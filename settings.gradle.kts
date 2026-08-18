@@ -35,7 +35,22 @@ rootProject.name = "vespa-relay"
 //             asset cache with its content-derived validators, and the stats
 //             document holder. Domain-free by construction — it depends on Ktor
 //             and kotlinx.serialization and on nothing of ours.
+//   :peers  — how this deployment talks to OTHER relays, shared by the two
+//             client-side planes and by neither of the above: the websocket
+//             client and its socket budget, Tor, the NIP-66 verdict record,
+//             discovery, the config both planes read, and the ingest queue both
+//             write through. It sits ABOVE :common and must stay there.
+//
+// …and the monitor plane is its own module over :peers:
+//
+//   :monitor — what is out there and how much of it can we use: the alias fold,
+//             the consistency gate and the fitness grades, signing kind-30166
+//             records the mirror's roster then selects on. It may not depend on
+//             :sync; what it still takes from the mirror arrives through
+//             MonitorEngine's constructor, which is where that is accounted for.
 include(":common")
 include(":web")
+include(":peers")
+include(":monitor")
 include(":relay")
 include(":sync")

@@ -21,25 +21,24 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncUpstream
-import com.nosfabrica.vespa.relay.maintenance.ParseAudit
-import com.nosfabrica.vespa.relay.monitor.AliasMonitor
-import com.nosfabrica.vespa.relay.monitor.FitnessPass
+import com.nosfabrica.vespa.relay.ingest.AddressVersion
+import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
+import com.nosfabrica.vespa.relay.ingest.ParseAudit
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
+import com.nosfabrica.vespa.relay.peers.PeerClient
+import com.nosfabrica.vespa.relay.peers.RelaySockets
+import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
+import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
-import com.nosfabrica.vespa.relay.shared.PeerClient
-import com.nosfabrica.vespa.relay.shared.RelaySockets
-import com.nosfabrica.vespa.relay.shared.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.shared.TorSettings
-import com.nosfabrica.vespa.relay.sync.AddressVersion
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
-import com.nosfabrica.vespa.relay.sync.IngestPipeline
-import com.nosfabrica.vespa.relay.sync.IngestTuning
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
@@ -53,8 +52,6 @@ import com.nosfabrica.vespa.relay.sync.VisitPool
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
-import com.nosfabrica.vespa.relay.sync.refused.IngestOrigin
-import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
@@ -69,7 +66,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
@@ -301,38 +297,6 @@ class SyncEngine(
         ingest.start()
         registerProcessors()
 
-        // BEFORE any pass reads a verdict and before the roster's first
-        // rebuild, which is why it blocks: the reads downstream ask only
-        // whether a url holds a verdict, so a record standing under rules this
-        // build no longer applies would be acted on as current. See
-        // [FitnessPass.retireStaleEpochs] for why the retraction belongs here
-        // rather than in every reader.
-        //
-        // Costs a PAGED walk of our own graded records on every boot — the
-        // epoch and the legacy tag are both decided per record rather than in
-        // the filter, so neither retraction can ask the store to return only
-        // what it wants — and on the boot after an epoch bump it costs a signed
-        // edit per standing verdict too. Paid once, at a deploy the operator
-        // chose, in exchange for never serving on a verdict we would not
-        // re-take. (This said "one indexed query returning nothing"; the query
-        // is indexed and it returns the whole graded corpus.)
-        //
-        // TWO GUARDS, NOT ONE. Sharing a `runCatching` meant a throw in the
-        // first retraction silently skipped the second — and reported it under
-        // the first one's name, so a store that could not answer the epoch walk
-        // left every legacy `s` grade standing with nothing said about it.
-        signer?.let { s ->
-            val record = RelayVerdictRecord(store, s)
-            runCatching { runBlocking { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
-            // …and the grades written before the move off `s`, which are not
-            // stale readings but readings in a tag that now means something
-            // else entirely. Same boot, same reason it cannot be left to the
-            // readers, and now its own failure to report.
-            runCatching { runBlocking { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
-        }
-
         peers.announceTor()
 
         // Make a fatal error visible instead of leaving a silent process that
@@ -425,7 +389,7 @@ class SyncEngine(
      *
      * The two probe passes are registered elsewhere — they are constructed with
      * their handles, because the pass writes its own work numbers and only
-     * [AliasMonitor] knows its clock.
+     * the alias monitor knows its clock.
      */
     private fun registerProcessors() {
         // The monitor's own rows are registered by [MonitorEngine], including
@@ -688,48 +652,11 @@ class SyncEngine(
     }
 
     companion object {
-        /**
-         * Is there anything for the monitor to work on — a stream's own
-         * `relaySource`, or the `monitor { sources }` block?
-         *
-         * A function over the config rather than a property of the engine so a
-         * test can hand it the deployment that broke: streams on static `urls`
-         * with every url entering through the monitor block, which is the
-         * posture [MonitorConfig] documents and the one the old rule
-         * (`discoveryStreams.isNotEmpty()`) answered `false` for.
-         */
-        internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
-
-        /**
-         * The names the progress document calls this router's non-stream jobs.
-         *
-         * Spelled out as constants for the reason `StreamPhases.word` gives:
-         * they are PUBLISHED, and a reader charting them must not have a row
-         * renamed by a Kotlin refactor.
-         */
-        const val FOLD_PROCESSOR = "aliasFold"
-
-        /**
-         * The candidate derivation — `StreamWorld`, which the router's own log
-         * line has always called the alias source ("router: alias source
-         * derived 16,752 url(s)"). Named for that line rather than for the
-         * class, so the document, the log and the code are one word.
-         */
-        const val SOURCE_PROCESSOR = "aliasSource"
-
-        // `consistency`, not `stability`: the class is `ConsistencyPass`, the
-        // state is `RelayConsistency` and the published tag is
-        // `self-consistent`. A fourth word for the same measurement is a word
-        // nobody can grep from the document back to the code.
-        const val STABILITY_PROCESSOR = "consistency"
-
-        /**
-         * The fitness pass — the verdict funnel the sync plane selects on.
-         * Its counts are the verdicts themselves, not the candidate funnel the
-         * fold and consistency rows carry: those two share a derivation, this
-         * one reports what it decided.
-         */
-        const val FITNESS_PROCESSOR = "fitness"
+        // The names the progress document calls this router's non-stream jobs.
+        // Spelled out as constants for the reason `StreamPhases.word` gives:
+        // they are PUBLISHED, and a reader charting them must not have a row
+        // renamed by a Kotlin refactor. The monitor's four live on
+        // [MonitorEngine], beside the passes that fill them.
 
         /** The rotating pool — roster, tails, audits, visits. See [VisitPool]. */
         const val VISITS_PROCESSOR = "visits"

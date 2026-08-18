@@ -23,9 +23,9 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.shared.DiscoveredRelay
-import com.nosfabrica.vespa.relay.shared.RelayDiscovery
-import com.nosfabrica.vespa.relay.shared.TorTransport
+import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
+import com.nosfabrica.vespa.relay.peers.RelayDiscovery
+import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore

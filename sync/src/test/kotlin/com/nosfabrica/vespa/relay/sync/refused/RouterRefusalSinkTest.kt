@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.sync.refused
 
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.PermanentRefusals
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.heal.HealKey
 import com.nosfabrica.vespa.relay.sync.heal.HealMode
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue

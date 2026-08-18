@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.utils.Hex
 import java.nio.file.Files

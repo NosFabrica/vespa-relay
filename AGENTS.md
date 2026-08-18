@@ -4,22 +4,26 @@ A Nostr relay with trust-ranked NIP-50 search. Quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays.
 
-Four Gradle modules, JVM only (toolchain 21), two processes over one store:
+Six Gradle modules, JVM only (toolchain 21), two processes over one store:
 
 - **`:relay`** — the serving side. `RelayMain` is its entrypoint.
-- **`:sync`** — the mirror and the monitor, as one process so it restarts
-  without the relay or Vespa noticing. `SyncMain` is its entrypoint. TWO PLANES,
-  and the packages say which is which: `sync/` moves events into the store,
-  `monitor/` measures relays and signs NIP-66 verdicts about them, `shared/` is
-  the four classes both touch. `SyncEngine` sits above all three because it
-  starts both planes and belongs to neither. It used to be one `router/` package
-  for the lot, which said nothing about what was mirroring and what was
-  measuring — operators still know the subsystem as the router (`router.conf`,
-  the `router:` log prefix), and that is a separate name from these.
+- **`:sync`** — the MIRROR, and the process that hosts the monitor beside it so
+  the pair restarts without the relay or Vespa noticing. `SyncMain` is its
+  entrypoint and builds both engines over one `PeerClient`. Operators know the
+  subsystem as the router (`router.conf`, the `router:` log prefix), and that is
+  a separate name from these.
+- **`:monitor`** — the MONITOR plane: the alias fold, the consistency gate and
+  the fitness grades, signing kind-30166 records the mirror's roster selects on.
+  **It may not depend on `:sync`**, and the compiler enforces that now. What it
+  still takes from the mirror — the ingest queue a probe dial's events land in,
+  the socket refcount, the pinned urls — arrives through `MonitorEngine`'s
+  constructor, which is where that debt is accounted for. Reading the other way
+  is already clean: the mirror asks the STORE for verdicts, a plain NIP-01 read
+  that would survive a process boundary untouched.
 
-…and two shared modules, which are shared with DIFFERENT audiences. That is the
-distinction to hold when deciding where something goes, and each module states
-its own admission rule:
+…over three shared modules, which are shared with DIFFERENT audiences. That is
+the distinction to hold when deciding where something goes, and each module
+states its own admission rule:
 
 - **`:common`** — only what the SERVING relay also reads: `RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
@@ -28,6 +32,12 @@ its own admission rule:
   Anything one process owns lives in that process's module. It must never gain
   a dependency on quartz's relay CLIENT or on Ktor: the day it does, it has
   stopped being "what both read" and become the junk drawer.
+- **`:peers`** — how this deployment talks to OTHER relays, shared by the two
+  client-side planes and by neither of the other two modules: `PeerClient` (the
+  websocket client, the 1,024-socket dispatcher, Tor, NIP-42), `RelaySockets`,
+  `RelayVerdictRecord` and the `Verdict` vocabulary both planes speak,
+  `RelayDiscovery`, the `RouterConfig` both read, the `IngestPipeline` both
+  write through, and `Processors`. It sits ABOVE `:common` and must stay there.
 - **`:web`** — how a service serves a page: the Ktor scaffolding
   (`installPageDefaults`, `serveStatusSite`), the classpath asset cache and its
   content-derived validators (`WebAssets`, `webModules`, `favicon`), the page
@@ -42,7 +52,9 @@ its own admission rule:
 ```bash
 ./gradlew build                    # compile + test + spotless check, all modules
 ./gradlew :relay:test              # serving-side tests
-./gradlew :sync:test               # router tests (moved with the module)
+./gradlew :sync:test               # the mirror plane
+./gradlew :monitor:test            # the fold, the consistency gate, the grades
+./gradlew :peers:test              # the plumbing, the verdict record, ingest
 ./gradlew :sync:test --tests "*SyncBands*"
 
 # Dials the five real indexer relays and reports two things: how each ENDS an
@@ -73,7 +85,7 @@ its own admission rule:
 # a store looks like before the boot migration has run. The nsec must be the
 # relay's own RELAY_NSEC or the panel correctly counts them as another monitor's.
 # Then open /stats.html and press "Read verdicts from this relay".
-./gradlew :sync:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
+./gradlew :monitor:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
   -DseedVerdictsNsec=nsec1... -DseedVerdictsCount=600 --rerun -i
 #   …a different relay, or more/fewer legacy rows:
 #   -DseedVerdictsUrl=ws://localhost:7777 -DseedVerdictsLegacy=15
@@ -89,7 +101,7 @@ its own admission rule:
 # decide from each. Answers the three ways a `.onion` fails to fold — window too
 # short, relay will not answer a fingerprint, paths genuinely distinct — which
 # are the same silence from the outside. Asserts nothing.
-./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
+./gradlew :monitor:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
   -DonionFoldSocks=127.0.0.1:9050 --rerun -i
 
 # Runs a REAL pass of the fold against REAL relays and prints the numbers the
@@ -98,7 +110,7 @@ its own admission rule:
 # published, and whether every socket the pass claimed came back. This is the
 # one that tells our reading of a relay apart from the relay — three claims in
 # the sections below were corrected by running it. Asserts nothing.
-./gradlew :sync:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
+./gradlew :monitor:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
 #   …or a group of your own, `;` between groups and `,` within one:
 #   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
 
@@ -108,7 +120,7 @@ its own admission rule:
 # fake page says: its unrecognised bucket either is empty or names the strings
 # the table still has to learn. Asserts only what cannot depend on the network —
 # that the partition closes and the rows sum to `unmeasured`.
-./gradlew :sync:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
+./gradlew :monitor:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
 #   …or urls of your own:
 #   -DliveConsistencyUrls='wss://relay.example,wss://other.example'
 
@@ -118,7 +130,7 @@ its own admission rule:
 # anchor fixes it) or because it does not answer the same question twice (an
 # older anchor does not). Those are different facts and want different responses
 # — see the self-consistency section below. Asserts nothing.
-./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
+./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
@@ -126,7 +138,7 @@ its own admission rule:
 # beside them. Pins that this router's client really does have a NIP-42
 # responder, which is what makes quartz's derived default the value AliasProbe
 # used to hardcode. Asserts nothing.
-./gradlew :sync:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
+./gradlew :monitor:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
 #   …or a relay of your own: -DauthGatedUrl='wss://relay.example'
 
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
@@ -273,6 +285,40 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
   WebAssets.kt              /web/… off the classpath, hashed once, and /favicon.ico
   PageIcon.kt               pageWithIcon — every <link rel="icon"> replaced by one
   StatsSnapshot.kt          the served document: two writers merged, persisted
+
+peers/src/main/kotlin/com/nosfabrica/vespa/relay/
+  peers/
+    PeerClient.kt         the websocket client, the 1,024-socket dispatcher, Tor
+                          and NIP-42 — one of each, for BOTH planes, which is
+                          why RelaySockets can refcount across them
+    RelaySockets.kt       who is still using this socket: one refcount across
+                          every stream and every probe pass
+    RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
+                          the mirror reads. The contract between the planes
+    Verdict.kt            …and the label vocabulary they are written in. In
+                          :peers because a vocabulary only one side can name is
+                          not a contract
+    RelayFacts.kt         the NIP-66 fact tags that ride the same record
+    RelayDiscovery.kt     which urls a relay list names, and which a `dead`
+                          verdict of ours holds out
+    TorTransport.kt       the .onion transport, and probeIdleMs
+  config/                 RouterConfig + its HOCON loader — one file configures
+                          both planes, so it sits under both
+  ingest/                 IngestPipeline (on an IngestTuning, not the whole
+                          config), ParseAudit, the refusal filters, ProbeGate
+  progress/               Processors and InFlight — the report both planes
+                          register rows in
+
+monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
+  MonitorEngine.kt        the plane: the three passes, the derivation, the boot
+                          retirement of verdicts this router would no longer
+                          sign. Its CONSTRUCTOR is the account of what the
+                          monitor still takes from the mirror
+  AliasFolding.kt         which urls are one server wearing several addresses
+  ConsistencyPass.kt      which cannot answer the same question twice
+  FitnessPass.kt          …and the grades for what survives, signed
+  StreamWorld.kt          the candidate set all three measure over
+  AliasMonitor.kt         their clock, and the fast lane
 
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt          entrypoint; reads env, deploys the schema, wires the

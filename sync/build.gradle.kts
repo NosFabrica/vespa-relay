@@ -18,6 +18,14 @@ dependencies {
     // SyncEngine's constructor takes the audit and pressure types from :common,
     // and its tests build quartz filters — api keeps those visible downstream.
     api(project(":common"))
+    // The peer vocabulary — the websocket client, Tor, discovery, the verdict
+    // record, the config, the ingest queue.
+    api(project(":peers"))
+    // The other plane. This process HOSTS the monitor today: SyncMain builds
+    // both engines over one PeerClient. The dependency is one-directional and
+    // has to stay that way — :monitor knowing about :sync is what would make
+    // the two inseparable again.
+    api(project(":monitor"))
     // This process serves its own status page: what it has walked, what its
     // streams are doing, and the glossary for both. api because SyncStatus
     // takes a StatsSnapshot in its signature.
@@ -51,54 +59,18 @@ tasks.test {
     useJUnitPlatform()
     // Forwarded, not inherited: a system property on the Gradle command line
     // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
-    // These dial the public internet, so they stay off unless asked for
-    // by name — `RealRelayDrainProbe` and `PagingCursorProbe`.
-    System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
-    System.getProperty("pagingCursorProbe")?.let { systemProperty("pagingCursorProbe", it) }
-    // Same forwarding, same reason. `SyncBandsProdScaleProbe` builds a ~14MB
-    // corpus and hands the two files to the relay-side probe through
-    // `prodScaleDir`, so both properties have to cross into the fork.
-    System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
-    System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
-    // The fold's two live probes, and the same trap: without these lines the
-    // switch reaches the daemon, the forked JVM never sees it, and the probe
-    // prints its own `[skip]` line — which reads exactly like a probe that was
-    // asked for and had nothing to say. `AliasFoldLiveProbe` runs a real pass
-    // against real relays; `AliasFoldOnionProbe` needs a Tor SOCKS proxy.
-    System.getProperty("liveFoldProbe")?.let { systemProperty("liveFoldProbe", it) }
-    System.getProperty("liveFoldGroups")?.let { systemProperty("liveFoldGroups", it) }
-    System.getProperty("onionFoldProbe")?.let { systemProperty("onionFoldProbe", it) }
-    System.getProperty("onionFoldSocks")?.let { systemProperty("onionFoldSocks", it) }
-    System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }
-    System.getProperty("selfConsistency")?.let { systemProperty("selfConsistency", it) }
-    System.getProperty("selfConsistencyUrls")?.let { systemProperty("selfConsistencyUrls", it) }
-    System.getProperty("authGatedProbe")?.let { systemProperty("authGatedProbe", it) }
-    System.getProperty("authGatedUrl")?.let { systemProperty("authGatedUrl", it) }
-    System.getProperty("authRefusalProbe")?.let { systemProperty("authRefusalProbe", it) }
-    System.getProperty("authRefusalUrls")?.let { systemProperty("authRefusalUrls", it) }
-    System.getProperty("authRefusalCensus")?.let { systemProperty("authRefusalCensus", it) }
-    // A whole stability pass over real relays — the only test that can prove
-    // `Silence` classifies what OkHttp and the JDK actually say, rather than
-    // what a fake page says. Same forwarding, same trap.
-    System.getProperty("liveConsistency")?.let { systemProperty("liveConsistency", it) }
-    System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
-    // The two planes end to end against real relays: fitness verdicts onto
-    // records, the roster read back, a small VisitPool run on it.
-    System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
-    // Seeds one synthetic 10040 into a LOCAL relay so the `certified` gate
-    // and the monitor's 10040 source can be watched live. Same trap.
-    System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
-    // The verdicts-panel seed: a monitor corpus in a LOCAL relay, so the stats
-    // page's one protocol-speaking panel can be driven against a real store.
-    System.getProperty("seedVerdicts")?.let { systemProperty("seedVerdicts", it) }
-    System.getProperty("seedVerdictsUrl")?.let { systemProperty("seedVerdictsUrl", it) }
-    System.getProperty("seedVerdictsNsec")?.let { systemProperty("seedVerdictsNsec", it) }
-    System.getProperty("seedVerdictsCount")?.let { systemProperty("seedVerdictsCount", it) }
-    System.getProperty("seedVerdictsLegacy")?.let { systemProperty("seedVerdictsLegacy", it) }
-    System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
-    // Stages the enforce-mode retraction scenario — a provider on a real
-    // relay, a phantom score only in our store. Same trap.
+    // These dial the public internet or write to a relay, so they stay off unless asked for by name.
+    //
+    // EVERY property a probe in this module reads has to appear here. A missing
+    // one does not fail — the probe skips itself with its own "[skip]" line, which
+    // reads exactly like a probe that was never asked for.
+    System.getProperty("enforceLocalRelay")?.let { systemProperty("enforceLocalRelay", it) }
     System.getProperty("enforceProbe")?.let { systemProperty("enforceProbe", it) }
     System.getProperty("enforceProviderRelay")?.let { systemProperty("enforceProviderRelay", it) }
-    System.getProperty("enforceLocalRelay")?.let { systemProperty("enforceLocalRelay", it) }
+    System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
+    System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
+    System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
+    System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
+    System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
+    System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
 }

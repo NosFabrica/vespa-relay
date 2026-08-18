@@ -20,6 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.sync.refused
 
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.PermanentRefusals
+import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.heal.HealKey
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.StaleRef
@@ -71,9 +75,13 @@ class RouterRefusalSink(
     ) {
         if (!PermanentRefusals.isPermanent(reason)) return
 
-        if (origin.url != null && PermanentRefusals.isHealable(reason)) {
+        // Bound to a local rather than smart-cast: `origin` is another
+        // module's type now, so the compiler cannot prove the property does not
+        // change between the check and the use.
+        val from = origin.url
+        if (from != null && PermanentRefusals.isHealable(reason)) {
             healKeyFor(event, reason, origin)?.let { key ->
-                queue.offer(origin.url, key, StaleRef(event.id, event.createdAt))
+                queue.offer(from, key, StaleRef(event.id, event.createdAt))
             }
         }
 

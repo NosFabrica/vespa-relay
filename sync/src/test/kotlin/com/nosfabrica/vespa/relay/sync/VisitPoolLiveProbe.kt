@@ -28,17 +28,20 @@ import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.monitor.AliasFolding
+import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.AliasProbe
 import com.nosfabrica.vespa.relay.monitor.FitnessPass
+import com.nosfabrica.vespa.relay.peers.RelayDiscovery
+import com.nosfabrica.vespa.relay.peers.RelaySockets
+import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
+import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
-import com.nosfabrica.vespa.relay.shared.RelayDiscovery
-import com.nosfabrica.vespa.relay.shared.RelaySockets
-import com.nosfabrica.vespa.relay.shared.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
-import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -84,7 +87,7 @@ class VisitPoolLiveProbe {
                 Filter(
                     kinds = listOf(30166),
                     authors = listOf(monitor),
-                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(FitnessPass.Verdict.PRIME.value)),
+                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(Verdict.PRIME.value)),
                 ),
             maxAgeSeconds = 3600,
         )
@@ -126,7 +129,7 @@ class VisitPoolLiveProbe {
                         progress = processors.of("fitness"),
                     )
                 val started = System.currentTimeMillis()
-                fitness.measure("live probe", candidates, canDial = { true }, onEvent = {}, sockets = AliasFolding.Sockets.NONE)
+                fitness.measure("live probe", candidates, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
                 println("=".repeat(78))
                 println("fitness pass over ${candidates.size} url(s) in ${System.currentTimeMillis() - started}ms — records now say:")
                 val roster = RelayDiscovery.discover(store, RelayDiscoveryConfig(listOf(probeSource(signer.pubKey)), 3600, RelayExcludes.NONE))

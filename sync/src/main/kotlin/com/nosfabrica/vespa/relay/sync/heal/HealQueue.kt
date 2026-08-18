@@ -87,7 +87,7 @@ data class StaleRef(
  * Work the reconcile discovered and refuses to do itself.
  *
  * **Bounded and coalescing, and it DROPS rather than blocks.** That is
- * deliberately the inverse of [com.nosfabrica.vespa.relay.sync.IngestPipeline.submit],
+ * deliberately the inverse of [com.nosfabrica.vespa.relay.ingest.IngestPipeline.submit],
  * which suspends its producer rather than lose an event, and the difference is
  * the point: an event dropped there is data lost, a heal dropped here is a
  * retry — the next cycle rediscovers it the moment the relay offers the stale

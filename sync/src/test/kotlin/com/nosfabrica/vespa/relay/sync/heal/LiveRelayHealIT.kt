@@ -22,9 +22,9 @@ package com.nosfabrica.vespa.relay.sync.heal
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
-import com.nosfabrica.vespa.relay.sync.refused.IngestOrigin
-import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
