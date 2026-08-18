@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -118,6 +119,7 @@ class StreamWorldDerivationTest {
         exclude: List<String>,
         monitorAuthors: List<String> = emptyList(),
         self: String? = null,
+        progress: Processors.Handle? = null,
     ): StreamWorld {
         val scope = CoroutineScope(Job())
         return StreamWorld(
@@ -137,6 +139,7 @@ class StreamWorldDerivationTest {
             tor = null,
             sockets = AliasFolding.Sockets.NONE,
             monitorConfig = monitorConfig(exclude),
+            progress = progress,
         )
     }
 
@@ -187,6 +190,41 @@ class StreamWorldDerivationTest {
                 d.excluded + d.heldOutDead + candidates.size,
                 "the identity the coverage card's top three rows are drawn from",
             )
+        }
+
+    @Test
+    fun `the walk says where it has got to, and the row ends with the yield`() =
+        runBlocking {
+            // THE STATE THAT USED TO BE INVISIBLE. This walk is minutes on a
+            // live store and it sits in front of every probe pass, so while it
+            // ran the card had three rows reading `idle` and nothing saying the
+            // sweep had started at all.
+            //
+            // The position is per SOURCE, and that is the only unit available:
+            // how many urls the walk yields is what it is finding out, so a
+            // position counted in them would need its own answer first.
+            val store = storeWithPerNpubUrls()
+            val processors = Processors()
+            val row = processors.of("aliasSource")
+            val world = world(store, listOf("wss://filter.nostr.wine/npub.*"), progress = row)
+            // Five zeros and a walk that has not happened are the same object,
+            // and only this tells them apart — the row's whole fact line is
+            // drawn from those counts, so a boot must publish none of them
+            // rather than claim it named no urls.
+            assertEquals(false, world.derived, "nothing has been derived before the first walk")
+
+            val candidates = world.candidates()
+            assertEquals(true, world.derived, "and the numbers are a measurement once one has")
+
+            val after = processors.snapshot().single()
+            assertEquals("source", after.measuring?.unit, "the walk declared what it was counting")
+            assertEquals(1, after.measuring?.toProbe, "one unit per configured source — here, the monitor block's own")
+            assertEquals(1, after.measuring?.attempted, "and it is behind the walk once that source's discovery ends")
+            // The yield, stated rather than left to a subtraction: it is what
+            // the passes were handed, and every number on their rows is a share
+            // of it.
+            assertEquals(candidates.size, world.lastDerivation.candidates)
+            assertEquals(1, world.lastDerivation.candidates, "one relay survives the exclude, and the row says so")
         }
 
     @Test

@@ -134,6 +134,10 @@ class SyncVocabularyTest {
                    {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "running",
                     "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3}, "taken": {"delivered": 3}, "received": 9}]}],
                  "processors": [
+                   {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
+                    "lastPassAt": 880, "lastPassSec": 300,
+                    "measuring": {"unit": "source", "attempted": 2, "toProbe": 6},
+                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "candidates": 40, "recordedOnly": 6},
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
                     "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,

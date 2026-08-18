@@ -301,6 +301,19 @@ class SyncEngine(
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
     /**
+     * THE ROW THE DERIVATION REPORTS ON, and it is declared HERE, above the
+     * passes it feeds, on purpose: [Processors.of] registers in call order and
+     * the document is drawn in registration order, so a handle taken after the
+     * fold's would draw the collection step under the pass that waits on it.
+     *
+     * On the same terms as the passes — a signer or nothing. It is not that the
+     * derivation needs an identity, but that without one there is no
+     * [aliasMonitor] to run it, and a row for work this deployment never does
+     * would draw a `Relay monitor` card on a router that has no monitor.
+     */
+    private val sourceProgress = signer?.let { processors.of(SOURCE_PROCESSOR) }
+
+    /**
      * The duplicate-url fold, built only when there is a signer — the verdict
      * it produces is a signed NIP-66 record, so a router with no identity has
      * nowhere to put one and dials every url as its own relay, exactly as
@@ -407,6 +420,7 @@ class SyncEngine(
             tor = tor,
             sockets = sockets,
             monitorConfig = config.monitor,
+            progress = sourceProgress,
         )
 
     /**
@@ -520,6 +534,31 @@ class SyncEngine(
             // measure the same derived set; a supplier rather than a copy, for
             // the reason [Processors] gives.
             ?.also {
+                // THE DERIVATION'S OWN ROW, which is the same four numbers plus
+                // the one the passes below cannot state: what it handed them.
+                // On the row that produced them rather than only on the rows
+                // that consume them — a reader watching the collection step run
+                // is asking how big the corpus turned out to be, and every
+                // other number on this card is a share of that answer.
+                sourceProgress?.counts {
+                    // NOTHING UNTIL A WALK HAS RUN. These five are the row's
+                    // whole fact line, and a boot that published them as zeros
+                    // would say `0 url(s) named` for the two minutes before the
+                    // first sweep — a measurement nobody has taken, and one a
+                    // reader cannot tell from a store with no relay lists in
+                    // it. See [StreamWorld.derived].
+                    if (!world.derived) {
+                        emptyList()
+                    } else {
+                        listOf(
+                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
+                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
+                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
+                            Processors.Count("candidates", world.lastDerivation.candidates.toLong()),
+                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
+                        )
+                    }
+                }
                 for (pass in listOfNotNull(folding?.progress, consistencyPass?.progress)) {
                     pass.counts {
                         listOf(
@@ -731,6 +770,10 @@ class SyncEngine(
         // is never called. Said out loud, because a row left at `starting` for
         // the life of the process reads as a pass that is about to run.
         if (discoveryStreams.isEmpty()) {
+            // The derivation with them: `aliasMonitor.start()` is what runs it,
+            // and a row left at `starting` for the life of the process reads as
+            // a collection step that is about to begin.
+            sourceProgress?.phase(Processors.OFF)
             folding?.progress?.phase(Processors.OFF)
             consistencyPass?.progress?.phase(Processors.OFF)
         }
@@ -1005,6 +1048,14 @@ class SyncEngine(
          * renamed by a Kotlin refactor.
          */
         const val FOLD_PROCESSOR = "aliasFold"
+
+        /**
+         * The candidate derivation — `StreamWorld`, which the router's own log
+         * line has always called the alias source ("router: alias source
+         * derived 16,752 url(s)"). Named for that line rather than for the
+         * class, so the document, the log and the code are one word.
+         */
+        const val SOURCE_PROCESSOR = "aliasSource"
 
         // `consistency`, not `stability`: the class is `ConsistencyPass`, the
         // state is `RelayConsistency` and the published tag is

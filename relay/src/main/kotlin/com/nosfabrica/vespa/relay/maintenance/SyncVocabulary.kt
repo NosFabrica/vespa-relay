@@ -414,10 +414,12 @@ internal object SyncVocabulary {
             )
             put(
                 "processors",
-                "The router's work that is NOT a stream, and the answer to \"what else is running\". Seven of them: " +
-                    "the alias fold, the stability gate and the fitness pass (all three on the alias monitor's own " +
-                    "six-hour clock, all three writing tags onto the same NIP-66 kind-30166 records), the rotating " +
-                    "pool the visit-mode streams ride, ingest, the healer and the upstream push. A passive NIP-66 " +
+                "The router's work that is NOT a stream, and the answer to \"what else is running\". Eight of them: " +
+                    "the alias source (which walks the store for every url the relay lists name and hands the passes " +
+                    "the set they work on — minutes, at the head of every sweep, and for all of them the rows below " +
+                    "it read `idle`), the alias fold, the stability gate and the fitness pass (all three on the alias " +
+                    "monitor's own six-hour clock, all three writing tags onto the same NIP-66 kind-30166 records), " +
+                    "the rotating pool the visit-mode streams ride, ingest, the healer and the upstream push. A passive NIP-66 " +
                     "watcher used to be an eighth, signing a record per socket this client opened; the passes own the " +
                     "record now. A processor that is not registered is one this router does not run — a deployment " +
                     "with no signer has no fold and no monitor at all — so an absent row is a fact rather than " +
@@ -428,7 +430,10 @@ internal object SyncVocabulary {
                 "Urls a stream handed a processor's pass, before anything was decided — the router's own word for the " +
                     "argument it passes (`measure(label, candidates, …)`). The denominator `unmeasured` is counted " +
                     "against, and NOT the number that was dialled: most of a candidate set already carries a current " +
-                    "verdict and is never asked again until it ages out.",
+                    "verdict and is never asked again until it ages out. Published in two places for one population: " +
+                    "inside a pass's `streams` row it is what that pass was handed, and on the ALIAS SOURCE's row it " +
+                    "is what the derivation yielded — `sourced - excluded - heldOutDead`, stated rather than left to " +
+                    "a subtraction, because it is the number every count on the passes below is a share of.",
             )
             put(
                 "newUrls",
@@ -624,7 +629,9 @@ internal object SyncVocabulary {
                 "What `attempted` and `toProbe` are counts OF, because the passes do not decide the same thing: the " +
                     "stability gate and the fitness pass answer about a `url`, the alias fold answers about a `host` " +
                     "and dials every url of one to do it. A fold position counted in urls would jump by 55 for one " +
-                    "verdict and by 1 for the next.",
+                    "verdict and by 1 for the next. The alias source counts neither — its unit is a `source`, one " +
+                    "configured relay-list block at a time, since how many urls the walk yields is the thing it is " +
+                    "finding out and cannot be a denominator until it has.",
             )
             put(
                 "rotating",
