@@ -161,8 +161,12 @@ class InFlight(
          */
         val stage: String? = null,
         /**
-         * WHERE IN TIME its paged walk has got to — the `created_at` second the
-         * cursor is reading now.
+         * HOW FAR BACK the leg has got — a second, always read the same
+         * direction whichever stage set it: the `created_at` the paged cursor
+         * is reading now, or the older edge of the negentropy window an audit
+         * is comparing now. Never the newer end of either range; an audit
+         * publishing the window's `until` here read as `back to <today>` for
+         * the whole of a sweep with years still to compare.
          *
          * [doing] `paging` beside a large [quietForSec] is two legs that look
          * identical here: one deep in a real backlog and one whose cursor has
@@ -170,8 +174,8 @@ class InFlight(
          * — it is the MINIMUM over every live walk, one date describing the
          * deepest, while a row is drawn because it is the exception.
          *
-         * Null when no walk of this url is running: in the guards, queued, or
-         * reconciling without the delete pass, which pages under the same key.
+         * Null when neither is running for this url: in the guards, queued, or
+         * a retraction pass, whose reconcile publishes no window.
          */
         val pagingUntil: Long? = null,
     )

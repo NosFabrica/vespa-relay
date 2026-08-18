@@ -284,9 +284,14 @@ internal object SyncVocabulary {
                     "real backlog and working its way down, and one whose cursor is not moving at all. Read this " +
                     "twice and they separate — it either advanced or it did not. The stream's own `reached` cannot " +
                     "answer it, being the MINIMUM over every live walk: one date describing the deepest leg, while " +
-                    "the row beside it is named precisely because it is the exception. Absent on every leg that is " +
-                    "not paging — reconciling legs have no cursor and neither has one still in the guards — which " +
-                    "is a state and not a gap.",
+                    "the row beside it is named precisely because it is the exception. An AUDITING leg reports the " +
+                    "same reading from a different mechanism: the OLDER edge of the negentropy window it is " +
+                    "comparing right now, announced after the window has been cut to a size both sides will take, " +
+                    "so it descends window by window the way the paged cursor descends event by event. Both are " +
+                    "how far BACK the leg has got, never how far forward — the audit used to publish the window's " +
+                    "newer edge here, which read as `back to <today>` for the whole of a sweep that had years left " +
+                    "to compare. Absent on a leg that is neither paging nor auditing — one still in the guards has " +
+                    "no cursor at all — which is a state and not a gap.",
             )
             put(
                 "omitted",

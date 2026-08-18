@@ -110,8 +110,11 @@ class AliasProbeTest {
         page: Int = 500,
     ) = AliasProbe(fetch = fake::fetch, target = target, page = page, fallbackPage = 100)
 
+    // `: Unit` is load-bearing: `assertNotNull` RETURNS the value it checked,
+    // so this expression-bodied test compiled to a method returning `long`, and
+    // JUnit 5 silently does not run a non-void @Test — it had never run.
     @Test
-    fun `the read latency is the FIRST page, not the walk it took to reach the target`() =
+    fun `the read latency is the FIRST page, not the walk it took to reach the target`(): Unit =
         runBlocking {
             // NIP-66's `rtt-read` is a round trip, and this is signed as a
             // month-long claim about somebody else's server. Timing the walk

@@ -282,10 +282,15 @@ internal class NegentropyPager(
         leg: Filter,
         onProgress: ((Int, Int) -> Unit)? = null,
         /**
-         * WHERE IN TIME the sweep is: called with (since, until) as each
-         * window is taken up, newest first. The progress callback above counts
-         * events, and a sweep that finds nothing missing delivers none — this
-         * is the only signal that moves on a clean audit.
+         * WHERE IN TIME the sweep is: called with (since, until) of each window
+         * the sweep actually RECONCILES, after any bisection has cut it to a
+         * size both sides will take. Windows are taken newest-first, so `since`
+         * — the older edge — is the depth reached, and it only descends; that
+         * is the number a reader wants beside `auditing history (negentropy)`,
+         * and it is the same reading as a paging leg's cursor rather than the
+         * opposite end of the range. The progress callback above counts events,
+         * and a sweep that finds nothing missing delivers none — this is the
+         * only signal that moves on a clean audit.
          */
         onWindow: ((Long, Long) -> Unit)? = null,
         onEvent: suspend (Event) -> Unit,
@@ -319,7 +324,6 @@ internal class NegentropyPager(
         while (stack.isNotEmpty()) {
             // Newest first — the invariant the cursor rests on.
             val sweepWindow = stack.removeLast()
-            onWindow?.invoke(sweepWindow.first, sweepWindow.last)
             val minimal = sweepWindow.last - sweepWindow.first <= MIN_WINDOW_SECONDS
 
             // (1) Our side, before the round trip: this is what sizes the
@@ -330,6 +334,13 @@ internal class NegentropyPager(
                 bisect(stack, sweepWindow)
                 continue
             }
+            // AFTER the cut, not before it: the first window off the stack is
+            // the WHOLE leg — a decade wide on a deep history — and announcing
+            // it would report a floor the sweep has not reached, then walk the
+            // cursor UPWARDS as each bisection narrowed it. Announced here the
+            // reported windows descend, because only windows that are actually
+            // reconciled are announced and those are popped newest-first.
+            onWindow?.invoke(sweepWindow.first, sweepWindow.last)
 
             var pagedHere = 0
             try {

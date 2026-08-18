@@ -628,9 +628,15 @@ internal class VisitPool(
                 // window already agrees — so without this a relay whose whole
                 // history verifies reads as a worker gone quiet for minutes.
                 onProgress = { _, _ -> ongoingVisit.lastActivityMs = System.currentTimeMillis() },
-                onWindow = { _, until ->
+                // The window's SINCE, which is the same reading as a paging
+                // leg's cursor: how far BACK the audit has got. It was `until`,
+                // the newer edge — so a sweep that had years left to compare
+                // reported the row `back to <today>` and only moved once a
+                // whole window finished. The pager announces a window after the
+                // cut, so this descends.
+                onWindow = { since, _ ->
                     ongoingVisit.lastActivityMs = System.currentTimeMillis()
-                    ongoingVisit.pagingUntil = until
+                    ongoingVisit.pagingUntil = since
                 },
             ) { event ->
                 received++

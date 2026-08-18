@@ -245,8 +245,15 @@ class NegentropyPagerTest {
             peer.reconciled.forEach { assertTrue(peer.density.count(it) <= 5_000) }
         }
 
+    // `: Unit` is load-bearing on the two tests below and not decoration:
+    // an expression-bodied test whose last statement HAS a value —
+    // `zipWithNext` returns the list of its lambda's results — compiles to a
+    // method returning that type, and JUnit 5 silently does not run a
+    // non-void @Test. `windows are walked newest first` had been skipped that
+    // way, unnoticed, since it was written. Declaring Unit discards the value
+    // and the method comes back void.
     @Test
-    fun `windows are walked newest first`() =
+    fun `windows are walked newest first`(): Unit =
         runBlocking {
             val index = FakeIndex(Density(perSecond = 100))
             val peer = FakePeer(Density(perSecond = 1))
@@ -254,6 +261,30 @@ class NegentropyPagerTest {
 
             peer.asked.zipWithNext { a, b ->
                 assertTrue(b.last < a.first, "windows must descend: asked $a then $b")
+            }
+        }
+
+    @Test
+    fun `the window cursor is the older edge, announced after the cut, and only descends`(): Unit =
+        runBlocking {
+            // The in-flight row draws this as `back to <date>` beside
+            // `auditing history (negentropy)`, in the same direction as a paged
+            // leg's cursor. Two ways that reading used to be wrong: the newer
+            // edge (a sweep with years left reporting today's date), and
+            // announcing a window BEFORE it is cut (the whole leg, then a
+            // cursor walking upwards as each bisection narrowed it).
+            val index = FakeIndex(Density(perSecond = 100))
+            val peer = FakePeer(Density(perSecond = 1))
+            val announced = mutableListOf<LongRange>()
+            pager(index, peer)
+                .sweep(mirror, relay, notes, leg(1_000, 1_999), onWindow = { since, until -> announced += since..until }) {}
+
+            assertEquals(peer.asked, announced.toList(), "only the windows actually reconciled are announced")
+            assertTrue(announced.size > 1, "a leg 100x the target must be cut, or this test proves nothing")
+            assertEquals(1_999L, announced.first().last, "the first window announced is the newest")
+            assertEquals(1_000L, announced.last().first, "the last one reaches the leg's floor")
+            announced.zipWithNext { a, b ->
+                assertTrue(b.first < a.first, "the cursor must only go back: announced $a then $b")
             }
         }
 

@@ -1786,6 +1786,10 @@ const dayOf = (t) => new Date(t * 1000).toISOString().slice(0, 10);
  * per-event cursor exists to give. So the minute is drawn while the cursor is
  * still within [FINE_CURSOR_SEC] of now, and the plain day after that, where the
  * minute would be false precision on a walk measured in years.
+ *
+ * An auditing leg's cursor is the older edge of the negentropy window it is
+ * comparing, so `back to` reads the same direction on both stages — a date near
+ * now means the leg has only just started down, never that it is done.
  */
 const FINE_CURSOR_SEC = 2 * 24 * 60 * 60;
 const cursorOf = (t, nowSec) =>

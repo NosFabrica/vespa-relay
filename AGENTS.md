@@ -3482,6 +3482,17 @@ statement about someone else's server.
   endpoint paths: [docs/migrations.md](docs/migrations.md).
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
+- **A `@Test` that returns a value does not run, and nothing says so.** JUnit 5
+  silently ignores a non-void test method, and Kotlin's expression bodies hand
+  it one whenever the last statement HAS a value — `assertNotNull` returns what
+  it checked, `zipWithNext` returns the list of its lambda's results. Two tests
+  here were dead this way and passed the eye test for months: they were in the
+  source, in the class file, and never in the run. Declaring `(): Unit =`
+  discards the value and the method comes back void; that annotation is
+  load-bearing wherever you find it. To sweep for more:
+  `javap -p <class> | grep 'public final' | grep -v void` over
+  `*/build/classes/kotlin/test`, or compare the test names in the source
+  against `build/test-results/test/TEST-*.xml`, which lists what ACTUALLY ran.
 - **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
   nine months apart group as `"2025-1-5"` and `"2025-10-9"`. Unpadded values
   misorder as text wherever the digit count differs in the same position —
