@@ -64,10 +64,10 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   that the upstream no longer serves. Only for a stream whose upstream owns the
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
-- **`fullResyncSeconds`** *(optional)* — how often this stream's bands expire
-  into a full paged re-walk of its whole filter. Defaults to
-  `SYNC_FULL_RESYNC_SECONDS` (7 days). See
-  [`fullResyncSeconds` and the audit](#fullresyncseconds-and-the-audit).
+- **`refetchThePastSeconds`** *(optional)* — how often this stream's bands
+  expire, putting its whole filter back on the walk. Defaults to
+  `SYNC_REFETCH_THE_PAST_SECONDS` (7 days). See
+  [`refetchThePastSeconds` and the audit](#refetchthepastseconds-and-the-audit).
 - **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
   the upstream is the source of truth for, and therefore the only ones absence
   may delete. See
@@ -127,14 +127,27 @@ One thing it does not promise: Nostr lets an event be published with any
 deliberate — re-reading a corpus every restart is a certain daily cost, while
 that hole is occasional and clears the next time the filter changes.
 
-### `fullResyncSeconds` and the audit
+### `refetchThePastSeconds` and the audit
 
-A band narrows work; it never expires on its own evidence. So it also carries a
-period: once a band is older than `fullResyncSeconds` — the stream's own value,
-else `SYNC_FULL_RESYNC_SECONDS`, else quartz's 7 days — it is discarded and the
-whole filter is walked again from the plausible floor. That is the only thing
-that can re-read a window a relay back-filled after we passed it, and for a
-stream with no `auditSeconds` it is the only full re-check there is.
+A band narrows work; it never expires on its own evidence. So it can carry a
+period: once a band is older than `refetchThePastSeconds` — the stream's own
+value, else `SYNC_REFETCH_THE_PAST_SECONDS` (which still answers to its old
+name, `SYNC_FULL_RESYNC_SECONDS`) — it is discarded and the whole filter is
+walked again from the plausible floor. That is the only thing that can re-read a
+window a relay back-filled after we passed it, and for a stream with no
+`auditSeconds` it is the only full re-check there is.
+
+**There is no default, deliberately.** Unset, on both the stream and the
+environment, means the past is never re-read — because re-reading a whole
+history is the most expensive thing this router does on a schedule, and it was
+running on a period nobody had chosen. Streams left with neither a re-fetch
+period nor an audit are named at boot:
+
+```
+router: stream(s) indexers have neither `auditSeconds` nor `refetchThePastSeconds` — they page
+forward only, and nothing will re-read the history they have already walked. Set one if a relay
+of theirs can back-fill
+```
 
 Where an audit does run, the two are the same job at different prices: the audit
 reconciles the covered history and downloads the difference; the re-walk

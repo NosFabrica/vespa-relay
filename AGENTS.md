@@ -1694,8 +1694,9 @@ ask reads, and cannot narrow it — which is a second reason to ask only for wha
 the audit compares. Where the two coincide, as they now do on `assertions`
 (`filter.kinds == ownedKinds`, so `ownedAskOf` is identity), the daily reconcile
 closes the catch-up's own older leg and the deep re-walk stops. And every
-`fullResyncSeconds` — per stream now, `SYNC_FULL_RESYNC_SECONDS` for those that
-name none, quartz's week under that —
+`refetchThePastSeconds` — per stream, `SYNC_REFETCH_THE_PAST_SECONDS` for those
+that name none, and NEVER under that, since nothing this expensive runs on a
+period nobody chose —
 a band is STALE and `legs()` hands back the whole filter, floored on the
 wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
 `Band.widen` freezes on every non-stale merge, so it means "last walk from
@@ -3422,6 +3423,19 @@ survive the session to the engine query` passed unchanged through a wholesale
 replacement of the mechanism it covers. Conversely, a test that asserted
 `everReconciled`'s exact behaviour passed while shipping a bug, because it
 encoded the implementation's own opinion of itself.
+
+**A period knob is named for the JOB it repeats, never for the transport.**
+`refreshSeconds`, `auditSeconds`, `sweepSeconds`, `fastLaneSeconds`,
+`refetchThePastSeconds` — a reader tuning one is asking "how often does X
+happen", and X is a job. The transport is a separate axis and already has its
+own words (`sync`, and the in-flight `doing` column): the audit pages any window
+a peer will not reconcile, and a static stream's re-walk goes over whichever
+transport its `sync` chose, so a knob spelling a mechanism into its name would
+be wrong on those paths. Say what is repeated and, where two knobs repeat over
+the same ground, say WHICH ground — `refetchThePastSeconds` was
+`fullResyncSeconds`, which named neither. Renames go through
+`syncEnv(new, *legacy)` for env vars and a boot warning for config keys; never
+silently.
 
 **A configured component must never be silently inert.** Several bugs here were
 a switch that was read, accepted, and did nothing. If a flag needs something else

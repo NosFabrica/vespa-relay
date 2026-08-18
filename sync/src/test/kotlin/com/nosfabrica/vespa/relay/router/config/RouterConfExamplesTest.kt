@@ -185,10 +185,10 @@ class RouterConfExamplesTest {
         // reconciles the covered history, the re-walk re-downloads it — and a
         // visit pages BEFORE it audits, so equal periods mean the stream pages
         // its whole history and then reconciles the same ground in one visit.
-        example.streams.filter { it.auditSeconds != null && it.fullResyncSeconds != null }.forEach {
+        example.streams.filter { it.auditSeconds != null && it.refetchThePastSeconds != null }.forEach {
             assertTrue(
-                it.fullResyncSeconds!! > it.auditSeconds!!,
-                "stream '${it.name}' re-walks every ${it.fullResyncSeconds}s against an audit every ${it.auditSeconds}s",
+                it.refetchThePastSeconds!! > it.auditSeconds!!,
+                "stream '${it.name}' re-walks every ${it.refetchThePastSeconds}s against an audit every ${it.auditSeconds}s",
             )
         }
         // The two outbox streams are the ones it costs most: every certified
@@ -196,7 +196,7 @@ class RouterConfExamplesTest {
         listOf("profileViaOutbox", "contentViaOutbox").forEach { name ->
             assertEquals(
                 2_592_000L,
-                example.streams.single { it.name == name }.fullResyncSeconds,
+                example.streams.single { it.name == name }.refetchThePastSeconds,
                 "stream '$name' should re-walk monthly, not on the router's weekly default",
             )
         }

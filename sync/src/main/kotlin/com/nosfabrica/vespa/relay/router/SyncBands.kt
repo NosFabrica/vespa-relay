@@ -99,7 +99,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class SyncBands(
     private val file: File?,
-    private val fullResyncSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+    internal val refetchThePastSeconds: Long = NEVER,
     /**
      * Streams whose re-walk runs on a period of their own, by name. Fixed at
      * construction rather than registered later: a [SyncCoverage] is built on
@@ -216,8 +216,36 @@ class SyncBands(
      */
     private fun coverage(stream: String): SyncCoverage =
         coverageByStream.computeIfAbsent(stream) {
-            SyncCoverage(perStream[stream] ?: fullResyncSeconds, onChange = { dirty = true })
+            SyncCoverage(refetchThePastSecondsFor(stream), onChange = { dirty = true })
         }
+
+    /** What [stream]'s bands are trusted for: its own period, else the router's. */
+    internal fun refetchThePastSecondsFor(stream: String): Long = perStream[stream] ?: refetchThePastSeconds
+
+    /**
+     * Say WHICH streams have no way back into their own past, at boot.
+     *
+     * A stream re-reads history two ways: [SyncStream.auditSeconds] reconciles
+     * the covered past and downloads the difference, and
+     * [SyncStream.refetchThePastSeconds] expires the band so the past is walked
+     * again. With neither, a walk that missed a window — a relay that
+     * back-filled after we passed it, a leg that recorded a band on a page it
+     * should not have — is never revisited, and the band file says nothing
+     * about it because a band only ever widens.
+     *
+     * Printed rather than refused: a mirror that only ever moves forward is a
+     * legitimate deployment, and the router's job is to make sure nobody is in
+     * one by accident.
+     */
+    private fun announceUncheckedPasts(streams: List<SyncStream>) {
+        val blind = streams.filter { it.auditSeconds == null && refetchThePastSecondsFor(it.name) == NEVER }
+        if (blind.isEmpty()) return
+        System.err.println(
+            "router: stream(s) ${blind.joinToString(", ") { it.name }} have neither `auditSeconds` nor " +
+                "`refetchThePastSeconds` — they page forward only, and nothing will re-read the history they " +
+                "have already walked. Set one if a relay of theirs can back-fill",
+        )
+    }
 
     // ---- the band arithmetic, upstream's ------------------------------------
     // Delegated rather than exposing `coverage` directly: these five calls are
@@ -665,12 +693,32 @@ class SyncBands(
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
         /**
+         * No period at all, spelled as one quartz can hold: `isStale` is
+         * `now - fullAt >= period`, so a period no clock reaches is a band that
+         * is trusted for as long as the process lives. Not zero — that is
+         * "always stale", the opposite — and not a magic null, because
+         * [SyncCoverage] takes a number.
+         */
+        internal const val NEVER = Long.MAX_VALUE
+
+        /**
          * `SYNC_STATE_FILE` — where the bands live. Unset keeps them in memory,
          * which is the same as not having them.
          *
          * [streams] carry the per-stream re-walk periods, so this is built
-         * AFTER the config is parsed. `SYNC_FULL_RESYNC_SECONDS` remains the
-         * default for every stream that does not name one.
+         * AFTER the config is parsed. `SYNC_REFETCH_THE_PAST_SECONDS` is the
+         * default for every stream that does not name one, and it answers to
+         * `SYNC_FULL_RESYNC_SECONDS` and the pre-rename `ROUTER_` spelling too,
+         * loudly.
+         *
+         * **Unset means NEVER, not "a week".** Re-reading a relay's whole
+         * history is the most expensive thing this router does on a schedule —
+         * the content mirror is ~130 kinds against every certified relay — and
+         * a period nobody chose was doing it on quartz's default, invisibly,
+         * beside audits that already cover the same ground for the difference
+         * alone. A schedule that costs that much is written down or it does
+         * not run. The streams left with no re-check at all are named at boot
+         * rather than left to be inferred.
          */
         fun fromEnv(
             env: Map<String, String>,
@@ -683,12 +731,12 @@ class SyncBands(
                     ?.takeIf { it.isNotEmpty() }
                     ?.let(::File),
                 env
-                    .syncEnv("SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
+                    .syncEnv("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
                     ?.trim()
                     ?.toLongOrNull()
-                    ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
-                streams.mapNotNull { stream -> stream.fullResyncSeconds?.let { stream.name to it } }.toMap(),
-            ).startPeriodicFlush()
+                    ?.takeIf { it > 0 } ?: NEVER,
+                streams.mapNotNull { stream -> stream.refetchThePastSeconds?.let { stream.name to it } }.toMap(),
+            ).also { it.announceUncheckedPasts(streams) }.startPeriodicFlush()
     }
 }
 

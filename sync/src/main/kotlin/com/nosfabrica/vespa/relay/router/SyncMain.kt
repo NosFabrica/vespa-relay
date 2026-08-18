@@ -144,7 +144,7 @@ fun main() {
     // Where a paged relay's already-walked history is remembered, so a
     // restart resumes instead of re-reading the corpus. Built from the parsed
     // streams, not from the environment alone: a stream may set its own
-    // `fullResyncSeconds`, and a period learned after its first band would be
+    // `refetchThePastSeconds`, and a period learned after its first band would be
     // ignored for the life of the process.
     val bands = SyncBands.fromEnv(env, config.streams)
 

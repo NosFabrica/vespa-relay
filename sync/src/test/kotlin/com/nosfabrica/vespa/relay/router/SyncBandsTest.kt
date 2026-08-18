@@ -294,15 +294,37 @@ class SyncBandsTest {
 
     @Test
     fun `a band stops narrowing once it is older than the resync period`() {
-        val c = SyncBands(null, fullResyncSeconds = 60)
+        val c = SyncBands(null, refetchThePastSeconds = 60)
         c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = now() - 3600)
         // Recorded 'now' whatever the created_at claim, so age it by rewriting.
         c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = now())
         assertEquals(1, c.legs(mirror, relay, profiles).size, "fresh band still narrows")
 
-        val stale = SyncBands(null, fullResyncSeconds = 0)
+        val stale = SyncBands(null, refetchThePastSeconds = 0)
         stale.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = now())
         assertSame(profiles, stale.legs(mirror, relay, profiles).single(), "a band past its period re-walks everything")
+    }
+
+    @Test
+    fun `the re-walk period is opt-in, and answers to both of its old env names`() {
+        // SYNC_FULL_RESYNC_SECONDS shipped and is in a running deployment's
+        // compose file; a rename that ignored it would change that
+        // deployment's schedule without saying so.
+        fun period(env: Map<String, String>) = SyncBands.fromEnv(env).use { it.refetchThePastSecondsFor(mirror) }
+
+        // Nothing set: nothing re-read. Re-walking a whole history is the most
+        // expensive scheduled thing here, so it is written down or it does not
+        // happen — quartz's week used to apply to every deployment that had
+        // never heard of the knob.
+        assertEquals(SyncBands.NEVER, period(emptyMap()))
+        assertEquals(86_400L, period(mapOf("SYNC_REFETCH_THE_PAST_SECONDS" to "86400")))
+        assertEquals(86_400L, period(mapOf("SYNC_FULL_RESYNC_SECONDS" to "86400")))
+        assertEquals(86_400L, period(mapOf("ROUTER_FULL_RESYNC_SECONDS" to "86400")))
+        assertEquals(
+            86_400L,
+            period(mapOf("SYNC_REFETCH_THE_PAST_SECONDS" to "86400", "SYNC_FULL_RESYNC_SECONDS" to "1")),
+            "the current spelling decides when a config carries both",
+        )
     }
 
     @Test
@@ -312,7 +334,7 @@ class SyncBandsTest {
         // the period has to be read per stream rather than per file. Expressed
         // as 0 (always stale) against a long one, because a hermetic test
         // cannot age a band by a week.
-        val c = SyncBands(null, fullResyncSeconds = 0, perStream = mapOf("patient" to 86_400))
+        val c = SyncBands(null, refetchThePastSeconds = 0, perStream = mapOf("patient" to 86_400))
         c.record("patient", relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         c.record("eager", relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
@@ -324,7 +346,7 @@ class SyncBandsTest {
     fun `the re-walk replaces the old claim instead of widening it`() {
         // Widening would carry the stale band's floor forward forever and the
         // periodic pass would never actually reset anything.
-        val c = SyncBands(null, fullResyncSeconds = 0)
+        val c = SyncBands(null, refetchThePastSeconds = 0)
         c.record(mirror, relay, profiles, 1_700_000_000L, 1_700_001_000L, paged = true)
         c.record(mirror, relay, profiles, 1_700_005_000L, 1_700_006_000L, paged = true)
 

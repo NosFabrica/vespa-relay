@@ -710,13 +710,13 @@ class RouterConfigTest {
                 ).streams
                 .single()
 
-        assertEquals(2_592_000L, stream("fullResyncSeconds = 2592000").fullResyncSeconds)
+        assertEquals(2_592_000L, stream("refetchThePastSeconds = 2592000").refetchThePastSeconds)
         // Unset is not zero: it means the router's default, which is the env
         // knob and quartz's week under that.
-        assertNull(stream("").fullResyncSeconds)
+        assertNull(stream("").refetchThePastSeconds)
         // Same floor as the audit's, and for the same reason — under an hour
         // it is a re-walk loop rather than a period.
-        assertEquals(3600L, stream("fullResyncSeconds = 60").fullResyncSeconds)
+        assertEquals(3600L, stream("refetchThePastSeconds = 60").refetchThePastSeconds)
     }
 
     @Test

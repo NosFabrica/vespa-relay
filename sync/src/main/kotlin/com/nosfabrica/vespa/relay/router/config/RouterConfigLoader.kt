@@ -36,12 +36,18 @@ import java.util.regex.PatternSyntaxException
  */
 internal fun Map<String, String>.syncEnv(
     name: String,
-    legacy: String,
+    // Oldest last: a knob renamed twice carries both spellings, and the first
+    // one SET wins so a deployment mid-migration is never read from the older
+    // of two values it has.
+    vararg legacy: String,
 ): String? {
     this[name]?.let { return it }
-    val value = this[legacy] ?: return null
-    System.err.println("router: $legacy was renamed to $name — the old name still works; update your config")
-    return value
+    for (old in legacy) {
+        val value = this[old] ?: continue
+        System.err.println("router: $old was renamed to $name — the old name still works; update your config")
+        return value
+    }
+    return null
 }
 
 /**
@@ -217,13 +223,13 @@ object RouterConfigLoader {
                             null
                         }
                     }?.coerceAtLeast(3600L)
-                // How often this stream's bands expire into a full paged
-                // re-walk. Floored at an hour for the reason above and warned
-                // about below its own audit, where it re-downloads exactly
-                // what the audit was about to reconcile.
-                val fullResyncSeconds =
-                    if (s.hasPath("fullResyncSeconds")) {
-                        s.getLong("fullResyncSeconds").coerceAtLeast(3600L).also {
+                // How often this stream's bands expire, putting its whole
+                // filter back on the walk. Floored at an hour for the reason
+                // above, and warned about below its own audit, where it
+                // re-downloads exactly what the audit was about to reconcile.
+                val refetchThePastSeconds =
+                    if (s.hasPath("refetchThePastSeconds")) {
+                        s.getLong("refetchThePastSeconds").coerceAtLeast(3600L).also {
                             if (auditSeconds != null && it <= auditSeconds) {
                                 System.err.println(
                                     "router: stream '$name' re-walks every ${it}s but audits every ${auditSeconds}s — " +
@@ -281,7 +287,7 @@ object RouterConfigLoader {
                     sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
-                    fullResyncSeconds = fullResyncSeconds,
+                    refetchThePastSeconds = refetchThePastSeconds,
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     auditSeconds = auditSeconds,

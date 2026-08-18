@@ -143,6 +143,12 @@ streams {
         # including the 10002s the monitor's own sources read.
         sync = "fetch"
         filter = { "kinds": [0, 10002] }
+        # No audit on this stream, so this is its ONLY way back into history:
+        # without it the five bands only ever move forward and a profile these
+        # relays back-fill below them is never read. There is no default —
+        # re-reading a whole corpus on a schedule nobody chose is exactly the
+        # cost that should be written down.
+        refetchThePastSeconds = 604800
         urls = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",
@@ -208,14 +214,15 @@ streams {
         # roster never dips and the old key comes out once the new one covers
         # the corpus.
         auditSeconds = 604800  # weekly negentropy audit of the covered past
-        # …and how often the bands EXPIRE into a full paged re-walk, which is
-        # the coarse version of the same check. Left at the default both land
-        # on seven days, and the catch-up runs before the audit inside a visit
-        # — so the stream re-pages its whole history from the plausible floor
-        # and THEN reconciles the same ground for the difference. Monthly keeps
-        # the safety net for whatever band arithmetic cannot see, at a quarter
-        # of the walks, with the weekly audit doing the real work between them.
-        fullResyncSeconds = 2592000
+        # …and how often the bands EXPIRE, putting the whole filter back on the
+        # walk — the coarse version of the same check, paid in full downloads.
+        # Unset it does not run at all; set it equal to the audit and the two
+        # collide, because the catch-up runs BEFORE the audit inside a visit, so
+        # the stream re-pages its whole history from the plausible floor and
+        # THEN reconciles the same ground for the difference. Monthly keeps the
+        # safety net for what band arithmetic cannot see, at a quarter of the
+        # walks, with the weekly audit doing the real work between them.
+        refetchThePastSeconds = 2592000
     }
 
     assertions {
@@ -284,6 +291,10 @@ streams {
         # daily: each (relay, provider) band ages on its own clock, and a
         # deletion decision deserves the audited full-history reconcile.
         auditSeconds = 86400
+        # …and no `refetchThePastSeconds` on purpose: the reconcile above
+        # already compares this ask's whole history every day and downloads only
+        # the difference, so re-paging the same ground would buy nothing that
+        # the audit does not already prove.
     }
 
     # The content mirror: every public kind worth searching, from every relay
@@ -317,7 +328,7 @@ streams {
             }
         ]
         auditSeconds = 604800
-        fullResyncSeconds = 2592000  # see profileViaOutbox — and this is the
+        refetchThePastSeconds = 2592000  # see profileViaOutbox — and this is the
                                      # corpus where re-paging weekly costs most
     }
 }
