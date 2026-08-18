@@ -413,20 +413,34 @@ internal object SyncProgressReport {
      * row, which is the manufactured-number failure the router side refuses at
      * source.
      *
-     * Same contract as every other list here: bounded a second time on this
-     * side rather than trusting the router bounded it, unreadable rows counted
-     * rather than dropped silently, and `omitted` carrying whatever either side
-     * left out.
+     * NOT BOUNDED AGAIN HERE, which is the one place it departs from
+     * [undecided] and [foldedOnto] and follows [inFlight] instead. Those two
+     * re-cut a list the router already cut, because their rows carry arithmetic
+     * this side re-derives: an `undecided` reason dropped here is urls the page
+     * then draws as `not accounted for`, a fault reported against a document
+     * that was complete when it arrived. Held rows sum to nothing, so a second
+     * cut buys no safety — and it costs the thing [MAX_UNDECIDED_ROWS] records
+     * having been bitten by twice: a number over here that has to be kept in
+     * step with a number over there.
+     *
+     * There is nothing left for it to bound in any case. The router publishes
+     * at most `Processors.MAX_HELD_RELAYS` of up to `dialConcurrency` held urls
+     * — the hardest cut in this document — so a cap here could only ever fire
+     * on a file this build did not write, and all it would do there is shorten
+     * a list somebody else had already shortened.
+     *
+     * What IS kept is the rest of the contract: unreadable rows counted rather
+     * than dropped silently, and `omitted` carrying whatever either side left
+     * out.
      */
     private fun heldRelays(o: JsonObject?): JsonObject? {
         if (o == null) return null
         val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
         if (rows.isEmpty()) return null
-        val kept = rows.take(MAX_HELD_ROWS)
         var unreadable = 0
         return buildJsonObject {
             putJsonArray("relays") {
-                for (row in kept) {
+                for (row in rows) {
                     val relay =
                         text(row["relay"]) ?: run {
                             unreadable++
@@ -444,7 +458,7 @@ internal object SyncProgressReport {
                     )
                 }
             }
-            put("omitted", (num(o["omitted"]) ?: 0) + unreadable + (rows.size - kept.size))
+            put("omitted", (num(o["omitted"]) ?: 0) + unreadable)
         }
     }
 
@@ -942,17 +956,6 @@ internal object SyncProgressReport {
      */
     private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
-
-    /**
-     * Held urls kept per processor, matching `Processors.MAX_HELD_RELAYS`.
-     *
-     * The two move together for the same reason [MAX_UNDECIDED_ROWS] does, and
-     * cutting below the router costs less here: the rows are sorted
-     * longest-held first, so what a short bound drops is the ordinary end of
-     * the list rather than the wedged leg the list exists for. `omitted` still
-     * carries whatever either side left out.
-     */
-    private const val MAX_HELD_ROWS = 20
 
     /**
      * Named hosts kept under one reason, matching `Processors.MAX_UNDECIDED_EXAMPLES`.
