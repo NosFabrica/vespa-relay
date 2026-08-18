@@ -28,17 +28,6 @@ package com.nosfabrica.vespa.relay.util
  * collide on the classpath.
  */
 
-/**
- * A `created_at` as a UTC day. Day resolution on purpose: it answers "is the
- * walk moving, and roughly where is it".
- */
-internal fun fmtDay(seconds: Long): String =
-    java.time.Instant
-        .ofEpochSecond(seconds)
-        .atZone(java.time.ZoneOffset.UTC)
-        .toLocalDate()
-        .toString()
-
 /** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
 internal fun fmtCount(n: Int): String =
     when {

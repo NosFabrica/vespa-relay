@@ -221,15 +221,14 @@ class SyncEngine(
 
     /** Relays with a transfer actually running, across every path. */
 
-    // One stream BUILDS its id set at a time, static and discovery both: the set
-    // is a full store walk and concurrent ones sum on the heap.
+    // One stream BUILDS an id set at a time: the set is a store walk and
+    // concurrent ones sum on the heap. It bounds the BUILD, never a run — the
+    // pool is a rotation with no join, so holding it for a run would mean
+    // holding it for the life of the process while every other stream queued.
     //
-    // It used to be held for a whole run, which was the same thing while a
-    // discovery fan-out ended in a join. It cannot be now: the pool is a
-    // rotation with no join, so "the whole run" is forever and every other
-    // id-set stream would queue behind it for the life of the process. What
-    // bounds RESIDENCY on that side is `SharedIdSet`, which never lets a stream
-    // hold more than the set in use plus one still being read by a straggler.
+    // The sets themselves are per reconcile now and die with it. The shared
+    // generational set the fan-out passed between its stragglers (`SharedIdSet`)
+    // went with the fan-out.
     private val streamGate = Semaphore(1)
 
     private val downUpstreams = config.downUpstreams()
