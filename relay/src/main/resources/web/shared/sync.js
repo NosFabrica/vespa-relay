@@ -281,13 +281,16 @@ export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
  * what each of them DECIDES.
  *
  * They were one panel because they arrive in one array, and reading it meant
- * holding two unrelated questions at once. The passes named here answer *which
- * relay urls are worth dialling at all*: the fold collapses one server's several
+ * holding two unrelated questions at once. The rows named here answer *which
+ * relay urls are worth dialling at all*: the alias source walks the store for
+ * every url the relay lists name and hands the three passes their candidate
+ * set, the fold collapses one server's several
  * addresses, the stability gate refuses a url that answers a filter two ways,
  * and the fitness pass signs the `prime` certificate every visit-mode
  * stream's relay list is made of — including the `dead` verdict that holds an
  * unreachable url out of every fan-out. All three run on the alias monitor's own
- * clock, none of them is configured by a stream, and their unit is a RELAY. What
+ * clock, none of them is configured by a stream, and their subject is a RELAY
+ * URL rather than an event. What
  * is left — the rotating pool, ingest, the healer, the upstream push — moves
  * EVENTS, on the streams' clock, and is where a slow mirror is actually
  * diagnosed.
@@ -307,7 +310,12 @@ export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
  * the one that already carries the status line and the leftovers. Dropping a row
  * to keep a card tidy is how a new job runs unwatched for a year.
  */
-export const MONITOR_PROCESSORS = ["aliasFold", "consistency", "fitness"];
+// FIRST, and the order is the document's rather than this list's — the router
+// registers the source ahead of the passes it feeds, and `splitProcessors`
+// keeps whatever order it was handed. Named here so the row lands on the
+// monitor card at all; without it the collection step would draw beside ingest,
+// under a card asking whether the mirror is keeping up.
+export const MONITOR_PROCESSORS = ["aliasSource", "aliasFold", "consistency", "fitness"];
 
 export function splitProcessors(progress) {
   const monitor = [];

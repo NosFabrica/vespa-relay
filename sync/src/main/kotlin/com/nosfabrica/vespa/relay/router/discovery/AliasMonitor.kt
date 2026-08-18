@@ -146,6 +146,23 @@ class AliasMonitor(
         suspend fun candidates(): List<NormalizedRelayUrl>
 
         /**
+         * Where the derivation says what it is doing, or null for a source
+         * that says nothing.
+         *
+         * The same split [Pass.progress] describes, for the same reason: the
+         * monitor owns the CLOCK — when the derivation ran, how long it took,
+         * when the next sweep is due — and the source owns the WORK, so both
+         * write to one handle from opposite sides.
+         *
+         * It earns a row of its own because it is the state nothing could see:
+         * `candidates()` walks the whole store, which is MINUTES on a live one,
+         * and for all of them every pass below reads `idle` with no countdown —
+         * the sweep has started and has not reached a pass yet, which is
+         * indistinguishable from a sweep that is not running at all.
+         */
+        val progress: Processors.Handle? get() = null
+
+        /**
          * Only the urls named by relay-list events ingested at or after
          * [since] — the fast lane's derivation. Bounded by construction: it
          * reads minutes of events where [candidates] walks the store. The
@@ -224,6 +241,13 @@ class AliasMonitor(
         // minutes — the same rule `StreamPhases.register` follows, and for the
         // same reason: silence must never read as "not configured".
         dueAtMs = System.currentTimeMillis() + startupDelayMs
+        // The derivation is on the passes' clock and not on one of its own: it
+        // runs once per sweep, at the head of it, so "when is the next one due"
+        // has exactly one answer for the whole card.
+        source?.progress?.let { p ->
+            p.nextPassAt { dueAtMs }
+            p.phase(Processors.IDLE)
+        }
         for (pass in passes) {
             pass.progress?.nextPassAt { dueAtMs }
             pass.progress?.phase(Processors.IDLE)
@@ -268,6 +292,15 @@ class AliasMonitor(
                     lastLookSec = System.currentTimeMillis() / 1000
                     try {
                         passGate.withLock {
+                            // NOT bracketed onto the source's row, though it is
+                            // the same object deriving. That row is the SWEEP's
+                            // derivation: the lane reads minutes of events
+                            // where a sweep walks the store, so counting a lane
+                            // tick as a pass there would run `passesRun` up by
+                            // the hour and overwrite a `lastPassSec` measured in
+                            // minutes with one measured in milliseconds. The
+                            // lane's work is reported on the pass it runs, which
+                            // brackets itself.
                             val fresh = source.candidatesSince(lookFrom)
                             if (fresh.isNotEmpty()) {
                                 System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
@@ -336,6 +369,11 @@ class AliasMonitor(
         // of them had finished discovering first.
         val work =
             source?.let { src ->
+                // BRACKETED LIKE A PASS, because from a reader's side it is
+                // one: it has a clock, it takes minutes, and the three rows
+                // under it cannot start until it returns. Its own phase word,
+                // because it dials nothing — see [Processors.COLLECTING].
+                src.progress?.begin(Processors.COLLECTING)
                 val urls =
                     try {
                         src.candidates()
@@ -347,6 +385,12 @@ class AliasMonitor(
                     } catch (e: Exception) {
                         System.err.println("router: alias source failed to derive: ${e.message}")
                         emptyList()
+                    } finally {
+                        // From a `finally` for the reason the passes' own
+                        // `finish` is: a derivation that throws every sweep and
+                        // one that never returns are different faults, and only
+                        // a clock that keeps moving separates them.
+                        src.progress?.finish()
                     }
                 // Nothing derived is not nothing to do — a cold store has no
                 // relay lists yet — so this reads as an empty pass and retries

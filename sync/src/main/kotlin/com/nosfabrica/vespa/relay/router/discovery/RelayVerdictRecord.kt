@@ -902,8 +902,16 @@ class RelayVerdictRecord(
          */
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 
-        /** Urls per `#d` query. The fan-out is five figures wide; the filter should not be. */
-        private const val QUERY_CHUNK = 500
+        /**
+         * Urls per `#d` query. The fan-out is five figures wide; the filter
+         * should not be.
+         *
+         * Shared with [RelayDiscovery.undialable]'s subject-bound read rather
+         * than restated there: it is the same query shape against the same
+         * records, and two spellings of "how wide may a filter be" is how one
+         * of them ends up sized for a store nobody is running.
+         */
+        internal const val QUERY_CHUNK = 500
 
         /**
          * Records held in memory at once while [loadAll] walks the corpus.

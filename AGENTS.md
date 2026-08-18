@@ -411,7 +411,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                             across streams and probe passes; quartz closes
                             none of its own connections
       StreamWorld.kt        the url universe the monitor measures: every
-                            stream's sources, plus the monitor's own
+                            stream's sources, plus the monitor's own. Reports as
+                            the `aliasSource` processor — the walk is minutes on
+                            a live store and sits at the head of every sweep, so
+                            without a row of its own the card had three passes
+                            reading `idle` while the monitor was working
     progress/             observability
       StreamPhases.kt       per-stream progress reporting, and the snapshot the
                             progress file is written from
@@ -700,7 +704,10 @@ relay/src/main/resources/
                         EVENTS — and last the coverage bars, which are where it
                         has WALKED rather than what it is doing. *Relay monitor*
                         answers "which relays may we dial at all": the corpus
-                        tree, then the alias fold, the stability gate and
+                        tree, then the url round-up (`aliasSource`, the store
+                        walk that derives the candidate set — its own row
+                        because it takes minutes and every pass waits on it),
+                        the alias fold, the stability gate and
                         fitness, whose unit is a URL, whose clock is the
                         monitor's own and whose output is a signed 30166 record
                         — so it sits beside the panel that reads those records
@@ -1197,13 +1204,14 @@ now, and `inFlight` rows carry `pass`.
 **…and a FIFTH member says what is running that is not a stream at all.**
 `processors` (`Processors`, published under `sync.progress.processors` and drawn
 as *Also running* on the coverage card) is the other half of "what is this
-router doing". A stream is the part an operator CONFIGURED; these six run beside
+router doing". A stream is the part an operator CONFIGURED; these run beside
 them with nothing configured about them, and until they were published the only
 trace any of them left was a stderr line on a container whose logs rotate inside
 the hour:
 
 | processor | what it is | how far along it is |
 |---|---|---|
+| `aliasSource` | `StreamWorld.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
@@ -1278,6 +1286,31 @@ implicit: verdict sources bypassed the scan cache entirely because they were a
 different type, and collapsing the types without stating the cadence would have
 turned "minutes" into "six hours" silently.
 
+**The monitor runs when there are SOURCES, not when there are discovery
+streams.** `SyncEngine.hasMonitorSources` is the gate — it reads
+`discoveryStreams` OR `monitor { sources }` — and it used to read the first
+alone. A deployment that took the block's offer all the way (static `urls` on
+every stream, all candidates arriving through `monitor { sources }`) therefore
+never called `aliasMonitor.start()`: `StreamWorld` unioned the block's urls
+correctly and nothing ever ran over them — no fold, no stability gate, no
+fitness, not one `prime` signed, and four rows reading `off` for the life of
+the process, which is also what those rows correctly say on the static config
+the gate was written for. One rule, read by the start gate and by the `off`
+rows both, because rows marked `off` under a monitor that is running is the
+silent half of them disagreeing. `MonitorGateTest` puts the deployment that
+broke in front of it.
+
+**The fast lane's hold-out read is bounded by its own subject.**
+`RelayDiscovery.undialable` takes `among`: null for a sweep, which is about to
+walk the corpus and wants the whole dead set, and the lane's own handful
+otherwise. Unbounded there, a lane tick materialized every `dead` record in the
+store — five figures on a discovered corpus, and one of the "no limit" reads the
+`maxHits` cap rejects on multi-node — every `fastLaneSeconds`, thirty times an
+hour, to answer a question about a dozen urls. It is `#d`-chunked like
+`RelayVerdictRecord.load` now, and the lane derives BEFORE it reads, so a tick
+that found nothing (most of them) costs no read at all. Same answer either way:
+the hold-out only ever applied to the urls the lane found.
+
 **The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
 constant is a source edit and a source edit is a restart — and strips `s` /
@@ -1340,10 +1373,10 @@ them are invisible from the outside and one had a test asserting it.
   world it actually assembles. The fast lane does not rescue this: it only sees
   urls named SINCE its last look, so a url present at boot is never picked up.
 - **The fast lane was doing a store-wide read every 120 seconds** — the one
-  thing its own comment says it exists not to do. `candidatesSince` asked for
-  every `dead` record inside the TTL (832 on a staging corpus) to hold out a set
-  it could name in advance. It derives first now and scopes the read to what it
-  derived, so a tick that found nothing asks nothing.
+  thing its own comment says it exists not to do. Found independently by this
+  audit and by the work that landed as `79c182e`, which is the fix in the tree:
+  see *The fast lane's hold-out read is bounded by its own subject* above. The
+  audit's own version was dropped at the merge in favour of it.
 - **Both boot retractions walked our own corpus in one unbounded query**, inside
   the `runBlocking` the roster's first rebuild waits on. Neither can ask its
   question in a filter — the epoch and the legacy `s` tag are decided per record

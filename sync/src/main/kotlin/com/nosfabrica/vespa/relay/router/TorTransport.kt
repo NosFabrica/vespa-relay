@@ -267,6 +267,14 @@ internal class TorTransport(
         if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
         if (!probing.compareAndSet(false, true)) return probeSaid
         try {
+            // The same question again, now that we hold the flag. Reading the
+            // TTL and taking the flag are two steps, and a caller descheduled
+            // between them can be handed the flag by a prober that has since
+            // finished — arriving here with a fresh answer already in
+            // [probedAt] and about to open a second connection for it. Losing
+            // the CAS is not the only way to lose the race; winning it late is
+            // the other, and it is the one that costs a connection.
+            if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
             probeSaid =
                 runCatching {
                     java.net.Socket().use {

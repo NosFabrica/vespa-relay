@@ -87,6 +87,19 @@ object RelayDiscovery {
         // them, which is what dialling them without Tor amounts to anyway.
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
+        /**
+         * Called as each of [RelayDiscoveryConfig.sources] finishes, for a
+         * caller reporting a position.
+         *
+         * A SOURCE is the only unit this walk can be counted in from outside:
+         * the store reads inside it stream a projection or page an unknown
+         * number of events, so nothing here knows a total until it has the
+         * answer. It is per source rather than per CONFIG because a deployment
+         * that has moved its relay-list parsing into `monitor { sources }` has
+         * exactly one config — and a position of "0 of 1" that goes to "1 of 1"
+         * is not a position. See [StreamWorld.candidates].
+         */
+        onSource: () -> Unit = {},
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -176,6 +189,8 @@ object RelayDiscovery {
                     }
                 }
             }
+            // This source is behind the walk, whatever it yielded.
+            onSource()
         }
 
         // DIAGNOSTIC: what the pairing actually built. A bound select is only
@@ -251,37 +266,34 @@ object RelayDiscovery {
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
         /**
-         * Ask about THESE urls only, or null for the whole corpus.
+         * The urls the caller is ASKING ABOUT, or null for the whole dead set.
          *
-         * The corpus read is right for a sweep, which is deciding what to walk
-         * and has the whole world in hand anyway. It is wrong for the FAST
-         * LANE, whose entire premise is that it looks at the handful of urls
-         * named since its last tick — `a store-wide derivation is exactly what
-         * this lane exists not to do`, in the lane's own words — and which was
-         * nevertheless materializing every `dead` record inside the TTL (832 on
-         * a staging corpus) every 120 seconds to hold out a set it could name
-         * in advance.
+         * A sweep wants all of it — it is about to walk the corpus, and the
+         * hold-out applies to every url in it. The FAST LANE is the opposite
+         * shape: it derives the handful of urls named since its last look, two
+         * minutes ago, and asks only whether those are dead. Unbounded there,
+         * this materialized every dead record in the store — five figures on a
+         * discovered corpus — every `fastLaneSeconds`, to answer a question
+         * about a dozen urls. That is the read the store bump's `maxHits` cap
+         * names, run thirty times an hour against a lane whose own KDoc calls
+         * it "bounded by construction".
          *
-         * Scoped, the read is bounded by the caller's list instead of by how
-         * many relays have died, and a tick that derived nothing asks nothing
-         * at all. Chunked at [QUERY_SCOPE_CHUNK] for the reason
-         * [RelayVerdictRecord.load] chunks: a `#d` list is a filter term per
-         * url and a store has a limit on how many it will take.
+         * Bounded by `#d` in [QUERY_CHUNK]-sized chunks, the same shape
+         * [RelayVerdictRecord.load] is: `d` is a single-letter tag and the only
+         * part of these records the index answers on. The `l` tag comes off the
+         * query when this is set, because the label check below is what decides
+         * a verdict either way and one tag key is the query shape already
+         * proven on this store.
          */
-        scope: Collection<NormalizedRelayUrl>? = null,
+        among: Collection<NormalizedRelayUrl>? = null,
     ): Set<NormalizedRelayUrl> {
         if (monitorAuthors.isEmpty()) return emptySet()
-        if (scope == null) {
-            return verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now)
-                .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
-        }
-        if (scope.isEmpty()) return emptySet()
-        val found = HashSet<NormalizedRelayUrl>()
-        for (chunk in scope.map { it.url }.chunked(QUERY_SCOPE_CHUNK)) {
-            verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now, chunk)
-                .mapNotNullTo(found) { urlOf(it, allowOnion) }
-        }
-        return found
+        // Nothing asked about is nothing held out, and it is not a reason to
+        // read the whole dead set: `among` being EMPTY is a caller saying it
+        // has no urls, where null is a caller saying it wants all of them.
+        if (among != null && among.isEmpty()) return emptySet()
+        return verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now, among)
+            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
     }
 
     /**
@@ -368,50 +380,66 @@ object RelayDiscovery {
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
         now: Long,
-        /** The `d` values to bound the read to, or null for every record carrying the grade. */
-        scope: List<String>? = null,
-    ): List<Event> =
-        store
-            .query<Event>(
-                Filter(
-                    kinds = listOf(RelayDiscoveryEvent.KIND),
-                    // Absent, not empty: a NIP-01 filter with no `authors` key
-                    // is the unscoped read. An EMPTY list would be a predicate
-                    // nothing satisfies.
-                    authors = monitorAuthors.takeIf { it.isNotEmpty() },
-                    // Tag terms AND together, so a `d` scope narrows the grade
-                    // read to the urls the caller asked about.
-                    tags =
-                        buildMap {
-                            put(RelayVerdictRecord.LABEL_TAG, listOf(verdict.value))
-                            scope?.let { put("d", it) }
-                        },
-                    // The freshness bound, indexed — the record's own clock says
-                    // when this monitor last re-checked the relay again, now
-                    // that no passive writer bumps it on every socket.
-                    since = now - maxAgeSeconds,
-                ),
-            ).filter { event ->
-                // OUR NAMESPACE'S label, not any label carrying this value.
-                // `l` is shared — the same records carry country codes and ASNs
-                // from other monitors — and the store's tag index answers on the
-                // value alone, so the namespace check is what makes this read a
-                // read of fitness grades rather than of every label in the store.
-                val s =
-                    event.tags.firstOrNull {
-                        it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
-                            it[0] == RelayVerdictRecord.LABEL_TAG &&
-                            it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
+        among: Collection<NormalizedRelayUrl>? = null,
+    ): List<Event> {
+        // THE SUBJECT-BOUND READ, for a caller asking about a known handful —
+        // see [undialable]'s `among`. Chunked, because a filter carrying every
+        // url of a wide ask is a query nobody has sized; the label tag comes
+        // off, because `#d` is the bound that makes this small and the check
+        // below is what reads a verdict either way.
+        val queried =
+            if (among != null) {
+                among
+                    .map { it.url }
+                    .chunked(RelayVerdictRecord.QUERY_CHUNK)
+                    .flatMap { chunk ->
+                        store.query<Event>(
+                            Filter(
+                                kinds = listOf(RelayDiscoveryEvent.KIND),
+                                authors = monitorAuthors.takeIf { it.isNotEmpty() },
+                                tags = mapOf("d" to chunk),
+                                since = now - maxAgeSeconds,
+                            ),
+                        )
                     }
-                // Where the read IS scoped, the store's `authors` filter is the
-                // trust boundary and this one string compare re-states it on the
-                // returned events, so a query layer that ever treated `authors`
-                // as a hint rather than a predicate cannot hand a stranger's
-                // verdict through. Unscoped there is nothing to re-state.
-                (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
-                    s != null &&
-                    s[1] == verdict.value
+            } else {
+                store.query<Event>(
+                    Filter(
+                        kinds = listOf(RelayDiscoveryEvent.KIND),
+                        // Absent, not empty: a NIP-01 filter with no `authors` key
+                        // is the unscoped read. An EMPTY list would be a predicate
+                        // nothing satisfies.
+                        authors = monitorAuthors.takeIf { it.isNotEmpty() },
+                        tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(verdict.value)),
+                        // The freshness bound, indexed — the record's own clock says
+                        // when this monitor last re-checked the relay again, now
+                        // that no passive writer bumps it on every socket.
+                        since = now - maxAgeSeconds,
+                    ),
+                )
             }
+        return queried.filter { event ->
+            // OUR NAMESPACE'S label, not any label carrying this value.
+            // `l` is shared — the same records carry country codes and ASNs
+            // from other monitors — and the store's tag index answers on the
+            // value alone, so the namespace check is what makes this read a
+            // read of fitness grades rather than of every label in the store.
+            val s =
+                event.tags.firstOrNull {
+                    it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
+                        it[0] == RelayVerdictRecord.LABEL_TAG &&
+                        it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
+                }
+            // Where the read IS scoped, the store's `authors` filter is the
+            // trust boundary and this one string compare re-states it on the
+            // returned events, so a query layer that ever treated `authors`
+            // as a hint rather than a predicate cannot hand a stranger's
+            // verdict through. Unscoped there is nothing to re-state.
+            (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
+                s != null &&
+                s[1] == verdict.value
+        }
+    }
 
     /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
     private fun urlOf(
@@ -496,14 +524,6 @@ object RelayDiscovery {
      * and a bounded allocation.
      */
     private const val SCAN_PAGE = 10_000
-
-    /**
-     * Urls per `#d` term when [undialable] is scoped — the same 500
-     * [RelayVerdictRecord.load] chunks at, and for the same reason: a `#d`
-     * list is one filter term per url and a store will not take an unbounded
-     * number of them.
-     */
-    private const val QUERY_SCOPE_CHUNK = 500
 
     /**
      * Is this event too long to be a relay list?

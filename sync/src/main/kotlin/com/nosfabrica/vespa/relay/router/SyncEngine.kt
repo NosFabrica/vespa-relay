@@ -241,6 +241,31 @@ class SyncEngine(
     private val discoveryStreams = config.discoveryStreams()
 
     /**
+     * IS THERE ANYTHING FOR THE MONITOR TO WORK ON — the one question both the
+     * start gate and the `off` rows are decided by.
+     *
+     * It was `discoveryStreams.isNotEmpty()` alone, written when a stream's own
+     * `relaySource` was the only way a url could enter the system. The
+     * `monitor { sources }` block is the other way, and [MonitorConfig]
+     * documents the posture it exists for: a deployment moves every ounce of
+     * relay-list parsing off the streams, which then run on verdict queries
+     * alone. Take that all the way — streams with static `urls` and one monitor
+     * block, the pure-monitor deployment — and `discoveryStreams` is EMPTY
+     * while the block names three sources. `aliasMonitor.start()` was never
+     * called: no fold, no stability gate, no fitness, no `prime` ever signed,
+     * and four rows on the monitor card reading `off` for the life of the
+     * process. The urls were derived correctly by [StreamWorld], which unions
+     * both, and then nothing ran over them.
+     *
+     * Decided ONCE and read from both places, because the failure mode of them
+     * disagreeing is silent in one direction: rows marked `off` under a monitor
+     * that is running. The rule itself is [hasMonitorSources], out where a test
+     * can put a config in front of it — building a whole engine to ask a
+     * question about a config file is how a gate goes untested.
+     */
+    private val monitorHasSources = hasMonitorSources(config)
+
+    /**
      * The fork's arithmetic — see [VisitPool.ridesThePool]: every relaySource
      * entry answers to the monitor, or the stream keeps the legacy pass
      * machinery (the union path for the deployment mid-crossing). A
@@ -299,6 +324,19 @@ class SyncEngine(
 
     /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+
+    /**
+     * THE ROW THE DERIVATION REPORTS ON, and it is declared HERE, above the
+     * passes it feeds, on purpose: [Processors.of] registers in call order and
+     * the document is drawn in registration order, so a handle taken after the
+     * fold's would draw the collection step under the pass that waits on it.
+     *
+     * On the same terms as the passes — a signer or nothing. It is not that the
+     * derivation needs an identity, but that without one there is no
+     * [aliasMonitor] to run it, and a row for work this deployment never does
+     * would draw a `Relay monitor` card on a router that has no monitor.
+     */
+    private val sourceProgress = signer?.let { processors.of(SOURCE_PROCESSOR) }
 
     /**
      * The duplicate-url fold, built only when there is a signer — the verdict
@@ -407,6 +445,7 @@ class SyncEngine(
             tor = tor,
             sockets = sockets,
             monitorConfig = config.monitor,
+            progress = sourceProgress,
         )
 
     /**
@@ -520,6 +559,31 @@ class SyncEngine(
             // measure the same derived set; a supplier rather than a copy, for
             // the reason [Processors] gives.
             ?.also {
+                // THE DERIVATION'S OWN ROW, which is the same four numbers plus
+                // the one the passes below cannot state: what it handed them.
+                // On the row that produced them rather than only on the rows
+                // that consume them — a reader watching the collection step run
+                // is asking how big the corpus turned out to be, and every
+                // other number on this card is a share of that answer.
+                sourceProgress?.counts {
+                    // NOTHING UNTIL A WALK HAS RUN. These five are the row's
+                    // whole fact line, and a boot that published them as zeros
+                    // would say `0 url(s) named` for the two minutes before the
+                    // first sweep — a measurement nobody has taken, and one a
+                    // reader cannot tell from a store with no relay lists in
+                    // it. See [StreamWorld.derived].
+                    if (!world.derived) {
+                        emptyList()
+                    } else {
+                        listOf(
+                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
+                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
+                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
+                            Processors.Count("candidates", world.lastDerivation.candidates.toLong()),
+                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
+                        )
+                    }
+                }
                 for (pass in listOfNotNull(folding?.progress, consistencyPass?.progress)) {
                     pass.counts {
                         listOf(
@@ -668,10 +732,9 @@ class SyncEngine(
         // side until every stream has crossed.
         visitPool.start()
 
-        // Only where there is something to fold for. A dynamic stream is what
-        // discovers urls off other people's relay lists; a static config names
-        // its upstreams by hand and has no duplicates to find.
-        if (discoveryStreams.isNotEmpty()) aliasMonitor?.start()
+        // Only where there is something to fold for — see [monitorHasSources],
+        // which is the whole of that question and NOT `discoveryStreams` alone.
+        if (monitorHasSources) aliasMonitor?.start()
 
         // The phase report runs for the life of the engine, not inside the
         // static backfill's progress loop: a discovery-only config has no
@@ -737,7 +800,15 @@ class SyncEngine(
         // by hand and has no duplicate urls to find, so `aliasMonitor.start()`
         // is never called. Said out loud, because a row left at `starting` for
         // the life of the process reads as a pass that is about to run.
-        if (discoveryStreams.isEmpty()) {
+        //
+        // The SAME question the start gate asks, and it has to stay the same
+        // one: a row marked `off` under a monitor that is running is the more
+        // damaging half of the two ways these can disagree.
+        if (!monitorHasSources) {
+            // The derivation with them: `aliasMonitor.start()` is what runs it,
+            // and a row left at `starting` for the life of the process reads as
+            // a collection step that is about to begin.
+            sourceProgress?.phase(Processors.OFF)
             folding?.progress?.phase(Processors.OFF)
             consistencyPass?.progress?.phase(Processors.OFF)
         }
@@ -1005,6 +1076,18 @@ class SyncEngine(
 
     companion object {
         /**
+         * Is there anything for the monitor to work on — a stream's own
+         * `relaySource`, or the `monitor { sources }` block?
+         *
+         * A function over the config rather than a property of the engine so a
+         * test can hand it the deployment that broke: streams on static `urls`
+         * with every url entering through the monitor block, which is the
+         * posture [MonitorConfig] documents and the one the old rule
+         * (`discoveryStreams.isNotEmpty()`) answered `false` for.
+         */
+        internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
+
+        /**
          * The names the progress document calls this router's non-stream jobs.
          *
          * Spelled out as constants for the reason `StreamPhases.word` gives:
@@ -1012,6 +1095,14 @@ class SyncEngine(
          * renamed by a Kotlin refactor.
          */
         const val FOLD_PROCESSOR = "aliasFold"
+
+        /**
+         * The candidate derivation — `StreamWorld`, which the router's own log
+         * line has always called the alias source ("router: alias source
+         * derived 16,752 url(s)"). Named for that line rather than for the
+         * class, so the document, the log and the code are one word.
+         */
+        const val SOURCE_PROCESSOR = "aliasSource"
 
         // `consistency`, not `stability`: the class is `ConsistencyPass`, the
         // state is `RelayConsistency` and the published tag is

@@ -310,15 +310,18 @@ const leg = (n, quiet, over = {}) => ({
   // be a PARTITION: a row that lands in neither list is a job nobody watches.
   const doc = {
     processors: [
-      { name: "aliasFold" }, { name: "consistency" }, { name: "fitness" }, { name: "visits" },
+      { name: "aliasSource" }, { name: "aliasFold" }, { name: "consistency" }, { name: "fitness" }, { name: "visits" },
       { name: "ingest" }, { name: "heal" }, { name: "upstreamPush" },
     ],
   };
   const { monitor, pipeline } = splitProcessors(doc);
-  assert.deepEqual(monitor.map((p) => p.name), ["aliasFold", "consistency", "fitness"]);
+  // The round-up leads, because the router registers it ahead of the passes it
+  // feeds and this keeps the document's order. It is the row that says what the
+  // monitor is doing for the minutes before any pass has started.
+  assert.deepEqual(monitor.map((p) => p.name), ["aliasSource", "aliasFold", "consistency", "fitness"]);
   assert.deepEqual(pipeline.map((p) => p.name), ["visits", "ingest", "heal", "upstreamPush"]);
   assert.equal(monitor.length + pipeline.length, doc.processors.length, "every row lands somewhere");
-  assert.equal(MONITOR_PROCESSORS.length, 3, "the three passes that decide a RELAY rather than move an event");
+  assert.equal(MONITOR_PROCESSORS.length, 4, "the round-up and the three passes that decide a RELAY rather than move an event");
 
   // A processor this page has not been taught draws on the sync side rather
   // than nowhere — the card that already carries the status line and the

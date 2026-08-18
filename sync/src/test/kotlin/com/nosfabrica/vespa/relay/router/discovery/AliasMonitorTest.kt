@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * The monitor is what keeps a probe pass off a sync cycle, so what matters
@@ -74,11 +76,18 @@ class AliasMonitorTest {
     /** A [AliasMonitor.CandidateSource] over a fixed world, standing in for the engine's derivation. */
     private class World(
         private val urls: List<NormalizedRelayUrl>,
+        /** The row the derivation reports on, where a test is watching it. */
+        override val progress: Processors.Handle? = null,
+        /** Run INSIDE the derivation, which is the only moment its own phase is observable. */
+        private val whileDeriving: () -> Unit = {},
+        private val fail: (() -> Throwable)? = null,
     ) : AliasMonitor.CandidateSource {
         val derivations = AtomicInteger()
 
         override suspend fun candidates(): List<NormalizedRelayUrl> {
             derivations.incrementAndGet()
+            whileDeriving()
+            fail?.let { throw it() }
             return urls
         }
 
@@ -112,6 +121,55 @@ class AliasMonitorTest {
             assertEquals(1, world.derivations.get(), "the world is derived once per pass, when the pass runs")
             assertEquals(listOf(AliasMonitor.ALL_STREAMS), pass.passes.map { it.first })
             assertEquals(listOf(a, b, c), pass.passes.single().second)
+        }
+
+    @Test
+    fun `the derivation reports on a row of its own, bracketed like the passes it feeds`() =
+        runBlocking {
+            // THE FIVE MINUTES NOTHING COULD SEE. Deriving the candidate set
+            // walks the whole store, and it happens at the head of a sweep,
+            // before any pass has been given anything — so every row on the
+            // monitor card read `idle` with no countdown, which is exactly what
+            // they read when the monitor is asleep for six hours.
+            val processors = Processors()
+            val row = processors.of("aliasSource")
+            var duringPhase: String? = null
+            val world =
+                World(
+                    listOf(a, b, c),
+                    progress = row,
+                    whileDeriving = { duringPhase = processors.snapshot().single().phase },
+                )
+
+            sourced(Recording(), world).runPass()
+
+            // Its own word, and not `measuring`: this opens no socket. A reader
+            // told a pass is dialling looks at the relays, and there are none
+            // to look at yet.
+            assertEquals(Processors.COLLECTING, duringPhase, "the walk says what it is doing while it walks")
+            val after = processors.snapshot().single()
+            assertEquals(Processors.IDLE, after.phase, "and stands down when the passes take over")
+            assertEquals(1L, after.passes, "one derivation is one pass on this row")
+            assertTrue(after.lastPassAt != null, "a derivation that ended says when")
+        }
+
+    @Test
+    fun `a derivation that throws still stamps its clock`() =
+        runBlocking {
+            // The same reason the passes stamp theirs from a `finally`: a walk
+            // that fails every sweep and one that never returns are different
+            // faults, and a frozen `lastPassAt` under a phase that never leaves
+            // `collecting` is the only thing that tells them apart.
+            val processors = Processors()
+            val row = processors.of("aliasSource")
+            val world = World(listOf(a, b, c), progress = row, fail = { IllegalStateException("the store is down") })
+
+            sourced(Recording(), world).runPass()
+
+            val after = processors.snapshot().single()
+            assertEquals(Processors.IDLE, after.phase)
+            assertEquals(1L, after.passes)
+            assertTrue(after.lastPassAt != null, "a failed derivation is a pass that ran")
         }
 
     @Test

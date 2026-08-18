@@ -34,6 +34,9 @@ import java.util.concurrent.atomic.AtomicLong
  * of the router that an operator CONFIGURED, and several long-running jobs sit
  * beside them with nothing configured about them at all:
  *
+ *  - the **alias source**, which walks the store for every url the relay lists
+ *    name and hands the three passes below the set they work on — minutes of a
+ *    sweep, in front of every one of them;
  *  - the **alias fold** and the **stability pass**, which run on
  *    `AliasMonitor`'s own six-hour clock and decide which discovered urls the
  *    fan-out is allowed to stop dialling;
@@ -883,17 +886,40 @@ class Processors {
         const val MEASURING = "measuring"
 
         /**
+         * A pass is reading the STORE to work out what to dial — the alias
+         * source's whole job, and the first minutes of a sweep.
+         *
+         * Its own word rather than [MEASURING], which this document defines as
+         * "a pass is dialling right now". The derivation opens no socket at
+         * all: it walks every relay-list source, drops what an operator
+         * excluded and what a signed record calls dead, and hands what is left
+         * to the three passes. Calling that `measuring` would put a reader on a
+         * relay that is not answering when the router has not dialled one yet,
+         * and the two states want opposite next moves.
+         */
+        const val COLLECTING = "collecting"
+
+        /**
          * What a pass counts its progress in — see [Measuring.unit].
          *
-         * Two words, because the passes decide different things: the stability
+         * Three words, because the passes decide different things: the stability
          * gate and the fitness pass answer about a URL, the fold answers about a
-         * HOST and dials every url of one to do it. Publishing both as "relays"
-         * would put two quantities under one word on adjacent rows, which is the
-         * exact overload the published glossary exists to stop.
+         * HOST and dials every url of one to do it. Publishing them all as
+         * "relays" would put three quantities under one word on adjacent rows,
+         * which is the exact overload the published glossary exists to stop.
          */
         const val UNIT_URL = "url"
 
         const val UNIT_HOST = "host"
+
+        /**
+         * …and the alias source counts neither: it walks one configured RELAY
+         * LIST SOURCE at a time — each stream's `relaySource` block plus the
+         * monitor's own — and how many urls that yields is the thing it is
+         * finding out. A position counted in urls would need a denominator that
+         * only exists once the walk it is meant to describe has finished.
+         */
+        const val UNIT_SOURCE = "source"
 
         /** Between passes: the last one finished and the next is on the clock. */
         const val IDLE = "idle"

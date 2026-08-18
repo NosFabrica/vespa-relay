@@ -72,6 +72,34 @@ class TorTransportTest {
             java.util.concurrent.atomic
                 .AtomicInteger()
 
+        /**
+         * [accepted] once it has stopped moving. A connect returns as soon as
+         * the kernel has completed the handshake, and the count is bumped by
+         * the accept loop one thread wakeup later — so a caller that has
+         * returned is not proof the connection it made has been counted. Read
+         * on the instant, this says 0 about once in a thousand runs, which
+         * fails the assertion for the opposite of the reason it exists.
+         */
+        fun settledAccepts(
+            quietMs: Long = 250,
+            capMs: Long = 5_000,
+        ): Int {
+            val deadline = System.nanoTime() + capMs * 1_000_000
+            var seen = -1
+            var changedAt = System.nanoTime()
+            while (System.nanoTime() < deadline) {
+                val now = accepted.get()
+                if (now != seen) {
+                    seen = now
+                    changedAt = System.nanoTime()
+                } else if (now > 0 && System.nanoTime() - changedAt > quietMs * 1_000_000) {
+                    return now
+                }
+                Thread.sleep(5)
+            }
+            return accepted.get()
+        }
+
         init {
             thread(isDaemon = true) {
                 while (!server.isClosed) {
@@ -270,7 +298,7 @@ class TorTransportTest {
             }
             start.countDown()
             assertTrue(done.await(20, TimeUnit.SECONDS), "the callers should not be blocked behind each other")
-            assertEquals(1, socks.accepted.get(), "32 callers opened ${socks.accepted.get()} connections to the proxy")
+            assertEquals(1, socks.settledAccepts(), "32 callers opened ${socks.accepted.get()} connections to the proxy")
         }
     }
 
