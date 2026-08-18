@@ -1215,6 +1215,31 @@ implicit: verdict sources bypassed the scan cache entirely because they were a
 different type, and collapsing the types without stating the cadence would have
 turned "minutes" into "six hours" silently.
 
+**The monitor runs when there are SOURCES, not when there are discovery
+streams.** `SyncEngine.hasMonitorSources` is the gate — it reads
+`discoveryStreams` OR `monitor { sources }` — and it used to read the first
+alone. A deployment that took the block's offer all the way (static `urls` on
+every stream, all candidates arriving through `monitor { sources }`) therefore
+never called `aliasMonitor.start()`: `StreamWorld` unioned the block's urls
+correctly and nothing ever ran over them — no fold, no stability gate, no
+fitness, not one `prime` signed, and four rows reading `off` for the life of
+the process, which is also what those rows correctly say on the static config
+the gate was written for. One rule, read by the start gate and by the `off`
+rows both, because rows marked `off` under a monitor that is running is the
+silent half of them disagreeing. `MonitorGateTest` puts the deployment that
+broke in front of it.
+
+**The fast lane's hold-out read is bounded by its own subject.**
+`RelayDiscovery.undialable` takes `among`: null for a sweep, which is about to
+walk the corpus and wants the whole dead set, and the lane's own handful
+otherwise. Unbounded there, a lane tick materialized every `dead` record in the
+store — five figures on a discovered corpus, and one of the "no limit" reads the
+`maxHits` cap rejects on multi-node — every `fastLaneSeconds`, thirty times an
+hour, to answer a question about a dozen urls. It is `#d`-chunked like
+`RelayVerdictRecord.load` now, and the lane derives BEFORE it reads, so a tick
+that found nothing (most of them) costs no read at all. Same answer either way:
+the hold-out only ever applied to the urls the lane found.
+
 **The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
 constant is a source edit and a source edit is a restart — and strips `s` /
