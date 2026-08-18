@@ -923,6 +923,25 @@ things about it are load-bearing:
   FIRST, which is the reverse of a stream's `inFlight` — there held is not risk,
   here every leg is bounded and a long one is the anomaly.
 
+**The thirteen urls that pass was holding were dialled, and none of them
+reproduces the hang.** Worth recording, because it is the evidence that says the
+deadline is a backstop and not the fix for a specific relay. Every one of them
+terminates every rung of the ask ladder today: eight EOSE promptly at 500 events
+with nothing above the anchor, two refuse the bare filter with `blocked: can't
+handle empty filters` and answer the kinds rung, one is kinds-restricted, one
+(`relay.ltgnet.work:8443`) will not open a socket at all, and one
+(`quietplace.xyz`) accepts a socket, serves a NIP-11 document, and then answers
+NO REQ on any rung and no NEG-OPEN either. The worst case among them is that
+last one at ~60s of ladder, comfortably inside the four-minute deadline.
+
+So the hang is not a property of any of these relays as they behave now, which
+leaves the path the probes cannot exercise from outside: **the `onEvent` hook**.
+It is run outside quartz's timeout scope by design, this router hands it to a
+bounded ingest queue, and a job parked in it produces exactly what the thread
+dump showed — a socket in `loopReader` with NOTHING arriving, because we stopped
+draining, the TCP window closed and the relay stopped sending. A relay-shaped
+hypothesis predicts a socket busy with frames; the dump showed the opposite.
+
 `measuring.quietForSec` is the other half. `etaSec` read `0` throughout the
 stall, which is correct arithmetic on a rate that has gone to zero and actively
 misleading as a signal — it is the same `0` a pass one url from done reports. The

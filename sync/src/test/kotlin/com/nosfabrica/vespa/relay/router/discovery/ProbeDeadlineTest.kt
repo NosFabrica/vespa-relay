@@ -298,6 +298,56 @@ class ProbeDeadlineTest {
             assertNull(processors.snapshot().single().inFlight)
         }
 
+    @Test
+    fun `a relay that connects and then says nothing is silent, not restricted`() =
+        runBlocking {
+            // MEASURED ON `quietplace.xyz`, one of the urls a stalled pass was
+            // holding: it accepts a websocket, serves a NIP-11 document, and
+            // then answers no REQ on any of the three rungs and no NEG-OPEN
+            // either — every window simply lapses.
+            //
+            // `Verdict.SILENT` is "connected, then nothing: no EOSE, no CLOSED,
+            // the window lapsed", word for word. `Verdict.RESTRICTED` is
+            // "answers only shaped queries this router cannot generally send",
+            // which requires the relay to have ANSWERED. The branches were
+            // swapped, so the one case with no terminal reason at all — the
+            // definition of silence — was published to the whole network as a
+            // relay with a narrow query policy.
+            val store = newStore()
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    // A window that lapses: no events, and no terminal reason
+                    // either, which is what quartz reports when its idle clock
+                    // fires with the relay still pending.
+                    probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = null) },
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                )
+            pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = AliasFolding.Sockets.NONE)
+            assertEquals(FitnessPass.Verdict.SILENT.value, gradeOf(store, wedged))
+
+            // …AND THE OTHER SIDE OF THE SWAP HAS NO PATH TO IT. A relay that
+            // CLOSES every rung has SPOKEN as far as the probe is concerned, so
+            // it comes back as an empty window — which this pass reads as a
+            // drain, not a refusal — and grades `prime`. Pinned so the state is
+            // recorded rather than assumed: `restricted` is currently
+            // unreachable, and reaching it needs a signal `AliasProbe.Page`
+            // does not carry.
+            val refusing = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(refusing, signer),
+                probe = probe { _, _, _, _ -> AliasProbe.Page(events = emptyList(), reason = "closed: blocked: can't handle empty filters") },
+                client = EmptyNostrClient(),
+                foldedAway = { emptyMap() },
+                inconsistent = { emptySet() },
+                progress = Processors().of("fitness"),
+            ).measure("refusal", listOf(wedged), canDial = { true }, onEvent = {}, sockets = AliasFolding.Sockets.NONE)
+            assertEquals(FitnessPass.Verdict.PRIME.value, gradeOf(refusing, wedged))
+        }
+
     /**
      * The fitness grade the store now carries for [url], or null for NO RECORD
      * AT ALL — which is the distinction both fitness assertions rest on.

@@ -471,8 +471,41 @@ class FitnessPass(
             return when (val cause = Silence.of(lastReason)) {
                 Silence.TIMEOUT, Silence.RATE_LIMITED, Silence.UNKNOWN -> {
                     if (lastReason == null) {
-                        Outcome(Verdict.RESTRICTED, "answered no shape this router can send; see the ask ladder")
+                        // NOTHING CAME BACK AT ALL. No EOSE, no CLOSED, no
+                        // transport failure — every rung's window simply
+                        // lapsed, which is [Verdict.SILENT] word for word.
+                        //
+                        // This branch published `restricted` for eleven
+                        // months, and the two were swapped: `restricted` means
+                        // the relay ANSWERED and none of the answers was a
+                        // window, so it needs a terminal reason to be true and
+                        // this is the one case that has none. Measured on
+                        // `quietplace.xyz`, which accepts a socket, serves a
+                        // NIP-11 document, and then answers no REQ and no
+                        // NEG-OPEN ever: it was being published to the whole
+                        // network as a relay with a narrow query policy.
+                        //
+                        // [Verdict.RESTRICTED] is left with NO PATH TO IT, and
+                        // that is the honest state rather than a regression to
+                        // hide: the case it describes — a relay that answers
+                        // only shapes we cannot send — currently grades
+                        // `prime`, because a CLOSED refusal makes the relay
+                        // "speak" and an empty window is deliberately read as a
+                        // drain rather than as a refusal. Telling those two
+                        // empties apart needs a signal `AliasProbe.Page` does
+                        // not carry, so it is a change to the probe and not to
+                        // this line. Manufacturing a path here out of an
+                        // unrecognised transport string would only publish
+                        // OUR socket failing as the relay having a query
+                        // policy, which is the same class of mistake this
+                        // branch is being fixed for.
+                        Outcome(Verdict.SILENT, "connected, then nothing: no EOSE and no CLOSED on any rung of the ladder")
                     } else {
+                        // A reason we could not place. Still silence — and note
+                        // it can only be a TRANSPORT word: quartz reports a
+                        // reason with no events exclusively for `cannot:`, so
+                        // anything the relay itself said made it "speak" and
+                        // never reaches here.
                         Outcome(Verdict.SILENT, cause.reason)
                     }
                 }
