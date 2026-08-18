@@ -251,16 +251,25 @@ internal class StreamWorld(
      * How many, and out of what, is [lastDerivation].
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
-        // WHAT THIS WALK SET OUT TO DO, declared before the first store read.
-        //
-        // One unit per configured source — see [Processors.UNIT_SOURCE] for why
-        // it cannot be urls. The two record reads that bracket the walk
-        // ([ownDead] above, [ownRecords] below) are deliberately outside the
-        // count: they are two queries against an index rather than a walk of
-        // the store, and folding them in would put a position on the row that
-        // jumps by a third for work nobody is waiting on.
-        progress?.measuring(derivations().size, Processors.UNIT_SOURCE)
         val dead = ownDead()
+        // WHAT THIS WALK SET OUT TO DO, declared AFTER the dead-set read and
+        // before the walk it describes.
+        //
+        // One unit per configured SOURCE — see [Processors.UNIT_SOURCE] for why
+        // it cannot be urls, and `RelayDiscovery.discover`'s `onSource` for why
+        // it cannot be per derivation: a deployment that has moved its parsing
+        // into `monitor { sources }` has one config holding several sources,
+        // and a position that reads "0 of 1" until it reads "1 of 1" is not a
+        // position.
+        //
+        // After [ownDead] because the rate this implies is timed from HERE —
+        // see [Processors.Run.startedMs]. That read is two indexed queries
+        // rather than a walk, and left inside the timing it lands in the
+        // numerator of every estimate while contributing nothing to the
+        // numerator's units. The row still says `collecting` throughout it; it
+        // simply has no position to give yet, which is the same thing every
+        // probe pass does while it works out its own set.
+        progress?.measuring(derivations().sumOf { it.second.sources.size }, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         // Kept rather than only skipped, so the funnel's first branch divides.
         // An operator who excluded a hundred urls and then asks why the fan-out
@@ -269,7 +278,7 @@ internal class StreamWorld(
         // One tick per source as its walk ends — the sweep's position, and the
         // only path that reports one: the fast lane runs the same `derive` and
         // must not move a sweep's row. See the lane's comment in [AliasMonitor].
-        derive("alias source", { it }, onSourceDone = { progress?.attempted() }) { url, kept ->
+        derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
             if (kept) all += url else excluded += url
         }
         // `exclude` is PER STREAM, so a url one stream excludes and another asks
@@ -332,10 +341,18 @@ internal class StreamWorld(
     private suspend fun derive(
         what: String,
         bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
-        onSourceDone: () -> Unit = {},
+        onSource: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
         for ((label, discovery) in derivations()) {
+            // Ticked by `discover` as each source ends, and TOPPED UP here if
+            // it threw partway: the position's denominator counts every source
+            // this pass set out to walk, so a config that failed on its second
+            // of three would otherwise leave the row a unit short forever —
+            // `4 of 6` under `idle`, which reads as a walk that stopped rather
+            // than one that finished badly. A source we could not read is still
+            // behind us.
+            var ticked = 0
             val found =
                 try {
                     RelayDiscovery.discover(
@@ -343,6 +360,10 @@ internal class StreamWorld(
                         bound(discovery).copy(exclude = RelayExcludes.NONE),
                         skip = emptySet(),
                         allowOnion = tor != null,
+                        onSource = {
+                            ticked++
+                            onSource()
+                        },
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -350,12 +371,8 @@ internal class StreamWorld(
                     System.err.println("router: $what could not derive $label: ${e.message}")
                     emptyList()
                 }
+            repeat(discovery.sources.size - ticked) { onSource() }
             found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
-            // AFTER the walk, however it ended — a source whose discovery threw
-            // is behind this derivation exactly as a source that yielded
-            // nothing is, and a position that only moved on success would sit
-            // still through the failure a reader is watching for.
-            onSourceDone()
         }
     }
 

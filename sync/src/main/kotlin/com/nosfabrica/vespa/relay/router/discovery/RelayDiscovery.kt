@@ -87,6 +87,19 @@ object RelayDiscovery {
         // them, which is what dialling them without Tor amounts to anyway.
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
+        /**
+         * Called as each of [RelayDiscoveryConfig.sources] finishes, for a
+         * caller reporting a position.
+         *
+         * A SOURCE is the only unit this walk can be counted in from outside:
+         * the store reads inside it stream a projection or page an unknown
+         * number of events, so nothing here knows a total until it has the
+         * answer. It is per source rather than per CONFIG because a deployment
+         * that has moved its relay-list parsing into `monitor { sources }` has
+         * exactly one config — and a position of "0 of 1" that goes to "1 of 1"
+         * is not a position. See [StreamWorld.candidates].
+         */
+        onSource: () -> Unit = {},
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -176,6 +189,8 @@ object RelayDiscovery {
                     }
                 }
             }
+            // This source is behind the walk, whatever it yielded.
+            onSource()
         }
 
         // DIAGNOSTIC: what the pairing actually built. A bound select is only
