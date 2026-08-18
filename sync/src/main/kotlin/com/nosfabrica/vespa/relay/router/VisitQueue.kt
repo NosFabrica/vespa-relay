@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.router
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -53,7 +55,15 @@ internal class VisitQueue(
     private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
     private val inFlight = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
     private val parked = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val armed = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /**
+     * The pending revisit per url, as a CANCELLABLE job rather than a bare
+     * membership mark — see [disarm] for what a mark could not express.
+     */
+    private val armed = ConcurrentHashMap<NormalizedRelayUrl, Job>()
+
+    /** Guards the two compound reads that decide a park — see [visitLoop]. */
+    private val handoff = Any()
 
     val waiting: Int get() = queued.size
 
@@ -81,16 +91,33 @@ internal class VisitQueue(
     ) {
         for (url in channel) {
             queued.remove(url)
-            if (!inFlight.add(url)) {
-                parked.add(url)
-                continue
-            }
+            // ONE STEP, because these two collections have to agree.
+            //
+            // `inFlight.add` and `parked.add` were separate, and so were the
+            // finishing visit's `inFlight.remove` and `parked.remove`. Between
+            // a worker's failed add and its park, the running visit could
+            // finish, see nothing parked, and arm a timer — so the prompt
+            // requeue this class promises as its second invariant was
+            // downgraded to a timer wait, and the park left behind bought one
+            // spurious back-to-back visit later. Both blocks are pure
+            // collection work and neither suspends, so a plain monitor is the
+            // whole fix.
+            val parkedInstead =
+                synchronized(handoff) {
+                    if (inFlight.add(url)) false else parked.add(url).let { true }
+                }
+            if (parkedInstead) continue
+            var requeue = false
             try {
                 if (stillWanted(url)) visit(url)
             } finally {
-                inFlight.remove(url)
+                requeue =
+                    synchronized(handoff) {
+                        inFlight.remove(url)
+                        parked.remove(url)
+                    }
             }
-            if (parked.remove(url)) {
+            if (requeue) {
                 // A requeue arrived mid-visit: back on the queue now, and no
                 // timer — the prompt visit will arm its own.
                 offer(url)
@@ -100,17 +127,44 @@ internal class VisitQueue(
         }
     }
 
+    /**
+     * DROP A PENDING REVISIT so the next completion arms a fresh one.
+     *
+     * The delay is read once, when the timer is armed, and a url armed while
+     * it was TAILED gets the tailed cadence — half an hour against five
+     * minutes for an untailed one. Eviction promptly requeues the url, but the
+     * visit that follows finds the old timer still standing in `armed` and
+     * arms nothing, so the relay that just LOST its live feed then waits out
+     * the cadence it earned while it had one. Six times the freshness gap, on
+     * exactly the relays least able to afford it.
+     *
+     * So the pool disarms on eviction. The "exactly one timer" rule is intact
+     * — this removes one rather than adding a second — and a url with nothing
+     * armed is a no-op.
+     */
+    fun disarm(url: NormalizedRelayUrl) {
+        armed.remove(url)?.cancel()
+    }
+
     private fun armRevisit(
         url: NormalizedRelayUrl,
         revisitDelayMs: (NormalizedRelayUrl) -> Long,
         stillWanted: (NormalizedRelayUrl) -> Boolean,
     ) {
-        if (!armed.add(url)) return
         val delayMs = revisitDelayMs(url)
-        scope.launch {
-            delay(delayMs)
-            armed.remove(url)
-            if (stillWanted(url)) offer(url)
-        }
+        // LAZY, and registered before it can run: the body clears its own
+        // entry, so a job that started before the map knew about it would
+        // either clear a successor's entry or leak its own.
+        val job =
+            scope.launch(start = CoroutineStart.LAZY) {
+                delay(delayMs)
+                // Only OUR OWN entry — a [disarm] and re-arm in between put a
+                // different job there, and that one still owes a revisit.
+                if (armed.remove(url, coroutineContext[Job])) {
+                    if (stillWanted(url)) offer(url)
+                }
+            }
+        if (armed.putIfAbsent(url, job) != null) return
+        job.start()
     }
 }

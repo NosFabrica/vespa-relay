@@ -250,10 +250,38 @@ object RelayDiscovery {
         maxAgeSeconds: Long,
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
+        /**
+         * Ask about THESE urls only, or null for the whole corpus.
+         *
+         * The corpus read is right for a sweep, which is deciding what to walk
+         * and has the whole world in hand anyway. It is wrong for the FAST
+         * LANE, whose entire premise is that it looks at the handful of urls
+         * named since its last tick — `a store-wide derivation is exactly what
+         * this lane exists not to do`, in the lane's own words — and which was
+         * nevertheless materializing every `dead` record inside the TTL (832 on
+         * a staging corpus) every 120 seconds to hold out a set it could name
+         * in advance.
+         *
+         * Scoped, the read is bounded by the caller's list instead of by how
+         * many relays have died, and a tick that derived nothing asks nothing
+         * at all. Chunked at [QUERY_SCOPE_CHUNK] for the reason
+         * [RelayVerdictRecord.load] chunks: a `#d` list is a filter term per
+         * url and a store has a limit on how many it will take.
+         */
+        scope: Collection<NormalizedRelayUrl>? = null,
     ): Set<NormalizedRelayUrl> {
         if (monitorAuthors.isEmpty()) return emptySet()
-        return verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now)
-            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+        if (scope == null) {
+            return verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now)
+                .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+        }
+        if (scope.isEmpty()) return emptySet()
+        val found = HashSet<NormalizedRelayUrl>()
+        for (chunk in scope.map { it.url }.chunked(QUERY_SCOPE_CHUNK)) {
+            verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now, chunk)
+                .mapNotNullTo(found) { urlOf(it, allowOnion) }
+        }
+        return found
     }
 
     /**
@@ -340,6 +368,8 @@ object RelayDiscovery {
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
         now: Long,
+        /** The `d` values to bound the read to, or null for every record carrying the grade. */
+        scope: List<String>? = null,
     ): List<Event> =
         store
             .query<Event>(
@@ -349,7 +379,13 @@ object RelayDiscovery {
                     // is the unscoped read. An EMPTY list would be a predicate
                     // nothing satisfies.
                     authors = monitorAuthors.takeIf { it.isNotEmpty() },
-                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(verdict.value)),
+                    // Tag terms AND together, so a `d` scope narrows the grade
+                    // read to the urls the caller asked about.
+                    tags =
+                        buildMap {
+                            put(RelayVerdictRecord.LABEL_TAG, listOf(verdict.value))
+                            scope?.let { put("d", it) }
+                        },
                     // The freshness bound, indexed — the record's own clock says
                     // when this monitor last re-checked the relay again, now
                     // that no passive writer bumps it on every socket.
@@ -460,6 +496,14 @@ object RelayDiscovery {
      * and a bounded allocation.
      */
     private const val SCAN_PAGE = 10_000
+
+    /**
+     * Urls per `#d` term when [undialable] is scoped — the same 500
+     * [RelayVerdictRecord.load] chunks at, and for the same reason: a `#d`
+     * list is one filter term per url and a store will not take an unbounded
+     * number of them.
+     */
+    private const val QUERY_SCOPE_CHUNK = 500
 
     /**
      * Is this event too long to be a relay list?

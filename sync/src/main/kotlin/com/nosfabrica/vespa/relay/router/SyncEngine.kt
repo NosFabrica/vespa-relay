@@ -585,22 +585,29 @@ class SyncEngine(
         // [FitnessPass.retireStaleEpochs] for why the retraction belongs here
         // rather than in every reader.
         //
-        // Costs one indexed query returning nothing on every boot but the one
-        // after an epoch bump, and on that one it costs a signed edit per
-        // standing verdict — paid once, at a deploy the operator chose, in
-        // exchange for never serving on a verdict we would not re-take.
+        // Costs a PAGED walk of our own graded records on every boot — the
+        // epoch and the legacy tag are both decided per record rather than in
+        // the filter, so neither retraction can ask the store to return only
+        // what it wants — and on the boot after an epoch bump it costs a signed
+        // edit per standing verdict too. Paid once, at a deploy the operator
+        // chose, in exchange for never serving on a verdict we would not
+        // re-take. (This said "one indexed query returning nothing"; the query
+        // is indexed and it returns the whole graded corpus.)
+        //
+        // TWO GUARDS, NOT ONE. Sharing a `runCatching` meant a throw in the
+        // first retraction silently skipped the second — and reported it under
+        // the first one's name, so a store that could not answer the epoch walk
+        // left every legacy `s` grade standing with nothing said about it.
         signer?.let { s ->
-            runCatching {
-                runBlocking {
-                    val record = RelayVerdictRecord(store, s)
-                    FitnessPass.retireStaleEpochs(store, record, s.pubKey)
-                    // …and the grades written before the move off `s`, which
-                    // are not stale readings but readings in a tag that now
-                    // means something else entirely. Same retraction, same
-                    // boot, same reason it cannot be left to the readers.
-                    FitnessPass.retireLegacyGrades(store, record, s.pubKey)
-                }
-            }.onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
+            val record = RelayVerdictRecord(store, s)
+            runCatching { runBlocking { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
+                .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
+            // …and the grades written before the move off `s`, which are not
+            // stale readings but readings in a tag that now means something
+            // else entirely. Same boot, same reason it cannot be left to the
+            // readers, and now its own failure to report.
+            runCatching { runBlocking { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+                .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
         }
 
         // Said at boot, both ways: a transport that is configured but not

@@ -351,7 +351,21 @@ class AliasMonitor(
                 // Nothing derived is not nothing to do — a cold store has no
                 // relay lists yet — so this reads as an empty pass and retries
                 // at [emptyRetryMs] rather than sleeping the full interval.
-                if (urls.size < 2) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
+                //
+                // EMPTY, not "fewer than two", and the difference is a mirror.
+                // The guard was written when this class ran the FOLD and only
+                // the fold: one url cannot be held up against another, so a
+                // world of one was genuinely nothing to do. Two per-url passes
+                // joined the list since — the stability gate and fitness — and
+                // neither compares urls to anything, so the guard was skipping
+                // the pass that writes `prime` on the one candidate set that
+                // most needs it. A router discovering exactly one relay never
+                // graded it, so every visit-mode stream selecting on that grade
+                // had a permanently empty roster: #139's symptom by another
+                // route. The fold still refuses a world of one — inside
+                // [AliasFolding.measure], where the world it refuses is the one
+                // it actually assembled rather than this pass's candidates.
+                if (urls.isEmpty()) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
             } ?: emptyList()
         lastPassHadWork = work.isNotEmpty()
         // ONE PASS AT A TIME, over every stream — rather than one stream at a

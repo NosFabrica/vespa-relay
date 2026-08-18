@@ -1326,6 +1326,46 @@ in the rollup dropped that row before the page could apply the rule, silently,
 since neither had an `omitted` to disclose it with. The invariant is now held on
 both sides rather than defended on one and undermined on the other.
 
+**An audit of the monitor and pool planes turned up five things worth knowing,
+and the first is a second route to #139's symptom.** Recorded because four of
+them are invisible from the outside and one had a test asserting it.
+
+- **A candidate set of ONE was never graded at all.** `AliasMonitor` gated its
+  whole work list on `urls.size < 2`, written when this class ran the fold and
+  only the fold — one url cannot be held up against another. The stability gate
+  and the fitness pass joined the list since and neither compares urls to
+  anything, so a router discovering exactly one relay never wrote a `prime`
+  grade for it and every visit-mode stream had a permanently empty roster. The
+  fold still refuses a world of one, inside `AliasFolding.measure`, against the
+  world it actually assembles. The fast lane does not rescue this: it only sees
+  urls named SINCE its last look, so a url present at boot is never picked up.
+- **The fast lane was doing a store-wide read every 120 seconds** — the one
+  thing its own comment says it exists not to do. `candidatesSince` asked for
+  every `dead` record inside the TTL (832 on a staging corpus) to hold out a set
+  it could name in advance. It derives first now and scopes the read to what it
+  derived, so a tick that found nothing asks nothing.
+- **Both boot retractions walked our own corpus in one unbounded query**, inside
+  the `runBlocking` the roster's first rebuild waits on. Neither can ask its
+  question in a filter — the epoch and the legacy `s` tag are decided per record
+  — so both read every graded record; they page now. The call site's comment
+  claimed "one indexed query returning nothing", which was half right: indexed,
+  and it returns everything.
+- **…and they shared one `runCatching`**, so a throw in the epoch walk silently
+  skipped the legacy one and reported it under the wrong name. Two guards now.
+- **A revisit timer outlived the tail that sized it.** The delay is read once,
+  at arming, so a url armed while tailed carries `REVISIT_TAILED_MS` (30 min)
+  against `REVISIT_UNTAILED_MS` (5 min). Eviction requeues promptly, but the
+  visit after it found the old timer standing in `armed` and armed nothing — so
+  the relay that had just lost its live feed waited out the cadence it earned
+  while it still had one. `dropTail` disarms; the "exactly one timer" rule is
+  intact because disarming removes one rather than adding a second.
+- **`parked` had a check-then-act race.** A worker's failed `inFlight.add` and
+  its `parked.add` were two steps, as were the finishing visit's two removes, so
+  the prompt requeue this class promises as its second invariant could be
+  downgraded to a timer wait and the leftover park bought one spurious
+  back-to-back visit later. Both blocks are pure collection work and neither
+  suspends, so one monitor closes it.
+
 **The rule was audited against every cap in the two rollups, and three failed
 it.** They are gone; what is left is the list of caps that earn their keep, and
 a new one has to argue its way onto it:

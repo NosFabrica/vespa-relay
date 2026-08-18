@@ -672,24 +672,37 @@ class FitnessPass(
             record: RelayVerdictRecord,
             author: String,
         ): Int {
-            val stale =
-                store
-                    .query<RelayDiscoveryEvent>(
-                        Filter(
-                            kinds = listOf(RelayDiscoveryEvent.KIND),
-                            authors = listOf(author),
-                            tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
-                        ),
-                    ).filter { event ->
-                        // A record with NO grade of ours is not a stale grade,
-                        // it is somebody else's label that happened to carry
-                        // one of our values — the tag index answers on the
-                        // value alone, so the query can return those. Retiring
-                        // on a null here would edit records we have no verdict
-                        // on at all.
-                        val grade = ourGrade(event) ?: return@filter false
-                        grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH
-                    }.mapNotNull { it.relay() }
+            // PAGED, because the epoch cannot be asked for in the filter.
+            //
+            // The tag index answers on the label's VALUE, and the epoch lives
+            // further along the same tag — so this query returns every record
+            // carrying any of our grades and the epoch is decided here, one
+            // event at a time. That is the whole corpus of graded urls (12,374
+            // on a staging deployment), materialized at boot, inside a
+            // `runBlocking` that the roster's first rebuild waits on. Paging
+            // bounds what is alive at once to [SCAN_PAGE] rather than to how
+            // many relays this router has ever graded.
+            val stale = mutableListOf<NormalizedRelayUrl>()
+            RelayDiscovery.scan(
+                store,
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = listOf(author),
+                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
+                ),
+                SCAN_PAGE,
+            ) { event ->
+                val record = event as? RelayDiscoveryEvent ?: return@scan
+                // A record with NO grade of ours is not a stale grade, it is
+                // somebody else's label that happened to carry one of our
+                // values — the tag index answers on the value alone, so the
+                // query can return those. Retiring on a null here would edit
+                // records we have no verdict on at all.
+                val grade = ourGrade(record) ?: return@scan
+                if (grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH) {
+                    record.relay()?.let(stale::add)
+                }
+            }
             retire(record, stale)
             if (stale.isNotEmpty()) {
                 System.err.println(
@@ -727,20 +740,22 @@ class FitnessPass(
             record: RelayVerdictRecord,
             author: String,
         ): Int {
-            val legacy =
-                store
-                    .query<RelayDiscoveryEvent>(
-                        Filter(
-                            kinds = listOf(RelayDiscoveryEvent.KIND),
-                            authors = listOf(author),
-                            // THE OLD BUILD'S VOCABULARY, which is not this
-                            // one — see [LEGACY_GRADES]. Querying today's
-                            // values here missed every `syncable` record in
-                            // the store, i.e. the only admitting grade and the
-                            // largest group of them.
-                            tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
-                        ),
-                    ).mapNotNull { it.relay() }
+            // Paged for [retireStaleEpochs]'s reason: a boot-time walk of our
+            // own records must not be bounded by how many of them there are.
+            val legacy = mutableListOf<NormalizedRelayUrl>()
+            RelayDiscovery.scan(
+                store,
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = listOf(author),
+                    // THE OLD BUILD'S VOCABULARY, which is not this one — see
+                    // [LEGACY_GRADES]. Querying today's values here missed
+                    // every `syncable` record in the store, i.e. the only
+                    // admitting grade and the largest group of them.
+                    tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
+                ),
+                SCAN_PAGE,
+            ) { event -> (event as? RelayDiscoveryEvent)?.relay()?.let(legacy::add) }
             retire(record, legacy)
             if (legacy.isNotEmpty()) {
                 System.err.println(
@@ -859,6 +874,18 @@ class FitnessPass(
          * say NEG-MSG is answered by the transfer's own fallback anyway.
          */
         const val NIP77_IDLE_MS = 10_000L
+
+        /**
+         * Records per page when the boot retractions walk our own corpus.
+         *
+         * Neither of them can ask its question in a filter — the epoch and the
+         * legacy tag are both decided per record — so both read every record
+         * carrying a grade and both used to do it in ONE unbounded query, at
+         * boot, inside the `runBlocking` the roster's first rebuild waits on.
+         * Paging bounds what is alive at once to this rather than to how many
+         * relays this router has ever graded.
+         */
+        const val SCAN_PAGE = 2_000
 
         /**
          * The steps one url's job passes through, published as a held leg's

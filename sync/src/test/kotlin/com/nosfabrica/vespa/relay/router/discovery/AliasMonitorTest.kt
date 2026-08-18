@@ -115,18 +115,40 @@ class AliasMonitorTest {
         }
 
     @Test
-    fun `a world too small to compare is an empty pass, not a measured one`() =
+    fun `an empty world is an empty pass, not a measured one`() =
         runBlocking {
-            // Same rule the submitted path has always had: one url cannot be
-            // held up against anything, and a cold store legitimately has none
-            // yet — which must read as "nothing to do YET" and retry, not as a
-            // pass that ran.
+            // A cold store legitimately has no relay lists yet, which must read
+            // as "nothing to do YET" and retry rather than as a pass that ran.
+            val pass = Recording()
+            val m = sourced(pass, World(emptyList()))
+
+            m.runPass()
+
+            assertEquals(0, pass.calls.get())
+        }
+
+    @Test
+    fun `a world of ONE is measured, because only the fold needs a second url`() =
+        runBlocking {
+            // THIS USED TO BE SKIPPED, and skipping it took the mirror down.
+            // The guard read `size < 2` from when this class ran the fold and
+            // nothing else: one url cannot be held up against another. The
+            // stability gate and the fitness pass joined the list since and
+            // neither compares urls to anything — so a router discovering
+            // exactly one relay never got a `prime` grade written for it, and
+            // every stream selecting on that grade had a permanently empty
+            // roster.
+            //
+            // The fold's own refusal is unaffected: it lives in
+            // `AliasFolding.measure`, against the world it assembles rather
+            // than against this pass's candidate list.
             val pass = Recording()
             val m = sourced(pass, World(listOf(a)))
 
             m.runPass()
 
-            assertEquals(0, pass.calls.get())
+            assertEquals(1, pass.calls.get())
+            assertEquals(listOf(a), pass.passes.single().second)
         }
 
     @Test

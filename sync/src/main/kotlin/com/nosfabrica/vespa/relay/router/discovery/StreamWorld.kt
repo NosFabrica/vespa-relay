@@ -179,12 +179,13 @@ internal class StreamWorld(
      * also had to work around. The fitness pass states it outright now, so the
      * hold-out reads the same tag the roster does.
      */
-    private suspend fun ownDead(): Set<NormalizedRelayUrl> =
+    private suspend fun ownDead(scope: Collection<NormalizedRelayUrl>? = null): Set<NormalizedRelayUrl> =
         RelayDiscovery.undialable(
             store,
             monitorAuthors = monitorAuthors,
             maxAgeSeconds = DEAD_TTL_SECONDS,
             allowOnion = tor != null,
+            scope = scope,
         )
 
     /**
@@ -313,11 +314,18 @@ internal class StreamWorld(
      * the exclude lists apply inside [RelayDiscovery.discover] as ever.
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
-        val dead = ownDead()
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
         derive("fast lane", { discovery ->
             discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
         }) { url, kept -> if (kept) fresh += url }
+        // DERIVED FIRST, then asked about — the reverse of [candidates], and
+        // the reverse on purpose. This lane runs every `fastLaneSeconds` (120
+        // by default) and its whole premise is that it looks at the handful of
+        // urls named since the last tick; loading every `dead` record in the
+        // corpus to hold out a set we can name in advance is the store-wide
+        // derivation this lane exists not to do. A tick that derived nothing
+        // now asks nothing at all, which is most of them.
+        val dead = ownDead(scope = fresh)
         return fresh.filterNot { it in dead }
     }
 
