@@ -1,5 +1,5 @@
 import assert from 'assert';
-const { Relay } = await import(new URL("../../relay/src/main/resources/web/shared/relay.js", import.meta.url));
+const { Relay } = await import(new URL("../../web/src/main/resources/web/shared/relay.js", import.meta.url));
 
 // Drive req()'s retry logic through a stubbed reqOnce — the wiring under
 // test is exactly: CLOSED auth-required -> onAuthRequired -> resend once.
@@ -152,7 +152,7 @@ assert.strictEqual(t.calls, 1);
 // SETTLE the promise: the readiness panel awaits these before it can say
 // anything, and a count that never settles is a panel that never appears.
 {
-  const { REFUSED, TIMED_OUT } = await import(new URL("../../relay/src/main/resources/web/shared/relay.js", import.meta.url));
+  const { REFUSED, TIMED_OUT } = await import(new URL("../../web/src/main/resources/web/shared/relay.js", import.meta.url));
   const armed = () => {
     const r = new Relay("ws://unused/");
     r.connect = async () => {};

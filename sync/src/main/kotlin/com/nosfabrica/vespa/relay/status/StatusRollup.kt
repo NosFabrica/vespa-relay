@@ -24,7 +24,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Rebuild the status document on a timer.
+ * Rebuild a status document on a timer — one instance per plane.
  *
  * Its own single daemon thread rather than a coroutine on the engine's scope,
  * and the reason is the one this whole split is about: the page has to keep
@@ -37,18 +37,20 @@ import java.util.concurrent.TimeUnit
  * one bad tick would silently end the feature for the life of the process.
  */
 internal class StatusRollup(
-    private val status: SyncStatus,
+    /** What this timer is for, in the log line a failed pass prints. */
+    private val name: String,
     private val everySeconds: Long,
+    private val publish: () -> Unit,
 ) : AutoCloseable {
     private val timer =
         Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "sync-status").apply { isDaemon = true }
+            Thread(r, "$name-status").apply { isDaemon = true }
         }
 
     fun start(): StatusRollup {
         timer.scheduleAtFixedRate({
-            runCatching { status.publish() }
-                .onFailure { System.err.println("router: status rollup failed: ${it.message}") }
+            runCatching { publish() }
+                .onFailure { System.err.println("router: $name status rollup failed: ${it.message}") }
         }, everySeconds, everySeconds, TimeUnit.SECONDS)
         return this
     }

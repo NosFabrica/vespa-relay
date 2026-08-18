@@ -273,55 +273,20 @@ export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
 }
 
-/**
- * THE MONITOR'S WORK, AND THE SYNC'S — one list of processor rows, split by
- * what each of them DECIDES.
+/*
+ * THERE IS NO `splitProcessors` HERE ANY MORE.
  *
- * They were one panel because they arrive in one array, and reading it meant
- * holding two unrelated questions at once. The rows named here answer *which
- * relay urls are worth dialling at all*: the alias source walks the store for
- * every url the relay lists name and hands the three passes their candidate
- * set, the fold collapses one server's several
- * addresses, the stability gate refuses a url that answers a filter two ways,
- * and the fitness pass signs the `prime` certificate every visit-mode
- * stream's relay list is made of — including the `dead` verdict that holds an
- * unreachable url out of every fan-out. All three run on the alias monitor's own
- * clock, none of them is configured by a stream, and their subject is a RELAY
- * URL rather than an event. What
- * is left — the rotating pool, ingest, the healer, the upstream push — moves
- * EVENTS, on the streams' clock, and is where a slow mirror is actually
- * diagnosed.
+ * Both planes' rows used to arrive in one `processors` array, because one
+ * `Processors` object served both, so the page had to sort them by name into
+ * the mirror's card and the monitor's — with an allowlist, and with anything
+ * unrecognised routed to the mirror's card rather than dropped, since dropping
+ * a row to keep a card tidy is how a new job runs unwatched for a year.
  *
- * A fourth used to sit here: a passive NIP-66 watcher signing a record per
- * socket. It is gone — the passes own the record now — and if a watcher ever
- * returns, its row belongs in this list rather than beside ingest.
- *
- * `MONITOR_PROCESSORS` is a list rather than a Set literal for the reason
- * `BOTTLENECK` carries `__proto__: null`: the names are strings off the wire,
- * and a lookup that can reach `Object.prototype` answers `true` for
- * `constructor`.
- *
- * **AN UNKNOWN NAME GOES TO THE PIPELINE, never nowhere.** A router that starts
- * publishing a processor this page has not been taught must still draw it: the
- * two lists are a PARTITION of what the document carries, and the sync card is
- * the one that already carries the status line and the leftovers. Dropping a row
- * to keep a card tidy is how a new job runs unwatched for a year.
+ * Each plane keeps its own report and publishes its own document now. A row
+ * belongs to the object that registered it, the sort has nothing left to sort,
+ * and the allowlist that could go stale against a newly registered processor
+ * is gone with it.
  */
-// FIRST, and the order is the document's rather than this list's — the router
-// registers the source ahead of the passes it feeds, and `splitProcessors`
-// keeps whatever order it was handed. Named here so the row lands on the
-// monitor card at all; without it the collection step would draw beside ingest,
-// under a card asking whether the mirror is keeping up.
-export const MONITOR_PROCESSORS = ["aliasSource", "aliasFold", "consistency", "fitness"];
-
-export function splitProcessors(progress) {
-  const monitor = [];
-  const pipeline = [];
-  for (const p of progress?.processors || []) {
-    if (p) (MONITOR_PROCESSORS.includes(p.name) ? monitor : pipeline).push(p);
-  }
-  return { monitor, pipeline };
-}
 
 /** The phase word a visit-mode stream carries — `StreamPhases.Phase.Rotating`. */
 export const ROTATING = "rotating";

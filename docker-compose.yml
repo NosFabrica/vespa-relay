@@ -366,6 +366,15 @@ services:
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
       # Survives a restart, so a redeploy does not blank the page for a tick.
       SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
+      # THE MONITOR'S OWN PAGE, one port past it: which relay urls are one
+      # server wearing several addresses, which cannot answer the same question
+      # twice, which are graded prime — and the signed kind-30166 records
+      # themselves, read over the relay's websocket. Its own page because it
+      # answers a different question in a different unit (relay urls, not
+      # events), and because when this plane becomes its own container the port
+      # it is read at does not change. 0 serves no monitor page.
+      MONITOR_STATUS_PORT: 7779
+      MONITOR_STATUS_FILE: ${MONITOR_STATUS_FILE:-/var/lib/vespa-relay/monitor-status.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -417,6 +426,8 @@ services:
       # — by a person with a browser — and because the alternative is exec'ing
       # into the container to find out whether the mirror is running.
       - "${SYNC_STATUS_PORT:-7778}:7778"
+      # …and the monitor's, for the same reason.
+      - "${MONITOR_STATUS_PORT:-7779}:7779"
     volumes:
       # Mounts your local ./router.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.

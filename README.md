@@ -219,6 +219,19 @@ is up:
   document needed a heartbeat and the relay needed to age it, and a mirror down
   for a day still drew the card a mirror mid-cycle drew. A request answers it.
 
+- **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779) — what this router has
+  decided about the relay urls it discovers: which are one server wearing
+  several addresses, which cannot answer the same question twice, which are
+  graded `prime`, and which are unreachable. Below the passes, a panel reads the
+  signed **kind-30166** records themselves out of the relay over its own
+  websocket, which makes it a protocol check as much as a view: a verdict that
+  cannot be read there cannot be read by any client either.
+
+  Its own page because it asks a different question in a different unit. Sync
+  coverage is measured in events and asks whether the mirror is keeping up; this
+  is measured in relay urls and asks which of them may be dialled at all. An
+  operator arrives with one of the two.
+
 ## Supported NIPs
 
 | NIP | | In this relay |

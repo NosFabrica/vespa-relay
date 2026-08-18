@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
@@ -61,7 +62,7 @@ import java.time.Instant
  * [SyncCoverageReport] stays whole: folding bands and sweep cursors into
  * per-stream groups and depth buckets is real computation, not a re-copy, and
  * it is the same computation wherever it runs. [GaugeSeries] stays because a
- * series is the one thing a single tick cannot state. [SyncVocabulary] ships
+ * series is the one thing a single tick cannot state. [StatusVocabulary] ships
  * with the numbers it defines, so a chip can never describe a member in words
  * the router would not use.
  *
@@ -119,12 +120,15 @@ class SyncStatus(
                 buildJsonObject {
                     coverage?.forEach { (member, value) -> put(member, value) }
                     withSeries?.let { put("progress", it) }
-                    // What every number above MEANS, in the document that
-                    // carries them. Last, because it is the largest member here
-                    // and the least likely to be read first.
-                    put("terms", SyncVocabulary.TERMS)
                 }
             }
+
+        // What every number above MEANS — the subset of the shared vocabulary
+        // THIS document publishes. The monitor's members are defined in the
+        // same map and shipped in the monitor's own document; see
+        // [StatusVocabulary.termsFor] for why a glossary listing members the
+        // document does not carry is worse than a smaller one.
+        val withTerms = data?.let { JsonObject(it + ("terms" to StatusVocabulary.termsFor(it))) }
 
         snapshot.publish(
             buildJsonObject {
@@ -158,7 +162,7 @@ class SyncStatus(
                         )
                         put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                         put("tookMs", System.currentTimeMillis() - startedMs)
-                        put("data", data ?: JsonObject(emptyMap()))
+                        put("data", withTerms ?: JsonObject(emptyMap()))
                         if (errors.isNotEmpty()) putJsonObject("errors") { errors.forEach { (k, v) -> put(k, v) } }
                     }
                 }

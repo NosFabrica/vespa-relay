@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -38,7 +39,7 @@ import kotlin.test.assertTrue
  * complaint. So the terms are checked against the members the other two reports
  * actually emit, in both directions.
  */
-class SyncVocabularyTest {
+class StatusVocabularyTest {
     /**
      * Members that carry no NUMBER and need no entry: identifiers, timestamps,
      * and structures whose own children are what a reader looks up.
@@ -178,7 +179,7 @@ class SyncVocabularyTest {
         walk(coverage)
         walk(progress)
 
-        val undefined = published - selfDescribing - SyncVocabulary.TERMS.keys
+        val undefined = published - selfDescribing - StatusVocabulary.TERMS.keys
         assertTrue(
             undefined.isEmpty(),
             "published with no term, so a reader needs the source to read them: $undefined",
@@ -328,7 +329,7 @@ class SyncVocabularyTest {
                     "heapPct",
                 )
 
-        assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")
+        assertEquals(emptySet(), StatusVocabulary.TERMS.keys - known, "a term for nothing")
     }
 
     @Test
@@ -337,7 +338,7 @@ class SyncVocabularyTest {
         // the span every kind has EVIDENCE for. (It covered a third — a fan-out
         // leg that had RETURNED, the least meaningful of them and the one being
         // read as progress — until the fan-out itself went.)
-        val terms = SyncVocabulary.TERMS
+        val terms = StatusVocabulary.TERMS
 
         assertTrue(terms["settled"]!!.jsonPrimitive.content.contains("Nothing outstanding"))
         assertTrue(terms["evidence"]!!.jsonPrimitive.content.contains("not a coverage claim"))
@@ -348,7 +349,7 @@ class SyncVocabularyTest {
     @Test
     fun `approximations say they are approximations`() {
         assertTrue(
-            SyncVocabulary.TERMS["frame"]!!
+            StatusVocabulary.TERMS["frame"]!!
                 .jsonPrimitive.content
                 .startsWith("APPROXIMATE"),
         )
@@ -360,9 +361,38 @@ class SyncVocabularyTest {
         // contradiction, and the document has to say why before a reader files
         // it as one.
         assertTrue(
-            SyncVocabulary.TERMS["scope"]!!
+            StatusVocabulary.TERMS["scope"]!!
                 .jsonPrimitive.content
                 .contains("per STREAM"),
         )
+    }
+
+    @Test
+    fun `each document ships the definitions it needs and not the other plane's`() {
+        // The property `termsFor` exists for. There are two status documents
+        // now — the mirror's and the monitor's — and they publish disjoint
+        // halves of one vocabulary. Shipping the whole map in both would put a
+        // definition for `queued` in the monitor's document and one for
+        // `foldedAway` in the mirror's, and a glossary listing members the
+        // reader will not find is the way that promise rots into fiction.
+        val mirror =
+            Json
+                .parseToJsonElement("""{"progress": {"processors": [{"name": "ingest", "queued": 3, "capacity": 4096}]}}""")
+                .jsonObject
+        val monitor =
+            Json
+                .parseToJsonElement("""{"progress": {"processors": [{"name": "aliasFold", "foldedAway": 8, "candidates": 40}]}}""")
+                .jsonObject
+
+        val forMirror = StatusVocabulary.termsFor(mirror).keys
+        val forMonitor = StatusVocabulary.termsFor(monitor).keys
+
+        assertTrue("queued" in forMirror, "the mirror's document defines the members it carries")
+        assertTrue("queued" !in forMonitor, "…and not the ones it does not")
+        assertTrue("foldedAway" in forMonitor)
+        assertTrue("foldedAway" !in forMirror)
+        // Both still draw from ONE map: a member defined twice is two
+        // definitions to keep in step, which is the state this replaced.
+        assertTrue((forMirror + forMonitor).all { it in StatusVocabulary.TERMS.keys })
     }
 }

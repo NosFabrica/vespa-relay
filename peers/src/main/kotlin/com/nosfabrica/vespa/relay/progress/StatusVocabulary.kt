@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.status
+package com.nosfabrica.vespa.relay.progress
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -49,7 +50,7 @@ import kotlinx.serialization.json.put
  *
  * **One entry per published member, and no entry without one.** A term here that
  * nothing emits is a promise the document does not keep; a member emitted with
- * no term is the state this exists to end. `SyncVocabularyTest` pins both
+ * no term is the state this exists to end. `StatusVocabularyTest` pins both
  * directions against the other reports' output.
  *
  * **Say what the number is NOT, where it has been misread.** Half of these
@@ -60,14 +61,13 @@ import kotlinx.serialization.json.put
  * fraction are estimates or envelopes, and every one of them has at some point
  * been quoted as a measurement.
  */
-internal object SyncVocabulary {
+object StatusVocabulary {
     /**
-     * The `terms` object of the `sync` section.
+     * Every member either status document can publish, defined.
      *
      * Static — it describes the schema, not this deployment — so it is built
-     * once and served from a `val`. It is ~2KB on a document already measured in
-     * tens, and it is the difference between a chart a stranger can read and one
-     * only this repository can.
+     * once and served from a `val`. Ship it through [termsFor] rather than
+     * whole: it is ~2KB, and each document publishes about half of it.
      */
     val TERMS: JsonObject =
         buildJsonObject {
@@ -795,4 +795,42 @@ internal object SyncVocabulary {
                     "relays already delivered.",
             )
         }
+
+    /**
+     * The definitions [document] actually needs — every member it publishes,
+     * at any depth, and no others.
+     *
+     * ## Why a subset rather than the whole map
+     *
+     * There are two status documents now, one per plane, and they publish
+     * disjoint halves of this vocabulary. Shipping the whole thing in both
+     * would put ~1KB of definitions for the mirror's members in the monitor's
+     * document and vice versa — but the real cost is the claim it makes. A
+     * glossary is a promise that the reader will find these numbers here, and a
+     * definition for a member the document does not carry is the way that
+     * promise rots into fiction. `StatusVocabularyTest` holds the other
+     * direction: no published member without a term, checked against both
+     * documents at once, because a term that has left one of them may still be
+     * earning its place in the other.
+     *
+     * Walks the document rather than taking a list, for the same reason the
+     * test does: a list is a third thing to keep in step with the two it
+     * describes.
+     */
+    fun termsFor(document: JsonObject): JsonObject {
+        val published = LinkedHashSet<String>()
+
+        fun walk(o: JsonObject) {
+            for ((member, value) in o) {
+                published += member
+                when (value) {
+                    is JsonObject -> walk(value)
+                    is JsonArray -> value.filterIsInstance<JsonObject>().forEach(::walk)
+                    else -> Unit
+                }
+            }
+        }
+        walk(document)
+        return JsonObject(TERMS.filterKeys { it in published })
+    }
 }

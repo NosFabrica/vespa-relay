@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
+import com.nosfabrica.vespa.relay.monitor.MonitorStatus
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -236,7 +237,6 @@ class SyncEngine(
             config = config,
             peers = peers,
             signer = signer,
-            processors = processors,
             sockets = sockets,
             ingest = ingest,
             pinnedUrls = pinnedUrls,
@@ -650,6 +650,17 @@ class SyncEngine(
                 ", ${upPush.pushed.get()} pushed)",
         )
     }
+
+    /**
+     * The monitor plane's status document — see [MonitorEngine.status].
+     *
+     * Reached through this engine because this process composes the two; the
+     * document itself is the monitor's, built over its own rows.
+     */
+    fun monitorStatus(
+        everySeconds: Long,
+        relayUrl: String?,
+    ): MonitorStatus = monitor.status(everySeconds, relayUrl)
 
     companion object {
         // The names the progress document calls this router's non-stream jobs.

@@ -310,6 +310,10 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
                           register rows in
 
 monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
+  MonitorStatus.kt        this plane's OWN /stats.json — its four pass rows, the
+                          subset of the glossary they need, and the served
+                          relay's ws url, which the verdict panel has to be told
+                          because this page is not served by the relay
   MonitorEngine.kt        the plane: the three passes, the derivation, the boot
                           retirement of verdicts this router would no longer
                           sign. Its CONSTRUCTOR is the account of what the

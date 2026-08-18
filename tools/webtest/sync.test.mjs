@@ -11,8 +11,8 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  IN_FLIGHT_SHOWN, MEASURING, MONITOR_PROCESSORS, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  heldOf, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors,
+  IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
+  heldOf, legsOf, measuringOf, probeProgress, rotationOf,
 } from "../../web/src/main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -288,46 +288,6 @@ const leg = (n, quiet, over = {}) => ({
   assert.deepEqual(heldOf(null), { rows: [], more: 0 });
   assert.deepEqual(heldOf({ relays: [] }), { rows: [], more: 0 }, "a pass holding nothing draws nothing");
   ok("a stalled pass is told from one about to finish, and the url holding it is named");
-}
-
-// ── the monitor's work against the sync's ───────────────────────────────────
-{
-  // The two cards are one array on the wire, and the rule that sorts it has to
-  // be a PARTITION: a row that lands in neither list is a job nobody watches.
-  const doc = {
-    processors: [
-      { name: "aliasSource" }, { name: "aliasFold" }, { name: "consistency" }, { name: "fitness" }, { name: "visits" },
-      { name: "ingest" }, { name: "heal" }, { name: "upstreamPush" },
-    ],
-  };
-  const { monitor, pipeline } = splitProcessors(doc);
-  // The round-up leads, because the router registers it ahead of the passes it
-  // feeds and this keeps the document's order. It is the row that says what the
-  // monitor is doing for the minutes before any pass has started.
-  assert.deepEqual(monitor.map((p) => p.name), ["aliasSource", "aliasFold", "consistency", "fitness"]);
-  assert.deepEqual(pipeline.map((p) => p.name), ["visits", "ingest", "heal", "upstreamPush"]);
-  assert.equal(monitor.length + pipeline.length, doc.processors.length, "every row lands somewhere");
-  assert.equal(MONITOR_PROCESSORS.length, 4, "the round-up and the three passes that decide a RELAY rather than move an event");
-
-  // A processor this page has not been taught draws on the sync side rather
-  // than nowhere — the card that already carries the status line and the
-  // leftovers. Dropping a row to keep a card tidy is how a new job runs
-  // unwatched for a year.
-  const novel = splitProcessors({ processors: [{ name: "somethingNew" }, { name: "fitness" }] });
-  assert.deepEqual(novel.pipeline.map((p) => p.name), ["somethingNew"]);
-  assert.deepEqual(novel.monitor.map((p) => p.name), ["fitness"]);
-
-  // The document's order is kept inside each list: two rollups of one state
-  // must draw the same card.
-  const reversed = splitProcessors({ processors: [{ name: "fitness" }, { name: "aliasFold" }] });
-  assert.deepEqual(reversed.monitor.map((p) => p.name), ["fitness", "aliasFold"]);
-
-  // The name is a string off the wire, so the lookup must not reach
-  // Object.prototype — the same rule `BOTTLENECK` carries `__proto__: null` for.
-  assert.deepEqual(splitProcessors({ processors: [{ name: "constructor" }] }).monitor, []);
-  assert.deepEqual(splitProcessors({ processors: [null, { name: "ingest" }] }).pipeline.map((p) => p.name), ["ingest"]);
-  assert.deepEqual(splitProcessors(null), { monitor: [], pipeline: [] });
-  ok("the monitor's passes and the event pipeline are a partition, and an unknown row is still drawn");
 }
 
 // ── what a rotating stream is riding ────────────────────────────────────────

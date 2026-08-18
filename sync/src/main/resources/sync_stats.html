@@ -48,7 +48,7 @@
 
 <script type="module">
 import { mountStatsPage } from "/web/shared/statspage.js";
-import { monitorCard, syncCard } from "/web/sync/cards.js";
+import { syncCard } from "/web/sync/cards.js";
 
 /**
  * The body, panel by panel — what each draws and which sections it reads from.
@@ -59,15 +59,14 @@ import { monitorCard, syncCard } from "/web/sync/cards.js";
  * of rows tall behind a filter and a scroll box, and rebuilding it under a
  * reader every thirty seconds would throw away both.
  *
- * Two panels off ONE section, rather than one card asking two questions. Sync
- * coverage answers "is the mirror keeping up"; the monitor answers "what is out
- * there, and how much of it can we use". Their own containers so each keeps its
- * own redraw, and so a deployment running no monitor draws nothing here instead
- * of an empty heading.
+ * ONE panel, and the monitor's is not missing — it is its own PAGE now, on its
+ * own port. Sync coverage answers "is the mirror keeping up", measured in
+ * events; the monitor answers "what is out there, and how much of it can we
+ * use", measured in relay urls. An operator arrives with one of those two
+ * questions, and two pages are what let them stop reading at the answer.
  */
 const PANELS = [
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync ? [syncCard(doc.sync)] : []) },
-  { name: "monitor", reads: ["sync"], build: (doc) => (doc.sync ? [monitorCard(doc.sync)].filter(Boolean) : []) },
 ];
 
 mountStatsPage({

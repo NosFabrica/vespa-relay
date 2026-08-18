@@ -127,6 +127,7 @@ class SyncStatusSiteTest {
                 "/web/shared/stats.css",
                 "/web/shared/statspage.js",
                 "/web/shared/page.js",
+                "/web/shared/processors.js",
                 "/web/shared/sync.js",
                 "/web/sync/cards.js",
             )

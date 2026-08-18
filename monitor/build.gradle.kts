@@ -18,7 +18,14 @@ dependencies {
     api(project(":peers"))
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
+    // This plane serves its own status page: the four pass rows and the per-url
+    // verdicts they sign. api because MonitorStatus's document is published
+    // through a StatsSnapshot.
+    api(project(":web"))
     testImplementation(kotlin("test"))
+    // The page's routes and every module it imports are asserted in-process,
+    // the same way the relay's and the mirror's are.
+    testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.serialization.json)
 }
 

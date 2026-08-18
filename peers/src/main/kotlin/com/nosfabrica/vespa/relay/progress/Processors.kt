@@ -20,6 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.progress
 
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -879,6 +884,198 @@ class Processors {
     }
 
     companion object {
+        /**
+         * One processor row, as both status documents publish it.
+         *
+         * Here rather than in either plane's document builder because both
+         * planes register rows and both draw them with the same card: a second
+         * serializer would be a second shape for one thing, and the page could
+         * not tell which it was reading.
+         */
+        fun published(p: Snapshot): JsonObject =
+            buildJsonObject {
+                put("name", p.name)
+                put("phase", p.phase)
+                put("phaseForSec", p.phaseForSec)
+                // `passesRun`, not `passes`: a stream's `passes` is the LIST of
+                // walks still running, and one name for a list and a count is
+                // the kind of overload this document exists to stop making.
+                p.passes?.let { put("passesRun", it) }
+                p.lastPassAt?.let { put("lastPassAt", it) }
+                p.lastPassSec?.let { put("lastPassSec", it) }
+                // The countdown, and the reason a processor needs one at all:
+                // "the fold has decided nothing about this host" reads as broken
+                // until you know its clock is six hours long and the next turn
+                // is four of them away.
+                p.nextInSec?.let { put("nextInSec", it) }
+                // …and the countdown's opposite half: where the pass RUNNING
+                // right now has got to. The sweep unsets its due time while it
+                // runs, which is exactly why this had to exist: for the hours a
+                // stability pass takes, the row's only number disappeared and
+                // `measuring` stood alone with no size, no position and no end.
+                //
+                // NOT mutually exclusive, though a sweep makes them look it. A
+                // FAST LANE pass runs between sweeps — see [AliasMonitor.start]
+                // — so the fitness row can carry a position and a countdown at
+                // once, and both are true: the lane is measuring the urls named
+                // since its last look, and the sweep is still due when it says.
+                p.measuring?.let { m ->
+                    put(
+                        "measuring",
+                        buildJsonObject {
+                            put("unit", m.unit)
+                            put("attempted", m.attempted)
+                            put("toProbe", m.toProbe)
+                            // Absent until a unit has landed, and again once the
+                            // last one has — an estimate with nothing behind it
+                            // is the failure mode the paging ETA is remembered
+                            // for.
+                            m.etaSec?.let { put("etaSec", it) }
+                            // …and the number that tells "one url to go" from
+                            // "one url stuck", which `etaSec` alone cannot: it
+                            // reads 0 for both. See
+                            // [Processors.Measuring.quietForSec].
+                            put("quietForSec", m.quietForSec)
+                        },
+                    )
+                }
+                // WHICH urls the pass is holding, and what each is doing with
+                // its permit. The counts never said: a fitness pass held one
+                // url of 12,374 for 74 minutes and the url was not nameable
+                // from anywhere in this document, the log, or a thread dump — a
+                // suspended coroutine has no frame. See [Processors.Holding],
+                // and note the order is longest-held FIRST, which is the
+                // reverse of a stream's [InFlight].
+                p.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { f ->
+                    put(
+                        "inFlight",
+                        buildJsonObject {
+                            putJsonArray("relays") {
+                                for (r in f.relays) {
+                                    add(
+                                        buildJsonObject {
+                                            put("relay", r.relay)
+                                            put("heldForSec", r.heldForSec)
+                                            // WHICH STEP, in the pass's own
+                                            // words. The clock says how long;
+                                            // only this says what for.
+                                            put("stage", r.stage)
+                                        },
+                                    )
+                                }
+                            }
+                            // Never silent, for [InFlight]'s reason: a list
+                            // that does not disclose its truncation reads as
+                            // the whole answer.
+                            put("omitted", f.omitted)
+                        },
+                    )
+                }
+                for (c in p.counts) put(c.name, c.value)
+                // WHAT A TOTAL IS MADE OF. `rejected` is the largest number this
+                // router publishes and the least readable one: a mirror is
+                // offered the same event once per relay holding it, so rejecting
+                // most of what arrives is the pipeline working. The split is
+                // what says so.
+                p.reasons.takeIf { it.isNotEmpty() }?.let { rows ->
+                    put(
+                        "rejections",
+                        buildJsonObject {
+                            putJsonArray("reasons") {
+                                for (r in rows) {
+                                    add(
+                                        buildJsonObject {
+                                            put("reason", r.reason)
+                                            put("events", r.events)
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+                p.work.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("streams") {
+                        for (w in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("name", w.stream)
+                                    put("candidates", w.candidates)
+                                    // …and the share of them that arrived with
+                                    // nothing decided, which is what the card
+                                    // draws its position against. Absent from a
+                                    // pass that does not count it — see
+                                    // [Processors.Work.newUrls].
+                                    w.newUrls?.let { put("newUrls", it) }
+                                    // THE PARTITION, in precedence order:
+                                    // `candidates = foldedAway + consistent +
+                                    // inconsistent + unmeasured`, and
+                                    // `unmeasured` is the sum of the `undecided`
+                                    // rows' `urls`. Written at zero, because a
+                                    // member that appears only when non-zero
+                                    // cannot be summed by a reader that has not
+                                    // memorised the schema — but ABSENT from a
+                                    // pass that does not measure them at all,
+                                    // which is the fold. See [Processors.Work].
+                                    w.foldedAway?.let { put("foldedAway", it) }
+                                    w.consistent?.let { put("consistent", it) }
+                                    w.inconsistent?.let { put("inconsistent", it) }
+                                    // The one that says whether it is getting
+                                    // anywhere. See [Processors.Work].
+                                    put("unmeasured", w.unmeasured)
+                                    put("dialled", w.dialled)
+                                    put("decided", w.decided)
+                                    w.undecided.takeIf { it.isNotEmpty() }?.let { reasons ->
+                                        put(
+                                            "undecided",
+                                            buildJsonObject {
+                                                putJsonArray("reasons") {
+                                                    for (u in reasons) {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("reason", u.reason)
+                                                                u.parent?.let { put("parent", it) }
+                                                                // Urls first: it is the count that
+                                                                // sums back to `unmeasured`, and
+                                                                // `hosts` beside it is the count
+                                                                // that names who to chase.
+                                                                put("urls", u.urls)
+                                                                put("hosts", u.hosts)
+                                                                u.examples.takeIf { it.isNotEmpty() }?.let { names ->
+                                                                    putJsonArray("examples") { for (h in names) add(h) }
+                                                                }
+                                                                // The widest few WITH counts, where the pass
+                                                                // counts urls. Ranked, and deliberately not
+                                                                // summing to the row — see [Processors.Undecided.top].
+                                                                u.top.takeIf { it.isNotEmpty() }?.let { rows ->
+                                                                    putJsonArray("top") {
+                                                                        for (h in rows) {
+                                                                            add(
+                                                                                buildJsonObject {
+                                                                                    put("host", h.host)
+                                                                                    put("urls", h.urls)
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                        )
+                                                    }
+                                                }
+                                                // Bounded like every other list
+                                                // here, and never silently.
+                                                put("omitted", w.undecidedOmitted)
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
         /** Registered, nothing said yet — the honest word before the first pass or the first tick. */
         const val STARTING = "starting"
 

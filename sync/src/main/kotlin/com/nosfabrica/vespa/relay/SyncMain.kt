@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.monitor.MonitorStatus
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.SyncProgress
@@ -62,6 +63,12 @@ private const val DEPLOY_RETRY_SECONDS = 5L
 private const val DEFAULT_STATUS_PORT = 7778
 
 /**
+ * …and the monitor's, one past it. Same reasoning: the pair is guessable from
+ * either end, and a page nobody opens costs a port and nothing else.
+ */
+private const val DEFAULT_MONITOR_STATUS_PORT = 7779
+
+/**
  * How often the status document is rebuilt.
  *
  * Thirty seconds, matched to the mirror's own progress tick: the document is a
@@ -88,6 +95,11 @@ private fun statusInterval(env: Map<String, String>): Long =
 private fun statusPage(): String =
     SyncStatus::class.java.getResourceAsStream("/sync_stats.html")?.use { it.readBytes().decodeToString() }
         ?: error("sync_stats.html is missing from the :sync jar — the status page cannot be served.")
+
+/** The monitor's page, off ITS module's classpath, on the same terms. */
+private fun monitorPage(): String =
+    MonitorStatus::class.java.getResourceAsStream("/monitor_stats.html")?.use { it.readBytes().decodeToString() }
+        ?: error("monitor_stats.html is missing from the :monitor jar — the monitor page cannot be served.")
 
 /**
  * Run the sync engine — "the router" — as its own process against a Vespa the
@@ -287,6 +299,17 @@ fun main() {
         env["SYNC_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("SYNC_STATUS_PORT='$it' is not a port number. Unset it to serve no status page.")
         } ?: DEFAULT_STATUS_PORT
+    // The monitor's page, on its own port. Its own rather than a second panel
+    // on the mirror's because it answers a different question — "what is out
+    // there, and how much of it can we use" against "is the mirror keeping up"
+    // — on a different clock and in a different unit. It is also what the
+    // eventual process split needs: when the plane moves into its own
+    // container, the port it is read at does not change.
+    val monitorPort =
+        env["MONITOR_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toIntOrNull() ?: error("MONITOR_STATUS_PORT='$it' is not a port number. Set it to 0 to serve no monitor page.")
+        } ?: DEFAULT_MONITOR_STATUS_PORT
+
     val statusSite =
         if (statusPort <= 0) {
             System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
@@ -300,7 +323,7 @@ fun main() {
             // this pass reads maps that are already populated, so there is no
             // reason for a reader to wait a whole interval for them.
             status.publish()
-            StatusRollup(status, everySeconds).start() to
+            StatusRollup("sync", everySeconds, status::publish).start() to
                 serveStatusSite(
                     port = statusPort,
                     page = statusPage(),
@@ -312,12 +335,39 @@ fun main() {
         println("vespa-sync status page on http://localhost:$statusPort/ (refreshed every ${statusInterval(env)}s)")
     }
 
+    // …and the monitor's, over ITS OWN report. Built from the engine because
+    // this process composes the two planes; the document is the monitor's, and
+    // the day the plane moves into its own container this block moves with it
+    // unchanged.
+    val monitorSite =
+        if (monitorPort <= 0) {
+            System.err.println("router: MONITOR_STATUS_PORT=$monitorPort — no monitor page; what this router has decided about each relay url will be visible only in the signed records")
+            null
+        } else {
+            val monitorSnapshot = StatsSnapshot(env["MONITOR_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
+            val everySeconds = statusInterval(env)
+            val monitorStatus = engine.monitorStatus(everySeconds, relayUrl.url)
+
+            fun publish() = monitorSnapshot.publish(monitorStatus.document())
+            publish()
+            StatusRollup("monitor", everySeconds, ::publish).start() to
+                serveStatusSite(
+                    port = monitorPort,
+                    page = monitorPage(),
+                    snapshot = monitorSnapshot,
+                    icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
+                )
+        }
+    if (monitorSite != null) {
+        println("vespa-sync monitor page on http://localhost:$monitorPort/")
+    }
+
     Runtime.getRuntime().addShutdownHook(
         Thread {
             // Before the engine: the page reads state the engine is about to
             // stop updating, and answering a request with a half-torn-down
             // document is worse than refusing the connection.
-            statusSite?.let { (rollup, server) ->
+            listOfNotNull(statusSite, monitorSite).forEach { (rollup, server) ->
                 rollup.close()
                 server.stop(1_000, 2_000)
             }

@@ -77,7 +77,15 @@ import { fileURLToPath } from "url";
 
 let failed = 0;
 for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "source.test.mjs"]) {
-  const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
+  // --import webroot.mjs: the pages' assets are spread across four modules and
+  // resolved off the CLASSPATH by the server. Node resolves against the file on
+  // disk, so a shared module imported from a service's own is a path that does
+  // not exist. See webroot.mjs.
+  const r = spawnSync(
+    process.execPath,
+    ["--import", fileURLToPath(new URL("webroot.mjs", import.meta.url)), fileURLToPath(new URL(t, import.meta.url))],
+    { stdio: "inherit" },
+  );
   if (r.status !== 0) failed++;
 }
 process.exit(failed ? 1 : 0);

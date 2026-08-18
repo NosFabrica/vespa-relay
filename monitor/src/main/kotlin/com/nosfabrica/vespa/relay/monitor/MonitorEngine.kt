@@ -84,7 +84,15 @@ class MonitorEngine(
      * so every pass here is absent rather than idle, and the rows say `off`.
      */
     private val signer: NostrSigner?,
-    private val processors: Processors,
+    /**
+     * THIS PLANE'S OWN report, not the mirror's.
+     *
+     * It used to be one shared `Processors`, so both planes' rows landed in one
+     * document and the page had to split them apart again by name
+     * (`splitProcessors` in the JS, which is gone with it). Each plane
+     * publishes what it runs; a row belongs to the object that registered it.
+     */
+    private val processors: Processors = Processors(),
     /**
      * WHO IS STILL USING THIS SOCKET — shared with the mirror, not owned here.
      * A probe pass releasing a url must not close a socket a stream is still
@@ -546,4 +554,17 @@ class MonitorEngine(
          */
         const val FITNESS_PROCESSOR = "fitness"
     }
+
+    /**
+     * This plane's own status document, over its own [Processors].
+     *
+     * Handed out rather than built by the caller because the rows are private
+     * to this object — which is the property that makes the page survive the
+     * process split unchanged: whatever composes the two engines today, the
+     * monitor's page reads the monitor's own report.
+     */
+    fun status(
+        everySeconds: Long,
+        relayUrl: String?,
+    ): MonitorStatus = MonitorStatus(processors, everySeconds, relayUrl)
 }
