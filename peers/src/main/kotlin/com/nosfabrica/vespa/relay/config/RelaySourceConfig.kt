@@ -79,7 +79,7 @@ data class RelayDiscoveryConfig(
      * [com.nosfabrica.vespa.relay.peers.RelayDiscovery.discover] —
      * which is why it is opt-in and null by default. Duplicate urls are
      * handled downstream by
-     * [com.nosfabrica.vespa.relay.monitor.RelayAliases] either way;
+     * `RelayAliases` either way;
      * this is only about refusing to read an implausible list at all.
      */
     val maxRelaysPerList: Int? = null,
@@ -152,7 +152,7 @@ class RelayExcludes(
  * port and 362 of them duplicated a portless url already in the set.
  *
  * Done here rather than left to
- * [com.nosfabrica.vespa.relay.monitor.RelayAliases] because it needs
+ * `RelayAliases` because it needs
  * no evidence: 443 on `wss` and 80 on `ws` are the scheme's own default, and
  * dropping them is what every URL parser already does. The fold is for urls
  * that only MEASUREMENT can prove equal.
