@@ -168,7 +168,14 @@ class SyncProgressTest {
                 lastPassAt = 900,
                 lastPassSec = 9_720,
                 nextInSec = null,
-                measuring = Processors.Measuring(unit = Processors.UNIT_URL, attempted = 604, toProbe = 4_728, etaSec = 2_724),
+                measuring =
+                    Processors.Measuring(
+                        unit = Processors.UNIT_URL,
+                        attempted = 604,
+                        toProbe = 4_728,
+                        etaSec = 2_724,
+                        quietForSec = 3,
+                    ),
                 work = emptyList(),
                 counts = emptyList(),
             )
@@ -183,6 +190,11 @@ class SyncProgressTest {
         assertEquals(604L, measuring["attempted"]!!.jsonPrimitive.long)
         assertEquals(4_728L, measuring["toProbe"]!!.jsonPrimitive.long)
         assertEquals(2_724L, measuring["etaSec"]!!.jsonPrimitive.long)
+        // …and the reading `etaSec` cannot give. A pass one url from done and a
+        // pass whose last url has wedged both report `~0s left`; only this
+        // separates them, so it rides beside the estimate rather than instead
+        // of it.
+        assertEquals(3L, measuring["quietForSec"]!!.jsonPrimitive.long)
     }
 
     @Test

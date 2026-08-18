@@ -242,10 +242,24 @@ internal object SyncVocabulary {
             )
             put(
                 "quietForSec",
-                "How long since that leg last received anything, or since it was claimed if it never has. THE ONE " +
-                    "THAT DECIDES what a long-held slot means: events still landing is a relay with a backlog and a " +
-                    "slot well spent, this number climbing is a walk that is not going to end. Both look identical " +
-                    "from the durations alone.",
+                "HOW LONG SINCE THE LAST THING THIS ROW COUNTS ARRIVED, on both of the rows that publish it. On a " +
+                    "stream leg it is events: how long since that leg last received one, or since it was claimed if " +
+                    "it never has, and it is THE ONE THAT DECIDES what a long-held slot means — events still landing " +
+                    "is a relay with a backlog and a slot well spent, this number climbing is a walk that is not " +
+                    "going to end. On a processor\'s `measuring` it is units of the pass: how long since one last " +
+                    "ENDED, which is what tells a pass about to finish from one that has stopped. `etaSec` cannot — " +
+                    "it is honest arithmetic on the rate so far, so a pass whose last url has wedged reports `0` and " +
+                    "every number on the row agrees with every other one. A production fitness pass read `12373 of " +
+                    "12374, ~0s left` for 74 minutes.",
+            )
+            put(
+                "stage",
+                "WHICH STEP a probe pass is on for the url it is holding, in the pass\'s own words — `pre-probe`, " +
+                    "`nip-11 document`, `ask ladder`, `neg-open` for fitness, `paired walk` for the stability gate, " +
+                    "`fingerprint` for the fold. `heldForSec` beside it says how long; only this says what for, and " +
+                    "the steps stall for unrelated reasons: a name that will not resolve stalls the pre-probe, a " +
+                    "relay that never stops sending stalls the ladder, a full ingest queue stalls whichever step is " +
+                    "delivering. It is the stream leg\'s `doing` for a job that is a ladder rather than a transfer.",
             )
             put(
                 "doing",

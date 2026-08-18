@@ -130,6 +130,107 @@ class ProcessorsTest {
         assertEquals(10, run.toProbe)
         // Ten seconds for two urls is five seconds each, and eight are left.
         assertEquals(40L, run.etaSec)
+        // …and the reading the estimate cannot give. Timed from the last unit
+        // that ENDED, so it is zero the moment one does and climbs from there.
+        assertEquals(0L, run.quietForSec)
+    }
+
+    @Test
+    fun `a pass that has stopped is told from one about to finish, which the estimate cannot do`() {
+        // The production shape: `attempted: 12,373 of 12,374, etaSec: 0` held
+        // for 74 minutes on one wedged url. The estimate was CORRECT arithmetic
+        // — one unit left at the rate so far rounds to nothing — and every
+        // number on the row agreed with every other one. Nothing published said
+        // the pass had stopped.
+        val p = Processors()
+        val fitness = p.of("fitness")
+        fitness.begin(nowMs = 0)
+        // The production numbers, so the estimate is the one that was actually
+        // published: 12,373 units in the first second of the pass leaves one,
+        // and one unit at that rate rounds to no seconds at all.
+        fitness.measuring(12_374, Processors.UNIT_URL, nowMs = 0)
+        fitness.attempted(12_373, nowMs = 1_000)
+
+        val stalled = p.snapshot(nowMs = 4_455_000).single().measuring!!
+        assertEquals(0L, stalled.etaSec, "the estimate is still honest arithmetic, and still says nothing")
+        assertEquals(4_454L, stalled.quietForSec, "…so this is the one member that separates the two readings")
+    }
+
+    @Test
+    fun `a pass names the urls it is holding, longest first, and lets go of them with the pass`() {
+        // The whole diagnostic gap this closes: the url that held a fitness
+        // pass for 74 minutes was not nameable from the progress document, the
+        // log, or a thread dump — a suspended coroutine has no frame. The pass
+        // knew it the entire time.
+        val p = Processors()
+        val fitness = p.of("fitness")
+        fitness.begin(nowMs = 0)
+        fitness.holding("wss://slow.example/", "ask ladder", nowMs = 1_000)
+        fitness.holding("wss://quick.example/", "pre-probe", nowMs = 3_000)
+
+        val held = p.snapshot(nowMs = 5_000).single().inFlight!!
+        // Longest-held FIRST, which is the reverse of a stream's legs: there,
+        // held is not risk; here every leg is bounded by a deadline, so a long
+        // one is the anomaly and belongs at the top.
+        assertEquals(listOf("wss://slow.example/", "wss://quick.example/"), held.relays.map { it.relay })
+        assertEquals(4L, held.relays[0].heldForSec)
+        assertEquals("ask ladder", held.relays[0].stage)
+        assertEquals(0, held.omitted)
+
+        // A later call MOVES THE STEP AND KEEPS THE CLOCK. A leg that restarted
+        // its clock at every rung would report the last step's age as its own,
+        // which is exactly the number being looked up.
+        fitness.holding("wss://slow.example/", "neg-open", nowMs = 4_000)
+        val moved =
+            p
+                .snapshot(nowMs = 5_000)
+                .single()
+                .inFlight!!
+                .relays
+                .first()
+        assertEquals("neg-open", moved.stage)
+        assertEquals(4L, moved.heldForSec)
+
+        fitness.released("wss://slow.example/")
+        assertEquals(
+            listOf("wss://quick.example/"),
+            p
+                .snapshot(nowMs = 5_000)
+                .single()
+                .inFlight!!
+                .relays
+                .map { it.relay },
+        )
+
+        // Nothing outlives the pass. A row left standing under `idle` would be
+        // a fault report about a leg that is not running.
+        fitness.finish(nowMs = 6_000)
+        assertNull(p.snapshot(nowMs = 7_000).single().inFlight)
+    }
+
+    @Test
+    fun `a wide pass publishes every url it is holding, not a head of them`() {
+        // A row here is a JOB, so the monitor's `dialConcurrency` already
+        // bounds the set — which puts it on the far side of this repo's rule
+        // that a cap is for a list the NETWORK can grow. It was cut to twenty
+        // once, on the argument that most rows are ordinary dials a second old:
+        // true of the ROWS and false of the LIST, since `omitted: 480` says
+        // nothing about whether those 480 are healthy while the whole set
+        // sorted by age is the distribution, and the distribution is what an
+        // operator is reading the list for.
+        val p = Processors()
+        val fitness = p.of("fitness")
+        fitness.begin(nowMs = 0)
+        for (i in 0 until 500) {
+            fitness.holding("wss://r$i.example/", "ask ladder", nowMs = 1_000L + i)
+        }
+
+        val held = p.snapshot(nowMs = 2_000).single().inFlight!!
+        assertEquals(500, held.relays.size)
+        assertEquals(0, held.omitted, "the member stays as the schema's promise; nothing is being dropped")
+        // …and the order is still oldest first, so the wedged leg is at the top
+        // for whatever the page chooses to draw.
+        assertEquals("wss://r0.example/", held.relays.first().relay)
     }
 
     @Test

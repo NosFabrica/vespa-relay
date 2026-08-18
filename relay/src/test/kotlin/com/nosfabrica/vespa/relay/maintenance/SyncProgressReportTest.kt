@@ -659,6 +659,58 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `a pass republishes when a unit last landed, and which urls it is holding`() {
+        // The pair that made a 74-minute stall readable. `etaSec` reads 0 both
+        // for a pass one url from done and for a pass whose last url has
+        // wedged, and the url doing the holding was not nameable from this
+        // document at all — so one member says the pass has stopped and the
+        // other says which relay stopped it.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [
+                   {"name": "fitness", "phase": "measuring",
+                    "measuring": {"unit": "url", "attempted": 12373, "toProbe": 12374, "etaSec": 0, "quietForSec": 4454},
+                    "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454, "stage": "ask ladder",
+                                             "invented": 3},
+                                            {"heldForSec": 12}],
+                                 "omitted": 7}},
+                   {"name": "consistency", "phase": "measuring",
+                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22}},
+                   {"name": "ingest", "phase": "running", "queued": 12}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val rows = out["processors"] as JsonArray
+
+        assertEquals(
+            4_454L,
+            rows[0]
+                .jsonObject["measuring"]!!
+                .jsonObject["quietForSec"]!!
+                .jsonPrimitive.long,
+        )
+        assertNull(
+            rows[1].jsonObject["measuring"]!!.jsonObject["quietForSec"],
+            "absent is a router that predates the member, and a position without it is still a position",
+        )
+
+        val held = rows[0].jsonObject["inFlight"]!!.jsonObject
+        val relays = held["relays"] as JsonArray
+        assertEquals(1, relays.size, "a row that names no url says nothing and cannot be looked up")
+        assertEquals("wss://wedged.example/", relays[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(4_454L, relays[0].jsonObject["heldForSec"]!!.jsonPrimitive.long)
+        assertEquals("ask ladder", relays[0].jsonObject["stage"]!!.jsonPrimitive.content)
+        assertNull(relays[0].jsonObject["invented"], "a member this side does not name is not passed through")
+        // The unreadable row is COUNTED rather than dropped silently, which is
+        // the whole contract `omitted` carries everywhere else in this object.
+        assertEquals(8L, held["omitted"]!!.jsonPrimitive.long)
+
+        assertNull(rows[2].jsonObject["inFlight"], "a processor holding nothing publishes no list")
+    }
+
+    @Test
     fun `the round-up's row keeps its position and the yield it ends with`() {
         // THE FIVE MINUTES NOTHING PUBLISHED. The derivation walks the store
         // for every url the relay lists name, and until it had a row of its own
@@ -817,14 +869,13 @@ class SyncProgressReportTest {
 
     @Test
     fun `every reason the gate can reach survives this side, and its hosts are ranked as sent`() {
-        // THE CAP THAT WAS ONE SHORT. This side bounds what the router already
-        // bounded, and the two numbers have to be read together: the router
-        // publishes up to `Processors.MAX_UNDECIDED_REASONS` (8) and the
-        // stability gate can reach seven of them, while this side cut at six.
-        // Cutting BELOW the router is not bounding, it is dropping — and the
-        // dropped reason's urls then land in the card's `not accounted for`
-        // slice, which reports an arithmetic fault against a document that was
-        // complete when it arrived.
+        // THE CAP THAT WAS ONE SHORT — twice, at six and at eight, and it is
+        // gone from both sides now. A reason is an enum value in the router's
+        // source, so the network cannot grow this list and a number beside it
+        // could only ever pick which reasons an operator is not shown. Cutting
+        // was not bounding, it was dropping: the dropped reason's urls land in
+        // the card's `not accounted for` slice, which reports an arithmetic
+        // fault against a document that was complete when it arrived.
         val reasons =
             listOf(
                 "declined by our own transport",

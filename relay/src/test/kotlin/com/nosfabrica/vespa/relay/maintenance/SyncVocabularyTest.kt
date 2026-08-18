@@ -146,7 +146,9 @@ class SyncVocabularyTest {
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 900,
-                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300},
+                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300, "quietForSec": 4},
+                    "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454,
+                                             "stage": "paired walk"}], "omitted": 2},
                     "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
@@ -252,6 +254,10 @@ class SyncVocabularyTest {
                     "events",
                     "quietForSec",
                     "doing",
+                    // …and `doing`'s counterpart on the other kind of held row:
+                    // a probe leg is a ladder, not a transfer, so what it
+                    // publishes is which STEP it is on.
+                    "stage",
                     "pagingUntil",
                     "omitted",
                     "owner",

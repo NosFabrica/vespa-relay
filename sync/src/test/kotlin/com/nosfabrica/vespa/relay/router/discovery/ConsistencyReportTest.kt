@@ -290,24 +290,43 @@ class ConsistencyReportTest {
         }
 
     @Test
-    fun `every row the gate can emit fits under the published cap`() =
-        runBlocking {
-            // THE CAP HAS BEEN ONE SHORT TWICE. Truncating here does not shorten
-            // a list, it breaks the property the url counts exist for — the rows
-            // sum to `unmeasured` — and the shortfall surfaces on the card as
-            // `not accounted for` in the FAULT tone, an arithmetic error
-            // reported against a pass that was working perfectly.
-            //
-            // Six reasons, plus the seven causes `never answered a REQ` splits
-            // into, is thirteen rows. Asserted against the enums rather than
-            // against today's output, so naming an eighth cause fails here
-            // rather than on a live card.
-            val widest = (ConsistencyPass.Unmeasured.entries.size - 1) + Silence.entries.size
-            assertTrue(
-                widest <= Processors.MAX_UNDECIDED_REASONS,
-                "the gate can emit $widest rows and the cap keeps ${Processors.MAX_UNDECIDED_REASONS}",
-            )
-        }
+    fun `every row the gate can emit survives, because nothing cuts them any more`() {
+        // THE CAP THAT USED TO STAND HERE WAS ONE SHORT TWICE, at six and at
+        // eight, both times because a reason list grew and the number did not.
+        // It could never have been anything else: a reason is an ENUM VALUE in
+        // this source, so the network cannot grow the list, and a cap on a list
+        // our own source bounds only picks which reasons an operator is not
+        // shown. It also broke the property the url counts exist for — the rows
+        // sum to `unmeasured`, so a cut tail surfaced on the card as `not
+        // accounted for` in the FAULT tone, an arithmetic error reported
+        // against a pass that was working perfectly.
+        //
+        // Every reason the gate can emit, from the enums rather than from
+        // today's output: each `Unmeasured` except the one `Silence` refines,
+        // plus every cause it splits into.
+        val widest = (ConsistencyPass.Unmeasured.entries.size - 1) + Silence.entries.size
+        val processors = Processors()
+        processors.of("consistency").record(
+            Processors.Work(
+                stream = "all streams",
+                candidates = widest,
+                unmeasured = widest,
+                dialled = widest,
+                decided = 0,
+                undecided = (0 until widest).map { Processors.Undecided(reason = "r$it", hosts = 1, urls = 1) },
+            ),
+        )
+
+        val row =
+            processors
+                .snapshot()
+                .single()
+                .work
+                .single()
+        assertEquals(widest, row.undecided.size, "a list an enum bounds must not be cut by a number beside it")
+        assertEquals(0, row.undecidedOmitted, "…and nothing is being dropped for the member to disclose")
+        assertEquals(row.unmeasured, row.undecided.sumOf { it.urls }, "…so the rows still sum to what they account for")
+    }
 
     @Test
     fun `the candidate set divides exactly once`() =

@@ -35,6 +35,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -242,6 +243,13 @@ class FitnessPass(
         // REQ, or answer every REQ and serve no document at all.
         val readings = ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>()
         val downloaded = AtomicInteger()
+        // Urls this pass gave up on rather than measured — see
+        // [AliasProbe.deadlineMs]. The count is the fact; the names are what
+        // made the 74-minute stall unnameable without them, and they are
+        // bounded because a pass that abandons everything must not turn one
+        // fault into 12,374 log lines.
+        val abandonedCount = AtomicInteger()
+        val abandoned = ConcurrentHashMap.newKeySet<String>()
         try {
             // THE FREE REFUSALS FIRST. Both are standing verdicts other passes
             // already paid dials for; turning them into a status costs a store
@@ -274,38 +282,37 @@ class FitnessPass(
                 for (url in toDial) {
                     launch {
                         gate.withPermit {
-                            val reachable =
-                                try {
-                                    canDial(url)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    outcomes[url] = Outcome(Verdict.DEAD, "the reachability probe itself failed: ${e.javaClass.simpleName}")
-                                    return@withPermit
-                                }
-                            if (!reachable) {
-                                outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
-                                return@withPermit
-                            }
-                            // The relay's own account of itself, and the
-                            // handshake that carries it — asked BEFORE the
-                            // socket is claimed, because it is an ordinary
-                            // HTTP call to the same host and has nothing to do
-                            // with the websocket refcount.
-                            document?.read(url)?.let { readings[url] = it }
-                            sockets.claim(url)
-                            try {
-                                outcomes[url] =
-                                    dialVerdict(url, anchor) { event ->
-                                        downloaded.incrementAndGet()
-                                        onEvent(event)
+                            // THE DEADLINE, AND IT IS INSIDE THE PERMIT.
+                            //
+                            // Around the `launch` instead, it would be counting
+                            // the wait for one of `concurrency` permits — which
+                            // on 12,374 urls at 500 permits is most of a job's
+                            // life, is the pass's own shape rather than any
+                            // relay's, and would cut the urls at the back of the
+                            // queue first. Here it bounds exactly the steps this
+                            // job owns: the pre-probe, the document, the ladder,
+                            // the NEG-OPEN. See [AliasProbe.deadlineMs] for what
+                            // it is made of and why the job needed one at all.
+                            val ran =
+                                withTimeoutOrNull(probe.deadlineMs(url)) {
+                                    try {
+                                        measureOne(url, anchor, canDial, sockets, outcomes, readings, downloaded, onEvent)
+                                    } finally {
+                                        // Whatever ended it — a verdict, a
+                                        // throw, the deadline, a shutdown — the
+                                        // url is no longer held.
+                                        progress.released(url.url)
                                     }
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                outcomes[url] = Outcome(Verdict.SILENT, "the dial threw ${e.javaClass.simpleName} before the relay said anything")
-                            } finally {
-                                sockets.release(url)
+                                }
+                            if (ran == null) {
+                                // NO VERDICT IS WRITTEN. Our instrument gave up;
+                                // that is not a fact about the relay, and
+                                // publishing one would sign our own timeout as
+                                // its grade — see [AliasProbe.deadlineMs]. It
+                                // arrives at the next pass exactly as it arrived
+                                // at this one.
+                                if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
+                                abandonedCount.incrementAndGet()
                             }
                         }
                         // FROM THE JOB'S COMPLETION, for the reason the other
@@ -331,11 +338,79 @@ class FitnessPass(
                 )
             }
 
-            report(label, candidates.size, outcomes.values.groupingBy { it.verdict }.eachCount(), startedMs)
+            report(
+                label,
+                candidates.size,
+                outcomes.values.groupingBy { it.verdict }.eachCount(),
+                startedMs,
+                abandonedCount.get(),
+                abandoned,
+            )
         } finally {
             progress.finish()
         }
         return downloaded.get()
+    }
+
+    /**
+     * ONE URL'S WHOLE JOB, extracted so the deadline above has something to
+     * wrap and so each step can say which step it is.
+     *
+     * The steps are unchanged and so is their order — the pre-probe, then the
+     * document, then the dial — and only the last of them claims a socket: the
+     * NIP-11 ask is an ordinary HTTP call to the same host and has nothing to
+     * do with the websocket refcount.
+     *
+     * [Processors.Handle.holding] is called at each boundary because the steps
+     * fail for unrelated reasons and a held url that cannot say which one it is
+     * on names half a fault. A suspended coroutine has no stack frame, so this
+     * is the only place the answer can come from.
+     */
+    private suspend fun measureOne(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        sockets: AliasFolding.Sockets,
+        outcomes: ConcurrentHashMap<NormalizedRelayUrl, Outcome>,
+        readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
+        downloaded: AtomicInteger,
+        onEvent: suspend (Event) -> Unit,
+    ) {
+        progress.holding(url.url, STAGE_REACHABILITY)
+        val reachable =
+            try {
+                canDial(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                outcomes[url] = Outcome(Verdict.DEAD, "the reachability probe itself failed: ${e.javaClass.simpleName}")
+                return
+            }
+        if (!reachable) {
+            outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
+            return
+        }
+        // The relay's own account of itself, and the handshake that carries it
+        // — asked BEFORE the socket is claimed, because it is an ordinary HTTP
+        // call to the same host and has nothing to do with the websocket
+        // refcount.
+        progress.holding(url.url, STAGE_DOCUMENT)
+        document?.read(url)?.let { readings[url] = it }
+        progress.holding(url.url, STAGE_LADDER)
+        sockets.claim(url)
+        try {
+            outcomes[url] =
+                dialVerdict(url, anchor) { event ->
+                    downloaded.incrementAndGet()
+                    onEvent(event)
+                }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            outcomes[url] = Outcome(Verdict.SILENT, "the dial threw ${e.javaClass.simpleName} before the relay said anything")
+        } finally {
+            sockets.release(url)
+        }
     }
 
     /**
@@ -396,8 +471,41 @@ class FitnessPass(
             return when (val cause = Silence.of(lastReason)) {
                 Silence.TIMEOUT, Silence.RATE_LIMITED, Silence.UNKNOWN -> {
                     if (lastReason == null) {
-                        Outcome(Verdict.RESTRICTED, "answered no shape this router can send; see the ask ladder")
+                        // NOTHING CAME BACK AT ALL. No EOSE, no CLOSED, no
+                        // transport failure — every rung's window simply
+                        // lapsed, which is [Verdict.SILENT] word for word.
+                        //
+                        // This branch published `restricted` for eleven
+                        // months, and the two were swapped: `restricted` means
+                        // the relay ANSWERED and none of the answers was a
+                        // window, so it needs a terminal reason to be true and
+                        // this is the one case that has none. Measured on
+                        // `quietplace.xyz`, which accepts a socket, serves a
+                        // NIP-11 document, and then answers no REQ and no
+                        // NEG-OPEN ever: it was being published to the whole
+                        // network as a relay with a narrow query policy.
+                        //
+                        // [Verdict.RESTRICTED] is left with NO PATH TO IT, and
+                        // that is the honest state rather than a regression to
+                        // hide: the case it describes — a relay that answers
+                        // only shapes we cannot send — currently grades
+                        // `prime`, because a CLOSED refusal makes the relay
+                        // "speak" and an empty window is deliberately read as a
+                        // drain rather than as a refusal. Telling those two
+                        // empties apart needs a signal `AliasProbe.Page` does
+                        // not carry, so it is a change to the probe and not to
+                        // this line. Manufacturing a path here out of an
+                        // unrecognised transport string would only publish
+                        // OUR socket failing as the relay having a query
+                        // policy, which is the same class of mistake this
+                        // branch is being fixed for.
+                        Outcome(Verdict.SILENT, "connected, then nothing: no EOSE and no CLOSED on any rung of the ladder")
                     } else {
+                        // A reason we could not place. Still silence — and note
+                        // it can only be a TRANSPORT word: quartz reports a
+                        // reason with no events exclusively for `cannot:`, so
+                        // anything the relay itself said made it "speak" and
+                        // never reaches here.
                         Outcome(Verdict.SILENT, cause.reason)
                     }
                 }
@@ -428,6 +536,7 @@ class FitnessPass(
         // exception is it declining. Anything else proves nothing and writes
         // nothing, so a flaky moment cannot demote a reconciling relay.
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
+        progress.holding(url.url, STAGE_NIP77)
         val nip77 =
             try {
                 client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
@@ -507,11 +616,26 @@ class FitnessPass(
         candidates: Int,
         byVerdict: Map<Verdict, Int>,
         startedMs: Long,
+        abandonedCount: Int,
+        abandoned: Set<String>,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
             "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts",
         )
+        // ON ITS OWN LINE, and only when there were any. These urls carry no
+        // verdict at all, so they are absent from the counts above by
+        // construction — a pass that abandoned a hundred urls would otherwise
+        // report a clean partition over the ones it managed to reach. Named,
+        // because the whole reason this line exists is that the held url was
+        // not nameable from anywhere in the system.
+        if (abandonedCount > 0) {
+            val named = abandoned.sorted().joinToString()
+            val more = if (abandonedCount > abandoned.size) " (+${abandonedCount - abandoned.size} more)" else ""
+            System.err.println(
+                "router: fitness [$label] — gave up on $abandonedCount url(s) at the per-url deadline, no verdict written: $named$more",
+            )
+        }
         progress.counts {
             Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } }
         }
@@ -548,24 +672,37 @@ class FitnessPass(
             record: RelayVerdictRecord,
             author: String,
         ): Int {
-            val stale =
-                store
-                    .query<RelayDiscoveryEvent>(
-                        Filter(
-                            kinds = listOf(RelayDiscoveryEvent.KIND),
-                            authors = listOf(author),
-                            tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
-                        ),
-                    ).filter { event ->
-                        // A record with NO grade of ours is not a stale grade,
-                        // it is somebody else's label that happened to carry
-                        // one of our values — the tag index answers on the
-                        // value alone, so the query can return those. Retiring
-                        // on a null here would edit records we have no verdict
-                        // on at all.
-                        val grade = ourGrade(event) ?: return@filter false
-                        grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH
-                    }.mapNotNull { it.relay() }
+            // PAGED, because the epoch cannot be asked for in the filter.
+            //
+            // The tag index answers on the label's VALUE, and the epoch lives
+            // further along the same tag — so this query returns every record
+            // carrying any of our grades and the epoch is decided here, one
+            // event at a time. That is the whole corpus of graded urls (12,374
+            // on a staging deployment), materialized at boot, inside a
+            // `runBlocking` that the roster's first rebuild waits on. Paging
+            // bounds what is alive at once to [SCAN_PAGE] rather than to how
+            // many relays this router has ever graded.
+            val stale = mutableListOf<NormalizedRelayUrl>()
+            RelayDiscovery.scan(
+                store,
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = listOf(author),
+                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
+                ),
+                SCAN_PAGE,
+            ) { event ->
+                val record = event as? RelayDiscoveryEvent ?: return@scan
+                // A record with NO grade of ours is not a stale grade, it is
+                // somebody else's label that happened to carry one of our
+                // values — the tag index answers on the value alone, so the
+                // query can return those. Retiring on a null here would edit
+                // records we have no verdict on at all.
+                val grade = ourGrade(record) ?: return@scan
+                if (grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH) {
+                    record.relay()?.let(stale::add)
+                }
+            }
             retire(record, stale)
             if (stale.isNotEmpty()) {
                 System.err.println(
@@ -603,20 +740,22 @@ class FitnessPass(
             record: RelayVerdictRecord,
             author: String,
         ): Int {
-            val legacy =
-                store
-                    .query<RelayDiscoveryEvent>(
-                        Filter(
-                            kinds = listOf(RelayDiscoveryEvent.KIND),
-                            authors = listOf(author),
-                            // THE OLD BUILD'S VOCABULARY, which is not this
-                            // one — see [LEGACY_GRADES]. Querying today's
-                            // values here missed every `syncable` record in
-                            // the store, i.e. the only admitting grade and the
-                            // largest group of them.
-                            tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
-                        ),
-                    ).mapNotNull { it.relay() }
+            // Paged for [retireStaleEpochs]'s reason: a boot-time walk of our
+            // own records must not be bounded by how many of them there are.
+            val legacy = mutableListOf<NormalizedRelayUrl>()
+            RelayDiscovery.scan(
+                store,
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = listOf(author),
+                    // THE OLD BUILD'S VOCABULARY, which is not this one — see
+                    // [LEGACY_GRADES]. Querying today's values here missed
+                    // every `syncable` record in the store, i.e. the only
+                    // admitting grade and the largest group of them.
+                    tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
+                ),
+                SCAN_PAGE,
+            ) { event -> (event as? RelayDiscoveryEvent)?.relay()?.let(legacy::add) }
             retire(record, legacy)
             if (legacy.isNotEmpty()) {
                 System.err.println(
@@ -735,5 +874,43 @@ class FitnessPass(
          * say NEG-MSG is answered by the transfer's own fallback anyway.
          */
         const val NIP77_IDLE_MS = 10_000L
+
+        /**
+         * Records per page when the boot retractions walk our own corpus.
+         *
+         * Neither of them can ask its question in a filter — the epoch and the
+         * legacy tag are both decided per record — so both read every record
+         * carrying a grade and both used to do it in ONE unbounded query, at
+         * boot, inside the `runBlocking` the roster's first rebuild waits on.
+         * Paging bounds what is alive at once to this rather than to how many
+         * relays this router has ever graded.
+         */
+        const val SCAN_PAGE = 2_000
+
+        /**
+         * The steps one url's job passes through, published as a held leg's
+         * `stage` — see [Processors.Holding.Held.stage].
+         *
+         * The pass's own words for its own steps, so a reader can grep from the
+         * document to the line that was running. Deliberately not four verdict
+         * values: nothing here is ever published about a relay.
+         */
+        const val STAGE_REACHABILITY = "pre-probe"
+
+        const val STAGE_DOCUMENT = "nip-11 document"
+
+        const val STAGE_LADDER = "ask ladder"
+
+        const val STAGE_NIP77 = "neg-open"
+
+        /**
+         * How many abandoned urls a pass names in its log line.
+         *
+         * A ceiling, not a sample: the point of the line is that the url was
+         * unnameable, so it has to carry enough of them to act on while
+         * refusing to turn one systemic fault into a page of stderr. The count
+         * beside the names is always the whole truth.
+         */
+        const val MAX_ABANDONED_NAMED = 32
     }
 }

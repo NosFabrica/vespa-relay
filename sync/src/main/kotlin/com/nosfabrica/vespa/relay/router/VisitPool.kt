@@ -835,6 +835,12 @@ internal class VisitPool(
         val tail = tails.remove(url) ?: return
         runCatching { client.unsubscribe(tail.subId) }
         sockets.release(url)
+        // The revisit timer this url earned WHILE TAILED is now the wrong one:
+        // it was armed at [REVISIT_TAILED_MS] and this relay is on the
+        // [REVISIT_UNTAILED_MS] cadence from here. Dropping it lets the visit
+        // that follows arm the cadence the url actually has — see
+        // [VisitQueue.disarm].
+        queue.disarm(url)
         phasesChanged()
     }
 

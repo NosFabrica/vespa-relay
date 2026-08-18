@@ -27,6 +27,24 @@ package com.nosfabrica.vespa.relay.router
  * still delivering is never cut off however long its history takes. A
  * wall-clock deadline could only ever fire on the healthy case — one once
  * truncated four working upstreams at exactly its 4h mark.
+ *
+ * **THE SYNC PLANE'S BUDGET, AND THE MONITOR PLANE HAS A DIFFERENT ONE.** Every
+ * caller of this constant is a sync-plane transfer — `VisitPool`,
+ * `StaticBackfill`, `RetractionAudit`, `UpstreamPush`, `NegentropyPager` — while
+ * the probe passes derive theirs per url from `connectionTimeout` (20s by
+ * default) through [probeIdleMs], plus the Tor circuit budget where the url
+ * needs one. The two are deliberately different numbers, because they are
+ * sizing different things: this one is the silence a relay is allowed WHILE
+ * DELIVERING a history that may run for hours, and the probe's is the silence a
+ * relay is allowed while answering a single twenty-event ask that has no
+ * business taking longer than a handshake.
+ *
+ * The passes also carry something no caller of this constant does — a hard
+ * per-url wall clock, [AliasProbe.deadlineMs], sized as a multiple of the probe
+ * window above. That is not a disagreement with the paragraph above either: a
+ * probe is not a transfer, so cutting one costs a re-measure next pass rather
+ * than a truncated history, and a probe pass BLOCKS the roster every stream is
+ * built from while it runs.
  */
 internal const val NEG_IDLE_MS = 30_000L
 

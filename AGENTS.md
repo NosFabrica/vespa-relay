@@ -884,6 +884,77 @@ loader supplies. `VerdictSource` and its separate verified read are gone —
 they differed in the questions they were allowed to answer and in almost
 nothing else once the epoch and the tag-stamp freshness left.
 
+**NO PROBE PASS MAY JOIN ON ITS SLOWEST URL, and this is the rule to know
+before touching one.** The three monitor passes fan out with `coroutineScope`,
+which joins on every child — so one url that never returns holds the pass, and
+because a stream admits a relay only on a `prime` verdict and only the fitness
+pass writes one, it holds the whole dynamic mirror with it. Measured on staging:
+one url of 12,374 sat at `attempted: 12,373` for 74 minutes while `roster: 0`,
+`tails: 0` and three streams reported `0 certified relay(s)`. For scale, the
+same pass had cleared the first 11,879 urls in 37 minutes.
+
+Every outbound call the job makes was already bounded — a 5s TCP pre-probe, a
+10s NIP-11 document, an idle window per rung of the ask ladder, a 10s NEG-OPEN —
+and that is exactly the trap: **an idle window is not a wall clock.** Quartz says
+so in its own header for the call these walks are made of — *"there is no
+wall-clock ceiling parameter … a hard deadline composes at the call site"* — and
+two paths inside that fetch loop are outside the window by construction. A relay
+that never stops sending keeps the timeout disarmed (it is armed only when both
+channels are dry), and the suspending `onEvent` hook is deliberately run outside
+the timeout scope so a stalled write is not cancelled mid-event — which for this
+router means a full ingest queue blocks it.
+
+So every pass now puts `AliasProbe.deadlineMs` around its unit of work, and four
+things about it are load-bearing:
+
+- **It is derived from the very window it bounds** — `WINDOWS_PER_URL` (12) times
+  the url's own `probeIdleMs`. Sized from a constant it would cut every `.onion`
+  the fold measures, since a hidden service is allowed its circuit budget on top
+  of the clearnet one. Four minutes at the default `connectionTimeout = 20`,
+  against a job whose own bounds sum to about ninety seconds.
+- **It goes INSIDE `gate.withPermit`, never around the `launch`.** Out there it
+  would be timing the wait for one of `dialConcurrency` permits, which on 12,374
+  urls is most of a job's life, is the pass's own shape rather than any relay's,
+  and would cut the urls at the back of the queue first.
+- **NOTHING IS PUBLISHED about a url it cuts.** A deadline is our instrument
+  giving up, not a fact about the relay — the same rule
+  `ConsistencyPass.Unmeasured.FAILED` already carried for a probe that threw. The
+  url is counted, named in the pass's log line, and measured again next pass.
+  That is what makes the number safe to set close: cutting a relay that would
+  have answered costs one more pass, and not cutting one costs the mirror.
+- **The held urls are published** (`processors[].inFlight`), because the wedged
+  url was not nameable from anywhere: not from the position, not from the log
+  (420 router lines over twenty minutes, none about fitness), and not from a
+  thread dump, since a suspended coroutine has no frame. It was recoverable from
+  OkHttp thread names, which is not a diagnostic anyone should need. Longest-held
+  FIRST, which is the reverse of a stream's `inFlight` — there held is not risk,
+  here every leg is bounded and a long one is the anomaly.
+
+**The thirteen urls that pass was holding were dialled, and none of them
+reproduces the hang.** Worth recording, because it is the evidence that says the
+deadline is a backstop and not the fix for a specific relay. Every one of them
+terminates every rung of the ask ladder today: eight EOSE promptly at 500 events
+with nothing above the anchor, two refuse the bare filter with `blocked: can't
+handle empty filters` and answer the kinds rung, one is kinds-restricted, one
+(`relay.ltgnet.work:8443`) will not open a socket at all, and one
+(`quietplace.xyz`) accepts a socket, serves a NIP-11 document, and then answers
+NO REQ on any rung and no NEG-OPEN either. The worst case among them is that
+last one at ~60s of ladder, comfortably inside the four-minute deadline.
+
+So the hang is not a property of any of these relays as they behave now, which
+leaves the path the probes cannot exercise from outside: **the `onEvent` hook**.
+It is run outside quartz's timeout scope by design, this router hands it to a
+bounded ingest queue, and a job parked in it produces exactly what the thread
+dump showed — a socket in `loopReader` with NOTHING arriving, because we stopped
+draining, the TCP window closed and the relay stopped sending. A relay-shaped
+hypothesis predicts a socket busy with frames; the dump showed the opposite.
+
+`measuring.quietForSec` is the other half. `etaSec` read `0` throughout the
+stall, which is correct arithmetic on a rate that has gone to zero and actively
+misleading as a signal — it is the same `0` a pass one url from done reports. The
+seconds since a unit last ENDED is what separates them, and the card draws it
+only past `STUCK_PASS_SEC`.
+
 **NOTHING IN THE SYNC PLANE KNOWS THAT `l` IS THE TAG OR THAT `prime` IS THE
 VALUE.** That is the whole point of a gate being a filter: another monitor
 spelling its opinion `["l", "online", "monitor.example"]` — or on a tag of its
@@ -1288,6 +1359,70 @@ in the rollup dropped that row before the page could apply the rule, silently,
 since neither had an `omitted` to disclose it with. The invariant is now held on
 both sides rather than defended on one and undermined on the other.
 
+**An audit of the monitor and pool planes turned up five things worth knowing,
+and the first is a second route to #139's symptom.** Recorded because four of
+them are invisible from the outside and one had a test asserting it.
+
+- **A candidate set of ONE was never graded at all.** `AliasMonitor` gated its
+  whole work list on `urls.size < 2`, written when this class ran the fold and
+  only the fold — one url cannot be held up against another. The stability gate
+  and the fitness pass joined the list since and neither compares urls to
+  anything, so a router discovering exactly one relay never wrote a `prime`
+  grade for it and every visit-mode stream had a permanently empty roster. The
+  fold still refuses a world of one, inside `AliasFolding.measure`, against the
+  world it actually assembles. The fast lane does not rescue this: it only sees
+  urls named SINCE its last look, so a url present at boot is never picked up.
+- **The fast lane was doing a store-wide read every 120 seconds** — the one
+  thing its own comment says it exists not to do. Found independently by this
+  audit and by the work that landed as `79c182e`, which is the fix in the tree:
+  see *The fast lane's hold-out read is bounded by its own subject* above. The
+  audit's own version was dropped at the merge in favour of it.
+- **Both boot retractions walked our own corpus in one unbounded query**, inside
+  the `runBlocking` the roster's first rebuild waits on. Neither can ask its
+  question in a filter — the epoch and the legacy `s` tag are decided per record
+  — so both read every graded record; they page now. The call site's comment
+  claimed "one indexed query returning nothing", which was half right: indexed,
+  and it returns everything.
+- **…and they shared one `runCatching`**, so a throw in the epoch walk silently
+  skipped the legacy one and reported it under the wrong name. Two guards now.
+- **A revisit timer outlived the tail that sized it.** The delay is read once,
+  at arming, so a url armed while tailed carries `REVISIT_TAILED_MS` (30 min)
+  against `REVISIT_UNTAILED_MS` (5 min). Eviction requeues promptly, but the
+  visit after it found the old timer standing in `armed` and armed nothing — so
+  the relay that had just lost its live feed waited out the cadence it earned
+  while it still had one. `dropTail` disarms; the "exactly one timer" rule is
+  intact because disarming removes one rather than adding a second.
+- **`parked` had a check-then-act race.** A worker's failed `inFlight.add` and
+  its `parked.add` were two steps, as were the finishing visit's two removes, so
+  the prompt requeue this class promises as its second invariant could be
+  downgraded to a timer wait and the leftover park bought one spurious
+  back-to-back visit later. Both blocks are pure collection work and neither
+  suspends, so one monitor closes it.
+
+**The rule was audited against every cap in the two rollups, and three failed
+it.** They are gone; what is left is the list of caps that earn their keep, and
+a new one has to argue its way onto it:
+
+| cap | length decided by | verdict |
+|---|---|---|
+| held urls per processor | `dialConcurrency` — a job, our config | REMOVED |
+| `undecided` reasons | two enums in our source (5 + 13) | REMOVED |
+| `passes` on the relay side | `StreamPhases.MAX_TRACKED_CYCLES` — our source | REMOVED |
+| hosts named under a reason (100) | the host universe — discovery | kept |
+| `foldedOnto` survivors and their sample urls | discovery | kept |
+| ingest rejection reasons | store error strings, already overflow-bucketed at source | kept |
+
+Two things the audit made explicit. **A cap on a list our own source bounds is
+not a safety ceiling, it is an editorial one**, and the editorial cut belongs at
+the display layer where it can be widened without a redeploy of the writer —
+`sync.js` still draws a few held urls with `+N more`, and the record it draws
+from is whole. **And a re-cap on the relay side of a list the router already cut
+is worse than either**, because it is a number over here that has to be kept in
+step with a number over there in order to go on doing nothing; the undecided one
+was one short twice, at six and at eight, both times because a reason list grew
+and the number did not. `omitted` survives every removal as the schema's promise
+— absent cannot be told from "nothing dropped".
+
 `AliasMonitor.runPass` runs ONE PASS over every stream rather than one stream
 over every pass, which is what makes a pass a clocked unit — `lastPassAt`,
 `lastPassSec` and the `measuring` phase describe the whole pass instead of
@@ -1297,8 +1432,9 @@ measures anything, so no stability walk is spent on a url another stream's fold
 was about to remove.
 
 **A PASS IN FLIGHT PUBLISHES WHERE IT HAS GOT TO** — `measuring: {unit,
-attempted, toProbe, etaSec}`, and it is the only member of a processor row that
-moves between passes; every other one describes the pass that ENDED. It exists
+attempted, toProbe, etaSec, quietForSec}`, beside `inFlight` naming the urls it
+is holding, and those two are the only members of a processor row that
+move between passes; every other one describes the pass that ENDED. It exists
 because the row went blind exactly when it became interesting: a stability pass
 runs for hours, `lastPassSec` belongs to the pass before it, and a SWEEP unsets
 `nextInSec` while it runs (a pass takes as long as it takes, so nothing has
@@ -1317,6 +1453,14 @@ the same thing: the gate and the fitness pass decide a `url`, the fold decides a
 remembered for. The fold walks its groups widest-first, so its estimate reads
 long and improves, which is the safe direction for a number someone uses to
 decide whether to wait.
+
+`quietForSec` is the member that says the pass has STOPPED, and it is there
+because `etaSec` cannot: a pass whose last url has wedged reports `~0s left`,
+which is honest arithmetic on a rate that has gone to zero and is the same `0` a
+pass one url from done reports. A production fitness pass read `12,373 of
+12,374, ~0s left` for 74 minutes and every number on the row agreed with every
+other one — see the monitor-plane deadline section above for what was holding
+it, and `inFlight` for which url.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:
@@ -3097,6 +3241,33 @@ host wearing 55 urls. The refcount is claimed before the dial and released in a
 `finally`, and it has to be SHARED — one count across every stream, probe pass
 and pool visit — because that refcount is what stops a probe closing a socket
 a transfer is still running on.
+
+**And the release must NOT reach for `getOrCreateRelay`, which is the trap
+inside the trap: that call is a CONSTRUCTOR.** The release path read
+`client.getOrCreateRelay(url).disconnect()`, which looks like a no-op on a url
+with no connection and is the opposite. `NostrClient` reconciles its pool
+against the relays its live subscriptions want (`updatePool`, off a flow sampled
+at 300ms), so a probed url normally leaves the pool moments after the fetch's own
+`unsubscribe` — and a `getOrCreate` after that puts a fresh `BasicRelayClient`
+back into it, subscribed to nothing, so nothing ever removes it again. The
+60-second keep-alive (`reconnectIfNeedsTo`) then dials every disconnected relay
+the pool holds, and `disconnect()` clears the backoff on its way out —
+*"this is not an error, so prepare to reconnect as soon as requested"* — so the
+backoff does not hold it back either.
+
+Measured on staging: 105 threads in `okhttp3.internal.ws.RealWebSocket.loopReader`,
+of which 5 were the static stream upstreams and about 100 were left over from
+probe passes reporting `passesRun: 1` — i.e. FINISHED — the oldest silent for
+over ninety minutes against a 20-second idle budget. **The leak was per RELEASE,
+not per dial**, which is why it grew with passes that had already reported
+themselves done. The fix is a pool-membership check first
+(`client.availableRelaysFlow()`), and there is nothing to close when it fails:
+a url quartz has already dropped was disconnected on its way out. What this
+repo cannot do is REMOVE the entry — `RelayPool.removeRelay` exists and the pool
+is private to `NostrClient` — so the remaining case is a url still in the pool
+because our release beat the 300ms reconcile, which is the case where
+disconnecting is exactly right. `RelaySocketsTest` pins it on pool membership,
+because an entry in the pool is what the keep-alive walks.
 
 **The other half of that question needs no probe, and answer it FIRST.** The
 verdict is a signed kind-30166 addressed by the url, served by this relay:

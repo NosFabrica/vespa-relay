@@ -173,7 +173,23 @@ class Processors {
          * outlives the log.
          */
         val undecided: List<Undecided> = emptyList(),
-        /** Reasons left out of [undecided]. Never silent, for [InFlight]'s reason. */
+        /**
+         * Reasons left out of [undecided]. Never silent, for [InFlight]'s reason.
+         *
+         * ZERO, always, since the list stopped being cut — and the member stays
+         * because absent cannot be told from "nothing dropped".
+         *
+         * It WAS sixteen, and that cap was the file's own rule broken twice
+         * over. A reason is an enum value in this source — five from the fold,
+         * thirteen from the stability gate — so the network cannot grow the
+         * list and a cap could only ever pick which reasons an operator is not
+         * shown. Worse, truncating did not merely shorten it: the rows sum to
+         * [unmeasured], so a cut tail surfaced on the card as `not accounted
+         * for` in the fault tone — an arithmetic error reported against a pass
+         * that was working. The cap was one short twice, at six and at eight,
+         * both times because a reason list grew and the number did not. Nothing
+         * can be short of an enumeration it does not bound.
+         */
         val undecidedOmitted: Int = 0,
     )
 
@@ -235,7 +251,113 @@ class Processors {
          * for a number an operator uses to decide whether to wait.
          */
         val etaSec: Long?,
+        /**
+         * How long since a unit last ENDED — the number that tells a pass about
+         * to finish from one that has stopped.
+         *
+         * [etaSec] cannot: it is honest arithmetic on the rate so far, so a
+         * pass whose last url has wedged reports `0` — correct, and
+         * indistinguishable from a pass a second from done. A production
+         * fitness pass sat at `attempted: 12373, toProbe: 12374, etaSec: 0` for
+         * 74 minutes and every number on the row agreed with every other one.
+         *
+         * Beside the position rather than replacing it, because the pair is the
+         * disclosure: `12373 of 12374` with this at 4 seconds is a pass
+         * finishing, and the same position with this at 4,000 is a pass that is
+         * not going to.
+         *
+         * Zero before the first unit lands, which is the pass's own age at that
+         * point and not a claim that something just finished — [attempted] is
+         * `0` beside it and says so.
+         */
+        val quietForSec: Long,
     )
+
+    /**
+     * WHICH URLS A PASS IS HOLDING RIGHT NOW, and what it is doing with each —
+     * the counts' missing half, on the same terms [InFlight] states them for a
+     * stream.
+     *
+     * ## The question this exists to answer
+     *
+     * A fitness pass held one url of 12,374 for 74 minutes, and that url was
+     * not nameable from anywhere in the system: not from the position (which
+     * publishes a number), not from the log (420 router lines over twenty
+     * minutes, none about fitness), and not from a thread dump, since a
+     * suspended coroutine has no frame. It was recoverable from OkHttp thread
+     * names, which is not a diagnostic anyone should need. The pass knew the
+     * url perfectly well the whole time.
+     *
+     * ## Its own shape rather than [InFlight]'s, and why
+     *
+     * A stream leg is a TRANSFER and is decided by three clocks — has it a
+     * slot, has it delivered, is it still delivering. A probe leg is a LADDER:
+     * it delivers events only incidentally, holds no transfer slot, and what
+     * decides it is which step it is on. Filling `events`/`quietForSec` here
+     * would be manufacturing the two numbers a reader would then act on, which
+     * is the one thing [Work]'s nullable members exist to refuse.
+     *
+     * ## LONGEST-HELD FIRST, which is the opposite of [InFlight]'s order
+     *
+     * There, held is not risk: the healthiest thing the router does is hold one
+     * relay for an hour while it streams two million events. Here every leg is
+     * bounded by [AliasProbe.deadlineMs] by construction, so a leg near that
+     * bound is the anomaly and the front of the list is where it belongs.
+     *
+     * ## WHOLE, like [InFlight] and for the same reason
+     *
+     * A row is a JOB, so the monitor's `dialConcurrency` already bounds the set
+     * — 128 by default, and whatever an operator chose when it is not. That
+     * puts it on the side of the line this file draws elsewhere: a cap is for a
+     * list the network can grow, and capping one our own configuration bounds
+     * only picks which rows an operator is not shown. It was cut to twenty
+     * once, on the argument that 499 of 500 rows are ordinary dials a second
+     * old — which is true of the ROWS and false of the LIST: `omitted: 480`
+     * says nothing about whether those 480 are healthy, while the whole set
+     * sorted by age is the distribution, and the distribution is the finding.
+     * The page still draws a few of them; that is an editorial cut, it belongs
+     * at the display layer, and the record it is drawn from is complete.
+     */
+    class Holding(
+        /** Urls with a live job, longest-held first. */
+        val relays: List<Held>,
+        /**
+         * How many more had a job and are not named here.
+         *
+         * ZERO, always, and kept for the reason [InFlight.omitted] is kept from
+         * the pool: a list that does not disclose its truncation reads as the
+         * whole answer, and a reader finding the member absent cannot tell
+         * "nothing dropped" from "does not say".
+         *
+         * This was a cut of twenty, and the cut broke the rule the rest of this
+         * file holds — a cap is for a list the NETWORK can grow, and a held row
+         * is a JOB, so `dialConcurrency` already bounds it. Capping it only
+         * picked which rows an operator is not shown, and picked them from the
+         * one list that exists because a row was not shown.
+         */
+        val omitted: Int,
+    ) {
+        /** One url a probe job is holding, and what it is doing with it. */
+        class Held(
+            val relay: String,
+            /**
+             * Since the job took its permit — which is after the wait for one,
+             * not before. A pass at `dialConcurrency` has urls queued behind
+             * every leg here and their wait is the pass's shape rather than any
+             * relay's, so the queue is deliberately outside this clock and
+             * outside the deadline it is read against.
+             */
+            val heldForSec: Long,
+            /**
+             * WHICH STEP, in the words the pass's own code uses. The clock
+             * above says how long; only this says what for, and the steps fail
+             * for unrelated reasons — a name that will not resolve stalls the
+             * pre-probe, a relay that never stops sending stalls the ladder,
+             * a full ingest queue stalls whichever step is delivering.
+             */
+            val stage: String,
+        )
+    }
 
     /** One server under a reason, and how many of its urls ended there. */
     class HostCount(
@@ -339,6 +461,12 @@ class Processors {
          * [Measuring]. The only member here that moves while a pass runs.
          */
         val measuring: Measuring? = null,
+        /**
+         * …and WHICH urls it is holding while it gets there — see [Holding].
+         * Null when the pass is holding nothing, which is every processor
+         * between passes and every one that does not report a held set.
+         */
+        val inFlight: Holding? = null,
         val work: List<Work>,
         val counts: List<Count>,
         /**
@@ -376,6 +504,17 @@ class Processors {
         val startedMs: Long,
     ) {
         val attempted = AtomicInteger()
+
+        /**
+         * When a unit last ENDED, or the walk's start before the first one —
+         * see [Measuring.quietForSec].
+         *
+         * Beside [attempted] rather than derived from it: a counter says how
+         * many are behind the pass and nothing at all about when the last one
+         * got there, and the whole difference between a pass finishing and a
+         * pass stopped is in the second question.
+         */
+        val lastUnitMs = AtomicLong(startedMs)
     }
 
     // Internal rather than private only because [Handle] holds one: a private
@@ -419,6 +558,19 @@ class Processors {
          */
         @Volatile
         var run: Run? = null
+
+        /**
+         * WHAT THIS PROCESSOR IS HOLDING RIGHT NOW — url to (taken at, step).
+         *
+         * A plain map rather than a swapped-whole reference like [run], because
+         * unlike the position it is not a set of members that have to agree:
+         * every entry is one job's own, written by that job and removed by it,
+         * and a reader arriving mid-write sees one row more or fewer rather
+         * than two passes at once. Bounded by the pass's dial concurrency, and
+         * cleared on both pass boundaries so a row can never outlive the pass
+         * that took it.
+         */
+        val held = ConcurrentHashMap<String, Pair<Long, String>>()
 
         @Volatile
         var counts: (() -> List<Count>)? = null
@@ -467,6 +619,7 @@ class Processors {
                 // past, and "-40s" reads as a bug rather than as a queue.
                 nextInSec = e.nextAt?.invoke()?.let { ((it - nowMs) / 1000).coerceAtLeast(0) },
                 measuring = measuring(e, nowMs),
+                inFlight = holding(e, nowMs),
                 // Ordered, for the same reason every other list here is: two
                 // rollups of one state must produce the same document.
                 work = e.work.values.sortedBy { it.stream },
@@ -513,7 +666,44 @@ class Processors {
                 } else {
                     null
                 },
+            quietForSec = ((nowMs - run.lastUnitMs.get()) / 1000).coerceAtLeast(0),
         )
+    }
+
+    /**
+     * What the pass is holding as of [nowMs] — or null, which is a processor
+     * holding nothing.
+     *
+     * Read off the entry rather than pushed, like the position and the
+     * counters. Not guarded by [Entry.run]: the fold takes its first dial
+     * before it can declare a set, and a leg held by a pass whose position is
+     * not yet published is exactly the leg worth naming.
+     */
+    private fun holding(
+        e: Entry,
+        nowMs: Long,
+    ): Holding? {
+        if (e.held.isEmpty()) return null
+        // Snapshotted before it is sorted: the map moves under a wide pass on
+        // every dial, and a comparator reading a value that changes mid-sort is
+        // the one way this could throw into a report.
+        val rows = e.held.entries.map { (relay, taken) -> Triple(relay, taken.first, taken.second) }
+        val named =
+            rows
+                // Longest-held first — see [Holding]. Then by name, so two legs
+                // taken in the same millisecond do not swap places between two
+                // rollups of one state.
+                .sortedWith(compareBy({ it.second }, { it.first }))
+                .map { (relay, takenMs, stage) ->
+                    Holding.Held(
+                        relay = relay,
+                        heldForSec = ((nowMs - takenMs) / 1000).coerceAtLeast(0),
+                        stage = stage,
+                    )
+                }
+        // Whole — see [Holding]. `omitted` is the schema's promise rather than
+        // a count this side can make non-zero.
+        return Holding(named, 0)
     }
 
     /** What a processor holds to report through. Cheap to keep; safe to call from anywhere. */
@@ -554,6 +744,11 @@ class Processors {
             // pass's `4,728 of 4,728` sitting under a fresh `measuring` reads as
             // a pass that finished instantly.
             entry.run = null
+            // …and the previous pass's held urls with it. Nothing should be
+            // left — every job releases in a `finally`, and every job is
+            // bounded — but a row surviving into the next pass would name a leg
+            // that is not running, which is worse than naming none.
+            entry.held.clear()
             phase(word)
         }
 
@@ -587,6 +782,7 @@ class Processors {
             // [Work], which this pass has already recorded and which stands
             // until the next one replaces it.
             entry.run = null
+            entry.held.clear()
             entry.lastPassAtSec = nowMs / 1000
             entry.passes.incrementAndGet()
             phase(word)
@@ -618,11 +814,47 @@ class Processors {
          * decided nothing, see [Measuring.attempted] — so the position measures
          * the pass rather than its luck.
          */
-        fun attempted(units: Int = 1) {
+        fun attempted(
+            units: Int = 1,
+            nowMs: Long = System.currentTimeMillis(),
+        ) {
             // Silent when no pass has declared a set — a caller that counts
             // without declaring is publishing a numerator with no denominator,
             // and dropping it is better than inventing one.
-            entry.run?.attempted?.addAndGet(units)
+            val run = entry.run ?: return
+            run.attempted.addAndGet(units)
+            run.lastUnitMs.set(nowMs)
+        }
+
+        /**
+         * This pass has taken [relay] and is [stage] on it — see [Holding].
+         *
+         * Called again as the job moves on, which UPDATES the step and keeps
+         * the clock: the row's whole job is to say how long this url has been
+         * held, and a leg that restarted its clock at every rung would report
+         * the last step's age as the leg's.
+         *
+         * Cheap enough to call per step and safe to call from anywhere: one map
+         * write on a map bounded by the pass's dial concurrency.
+         */
+        fun holding(
+            relay: String,
+            stage: String,
+            nowMs: Long = System.currentTimeMillis(),
+        ) {
+            entry.held.compute(relay) { _, existing -> (existing?.first ?: nowMs) to stage }
+        }
+
+        /**
+         * …and it is done with it, however it ended.
+         *
+         * From a `finally`, on the same terms [finish] is: a job that threw, was
+         * cancelled, or ran out its deadline has stopped holding the url either
+         * way, and a row that outlives its job is a fault report about a leg
+         * that is not there.
+         */
+        fun released(relay: String) {
+            entry.held.remove(relay)
         }
 
         /** Where to ask when the next pass is due, in epoch millis. Null means nothing is scheduled. */
@@ -705,21 +937,6 @@ class Processors {
          * measure" are different states, and only the second one is permanent.
          */
         const val OFF = "off"
-
-        /**
-         * How many `undecided` reasons a work row publishes.
-         *
-         * Sixteen covers both enumerations whole with headroom: five from the
-         * fold, and thirteen from the stability gate — six reasons plus the
-         * SEVEN causes `never answered a REQ` splits into. Truncating here does
-         * not merely shorten a list, it breaks the property the url counts
-         * exist for: the rows sum to [Work.unmeasured], and a cut tail surfaces
-         * on the card as `not accounted for` in the fault tone — an arithmetic
-         * error reported against a pass that was working. This has been one
-         * short twice, once at six and once at eight, both times because a
-         * reason list grew and the cap did not.
-         */
-        const val MAX_UNDECIDED_REASONS = 16
 
         /**
          * Named hosts per reason.

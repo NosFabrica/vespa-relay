@@ -325,9 +325,13 @@ internal object SyncProgressReport {
             // was showing, and its still-running legs appeared only as the new
             // pass's `busy`. Each row is rebuilt by the same [cycle] reader, so
             // the arithmetic is checked per pass rather than per stream.
+            //
+            // Uncapped: `StreamPhases.MAX_TRACKED_CYCLES` bounds the list at
+            // source and it is OUR source, so a number over here restating one
+            // over there could only ever pick which passes an operator is not
+            // shown — and would have to be kept in step to go on doing nothing.
             (o["passes"] as? JsonArray)
                 ?.filterIsInstance<JsonObject>()
-                ?.take(MAX_PASSES)
                 ?.mapNotNull { cycle(it) }
                 ?.takeIf { it.size > 1 }
                 ?.let { rows -> putJsonArray("passes") { for (r in rows) add(r) } }
@@ -354,6 +358,7 @@ internal object SyncProgressReport {
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
             measuring(o["measuring"] as? JsonObject)?.let { put("measuring", it) }
+            heldRelays(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
             for (counter in COUNTERS) (num(o[counter]) ?: LEGACY_COUNTERS[counter]?.let { num(o[it]) })?.let { put(counter, it) }
             rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
             // Uncapped for the same reason as the processor list itself: these
@@ -394,6 +399,61 @@ internal object SyncProgressReport {
             put("attempted", attempted)
             put("toProbe", toProbe)
             num(o["etaSec"])?.let { put("etaSec", it) }
+            // The one member here that may be absent without costing the
+            // object. `attempted`/`toProbe` are the position and mean nothing
+            // apart; this is a second reading BESIDE it, and a router that
+            // predates it should still draw a position rather than none.
+            num(o["quietForSec"])?.let { put("quietForSec", it) }
+        }
+    }
+
+    /**
+     * WHICH URLS A PROBE PASS IS HOLDING, rebuilt row by row.
+     *
+     * Its own reader rather than [inFlight]'s, because it is its own shape: a
+     * stream leg is a transfer and carries three clocks about delivery, a probe
+     * leg is a ladder and carries one clock and the step it is on. Sharing the
+     * reader would mean defaulting `events` and `quietForSec` to zero for every
+     * row, which is the manufactured-number failure the router side refuses at
+     * source.
+     *
+     * NOT BOUNDED, on either side, and that follows this file's rule rather
+     * than departing from it: a cap is for a list the NETWORK can grow, and a
+     * held row is a JOB, so the monitor's `dialConcurrency` already bounds the
+     * set — 128 by default, and whatever an operator chose when it is not. The
+     * lists still capped here are the ones discovery decides the length of:
+     * [foldedOnto]'s survivors and the hosts named under an undecided reason.
+     *
+     * What IS kept is the rest of the contract: unreadable rows counted rather
+     * than dropped silently, and `omitted` carrying whatever the router left
+     * out.
+     */
+    private fun heldRelays(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        var unreadable = 0
+        return buildJsonObject {
+            putJsonArray("relays") {
+                for (row in rows) {
+                    val relay =
+                        text(row["relay"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
+                    add(
+                        buildJsonObject {
+                            put("relay", relay)
+                            put("heldForSec", num(row["heldForSec"]) ?: 0)
+                            // Copied as written and never defaulted: a router
+                            // that names no step says nothing, which reads as
+                            // "not known" rather than as a wrong step.
+                            text(row["stage"])?.let { put("stage", it) }
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + unreadable)
         }
     }
 
@@ -489,7 +549,15 @@ internal object SyncProgressReport {
         if (o == null) return null
         val rows = (o["reasons"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
         if (rows.isEmpty()) return null
-        val kept = rows.take(MAX_UNDECIDED_ROWS)
+        // WHOLE, like the held urls and the processor rows. A reason is an enum
+        // value in the router's source — five from the fold, thirteen from the
+        // stability gate — so the network cannot grow this list, and a cap could
+        // only ever pick which reasons an operator is not shown. Cutting it also
+        // BREAKS ARITHMETIC: the rows sum to `unmeasured`, and a tail dropped
+        // here surfaces on the card as `not accounted for` in the fault tone, an
+        // error reported against a pass that was working. It has been short
+        // twice for exactly that reason.
+        val kept = rows
         var unreadable = 0
         return buildJsonObject {
             putJsonArray("reasons") {
@@ -886,20 +954,6 @@ internal object SyncProgressReport {
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
 
-    /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
-    private const val MAX_PASSES = 4
-
-    /**
-     * Undecided reasons kept per row, matching `Processors.MAX_UNDECIDED_REASONS`.
-     *
-     * The two move together. This side bounds a list the router already
-     * bounded; cutting BELOW what the router publishes drops a reason whose
-     * urls the page then draws as `not accounted for` — an arithmetic fault
-     * reported against a document that was complete when it arrived. It has
-     * been short twice, so the number is chosen against the gate's whole
-     * enumeration (thirteen) rather than against today's output.
-     */
-    private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
 
     /**

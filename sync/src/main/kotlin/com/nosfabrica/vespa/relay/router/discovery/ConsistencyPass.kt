@@ -32,6 +32,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -156,6 +157,18 @@ class ConsistencyPass(
 
         /** The probe threw. Ours to fix, and never a claim about the relay. */
         FAILED("the probe failed mid-walk"),
+
+        /**
+         * The job ran out its wall clock — see [AliasProbe.deadlineMs].
+         *
+         * Beside [FAILED] rather than folded into it, and both are ours rather
+         * than the relay's. A probe that threw got an answer it could not use;
+         * this one never got an answer at all, and the two want different
+         * responses: the first is a bug in the walk, the second is a url that
+         * would have held the whole pass open before there was a deadline to
+         * end it.
+         */
+        ABANDONED("gave up at the per-url deadline"),
     }
 
     /**
@@ -256,82 +269,27 @@ class ConsistencyPass(
             for (url in wanted) {
                 launch {
                     gate.withPermit {
-                        // The pre-probe opens a socket of its own and can throw.
-                        // NOT `runCatching`, which swallows CancellationException:
-                        // a pass cancelled at shutdown would record every
-                        // remaining url as a probe failure on its way out.
-                        val reachable =
-                            try {
-                                canDial(url)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                silent[url] = Finding(Unmeasured.FAILED)
-                                return@withPermit
+                        // THE DEADLINE, AND IT IS INSIDE THE PERMIT — see
+                        // [AliasProbe.deadlineMs] for what it is made of, and
+                        // [FitnessPass.measure] for why it cannot go around the
+                        // `launch`: out there it would be timing the wait for one
+                        // of `concurrency` permits, which is this pass's own shape
+                        // and no relay's fault.
+                        val ran =
+                            withTimeoutOrNull(probe.deadlineMs(url)) {
+                                try {
+                                    measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced)
+                                } finally {
+                                    // However it ended — a verdict, a throw, the
+                                    // deadline, a shutdown — the url is no longer
+                                    // held.
+                                    progress?.released(url.url)
+                                }
                             }
-                        if (!reachable) {
-                            silent[url] = Finding(Unmeasured.TRANSPORT)
-                            return@withPermit
-                        }
-                        walked.incrementAndGet()
-                        sockets.claim(url)
-                        val attempt =
-                            try {
-                                // The pair, genuinely concurrent over one
-                                // connection, so "the answer changed" cannot be
-                                // blamed on elapsed time. It was staged once,
-                                // with a comment claiming concurrency it did not
-                                // have. See [ladder] for the filter rungs.
-                                ladder(url, anchor, onEvent)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                // A relay failing mid-walk is [HostStrikes]'
-                                // business. It is not evidence about how this one
-                                // answers, so it must not become a verdict.
-                                null
-                            } finally {
-                                sockets.release(url)
-                            }
-                        if (attempt == null) {
-                            silent[url] = Finding(Unmeasured.FAILED)
-                            return@withPermit
-                        }
-                        val answer = consistency.decide(attempt.best.first.ids, attempt.best.second.ids)
-                        if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
-                            val why = attempt.why()
-                            // The transport's own words, but only under the one
-                            // reason they explain: a relay that answered thinly
-                            // said nothing about its socket.
-                            val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
-                            if (cause == Silence.UNKNOWN && unplaced.size < MAX_UNPLACED_SAMPLES) {
-                                attempt.saidWhat()?.let { unplaced += it }
-                            }
-                            silent[url] = Finding(why, cause)
-                            return@withPermit
-                        }
-                        val first = attempt.best.first.ids!!
-                        val second = attempt.best.second.ids!!
-                        consistency.learn(url, answer)
-                        decided.incrementAndGet()
-                        if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
-                        // Written as each url is decided, not at the end of the
-                        // pass: a pass over a wide fan-out runs for a long time,
-                        // one url's answer is complete on its own, and a restart
-                        // in the middle must not throw away what was already
-                        // proved. Guarded, because these are signed public
-                        // statements and one failing to write must not take the
-                        // pass down.
-                        runCatching {
-                            record.publishConsistency(
-                                url,
-                                consistent = answer == RelayConsistency.Verdict.CONSISTENT,
-                                first = first.size,
-                                second = second.size,
-                                shared = consistency.shared(first, second),
-                                score = consistency.containment(first, second),
-                            )
-                        }
+                        // NOTHING IS PUBLISHED about a url the deadline cut. The
+                        // clock is ours and the verdict would be about the relay
+                        // — see [Unmeasured.ABANDONED].
+                        if (ran == null) silent[url] = Finding(Unmeasured.ABANDONED)
                     }
                     // FROM THE JOB'S COMPLETION, not from a counter inside the
                     // body: this url is behind the pass however it ended, and
@@ -462,8 +420,11 @@ class ConsistencyPass(
                 unmeasured = unmeasured,
                 dialled = dialled,
                 decided = decided,
-                undecided = rows.take(Processors.MAX_UNDECIDED_REASONS),
-                undecidedOmitted = (rows.size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),
+                // WHOLE. A reason is an enum value in this source, so the
+                // network cannot grow this list and there is nothing for a cap
+                // to protect — see [Processors.Work.undecidedOmitted] for the
+                // two times one was short of its own enumeration.
+                undecided = rows,
             ),
         )
     }
@@ -539,6 +500,107 @@ class ConsistencyPass(
                 best.depth == 0 -> Unmeasured.FILTER_REFUSED
                 else -> Unmeasured.TOO_THIN
             }
+    }
+
+    /**
+     * ONE URL'S PAIRED WALK, extracted so the deadline above has something to
+     * wrap and so each step can say which step it is.
+     *
+     * Unchanged from where it used to sit inline, but for the two
+     * [Processors.Handle.holding] calls: a held url that cannot say whether it
+     * is in the pre-probe or on the walk names half a fault, and a suspended
+     * coroutine has no stack frame to answer from.
+     */
+    private suspend fun measureOne(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        onEvent: suspend (Event) -> Unit,
+        sockets: AliasFolding.Sockets,
+        walked: AtomicInteger,
+        decided: AtomicInteger,
+        refused: AtomicInteger,
+        silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
+        unplaced: MutableSet<String>,
+    ) {
+        progress?.holding(url.url, STAGE_REACHABILITY)
+        // The pre-probe opens a socket of its own and can throw.
+        // NOT `runCatching`, which swallows CancellationException:
+        // a pass cancelled at shutdown would record every
+        // remaining url as a probe failure on its way out.
+        val reachable =
+            try {
+                canDial(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                silent[url] = Finding(Unmeasured.FAILED)
+                return
+            }
+        if (!reachable) {
+            silent[url] = Finding(Unmeasured.TRANSPORT)
+            return
+        }
+        walked.incrementAndGet()
+        progress?.holding(url.url, STAGE_LADDER)
+        sockets.claim(url)
+        val attempt =
+            try {
+                // The pair, genuinely concurrent over one
+                // connection, so "the answer changed" cannot be
+                // blamed on elapsed time. It was staged once,
+                // with a comment claiming concurrency it did not
+                // have. See [ladder] for the filter rungs.
+                ladder(url, anchor, onEvent)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A relay failing mid-walk is [HostStrikes]'
+                // business. It is not evidence about how this one
+                // answers, so it must not become a verdict.
+                null
+            } finally {
+                sockets.release(url)
+            }
+        if (attempt == null) {
+            silent[url] = Finding(Unmeasured.FAILED)
+            return
+        }
+        val answer = consistency.decide(attempt.best.first.ids, attempt.best.second.ids)
+        if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
+            val why = attempt.why()
+            // The transport's own words, but only under the one
+            // reason they explain: a relay that answered thinly
+            // said nothing about its socket.
+            val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
+            if (cause == Silence.UNKNOWN && unplaced.size < MAX_UNPLACED_SAMPLES) {
+                attempt.saidWhat()?.let { unplaced += it }
+            }
+            silent[url] = Finding(why, cause)
+            return
+        }
+        val first = attempt.best.first.ids!!
+        val second = attempt.best.second.ids!!
+        consistency.learn(url, answer)
+        decided.incrementAndGet()
+        if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
+        // Written as each url is decided, not at the end of the
+        // pass: a pass over a wide fan-out runs for a long time,
+        // one url's answer is complete on its own, and a restart
+        // in the middle must not throw away what was already
+        // proved. Guarded, because these are signed public
+        // statements and one failing to write must not take the
+        // pass down.
+        runCatching {
+            record.publishConsistency(
+                url,
+                consistent = answer == RelayConsistency.Verdict.CONSISTENT,
+                first = first.size,
+                second = second.size,
+                shared = consistency.shared(first, second),
+                score = consistency.containment(first, second),
+            )
+        }
     }
 
     /**
@@ -637,5 +699,15 @@ class ConsistencyPass(
          * so nothing is hidden by the cap.
          */
         const val MAX_UNPLACED_SAMPLES = 3
+
+        /**
+         * The steps one url's job passes through, published as a held leg's
+         * `stage` — see [Processors.Holding.Held.stage]. The pass's own words
+         * for its own steps, so a reader can grep from the document to the line
+         * that was running.
+         */
+        const val STAGE_REACHABILITY = "pre-probe"
+
+        const val STAGE_LADDER = "paired walk"
     }
 }

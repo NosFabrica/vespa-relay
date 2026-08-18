@@ -101,7 +101,10 @@ import java.nio.file.StandardCopyOption
  *                                 "omitted": 0}}]},
  *     {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
  *      "lastPassAt": 1769998000, "lastPassSec": 9720,
- *      "measuring": {"unit": "url", "attempted": 604, "toProbe": 4728, "etaSec": 2724},
+ *      "measuring": {"unit": "url", "attempted": 604, "toProbe": 4728, "etaSec": 2724,
+ *                    "quietForSec": 3},
+ *      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 214,
+ *                               "stage": "paired walk"}], "omitted": 0},
  *      "sourced": 17584, "heldOutDead": 832,
  *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 11429,
  *                   "consistent": 583, "inconsistent": 12, "unmeasured": 4728,
@@ -129,6 +132,14 @@ import java.nio.file.StandardCopyOption
  * a countdown to the next pass is a promise nobody has computed until this one
  * returns; a fast-lane pass carries both, and both are true. See
  * [Processors.Measuring].
+ *
+ * `quietForSec` beside it is what separates a pass about to finish from one that
+ * has stopped: `etaSec` is honest arithmetic on the rate so far, so a pass whose
+ * last url has wedged reports `0` and every number on the row agrees with every
+ * other one. A processor's `inFlight` is the same disclosure a stream's is —
+ * WHICH urls it is holding rather than how many — with its own shape and its own
+ * order, longest-held first, because a probe leg is bounded by construction and
+ * a long one is the anomaly. See [Processors.Holding].
  *
  * `writtenAt` is the HEARTBEAT and is the most load-bearing member here: it is
  * rewritten on every tick whatever the streams are doing, so a reader can tell a
@@ -526,6 +537,43 @@ class SyncProgress(
                             // is the failure mode the paging ETA is remembered
                             // for.
                             m.etaSec?.let { put("etaSec", it) }
+                            // …and the number that tells "one url to go" from
+                            // "one url stuck", which `etaSec` alone cannot: it
+                            // reads 0 for both. See
+                            // [Processors.Measuring.quietForSec].
+                            put("quietForSec", m.quietForSec)
+                        },
+                    )
+                }
+                // WHICH urls the pass is holding, and what each is doing with
+                // its permit. The counts never said: a fitness pass held one
+                // url of 12,374 for 74 minutes and the url was not nameable
+                // from anywhere in this document, the log, or a thread dump — a
+                // suspended coroutine has no frame. See [Processors.Holding],
+                // and note the order is longest-held FIRST, which is the
+                // reverse of a stream's [InFlight].
+                p.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { f ->
+                    put(
+                        "inFlight",
+                        buildJsonObject {
+                            putJsonArray("relays") {
+                                for (r in f.relays) {
+                                    add(
+                                        buildJsonObject {
+                                            put("relay", r.relay)
+                                            put("heldForSec", r.heldForSec)
+                                            // WHICH STEP, in the pass's own
+                                            // words. The clock says how long;
+                                            // only this says what for.
+                                            put("stage", r.stage)
+                                        },
+                                    )
+                                }
+                            }
+                            // Never silent, for [InFlight]'s reason: a list
+                            // that does not disclose its truncation reads as
+                            // the whole answer.
+                            put("omitted", f.omitted)
                         },
                     )
                 }

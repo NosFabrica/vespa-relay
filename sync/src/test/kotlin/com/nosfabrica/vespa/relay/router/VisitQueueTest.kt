@@ -45,6 +45,69 @@ class VisitQueueTest {
     private val url = RelayUrlNormalizer.normalize("wss://a.example")
 
     @Test
+    fun `disarming a revisit lets the next completion arm the cadence the url now has`() =
+        runBlocking {
+            // THE SIX-TIMES FRESHNESS GAP. The delay is read once, when the
+            // timer is armed, so a url armed while TAILED carries the tailed
+            // cadence — half an hour against five minutes untailed. Eviction
+            // requeues it promptly, but the visit that followed found the old
+            // timer still standing and armed nothing, so the relay that had
+            // just lost its live feed waited out the cadence it earned while it
+            // still had one.
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue(scope)
+            val entered = Channel<Unit>(Channel.UNLIMITED)
+            // Long while "tailed", short once not — the pool's own shape.
+            val tailed = AtomicInteger(1)
+            val visits = AtomicInteger()
+            scope.launch {
+                q.visitLoop(
+                    stillWanted = { true },
+                    revisitDelayMs = { if (tailed.get() == 1) 3_600_000L else 150L },
+                ) {
+                    visits.incrementAndGet()
+                    entered.send(Unit)
+                }
+            }
+            try {
+                withTimeout(10_000) {
+                    q.offer(url)
+                    entered.receive()
+                    // Visit one is done and an hour-long timer is armed.
+                    delay(200)
+                    assertEquals(1, visits.get())
+
+                    // The tail is evicted: the cadence is now the short one,
+                    // and the pool requeues promptly as it always did.
+                    tailed.set(0)
+                    q.disarm(url)
+                    q.offer(url)
+                    entered.receive()
+
+                    // …and THIS is what the stale timer used to swallow: the
+                    // completion after eviction arms the untailed cadence, so a
+                    // third visit lands on the short clock rather than an hour
+                    // out.
+                    entered.receive()
+                    assertEquals(3, visits.get())
+                }
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `disarming a url with nothing armed is a no-op`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                VisitQueue(scope).disarm(url)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
     fun `a requeue during a visit is parked and re-sent the moment it finishes`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
