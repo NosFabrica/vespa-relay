@@ -52,11 +52,11 @@ import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.ServingPressure
-import com.nosfabrica.vespa.relay.server.StatsSnapshot
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
+import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import kotlinx.coroutines.CoroutineScope

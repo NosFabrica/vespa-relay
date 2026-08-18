@@ -4,7 +4,7 @@ A Nostr relay with trust-ranked NIP-50 search. Quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays.
 
-Three Gradle modules, JVM only (toolchain 21), two processes over one store:
+Four Gradle modules, JVM only (toolchain 21), two processes over one store:
 
 - **`:relay`** — the serving side. `RelayMain` is its entrypoint.
 - **`:sync`** — the mirror and the monitor, as one process so it restarts
@@ -16,11 +16,26 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
   for the lot, which said nothing about what was mirroring and what was
   measuring — operators still know the subsystem as the router (`router.conf`,
   the `router:` log prefix), and that is a separate name from these.
-- **`:common`** — only what both genuinely read: `RelayIdentity`,
+
+…and two shared modules, which are shared with DIFFERENT audiences. That is the
+distinction to hold when deciding where something goes, and each module states
+its own admission rule:
+
+- **`:common`** — only what the SERVING relay also reads: `RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
   whose mean crosses the process boundary over the relay's `GET /pressure`,
   polled by the sync process to yield ingest when client reads slow down.
-  Anything one process owns lives in that process's module.
+  Anything one process owns lives in that process's module. It must never gain
+  a dependency on quartz's relay CLIENT or on Ktor: the day it does, it has
+  stopped being "what both read" and become the junk drawer.
+- **`:web`** — how a service serves a page: the Ktor scaffolding
+  (`installPageDefaults`, `serveStatusSite`), the classpath asset cache and its
+  content-derived validators (`WebAssets`, `webModules`, `favicon`), the page
+  cache (`CachedPage`, `IconedPage`, `pageWithIcon`) and the stats document
+  holder (`StatsSnapshot`). Domain-free by construction — it depends on Ktor and
+  kotlinx.serialization and on nothing of ours, `:common` included. Assets are
+  looked up on the CLASSPATH rather than under a module root, so a service ships
+  its own page beside the shared ones and one `/web/…` route serves both.
 
 ## Commands
 
@@ -246,6 +261,17 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
                             piece of it both processes read
     SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
   util/Format.kt            fmtDuration — the one formatter both processes print
+
+web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
+  StatusSite.kt             installPageDefaults (compression + CORS, on the terms
+                            measured in HttpServer), statsDocument, and
+                            serveStatusSite — one page + its document + its
+                            assets, which is a whole background service's UI
+  CachedPages.kt            CachedPage/IconedPage and the ETag exchange every
+                            page and document answers with
+  WebAssets.kt              /web/… off the classpath, hashed once, and /favicon.ico
+  PageIcon.kt               pageWithIcon — every <link rel="icon"> replaced by one
+  StatsSnapshot.kt          the served document: two writers merged, persisted
 
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt          entrypoint; reads env, deploys the schema, wires the
@@ -808,11 +834,12 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                      direction)
     StatsRollup.kt   the document, section by section, each failing on its own
                      — and `StatsTier`, the two schedules it is computed on
-  server/
-    StatsSnapshot.kt what GET /stats.json serves — held in memory with an
+  (:web) StatsSnapshot.kt
+                     what GET /stats.json serves — held in memory with an
                      ETag, written through to STATS_FILE so a deploy does not
                      blank the page for the minutes a first rollup takes, and
-                     the MERGE point for the two tiers
+                     the MERGE point for the two tiers. In :web because every
+                     service publishes a document this way, not just the relay
 ```
 
 **The document is computed in two passes, and the split is by measured cost.**

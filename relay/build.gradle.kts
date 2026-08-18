@@ -24,6 +24,10 @@ dependencies {
     // The relay is Quartz's protocol engine (RelayServerBase) over a vespa-eventstore store.
     // The router lives in :sync and runs as its own process — nothing here dials out.
     api(project(":common"))
+    // The page server: routes, the classpath asset cache and its validators, and
+    // the stats document holder. api because serveRelay takes an IconedPage and
+    // a StatsSnapshot in its signature.
+    api(project(":web"))
     api(libs.quartz)
     api(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)

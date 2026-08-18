@@ -42,7 +42,7 @@ package com.nosfabrica.vespa.relay.server
  * once unset publishes our own url, the doc's `icon` is no longer a reliable
  * signal that an override exists — redirecting `/favicon.ico` to whatever the
  * doc says would send it to itself. That is why [selfIconUrl] is compared
- * against rather than assumed absent; see `iconOverride` in HttpServer.
+ * against rather than assumed absent; see `iconOverride` in :web.
  */
 
 /**
@@ -83,52 +83,3 @@ internal fun selfIconUrl(relayUrl: String?): String? {
     if (!reachable) return null
     return "$scheme://$authority/favicon.ico"
 }
-
-/**
- * Every `<link rel="icon">` in a page, replaced by one pointing at [icon].
- *
- * Replaced rather than appended, and this is the half that would silently do
- * nothing if it were skipped: the pages hint the built-in SVG FIRST, and Chrome,
- * Firefox and Edge all prefer an SVG icon to an `.ico`. An operator's icon added
- * alongside would lose to ours in every browser except Safari — an override that
- * appears to work only where nobody looks.
- *
- * [icon] null leaves the markup exactly as it is on disk, which is the common
- * case and the one worth keeping byte-identical: with no override the pages are
- * the classpath's own bytes, and the two hints they carry are already this
- * relay's icon.
- *
- * The value is ESCAPED because of where it can come from. `RELAY_ICON` is an
- * operator's own environment, but `changerelayicon` is a NIP-86 RPC — an
- * authenticated admin over the network — and this function is what puts its
- * argument inside an HTML attribute of a page served to everyone.
- */
-internal fun pageWithIcon(
-    html: String,
-    icon: String?,
-): String {
-    val url = icon?.takeIf { it.isNotBlank() } ?: return html
-    val replacement = """<link rel="icon" href="${escapeAttribute(url)}" />"""
-    var first = true
-    return ICON_LINK.replace(html) {
-        if (first) {
-            first = false
-            // The captured indentation keeps the substituted line sitting where
-            // the pair it replaces sat; the pages are read by people.
-            it.groupValues[1] + replacement + it.groupValues[2]
-        } else {
-            ""
-        }
-    }
-}
-
-/** One `<link rel="icon" …>` line, with its leading indentation and trailing newline. */
-private val ICON_LINK = Regex("""([ \t]*)<link rel="icon"[^>]*>(\r?\n?)""")
-
-/** The four characters that can leave an HTML attribute's quotes, or start an entity. */
-private fun escapeAttribute(value: String) =
-    value
-        .replace("&", "&amp;")
-        .replace("\"", "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")

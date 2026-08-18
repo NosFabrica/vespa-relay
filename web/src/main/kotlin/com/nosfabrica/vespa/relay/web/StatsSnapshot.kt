@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.server
+package com.nosfabrica.vespa.relay.web
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -35,7 +35,7 @@ import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * What `GET /stats.json` serves: the last computed statistics document, held in
+ * What a service's `GET /stats.json` serves: the last computed statistics document, held in
  * memory with a validator, and written through to a file so a restart answers
  * with the previous one instead of nothing.
  *
@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicReference
  * The obvious shape is to write the JSON somewhere public and let a static
  * handler serve it. Two reasons it is not that here.
  *
- * The relay has no public static directory. `/web/…` is served from
+ * These services have no public static directory. `/web/…` is served from
  * [WebAssets] off the classpath rather than Ktor's `staticResources`,
  * specifically so it can mint content-derived validators — a jar entry's mtime
  * is the build's, not the file's. Adding a disk-backed static root for one file
@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicReference
  * audit land in). Serving is a different question and is answered from memory,
  * where the bytes and their ETag are already computed.
  *
- * The write is atomic (temp file + move), same as [BanListFile] and for the
+ * The write is atomic (temp file + move), same as the relay's own `BanListFile` and for the
  * same reason: a reader that catches a half-written document gets a parse error
  * on the next boot, and the recovery for that is silently starting empty.
  */

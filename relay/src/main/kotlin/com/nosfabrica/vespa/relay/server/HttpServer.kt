@@ -21,38 +21,33 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.config.defaultRelayLimits
+import com.nosfabrica.vespa.relay.web.IconedPage
+import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.favicon
+import com.nosfabrica.vespa.relay.web.iconOverride
+import com.nosfabrica.vespa.relay.web.installPageDefaults
+import com.nosfabrica.vespa.relay.web.respondPage
+import com.nosfabrica.vespa.relay.web.statsDocument
+import com.nosfabrica.vespa.relay.web.webModules
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.defaultForFilePath
-import io.ktor.http.withCharset
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
-import io.ktor.server.plugins.compression.Compression
-import io.ktor.server.plugins.compression.deflate
-import io.ktor.server.plugins.compression.gzip
-import io.ktor.server.plugins.compression.minimumSize
-import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.request.host
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
-import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The NIP-11 relay identity served on `GET /` (Accept: application/nostr+json).
@@ -152,20 +147,7 @@ fun serveRelay(
         }
 
     return embeddedServer(Netty, port = port) {
-        // The pages are ~117KB of text — html, ES modules, css — and none of it
-        // was compressed. Measured over a Cloudflare tunnel, a cold load was
-        // 1,513ms for 13 requests; text of this shape gives back roughly 4x to
-        // gzip, and the saving lands entirely on the link, which is where the
-        // time goes for anyone not on localhost.
-        //
-        // Text only, and above a threshold: the websocket path is untouched
-        // (its frames are already small and latency-sensitive), and compressing
-        // a 200-byte NIP-11 document costs more than it saves.
-        install(Compression) {
-            gzip { priority = 1.0 }
-            deflate { priority = 0.9 }
-            minimumSize(1024)
-        }
+        installPageDefaults()
 
         // Onion-Location: the standard way a clearnet service says "I am also
         // this hidden service". Tor Browser turns it into the ".onion
@@ -188,16 +170,6 @@ fun serveRelay(
             },
         )
 
-        install(CORS) {
-            // NIP-11 is consumed by browser clients and NIP-86 by browser
-            // admin tools; both need CORS. anyHost is correct here — the
-            // endpoints are public by design, and the admin RPC's security
-            // is the NIP-98 token, not the Origin.
-            anyHost()
-            allowMethod(HttpMethod.Post)
-            allowHeader(HttpHeaders.Authorization)
-            allowHeader(HttpHeaders.ContentType)
-        }
         install(WebSockets) {
             // Without a ping, a phone that walks off NAT leaves a half-open
             // socket whose session — subscriptions, fanout work, outbound
@@ -273,130 +245,6 @@ private const val ONION_LOCATION = "Onion-Location"
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
 
 /**
- * `GET /web/…` — the landing page's native ES modules, straight off the
- * classpath, no build step.
- *
- * A distinct /web prefix rather than a root fallback: the root is already
- * three-way overloaded (WS upgrade, NIP-11 negotiation, the landing page), and
- * a wildcard there would have to lose to all of them by routing subtlety
- * instead of by construction.
- *
- * Served from [WebAssets] rather than Ktor's `staticResources` for the
- * validator. A short max-age is the freshness bound the page wants — index.html
- * is revalidated every time, so a stale module can outlive a new page by at most
- * a minute — but on its own it means every load past that minute re-downloads
- * all 23 modules in full, and a deep link IS a full load. The classpath carries
- * no validators to revalidate against, so this mints one from the content: a
- * returning reader gets 23 empty 304s instead of ~40KB. The read and the hash
- * happen once per module for the life of the process; before this, every request
- * re-opened the classpath entry and re-gzipped it.
- *
- * Its own function so a test can mount it alone — the module directory is the
- * whole page, and a broken route here is a blank site.
- */
-internal fun Route.webModules() {
-    get("/web/{path...}") {
-        val rel =
-            call.parameters
-                .getAll("path")
-                .orEmpty()
-                .joinToString("/")
-        val asset = WebAssets.get(rel)
-        if (asset == null) {
-            call.respond(HttpStatusCode.NotFound)
-        } else {
-            call.respondAsset(asset)
-        }
-    }
-}
-
-/**
- * `GET /favicon.ico` — the tab icon at the path a browser guesses.
- *
- * The pages all carry `<link rel="icon">` hints, so this route is for
- * everything that is NOT one of them: `/stats.json` opened in a tab, a 404, a
- * bookmark to the websocket url, and the crawlers and feed readers that only
- * ever ask the well-known path. Before this the relay served no icon at all and
- * a tab showed the browser's blank sheet.
- *
- * The same bytes [webModules] serves at `/web/favicon.ico`, from the same cache
- * — two urls for one resource on purpose. The markup points at `/web/…` because
- * that is where the page's assets live and where the validator and the
- * `max-age` already work; this path exists because a browser asking for it has
- * not read our markup.
- *
- * Its own function so a test can mount it alone, the same reason [webModules]
- * is one.
- */
-internal fun Route.favicon(icon: () -> String? = { null }) {
-    get("/favicon.ico") {
-        val override = icon()
-        if (override != null) {
-            // Temporary, not permanent: `RELAY_ICON` is an operator setting and
-            // a NIP-86 rpc can change it mid-run, and a 301 is the one redirect
-            // a browser is entitled to cache forever — an icon changed once
-            // would keep resolving to the old host on every client that saw it.
-            call.respondRedirect(override, permanent = false)
-        } else {
-            // Absent only if someone deleted the resource — a 404 is then the
-            // honest answer, and it is the answer this route replaced.
-            WebAssets.get("favicon.ico")?.let { call.respondAsset(it) } ?: call.respond(HttpStatusCode.NotFound)
-        }
-    }
-}
-
-/**
- * The icon an operator set, or null when the icon in the doc is the one this
- * relay serves anyway.
- *
- * The whole point is the null. With `RELAY_ICON` unset the NIP-11 doc now
- * publishes [selfIconUrl] — this relay's own `/favicon.ico` — so "the doc has an
- * icon" stopped meaning "the operator overrode the icon". Treating it as an
- * override would rewrite every page's `<link rel="icon">` to a url identical to
- * the built-in one it replaced (harmless, but a needless absolute url and a
- * second name for one file), and, worse, point `/favicon.ico` at itself: a
- * browser following that redirect arrives at the route that issued it and loops
- * until it gives up with no icon at all.
- */
-internal fun iconOverride(
-    icon: String?,
-    selfIconUrl: String?,
-): String? = icon?.takeIf { it.isNotBlank() && it != selfIconUrl }
-
-/**
- * A page whose icon links follow the relay document.
- *
- * Two states, and the common one costs nothing: with no override the html is
- * the classpath's own bytes and the [CachedPage] is built once, exactly as
- * before. With one, the markup is re-rendered — and re-rendered AGAIN whenever a
- * NIP-86 `changerelayicon` moves the doc, because a cached page is otherwise
- * frozen at boot and would keep serving a link to an icon the relay no longer
- * claims.
- *
- * Rebuilt on change rather than rendered per request: the substitution and the
- * etag hash together walk 25KB of markup, a page load asks for that markup all
- * the time, and an admin rpc arrives approximately never.
- */
-internal class IconedPage(
-    private val template: String,
-    icon: String?,
-) {
-    @Volatile
-    private var current: String? = icon
-
-    @Volatile
-    var page: CachedPage = CachedPage(pageWithIcon(template, icon))
-        private set
-
-    /** Re-theme, unless this is the icon already drawn — most rpcs change something else. */
-    fun icon(icon: String?) {
-        if (icon == current) return
-        current = icon
-        page = CachedPage(pageWithIcon(template, icon))
-    }
-}
-
-/**
  * `GET /stats.html` and `GET /stats.json` — the corpus statistics page and the
  * document it charts.
  *
@@ -437,145 +285,7 @@ internal fun Route.corpusStats(
         // only count the ones it already knew to name.
         get("/kind_stats.html") { call.respondRedirect("/stats.html", permanent = true) }
     }
-    snapshot?.let {
-        get("/stats.json") {
-            val doc = it.served()
-            if (doc == null) {
-                // 503, not an empty document: "no statistics yet" is a state a
-                // poller should retry, and a 200 carrying zeros is
-                // indistinguishable from a relay that genuinely holds nothing.
-                call.respondText(
-                    """{"error":"no statistics computed yet"}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.ServiceUnavailable,
-                )
-            } else {
-                call.respondSnapshot(doc)
-            }
-        }
-    }
-}
-
-/**
- * A strong ETag over [bytes] — the first 16 hex of its SHA-256.
- *
- * Content-derived rather than a timestamp on purpose: a jar entry's mtime is
- * the build's, not the file's, so two deploys of an unchanged module would
- * still miss. A hash makes "unchanged" mean unchanged.
- */
-private fun etagOf(bytes: ByteArray): String =
-    MessageDigest
-        .getInstance("SHA-256")
-        .digest(bytes)
-        .take(8)
-        .joinToString("") { "%02x".format(it) }
-        .let { "\"$it\"" }
-
-/** One of the three HTML pages, with the validator that saves re-sending it. */
-internal class CachedPage(
-    val html: String,
-) {
-    val etag: String = etagOf(html.toByteArray(Charsets.UTF_8))
-}
-
-/**
- * The landing/stats pages, revalidated every time but re-sent only when they
- * changed.
- *
- * `no-cache` is NOT "do not store": it means the browser must ask before
- * reusing, which is exactly the property these pages need — a deploy is picked
- * up on the next load, and the modules under /web can never outlive their page
- * by more than their own max-age. What it adds is the 304: reloading a page
- * that has not changed since the last deploy costs a header exchange instead of
- * 25KB of markup and inline CSS re-gzipped from scratch.
- */
-private suspend fun ApplicationCall.respondPage(page: CachedPage) {
-    response.header(HttpHeaders.ETag, page.etag)
-    response.header(HttpHeaders.CacheControl, "no-cache")
-    if (matchesEtag(page.etag)) {
-        respond(HttpStatusCode.NotModified)
-    } else {
-        respondText(page.html, ContentType.Text.Html)
-    }
-}
-
-/**
- * The statistics document, revalidated every time and re-sent only when the
- * rollup actually produced something new.
- *
- * The 304 is the point rather than a nicety: the page polls this on a timer and
- * the rollup is far slower than the poll, so most fetches are for bytes the
- * reader already has. `no-cache` (revalidate, don't reuse blind) rather than a
- * `max-age` guess, because the rollup interval is an operator setting and a
- * cache lifetime picked here would be wrong for anyone who changed it.
- */
-private suspend fun ApplicationCall.respondSnapshot(doc: StatsSnapshot.Served) {
-    response.header(HttpHeaders.ETag, doc.etag)
-    response.header(HttpHeaders.CacheControl, "no-cache")
-    if (matchesEtag(doc.etag)) {
-        respond(HttpStatusCode.NotModified)
-    } else {
-        respondBytes(doc.bytes, ContentType.Application.Json)
-    }
-}
-
-/** The same exchange for a /web module, which additionally may be reused for a minute. */
-private suspend fun ApplicationCall.respondAsset(asset: WebAssets.Asset) {
-    response.header(HttpHeaders.ETag, asset.etag)
-    response.header(HttpHeaders.CacheControl, "max-age=60")
-    if (matchesEtag(asset.etag)) {
-        respond(HttpStatusCode.NotModified)
-    } else {
-        respondBytes(asset.bytes, asset.contentType)
-    }
-}
-
-/**
- * Does the request already hold this exact version?
- *
- * `If-None-Match` is a comma-separated list, and a proxy may hand back a weak
- * form (`W/"…"`) of a tag we minted strong. Both are the same content by
- * construction here — one immutable resource, one hash — so the weak prefix is
- * stripped rather than treated as a mismatch that would re-send the body.
- */
-private fun ApplicationCall.matchesEtag(etag: String): Boolean =
-    request.headers[HttpHeaders.IfNoneMatch]
-        ?.split(',')
-        ?.any { it.trim().removePrefix("W/") == etag } == true
-
-/**
- * The page's ES modules, read off the classpath once each and held.
- *
- * Lazily, not enumerated at boot: the resources live inside the jar in a
- * deployment and inside a build directory in a test, and walking either is
- * more machinery than a map that fills itself on first use. The safety comes
- * from the path check rather than from the enumeration — [WEB_PATH] admits only
- * plain segment names, and `..` is rejected outright, so a request can only
- * ever name a file under `web/`.
- */
-internal object WebAssets {
-    class Asset(
-        val bytes: ByteArray,
-        val contentType: ContentType,
-        val etag: String,
-    )
-
-    private val cache = ConcurrentHashMap<String, Asset>()
-    private val WEB_PATH = Regex("^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*(?:/[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*)*$")
-
-    fun get(rel: String): Asset? {
-        if (rel.isEmpty() || rel.contains("..") || !WEB_PATH.matches(rel)) return null
-        cache[rel]?.let { return it }
-        val bytes = javaClass.getResourceAsStream("/web/$rel")?.use { it.readBytes() } ?: return null
-        // The modules are UTF-8 source and carry non-ASCII (the "…" in every
-        // clipped label), so the charset has to be stated. Anything that is not
-        // text keeps the type Ktor derives from its extension, unannotated.
-        val base = ContentType.defaultForFilePath(rel)
-        val type = if (base.contentType == "text" || base.contentSubtype in TEXTUAL) base.withCharset(Charsets.UTF_8) else base
-        return cache.computeIfAbsent(rel) { Asset(bytes, type, etagOf(bytes)) }
-    }
-
-    private val TEXTUAL = setOf("javascript", "json", "xml", "svg+xml")
+    statsDocument(snapshot)
 }
 
 /**

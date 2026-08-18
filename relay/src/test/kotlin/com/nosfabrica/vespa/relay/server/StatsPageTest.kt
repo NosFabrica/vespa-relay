@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.web.IconedPage
+import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.WebAssets
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText

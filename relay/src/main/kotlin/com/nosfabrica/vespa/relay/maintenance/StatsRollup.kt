@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.nosfabrica.vespa.relay.server.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.vitorpamplona.quartz.kinds.KindNames
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope

@@ -20,6 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.web.IconedPage
+import com.nosfabrica.vespa.relay.web.favicon
+import com.nosfabrica.vespa.relay.web.iconOverride
+import com.nosfabrica.vespa.relay.web.pageWithIcon
 import io.ktor.client.request.get
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
