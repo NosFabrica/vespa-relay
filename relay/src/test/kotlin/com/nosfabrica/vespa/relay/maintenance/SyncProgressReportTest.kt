@@ -820,14 +820,13 @@ class SyncProgressReportTest {
 
     @Test
     fun `every reason the gate can reach survives this side, and its hosts are ranked as sent`() {
-        // THE CAP THAT WAS ONE SHORT. This side bounds what the router already
-        // bounded, and the two numbers have to be read together: the router
-        // publishes up to `Processors.MAX_UNDECIDED_REASONS` (8) and the
-        // stability gate can reach seven of them, while this side cut at six.
-        // Cutting BELOW the router is not bounding, it is dropping — and the
-        // dropped reason's urls then land in the card's `not accounted for`
-        // slice, which reports an arithmetic fault against a document that was
-        // complete when it arrived.
+        // THE CAP THAT WAS ONE SHORT — twice, at six and at eight, and it is
+        // gone from both sides now. A reason is an enum value in the router's
+        // source, so the network cannot grow this list and a number beside it
+        // could only ever pick which reasons an operator is not shown. Cutting
+        // was not bounding, it was dropping: the dropped reason's urls land in
+        // the card's `not accounted for` slice, which reports an arithmetic
+        // fault against a document that was complete when it arrived.
         val reasons =
             listOf(
                 "declined by our own transport",

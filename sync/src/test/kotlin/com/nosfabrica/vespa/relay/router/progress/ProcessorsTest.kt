@@ -209,22 +209,27 @@ class ProcessorsTest {
     }
 
     @Test
-    fun `a held list wider than the cap says how much it left out`() {
-        // The monitor's dial concurrency is 500 by default, so unlike a
-        // stream's legs this list genuinely is cut — and a list that does not
-        // disclose its truncation reads as the whole answer.
+    fun `a wide pass publishes every url it is holding, not a head of them`() {
+        // A row here is a JOB, so the monitor's `dialConcurrency` already
+        // bounds the set — which puts it on the far side of this repo's rule
+        // that a cap is for a list the NETWORK can grow. It was cut to twenty
+        // once, on the argument that most rows are ordinary dials a second old:
+        // true of the ROWS and false of the LIST, since `omitted: 480` says
+        // nothing about whether those 480 are healthy while the whole set
+        // sorted by age is the distribution, and the distribution is what an
+        // operator is reading the list for.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 0)
-        for (i in 0 until Processors.MAX_HELD_RELAYS + 5) {
+        for (i in 0 until 500) {
             fitness.holding("wss://r$i.example/", "ask ladder", nowMs = 1_000L + i)
         }
 
         val held = p.snapshot(nowMs = 2_000).single().inFlight!!
-        assertEquals(Processors.MAX_HELD_RELAYS, held.relays.size)
-        assertEquals(5, held.omitted)
-        // …and what it kept is the oldest, not whichever the map happened to
-        // hand back: the cut must never be able to drop the wedged leg.
+        assertEquals(500, held.relays.size)
+        assertEquals(0, held.omitted, "the member stays as the schema's promise; nothing is being dropped")
+        // …and the order is still oldest first, so the wedged leg is at the top
+        // for whatever the page chooses to draw.
         assertEquals("wss://r0.example/", held.relays.first().relay)
     }
 

@@ -866,7 +866,6 @@ class AliasFolding(
                 dialled = probed,
                 decided = learned,
                 undecided = undecidedRows(undecided),
-                undecidedOmitted = (undecided.values.distinct().size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),
             ),
         )
         // WHICH HOSTS THIS PASS LEFT UNFOLDED, AND WHY.
@@ -912,7 +911,6 @@ class AliasFolding(
         val byReason = undecided.entries.groupBy({ it.value }, { it.key })
         return Undecided.entries
             .filter { byReason.containsKey(it) }
-            .take(Processors.MAX_UNDECIDED_REASONS)
             .map { reason ->
                 val hosts = byReason.getValue(reason)
                 Processors.Undecided(

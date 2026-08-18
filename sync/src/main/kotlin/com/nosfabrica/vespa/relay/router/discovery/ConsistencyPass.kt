@@ -420,8 +420,11 @@ class ConsistencyPass(
                 unmeasured = unmeasured,
                 dialled = dialled,
                 decided = decided,
-                undecided = rows.take(Processors.MAX_UNDECIDED_REASONS),
-                undecidedOmitted = (rows.size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),
+                // WHOLE. A reason is an enum value in this source, so the
+                // network cannot grow this list and there is nothing for a cap
+                // to protect — see [Processors.Work.undecidedOmitted] for the
+                // two times one was short of its own enumeration.
+                undecided = rows,
             ),
         )
     }

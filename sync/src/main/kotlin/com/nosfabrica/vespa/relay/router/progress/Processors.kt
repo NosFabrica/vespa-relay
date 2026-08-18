@@ -170,7 +170,23 @@ class Processors {
          * outlives the log.
          */
         val undecided: List<Undecided> = emptyList(),
-        /** Reasons left out of [undecided]. Never silent, for [InFlight]'s reason. */
+        /**
+         * Reasons left out of [undecided]. Never silent, for [InFlight]'s reason.
+         *
+         * ZERO, always, since the list stopped being cut — and the member stays
+         * because absent cannot be told from "nothing dropped".
+         *
+         * It WAS sixteen, and that cap was the file's own rule broken twice
+         * over. A reason is an enum value in this source — five from the fold,
+         * thirteen from the stability gate — so the network cannot grow the
+         * list and a cap could only ever pick which reasons an operator is not
+         * shown. Worse, truncating did not merely shorten it: the rows sum to
+         * [unmeasured], so a cut tail surfaced on the card as `not accounted
+         * for` in the fault tone — an arithmetic error reported against a pass
+         * that was working. The cap was one short twice, at six and at eight,
+         * both times because a reason list grew and the number did not. Nothing
+         * can be short of an enumeration it does not bound.
+         */
         val undecidedOmitted: Int = 0,
     )
 
@@ -284,16 +300,37 @@ class Processors {
      * relay for an hour while it streams two million events. Here every leg is
      * bounded by [AliasProbe.deadlineMs] by construction, so a leg near that
      * bound is the anomaly and the front of the list is where it belongs.
+     *
+     * ## WHOLE, like [InFlight] and for the same reason
+     *
+     * A row is a JOB, so the monitor's `dialConcurrency` already bounds the set
+     * — 128 by default, and whatever an operator chose when it is not. That
+     * puts it on the side of the line this file draws elsewhere: a cap is for a
+     * list the network can grow, and capping one our own configuration bounds
+     * only picks which rows an operator is not shown. It was cut to twenty
+     * once, on the argument that 499 of 500 rows are ordinary dials a second
+     * old — which is true of the ROWS and false of the LIST: `omitted: 480`
+     * says nothing about whether those 480 are healthy, while the whole set
+     * sorted by age is the distribution, and the distribution is the finding.
+     * The page still draws a few of them; that is an editorial cut, it belongs
+     * at the display layer, and the record it is drawn from is complete.
      */
     class Holding(
         /** Urls with a live job, longest-held first. */
         val relays: List<Held>,
         /**
-         * How many more the pass is holding and are not named here.
+         * How many more had a job and are not named here.
          *
-         * Bounded by the monitor's `dialConcurrency`, which is 500 by default —
-         * far wider than a stream's transfer pool, so unlike [InFlight] this one
-         * genuinely is cut, and says so.
+         * ZERO, always, and kept for the reason [InFlight.omitted] is kept from
+         * the pool: a list that does not disclose its truncation reads as the
+         * whole answer, and a reader finding the member absent cannot tell
+         * "nothing dropped" from "does not say".
+         *
+         * This was a cut of twenty, and the cut broke the rule the rest of this
+         * file holds — a cap is for a list the NETWORK can grow, and a held row
+         * is a JOB, so `dialConcurrency` already bounds it. Capping it only
+         * picked which rows an operator is not shown, and picked them from the
+         * one list that exists because a row was not shown.
          */
         val omitted: Int,
     ) {
@@ -654,7 +691,6 @@ class Processors {
                 // taken in the same millisecond do not swap places between two
                 // rollups of one state.
                 .sortedWith(compareBy({ it.second }, { it.first }))
-                .take(MAX_HELD_RELAYS)
                 .map { (relay, takenMs, stage) ->
                     Holding.Held(
                         relay = relay,
@@ -662,7 +698,9 @@ class Processors {
                         stage = stage,
                     )
                 }
-        return Holding(named, (rows.size - named.size).coerceAtLeast(0))
+        // Whole — see [Holding]. `omitted` is the schema's promise rather than
+        // a count this side can make non-zero.
+        return Holding(named, 0)
     }
 
     /** What a processor holds to report through. Cheap to keep; safe to call from anywhere. */
@@ -873,35 +911,6 @@ class Processors {
          * measure" are different states, and only the second one is permanent.
          */
         const val OFF = "off"
-
-        /**
-         * How many `undecided` reasons a work row publishes.
-         *
-         * Sixteen covers both enumerations whole with headroom: five from the
-         * fold, and thirteen from the stability gate — six reasons plus the
-         * SEVEN causes `never answered a REQ` splits into. Truncating here does
-         * not merely shorten a list, it breaks the property the url counts
-         * exist for: the rows sum to [Work.unmeasured], and a cut tail surfaces
-         * on the card as `not accounted for` in the fault tone — an arithmetic
-         * error reported against a pass that was working. This has been one
-         * short twice, once at six and once at eight, both times because a
-         * reason list grew and the cap did not.
-         */
-        const val MAX_UNDECIDED_REASONS = 16
-
-        /**
-         * How many held urls a processor names — see [Holding].
-         *
-         * [InFlight] publishes its whole set and argues the cut was wrong
-         * twice over; this one keeps a cut for the reason that argument turned
-         * on. There, a row is a transfer worker and `visitConcurrency` is 128,
-         * so the whole set is small and every row is interesting. Here the
-         * monitor's `dialConcurrency` is 500 by default and 499 of those rows
-         * are ordinary dials a second old. Sorted longest-held first, the top
-         * of the list is where a wedged leg is by construction, and `omitted`
-         * keeps the truncation from reading as the whole answer.
-         */
-        const val MAX_HELD_RELAYS = 20
 
         /**
          * Named hosts per reason.

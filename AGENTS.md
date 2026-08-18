@@ -1307,6 +1307,30 @@ in the rollup dropped that row before the page could apply the rule, silently,
 since neither had an `omitted` to disclose it with. The invariant is now held on
 both sides rather than defended on one and undermined on the other.
 
+**The rule was audited against every cap in the two rollups, and three failed
+it.** They are gone; what is left is the list of caps that earn their keep, and
+a new one has to argue its way onto it:
+
+| cap | length decided by | verdict |
+|---|---|---|
+| held urls per processor | `dialConcurrency` — a job, our config | REMOVED |
+| `undecided` reasons | two enums in our source (5 + 13) | REMOVED |
+| `passes` on the relay side | `StreamPhases.MAX_TRACKED_CYCLES` — our source | REMOVED |
+| hosts named under a reason (100) | the host universe — discovery | kept |
+| `foldedOnto` survivors and their sample urls | discovery | kept |
+| ingest rejection reasons | store error strings, already overflow-bucketed at source | kept |
+
+Two things the audit made explicit. **A cap on a list our own source bounds is
+not a safety ceiling, it is an editorial one**, and the editorial cut belongs at
+the display layer where it can be widened without a redeploy of the writer —
+`sync.js` still draws a few held urls with `+N more`, and the record it draws
+from is whole. **And a re-cap on the relay side of a list the router already cut
+is worse than either**, because it is a number over here that has to be kept in
+step with a number over there in order to go on doing nothing; the undecided one
+was one short twice, at six and at eight, both times because a reason list grew
+and the number did not. `omitted` survives every removal as the schema's promise
+— absent cannot be told from "nothing dropped".
+
 `AliasMonitor.runPass` runs ONE PASS over every stream rather than one stream
 over every pass, which is what makes a pass a clocked unit — `lastPassAt`,
 `lastPassSec` and the `measuring` phase describe the whole pass instead of
