@@ -2951,9 +2951,10 @@ by rendering the real card against a live `/stats.json`, not by a unit test.
 > became `visitConcurrency` against `tailBudget`; the leg give-up
 > (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
 > `dropFolded` runs in `certifiedScan`; `refusedOutright` ends a visit as it
-> ended a leg; `SharedIdSet`, bands and `CycleTally` survive unchanged. Read
-> what follows as the record of WHY those rules exist, not as a map of the
-> current code.
+> ended a leg; the bands survive unchanged. `SharedIdSet` and `CycleTally` do
+> NOT — they went with the second wave, so read every mention of them below as
+> history too. Read what follows as the record of WHY those rules exist, not as
+> a map of the current code.
 
 **The fan-out no longer JOINS, and that is the change to understand before
 touching the dynamic engine.** A dynamic stream used to launch every discovered relay,
