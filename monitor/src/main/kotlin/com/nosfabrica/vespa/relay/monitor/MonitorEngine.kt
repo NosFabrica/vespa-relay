@@ -286,6 +286,12 @@ class MonitorEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
+                // `aliases` ALONE, deliberately: this pass SIGNS a record for
+                // every entry it is handed — `l=alias`, `folds onto <url>`, on
+                // a tag `publishFitness` owns and therefore replaces. Only the
+                // half a probe actually measured may be published that way, so
+                // a stand-in elected for an absent survivor must not arrive
+                // here. See [AliasFolding.Collapsed.standIns].
                 foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                 inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
@@ -434,8 +440,14 @@ class MonitorEngine(
      * store. Everything else it takes — the grades, `speaksNegentropy` — is a
      * plain NIP-01 read of records signed here, which is why that direction
      * would survive a process boundary untouched and this one would not.
+     *
+     * BOTH maps, where the fitness pass above is handed `aliases` alone, and
+     * the difference is the whole of `Collapsed.standIns`: this caller only
+     * decides which socket to open, and nothing here publishes anything. A
+     * stand-in is not evidence — but it does keep a group whose survivor went
+     * missing from being dialled once per member.
      */
-    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls)?.aliases ?: emptyMap()
+    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls)?.let { it.aliases + it.standIns } ?: emptyMap()
 
     /** How many candidate urls a current `dead` verdict of ours holds out of the passes — for the health line. */
     fun heldOutDead(): Int = world.lastDerivation.heldOutDead
