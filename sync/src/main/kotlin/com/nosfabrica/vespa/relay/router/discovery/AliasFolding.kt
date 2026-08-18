@@ -154,14 +154,40 @@ class AliasFolding(
      * not reproducible — and the only safe reading of it is to dial the url as
      * it stands. Kept separate from [dial] so that policy is the caller's
      * explicit choice rather than a silent default inside here.
+     *
+     * **[aliases] AND [standIns] ARE SEPARATE BECAUSE ONE OF THEM GETS SIGNED.**
+     * `FitnessPass` turns every entry it is handed into a published 30166
+     * carrying `l=alias` and the evidence `folds onto <url>` — and
+     * `publishFitness` OWNS that tag, so the write also replaces whatever grade
+     * the url held. A map that mixed the two would therefore sign a pairing no
+     * probe ever took, and could overwrite a sibling's `prime` with an `alias`
+     * pointing at a member that happens to be broken. Which map a consumer
+     * reads is the whole safety property: take [aliases] to publish, take both
+     * to route.
      */
     data class Collapsed(
         /** The urls worth dialling: canonical, plus everything still unmeasured. */
         val dial: List<NormalizedRelayUrl>,
-        /** Folded url -> the url that stands in for it. */
+        /**
+         * Folded url -> the survivor a PROBE compared it against, present in
+         * this set. Backed by a measurement, and therefore the only half of the
+         * collapse a caller may publish a verdict from.
+         */
         val aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
         /** Urls with no verdict either way. A subset of [dial]. */
         val unmeasured: List<NormalizedRelayUrl>,
+        /**
+         * Folded url -> the member standing in for a survivor that is ABSENT
+         * from this set — see [collapse]'s re-election.
+         *
+         * ROUTING ONLY, and never evidence of anything. These two urls were
+         * each measured against the missing canonical and never against each
+         * other, so the pairing is inferred rather than taken, and no caller
+         * may publish it. A consumer that only decides which socket to open —
+         * `RosterBuilder` — applies it exactly like [aliases]; one that signs a
+         * record about a url must not.
+         */
+        val standIns: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
     /**
@@ -1219,39 +1245,65 @@ class AliasFolding(
      * missing one, and folds the rest onto that. The group stays one relay,
      * which is the whole property the fold exists to hold.
      *
-     * **This publishes NOTHING, and that is what makes it sound.** A fold is a
-     * measurement — B was compared against A — and the members of a group were
-     * each measured against the canonical, never against each other, so "B
-     * folds onto C" is a claim this has not earned and does not make. The
-     * `same-as` records still name A; [Collapsed.aliases] is documented as the
-     * url that STANDS IN for this one, and that is exactly the weaker thing
-     * being said here. The cost of the transitive step being wrong is bounded
-     * by the same TTL and is the cost the stored verdict already imposes —
-     * a group treated as one relay — redirected onto a member that answers.
-     * And it is not sticky: the moment A is discovered again, or its `dead`
-     * verdict lapses, `standIn` picks A back up with no re-probe and no record
-     * to retract.
+     * **The re-election leaves by [Collapsed.standIns], NOT by
+     * [Collapsed.aliases], and that separation is what makes it sound.** A fold
+     * is a measurement — B was compared against A — and the members of a group
+     * were each measured against the canonical, never against each other, so
+     * "B folds onto C" is a claim this has not earned. It must therefore never
+     * reach a signed record, and hoping a consumer treats it gently is not a
+     * guarantee: `FitnessPass` publishes a 30166 `l=alias` for every entry in
+     * the map it is given, and `publishFitness` owns that tag, so one mixed map
+     * would both sign an untaken pairing and overwrite a working sibling's
+     * `prime` with an alias pointing at whichever member preference happened to
+     * pick. Two fields make the distinction structural: the publisher reads
+     * `aliases` and cannot see a stand-in, the router reads both.
      *
-     * The one case this does NOT reach is a survivor that is present and
-     * un-dialable — the same corpse still in the relay list a roster reads, so
-     * `RosterBuilder` folds a live group onto it and the host leaves the
-     * fan-out. Telling those apart needs the grade, which this component
-     * deliberately cannot see; it is a change to what the caller hands in, not
-     * to this line.
+     * What routing on it costs if the transitive step is wrong is one cycle of
+     * a group treated as one relay — the treatment the stored verdict already
+     * imposes — redirected onto a member that answers. Nothing is sticky: the
+     * `same-as` records still name A, so the moment A is discovered again or
+     * its `dead` verdict lapses, `standIn` picks A back up with no re-probe and
+     * no record to retract.
+     *
+     * ## Two cases this deliberately does NOT reach
+     *
+     * A survivor that is present and UN-DIALABLE — the same corpse still in the
+     * relay list a roster reads, so the fold applies as written and the host
+     * leaves the fan-out. And an election that picks a member the CALLER will
+     * then drop for its own reasons, which is `RosterBuilder`'s `gatedBy`
+     * intersection: preference ranks urls, it does not know which of them a
+     * gate vouches for, so a group whose vouched member loses the election is
+     * held out until the next cycle. Both need a grade or a gate this component
+     * deliberately cannot see, and both are a change to what the caller hands
+     * in rather than to this line.
      */
     private fun collapse(candidates: List<NormalizedRelayUrl>): Collapsed {
         val present = candidates.toHashSet()
         val elected = reElected(candidates, present)
-        // The url to dial in place of this one: the recorded survivor while it
-        // is here to stand in, the group's stand-in for it while it is not, and
-        // the url itself when it is nobody's duplicate or the only one left.
-        val standIn = { url: NormalizedRelayUrl ->
+        // ONE pass, and one `canonicalOf` per url inside it. This was a `map`,
+        // a `filter` and an `associateWith` over the candidates, each of which
+        // re-derived the stand-in — three lookups per url where the answer is
+        // the same one, on a set that is 12,374 urls on a live router and is
+        // re-collapsed in front of every roster tick.
+        //
+        // The two maps are sorted as they are built, by the ONE question that
+        // separates them: was this url measured against the url it is handed
+        // to, or merely elected onto it. See [Collapsed.standIns].
+        val measured = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val inferred = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val dial = ArrayList<NormalizedRelayUrl>(candidates.size)
+        val seen = HashSet<NormalizedRelayUrl>(candidates.size)
+        for (url in candidates) {
             val canonical = aliases.canonicalOf(url)
-            if (canonical in present) canonical else elected[canonical] ?: url
+            // The recorded survivor while it is here to stand in, the group's
+            // elected stand-in while it is not, and the url itself when it is
+            // nobody's duplicate or the only member left.
+            val into = if (canonical in present) canonical else elected[canonical] ?: url
+            if (seen.add(into)) dial += into
+            if (into == url) continue
+            if (into == canonical) measured[url] = into else inferred[url] = into
         }
-        val dial = candidates.map(standIn).distinct()
-        val map = candidates.filter { standIn(it) != it }.associateWith(standIn)
-        return Collapsed(dial, map, dial.filter { !aliases.measured(it) })
+        return Collapsed(dial, measured, dial.filter { !aliases.measured(it) }, inferred)
     }
 
     /**
