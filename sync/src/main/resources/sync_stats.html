@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="What this mirror is doing: which relays each stream is riding, what the background passes are measuring, and how far the walk has reached." />
+<title>Mirror status</title>
+<!-- Served off the classpath, so these resolve to whichever jar ships them —
+     :relay's today. See WebAssets for why that is a url question and not a
+     module question. -->
+<link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/web/favicon.ico" sizes="16x16 32x32 48x48" />
+<link rel="stylesheet" href="/web/shared/stats.css" />
+<!--
+  WHAT THIS MIRROR IS DOING, charted from this service's own GET /stats.json.
+
+  THIS PAGE IS SERVED BY THE MIRROR, and that is the whole point of it existing
+  separately. It used to be two cards on the relay's /stats.html, drawn from
+  three JSON files the mirror wrote to a volume the relay mounted and read back.
+  That arrangement could not answer the first question an operator has. A file
+  says nothing about whether the process writing it still exists, so the
+  document had to carry a heartbeat and the relay had to turn it into a
+  staleness reading — and a mirror that had been down for a day published
+  exactly the card a mirror mid-cycle did.
+
+  Now the process that holds the numbers serves the page. "Is it running" is
+  answered by whether this page loaded, and about 2,500 lines on the relay's
+  side whose only job was to re-parse and re-narrate another process's files
+  went with the boundary that justified them.
+
+  THE JSON IS STILL THE ARTIFACT and this page is one reader of it — the same
+  contract the relay's page holds to. Everything drawn here is in
+  /stats.json, unauthenticated, so a dashboard can chart a fleet of these
+  without scraping markup.
+-->
+</head>
+<body>
+<main>
+  <h1>Mirror status</h1>
+  <p class="sub" id="scope">Loading…</p>
+
+  <div id="body"></div>
+
+  <footer id="foot"></footer>
+</main>
+<div class="tip" id="tip"></div>
+
+<script type="module">
+import { mountStatsPage } from "/web/shared/statspage.js";
+import { monitorCard, syncCard } from "/web/sync/cards.js";
+
+/**
+ * The body, panel by panel — what each draws and which sections it reads from.
+ *
+ * The `reads` list is the REDRAW KEY, not documentation: a panel is rebuilt
+ * only when a section it reads has been recomputed. On this page that matters
+ * for the same reason it does on the relay's — the coverage card is thousands
+ * of rows tall behind a filter and a scroll box, and rebuilding it under a
+ * reader every thirty seconds would throw away both.
+ *
+ * Two panels off ONE section, rather than one card asking two questions. Sync
+ * coverage answers "is the mirror keeping up"; the monitor answers "what is out
+ * there, and how much of it can we use". Their own containers so each keeps its
+ * own redraw, and so a deployment running no monitor draws nothing here instead
+ * of an empty heading.
+ */
+const PANELS = [
+  { name: "sync", reads: ["sync"], build: (doc) => (doc.sync ? [syncCard(doc.sync)] : []) },
+  { name: "monitor", reads: ["sync"], build: (doc) => (doc.sync ? [monitorCard(doc.sync)].filter(Boolean) : []) },
+];
+
+mountStatsPage({
+  panels: PANELS,
+  // SyncStatus.SCHEMA_VERSION — its own number, not the relay's: the two
+  // documents are published by different processes and version independently.
+  schema: 1,
+  // One cadence, because nothing here queries anything: the document is a fold
+  // over maps this process already holds.
+  tiers: [["status", "Status"]],
+  pendingNote:
+    "The mirror builds this beside its own work and the first pass lands within a tick. If this persists, " +
+    "check the sync log for `router:` lines — and that SYNC_STATUS_INTERVAL_SECONDS is not set to something enormous.",
+  footNote: "Counted against this mirror's own state, not the relay's corpus.",
+});
+</script>
+</body>
+</html>

@@ -18,6 +18,10 @@ dependencies {
     // SyncEngine's constructor takes the audit and pressure types from :common,
     // and its tests build quartz filters — api keeps those visible downstream.
     api(project(":common"))
+    // This process serves its own status page: what it has walked, what its
+    // streams are doing, and the glossary for both. api because SyncStatus
+    // takes a StatsSnapshot in its signature.
+    api(project(":web"))
     api(libs.quartz)
     api(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)
@@ -29,6 +33,9 @@ dependencies {
     implementation(libs.typesafe.config)
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.serialization.json)
+    // The status site's routes are asserted in-process, the same way the
+    // relay's are, rather than eyeballed against a running container.
+    testImplementation(libs.ktor.server.test.host)
 }
 
 kotlin {
@@ -36,7 +43,7 @@ kotlin {
 }
 
 application {
-    mainClass = "com.nosfabrica.vespa.relay.router.SyncMainKt"
+    mainClass = "com.nosfabrica.vespa.relay.SyncMainKt"
     applicationName = "vespa-sync"
 }
 

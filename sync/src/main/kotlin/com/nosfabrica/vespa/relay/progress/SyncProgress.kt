@@ -26,13 +26,9 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
- * WHAT EACH STREAM IS DOING RIGHT NOW, written where the relay can read it.
+ * WHAT EACH STREAM IS DOING RIGHT NOW, as this process's own status site draws it.
  *
  * ## Why this file exists beside the other three
  *
@@ -61,7 +57,6 @@ import java.nio.file.StandardCopyOption
  *
  * ```json
  * {
- *   "writtenAt": 1770000000,
  *   "streams": [
  *     {
  *       "name": "content",
@@ -141,20 +136,19 @@ import java.nio.file.StandardCopyOption
  * order, longest-held first, because a probe leg is bounded by construction and
  * a long one is the anomaly. See [Processors.Holding].
  *
- * `writtenAt` is the HEARTBEAT and is the most load-bearing member here: it is
- * rewritten on every tick whatever the streams are doing, so a reader can tell a
- * quiet router from a stopped one — which nothing on the other side could do
- * before. Every other timestamp in this document says when something happened;
- * this one says the process was alive to say so.
+ * There is NO heartbeat member, and there used to be. This document was a file
+ * on a volume the serving relay read, so it had to carry a `writtenAt` the
+ * reader turned into a `staleForSec`: a file cannot say whether the process
+ * writing it still exists, and a mirror down for a day published exactly the
+ * card a mirror mid-cycle did. The document is served by the process that
+ * builds it now, so the question is answered by whether the request answers,
+ * and every timestamp left in here says when something HAPPENED.
  *
  * `urls` and `taken` are a PARTITION and the members are chosen to sum — see
  * the pass tallies for the two identities and for why `pending` was derived. `balanced`
  * is the writer's own check on them, published rather than asserted.
  */
-class SyncProgress(
-    /** Where the document is written; null publishes nothing — see [write]. */
-    private val file: File?,
-) {
+class SyncProgress {
     /**
      * WHERE THE CONSTRAINT IS, and the numbers behind it.
      *
@@ -190,21 +184,27 @@ class SyncProgress(
         val servingMs: Long?,
     )
 
-    /** Whether this router publishes progress at all, i.e. whether `SYNC_PROGRESS_FILE` named a path. */
-    val publishes: Boolean get() = file != null
+    /**
+     * The last document published, or null before the first tick.
+     *
+     * Read by the status site on the same heap that wrote it. This used to be a
+     * FILE the serving relay read off a shared volume, which is why the document
+     * carried a `writtenAt` heartbeat: a file cannot say whether the process
+     * writing it is still running, so the reader had to infer it from a
+     * timestamp that stopped advancing. Nothing infers it now — the page is
+     * served by this process, so a page that renders is a process that is alive.
+     *
+     * Volatile rather than locked: one writer on the progress tick, readers on
+     * Netty threads, and the reference is swapped whole.
+     */
+    @Volatile
+    var latest: JsonObject? = null
+        private set
 
     /**
-     * Write [streams] out. Returns whether anything was written.
-     *
-     * Never throws, and — unlike the manifest — never LOGS on failure either.
-     * This runs on the progress tick, so a read-only volume would otherwise mint
-     * an error line every thirty seconds forever, burying the phase report this
-     * document exists to complement. The failure is disclosed on the other side
-     * instead: with no write, `writtenAt` stops advancing and the relay reports
-     * the file as stale, which is the same signal a stopped router gives and
-     * wants the same look.
+     * Publish [streams] as the current document.
      */
-    fun write(
+    fun publish(
         streams: List<StreamPhases.Stream>,
         processors: List<Processors.Snapshot> = emptyList(),
         /** Where the constraint is, and the numbers behind it — see [Health]. */
@@ -217,21 +217,8 @@ class SyncProgress(
          */
         fatals: Long = 0,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
-    ): Boolean {
-        val f = file ?: return false
-        return runCatching {
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, fatals, health, nowSeconds)))
-            // Temp file plus an atomic move, for the same reason every other
-            // file here is written that way: the relay reads this on its own
-            // schedule and a half-written document parses as nothing.
-            try {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }.isSuccess
+    ) {
+        latest = document(streams, processors, fatals, health, nowSeconds)
     }
 
     companion object {
@@ -249,7 +236,6 @@ class SyncProgress(
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
-                put("writtenAt", nowSeconds)
                 // Always, including zero: "no thread has been killed" is the
                 // claim worth publishing, and a member that appears only on
                 // damage cannot be distinguished from a router too old to say.
@@ -538,18 +524,24 @@ class SyncProgress(
             }
 
         /**
-         * `SYNC_PROGRESS_FILE` — where the document is written. Unset publishes
-         * nothing, which is right for a router with no relay beside it.
+         * `SYNC_PROGRESS_FILE` named where this document was WRITTEN, for the
+         * serving relay to read off a shared volume. It is gone: the sync
+         * process serves the document itself now, on its own status site, so a
+         * path here would be a file nobody ever opens.
          *
-         * No `ROUTER_*` spelling: those exist for settings that predate the
-         * rename, and this one never had one.
+         * Refused rather than ignored, the way every removed setting in this
+         * repo is. A router configured with it is a deployment expecting the
+         * relay's `/stats.html` to carry a sync card, and that card has moved —
+         * silently accepting the value would leave the operator watching a
+         * panel that is never going to appear.
          */
-        fun fromEnv(env: Map<String, String>): SyncProgress =
-            SyncProgress(
-                env["SYNC_PROGRESS_FILE"]
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.let(::File),
-            )
+        fun refuseRemovedEnv(env: Map<String, String>) {
+            env["SYNC_PROGRESS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                error(
+                    "SYNC_PROGRESS_FILE is no longer read — the sync process serves its own status page now " +
+                        "(SYNC_STATUS_PORT, default 7778). Remove it, and read the mirror at http://<sync-host>:7778/.",
+                )
+            }
+        }
     }
 }

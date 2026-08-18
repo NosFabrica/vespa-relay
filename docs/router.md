@@ -716,21 +716,37 @@ live declaration from one left behind by a router that was switched off. What is
 written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
 stream that is not running mirrors nothing.
 
-## Publishing what this router is doing
+## The router's own status page
 
 The manifest says what the mirror *would* hold. Nothing said whether it was
 working — that lived only in the log lines `StreamPhases` prints, i.e. in
 whatever a container's stderr had not yet rotated away. Three questions had no
-answer on the serving side at all: is the router alive, did the last cycle
-finish or abort, and what became of the urls it took on. A production fan-out
-reported **16,752 relays discovered** against **5,323 carrying a band**, with no
-published account of the other ~11,400.
+answer at all: is the router alive, did the last cycle finish or abort, and what
+became of the urls it took on. A production fan-out reported **16,752 relays
+discovered** against **5,323 carrying a band**, with no published account of the
+other ~11,400.
 
-Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
+This process serves the answers itself, at `SYNC_STATUS_PORT` (7778): the page
+at `/` and the document behind it at `/stats.json`, rebuilt every
+`SYNC_STATUS_INTERVAL_SECONDS`.
+
+It used to be a FILE — `SYNC_PROGRESS_FILE` — written to a volume the serving
+relay mounted, read back, re-parsed against an allowlist and re-narrated as two
+cards on the relay's `/stats.html`. That cost about 2,500 lines on the relay's
+side whose only job was to re-derive what this process already knew, and it
+could not answer the first question in the list. **A file says nothing about
+whether the process writing it still exists.** So the document carried a
+`writtenAt` heartbeat and the relay turned it into a `staleForSec` with a
+150-second threshold — and even with all that, a mirror that had been down for a
+day published a card that could not be told from one mid-cycle without reading
+the timestamp. A page served by the process it describes answers "is it running"
+by answering at all, so the knob is refused at boot now and the heartbeat is
+gone from the document.
+
+The `progress` half of that document:
 
 ```json
 {
-  "writtenAt": 1770000000,
   "streams": [
     {
       "name": "content",
@@ -757,12 +773,7 @@ Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
 }
 ```
 
-Four things are load-bearing here.
-
-**`writtenAt` is a heartbeat**, not a modification time. It advances on every
-tick whatever the streams are doing, so the relay can publish `staleForSec` — how
-long the router has gone without saying anything — and a mirror that stopped an
-hour ago stops looking like one that is simply between cycles.
+Three things are load-bearing here.
 
 **`urls` and `taken` are a partition, not a tally.** `discovered =
 foldedOntoAnother + excluded + taken`, and the ten outcomes under `taken` sum to
@@ -770,7 +781,7 @@ it exactly. `pending` is what closes the second identity *while the cycle runs*:
 it is derived from the other eight rather than counted, so the numbers add up
 mid-fan-out instead of only at the end. `balanced` is the router's own check on
 them, published rather than asserted, and the relay recomputes it as
-`accountedFor` on the other side — the two disagreeing localises the fault.
+`accountedFor` when it draws — the two disagreeing localises the fault.
 
 Two pairs in there are deliberately not one number, because each pair answers
 "will it try again, and when" in opposite ways:
@@ -826,10 +837,13 @@ software answers on every path, so one server wears many urls and every url-keye
 number is inflated until the alias fold decides them (measured: 3,272 urls on 850
 hosts). The gap between the two *is* the disclosure.
 
-The relay publishes all of it as `sync.progress` on `/stats.json`, beside a
-`sync.terms` glossary defining every number in the section — including the three
-different things the word "done" used to cover: a fan-out leg that *returned*, a
-walk that *settled*, and the span every kind has produced *evidence* for.
+All of it is published as `sync.progress` on this service's own `/stats.json`,
+beside a `sync.terms` glossary defining every number in the section — including
+the three different things the word "done" used to cover: a fan-out leg that
+*returned*, a walk that *settled*, and the span every kind has produced
+*evidence* for. The glossary ships inside the document rather than in this file,
+so a chip on the page can never describe a member in words the router would not
+use.
 
 ## Enabling it under docker compose
 

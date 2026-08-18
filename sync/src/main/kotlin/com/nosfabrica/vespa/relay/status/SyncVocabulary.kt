@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.maintenance
+package com.nosfabrica.vespa.relay.status
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -282,7 +282,8 @@ internal object SyncVocabulary {
                     "live run: 285 pending, every one of them a live worker, three of them downloading at 20k events each). " +
                     "The other reading is the one where `inFlight` is empty or absent: those urls never reached a verdict " +
                     "because the cycle stopped first, and they are dialled again on the next one. A router killed mid-fan-out " +
-                    "is that case with the last file still saying `running`, which `staleForSec` is what gives away.",
+                    "is the case this cannot distinguish on its own, and the page's own liveness — it is served by this " +
+                    "process — is what rules it out.",
             )
             put(
                 "accountedFor",
@@ -664,13 +665,6 @@ internal object SyncVocabulary {
                     "and \"the router said none\" are different facts. Per-stream and per-processor series are " +
                     "deliberately absent: the alias fold runs on a six-hour clock, so an hour of samples would not " +
                     "contain one of its passes.",
-            )
-            put(
-                "staleForSec",
-                "How long ago the router last wrote its progress file, measured against THIS rollup's clock. The router " +
-                    "rewrites it every tick whatever its streams are doing, so this is a heartbeat: a quiet mirror and a " +
-                    "stopped one are the same document without it. Anything past a few minutes means the sync process is " +
-                    "not running.",
             )
             // THE FITNESS PASS — the monitor's verdict funnel. Each member is
             // one value of the NIP-32 label it signs onto a relay's kind-30166

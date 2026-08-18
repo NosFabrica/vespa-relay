@@ -18,8 +18,9 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.maintenance
+package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.util.canonicalRelay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -302,9 +303,24 @@ internal object SyncCoverageReport {
         bandsJson: String?,
         sweepsJson: String?,
         nowSeconds: Long,
+    ): JsonObject? = build(parse(bandsJson), parse(sweepsJson), nowSeconds)
+
+    /**
+     * The same fold over the maps THEMSELVES, which is how the running process
+     * calls it: [SyncBands.snapshot] and [SweepState.snapshot] build exactly
+     * what their files hold, so nothing is serialised and re-parsed to draw a
+     * page in the process that owns the data.
+     *
+     * The string form above is kept for the tests, which state their fixtures
+     * as the file an operator would find on disk.
+     */
+    fun build(
+        bandsDoc: JsonObject?,
+        sweepsDoc: JsonObject?,
+        nowSeconds: Long,
     ): JsonObject? {
-        val bands = parse(bandsJson) ?: JsonObject(emptyMap())
-        val sweeps = parse(sweepsJson) ?: JsonObject(emptyMap())
+        val bands = bandsDoc ?: JsonObject(emptyMap())
+        val sweeps = sweepsDoc ?: JsonObject(emptyMap())
         if (bands.isEmpty() && sweeps.isEmpty()) return null
 
         // group id → group. A LinkedHashMap the whole way down: the file's own
@@ -355,7 +371,7 @@ internal object SyncCoverageReport {
             // JSON and starts with `{`.
             if (o["min"] != null) {
                 val (rawRelay, filterJson) = split(streamOrFlatKey, ' ') ?: continue
-                preStream(filterJson)?.band(StatsYql.canonicalRelay(rawRelay), o)
+                preStream(filterJson)?.band(canonicalRelay(rawRelay), o)
                 continue
             }
             val group = groups.getOrPut("stream:$streamOrFlatKey") { Group(streamOrFlatKey) }
@@ -373,21 +389,21 @@ internal object SyncCoverageReport {
                     // Applied to BOTH files and to the peer map below — it is a
                     // deterministic rename, so it cannot split a pair that the
                     // router wrote as one.
-                    group.band(StatsYql.canonicalRelay(rawRelay), band as? JsonObject ?: continue)
+                    group.band(canonicalRelay(rawRelay), band as? JsonObject ?: continue)
                 }
             }
         }
 
         val peers =
             (sweeps["peers"] as? JsonObject ?: JsonObject(emptyMap()))
-                .mapKeys { StatsYql.canonicalRelay(it.key) }
+                .mapKeys { canonicalRelay(it.key) }
         for ((streamOrFlatKey, value) in (sweeps["sweeps"] as? JsonObject ?: JsonObject(emptyMap()))) {
             val o = value as? JsonObject ?: continue
             // MIGRATION SHIM, told apart the same way — a filter can never be
             // named `downTo` either.
             if (o["downTo"] != null) {
                 val (rawRelay, filterJson) = split(streamOrFlatKey, '|') ?: continue
-                preStream(filterJson)?.mark(StatsYql.canonicalRelay(rawRelay), o)
+                preStream(filterJson)?.mark(canonicalRelay(rawRelay), o)
                 continue
             }
             val group = groups.getOrPut("stream:$streamOrFlatKey") { Group(streamOrFlatKey) }
@@ -399,7 +415,7 @@ internal object SyncCoverageReport {
                 // published from the cursor when nothing else has said it.
                 parse(filterJson)?.let { group.fold(it) }
                 for ((rawRelay, mark) in relays) {
-                    group.mark(StatsYql.canonicalRelay(rawRelay), mark as? JsonObject ?: continue)
+                    group.mark(canonicalRelay(rawRelay), mark as? JsonObject ?: continue)
                 }
             }
         }

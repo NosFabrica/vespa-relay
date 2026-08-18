@@ -363,62 +363,74 @@ class SweepState(
         return Reconciled(downTo, upTo, o["at"]?.jsonPrimitive?.longOrNull ?: 0L)
     }
 
+    /**
+     * Every cursor and peer cap, in the shape [save] writes and the status page
+     * reads.
+     *
+     * Extracted from [save] rather than duplicated for the page: the status
+     * site renders this state in the SAME process that holds it, so a second
+     * construction here would be a second format that could drift from the one
+     * on disk — and the file is what a restart reloads.
+     */
+    @Synchronized
+    internal fun snapshot(): JsonObject =
+        buildJsonObject {
+            put(
+                "peers",
+                buildJsonObject {
+                    peers.forEach { (url, p) ->
+                        put(
+                            url,
+                            buildJsonObject {
+                                put("target", p.target)
+                                p.cap?.let { put("cap", it) }
+                            },
+                        )
+                    }
+                },
+            )
+            put(
+                "sweeps",
+                buildJsonObject {
+                    // Grouped once here rather than held grouped: the
+                    // maps are read and written by sweep coroutines,
+                    // and one flat ConcurrentHashMap is the shape that
+                    // needs no lock to stay consistent.
+                    val byStream = LinkedHashMap<String, LinkedHashMap<String, LinkedHashMap<String, Reconciled>>>()
+                    sweeps.forEach { (k, r) ->
+                        byStream
+                            .getOrPut(k.stream) { LinkedHashMap() }
+                            .getOrPut(k.filter) { LinkedHashMap() }[k.relay] = r
+                    }
+                    byStream.forEach { (stream, byFilter) ->
+                        put(
+                            stream,
+                            buildJsonObject {
+                                byFilter.forEach { (filter, byRelay) ->
+                                    put(
+                                        filter,
+                                        buildJsonObject {
+                                            byRelay.forEach { (relay, r) -> put(relay, mark(r)) }
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    // MIGRATION SHIM: unclaimed pre-stream cursors go
+                    // back out flat, because there is still no stream to
+                    // file them under. They drain as their streams reach
+                    // them; goes when the reader above does.
+                    preStream.forEach { (pair, r) -> put("${pair.second}|${pair.first}", mark(r)) }
+                },
+            )
+        }
+
     @Synchronized
     private fun save(): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject =
-                buildJsonObject {
-                    put(
-                        "peers",
-                        buildJsonObject {
-                            peers.forEach { (url, p) ->
-                                put(
-                                    url,
-                                    buildJsonObject {
-                                        put("target", p.target)
-                                        p.cap?.let { put("cap", it) }
-                                    },
-                                )
-                            }
-                        },
-                    )
-                    put(
-                        "sweeps",
-                        buildJsonObject {
-                            // Grouped once here rather than held grouped: the
-                            // maps are read and written by sweep coroutines,
-                            // and one flat ConcurrentHashMap is the shape that
-                            // needs no lock to stay consistent.
-                            val byStream = LinkedHashMap<String, LinkedHashMap<String, LinkedHashMap<String, Reconciled>>>()
-                            sweeps.forEach { (k, r) ->
-                                byStream
-                                    .getOrPut(k.stream) { LinkedHashMap() }
-                                    .getOrPut(k.filter) { LinkedHashMap() }[k.relay] = r
-                            }
-                            byStream.forEach { (stream, byFilter) ->
-                                put(
-                                    stream,
-                                    buildJsonObject {
-                                        byFilter.forEach { (filter, byRelay) ->
-                                            put(
-                                                filter,
-                                                buildJsonObject {
-                                                    byRelay.forEach { (relay, r) -> put(relay, mark(r)) }
-                                                },
-                                            )
-                                        }
-                                    },
-                                )
-                            }
-                            // MIGRATION SHIM: unclaimed pre-stream cursors go
-                            // back out flat, because there is still no stream to
-                            // file them under. They drain as their streams reach
-                            // them; goes when the reader above does.
-                            preStream.forEach { (pair, r) -> put("${pair.second}|${pair.first}", mark(r)) }
-                        },
-                    )
-                }
+            val snapshot: JsonObject = snapshot()
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))

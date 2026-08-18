@@ -11,9 +11,9 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, MONITOR_PROCESSORS, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  heldOf, isLive, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors,
-} from "../../relay/src/main/resources/web/shared/sync.js";
+  IN_FLIGHT_SHOWN, MEASURING, MONITOR_PROCESSORS, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
+  heldOf, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors,
+} from "../../web/src/main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
@@ -23,41 +23,27 @@ const leg = (n, quiet, over = {}) => ({
   events: 1000 * n, quietForSec: quiet, ...over,
 });
 
-// ── is it running ───────────────────────────────────────────────────────────
-{
-  assert.equal(isLive({ staleForSec: 3 }), true);
-  assert.equal(isLive({ staleForSec: HEARTBEAT_STALE_SEC }), true, "the threshold itself is still alive");
-  assert.equal(isLive({ staleForSec: HEARTBEAT_STALE_SEC + 1 }), false);
-  // A document with no heartbeat is not a live router with an unknown age.
-  assert.equal(isLive({}), false);
-  assert.equal(isLive(null), false);
-  ok("a heartbeat past the threshold, or missing, is not a running router");
-}
-
 // ── the constraint ──────────────────────────────────────────────────────────
 {
   // THE BUG: the relay rebuilt `health` member by member against an allowlist,
   // so a router older than these gauges cleared every one of them and `{}` was
   // published anyway. The card guarded on the OBJECT, so it drew a chip with no
   // text in it beside the live one.
-  assert.equal(constraintOf({}, true), null, "an empty health object names no constraint");
-  assert.equal(constraintOf(null, true), null);
-  assert.equal(constraintOf({ eventsPerSec: 900 }, true), null, "gauges are not a verdict");
+  assert.equal(constraintOf({}), null, "an empty health object names no constraint");
+  assert.equal(constraintOf(null), null);
+  assert.equal(constraintOf({ eventsPerSec: 900 }), null, "gauges are not a verdict");
 
-  const c = constraintOf({ bottleneck: "ingest" }, true);
+  const c = constraintOf({ bottleneck: "ingest" });
   assert.equal(c.text, "ingest is the limit");
   assert.equal(c.tone, "warn", "ingest is the only one of the four that is a fault");
   assert.match(c.why, /not at the relays/);
-  assert.equal(constraintOf({ bottleneck: "downloads" }, true).tone, null, "the relays being the limit is not a fault");
-
-  // A verdict on a router that has stopped is a post-mortem, not a diagnosis.
-  assert.equal(constraintOf({ bottleneck: "ingest" }, false).text, "ingest is the limit, when it stopped");
+  assert.equal(constraintOf({ bottleneck: "downloads" }).tone, null, "the relays being the limit is not a fault");
 
   // A word this page has not been taught still says something rather than
   // rendering as undefined — the relay allowlists it, but the card is served to
   // whoever asks.
-  assert.equal(constraintOf({ bottleneck: "novel" }, true).text, "novel");
-  ok("the constraint is guarded on its own member, and reads past-tense once the router stops");
+  assert.equal(constraintOf({ bottleneck: "novel" }).text, "novel");
+  ok("the constraint is guarded on its own member, and names an unknown word rather than dropping it");
 }
 
 // ── the legs ────────────────────────────────────────────────────────────────
@@ -388,7 +374,7 @@ const leg = (n, quiet, over = {}) => ({
   // Object.prototype hands back a function, and destructuring one throws the
   // whole render away — a worse outcome than the unknown word it came from.
   for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
-    const c = constraintOf({ bottleneck: hostile }, true);
+    const c = constraintOf({ bottleneck: hostile });
     assert.equal(c.text, hostile, `${hostile} is an unknown word, not a prototype member`);
     assert.equal(c.why, "");
   }

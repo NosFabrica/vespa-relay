@@ -145,10 +145,10 @@ class SyncEngine(
     // replaceable is dropped before it is verified. Same reason as knownIds:
     // the query is the store's, the pipeline takes a function.
     newestVersions: (suspend (Int, List<String>) -> Map<String, AddressVersion>)? = null,
-    // SYNC_PROGRESS_FILE: what each stream is doing, and the disposition of
-    // every url its current cycle took on, written where the relay can publish
-    // it. Unset writes nothing — see [SyncProgress].
-    private val progressFile: SyncProgress = SyncProgress(null),
+    // What each stream is doing, and the disposition of every url its current
+    // cycle took on — see [SyncProgress]. Republished on the progress tick and
+    // read by this process's own status site off the same heap.
+    private val progress: SyncProgress = SyncProgress(),
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -744,17 +744,17 @@ class SyncEngine(
         // which is the whole of that question and NOT `discoveryStreams` alone.
         if (monitorHasSources) aliasMonitor?.start()
 
-        // The heartbeat is its own loop, NOT a passenger on the phase report.
-        // That report is skipped when a config has neither a down upstream nor a
-        // dynamic stream — a push-only router — and with the write inside it
-        // `writtenAt` never advanced, so the relay reported a perfectly healthy
-        // mirror as "probably not running". The whole point of this file is that
-        // it ticks whatever the streams are doing, and "there are no streams to
-        // report" is exactly that case.
+        // Its own loop, NOT a passenger on the phase report. That report is
+        // skipped when a config has neither a down upstream nor a dynamic
+        // stream — a push-only router — and with the publish inside it the
+        // status page had nothing to draw at all, so a perfectly healthy mirror
+        // rendered as a stopped one. This document describes the PROCESS as
+        // much as its streams, and "there are no streams to report" is exactly
+        // the case where that distinction matters.
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progressFile.write(phases.snapshot(), processors.snapshot(), health, fatals.get())
+                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get())
             }
         }
         if (visitStreams.isNotEmpty()) {

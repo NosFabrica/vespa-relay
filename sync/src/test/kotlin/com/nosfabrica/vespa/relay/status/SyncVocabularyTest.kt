@@ -18,10 +18,12 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.maintenance
+package com.nosfabrica.vespa.relay.status
 
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -66,7 +68,6 @@ class SyncVocabularyTest {
             "to",
             "startedAt",
             "endedAt",
-            "writtenAt",
             "relay",
             "min",
             "max",
@@ -110,54 +111,57 @@ class SyncVocabularyTest {
                 sweepsJson = null,
                 nowSeconds = 1_000,
             )!!
+        // The mirror's own document, parsed rather than re-projected: nothing
+        // filters these members on their way to the page any more, so a member
+        // with no term really does reach a reader — which is what this asserts.
         val progress =
-            SyncProgressReport.build(
-                """
-                {"writtenAt": 900, "fatals": 0,
-                 "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
-                            "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
-                 "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
-                 "roster": 412, "tails": 300,
-                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
-                                          "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                           "doing": "catching up (paging)", "pagingUntil": 1689857148}],
-                              "omitted": 118}}],
-                 "processors": [
-                   {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
-                    "lastPassAt": 880, "lastPassSec": 300,
-                    "measuring": {"unit": "source", "attempted": 2, "toProbe": 6},
-                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "candidates": 40, "recordedOnly": 6},
-                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                    "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
-                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                    "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
-                      "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
-                                                 "examples": ["a.example"]}], "omitted": 0}}]},
-                   {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
-                    "lastPassAt": 880, "lastPassSec": 900,
-                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300, "quietForSec": 4},
-                    "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454,
-                                             "stage": "paired walk"}], "omitted": 2},
-                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                    "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
-                      "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
-                      "undecided": {"reasons": [{"reason": "the connection was refused",
-                                                 "parent": "never answered a REQ", "urls": 22, "hosts": 7,
-                                                 "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
-                   {"name": "ingest", "phase": "running", "phaseForSec": 900,
-                    "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
-                    "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
-                   {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                    "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
-                    "prime": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
-                    "unpageable": 1, "auth-refused": 1, "restricted": 1},
-                   {"name": "visits", "phase": "rotating", "phaseForSec": 900,
-                    "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
-                    "visitsRun": 90, "auditing": 1, "auditsRun": 4, "auditsSkipped": 3, "retracted": 2, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
-                   {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
-                """.trimIndent(),
-                nowSeconds = 1_000,
-            )!!
+            Json
+                .parseToJsonElement(
+                    """
+                    {"fatals": 0,
+                     "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
+                                "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
+                     "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
+                     "roster": 412, "tails": 300,
+                     "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+                                              "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
+                                               "doing": "catching up (paging)", "pagingUntil": 1689857148}],
+                                  "omitted": 118}}],
+                     "processors": [
+                       {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
+                        "lastPassAt": 880, "lastPassSec": 300,
+                        "measuring": {"unit": "source", "attempted": 2, "toProbe": 6},
+                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "candidates": 40, "recordedOnly": 6},
+                       {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+                        "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
+                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
+                        "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
+                          "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
+                                                     "examples": ["a.example"]}], "omitted": 0}}]},
+                       {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
+                        "lastPassAt": 880, "lastPassSec": 900,
+                        "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300, "quietForSec": 4},
+                        "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454,
+                                                 "stage": "paired walk"}], "omitted": 2},
+                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
+                        "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
+                          "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
+                          "undecided": {"reasons": [{"reason": "the connection was refused",
+                                                     "parent": "never answered a REQ", "urls": 22, "hosts": 7,
+                                                     "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
+                       {"name": "ingest", "phase": "running", "phaseForSec": 900,
+                        "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
+                        "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
+                       {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+                        "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
+                        "prime": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
+                        "unpageable": 1, "auth-refused": 1, "restricted": 1},
+                       {"name": "visits", "phase": "rotating", "phaseForSec": 900,
+                        "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
+                        "visitsRun": 90, "auditing": 1, "auditsRun": 4, "auditsSkipped": 3, "retracted": 2, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
+                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
+                    """.trimIndent(),
+                ).jsonObject
 
         val published = mutableSetOf<String>()
 
@@ -208,7 +212,6 @@ class SyncVocabularyTest {
                     // simply lasts and its numbers are the whole story.
                     "rotating",
                     "accountedFor",
-                    "staleForSec",
                 ) +
                 setOf(
                     "relays",

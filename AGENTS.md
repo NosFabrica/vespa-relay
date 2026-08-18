@@ -130,12 +130,13 @@ its own admission rule:
 #   …or a relay of your own: -DauthGatedUrl='wss://relay.example'
 
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
-# 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
-# and after.json in $D; the :relay half charts both through SyncCoverageReport,
-# so the coverage card can be read before and after. Same `--rerun` rule.
+# 9,689 bands. The first probe loads/prunes/rewrites it and leaves before.json
+# and after.json in $D; the second charts both through SyncCoverageReport, so
+# the coverage card can be read before and after. Both in :sync now — the card
+# is the mirror's own page. Same `--rerun` rule.
 D=$(mktemp -d)
-./gradlew :sync:test  --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
-./gradlew :relay:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :sync:test --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :sync:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
@@ -475,9 +476,27 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           and a clock — plus either a pass schedule and an
                           `outstanding` count, or live gauges read through a
                           supplier
-    SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
-                          the heartbeat that tells a quiet router from a
-                          stopped one
+    SyncProgress.kt       what each stream is doing, republished on the
+                          progress tick and read by this process's own status
+                          site off the same heap. It was SYNC_PROGRESS_FILE,
+                          written for the relay to read off a shared volume;
+                          that knob is REFUSED at boot now
+  status/
+    SyncStatus.kt         the mirror's own /stats.json — the coverage fold, the
+                          progress document and the glossary, in the relay's
+                          envelope so both pages share one engine
+    StatusRollup.kt       its timer, on its own daemon thread so a saturated
+                          Dispatchers.IO cannot stop the page refreshing
+    SyncCoverageReport.kt bands + sweep cursors folded into per-stream groups
+                          and depth buckets. Real computation, which is why it
+                          survived the move whole
+    GaugeSeries.kt        the last hour of the four process gauges — the one
+                          thing a single tick cannot state, and all that is
+                          left of SyncProgressReport
+    SyncVocabulary.kt     what every number in the `sync` section means, shipped
+                          inside the document as `sync.terms`. Pinned in both
+                          directions by SyncVocabularyTest: no published count
+                          without a term, no term without a count
 
 
 relay/src/main/resources/
@@ -753,11 +772,10 @@ relay/src/main/resources/
                         it is a PARTITION: a processor name the page has not been
                         taught draws on the sync side rather than nowhere, since
                         dropping a row to keep a card tidy is how a new job runs
-                        unwatched. Two pins keep the JS honest against the
-                        Kotlin that feeds it, and both are in
-                        `SyncProgressReportTest`: every `taken` outcome must have
-                        a `DISPOSITION` row and every published gauge a line in
-                        `processorCounts`, because a name added on one side only
+                        unwatched. The pin that keeps the JS honest against the
+                        Kotlin that feeds it is `SyncVocabularyTest`: every
+                        published member must have a term, and every term a
+                        published member, because a name added on one side only
                         does not fail — the number silently stops being drawn on
                         a card that still looks complete.
                         ONE panel is not. Monitor verdicts (kind 30166) have no
@@ -818,13 +836,11 @@ jobs, and talks to Vespa directly rather than through the store:
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/
-    SyncProgressReport.kt  the router's progress file as `sync.progress` —
-                     staleness against THIS rollup's clock, and the disposition
-                     partition re-derived rather than forwarded
-    SyncVocabulary.kt  what every number in the `sync` section means, shipped
-                     inside the document as `sync.terms`. Pinned in both
-                     directions by `SyncVocabularyTest`: no published count
-                     without a term, no term without a count
+    MirrorReport.kt  the kind set this relay mirrors, from SYNC_MANIFEST_FILE
+                     — the LAST of the router's files this side reads. What the
+                     mirror has walked and what it is doing moved to the sync
+                     service's own status site; see `SyncStatus` for why a file
+                     could not answer "is it running" and an HTTP request can
     StatsYql.kt      the grouping pipelines and the readers for what comes
                      back — pure, so both halves are tested against captured
                      engine output rather than against an assumed shape
@@ -1121,10 +1137,14 @@ the FIRST space and rejoining with one. The stream level is this repo's too —
 quartz knows nothing about streams, so `SyncBands` holds one `SyncCoverage` per
 stream name.
 
-**Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
-mount both containers share, and charted as the *Sync coverage* card on
-`/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
-A third file rides the same mount for a different job: `SYNC_MANIFEST_FILE` is
+**Both state files are read by the ROUTER'S OWN status site**, on its own port,
+and charted there as the *Sync coverage* card — see `SyncCoverageReport`. They
+used to be read by the relay off the `/var/lib/vespa-relay` mount both
+containers share; `SyncStatus` has the account of what that boundary cost. The
+router is still the only writer either way, and the files stay on the volume
+because they are what a restart reloads.
+A third file rides the same mount for a different job, and is the ONE the relay
+still reads: `SYNC_MANIFEST_FILE` is
 CONFIG, not state — the streams this router runs and the kinds they ask for,
 written once at boot (`SyncManifest`) and published as `sync.mirrors` by
 `MirrorReport`. It exists because the mirror is a *filtered* subset and nothing
@@ -1144,15 +1164,20 @@ the same wrong shape, so the tests agreed with it; a fixture that is not the
 shape of the thing it stands in for tests the fixture. Do not fold it into the band file:
 bands are rewritten every 30 seconds and this changes only on a restart.
 
-**A FOURTH file says what the router is DOING.** `SYNC_PROGRESS_FILE`
-(`SyncProgress`, published as `sync.progress` by `SyncProgressReport`) is
-rewritten on the progress tick with each stream's phase and the disposition of
-every url its current cycle took on. Three things it fixes, all of which were
+**THE ROUTER'S OWN PAGE says what it is DOING.** `SyncProgress` republishes, on
+every progress tick, each stream's phase and the disposition of every url its
+current cycle took on; `SyncStatus` serves it at `SYNC_STATUS_PORT` (7778).
+This was a FOURTH file — `SYNC_PROGRESS_FILE`, read back and re-narrated by the
+relay through a `SyncProgressReport` that no longer exists — and the knob is
+refused at boot rather than ignored. Three things it fixes, all of which were
 unanswerable from the serving side:
 
-- **`writtenAt` is a HEARTBEAT**, not a modification time — it advances every
-  tick whatever the streams are doing, so the relay can publish `staleForSec`,
-  and a mirror that stopped an hour ago stops looking like one between cycles.
+- **"Is it running" is answered by the REQUEST.** The document used to carry a
+  `writtenAt` heartbeat and the relay turned it into a `staleForSec`, because a
+  file says nothing about whether the process writing it still exists — without
+  them a mirror down for a day published exactly the card a mirror mid-cycle
+  did. A page served by the process it describes needs neither, and neither is
+  in the document any more.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
   refusedUnstable + excluded + taken`, and the ten outcomes under `taken` sum to
   it exactly, with
@@ -1160,7 +1185,7 @@ unanswerable from the serving side:
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a
   disposition the router knew at the time. `balanced` is the router's own check;
-  the relay recomputes it as `accountedFor`, and the two disagreeing localises
+  the page recomputes it as `accountedFor`, and the two disagreeing localises
   the fault to the read or to the writer.
 - **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
   and one that finished left the identical trace — both simply stopped saying
@@ -1393,9 +1418,15 @@ absent row is a fact rather than missing data, and a zeroed one would say the
 opposite. And **the gauges are read through a supplier at snapshot time**, never
 pushed: they are live atomics owned by the component, and a copy kept in step by
 hand is the shape that produces a report disagreeing with the thing it reports
-on. The relay side re-derives nothing but bounds everything: `COUNTERS` in
-`SyncProgressReport` is an ALLOWLIST, so a name that is not in it (and therefore
-in `SyncVocabulary`) cannot reach a document served under this relay's name.
+on. NOTHING RE-DERIVES THESE ANY MORE, and the allowlist that used to went with
+the boundary. `SyncProgressReport` rebuilt the document member by member on the
+RELAY's side, which was right while the relay was reading another process's
+file: a hand-edited or half-migrated one must not put arbitrary JSON into a page
+served under the relay's name. The mirror serves its own page, so the writer and
+the reader are one object on one heap, and ~700 lines of re-copying our own
+members are gone. What survived is `SyncVocabulary`, pinned in both directions:
+a member with no term is a number a reader needs the source to understand, and
+now that nothing filters on the way out, the pin is a stronger claim than it was.
 
 **A CAP IS FOR A LIST THE NETWORK CAN GROW, and for nothing else.** The rollup
 bounds `foldedOnto` and the undecided reasons because discovery decides how long
@@ -2623,12 +2654,13 @@ nothing published them anywhere; they are the tree's business now, and a line
 repeating what a chart six rows above it says is a line a reader has to
 reconcile.
 
-Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
-`SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the
-router already bounded, and it sat at 6 against a gate that can reach 7 — cutting
-below the writer is not bounding, it is dropping, and the dropped reason's urls
-then surface as an arithmetic fault on a document that was complete when it
-arrived.
+`Processors.MAX_UNDECIDED_REASONS` (8) is now the ONLY cap on that list, and
+that is the point of the note. There used to be a second, `MAX_UNDECIDED_ROWS`
+on the relay's re-read, and it sat at 6 against a gate that can reach 7 —
+cutting below the writer is not bounding, it is dropping, and the dropped
+reason's urls then surfaced as an arithmetic fault on a document that was
+complete when it arrived. Two caps on one list is the shape of that bug; the
+re-read is gone and so is the second cap.
 
 Two things that partition made visible and then fixed. `dialled` was
 `wanted.size`, so urls the transport declined were reported as dials that never

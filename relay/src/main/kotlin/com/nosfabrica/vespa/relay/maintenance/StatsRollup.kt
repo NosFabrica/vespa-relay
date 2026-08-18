@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import com.nosfabrica.vespa.relay.util.canonicalRelay
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.vitorpamplona.quartz.kinds.KindNames
 import kotlinx.coroutines.CancellationException
@@ -212,24 +213,19 @@ internal class StatsRollup(
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
     /**
-     * The router's three files, read off the volume both containers mount. Null
-     * in a serve-only deployment, and null is the normal case rather than an
-     * error — see [SyncCoverageReport].
+     * The router's manifest, read off the volume both containers mount. Null in
+     * a serve-only deployment, and null is the normal case rather than an error.
      *
-     * Two are state (what the mirror has walked); the manifest is CONFIG (what
-     * it is configured to mirror at all), which is why it is written once at the
-     * router's boot rather than flushed — see [MirrorReport] and `SyncManifest`.
+     * The LAST of the router's files this side reads. The other three were
+     * state and heartbeat — what the mirror has walked, and what it is doing
+     * right now — and they are read on the sync service's own status site now,
+     * in the process that produces them. The manifest is CONFIG (what this
+     * relay is configured to mirror at all), which is why it is written once at
+     * the router's boot rather than flushed, and why the relay still has to be
+     * able to answer it with the router stopped — see [MirrorReport] and
+     * `SyncManifest`.
      */
-    private val syncBandsFile: File? = null,
-    private val syncSweepsFile: File? = null,
     private val syncManifestFile: File? = null,
-    /**
-     * The router's heartbeat and per-cycle disposition. A fourth file for the
-     * same reason there is a third: it is neither state the router accumulates
-     * nor config it declares, but what it is doing right now — and it is the
-     * only one whose ABSENCE from an advancing clock is itself the finding.
-     */
-    private val syncProgressFile: File? = null,
 ) {
     /**
      * Compute one [tier]'s members. Never throws: a section that fails says so
@@ -260,7 +256,7 @@ internal class StatsRollup(
                 // Absent, not empty, when there is no router: a serve-only relay
                 // has no sync to report and a card saying "0 relays" would read
                 // as a broken mirror rather than as no mirror.
-                syncSection(previous)?.let { sections["sync"] = it }
+                syncSection()?.let { sections["sync"] = it }
             }
 
             StatsTier.CHARTS -> {
@@ -312,65 +308,33 @@ internal class StatsRollup(
     }
 
     /**
-     * The router's coverage and the kind set it mirrors, read off the shared
-     * volume.
+     * The kind set this relay mirrors, read off the shared volume.
      *
-     * The one section that queries NOTHING — it is three file reads and a fold,
-     * and it is here rather than in its own endpoint because `/stats.json` is
-     * where a reader already looks and because the rollup already has a timer,
-     * a snapshot, and an ETag. [SyncCoverageReport] carries the argument for
-     * reading the router's files at all.
+     * The one section that queries NOTHING — it is a file read and a fold. It
+     * is the ONLY thing left of what used to be the router's whole card here.
+     * How far the mirror has walked, what its streams are doing, and what the
+     * monitor has decided all now live on the sync service's OWN status site,
+     * where the numbers are produced: a file cannot say whether the process
+     * writing it is still alive, which is why that card had to carry a
+     * heartbeat and a `staleForSec` an HTTP request answers for free.
      *
-     * `mirrors` sits beside the coverage rather than in a section of its own
-     * because the two are read as one thing: how far the mirror has walked, and
-     * what it was ever going to hold. Either half can be absent — a router that
-     * has walked nothing still knows its own filters, and a manifest is missing
-     * entirely until the router is restarted on a build that writes one.
+     * The manifest stays. It is not the mirror's UI — it is a fact about THIS
+     * relay that clients read (`shared/mirrors.js` bounds a count against us by
+     * it, or refuses to draw one), and the relay has to be able to answer it
+     * while the sync process is down.
      *
      * Wrapped so that no failure here can cost the document: an unreadable file
      * (wrong permissions, a volume that is not mounted, a half-written temp) is
      * reported as a failed section beside working ones, which is the same
      * contract every queried section has.
      */
-    private suspend fun syncSection(previous: JsonObject?): JsonObject? {
-        if (syncBandsFile == null && syncSweepsFile == null && syncManifestFile == null && syncProgressFile == null) return null
+    private suspend fun syncSection(): JsonObject? {
+        if (syncManifestFile == null) return null
         var data: JsonObject? = null
         val section =
             section { attempts ->
-                // ONE ATTEMPT PER FILE, and that is the whole reason this reads
-                // the way it does: the coverage is minutes of the router's work
-                // and the manifest is a few hundred bytes of config, so an
-                // unreadable manifest must not be able to take the card with it.
-                // Under one key it could — a throw anywhere in the lambda leaves
-                // `data` unassigned, and the section reports `failed` with the
-                // coverage it had already computed thrown away.
-                val coverage = attempt(attempts, "sync") { SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds()) }
                 val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
-                // The previously served progress, so the gauge series can be
-                // appended to rather than restarted — see [SyncProgressReport.series].
-                // Same `previous` the corpus section reads, and for the same
-                // reason: the document is where state that outlives one rollup
-                // is kept.
-                val carried = ((previous?.get("sync") as? JsonObject)?.get("data") as? JsonObject)?.get("progress") as? JsonObject
-                val progress = attempt(attempts, "progress") { SyncProgressReport.build(readOrNull(syncProgressFile), nowSeconds(), carried) }
-                data =
-                    if (coverage == null && mirrors == null && progress == null) {
-                        null
-                    } else {
-                        buildJsonObject {
-                            coverage?.forEach { (member, value) -> put(member, value) }
-                            mirrors?.let { put("mirrors", it) }
-                            progress?.let { put("progress", it) }
-                            // What every number above MEANS, in the document
-                            // that carries them. Emitted only when there is
-                            // something to explain — a glossary over an absent
-                            // section is 2KB of definitions for nothing — and
-                            // last, because it is the largest member here and
-                            // the least likely to be read first. See
-                            // [SyncVocabulary] for why it ships at all.
-                            put("terms", SyncVocabulary.TERMS)
-                        }
-                    }
+                data = mirrors?.let { buildJsonObject { put("mirrors", it) } }
                 data ?: buildJsonObject { }
             }
         // Nothing read AND nothing failed means no router has ever written here.
@@ -794,11 +758,11 @@ internal class StatsRollup(
             // are two strings for one relay — `toMap()` kept whichever came last
             // and threw the other's count away, so the relay both understated
             // its lists AND sat too low in a table sorted by them. See
-            // [StatsYql.canonicalRelay] for why the normalizer is the one the
+            // [canonicalRelay] for why the normalizer is the one the
             // router dials with.
             val relays =
                 pairs
-                    .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { StatsYql.canonicalRelay(it) to count } }
+                    .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { canonicalRelay(it) to count } }
                     .groupingBy { it.first }
                     .fold(0L) { sum, (_, count) -> sum + count }
             buildJsonObject {

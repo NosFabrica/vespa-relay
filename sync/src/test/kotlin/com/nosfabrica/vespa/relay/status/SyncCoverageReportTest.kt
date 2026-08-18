@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.maintenance
+package com.nosfabrica.vespa.relay.status
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -114,7 +114,7 @@ class SyncCoverageReportTest {
     fun `no files at all is no section, not an empty one`() {
         // A serve-only relay does not mirror. "No card" and "a card saying
         // zero" are different claims and only one of them is true here.
-        assertNull(SyncCoverageReport.build(null, null, now))
+        assertNull(SyncCoverageReport.build(null as String?, null, now))
         assertNull(SyncCoverageReport.build("", "   ", now))
         assertNull(SyncCoverageReport.build("{}", """{"peers":{},"sweeps":{}}""", now))
     }

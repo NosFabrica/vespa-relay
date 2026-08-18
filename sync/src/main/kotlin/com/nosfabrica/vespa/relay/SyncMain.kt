@@ -34,18 +34,60 @@ import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.shared.TorSettings
 import com.nosfabrica.vespa.relay.shared.onionUpstreams
+import com.nosfabrica.vespa.relay.status.StatusRollup
+import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.sync.AddressVersion
 import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncManifest
 import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
+import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
 // The deploy-race retry (see main): enough attempts to outlast the relay's
 // own boot deploy at a pace that stays visible in the log.
 private const val DEPLOY_ATTEMPTS = 5
 private const val DEPLOY_RETRY_SECONDS = 5L
+
+/**
+ * Where the status page binds when nothing says otherwise.
+ *
+ * One past the relay's 7777, so the pair is guessable from either end. It has a
+ * default at all — unlike the audits, which deliberately have none — because
+ * this costs a port and nothing else: a page nobody opens is a page nobody
+ * opens, whereas an unset audit period would quietly re-download a corpus.
+ */
+private const val DEFAULT_STATUS_PORT = 7778
+
+/**
+ * How often the status document is rebuilt.
+ *
+ * Thirty seconds, matched to the mirror's own progress tick: the document is a
+ * fold over maps this process already holds, so it costs no query and no dial,
+ * and a page refreshing slower than the state behind it would show a rotation
+ * that has already moved on.
+ */
+private const val DEFAULT_STATUS_INTERVAL_SECONDS = 30L
+
+/** `SYNC_STATUS_INTERVAL_SECONDS`, refused rather than silently defaulted when it is not a number. */
+private fun statusInterval(env: Map<String, String>): Long =
+    env["SYNC_STATUS_INTERVAL_SECONDS"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        it.toLongOrNull()?.takeIf { n -> n > 0 }
+            ?: error("SYNC_STATUS_INTERVAL_SECONDS='$it' is not a positive number of seconds. Unset SYNC_STATUS_PORT to serve no page.")
+    } ?: DEFAULT_STATUS_INTERVAL_SECONDS
+
+/**
+ * The status page's markup, off this module's own classpath.
+ *
+ * An error rather than a fallback if it is missing: the page is a resource of
+ * this jar, so an absent one means a broken build, and serving a blank page
+ * would hide that behind something that looks like an empty mirror.
+ */
+private fun statusPage(): String =
+    SyncStatus::class.java.getResourceAsStream("/sync_stats.html")?.use { it.readBytes().decodeToString() }
+        ?: error("sync_stats.html is missing from the :sync jar — the status page cannot be served.")
 
 /**
  * Run the sync engine — "the router" — as its own process against a Vespa the
@@ -172,17 +214,11 @@ fun main() {
         )
     }
 
-    // What each stream is DOING, rewritten on the progress tick. Unlike the
-    // manifest this is state, and unlike the bands it is a heartbeat: the file's
-    // `writtenAt` is the only thing on the relay's side of the volume that can
-    // tell a quiet router from a stopped one.
-    val progressFile = SyncProgress.fromEnv(env)
-    if (!progressFile.publishes) {
-        System.err.println(
-            "router: SYNC_PROGRESS_FILE unset — the relay cannot say what this router is doing, " +
-                "so a cycle that failed and one that finished will read the same on /stats.html",
-        )
-    }
+    // What each stream is DOING, republished on the progress tick and read by
+    // this process's own status site off the same heap. It was a FILE the
+    // serving relay read; see [SyncProgress] for what went with the boundary.
+    SyncProgress.refuseRemovedEnv(env)
+    val progress = SyncProgress()
 
     // One level finer than the bands: what each peer will reconcile in one
     // window, and how far down the timeline the running sweep already got.
@@ -219,7 +255,7 @@ fun main() {
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
-            progressFile = progressFile,
+            progress = progress,
             // The raw engine index, not the trust-projected store: the
             // projection's existingIds delegates straight through, and this is
             // a pure read that counts and never mutates — the use its own
@@ -242,8 +278,49 @@ fun main() {
             },
         ).start()
 
+    // THIS PROCESS'S OWN UI, on its own port. What the mirror has walked and
+    // what it is doing were three JSON files on a shared volume the serving
+    // relay read back and re-narrated; they are served here now, by the process
+    // that produces them. Unset disables it: a fill-only box with nobody to
+    // read a page should not bind a port, and the boot log says so.
+    val statusPort =
+        env["SYNC_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toIntOrNull() ?: error("SYNC_STATUS_PORT='$it' is not a port number. Unset it to serve no status page.")
+        } ?: DEFAULT_STATUS_PORT
+    val statusSite =
+        if (statusPort <= 0) {
+            System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
+            null
+        } else {
+            val statusSnapshot = StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
+            val everySeconds = statusInterval(env)
+            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds)
+            // Once before the server binds, so the first request answers with a
+            // document rather than the 503 that means "nothing computed yet" —
+            // this pass reads maps that are already populated, so there is no
+            // reason for a reader to wait a whole interval for them.
+            status.publish()
+            StatusRollup(status, everySeconds).start() to
+                serveStatusSite(
+                    port = statusPort,
+                    page = statusPage(),
+                    snapshot = statusSnapshot,
+                    icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
+                )
+        }
+    if (statusSite != null) {
+        println("vespa-sync status page on http://localhost:$statusPort/ (refreshed every ${statusInterval(env)}s)")
+    }
+
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            // Before the engine: the page reads state the engine is about to
+            // stop updating, and answering a request with a half-torn-down
+            // document is worse than refusing the connection.
+            statusSite?.let { (rollup, server) ->
+                rollup.close()
+                server.stop(1_000, 2_000)
+            }
             // Stop mirroring into the store before the store closes.
             engine.close()
             // After the engine, so the final report includes the last batch.

@@ -20,15 +20,15 @@
  */
 package com.nosfabrica.vespa.relay.progress
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /**
  * What the router publishes about itself.
@@ -40,12 +40,18 @@ import kotlin.test.assertTrue
  */
 class SyncProgressTest {
     @Test
-    fun `writtenAt advances even when nothing is happening`() {
-        // The heartbeat. A router with no stream to report must still stamp the
-        // document, or a quiet mirror and a stopped one are the same file.
+    fun `a router with nothing to report still publishes a document`() {
+        // A push-only config has neither a down upstream nor a dynamic stream,
+        // so it reports no streams at all — and its status page must still draw
+        // the fatals count, the constraint and the processor rows rather than
+        // the "nothing computed yet" card, which means something else entirely.
         val doc = SyncProgress.document(emptyList(), nowSeconds = 1_770_000_000)
 
-        assertEquals(1_770_000_000L, doc["writtenAt"]!!.jsonPrimitive.long)
+        assertEquals(0L, doc["fatals"]!!.jsonPrimitive.long)
+        // NO HEARTBEAT. The document was a file the serving relay read, so it
+        // stamped the clock for a reader that had no other way to tell a quiet
+        // mirror from a stopped one. This process serves the page itself now.
+        assertNull(doc["writtenAt"])
     }
 
     @Test
@@ -120,29 +126,28 @@ class SyncProgressTest {
     }
 
     @Test
-    fun `an unset path writes nothing and says it writes nothing`() {
-        val progress = SyncProgress(null)
+    fun `nothing is published until the first tick, and then the latest is what the page reads`() {
+        val progress = SyncProgress()
 
-        assertFalse(progress.publishes)
-        assertFalse(progress.write(emptyList()))
-    }
+        // The status site answers 503 in this state — "no document yet" and
+        // "this mirror is doing nothing" are different facts and must not share
+        // a rendering.
+        assertNull(progress.latest)
 
-    @Test
-    fun `a real write lands as parseable JSON`() {
-        val dir =
-            kotlin.io.path
-                .createTempDirectory("sync-progress")
-                .toFile()
-        val file = java.io.File(dir, "nested/sync-progress.json")
-        assertTrue(SyncProgress(file).write(listOf(streamWith()), nowSeconds = 42))
+        progress.publish(listOf(streamWith()), nowSeconds = 42)
+        val first = assertNotNull(progress.latest)
+        assertEquals("content", (first["streams"] as JsonArray)[0].jsonObject["name"]!!.jsonPrimitive.content)
 
-        val parsed =
-            kotlinx.serialization.json.Json
-                .parseToJsonElement(file.readText())
-                .jsonObject
-        assertEquals(42L, parsed["writtenAt"]!!.jsonPrimitive.long)
-        assertEquals("content", (parsed["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject["name"]!!.jsonPrimitive.content)
-        dir.deleteRecursively()
+        // THE HEARTBEAT IS GONE. This document used to be a file the serving
+        // relay read, so it stamped `writtenAt` for the reader to age; the
+        // process that builds it serves it now, and a member whose only use was
+        // inferring that this process exists would be a constant.
+        assertNull(first["writtenAt"])
+
+        // Swapped whole on the next tick, so a reader never sees half of two
+        // documents.
+        progress.publish(listOf(streamWith(name = "later")), nowSeconds = 43)
+        assertEquals("later", (progress.latest!!["streams"] as JsonArray)[0].jsonObject["name"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -298,13 +303,15 @@ class SyncProgressTest {
         assertNull(SyncProgress.document(emptyList(), nowSeconds = 1_000)["processors"])
     }
 
-    private fun streamWith(inFlight: InFlight? = null) =
-        StreamPhases.Stream(
-            name = "content",
-            phase = "rotating",
-            phaseForSec = 412,
-            roster = 3,
-            tails = 1,
-            inFlight = inFlight,
-        )
+    private fun streamWith(
+        inFlight: InFlight? = null,
+        name: String = "content",
+    ) = StreamPhases.Stream(
+        name = name,
+        phase = "rotating",
+        phaseForSec = 412,
+        roster = 3,
+        tails = 1,
+        inFlight = inFlight,
+    )
 }

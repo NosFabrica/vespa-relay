@@ -25,9 +25,6 @@
 // still referenced them, which is how a module keeps answering questions
 // nothing asks.
 
-/** Past this, a router that has not written its heartbeat is not running. */
-export const HEARTBEAT_STALE_SEC = 150;
-
 /**
  * Past this, a leg is not slow, it is stuck.
  *
@@ -112,17 +109,18 @@ export const BOTTLENECK = {
   mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
 };
 
-/**
- * Is the router running, as of the rollup that wrote this document?
+/*
+ * THERE IS NO `isLive` HERE ANY MORE, and its absence is the point.
  *
- * Measured against the ROLLUP's clock, not the reader's, because that is the
- * only clock that saw the file. Folding in however long the document has been
- * cached would report a working router as dead every time a rollup ran late.
+ * The mirror used to write its state to a file the serving relay read, so the
+ * page had to infer whether the writing process still existed: the document
+ * carried a `writtenAt` heartbeat, the relay turned it into a `staleForSec`,
+ * and this module decided at 150 seconds. The mirror serves its own page now.
+ * A page that renders is a process that answered, so the question is asked by
+ * the fetch and the three pieces of machinery that used to answer it — the
+ * heartbeat, the threshold and the stale-verdict past tense below — are gone
+ * rather than left computing a constant.
  */
-export function isLive(progress) {
-  return progress?.staleForSec != null && progress.staleForSec <= HEARTBEAT_STALE_SEC;
-}
-
 /**
  * The constraint verdict, or null where the document does not carry one.
  *
@@ -131,16 +129,15 @@ export function isLive(progress) {
  * can carry the numbers with no word or the word with no numbers, and each has
  * to stand without the others.
  *
- * Past tense once the heartbeat is stale. The verdict is worth keeping on a
- * router that has stopped — the last reading is most of a post-mortem — but a
- * live diagnosis beside "not running" claims a process that is gone is still
- * constrained.
+ * Present tense, unconditionally. It used to have a past-tense form for a
+ * router whose heartbeat had gone stale; a document served by the process it
+ * describes cannot be in that state.
  */
-export function constraintOf(health, live) {
+export function constraintOf(health) {
   const word = health?.bottleneck;
   if (!word) return null;
   const [text, why] = BOTTLENECK[word] || [word, ""];
-  return { word, text: live ? text : `${text}, when it stopped`, why, tone: word === "ingest" ? "warn" : null };
+  return { word, text, why, tone: word === "ingest" ? "warn" : null };
 }
 
 /** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */

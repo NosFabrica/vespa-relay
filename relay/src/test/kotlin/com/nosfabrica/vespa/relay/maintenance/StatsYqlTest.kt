@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import com.nosfabrica.vespa.relay.util.canonicalRelay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import java.time.DayOfWeek
@@ -387,12 +388,12 @@ class StatsYqlTest {
      */
     @Test
     fun `relay urls that name one relay canonicalise to one string`() {
-        val canonical = StatsYql.canonicalRelay("wss://nos.lol")
+        val canonical = canonicalRelay("wss://nos.lol")
         for (spelling in listOf("wss://nos.lol", "wss://nos.lol/", "wss://NOS.LOL", "  wss://nos.lol  ")) {
-            assertEquals(canonical, StatsYql.canonicalRelay(spelling), "'$spelling' is the same relay")
+            assertEquals(canonical, canonicalRelay(spelling), "'$spelling' is the same relay")
         }
         // Idempotent, or a second pass over a rolled-up value would drift.
-        assertEquals(canonical, StatsYql.canonicalRelay(canonical))
+        assertEquals(canonical, canonicalRelay(canonical))
         // Displayed without the normalizer's trailing slash.
         assertEquals("wss://nos.lol", canonical)
     }
@@ -420,7 +421,7 @@ class StatsYqlTest {
                 "wss://nos.lol:444",
                 "wss://nos.lol:443",
                 "ws://nos.lol",
-            ).map { StatsYql.canonicalRelay(it) }
+            ).map { canonicalRelay(it) }
         assertEquals(distinct.size, distinct.toSet().size, "these are six different endpoints: $distinct")
     }
 
@@ -433,8 +434,8 @@ class StatsYqlTest {
      */
     @Test
     fun `an unparseable relay url survives as itself`() {
-        assertEquals("not a url at all", StatsYql.canonicalRelay("  not a url at all  "))
-        assertEquals("", StatsYql.canonicalRelay(""))
+        assertEquals("not a url at all", canonicalRelay("  not a url at all  "))
+        assertEquals("", canonicalRelay(""))
     }
 
     // ---- the queries --------------------------------------------------------

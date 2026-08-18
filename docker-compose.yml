@@ -196,14 +196,14 @@ services:
       # set silently emptied. Same failure the ban-list pass-throughs above were
       # added for, and .env.example ships live values for all three — so it was
       # one uncommented edit away in the shipped configuration.
-      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
-      SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      # THE ONLY ROUTER FILE THIS SIDE STILL READS. What the mirror has walked
+      # (SYNC_STATE_FILE, SYNC_SWEEP_STATE_FILE) and what it is doing
+      # (SYNC_PROGRESS_FILE) were read here to draw two cards on /stats.html;
+      # the sync service serves those itself now, at http://sync:7778/. The
+      # manifest stays because it is a fact about THIS relay that clients read
+      # — it bounds a mirror-scoped count — and the relay must answer it while
+      # the router is down.
       SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
-      # What the router is DOING — the phase of each stream and the disposition
-      # of every url its current cycle took on. Its `writtenAt` is a heartbeat,
-      # so a router that has stopped and one that is merely quiet stop being the
-      # same picture here. Same path on both services.
-      SYNC_PROGRESS_FILE: ${SYNC_PROGRESS_FILE:-/var/lib/vespa-relay/sync-progress.json}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
@@ -354,11 +354,18 @@ services:
       # own relay's total is comparing a filtered mirror to an unfiltered one
       # and reads a complete mirror as 35% done. Same path on both services.
       SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
-      # Where this router writes what each stream is doing, on every progress
-      # tick, for the relay to publish as `sync.progress`. Rewritten whatever the
-      # streams are doing, because the timestamp is the heartbeat. Same path on
-      # both services.
-      SYNC_PROGRESS_FILE: ${SYNC_PROGRESS_FILE:-/var/lib/vespa-relay/sync-progress.json}
+      # THIS SERVICE'S OWN STATUS PAGE: what each stream is doing, what the
+      # background passes are measuring, and how far the walk has reached, at
+      # http://localhost:${SYNC_STATUS_PORT:-7778}/. It used to be a file
+      # (SYNC_PROGRESS_FILE) the relay read off this volume and re-narrated —
+      # which could not say whether this process was still alive, so the
+      # document carried a heartbeat and the relay aged it. A request answers
+      # that. Set the port to 0 to serve no page; SYNC_PROGRESS_FILE is now
+      # REFUSED at boot rather than ignored.
+      SYNC_STATUS_PORT: 7778
+      SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
+      # Survives a restart, so a redeploy does not blank the page for a tick.
+      SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -404,6 +411,12 @@ services:
       # budget, and it is deliberately its own dispatcher so onion dials
       # cannot draw the fan-out's slots down.
       SYNC_TOR_MAX_SOCKETS: ${SYNC_TOR_MAX_SOCKETS:-}
+    ports:
+      # The status page: what this mirror is doing, served by the process doing
+      # it. Published like the relay's own port because it is read the same way
+      # — by a person with a browser — and because the alternative is exec'ing
+      # into the container to find out whether the mirror is running.
+      - "${SYNC_STATUS_PORT:-7778}:7778"
     volumes:
       # Mounts your local ./router.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.

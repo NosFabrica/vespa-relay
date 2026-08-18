@@ -250,13 +250,12 @@ fun main() {
                 // so a document fetched from two of this relay's addresses names
                 // one relay rather than reading as two.
                 relayUrl = relayUrl.url,
-                // Read-only, off the volume the sync service writes them to.
+                // Read-only, off the volume the sync service writes it to.
                 // Absent is the normal case — a serve-only deployment has no
                 // router — and the section is then simply not in the document.
-                syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
-                syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
+                // The manifest ALONE: what the mirror has walked and what it is
+                // doing are served by the sync process itself now.
                 syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
-                syncProgressFile = syncFile(env, "SYNC_PROGRESS_FILE", "/var/lib/vespa-relay/sync-progress.json"),
             )
         // ONE ROLLUP, two timers: the tiers write disjoint halves of the
         // document and share nothing else, so a second instance would only be a
@@ -436,10 +435,15 @@ private fun statsInterval(
     } ?: default
 
 /**
- * The router files the stats rollup reads. Shared names, not relay-side copies —
+ * The router file the stats rollup reads. A shared name, not a relay-side copy —
  * see the exemption in the unused-settings warning above.
+ *
+ * ONE, where it was four. `SYNC_STATE_FILE`, `SYNC_SWEEP_STATE_FILE` and
+ * `SYNC_PROGRESS_FILE` are the sync process's own now: it serves what it has
+ * walked and what it is doing on its own status site, so setting them here is
+ * exactly the mistake the warning above exists to catch.
  */
-private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE", "SYNC_MANIFEST_FILE", "SYNC_PROGRESS_FILE")
+private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_MANIFEST_FILE")
 
 /**
  * Where one of the router's files lives, from the env or the path

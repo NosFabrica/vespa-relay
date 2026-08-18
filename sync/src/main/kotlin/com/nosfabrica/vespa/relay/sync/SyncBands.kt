@@ -611,48 +611,60 @@ class SyncBands(
         )
     }
 
+    /**
+     * Every band this router holds, in the shape [save] writes and the status
+     * page reads.
+     *
+     * Extracted from [save] rather than duplicated for the page: the status
+     * site renders this state in the SAME process that holds it, so a second
+     * construction here would be a second format that could drift from the one
+     * on disk — and the file is what a restart reloads.
+     */
+    @Synchronized
+    internal fun snapshot(): JsonObject =
+        buildJsonObject {
+            coverageByStream.forEach { (stream, coverage) ->
+                // The key's own two halves become the two inner levels.
+                val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
+                // A url this stream folded away is skipped rather than
+                // written: see [dropFolded]. Filtered per entry, so a
+                // filter whose every relay was folded contributes no
+                // empty husk to the file.
+                val skip = folded[stream].orEmpty()
+                coverage.export().forEach { (k, band) ->
+                    if (k.relay in skip) return@forEach
+                    byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
+                }
+                // A stream that has only ASKED holds no bands — its
+                // coverage exists because `legs()` created it — and an
+                // empty group is a stream the card would list as having
+                // walked nothing, which is a fact the file should not
+                // be asserting.
+                if (byFilter.isEmpty()) return@forEach
+                put(
+                    stream,
+                    buildJsonObject {
+                        byFilter.forEach { (filter, byRelay) ->
+                            put(
+                                filter,
+                                buildJsonObject {
+                                    byRelay.forEach { (relay, band) ->
+                                        put(relay, bandOf(band, verified[VerifiedKey(stream, filter, relay)]))
+                                    }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     @Synchronized
     private fun save(): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject =
-                buildJsonObject {
-                    coverageByStream.forEach { (stream, coverage) ->
-                        // The key's own two halves become the two inner levels.
-                        val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
-                        // A url this stream folded away is skipped rather than
-                        // written: see [dropFolded]. Filtered per entry, so a
-                        // filter whose every relay was folded contributes no
-                        // empty husk to the file.
-                        val skip = folded[stream].orEmpty()
-                        coverage.export().forEach { (k, band) ->
-                            if (k.relay in skip) return@forEach
-                            byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
-                        }
-                        // A stream that has only ASKED holds no bands — its
-                        // coverage exists because `legs()` created it — and an
-                        // empty group is a stream the card would list as having
-                        // walked nothing, which is a fact the file should not
-                        // be asserting.
-                        if (byFilter.isEmpty()) return@forEach
-                        put(
-                            stream,
-                            buildJsonObject {
-                                byFilter.forEach { (filter, byRelay) ->
-                                    put(
-                                        filter,
-                                        buildJsonObject {
-                                            byRelay.forEach { (relay, band) ->
-                                                put(relay, bandOf(band, verified[VerifiedKey(stream, filter, relay)]))
-                                            }
-                                        },
-                                    )
-                                }
-                            },
-                        )
-                    }
-                }
+            val snapshot: JsonObject = snapshot()
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
