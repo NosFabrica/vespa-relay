@@ -1687,8 +1687,13 @@ reason, check whether one of its kinds simply never answers.
 
 Two more ways a paged leg reaches back that are NOT this one, worth separating
 before theorising: a `reconciledThrough` band records against the filter the
-reconcile actually compared, so a retraction audit on `ownedKinds` narrows a
-different band key than the catch-up's ask reads; and every `fullResyncSeconds`
+reconcile actually COMPARED, so a retraction audit whose `ownedKinds` are a
+strict subset of the filter's stamps a different band key than the catch-up's
+ask reads, and cannot narrow it — which is a second reason to ask only for what
+the audit compares. Where the two coincide, as they now do on `assertions`
+(`filter.kinds == ownedKinds`, so `ownedAskOf` is identity), the daily reconcile
+closes the catch-up's own older leg and the deep re-walk stops. And every
+`fullResyncSeconds`
 (quartz's `DEFAULT_FULL_RESYNC_SECONDS`, 604800 — `SYNC_FULL_RESYNC_SECONDS`
 here) a band is STALE and `legs()` hands back the whole filter, floored on the
 wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
