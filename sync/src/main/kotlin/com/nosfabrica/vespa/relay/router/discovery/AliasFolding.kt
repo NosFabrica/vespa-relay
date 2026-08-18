@@ -154,14 +154,40 @@ class AliasFolding(
      * not reproducible — and the only safe reading of it is to dial the url as
      * it stands. Kept separate from [dial] so that policy is the caller's
      * explicit choice rather than a silent default inside here.
+     *
+     * **[aliases] AND [standIns] ARE SEPARATE BECAUSE ONE OF THEM GETS SIGNED.**
+     * `FitnessPass` turns every entry it is handed into a published 30166
+     * carrying `l=alias` and the evidence `folds onto <url>` — and
+     * `publishFitness` OWNS that tag, so the write also replaces whatever grade
+     * the url held. A map that mixed the two would therefore sign a pairing no
+     * probe ever took, and could overwrite a sibling's `prime` with an `alias`
+     * pointing at a member that happens to be broken. Which map a consumer
+     * reads is the whole safety property: take [aliases] to publish, take both
+     * to route.
      */
     data class Collapsed(
         /** The urls worth dialling: canonical, plus everything still unmeasured. */
         val dial: List<NormalizedRelayUrl>,
-        /** Folded url -> the url that stands in for it. */
+        /**
+         * Folded url -> the survivor a PROBE compared it against, present in
+         * this set. Backed by a measurement, and therefore the only half of the
+         * collapse a caller may publish a verdict from.
+         */
         val aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
         /** Urls with no verdict either way. A subset of [dial]. */
         val unmeasured: List<NormalizedRelayUrl>,
+        /**
+         * Folded url -> the member standing in for a survivor that is ABSENT
+         * from this set — see [collapse]'s re-election.
+         *
+         * ROUTING ONLY, and never evidence of anything. These two urls were
+         * each measured against the missing canonical and never against each
+         * other, so the pairing is inferred rather than taken, and no caller
+         * may publish it. A consumer that only decides which socket to open —
+         * `RosterBuilder` — applies it exactly like [aliases]; one that signs a
+         * record about a url must not.
+         */
+        val standIns: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
     /**
@@ -1175,33 +1201,141 @@ class AliasFolding(
      * Pure — no store, no network — so both halves end the same way and the
      * numbers [measure] logs are the numbers the next [apply] will produce.
      *
-     * **A FOLD IS ONLY APPLIED WHERE ITS SURVIVOR IS IN THE SET.** Every live
-     * consumer applies [Collapsed.aliases] by DROPPING the alias — `RosterBuilder`
-     * filters it out of the discovered list, `FitnessPass` stamps it
-     * `Verdict.ALIAS` — and neither adds the canonical, because until the fold
-     * grouped the whole recorded world the canonical was always in the same list
-     * by construction. It no longer is: a verdict can name a survivor this
-     * caller never asked about — held out as known dead, gone from the relay
-     * list that named it, measured on another stream's world — and dropping the
-     * alias then takes the relay out of the fan-out with nothing put back. One
-     * live url, folded onto a url nobody dials, for the record's whole TTL.
+     * **A FOLD IS ONLY APPLIED WHERE THE SET HOLDS A SURVIVOR TO APPLY IT TO.**
+     * Every live consumer applies [Collapsed.aliases] by DROPPING the alias —
+     * `RosterBuilder` filters it out of the discovered list, `FitnessPass`
+     * stamps it `Verdict.ALIAS` — and neither adds the canonical, because until
+     * the fold grouped the whole recorded world the canonical was always in the
+     * same list by construction. It no longer is: a verdict can name a survivor
+     * this caller never asked about — held out as known dead, gone from the
+     * relay list that named it, measured on another stream's world — and
+     * dropping the alias then takes the relay out of the fan-out with nothing
+     * put back. One live url, folded onto a url nobody dials, for the record's
+     * whole TTL.
      *
      * The same hazard existed before the fold ever looked past its candidates,
      * quietly and rarely: a stored verdict outlives the discovery that produced
      * it, so a canonical could always drift out of a later cycle's list. Guarded
      * HERE rather than at the publication end because the verdict is not wrong —
-     * the two urls really are one relay — it is simply not actionable while the
-     * survivor is absent, and it becomes actionable again, with no re-probe, the
-     * moment that url is discovered again.
+     * the two urls really are one relay — it is simply not actionable AS
+     * WRITTEN while the survivor is absent.
+     *
+     * ## Which is why an absent survivor RE-ELECTS rather than unfolds
+     *
+     * Handing every member back unfolded is only the right answer for a group
+     * of one. Above that it says the opposite of what the records say: measured
+     * on `relay.typedcypher.com`, whose four minted paths each folded onto the
+     * bare host at containment 1.000 and whose bare host then stopped upgrading
+     * the websocket. The `dead` verdict held the survivor out of
+     * [StreamWorld.candidates] for its 24h, the group arrived here with its
+     * canonical missing, all four unfolded, and every one of them was dialled
+     * and graded `prime` — four sockets, four bands and four cursors onto one
+     * server, published to the network as four relays. The two clocks make that
+     * the STEADY state and not a blip: a `dead` verdict lapses in 24h
+     * ([StreamWorld.DEAD_TTL_SECONDS]) and the fold that named the corpse
+     * stands for thirty ([RelayVerdictRecord.DEFAULT_TTL_SECONDS]), so the host
+     * alternates between four prime urls and one dead one, twice a day, for a
+     * month. The preference order elects the pathless url — rightly, it is the
+     * one every other participant's list names — which is also the url most
+     * likely to be a front door that stops speaking websocket while the paths
+     * behind it carry on.
+     *
+     * So a group whose survivor is absent picks the best member that is
+     * PRESENT, by the same [RelayAliases.preferred] order that elected the
+     * missing one, and folds the rest onto that. The group stays one relay,
+     * which is the whole property the fold exists to hold.
+     *
+     * **The re-election leaves by [Collapsed.standIns], NOT by
+     * [Collapsed.aliases], and that separation is what makes it sound.** A fold
+     * is a measurement — B was compared against A — and the members of a group
+     * were each measured against the canonical, never against each other, so
+     * "B folds onto C" is a claim this has not earned. It must therefore never
+     * reach a signed record, and hoping a consumer treats it gently is not a
+     * guarantee: `FitnessPass` publishes a 30166 `l=alias` for every entry in
+     * the map it is given, and `publishFitness` owns that tag, so one mixed map
+     * would both sign an untaken pairing and overwrite a working sibling's
+     * `prime` with an alias pointing at whichever member preference happened to
+     * pick. Two fields make the distinction structural: the publisher reads
+     * `aliases` and cannot see a stand-in, the router reads both.
+     *
+     * What routing on it costs if the transitive step is wrong is one cycle of
+     * a group treated as one relay — the treatment the stored verdict already
+     * imposes — redirected onto a member that answers. Nothing is sticky: the
+     * `same-as` records still name A, so the moment A is discovered again or
+     * its `dead` verdict lapses, `standIn` picks A back up with no re-probe and
+     * no record to retract.
+     *
+     * ## Two cases this deliberately does NOT reach
+     *
+     * A survivor that is present and UN-DIALABLE — the same corpse still in the
+     * relay list a roster reads, so the fold applies as written and the host
+     * leaves the fan-out. And an election that picks a member the CALLER will
+     * then drop for its own reasons, which is `RosterBuilder`'s `gatedBy`
+     * intersection: preference ranks urls, it does not know which of them a
+     * gate vouches for, so a group whose vouched member loses the election is
+     * held out until the next cycle. Both need a grade or a gate this component
+     * deliberately cannot see, and both are a change to what the caller hands
+     * in rather than to this line.
      */
     private fun collapse(candidates: List<NormalizedRelayUrl>): Collapsed {
         val present = candidates.toHashSet()
-        // The url to dial in place of this one, or the url itself when the
-        // stand-in is not here to stand in.
-        val standIn = { url: NormalizedRelayUrl -> aliases.canonicalOf(url).takeIf { it in present } ?: url }
-        val dial = candidates.map(standIn).distinct()
-        val map = candidates.filter { standIn(it) != it }.associateWith(standIn)
-        return Collapsed(dial, map, dial.filter { !aliases.measured(it) })
+        val elected = reElected(candidates, present)
+        // ONE pass, and one `canonicalOf` per url inside it. This was a `map`,
+        // a `filter` and an `associateWith` over the candidates, each of which
+        // re-derived the stand-in — three lookups per url where the answer is
+        // the same one, on a set that is 12,374 urls on a live router and is
+        // re-collapsed in front of every roster tick.
+        //
+        // The two maps are sorted as they are built, by the ONE question that
+        // separates them: was this url measured against the url it is handed
+        // to, or merely elected onto it. See [Collapsed.standIns].
+        val measured = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val inferred = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val dial = ArrayList<NormalizedRelayUrl>(candidates.size)
+        val seen = HashSet<NormalizedRelayUrl>(candidates.size)
+        for (url in candidates) {
+            val canonical = aliases.canonicalOf(url)
+            // The recorded survivor while it is here to stand in, the group's
+            // elected stand-in while it is not, and the url itself when it is
+            // nobody's duplicate or the only member left.
+            val into = if (canonical in present) canonical else elected[canonical] ?: url
+            if (seen.add(into)) dial += into
+            if (into == url) continue
+            if (into == canonical) measured[url] = into else inferred[url] = into
+        }
+        return Collapsed(dial, measured, dial.filter { !aliases.measured(it) }, inferred)
+    }
+
+    /**
+     * Absent survivor -> the member of its group that stands in for it here.
+     *
+     * Keyed by the MISSING canonical rather than by host: a host can carry more
+     * than one group, and the record is what says which urls were measured
+     * together. Grouping by host instead would fold two genuinely different
+     * endpoints onto each other the first time either one's survivor went
+     * missing, which is the mistake the fingerprint exists to avoid making.
+     *
+     * A group of one elects ITSELF, and standing in for yourself is a no-op:
+     * [collapse] finds `standIn(url) == url`, so it is dialled as it stands and
+     * reaches [Collapsed.aliases] no more than it did before re-election
+     * existed. That case keeps its old behaviour because its old behaviour was
+     * the right one — there is no other member to carry the relay.
+     */
+    private fun reElected(
+        candidates: List<NormalizedRelayUrl>,
+        present: Set<NormalizedRelayUrl>,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val groups = HashMap<NormalizedRelayUrl, MutableList<NormalizedRelayUrl>>()
+        for (url in candidates) {
+            val canonical = aliases.canonicalOf(url)
+            if (canonical == url || canonical in present) continue
+            groups.getOrPut(canonical) { ArrayList() } += url
+        }
+        val elected = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>(groups.size)
+        for ((canonical, members) in groups) {
+            aliases.preferred(members)?.let { elected[canonical] = it }
+        }
+        return elected
     }
 
     companion object {

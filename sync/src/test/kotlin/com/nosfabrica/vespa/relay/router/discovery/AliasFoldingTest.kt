@@ -538,6 +538,70 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a group whose survivor is held out folds onto the best url still present`() =
+        runBlocking {
+            // **`relay.typedcypher.com`, measured.** Four minted paths each
+            // folded onto the bare host at containment 1.000; the bare host then
+            // stopped upgrading the websocket and was graded `dead`, which holds
+            // it out of `StreamWorld.candidates` for 24h. The group arrived at
+            // `collapse` with its canonical missing, every member unfolded, and
+            // the fitness pass dialled and graded all four `prime` — four
+            // sockets, four bands and four cursors onto one server, and four
+            // relays published to the network where there is one.
+            //
+            // Unfolding is the right answer for a group of ONE — the test above
+            // — and the opposite of the records for a group of four.
+            val store = newStore()
+            val host = "wss://typedcypher.example"
+            val root = RelayUrlNormalizer.normalize(host)
+            // Deliberately not in preference order, so the assertion below is
+            // about the ORDER and not about which url happens to be first.
+            val paths = listOf("$host/tango-jade", "$host/onyx", "$host/ember-november").map { RelayUrlNormalizer.normalize(it) }
+            val fold = folding(store, upstreams())
+
+            fold.measure("t", listOf(root) + paths, canDial = { true })
+            assertEquals(
+                paths.associateWith { root },
+                fold.applyVerdicts(listOf(root) + paths).aliases,
+                "the fixture needs all three paths folded onto the bare host",
+            )
+
+            // The next sweep, with the survivor held out as dead.
+            val stranded = fold.applyVerdicts(paths)
+            val survivor = RelayUrlNormalizer.normalize("$host/onyx")
+            assertEquals(listOf(survivor), stranded.dial, "one server is still one dial, and the shortest path wins it")
+            assertEquals(
+                paths.filter { it != survivor }.associateWith { survivor },
+                stranded.standIns,
+                "the others stand in on it rather than each becoming a relay of their own",
+            )
+            assertTrue(stranded.unmeasured.isEmpty(), "every one of them is measured — re-election is not a reason to re-probe")
+
+            // **AND `aliases` IS EMPTY, WHICH IS THE SAFETY PROPERTY.**
+            // `FitnessPass` signs a 30166 for every entry it is handed —
+            // `l=alias`, `folds onto <url>`, on a tag `publishFitness` OWNS and
+            // therefore replaces. These three paths were each measured against
+            // the bare host and never against each other, so a stand-in
+            // arriving on that map would publish a pairing no probe took, and
+            // would overwrite the elected member's own `prime` on whichever
+            // sibling preference happened to rank first. Routing may infer;
+            // publishing may not.
+            assertTrue(stranded.aliases.isEmpty(), "an inferred pairing must never reach the map a verdict is signed from")
+
+            // NOTHING WAS PUBLISHED. The stand-in is this call's routing
+            // decision, not a new claim: the records still name the bare host,
+            // so the moment it answers again the group goes back to it with no
+            // re-probe and nothing to retract.
+            val recovered = fold.applyVerdicts(listOf(root) + paths)
+            assertEquals(
+                paths.associateWith { root },
+                recovered.aliases,
+                "the stored fold is untouched and the survivor is picked straight back up",
+            )
+            assertTrue(recovered.standIns.isEmpty(), "a survivor that is present needs no stand-in")
+        }
+
+    @Test
     fun `a host that cannot repeat itself leaves the store's other verdicts alone`() =
         runBlocking {
             // The reproducibility guard forgot the whole GROUP, which since the

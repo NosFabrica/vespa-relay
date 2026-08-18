@@ -461,6 +461,12 @@ class SyncEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
+                // `aliases` ALONE, deliberately: this pass SIGNS a record for
+                // every entry it is handed — `l=alias`, `folds onto <url>`, on
+                // a tag `publishFitness` owns and therefore replaces. Only the
+                // half a probe actually measured may be published that way, so
+                // a stand-in elected for an absent survivor must not arrive
+                // here. See [AliasFolding.Collapsed.standIns].
                 foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                 inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
@@ -619,7 +625,11 @@ class SyncEngine(
                     store = store,
                     streams = visitStreams,
                     bands = bands,
-                    foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
+                    // BOTH maps, because this caller only decides which socket
+                    // to open. A stand-in is not evidence and nothing here
+                    // publishes one — it just keeps a group whose survivor went
+                    // missing from being dialled once per member.
+                    foldedAway = { urls -> folding?.applyVerdicts(urls)?.let { it.aliases + it.standIns } ?: emptyMap() },
                     keepBands = pinnedUrls,
                     tor = tor,
                 ),

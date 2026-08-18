@@ -867,6 +867,19 @@ class RelayAliases(
         return group.minWith(PREFERENCE)
     }
 
+    /**
+     * The best url of [urls] under the same order [leaderOf] falls back to, or
+     * null when there is nothing to choose from.
+     *
+     * The comparator itself stays private: [AliasFolding.collapse] needs to
+     * name a stand-in when a group's recorded survivor is absent, and the only
+     * thing that question needs is the answer. Exposing [PREFERENCE] instead
+     * would let a caller sort a group by it and then pick differently, which is
+     * exactly the disagreement about "which url of a host wins" this order
+     * exists to prevent.
+     */
+    fun preferred(urls: Collection<NormalizedRelayUrl>): NormalizedRelayUrl? = urls.minWithOrNull(PREFERENCE)
+
     companion object {
         /**
          * How deep a fingerprint goes: the newest 500 events.
