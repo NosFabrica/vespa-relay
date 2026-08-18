@@ -271,7 +271,8 @@ internal object SyncVocabulary {
                     "the first two from the rest and nothing separated the last two. Absent until a leg reaches a " +
                     "stage worth the word. A working leg's word names TWO things, because they do not imply each " +
                     "other: what for — `catching up` is everything new since this relay's last pass, `auditing` is " +
-                    "the whole past re-checked on the stream's `auditSeconds` clock to find what no catch-up ever " +
+                    "the whole past re-checked on the stream's `negentropySyncThePastSeconds` clock to find what no " +
+                    "catch-up ever " +
                     "saw — and, in the bracket, how: `paging` walks a REQ newest-first, `negentropy` compares " +
                     "reconciliation windows and downloads only the difference. Negentropy is NOT a synonym for the " +
                     "audit and paging is not a synonym for the catch-up: an audit pages the windows a peer will not " +
@@ -970,9 +971,19 @@ internal object SyncVocabulary {
             )
             put(
                 "auditsRun",
-                "History audits run since boot: the windowed negentropy reconcile a stream's `auditSeconds` " +
-                    "schedules when a relay's last verified full pass ages out. Each relay's clock is its own, so " +
-                    "this climbs as a trickle — roster over auditSeconds — never a herd.",
+                "History reconciles run since boot: the windowed negentropy pass a stream's " +
+                    "`negentropySyncThePastSeconds` schedules when a relay's last verified full pass ages out. Each " +
+                    "relay's clock is its own, so this climbs as a trickle — roster over the period — never a herd.",
+            )
+            put(
+                "auditsSkipped",
+                "Reconciles NOT attempted because the monitor measured that relay as refusing a NEG-OPEN — the " +
+                    "`nip77` verdict on the same signed 30166 record the roster admits it by. Both audits are " +
+                    "negentropy end to end, so against such a relay the attempt cannot succeed, and it was made " +
+                    "every six hours per ask forever because a failed audit advances no clock. What re-checks their " +
+                    "past instead is the stream's `refetchThePastSeconds`, so this number climbing beside a stream " +
+                    "with no such period is the router saying that stream's history is never re-read on those " +
+                    "relays. UNMEASURED relays are not counted here: no verdict means the ask tries and finds out.",
             )
             put(
                 "retracted",

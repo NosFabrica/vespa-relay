@@ -64,8 +64,13 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   that the upstream no longer serves. Only for a stream whose upstream owns the
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
+- **`negentropySyncThePastSeconds`** *(optional, was `auditSeconds`)* — how
+  often to reconcile the covered past over NIP-77, against the relays a verdict
+  says can answer one. See
+  [`refetchThePastSeconds` and the reconcile](#refetchthepastseconds-and-the-audit).
 - **`refetchThePastSeconds`** *(optional)* — how often this stream's bands
-  expire, putting its whole filter back on the walk. Defaults to
+  expire, putting its whole filter back on the walk — the same job for the
+  relays that cannot reconcile. Defaults to
   `SYNC_REFETCH_THE_PAST_SECONDS` (7 days). See
   [`refetchThePastSeconds` and the audit](#refetchthepastseconds-and-the-audit).
 - **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
@@ -135,7 +140,18 @@ value, else `SYNC_REFETCH_THE_PAST_SECONDS` (which still answers to its old
 name, `SYNC_FULL_RESYNC_SECONDS`) — it is discarded and the whole filter is
 walked again from the plausible floor. That is the only thing that can re-read a
 window a relay back-filled after we passed it, and for a stream with no
-`auditSeconds` it is the only full re-check there is.
+`negentropySyncThePastSeconds` it is the only full re-check there is.
+
+**Which of the two a relay gets is the monitor's verdict, not a guess.** The
+fitness pass probes NEG-OPEN and signs the answer onto the same kind-30166
+record the roster admits the relay by. A relay measured as refusing one is never
+asked for a reconcile — the attempt cannot succeed, and a failed audit advances
+no clock, so it was retried every six hours per ask forever; those are counted
+as `auditsSkipped` on `/stats.json`. A relay nobody has measured is not a
+refusal: the ask tries and finds out. So a stream whose relays are mixed wants
+both periods — the reconcile short, the re-fetch long — and a stream that sets
+only the reconcile leaves its non-NIP-77 relays' history never re-read, which is
+what the skipped count is there to make visible.
 
 **There is no default, deliberately.** Unset, on both the stream and the
 environment, means the past is never re-read — because re-reading a whole
@@ -144,7 +160,7 @@ running on a period nobody had chosen. Streams left with neither a re-fetch
 period nor an audit are named at boot:
 
 ```
-router: stream(s) indexers have neither `auditSeconds` nor `refetchThePastSeconds` — they page
+router: stream(s) indexers have neither `negentropySyncThePastSeconds` nor `refetchThePastSeconds` — they page
 forward only, and nothing will re-read the history they have already walked. Set one if a relay
 of theirs can back-fill
 ```
@@ -154,8 +170,8 @@ reconciles the covered history and downloads the difference; the re-walk
 downloads the history. They also collide, because a visit runs its catch-up
 *before* its audit — leave both at a week and the stream re-pages everything and
 then reconciles the same ground in one visit. Give a stream that audits a period
-well above its `auditSeconds`; the example config runs the two outbox streams
-monthly against a weekly audit. Below its own `auditSeconds` the loader says so
+well above its `negentropySyncThePastSeconds`; the example config runs the two outbox streams
+monthly against a weekly audit. Below its own `negentropySyncThePastSeconds` the loader says so
 at boot, because there the audit can never be the cheaper path.
 
 The **live tail works against every relay**; the **negentropy backfill depends

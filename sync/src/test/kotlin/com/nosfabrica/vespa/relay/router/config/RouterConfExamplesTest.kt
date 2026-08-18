@@ -185,10 +185,11 @@ class RouterConfExamplesTest {
         // reconciles the covered history, the re-walk re-downloads it — and a
         // visit pages BEFORE it audits, so equal periods mean the stream pages
         // its whole history and then reconciles the same ground in one visit.
-        example.streams.filter { it.auditSeconds != null && it.refetchThePastSeconds != null }.forEach {
+        example.streams.filter { it.negentropySyncThePastSeconds != null && it.refetchThePastSeconds != null }.forEach {
             assertTrue(
-                it.refetchThePastSeconds!! > it.auditSeconds!!,
-                "stream '${it.name}' re-walks every ${it.refetchThePastSeconds}s against an audit every ${it.auditSeconds}s",
+                it.refetchThePastSeconds!! > it.negentropySyncThePastSeconds!!,
+                "stream '${it.name}' re-fetches the past every ${it.refetchThePastSeconds}s against a reconcile " +
+                    "every ${it.negentropySyncThePastSeconds}s",
             )
         }
         // The two outbox streams are the ones it costs most: every certified

@@ -70,7 +70,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Per stream, a visit is: catch-up pages over the band's outstanding legs
  * (kinds-only — no author narrowing, so the asks are a few hundred bytes),
- * then — when the stream sets `auditSeconds` and the band's last full pass
+ * then — when the stream sets `negentropySyncThePastSeconds` and the band's last full pass
  * has aged past it — a windowed negentropy audit of the covered history that
  * downloads only the diff. After the asks, the visit leaves a LIVE TAIL on the
  * open socket: new events arrive the moment they exist, and freshness stops
@@ -340,6 +340,15 @@ internal class VisitPool(
     private val poolReceived = AtomicLong()
     private val visitsRun = AtomicLong()
     private val auditsRun = AtomicLong()
+
+    /**
+     * Audits not attempted because the monitor measured the relay as not
+     * answering a NEG-OPEN — see [auditIfDue]. Counted rather than logged: it
+     * is a per-ask, per-visit decision on a roster of thousands, and the
+     * number beside `auditsRun` is what says whether a stream's history is
+     * being re-checked by reconcile or is waiting on `refetchThePastSeconds`.
+     */
+    private val auditsSkipped = AtomicLong()
     private val abortedVisits = AtomicLong()
 
     fun start() {
@@ -362,6 +371,7 @@ internal class VisitPool(
                 // `visiting` that could not be told from a catch-up.
                 Processors.Count("auditing", ongoing.values.count { it.stage == STAGE_AUDITING || it.stage == STAGE_RETRACTING }.toLong()),
                 Processors.Count("auditsRun", auditsRun.get()),
+                Processors.Count("auditsSkipped", auditsSkipped.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
                 Processors.Count("abortedVisits", abortedVisits.get()),
                 Processors.Count("evictedTails", evictedTails.get()),
@@ -513,7 +523,13 @@ internal class VisitPool(
                     abortedVisits.incrementAndGet()
                     return
                 }
-                auditIfDue(ask, url, ongoingVisit, snapshot.sharedAuthors[ask.stream.name].orEmpty())
+                auditIfDue(
+                    ask,
+                    url,
+                    ongoingVisit,
+                    snapshot.sharedAuthors[ask.stream.name].orEmpty(),
+                    snapshot.speaksNegentropy[url],
+                )
             }
             ongoingVisit.stage = "draining queued heals, then the tail"
             healer.drain(url)
@@ -583,38 +599,53 @@ internal class VisitPool(
      * licence to act on what we hold that the provider no longer serves; the
      * ordinary sweep would double the round trips to say half as much. Every
      * other stream with the knob set gets the plain history sweep. No
-     * `auditSeconds`, no audit of either kind.
+     * `negentropySyncThePastSeconds`, no audit of either kind.
+     *
+     * **A relay the monitor measured as not answering a NEG-OPEN is not asked.**
+     * Both audits are negentropy end to end, so against such a relay the
+     * attempt cannot succeed — and it was being made every `attemptSpacing`
+     * (six hours at the top of its clamp) per ask, forever, because a failed
+     * audit advances no clock. The verdict is already signed on the same 30166
+     * record the roster admits the relay by; [speaksNegentropy] reads it.
+     * UNMEASURED still tries: no verdict, an expired one, or a deployment with
+     * no signer to read one by all mean "find out", not "give up". What
+     * re-checks such a relay's past instead is `refetchThePastSeconds`.
      */
     private suspend fun auditIfDue(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
+        speaksNegentropy: Boolean?,
     ) {
-        val auditSeconds = ask.stream.auditSeconds ?: return
+        val negentropySyncThePastSeconds = ask.stream.negentropySyncThePastSeconds ?: return
+        if (speaksNegentropy == false) {
+            auditsSkipped.incrementAndGet()
+            return
+        }
         if (ask.stream.deleteMissing != DeleteMissing.OFF) {
-            retractionIfDue(ask, url, auditSeconds, ongoingVisit, sharedAuthors)
+            retractionIfDue(ask, url, negentropySyncThePastSeconds, ongoingVisit, sharedAuthors)
         } else {
-            sweepAudit(ask, url, auditSeconds, ongoingVisit)
+            sweepAudit(ask, url, negentropySyncThePastSeconds, ongoingVisit)
         }
     }
 
     /**
-     * The weekly (or whatever `auditSeconds` says) negentropy audit: when the
+     * The weekly (or whatever `negentropySyncThePastSeconds` says) negentropy audit: when the
      * band's last full pass has aged past the knob, reconcile the covered past
      * in windows and download only the diff. Staggering is free — each relay's
      * band ages on its own clock — so the steady state is
-     * `roster / auditSeconds`, a trickle, and no cap is needed.
+     * `roster / negentropySyncThePastSeconds`, a trickle, and no cap is needed.
      */
     private suspend fun sweepAudit(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        auditSeconds: Long,
+        negentropySyncThePastSeconds: Long,
         ongoingVisit: OngoingVisit,
     ) {
         val stream = ask.stream
         val now = nowSeconds()
-        if (!bands.claimAudit(stream.name, url, ask.filter, auditSeconds, now)) return
+        if (!bands.claimAudit(stream.name, url, ask.filter, negentropySyncThePastSeconds, now)) return
         val auditStarted = now
         var received = 0
         ongoingVisit.stage = STAGE_AUDITING
@@ -669,7 +700,7 @@ internal class VisitPool(
     }
 
     /**
-     * The retraction audit for one ask, on the same `auditSeconds` clock as
+     * The retraction audit for one ask, on the same `negentropySyncThePastSeconds` clock as
      * every other audit. The dueness, like the comparison, is
      * [RetractionAudit]'s own — the owned-ask band that schedules it is the
      * band the reconcile stamps, so both are derived in one place there.
@@ -677,12 +708,12 @@ internal class VisitPool(
     private suspend fun retractionIfDue(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        auditSeconds: Long,
+        negentropySyncThePastSeconds: Long,
         ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
     ) {
         val retraction = retraction ?: return
-        if (!retraction.claimAudit(ask.stream, url, ask.filter, auditSeconds)) return
+        if (!retraction.claimAudit(ask.stream, url, ask.filter, negentropySyncThePastSeconds)) return
         ongoingVisit.stage = STAGE_RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,
@@ -856,7 +887,7 @@ internal class VisitPool(
          * the store at all — whether it gates that list is the operator's
          * business, not a precondition for the engine that walks it. A
          * retracting stream rides too: its `deleteMissing` comparison IS its
-         * audit ([RetractionAudit]), on the `auditSeconds` clock the loader
+         * audit ([RetractionAudit]), on the `negentropySyncThePastSeconds` clock the loader
          * requires it to set.
          */
         internal fun ridesThePool(stream: SyncStream): Boolean = stream.discovery?.sources?.isNotEmpty() == true
@@ -922,7 +953,7 @@ internal class VisitPool(
          * column. Two independent axes, and each word names both:
          *
          *  - **What for.** CATCHING UP is everything new since the band's last
-         *    pass; AUDITING is the whole past re-checked on the `auditSeconds`
+         *    pass; AUDITING is the whole past re-checked on the `negentropySyncThePastSeconds`
          *    clock, whose purpose is to find what a catch-up never saw.
          *  - **How.** Paging walks a REQ newest-first; negentropy compares set
          *    reconciliation windows and downloads only the difference.

@@ -603,6 +603,15 @@ class SyncEngine(
     /** The deleteMissing comparison for the pool's retracting asks — see [RetractionAudit]. */
     private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
 
+    /**
+     * The monitor's own verdicts, read back — built on the same terms as the
+     * fold and the passes: a signer, or nothing. Without one this router has
+     * no identity to have written verdicts under, so every relay reads as
+     * unmeasured and every ask keeps trying, which is what the pool did before
+     * it could read one at all.
+     */
+    private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
+
     /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
     private val visitPool =
         VisitPool(
@@ -622,6 +631,9 @@ class SyncEngine(
                     foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                     keepBands = pinnedUrls,
                     tor = tor,
+                    // The fitness pass has always measured and signed this and
+                    // nothing has ever read it — see [RosterBuilder.Roster].
+                    speaksNegentropy = { urls -> verdicts?.load(urls)?.speaksNegentropy ?: emptyMap() },
                 ),
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),

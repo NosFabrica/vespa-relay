@@ -206,15 +206,31 @@ object RouterConfigLoader {
                 // wearing an audit's name. `verifySeconds` is the knob's old
                 // name, honored with a nudge — a renamed key must never
                 // silently turn a deployment's audits off.
-                val auditSeconds =
+                // Renamed twice, and both older spellings still parse: the
+                // knob clocks a NEGENTROPY reconcile of the covered past, and
+                // neither `auditSeconds` nor `verifySeconds` said which of the
+                // two re-checks it schedules — the other one now being
+                // `refetchThePastSeconds`, over a different transport, for a
+                // different set of relays.
+                val negentropySyncThePastSeconds =
                     when {
+                        s.hasPath("negentropySyncThePastSeconds") -> {
+                            s.getLong("negentropySyncThePastSeconds")
+                        }
+
                         s.hasPath("auditSeconds") -> {
+                            System.err.println(
+                                "router: stream '$name' uses auditSeconds — renamed to negentropySyncThePastSeconds " +
+                                    "(it clocks the reconcile of the covered past, against relays that answer a NEG-OPEN); " +
+                                    "the old name still works",
+                            )
                             s.getLong("auditSeconds")
                         }
 
                         s.hasPath("verifySeconds") -> {
                             System.err.println(
-                                "router: stream '$name' uses verifySeconds — renamed to auditSeconds (it clocks the history audit); the old name still works",
+                                "router: stream '$name' uses verifySeconds — renamed to negentropySyncThePastSeconds; " +
+                                    "the old name still works",
                             )
                             s.getLong("verifySeconds")
                         }
@@ -230,11 +246,12 @@ object RouterConfigLoader {
                 val refetchThePastSeconds =
                     if (s.hasPath("refetchThePastSeconds")) {
                         s.getLong("refetchThePastSeconds").coerceAtLeast(3600L).also {
-                            if (auditSeconds != null && it <= auditSeconds) {
+                            if (negentropySyncThePastSeconds != null && it <= negentropySyncThePastSeconds) {
                                 System.err.println(
-                                    "router: stream '$name' re-walks every ${it}s but audits every ${auditSeconds}s — " +
-                                        "the re-walk pages the whole history the audit was about to reconcile for the " +
-                                        "difference alone, so the audit can never be the cheaper path",
+                                    "router: stream '$name' re-fetches the past every ${it}s but negentropy-syncs it " +
+                                        "every ${negentropySyncThePastSeconds}s — the re-fetch pages the whole history the " +
+                                        "reconcile was about to compare for the difference alone, so the reconcile can " +
+                                        "never be the cheaper path",
                                 )
                             }
                         }
@@ -252,9 +269,9 @@ object RouterConfigLoader {
                         "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
                             "comparison runs as the pool's audit, over asks a scan paired with their owners"
                     }
-                    require(auditSeconds != null) {
-                        "router: stream '$name' sets deleteMissing without `auditSeconds` — " +
-                            "the retraction comparison runs as the history audit, and that knob is its clock"
+                    require(negentropySyncThePastSeconds != null) {
+                        "router: stream '$name' sets deleteMissing without `negentropySyncThePastSeconds` — " +
+                            "the retraction comparison IS that reconcile, and that knob is its clock"
                     }
                     // The delete's whole licence is per (relay, provider):
                     // "this relay no longer serves this provider" is the only
@@ -290,7 +307,7 @@ object RouterConfigLoader {
                     refetchThePastSeconds = refetchThePastSeconds,
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
-                    auditSeconds = auditSeconds,
+                    negentropySyncThePastSeconds = negentropySyncThePastSeconds,
                 )
             }
         // Advisory, never a refusal — the overlap can be deliberate. A kind a
@@ -536,7 +553,8 @@ object RouterConfigLoader {
         }
         require(!s.hasPath("sync")) {
             "router: stream '$stream' sets `sync` beside a relaySource — the pool has one shape for every " +
-                "stream: page forward from the band's edge, reconcile the covered past on the auditSeconds " +
+                "stream: page forward from the band's edge, reconcile the covered past on the " +
+                "negentropySyncThePastSeconds " +
                 "audit. `sync` chooses transport for static `urls` streams only; writing it here would claim " +
                 "a choice nothing reads"
         }

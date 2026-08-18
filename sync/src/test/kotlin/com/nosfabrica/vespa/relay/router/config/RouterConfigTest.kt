@@ -619,7 +619,7 @@ class RouterConfigTest {
         // The comparison runs as the history audit over asks a scan paired
         // with their owners, so the config must supply both halves: the
         // relaySource (a static stream has no discovery to pair authors
-        // with) and auditSeconds (the audit's clock).
+        // with) and negentropySyncThePastSeconds (the reconcile's clock).
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -649,7 +649,7 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = true
-                auditSeconds = 86400
+                negentropySyncThePastSeconds = 86400
                 $gated""",
             ).deleteMissing,
         )
@@ -658,7 +658,7 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = "dryRun"
-                auditSeconds = 86400
+                negentropySyncThePastSeconds = 86400
                 $gated""",
             ).deleteMissing,
         )
@@ -670,7 +670,8 @@ class RouterConfigTest {
                 deleteMissing = true""",
             )
         }
-        // No auditSeconds: the one decision that destroys data has no clock.
+        // No negentropySyncThePastSeconds: the one decision that destroys data
+        // has no clock.
         assertFailsWith<IllegalArgumentException> {
             stream(
                 """ownedKinds = [30382]
@@ -682,7 +683,7 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = "sometimes"
-                auditSeconds = 86400
+                negentropySyncThePastSeconds = 86400
                 $gated""",
             )
         }
@@ -721,10 +722,12 @@ class RouterConfigTest {
 
     @Test
     fun `the renamed knobs still answer to their old names, loudly`() {
-        // verifySeconds -> auditSeconds, newUrlSeconds -> fastLaneSeconds,
-        // concurrency -> dialConcurrency. A renamed key must never silently
-        // turn a deployment's audits or fast lane off — the old spelling
-        // parses, warns, and means the same thing.
+        // verifySeconds -> auditSeconds -> negentropySyncThePastSeconds,
+        // newUrlSeconds -> fastLaneSeconds, concurrency -> dialConcurrency. A
+        // renamed key must never silently turn a deployment's reconciles or
+        // fast lane off — every old spelling parses, warns, and means the same
+        // thing. Two generations of the same knob, because the second rename
+        // is what put the transport in the name.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -743,7 +746,7 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        assertEquals(604_800L, cfg.streams.single().auditSeconds)
+        assertEquals(604_800L, cfg.streams.single().negentropySyncThePastSeconds)
         assertEquals(90L, cfg.monitor!!.fastLaneSeconds)
         assertEquals(7, cfg.monitor!!.dialConcurrency)
     }
@@ -765,7 +768,7 @@ class RouterConfigTest {
                     filter = { "kinds": [30382] }
                     ownedKinds = [30382]
                     deleteMissing = true
-                    auditSeconds = 86400
+                    negentropySyncThePastSeconds = 86400
                     gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     relaySource = [ $source ]
                   }
@@ -805,7 +808,7 @@ class RouterConfigTest {
                   s {
                     dir = "down"
                     filter = { $kinds }
-                    auditSeconds = 86400
+                    negentropySyncThePastSeconds = 86400
                     gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     relaySource = [
                         {

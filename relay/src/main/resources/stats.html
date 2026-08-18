@@ -2333,6 +2333,9 @@ function processorFact(p) {
     if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
     if (p.auditing) add(`${fmt(p.auditing)} auditing now`, "auditing");
     if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
+    // Not a fault, and not nothing: those relays are re-checked by paging or
+    // not at all, and which one is a config question the tooltip names.
+    if (p.auditsSkipped) add(`${fmt(p.auditsSkipped)} skipped, no NIP-77`, "auditsSkipped");
     if (p.retracted) add(`${fmt(p.retracted)} RETRACTED upstream`, "retracted", true);
     if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
     if (p.evictedTails) add(`${fmt(p.evictedTails)} tail(s) rotated out`, "evictedTails");

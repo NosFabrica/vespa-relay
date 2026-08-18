@@ -102,6 +102,19 @@ class RelayVerdictRecord(
         val consistent: Set<NormalizedRelayUrl> = emptySet(),
         /** Urls measured as NOT doing so — the ones the fan-out refuses. */
         val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
+        /**
+         * Whether a url ANSWERED a NEG-OPEN when the fitness pass asked, by
+         * url. Absent means unmeasured — no verdict, an expired one, or a
+         * deployment reading someone else's — and unmeasured is not "no": the
+         * reader tries and finds out, which costs one round trip, where
+         * guessing "no" would give up negentropy for a relay that speaks it.
+         *
+         * The pass has always published this and nothing has ever read it.
+         * What it decides is which of the two re-checks of the past a relay
+         * gets: reconcile it on `negentropySyncThePastSeconds`, or re-fetch it
+         * on `refetchThePastSeconds`.
+         */
+        val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
     )
 
     /**
@@ -203,8 +216,9 @@ class RelayVerdictRecord(
         val distinct = HashSet<NormalizedRelayUrl>()
         val consistent = HashSet<NormalizedRelayUrl>()
         val inconsistent = HashSet<NormalizedRelayUrl>()
+        val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy)
     }
 
     /** A page of records, folded into the sets above — see [Building]. */
@@ -244,6 +258,20 @@ class RelayVerdictRecord(
                     // An answer this writer does not recognise is not a
                     // verdict. Ignored rather than guessed at: guessing
                     // "unstable" would drop a relay on a tag we cannot read.
+                    else -> Unit
+                }
+            }
+        // The third independent verdict, on the fitness pass's own epoch: did
+        // this url answer a NEG-OPEN? Same rule as the two above — an
+        // unreadable value is no verdict, so the reader is left to try.
+        event.tags
+            .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
+            ?.takeIf { current(it, FITNESS_EPOCH, floor) }
+            ?.get(1)
+            ?.let { answer ->
+                when (answer) {
+                    "true" -> speaksNegentropy[from] = true
+                    "false" -> speaksNegentropy[from] = false
                     else -> Unit
                 }
             }

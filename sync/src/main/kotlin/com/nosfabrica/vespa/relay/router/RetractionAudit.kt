@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## The cadence
  *
- * `auditSeconds`, the same knob that schedules every other ask's history
+ * `negentropySyncThePastSeconds`, the same knob that schedules every other ask's history
  * audit — a deletion decision deserves the audited full-history comparison,
  * not a quick pass, and each `(relay, provider)` band ages on its own clock
  * so the reconciles stagger themselves.
@@ -106,10 +106,10 @@ internal class RetractionAudit(
         stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
-        auditSeconds: Long,
+        negentropySyncThePastSeconds: Long,
     ): Boolean {
         val ownedAsk = ownedAskOf(stream, ask) ?: return false
-        return bands.claimAudit(stream.name, url, ownedAsk, auditSeconds)
+        return bands.claimAudit(stream.name, url, ownedAsk, negentropySyncThePastSeconds)
     }
 
     /**
@@ -201,7 +201,7 @@ internal class RetractionAudit(
 
         // The comparison itself proves the two sides are level, so the claim
         // rests on `reconciledThrough` rather than on event times — which is
-        // what schedules the NEXT audit of this ask on `auditSeconds`, and
+        // what schedules the NEXT audit of this ask on `negentropySyncThePastSeconds`, and
         // why an empty reconcile records this where an empty page records
         // nothing.
         if (compared) {

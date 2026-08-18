@@ -276,6 +276,27 @@ class RelayVerdictRecordTest {
         }
 
     @Test
+    fun `the NIP-77 measurement reads back, and an unmeasured relay is not a no`(): Unit =
+        runBlocking {
+            // The pass has always published this; the sync plane reads it now,
+            // and what it decides is whether an ask is reconciled or re-fetched.
+            // Three states, and the third is the one worth a test: a url NOBODY
+            // measured must not read as "does not speak negentropy", or the
+            // router would give up NIP-77 for every relay a monitor has not
+            // reached yet.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "no NEG-OPEN")
+            record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
+
+            val read = record.load(listOf(canonical, alias, self)).speaksNegentropy
+            assertEquals(true, read[canonical])
+            assertEquals(false, read[alias], "a measured refusal is a verdict, and the audit must not be attempted")
+            assertEquals(null, read[self], "unmeasured is not a verdict — the ask tries and finds out")
+        }
+
+    @Test
     fun `a label carrying no namespace is dropped rather than carried forever`() =
         runBlocking {
             // Nobody can attribute it — not us, not the monitor that wrote it —

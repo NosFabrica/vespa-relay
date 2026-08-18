@@ -850,6 +850,7 @@ internal object SyncProgressReport {
             "visitsRun",
             "auditing",
             "auditsRun",
+            "auditsSkipped",
             "retracted",
             "abortedVisits",
             "evictedTails",

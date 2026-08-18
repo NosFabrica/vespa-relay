@@ -61,6 +61,13 @@ internal class RosterBuilder(
     /** Urls a static subscription holds — their bands are never dropped, see [SyncBands.dropFolded]. */
     private val keepBands: Set<NormalizedRelayUrl> = emptySet(),
     private val tor: TorTransport? = null,
+    /**
+     * The monitor's NIP-77 verdict for the urls this roster ends up holding —
+     * `RelayVerdictRecord.load`'s `speaksNegentropy`, injected the same way
+     * [foldedAway] is, so a router with no signer to read verdicts by (and
+     * every probe) simply learns nothing and every ask keeps trying.
+     */
+    private val speaksNegentropy: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, Boolean> = { emptyMap() },
 ) {
     /**
      * ONE UNIT OF WORK against one relay: the stream asking, and the exact
@@ -94,6 +101,18 @@ internal class RosterBuilder(
          * legacy cycle applied, computed on the roster clock.
          */
         val sharedAuthors: Map<String, Set<String>>,
+        /**
+         * url → whether the monitor measured it ANSWERING a NEG-OPEN, absent
+         * where nothing measured it. Read off the same signed 30166 records
+         * the gate admits relays by, so the sync plane still decides nothing
+         * about a relay itself — it reads a verdict, exactly as it does for
+         * admission.
+         *
+         * What it decides: which re-check of the past a relay gets. A `false`
+         * here is why an audit is not attempted at all rather than attempted
+         * every six hours against a relay that cannot answer it.
+         */
+        val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
     )
 
     /** One source's discovery, held for its own `refreshSeconds` — a store walk is not a poll. */
@@ -141,7 +160,20 @@ internal class RosterBuilder(
             }
         }
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
-        return Roster(asks = asksByUrl, wants = wantsByUrl, sharedAuthors = shared)
+        // Asked for the urls this roster actually holds, not for the whole
+        // discovered universe: the read is chunked by `#d`, and the fan-out
+        // discovers an order of magnitude more urls than it dials.
+        val negentropy =
+            runCatching { speaksNegentropy(asksByUrl.keys.toList()) }.getOrElse {
+                // The read throws rather than answering partially, and an
+                // unread verdict is UNMEASURED — every ask keeps trying, which
+                // is what this did before it could read one at all. Said out
+                // loud because the alternative reading, "no relay speaks
+                // negentropy", would stop every audit in the router.
+                System.err.println("router: could not read the NIP-77 verdicts (${it.message?.take(120)}) — audits will try every relay this rebuild")
+                emptyMap()
+            }
+        return Roster(asks = asksByUrl, wants = wantsByUrl, sharedAuthors = shared, speaksNegentropy = negentropy)
     }
 
     /**

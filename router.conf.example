@@ -49,18 +49,32 @@
 #                   (10002, 10009, ...), or monitor kind-30166 verdicts —
 #                   `filter = { "kinds": [30166], "#l": ["prime"] }`
 #   sync            how to ask (see below)
-#   auditSeconds   fetch forward, audit the past: when a relay's last verified
-#                   full pass is older than this, its next visit reconciles the
-#                   covered history over NIP-77 in windows and downloads only
-#                   the diff. A week keeps history honest for the cost of a
-#                   trickle — each relay's clock is its own, so audits stagger
-#                   themselves at roster/auditSeconds per second.
+#
+# TWO WAYS BACK INTO THE PAST, and a relay gets whichever one it can answer.
+# Both are opt-in: unset means that re-check does not run.
+#
+#   negentropySyncThePastSeconds
+#                   when a relay's last verified full pass is older than this,
+#                   its next visit reconciles the covered history over NIP-77
+#                   in windows and downloads only the difference. A week keeps
+#                   history honest for the cost of a trickle — each relay's
+#                   clock is its own, so they stagger themselves at
+#                   roster/negentropySyncThePastSeconds per second. Only for
+#                   relays the monitor measured as answering a NEG-OPEN; one it
+#                   measured as refusing is never asked, since the attempt
+#                   cannot succeed and a failed one advances no clock.
+#   refetchThePastSeconds
+#                   when a relay's band is older than this, the whole filter
+#                   goes back on the walk and is PAGED again from the plausible
+#                   floor. The coarse twin, and the only re-check a relay
+#                   without NIP-77 can get — so a stream whose relays are
+#                   mixed wants both, the re-fetch on the longer clock.
 #
 # NOTE `sync` chooses the TRANSPORT of a static stream (negentropy vs paged
 # fetch), not whether it syncs — kept as `sync` for strfry familiarity.
 # CHOOSING `sync` — static `urls` streams only. A relaySource stream has one
 # shape and no choice to make: page forward from the band's edge, live-tail
-# the present, reconcile the covered past on the auditSeconds audit.
+# the present, and re-check the past on the two clocks above.
 #
 #   negentropy  the relays hold much the same events we do. Compares the two
 #               sets and transfers only the difference.
@@ -213,7 +227,11 @@ streams {
         # to `monitor.sweepSeconds`. Scoped to both, or left unscoped, the
         # roster never dips and the old key comes out once the new one covers
         # the corpus.
-        auditSeconds = 604800  # weekly negentropy audit of the covered past
+        # Weekly negentropy reconcile of the covered past, for the relays the
+        # monitor measured as answering a NEG-OPEN. A relay it measured as NOT
+        # answering is never asked — the attempt cannot succeed, and it is the
+        # line below that re-checks that relay's past instead.
+        negentropySyncThePastSeconds = 604800
         # …and how often the bands EXPIRE, putting the whole filter back on the
         # walk — the coarse version of the same check, paid in full downloads.
         # Unset it does not run at all; set it equal to the audit and the two
@@ -289,8 +307,10 @@ streams {
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
-        # deletion decision deserves the audited full-history reconcile.
-        auditSeconds = 86400
+        # deletion decision deserves the full-history reconcile. This IS the
+        # retraction comparison's clock — a provider relay that will not answer
+        # a NEG-OPEN can never have its scores retracted here, by design.
+        negentropySyncThePastSeconds = 86400
         # …and no `refetchThePastSeconds` on purpose: the reconcile above
         # already compares this ask's whole history every day and downloads only
         # the difference, so re-paging the same ground would buy nothing that
@@ -327,7 +347,7 @@ streams {
                 refreshSeconds = 120  # see profileViaOutbox
             }
         ]
-        auditSeconds = 604800
+        negentropySyncThePastSeconds = 604800
         refetchThePastSeconds = 2592000  # see profileViaOutbox — and this is the
                                      # corpus where re-paging weekly costs most
     }

@@ -145,12 +145,12 @@ class SyncBands(
      * defines it as "when the last pass that started from nothing finished",
      * and only a stale replace (the 7-day full resync) restarts it. Read as
      * "last verified", it freezes: the moment a band aged past
-     * `auditSeconds`, every visit's audit was due again, and one relay was
+     * `negentropySyncThePastSeconds`, every visit's audit was due again, and one relay was
      * measured taking 13 full history sweeps in 40 minutes. So the router
      * keeps its own stamp, advanced by every `reconciledThrough` record and
      * persisted beside the band it belongs to. Callers fall back to `fullAt`
      * when no stamp exists yet — a fresh band's paged full walk still defers
-     * the first audit one `auditSeconds`, exactly as before.
+     * the first audit one `negentropySyncThePastSeconds`, exactly as before.
      */
     private data class VerifiedKey(
         val stream: String,
@@ -169,7 +169,7 @@ class SyncBands(
 
     /**
      * THE AUDIT GATE, both halves in one place: is this ask's history due —
-     * the [verifiedAt] clock aged past [auditSeconds], falling back to the
+     * the [verifiedAt] clock aged past [negentropySyncThePastSeconds], falling back to the
      * band's `fullAt` so a fresh catch-up still defers the first audit — and
      * is the ask outside its attempt spacing? TRUE CLAIMS THE ATTEMPT: the
      * caller is expected to run the audit, and an audit that cannot complete
@@ -182,13 +182,13 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-        auditSeconds: Long,
+        negentropySyncThePastSeconds: Long,
         now: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
         val key = VerifiedKey(stream, filter.toJson(), url.url)
         val clock = verified[key] ?: band(stream, url, filter)?.fullAt ?: 0L
-        if (!auditDue(clock, now, auditSeconds)) return false
-        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(auditSeconds)) return false
+        if (!auditDue(clock, now, negentropySyncThePastSeconds)) return false
+        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(negentropySyncThePastSeconds)) return false
         attempts[key] = now
         return true
     }
@@ -225,7 +225,7 @@ class SyncBands(
     /**
      * Say WHICH streams have no way back into their own past, at boot.
      *
-     * A stream re-reads history two ways: [SyncStream.auditSeconds] reconciles
+     * A stream re-reads history two ways: [SyncStream.negentropySyncThePastSeconds] reconciles
      * the covered past and downloads the difference, and
      * [SyncStream.refetchThePastSeconds] expires the band so the past is walked
      * again. With neither, a walk that missed a window — a relay that
@@ -238,10 +238,10 @@ class SyncBands(
      * one by accident.
      */
     private fun announceUncheckedPasts(streams: List<SyncStream>) {
-        val blind = streams.filter { it.auditSeconds == null && refetchThePastSecondsFor(it.name) == NEVER }
+        val blind = streams.filter { it.negentropySyncThePastSeconds == null && refetchThePastSecondsFor(it.name) == NEVER }
         if (blind.isEmpty()) return
         System.err.println(
-            "router: stream(s) ${blind.joinToString(", ") { it.name }} have neither `auditSeconds` nor " +
+            "router: stream(s) ${blind.joinToString(", ") { it.name }} have neither `negentropySyncThePastSeconds` nor " +
                 "`refetchThePastSeconds` — they page forward only, and nothing will re-read the history they " +
                 "have already walked. Set one if a relay of theirs can back-fill",
         )
@@ -676,8 +676,8 @@ class SyncBands(
         internal fun auditDue(
             fullAt: Long,
             now: Long,
-            auditSeconds: Long,
-        ): Boolean = fullAt <= 0L || now - fullAt >= auditSeconds
+            negentropySyncThePastSeconds: Long,
+        ): Boolean = fullAt <= 0L || now - fullAt >= negentropySyncThePastSeconds
 
         /**
          * How long after an audit RAN before the same ask may try again,
@@ -687,7 +687,7 @@ class SyncBands(
          * floor and capped so a weekly audit still retries within the shift
          * an operator is watching.
          */
-        internal fun attemptSpacingSeconds(auditSeconds: Long): Long = (auditSeconds / 4).coerceIn(900L, 21_600L)
+        internal fun attemptSpacingSeconds(negentropySyncThePastSeconds: Long): Long = (negentropySyncThePastSeconds / 4).coerceIn(900L, 21_600L)
 
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L

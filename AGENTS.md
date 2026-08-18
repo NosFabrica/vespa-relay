@@ -983,7 +983,7 @@ out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
 why the router does its own author-bound read instead of using it. **Admitting
 widens, holding out forecloses — do not give them the same default.** The pool
-then rotates VISITS (per-ask catch-up, the `auditSeconds` audit, the heal
+then rotates VISITS (per-ask catch-up, the `negentropySyncThePastSeconds` audit, the heal
 drain) across `visitConcurrency` workers and holds up to `tailBudget` live
 tails, revisit-paced by each relay's recent yield. A scan whose select binds
 `authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
@@ -1050,7 +1050,7 @@ on every non-stale merge (it means "last walk from nothing"; read as "last
 verified" it made every audit re-fire on each visit — 13 sweeps of one relay
 in 40 minutes, measured). Callers fall back to `fullAt` where no stamp exists,
 so a fresh ask that DELIVERED pages still runs its first audit one
-`auditSeconds` after its catch-up, and one whose pages came back empty (no
+`negentropySyncThePastSeconds` after its catch-up, and one whose pages came back empty (no
 band) audits on its very first visit. `VisitPool.attemptSpacingSeconds` is the
 other half: an audit that cannot COMPLETE advances no clock, so attempts
 themselves are spaced instead of retried on the revisit floor.
@@ -1493,7 +1493,7 @@ own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
 **`doing` names the JOB and then the TRANSPORT, and neither implies the other.**
 `catching up (paging)` is what is new since this relay's last pass; `auditing
 history (negentropy)` is the whole past re-checked on the stream's
-`auditSeconds` clock, whose purpose is to find what no catch-up ever saw; and
+`negentropySyncThePastSeconds` clock, whose purpose is to find what no catch-up ever saw; and
 `auditing the provider's own records (negentropy)` is the retraction comparison,
 the same clock and the same full-past sweep. Negentropy is NOT a synonym for the
 audit: the sweep pages any window a peer will not reconcile, and a static
@@ -1706,7 +1706,7 @@ this clock. The catch-up runs before the audit inside a visit, so a stream
 whose two periods coincide re-pages its whole history and then reconciles the
 same ground; the example runs the outbox streams monthly against their weekly
 audit, and the loader warns when a period sits at or under its own
-`auditSeconds`.
+`negentropySyncThePastSeconds`.
 
 **Do not assume the leg below a floor is empty. It was measured, and it is not.**
 `RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
@@ -3425,7 +3425,7 @@ replacement of the mechanism it covers. Conversely, a test that asserted
 encoded the implementation's own opinion of itself.
 
 **A period knob is named for the JOB it repeats, never for the transport.**
-`refreshSeconds`, `auditSeconds`, `sweepSeconds`, `fastLaneSeconds`,
+`refreshSeconds`, `negentropySyncThePastSeconds`, `sweepSeconds`, `fastLaneSeconds`,
 `refetchThePastSeconds` — a reader tuning one is asking "how often does X
 happen", and X is a job. The transport is a separate axis and already has its
 own words (`sync`, and the in-flight `doing` column): the audit pages any window

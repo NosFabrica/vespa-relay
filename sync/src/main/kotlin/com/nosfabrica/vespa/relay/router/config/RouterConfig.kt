@@ -229,27 +229,41 @@ data class SyncStream(
      */
     val healRetractions: Boolean = false,
     /**
-     * Fetch forward, audit the past: when set, a relay whose band's last full
-     * pass is older than this gets a windowed negentropy audit on its next
-     * visit — the covered history reconciled, only the diff downloaded, and
-     * `fullAt` re-stamped. A week is the intended magnitude. Staggering is
-     * free (each relay's band ages on its own clock), so no herd and no cap.
-     * Null audits nothing, which leaves history exactly as complete as the
+     * Page forward, RECONCILE the past: when set, a relay whose covered
+     * history was last verified longer ago than this gets a windowed
+     * negentropy audit on its next visit — the whole covered range compared,
+     * only the difference downloaded. A week is the intended magnitude.
+     * Staggering is free (each relay's band ages on its own clock), so no herd
+     * and no cap.
+     *
+     * Only for relays that speak NIP-77, and the router does not guess which:
+     * the monitor measures it and signs the answer onto the same 30166 record
+     * the roster admits the relay by. A relay measured as NOT answering is
+     * never asked — the attempt cannot succeed, and a failed audit advances no
+     * clock, so it used to be retried every six hours forever. Their past is
+     * re-checked by [refetchThePastSeconds] instead, which is the other half
+     * of this pair and the reason both knobs name their transport: they are
+     * one job over two mechanisms, and which one a relay gets is a fact about
+     * the relay.
+     *
+     * Null reconciles nothing, which leaves history exactly as complete as the
      * paged walks left it.
      */
-    val auditSeconds: Long? = null,
+    val negentropySyncThePastSeconds: Long? = null,
     /**
      * How often this stream's bands EXPIRE, putting its whole filter back on
      * the walk — `SYNC_REFETCH_THE_PAST_SECONDS` for the streams that do not
-     * name one, and quartz's `DEFAULT_FULL_RESYNC_SECONDS` (a week) under that.
+     * name one, and NEVER under that — no schedule this expensive is a default.
      *
      * The coarse safety net, and the only full re-check a stream without
-     * [auditSeconds] has: band arithmetic can only widen what a walk observed,
-     * so nothing else would ever re-read a window a relay back-filled after we
-     * passed it. Where an audit DOES run it is the expensive twin of one — the
+     * [negentropySyncThePastSeconds] has: band arithmetic can only widen what
+     * a walk observed, so nothing else would ever re-read a window a relay
+     * back-filled after we passed it. Where a reconcile DOES run it is the
+     * expensive twin of one — the
      * audit reconciles the same history and downloads the difference, this
      * re-downloads the history — which is why a stream that audits wants a
-     * period well above its [auditSeconds] rather than beside it.
+     * period well above its [negentropySyncThePastSeconds] rather than beside
+     * it.
      *
      * Named for what it costs on the pool, where an expired band is always
      * re-PAGED. On a static stream it is re-walked by whatever that stream's
