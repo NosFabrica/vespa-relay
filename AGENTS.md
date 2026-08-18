@@ -7,9 +7,15 @@ store, plus a router that mirrors events from upstream relays.
 Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 
 - **`:relay`** — the serving side. `RelayMain` is its entrypoint.
-- **`:sync`** — the router, as its own process so it restarts without the
-  relay or Vespa noticing. `SyncMain` is its entrypoint; the package keeps the
-  `router` name on purpose (see below).
+- **`:sync`** — the mirror and the monitor, as one process so it restarts
+  without the relay or Vespa noticing. `SyncMain` is its entrypoint. TWO PLANES,
+  and the packages say which is which: `sync/` moves events into the store,
+  `monitor/` measures relays and signs NIP-66 verdicts about them, `shared/` is
+  the four classes both touch. `SyncEngine` sits above all three because it
+  starts both planes and belongs to neither. It used to be one `router/` package
+  for the lot, which said nothing about what was mirroring and what was
+  measuring — operators still know the subsystem as the router (`router.conf`,
+  the `router:` log prefix), and that is a separate name from these.
 - **`:common`** — only what both genuinely read: `RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
   whose mean crosses the process boundary over the relay's `GET /pressure`,
@@ -337,11 +343,25 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
 sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
                               report — lives here because ingest is what feeds it
-  util/SyncFormat.kt          fmtDay / fmtCount / nowSeconds, internal again
-  router/               the mirror (see below)
-    SyncMain.kt           entrypoint; env, store, engine, block
-    SyncEngine.kt         wiring, live tails, health/stats lines
-    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+  util/SyncFormat.kt          fmtCount / nowSeconds, internal again
+  SyncMain.kt           entrypoint; env, store, engine, block
+  SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
+                        which is why it sits above both: it starts them
+  sync/                 THE MIRROR — everything that moves events into the store
+    VisitPool.kt          EVERY down stream's engine: the roster (declared
+                          `urls` plus the relays the monitor's 30166 verdicts
+                          admit), rotating visits (catch-up, the reconcile of
+                          the past, heal drain), earned live tails,
+                          yield-paced revisits
+    VisitQueue.kt         whose turn it is, and when a relay may be revisited
+    RosterBuilder.kt      the asks a stream makes of each relay it may dial
+    RetractionAudit.kt    the deleteMissing comparison, run as a retracting
+                          ask's `negentropySyncThePastSeconds` reconcile:
+                          compare both ways, delete what the provider no
+                          longer serves
+    NegentropyPager.kt    the windowed history sweep every reconcile runs
+    SweepState.kt         per-peer window sizes and the in-progress cursor
+    SyncBands.kt          covered created_at bands per (relay, filter)
     IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
                           batchInsert, poison isolation. Dropping FIRST is the
                           point: a schnorr check is ~48us isolated and ~70-95us
@@ -349,98 +369,90 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           per relay holding it — and older VERSIONS of it from
                           the relays that never got the newest
     ProbeGate.kt          whether either drop-probe still earns its round trip,
-                          learned from what it drops. Replaces telling ingest
-                          which phase a stream is in
+                          learned from what it drops
     BisectingInsert.kt    the batch-bisecting write
-    VisitPool.kt          EVERY down stream's engine: the roster (declared
-                          `urls` plus the relays the monitor's 30166 verdicts
-                          admit), rotating visits
-                          (catch-up, audit, heal drain), earned live tails,
-                          yield-paced revisits
-    RetractionAudit.kt    the deleteMissing comparison, run as a retracting
-                          ask's auditSeconds audit: reconcile both ways,
-                          delete what the provider no longer serves
-    NegentropyPager.kt    the windowed history sweep the pool's non-retracting
-                          audits run
     UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
-    SyncBands.kt          covered created_at bands per (relay, filter)
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
                           streams and their kinds — written once at boot so the
                           relay can publish it. The kind list exists in
                           router.conf and nowhere else, and a count taken
                           against this relay is wrong without it
+    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+    RouterTuning.kt       the constants the mirror is paced by
+    heal/                 pushing back what an upstream is missing
+    refused/              what the store refused, so it is not re-downloaded
+  monitor/              THE MEASURING PLANE — what to believe about a relay,
+                        published as signed NIP-66 records. It decides nothing
+                        about syncing; the mirror reads its verdicts back
+    AliasMonitor.kt       the schedule the passes run on: fold, then stability,
+                          then fitness
+    AliasProbe.kt         the fingerprint: a relay's newest events, as ids
+    AliasFolding.kt       apply() reads verdicts; measure() earns them
+    RelayAliases.kt       which discovered urls are ONE relay (see below)
+    ConsistencyPass.kt    the pass that measures the stability gate
+    RelayConsistency.kt   which relays answer one filter the same way twice
+    FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
+                          the 30166 record, earned by answering a settled-anchor
+                          probe — the tag [VisitPool]'s roster selects on
+    ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
+    Silence.kt            classifying what a quiet socket actually said
+    Unreachability.kt     which failures may be published as NIP-66 records
+    HostStrikes.kt        per-authority strikes and eviction
+    RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
+                          rtts, `R`, `s` (+version), `N`. Absent writes no tag
+                          rather than a zero, and everything it writes it also
+                          OWNS, so a reading cannot outlive the dial that took
+                          it. Says which fields are deliberately unwritten
+                          (`rtt-write`, `g`, `T`, a `v` tag) and why
+    RelayDocument.kt      the relay's own NIP-11 document, for the fields no
+                          dial can measure — and the connect that carries it,
+                          which IS the `rtt-open` we publish. Pure `parse`,
+                          because it is somebody else's json
+    StreamWorld.kt        the url universe the monitor measures: every stream's
+                          sources, plus the monitor's own. Reports as the
+                          `aliasSource` processor
+  shared/               WHAT BOTH PLANES TOUCH, and the whole of it — the split
+                        was derived from the imports, not guessed
+    RelayDiscovery.kt     pulling relay urls out of stored events: the mirror
+                          builds its roster from them, the monitor its universe
+    RelayVerdictRecord.kt the signed 30166 edit — the monitor writes every
+                          verdict through it, the mirror reads the fold and the
+                          `nip77` measurement back out. OWNERSHIP IS A
+                          PREDICATE, not a set of tag names, because `l`/`L`
+                          are shared: the fitness writer may replace its own
+                          NIP-32 namespace and must carry every other
+                          labeller's through
+    RelaySockets.kt       WHO IS STILL USING THIS SOCKET — the one refcount
+                          across streams and probe passes; quartz closes none
+                          of its own connections
     TorTransport.kt       SYNC_TOR_SOCKS: the second OkHttp client, chosen per
                           url, whose .onion names resolve INSIDE the proxy
-    config/               the declarative side
-      RouterConfig.kt       the stream model (streams, directions, sync modes)
-      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
-      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
-    discovery/            which relays to dial, and what to believe about them
-      RelayDiscovery.kt     pulling relay urls out of stored events
-      HostStrikes.kt        per-authority strikes and eviction
-      Unreachability.kt     which failures may be published as NIP-66 records
-      RelayAliases.kt       which discovered urls are ONE relay (see below)
-      AliasProbe.kt         the fingerprint: a relay's newest events, as ids
-      AliasFolding.kt       apply() reads verdicts; measure() earns them
-      AliasMonitor.kt       the schedule the probe passes run on, off the sync
-                            plane entirely: fold, then stability, then fitness
-      RelayVerdictRecord.kt the signed 30166 edit every pass writes through:
-                            `same-as`, the consistency tag, the fitness grade.
-                            OWNERSHIP IS A PREDICATE, not a set of tag names,
-                            because `l`/`L` are shared: the fitness writer may
-                            replace its own NIP-32 namespace and must carry
-                            every other labeller's through
-      RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
-                            rtts, `R`, `s` (+version), `N`. Absent writes no tag
-                            rather than a zero, and everything it writes it also
-                            OWNS, so a reading cannot outlive the dial that took
-                            it. Says which fields are deliberately unwritten
-                            (`rtt-write`, `g`, `T`, a `v` tag) and why
-      RelayDocument.kt      the relay's own NIP-11 document, for the fields no
-                            dial can measure — and the connect that carries it,
-                            which IS the `rtt-open` we publish. Pure `parse`,
-                            because it is somebody else's json
-      RelayConsistency.kt   which relays answer one filter the same way twice
-      ConsistencyPass.kt    the pass that measures it (the stability gate)
-      Silence.kt            classifying what a quiet socket actually said
-      FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on the
-                            30166 record, earned by answering a settled-anchor
-                            probe — the tag [VisitPool]'s roster selects on
-      ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
-      RelaySockets.kt       WHO IS STILL USING THIS SOCKET — the one refcount
-                            across streams and probe passes; quartz closes
-                            none of its own connections
-      StreamWorld.kt        the url universe the monitor measures: every
-                            stream's sources, plus the monitor's own. Reports as
-                            the `aliasSource` processor — the walk is minutes on
-                            a live store and sits at the head of every sweep, so
-                            without a row of its own the card had three passes
-                            reading `idle` while the monitor was working
-    progress/             observability
-      StreamPhases.kt       per-stream progress reporting, and the snapshot the
-                            progress file is written from
-      PagingProgress.kt     time-axis progress for paged walks
-      CycleTally.kt         where every url a cycle took on ENDED UP — a
-                            partition that sums to what discovery handed over,
-                            not a bag of counters
-      InFlight.kt           WHICH relays a stream is holding right now, which
-                            those counts never said. UNBOUNDED, and the one list
-                            here that is: a row is a WORKER, so the pool's
-                            visitConcurrency already bounds it, and a top-N
-                            answered "what is this mirror connected to" with a
-                            sixth of the answer on a card that looked whole.
-                            Quietest first — held is not risk. Attributed by the
-                            ask RUNNING NOW, so a cheap stream showing one row
-                            beside an expensive one is them sharing workers
-      Processors.kt         the work that is NOT a stream: the alias fold, the
-                            stability gate, fitness, the rotating pool, ingest,
-                            the healer, the push. Same shape as a stream — a phase
-                            and a clock — plus either a pass schedule and an
-                            `outstanding` count, or live gauges read through a
-                            supplier
-      SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
-                            the heartbeat that tells a quiet router from a
-                            stopped one
+  config/               the declarative side, read by both planes
+    RouterConfig.kt       the stream model (streams, directions, the two
+                          re-check clocks)
+    RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+    RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped), and
+                          every removed knob's refusal
+  progress/             observability for both planes
+    StreamPhases.kt       per-stream progress reporting, and the snapshot the
+                          progress file is written from
+    InFlight.kt           WHICH relays a stream is holding right now, which
+                          those counts never said. UNBOUNDED, and the one list
+                          here that is: a row is a WORKER, so the pool's
+                          visitConcurrency already bounds it, and a top-N
+                          answered "what is this mirror connected to" with a
+                          sixth of the answer on a card that looked whole.
+                          Quietest first — held is not risk
+    Processors.kt         the work that is NOT a stream: the alias fold, the
+                          stability gate, fitness, the rotating pool, ingest,
+                          the healer, the push. Same shape as a stream — a phase
+                          and a clock — plus either a pass schedule and an
+                          `outstanding` count, or live gauges read through a
+                          supplier
+    SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
+                          the heartbeat that tells a quiet router from a
+                          stopped one
+
 
 relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/
