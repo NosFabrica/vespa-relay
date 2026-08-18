@@ -1229,6 +1229,17 @@ rows both, because rows marked `off` under a monitor that is running is the
 silent half of them disagreeing. `MonitorGateTest` puts the deployment that
 broke in front of it.
 
+**The fast lane's hold-out read is bounded by its own subject.**
+`RelayDiscovery.undialable` takes `among`: null for a sweep, which is about to
+walk the corpus and wants the whole dead set, and the lane's own handful
+otherwise. Unbounded there, a lane tick materialized every `dead` record in the
+store — five figures on a discovered corpus, and one of the "no limit" reads the
+`maxHits` cap rejects on multi-node — every `fastLaneSeconds`, thirty times an
+hour, to answer a question about a dozen urls. It is `#d`-chunked like
+`RelayVerdictRecord.load` now, and the lane derives BEFORE it reads, so a tick
+that found nothing (most of them) costs no read at all. Same answer either way:
+the hold-out only ever applied to the urls the lane found.
+
 **The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
 constant is a source edit and a source edit is a restart — and strips `s` /

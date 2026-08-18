@@ -302,6 +302,44 @@ class StreamWorldDerivationTest {
         }
 
     @Test
+    fun `the fast lane still holds out a url we call dead, asking only about what it found`() =
+        runBlocking {
+            // THE READ THAT WAS NOT BOUNDED. The lane derived the handful of
+            // urls named since its last look and then read the WHOLE dead set
+            // to filter them — an unbounded materializing query every
+            // `fastLaneSeconds`, thirty an hour at the stock 120s, to decide a
+            // question about a dozen urls. It asks about its own urls now, and
+            // this is the half that can go wrong quietly: the answer over that
+            // subset has to be identical.
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(
+                event(
+                    10002,
+                    arrayOf("r", "wss://corpse.example", "write"),
+                    arrayOf("r", "wss://answering.example", "write"),
+                ),
+            )
+            RelayVerdictRecord(store, monitor)
+                .publishFitness(
+                    RelayUrlNormalizer.normalize("wss://corpse.example"),
+                    "dead",
+                    "nothing answered",
+                    pageable = null,
+                    nip77 = null,
+                )
+
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
+            val fresh = world.candidatesSince(0)
+
+            assertEquals(
+                listOf("wss://answering.example/"),
+                fresh.map { it.url },
+                "the dead url is held out of the lane exactly as it is out of a sweep",
+            )
+        }
+
+    @Test
     fun `our own url is counted as excluded, which is what the row says`() =
         runBlocking {
             // The row reads "excluded by config, or our own url" — the self

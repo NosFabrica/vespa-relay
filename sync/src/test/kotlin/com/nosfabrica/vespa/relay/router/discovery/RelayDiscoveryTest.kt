@@ -29,8 +29,10 @@ import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.TagCondition
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -764,5 +766,51 @@ class RelayDiscoveryTest {
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))))).isEmpty())
+        }
+
+    /**
+     * THE HOLD-OUT READ, ASKED ABOUT A HANDFUL — the fast lane's shape.
+     *
+     * Unbounded, this materializes every `dead` record in the store to answer a
+     * question about the dozen urls a lane tick just found, once every
+     * `fastLaneSeconds`. Bounded by `#d`, it reads the records of the urls
+     * asked about and no others — and it has to give the SAME answer over that
+     * subset, which is the half a rescoping can quietly get wrong.
+     */
+    @Test
+    fun `the hold-out read can be bounded to the urls a caller is asking about`() =
+        runBlocking {
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            val record = RelayVerdictRecord(store, monitor)
+            val dead = RelayUrlNormalizer.normalize("wss://corpse.example")
+            val alsoDead = RelayUrlNormalizer.normalize("wss://elsewhere.example")
+            val alive = RelayUrlNormalizer.normalize("wss://answering.example")
+            for (url in listOf(dead, alsoDead)) {
+                record.publishFitness(url, "dead", "nothing answered", pageable = null, nip77 = null)
+            }
+            record.publishFitness(alive, "prime", "answered at a settled anchor", pageable = null, nip77 = null)
+
+            val authors = listOf(monitor.pubKey)
+            val whole = RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400)
+            assertEquals(setOf(dead, alsoDead), whole, "unbounded, it is the whole dead set")
+
+            // The same verdicts, over the subset asked about: the dead one in
+            // the ask is held out, the dead one OUTSIDE it is not returned —
+            // the caller is not asking, and a bound that leaked it would make
+            // the two reads disagree about a url the caller never mentioned.
+            assertEquals(
+                setOf(dead),
+                RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(dead, alive)),
+                "bounded, it answers about exactly the urls it was handed",
+            )
+            // A url with a verdict that is not `dead` is not held out, bounded
+            // or not: `alias`, `inconsistent` and the rest were earned by
+            // ANSWERING, and only the transport saying no keeps a url out.
+            assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(alive)).isEmpty())
+            // AN EMPTY ASK IS NOT AN UNBOUNDED ONE. This is the lane's quiet
+            // tick — nothing new arrived — and reading the whole dead set to
+            // decide nothing is exactly the cost the bound exists to remove.
+            assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = emptyList()).isEmpty())
         }
 }

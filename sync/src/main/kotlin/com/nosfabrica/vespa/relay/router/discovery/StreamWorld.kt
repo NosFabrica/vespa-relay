@@ -213,12 +213,16 @@ internal class StreamWorld(
      * also had to work around. The fitness pass states it outright now, so the
      * hold-out reads the same tag the roster does.
      */
-    private suspend fun ownDead(): Set<NormalizedRelayUrl> =
+    private suspend fun ownDead(among: Collection<NormalizedRelayUrl>? = null): Set<NormalizedRelayUrl> =
         RelayDiscovery.undialable(
             store,
             monitorAuthors = monitorAuthors,
             maxAgeSeconds = DEAD_TTL_SECONDS,
             allowOnion = tor != null,
+            // Null from the sweep, which is about to walk the whole corpus and
+            // needs the whole hold-out; the fast lane's own handful otherwise —
+            // see [RelayDiscovery.undialable]'s `among`.
+            among = among,
         )
 
     /**
@@ -386,11 +390,23 @@ internal class StreamWorld(
      * the exclude lists apply inside [RelayDiscovery.discover] as ever.
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
-        val dead = ownDead()
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
         derive("fast lane", { discovery ->
             discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
         }) { url, kept -> if (kept) fresh += url }
+        // DERIVED FIRST, AND THE HOLD-OUT ASKED ABOUT WHAT IT FOUND. This read
+        // the whole dead set before deriving anything, which made a lane tick
+        // cost one unbounded materializing query per `fastLaneSeconds` —
+        // thirty an hour at the stock 120s, five figures of records each, to
+        // decide a question about a dozen urls. Most ticks find nothing at all,
+        // and now those cost nothing: an empty `fresh` returns without a second
+        // read, and a non-empty one is bounded by its own size.
+        //
+        // Same answer either way — the hold-out only ever applied to the urls
+        // in `fresh`, so asking about the rest of the corpus was work whose
+        // result was discarded.
+        if (fresh.isEmpty()) return emptyList()
+        val dead = ownDead(among = fresh)
         return fresh.filterNot { it in dead }
     }
 
