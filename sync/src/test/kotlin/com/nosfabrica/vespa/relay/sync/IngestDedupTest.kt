@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -85,7 +84,7 @@ class IngestDedupTest {
                     // One worker: two would split the offer into halves that
                     // each fall under the probe's width gate, and this asserts
                     // what ONE batch does.
-                    RouterConfig(connectionTimeoutSec = 10, streams = emptyList(), ingestConcurrency = 1),
+                    IngestTuning(concurrency = 1, batch = 1000),
                     audit = null,
                     servingPressure = null,
                     scope = scope,

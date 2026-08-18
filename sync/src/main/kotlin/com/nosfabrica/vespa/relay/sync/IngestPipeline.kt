@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.sync.refused.IngestOrigin
@@ -66,7 +65,13 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class IngestPipeline(
     private val store: IEventStore,
-    config: RouterConfig,
+    /**
+     * The two knobs this needs, rather than the whole `RouterConfig` it used to
+     * take. Both planes write through this pipeline, and a queue does not need
+     * to see a stream list to size itself — the narrower argument is what lets
+     * it sit below the config that configures it.
+     */
+    tuning: IngestTuning,
     // When set, every mirrored event is also run through quartz's
     // search-indexing parse to collect what quartz cannot read.
     private val audit: ParseAudit?,
@@ -100,8 +105,8 @@ internal class IngestPipeline(
         val origin: IngestOrigin,
     )
 
-    private val workers = config.ingestConcurrency
-    private val configuredBatch = config.ingestBatch
+    private val workers = tuning.concurrency
+    private val configuredBatch = tuning.batch
 
     /**
      * How many downloaded events may wait for ingest. Bounded at both ends —
@@ -111,7 +116,7 @@ internal class IngestPipeline(
      * each mutex hold amortises, the queue how much memory sits between
      * download and write.
      */
-    val capacity = (config.ingestBatch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+    val capacity = (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
 
     /**
      * How many events one worker takes per pass — capped to its fair share of
@@ -119,7 +124,7 @@ internal class IngestPipeline(
      * everything while the rest idle, collapsing ingest to one thread
      * grinding a very long batch.
      */
-    private val batchSize = config.ingestBatch.coerceAtMost((capacity / workers).coerceAtLeast(1))
+    private val batchSize = tuning.batch.coerceAtMost((capacity / workers).coerceAtLeast(1))
 
     private val inbound = Channel<Inbound>(capacity)
 
@@ -931,4 +936,16 @@ internal class IngestPipeline(
 data class AddressVersion(
     val createdAt: Long,
     val id: String,
+)
+
+/**
+ * How much of the store's throughput ingest may use — `ingestConcurrency` and
+ * `ingestBatch` from `router.conf`, and nothing else.
+ *
+ * A type rather than two parameters so a caller cannot swap them, and so the
+ * pipeline can be constructed by something that has never read a `router.conf`.
+ */
+internal data class IngestTuning(
+    val concurrency: Int,
+    val batch: Int,
 )

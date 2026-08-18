@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelayExcludes
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.monitor.AliasFolding
@@ -138,7 +137,7 @@ class VisitPoolLiveProbe {
                 val ingest =
                     IngestPipeline(
                         store,
-                        RouterConfig(connectionTimeoutSec = 20, streams = emptyList(), ingestConcurrency = 1, ingestBatch = 200),
+                        IngestTuning(concurrency = 1, batch = 200),
                         null,
                         null,
                         scope,

@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -94,7 +93,7 @@ class IngestCostBench {
         val pipeline =
             IngestPipeline(
                 store,
-                RouterConfig(connectionTimeoutSec = 10, streams = emptyList(), ingestConcurrency = 2, ingestBatch = 1000),
+                IngestTuning(concurrency = 2, batch = 1000),
                 audit = null,
                 servingPressure = null,
                 scope = scope,

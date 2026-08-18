@@ -22,11 +22,11 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.shared.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.sync.IngestPipeline
+import com.nosfabrica.vespa.relay.sync.IngestTuning
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -158,7 +158,7 @@ class StreamWorldDerivationTest {
             ingest =
                 IngestPipeline(
                     store,
-                    RouterConfig(connectionTimeoutSec = 5, streams = emptyList(), ingestConcurrency = 1, ingestBatch = 8),
+                    IngestTuning(concurrency = 1, batch = 8),
                     null,
                     null,
                     scope,
@@ -282,7 +282,7 @@ class StreamWorldDerivationTest {
                     ingest =
                         IngestPipeline(
                             store,
-                            RouterConfig(connectionTimeoutSec = 5, streams = emptyList(), ingestConcurrency = 1, ingestBatch = 8),
+                            IngestTuning(concurrency = 1, batch = 8),
                             null,
                             null,
                             CoroutineScope(Job()),

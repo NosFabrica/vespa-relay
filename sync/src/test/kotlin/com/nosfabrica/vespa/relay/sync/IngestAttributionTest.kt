@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.sync.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.sync.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -96,7 +95,7 @@ class IngestAttributionTest {
         override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> = events.map { IEventStore.InsertOutcome.Rejected(RejectionReason.REPLACED) }
     }
 
-    private fun config() = RouterConfig(connectionTimeoutSec = 5, streams = emptyList(), ingestConcurrency = 1, ingestBatch = 8)
+    private fun config() = IngestTuning(concurrency = 1, batch = 8)
 
     private fun base(): IEventStore = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
 

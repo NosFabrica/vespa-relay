@@ -25,28 +25,21 @@ import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncUpstream
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
-import com.nosfabrica.vespa.relay.monitor.AliasFolding
 import com.nosfabrica.vespa.relay.monitor.AliasMonitor
-import com.nosfabrica.vespa.relay.monitor.AliasProbe
-import com.nosfabrica.vespa.relay.monitor.ConsistencyPass
 import com.nosfabrica.vespa.relay.monitor.FitnessPass
-import com.nosfabrica.vespa.relay.monitor.ReachabilityProbe
-import com.nosfabrica.vespa.relay.monitor.RelayAliases
-import com.nosfabrica.vespa.relay.monitor.RelayConsistency
-import com.nosfabrica.vespa.relay.monitor.RelayDocument
-import com.nosfabrica.vespa.relay.monitor.StreamWorld
+import com.nosfabrica.vespa.relay.monitor.MonitorEngine
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.shared.PeerClient
 import com.nosfabrica.vespa.relay.shared.RelaySockets
 import com.nosfabrica.vespa.relay.shared.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.shared.TorSettings
-import com.nosfabrica.vespa.relay.shared.TorTransport
-import com.nosfabrica.vespa.relay.shared.probeIdleMs
 import com.nosfabrica.vespa.relay.sync.AddressVersion
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
 import com.nosfabrica.vespa.relay.sync.IngestPipeline
+import com.nosfabrica.vespa.relay.sync.IngestTuning
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
@@ -64,17 +57,11 @@ import com.nosfabrica.vespa.relay.sync.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.sync.refused.RefusedIds
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
-import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.utils.Log
-import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -84,9 +71,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
-import okhttp3.Dispatcher
-import okhttp3.OkHttpClient
-import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
@@ -152,83 +136,14 @@ class SyncEngine(
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
-    // One OkHttp client for every upstream. The 120s ping surfaces half-open
-    // connections as a failed pong, which routes into quartz's reconnect path.
-    private val okhttp =
-        OkHttpClient
-            .Builder()
-            // The dispatcher budget is the real concurrency ceiling for the
-            // whole router: an open websocket holds a dispatcher slot for its
-            // entire life, so at the stock 64 every stream's `concurrency`
-            // silently stopped meaning anything (measured: a 20,340-relay
-            // cycle with an ETA of 330 hours). Must exceed static upstreams
-            // plus the sum of every stream's `concurrency`.
-            .dispatcher(
-                Dispatcher().apply {
-                    maxRequests = MAX_CONCURRENT_SOCKETS
-                    // Per HOST; only bites when one host serves several urls.
-                    maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
-                },
-            ).pingInterval(Duration.ofSeconds(120))
-            .connectTimeout(Duration.ofSeconds(config.connectionTimeoutSec))
-            .build()
-
-    // The Tor client, when there is one, and which urls it takes. See
-    // [TorTransport] for why resolution has to happen inside the proxy.
-    private val tor = torSettings?.let { TorTransport(it, okhttp) }
-
-    // Per URL, not one client for the process: quartz's builder takes
-    // (NormalizedRelayUrl) -> OkHttpClient precisely so a relay can be dialled
-    // over the transport that can reach it.
-    private val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> tor?.clientFor(url) ?: okhttp }, scope)
-
-    // NO PASSIVE NIP-66 WRITER. quartz's `RelayMonitor` used to live here,
-    // attached to this client as a connection listener, signing a kind-30166
-    // for every socket the fan-out opened. Two things followed, both bad. It
-    // was a second publisher of facts the monitor passes already state, and
-    // because a 30166 is addressable per (author, url) and every writer edits
-    // the same record, it rewrote `created_at` on a 5-minute flush for every
-    // relay we were actively syncing — so the record's own clock said "we
-    // talked recently" instead of "we checked this", and every consumer needed
-    // a private freshness convention to work around it.
-    //
-    // The monitor's passes are the only writers now. `created_at` means what
-    // every other NIP-66 consumer takes it to mean, and a stream can bound
-    // verdict freshness with a plain NIP-01 `since`.
-
-    // NIP-42: relays that gate reads behind AUTH serve nothing until we answer
-    // their challenge — and an unanswered challenge looks exactly like an
-    // ordinary empty relay. Attaching the authenticator is enough.
-    private val authenticator =
-        signer?.let { s ->
-            RelayAuthenticator(client, scope) { _, template, _ -> listOf(s.sign(template)) }
-        }
-
     /**
-     * What actually goes down the wire, for when the counters stop making
-     * sense. The error half — NOTICE, CLOSED, failed sends — is on always:
-     * those are the relay explaining itself. `sent`/`full` add outgoing
-     * commands / every message.
+     * HOW THIS PROCESS TALKS TO OTHER RELAYS — the websocket client, the socket
+     * budget, Tor and NIP-42, shared with the monitor plane rather than owned
+     * by either. See [PeerClient] for why one pool is the point.
      */
-    private val wireLog =
-        when (wireLogMode) {
-            "full", "sent" -> {
-                // The sent/received lines are DEBUG and quartz's floor is WARN
-                // in every deployment we run — without lowering it the switch
-                // would be accepted, construct its logger, and print nothing.
-                if (Log.minLevel > LogLevel.DEBUG) {
-                    Log.minLevel = LogLevel.DEBUG
-                    System.err.println(
-                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
-                    )
-                }
-                RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
-            }
-
-            else -> {
-                RelayLogger(client, debugSending = false, debugReceiving = false)
-            }
-        }
+    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec)
+    private val client = peers.client
+    private val tor = peers.tor
 
     // OutOfMemoryError kills whichever thread allocates next and is caught by
     // nobody; counted so the health line can say the process is damaged
@@ -250,31 +165,6 @@ class SyncEngine(
     private val downUpstreams = config.downUpstreams()
     private val upUpstreams = config.upUpstreams()
     private val discoveryStreams = config.discoveryStreams()
-
-    /**
-     * IS THERE ANYTHING FOR THE MONITOR TO WORK ON — the one question both the
-     * start gate and the `off` rows are decided by.
-     *
-     * It was `discoveryStreams.isNotEmpty()` alone, written when a stream's own
-     * `relaySource` was the only way a url could enter the system. The
-     * `monitor { sources }` block is the other way, and [MonitorConfig]
-     * documents the posture it exists for: a deployment moves every ounce of
-     * relay-list parsing off the streams, which then run on verdict queries
-     * alone. Take that all the way — streams with static `urls` and one monitor
-     * block, the pure-monitor deployment — and `discoveryStreams` is EMPTY
-     * while the block names three sources. `aliasMonitor.start()` was never
-     * called: no fold, no stability gate, no fitness, no `prime` ever signed,
-     * and four rows on the monitor card reading `off` for the life of the
-     * process. The urls were derived correctly by [StreamWorld], which unions
-     * both, and then nothing ran over them.
-     *
-     * Decided ONCE and read from both places, because the failure mode of them
-     * disagreeing is silent in one direction: rows marked `off` under a monitor
-     * that is running. The rule itself is [hasMonitorSources], out where a test
-     * can put a config in front of it — building a whole engine to ask a
-     * question about a config file is how a gate goes untested.
-     */
-    private val monitorHasSources = hasMonitorSources(config)
 
     /**
      * The fork's arithmetic — see [VisitPool.ridesThePool]: every relaySource
@@ -310,7 +200,7 @@ class SyncEngine(
     // off, so a deployment that has not opted in pays nothing.
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds, newestVersions, refusals)
+    private val ingest = IngestPipeline(store, IngestTuning(config.ingestConcurrency, config.ingestBatch), audit, servingPressure, scope, knownIds, newestVersions, refusals)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /**
@@ -331,283 +221,31 @@ class SyncEngine(
             ),
         )
 
-    /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
-    private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
-
     /**
-     * THE ROW THE DERIVATION REPORTS ON, and it is declared HERE, above the
-     * passes it feeds, on purpose: [Processors.of] registers in call order and
-     * the document is drawn in registration order, so a handle taken after the
-     * fold's would draw the collection step under the pass that waits on it.
-     *
-     * On the same terms as the passes — a signer or nothing. It is not that the
-     * derivation needs an identity, but that without one there is no
-     * [aliasMonitor] to run it, and a row for work this deployment never does
-     * would draw a `Relay monitor` card on a router that has no monitor.
-     */
-    private val sourceProgress = signer?.let { processors.of(SOURCE_PROCESSOR) }
-
-    /**
-     * The duplicate-url fold, built only when there is a signer — the verdict
-     * it produces is a signed NIP-66 record, so a router with no identity has
-     * nowhere to put one and dials every url as its own relay, exactly as
-     * before this existed.
-     *
-     * ONE instance, shared by both halves, because [RelayAliases] is the
-     * in-memory cache of what has been decided: give the reader and the prober
-     * one each and the reader never sees this boot's verdicts without a store
-     * round trip, and the prober re-probes what the reader already resolved.
-     */
-    private val folding =
-        signer?.let {
-            AliasFolding(
-                aliases = RelayAliases(),
-                record = RelayVerdictRecord(store, it),
-                // Per url, not per process: a `.onion` fingerprint that is only
-                // given the clearnet handshake budget times out while its
-                // circuit is still being built, and comes back as an empty
-                // window — which folds nothing, clears nothing, and leaves every
-                // url on that host in the fan-out forever. See [probeIdleMs].
-                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency = monitorConcurrency,
-                progress = processors.of(FOLD_PROCESSOR),
-            )
-        }
-
-    /**
-     * The stability gate: does a relay answer one filter the same way twice?
-     *
-     * Built on the same terms as the fold — signer or nothing, since the verdict
-     * is a signed NIP-66 record — and sharing its [RelayConsistency] between the
-     * reader and the prober for the same reason [RelayAliases] is shared.
-     *
-     * A separate probe instance from the fold's, because they walk to different
-     * depths for different reasons and one is not a cache of the other.
-     */
-    private val consistency = RelayConsistency()
-    private val consistencyPass =
-        signer?.let {
-            ConsistencyPass(
-                consistency = consistency,
-                record = RelayVerdictRecord(store, it),
-                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency = monitorConcurrency,
-                progress = processors.of(STABILITY_PROCESSOR),
-            )
-        }
-
-    /**
-     * One spelling of the probe constructor for the three passes — the fold,
-     * the stability gate, the fitness pass. Same transport and the same
-     * timeout budget; only the target depth differs.
-     */
-    private fun probeOver(target: Int) =
-        AliasProbe.over(client, target) { url ->
-            probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
-        }
-
-    /**
-     * The dialling half of both, on their own schedule so a probe pass never
-     * stands between a stream finishing discovery and starting its download.
-     *
-     * Order matters and is not alphabetical: the fold runs first so that a
-     * stability pass measures survivors rather than urls about to be folded away
-     * — measuring a duplicate twice and then deleting it is the one ordering
-     * that pays for work it throws away.
+     * WHO IS STILL USING THIS SOCKET — one refcount across every stream and
+     * every probe pass, which is why it is built here and handed to the monitor
+     * rather than owned by either. See [RelaySockets].
      */
     private val sockets = RelaySockets(client, pinnedUrls)
-    private val probe = ReachabilityProbe(tor)
 
     /**
-     * What the probe passes measure. Built here rather than reached for through
-     * [discovery]: the monitor is one of that object's constructor arguments, so
-     * asking it for the world is a cycle Kotlin can only be talked out of.
+     * THE OTHER PLANE. What is out there and how much of it can we use —
+     * the fold, the consistency gate and the fitness grades, on their own
+     * clock, writing the signed kind-30166 records this plane's roster then
+     * selects on. See [MonitorEngine] for what it still takes from this side.
      */
-    private val world =
-        StreamWorld(
-            store,
-            discoveryStreams,
-            probe,
-            ingest,
-            // Whose `dead` verdicts may hold a candidate out: our own
-            // signer, plus every monitor npub the config's verdict sources
-            // and certified gates name — the operator's trust statements.
-            //
-            // DELIBERATELY NOT the roster's rule. A source that names no
-            // `authors` reads verdicts unscoped, because admitting is a
-            // positive claim that still has to survive a dial. Holding out is
-            // the opposite: unscoped, one `dead` grade from anybody starves
-            // a relay out of the candidate set for good — never dialled, never
-            // re-measured, so the mark never clears. So an unscoped source
-            // contributes nothing here, and the set stays the identities the
-            // operator actually vouched for. See ForeignMonitorTest.
-            monitorAuthors =
-                (
-                    listOfNotNull(signer?.pubKey) +
-                        discoveryStreams
-                            .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
-                            .flatMap { it.filter.authors.orEmpty() }
-                ).distinct(),
-            // …and OURS alone, for the one count that is about the size of this
-            // router's own corpus rather than about whose word it takes.
-            self = signer?.pubKey,
-            tor = tor,
+    private val monitor =
+        MonitorEngine(
+            store = store,
+            config = config,
+            peers = peers,
+            signer = signer,
+            processors = processors,
             sockets = sockets,
-            monitorConfig = config.monitor,
-            progress = sourceProgress,
+            ingest = ingest,
+            pinnedUrls = pinnedUrls,
+            scope = scope,
         )
-
-    /**
-     * The grade the sync plane selects on — `"#l": ["prime"]` — plus the
-     * measured facts a visit reads back. Third in the pass order on purpose:
-     * fitness turns the fold's and the consistency pass's standing verdicts
-     * into refusals without re-dialling, so both must have run first or a
-     * to-be-folded url earns a dial the fold is about to make pointless.
-     */
-    private val fitness =
-        signer?.let { s ->
-            FitnessPass(
-                record = RelayVerdictRecord(store, s),
-                probe = probeOver(FitnessPass.FITNESS_TARGET),
-                client = client,
-                foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
-                inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
-                progress = processors.of(FITNESS_PROCESSOR),
-                // THE SAME PER-URL TRANSPORT THE DIAL USES. A `.onion`
-                // document has to be fetched inside the circuit, and handing
-                // this the direct client would both fail and put a hidden
-                // service through the local resolver — see [TorTransport].
-                document = RelayDocument({ url -> tor?.clientFor(url) ?: okhttp }),
-                routesThroughTor = { url -> tor?.routes(url) == true },
-                concurrency = monitorConcurrency,
-            )
-        }
-
-    private val aliasMonitor: AliasMonitor? =
-        listOfNotNull<AliasMonitor.Pass>(
-            // Each wrapper carries the same handle its pass writes into, so the
-            // monitor's clock — when the pass ran, how long it took, when the
-            // next one is due — lands on the row the pass is filling in. See
-            // [AliasMonitor.Pass.progress].
-            folding?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: AliasFolding.Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            consistencyPass?.let { g ->
-                object : AliasMonitor.Pass {
-                    override val progress = g.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: AliasFolding.Sockets,
-                    ): Int = g.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            fitness?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: AliasFolding.Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-        ).takeIf { it.isNotEmpty() }
-            ?.let { passes ->
-                AliasMonitor(
-                    passes,
-                    scope,
-                    // The monitor block's clock where one is configured; the
-                    // historical six hours otherwise.
-                    intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
-                    source = world,
-                    // The fast lane runs FITNESS alone: a first `prime` is
-                    // what a new relay waits on; fold and consistency verdicts
-                    // ride the next sweep.
-                    fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
-                    fastLanePass =
-                        fitness?.let { f ->
-                            object : AliasMonitor.Pass {
-                                override val progress = f.progress
-
-                                override suspend fun measure(
-                                    label: String,
-                                    candidates: List<NormalizedRelayUrl>,
-                                    canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                                    onEvent: suspend (Event) -> Unit,
-                                    sockets: AliasFolding.Sockets,
-                                ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                            }
-                        },
-                )
-            }
-            // WHERE THE CANDIDATE SET CAME FROM, on both passes' rows.
-            //
-            // Every number those passes publish is a share of `candidates`, and
-            // `candidates` is itself already filtered — a url a signed NIP-66
-            // record calls dead is dropped by [StreamWorld] before either pass
-            // sees it. Without these two, a reader has the whole funnel except
-            // its mouth, and no way to tell a corpus that shrank from one that
-            // was never that large. Both rows carry them because both passes
-            // measure the same derived set; a supplier rather than a copy, for
-            // the reason [Processors] gives.
-            ?.also {
-                // THE DERIVATION'S OWN ROW, which is the same four numbers plus
-                // the one the passes below cannot state: what it handed them.
-                // On the row that produced them rather than only on the rows
-                // that consume them — a reader watching the collection step run
-                // is asking how big the corpus turned out to be, and every
-                // other number on this card is a share of that answer.
-                sourceProgress?.counts {
-                    // NOTHING UNTIL A WALK HAS RUN. These five are the row's
-                    // whole fact line, and a boot that published them as zeros
-                    // would say `0 url(s) named` for the two minutes before the
-                    // first sweep — a measurement nobody has taken, and one a
-                    // reader cannot tell from a store with no relay lists in
-                    // it. See [StreamWorld.derived].
-                    if (!world.derived) {
-                        emptyList()
-                    } else {
-                        listOf(
-                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
-                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
-                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
-                            Processors.Count("candidates", world.lastDerivation.candidates.toLong()),
-                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
-                        )
-                    }
-                }
-                for (pass in listOfNotNull(folding?.progress, consistencyPass?.progress)) {
-                    pass.counts {
-                        listOf(
-                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
-                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
-                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
-                            // The corpus BESIDE the derivation: urls we hold
-                            // records about that no relay list named this round.
-                            // Without it the card's mouth is one walk's yield
-                            // and calls itself everything this router knows of.
-                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
-                        )
-                    }
-                }
-            }
 
     /** The deleteMissing comparison for the pool's retracting asks — see [RetractionAudit]. */
     private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
@@ -637,7 +275,7 @@ class SyncEngine(
                     store = store,
                     streams = visitStreams,
                     bands = bands,
-                    foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
+                    foldedAway = monitor::foldedAway,
                     keepBands = pinnedUrls,
                     tor = tor,
                     // The fitness pass has always measured and signed this and
@@ -695,17 +333,7 @@ class SyncEngine(
                 .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
         }
 
-        // Said at boot, both ways: a transport that is configured but not
-        // answering must not be discovered later, one silent onion relay at a
-        // time. The probe asks our own SOCKS port, so a false answer here is
-        // a statement about this container and nobody else's server.
-        tor?.let {
-            val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
-            System.err.println(
-                "router: tor SOCKS ${it.settings.socksAddress} $reach" +
-                    (if (it.settings.routeAll) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
-            )
-        }
+        peers.announceTor()
 
         // Make a fatal error visible instead of leaving a silent process that
         // looks merely quiet — four OOMs once passed unnoticed while the
@@ -720,7 +348,7 @@ class SyncEngine(
         }
         scope.launch { healthLoop() }
 
-        client.connect()
+        peers.connect()
 
         // Registered BEFORE anything is launched: a configured stream must
         // appear in the report from the first tick, so silence can never be
@@ -740,9 +368,10 @@ class SyncEngine(
         // before it.
         visitPool.start()
 
-        // Only where there is something to fold for — see [monitorHasSources],
-        // which is the whole of that question and NOT `discoveryStreams` alone.
-        if (monitorHasSources) aliasMonitor?.start()
+        // Only where there is something for it to work on — see
+        // [MonitorEngine.hasSources], which is the whole of that question and
+        // NOT `discoveryStreams` alone.
+        monitor.start()
 
         // Its own loop, NOT a passenger on the phase report. That report is
         // skipped when a config has neither a down upstream nor a dynamic
@@ -799,23 +428,10 @@ class SyncEngine(
      * [AliasMonitor] knows its clock.
      */
     private fun registerProcessors() {
-        // The two probe passes exist whenever there is a signer, and RUN only
-        // where there is something to fold: a static config names its upstreams
-        // by hand and has no duplicate urls to find, so `aliasMonitor.start()`
-        // is never called. Said out loud, because a row left at `starting` for
-        // the life of the process reads as a pass that is about to run.
-        //
-        // The SAME question the start gate asks, and it has to stay the same
-        // one: a row marked `off` under a monitor that is running is the more
-        // damaging half of the two ways these can disagree.
-        if (!monitorHasSources) {
-            // The derivation with them: `aliasMonitor.start()` is what runs it,
-            // and a row left at `starting` for the life of the process reads as
-            // a collection step that is about to begin.
-            sourceProgress?.phase(Processors.OFF)
-            folding?.progress?.phase(Processors.OFF)
-            consistencyPass?.progress?.phase(Processors.OFF)
-        }
+        // The monitor's own rows are registered by [MonitorEngine], including
+        // the `off` phases for a deployment with nothing to fold — the gate and
+        // the rows have to answer one question, and the damaging way for them
+        // to disagree is a row marked `off` under a monitor that is running.
         // WHERE EVERY MIRRORED EVENT ACTUALLY LANDS, and the first thing to look
         // at when the streams read busy and the store is not growing. The queue
         // depth against its capacity is the whole diagnosis: full means ingest
@@ -966,7 +582,7 @@ class SyncEngine(
                     heapUsedMb = usedMb,
                     heapMaxMb = maxMb,
                     sockets = open,
-                    socketCeiling = MAX_CONCURRENT_SOCKETS,
+                    socketCeiling = PeerClient.MAX_CONCURRENT_SOCKETS,
                     servingMs = pressure?.meanMs(),
                 )
             System.err.println(
@@ -1005,7 +621,7 @@ class SyncEngine(
             )
             // Named, because "16,248 skipped" says nothing about which corner
             // of the network we stopped looking at.
-            world.lastDerivation.heldOutDead.takeIf { it > 0 }?.let { dead ->
+            monitor.heldOutDead().takeIf { it > 0 }?.let { dead ->
                 System.err.println(
                     "router: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes",
                 )
@@ -1055,20 +671,15 @@ class SyncEngine(
         // No monitor flush here any more: the passes write their verdicts
         // synchronously as they measure, so there is no buffered liveness to
         // lose on the way down.
-        runCatching { authenticator?.destroy() }
         // Workers before transport: cancelled visits and tails stop touching
         // the client before it closes, instead of racing it and counting
         // their own deaths into `aborted`.
         scope.cancel()
-        runCatching { client.close() }
+        peers.close()
         ingest.closeIntake()
         // After the scope, so a worker mid-batch is cancelled rather than
         // stranded on a pool that has stopped accepting work.
         ingest.close()
-        runCatching {
-            okhttp.dispatcher.executorService.shutdown()
-            okhttp.connectionPool.evictAll()
-        }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
@@ -1125,8 +736,5 @@ class SyncEngine(
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"
         const val PUSH_PROCESSOR = "upstreamPush"
-
-        private const val MAX_CONCURRENT_SOCKETS = 1024
-        private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
     }
 }

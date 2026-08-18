@@ -184,7 +184,7 @@ internal fun probeIdleMs(
  * Clearnet keeps the direct client: routing 20,000 discovered relays through
  * Tor to reach the handful on it would trade the fan-out for the exception.
  */
-internal class TorTransport(
+class TorTransport(
     val settings: TorSettings,
     private val direct: OkHttpClient,
 ) {
