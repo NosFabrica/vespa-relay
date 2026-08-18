@@ -311,7 +311,6 @@ services:
       # hold on the stream's filter before a negentropy reconcile is worth its id
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that
       # measures it. Streams that declare `sync` in router.conf ignore both.
-      SYNC_NEG_MIN_EVENTS: ${SYNC_NEG_MIN_EVENTS:-${ROUTER_NEG_MIN_EVENTS:-100000}}
       # Run only these streams (comma-separated), so one part of the sync can be
       # tuned without the rest competing for the same sockets, heap and ingest
       # queue. Empty (the default) runs every stream the config defines. The

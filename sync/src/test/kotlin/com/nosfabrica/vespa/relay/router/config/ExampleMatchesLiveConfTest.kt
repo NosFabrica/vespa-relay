@@ -61,7 +61,6 @@ class ExampleMatchesLiveConfTest {
             s.filter.toJson(),
             s.urls.map { it.url },
             s.trusted,
-            s.sync,
             s.deleteMissing,
             s.discovery?.refreshSeconds,
             s.discovery

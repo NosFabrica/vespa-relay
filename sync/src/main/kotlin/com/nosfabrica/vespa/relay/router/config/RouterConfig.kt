@@ -38,8 +38,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  *
  * `dir` is `down` (mirror upstream events into our store), `up` (publish our
  * matching events upstream), or `both`. Beyond strfry's schema: `trusted`
- * (skip signature verification for this stream), `sync` ([SyncMode]),
- * `deleteMissing` ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]).
+ * (skip signature verification for this stream), `deleteMissing`
+ * ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]). `sync` is
+ * refused: the pool has ONE shape for every stream, so a transport choice here
+ * would claim a decision nothing reads.
  *
  * How far back a stream reaches is the [SyncStream.filter]'s own
  * `since`/`until`, exactly as NIP-01 reads them: absent is unbounded. The live
@@ -58,8 +60,6 @@ data class RouterConfig(
     val ingestBatch: Int = 1000,
     // How many matching events WE must already hold before a negentropy
     // reconcile beats paging — our own count decides alone; the NIP-45 COUNT
-    // round trip this once paired with was removed. From SYNC_NEG_MIN_EVENTS.
-    val negMinEvents: Int = 5_000,
     /**
      * Automatic negentropy paging: how many events one reconcile window aims to
      * hold, the floor and ceiling the learned per-peer size moves between, and
@@ -125,7 +125,7 @@ data class RouterConfig(
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
-            .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync, s.healContent, s.healRetractions) } }
+            .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.healContent, s.healRetractions) } }
 }
 
 /**
@@ -198,7 +198,6 @@ data class SyncUpstream(
     val url: NormalizedRelayUrl,
     val filter: Filter,
     val trusted: Boolean,
-    val sync: SyncMode = SyncMode.AUTO,
     val healContent: Boolean = false,
     val healRetractions: Boolean = false,
 )
@@ -211,8 +210,6 @@ data class SyncStream(
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
     val discovery: RelayDiscoveryConfig? = null,
-    // Whether this stream's relays share events with each other — see [SyncMode].
-    val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
     /**
@@ -306,37 +303,6 @@ enum class DeleteMissing {
 
     /** Delete. */
     ON,
-}
-
-/**
- * How a stream asks a relay for what it is missing.
- *
- * A property of the DATA, which is why it is declared rather than measured:
- * negentropy pays for itself in proportion to how much of a relay's set we
- * already hold, and no count can reveal that.
- *
- *  - [NEGENTROPY] — the same event lives on many relays (profiles, relay
- *    lists, follow lists). Reconciling id sets moves almost nothing; paging
- *    moves all of it.
- *  - [FETCH] — each relay holds its own events and no one else's (NIP-85
- *    assertions are per-provider by construction). Comparing millions of ids
- *    for a near-empty intersection is the expensive way to learn that.
- *  - [AUTO] — decide by size (see [StaticBackfill.worthReconciling]). Safe
- *    only where overlap tracks volume.
- */
-enum class SyncMode(
-    val wire: String,
-) {
-    AUTO("auto"),
-    NEGENTROPY("negentropy"),
-    FETCH("fetch"),
-    ;
-
-    companion object {
-        fun parse(raw: String): SyncMode =
-            entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) }
-                ?: error("router: unknown stream sync '$raw' (expected auto / negentropy / fetch)")
-    }
 }
 
 enum class SyncDirection(

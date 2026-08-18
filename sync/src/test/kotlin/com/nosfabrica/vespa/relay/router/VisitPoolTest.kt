@@ -20,11 +20,14 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -120,6 +123,57 @@ class VisitPoolTest {
         assertEquals(setOf("pure", "gatedScan", "retracting"), visit.map { it.name }.toSet())
         assertEquals(604_800L, visit.single { it.name == "pure" }.negentropySyncThePastSeconds)
     }
+
+    @Test
+    fun `a declared-urls stream rides the pool too, and an up stream does not`(): Unit =
+        runBlocking {
+            // The crossing: `urls` used to mean the legacy backfill, which
+            // walked each relay once per process and then live-tailed — so
+            // neither clock that re-checks the past could mean anything there.
+            // Where a relay came from is the only difference between the two
+            // kinds of stream now; everything after the roster is one policy.
+            val cfg =
+                RouterConfigLoader.parse(
+                    """
+                    streams {
+                        declared {
+                            dir    = "down"
+                            filter = { "kinds": [0, 10002] }
+                            urls   = [ "wss://a.example", "wss://b.example" ]
+                            negentropySyncThePastSeconds = 604800
+                            refetchThePastSeconds = 2592000
+                        }
+                        pushed {
+                            dir    = "up"
+                            filter = { "kinds": [1] }
+                            urls   = [ "wss://c.example" ]
+                        }
+                    }
+                    """.trimIndent(),
+                )
+            val visit = cfg.streams.filter { VisitPool.ridesThePool(it) }
+            assertEquals(listOf("declared"), visit.map { it.name }, "an up stream pushes; it has no past to re-check")
+
+            // …and its urls reach the roster, which is what makes the two
+            // clocks above real: the pool visits them like any other relay.
+            val roster =
+                RosterBuilder(store = NostrSemanticsStore(InMemoryEventIndex(), relay = null), streams = visit, bands = SyncBands(null)).rebuild()
+            assertEquals(
+                setOf("wss://a.example/", "wss://b.example/"),
+                roster.asks.keys
+                    .map { it.url }
+                    .toSet(),
+                "a declared url is an ask like any other",
+            )
+            assertEquals(
+                listOf(0, 10002),
+                roster.asks.values
+                    .first()
+                    .single()
+                    .filter.kinds,
+                "and it carries the stream's own filter, unnarrowed",
+            )
+        }
 
     @Test
     fun `a retracting pool stream must say when its comparison runs`() {

@@ -44,11 +44,17 @@
 #
 #   dir             "down" pulls into this relay, "up" pushes ours out
 #   filter          the NIP-01 filter to mirror — kinds, since/until
-#   urls            static relays to talk to (bypass the monitor's verdicts)
+#   urls            relays named here directly (bypass the monitor's verdicts)
 #   relaySource     where the relay list comes from: scans of relay-list events
 #                   (10002, 10009, ...), or monitor kind-30166 verdicts —
 #                   `filter = { "kinds": [30166], "#l": ["prime"] }`
-#   sync            how to ask (see below)
+#
+# WHERE A RELAY COMES FROM IS THE ONLY DIFFERENCE between the two. Both go into
+# one roster and are visited the same way: a live tail, a catch-up that pages
+# forward from the band's edge, and the two clocks below. There is no separate
+# backfill engine and no `sync` knob any more — that pair walked a `urls` relay
+# ONCE per process and then live-tailed, so nothing on such a stream could ever
+# re-check its own past.
 #
 # TWO WAYS BACK INTO THE PAST, and a relay gets whichever one it can answer.
 # Both are opt-in: unset means that re-check does not run.
@@ -70,17 +76,9 @@
 #                   without NIP-77 can get — so a stream whose relays are
 #                   mixed wants both, the re-fetch on the longer clock.
 #
-# NOTE `sync` chooses the TRANSPORT of a static stream (negentropy vs paged
-# fetch), not whether it syncs — kept as `sync` for strfry familiarity.
-# CHOOSING `sync` — static `urls` streams only. A relaySource stream has one
-# shape and no choice to make: page forward from the band's edge, live-tail
-# the present, and re-check the past on the two clocks above.
-#
-#   negentropy  the relays hold much the same events we do. Compares the two
-#               sets and transfers only the difference.
-#   fetch       the relays hold events nobody else has, or the overlap is
-#               unknown. Pages forward from the band's edge.
-#   auto        reconcile once we already hold a lot of the filter, else fetch.
+# `sync = "negentropy" | "fetch" | "auto"` is REFUSED at parse time, and so is
+# SYNC_NEG_MIN_EVENTS: they chose a transport for the engine that is gone. The
+# transport is decided per relay now, by what the monitor measured it can do.
 
 connectionTimeout = 20
 
@@ -155,14 +153,14 @@ streams {
         # Bootstrap. On an empty store there is nothing to reconcile against,
         # and these are what create the overlap every later stream depends on —
         # including the 10002s the monitor's own sources read.
-        sync = "fetch"
         filter = { "kinds": [0, 10002] }
-        # No audit on this stream, so this is its ONLY way back into history:
-        # without it the five bands only ever move forward and a profile these
-        # relays back-fill below them is never read. There is no default —
-        # re-reading a whole corpus on a schedule nobody chose is exactly the
-        # cost that should be written down.
-        refetchThePastSeconds = 604800
+        # Declared relays are visited exactly like discovered ones — one queue,
+        # one tail each, one policy — so these two clocks mean here what they
+        # mean everywhere: reconcile the covered past weekly with the relays
+        # that answer a NEG-OPEN, and re-page it monthly for the rest (and for
+        # whatever a reconcile cannot see). Neither has a default.
+        negentropySyncThePastSeconds = 604800
+        refetchThePastSeconds = 2592000
         urls = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",

@@ -176,23 +176,26 @@ well above its `negentropySyncThePastSeconds`; the example config runs the two o
 monthly against a weekly audit. Below its own `negentropySyncThePastSeconds` the loader says so
 at boot, because there the audit can never be the cheaper path.
 
-The **live tail works against every relay**; the **negentropy backfill depends
-on the upstream**. Some relays advertise NIP-77 but their reconciliation never
+The **live tail works against every relay**; the **reconcile depends on the
+upstream**. Some relays advertise NIP-77 but their reconciliation never
 converges. One bound handles that: a session with no protocol frames for 30
-seconds aborts itself, and the upstream leans on its live tail while relays that
-reconcile cleanly backfill in full. There is deliberately no wall-clock deadline —
-every timeout is measured from the last message, so a relay that stops answering
-is already gone, and one still sending is doing the work we asked for. So a
-brand-new store is filled forward from connect universally, and backfilled
-historically for the relays whose NIP-77 cooperates.
+seconds aborts itself, and the upstream leans on its live tail and its paged
+catch-up while relays that reconcile cleanly compare in full. There is
+deliberately no wall-clock deadline — every timeout is measured from the last
+message, so a relay that stops answering is already gone, and one still sending
+is doing the work we asked for.
 
-While backfilling, the router logs progress and an ETA to "useful" (backfill
-complete), so you can tell how long the initial fill will take:
-
-```
-router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:17 to useful
-router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
-```
+**One engine walks every relay.** A stream naming `urls` and a stream
+discovering them from the store differ only in where the list comes from; after
+that both are the pool's, and a relay from either is visited the same way — a
+catch-up that pages forward from the band's edge, the reconcile of the past
+where it is due, then a live tail on the socket the visit already holds. The
+`urls` half used to run a separate backfill that walked each relay once per
+process and then live-tailed, which is why it could not re-check its own past on
+any clock; its `sync` knob (and `SYNC_NEG_MIN_EVENTS`, which sized its `auto`
+mode) are refused at parse time now rather than accepted and ignored. What the
+pool is doing is in `/stats.json` — the streams' phases and their in-flight
+rows — rather than in a boot-time ETA line.
 
 ## Paging a negentropy sync
 
@@ -204,8 +207,8 @@ semaphore to keep them from summing on the heap. Theirs: past
 `max_sync_events` a relay refuses the whole thing rather than answering part of
 it.
 
-So above `SYNC_NEG_PAGE_TARGET` local events (default 100,000) a static
-backfill stops asking for the whole filter and sweeps it in windows instead.
+So above `SYNC_NEG_PAGE_TARGET` local events (default 100,000) a reconcile
+stops asking for the whole filter and sweeps it in windows instead.
 The boundary is a `created_at` timestamp — the only axis a Nostr filter can be
 cut on — but it is **decided by a count**, and two independent things may cut a
 window:

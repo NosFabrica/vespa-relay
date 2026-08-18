@@ -28,7 +28,6 @@ import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncDirection
-import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
@@ -168,7 +167,6 @@ class VisitPoolLiveProbe {
                                     refreshSeconds = 3600,
                                     exclude = RelayExcludes.NONE,
                                 ),
-                            sync = SyncMode.FETCH,
                         ),
                     )
                 val bands = SyncBands(null)

@@ -352,9 +352,9 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           learned from what it drops. Replaces telling ingest
                           which phase a stream is in
     BisectingInsert.kt    the batch-bisecting write
-    StaticBackfill.kt     history catch-up for configured upstreams
-    VisitPool.kt          relaySource streams' whole engine: the roster the
-                          monitor's 30166 verdicts admit to, rotating visits
+    VisitPool.kt          EVERY down stream's engine: the roster (declared
+                          `urls` plus the relays the monitor's 30166 verdicts
+                          admit), rotating visits
                           (catch-up, audit, heal drain), earned live tails,
                           yield-paced revisits
     RetractionAudit.kt    the deleteMissing comparison, run as a retracting
@@ -864,11 +864,25 @@ It is its own process (`SyncMain`, the compose `sync` service behind
 relay outage — and the sync bands make the re-run resume rather than
 re-download. The relay hard-errors if `SYNC_CONFIG*` is aimed at it: that
 setting used to start the mirror in-process, and accepting-but-ignoring it
-would be a mirror that quietly stopped mirroring. Two kinds of stream:
+would be a mirror that quietly stopped mirroring. A stream's relays come from
+one of two places and are walked the same way after that:
 
-- **static** — relays listed in `urls` in `router.conf`
-- **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
-  outbox lists, NIP-85 provider lists, relay hints)
+- **declared** — relays listed in `urls` in `router.conf`
+- **discovered** — relays found in stored events via `relaySource` (NIP-65
+  outbox lists, NIP-85 provider lists, relay hints), admitted by the monitor's
+  verdicts
+
+**ONE ENGINE walks both** — `VisitPool`, since the crossing finished. Declared
+urls skip discovery, the gate and the fold and go straight into the roster;
+everything downstream is identical, which is the point. `StaticBackfill` is
+gone with the `sync` knob, `SYNC_NEG_MIN_EVENTS` and `PagingProgress`: it
+walked a declared relay ONCE per process and then live-tailed, so
+`negentropySyncThePastSeconds` and `refetchThePastSeconds` could never mean
+anything on those streams, and both are refused at parse time now rather than
+accepted and ignored. **Still unpruned after the crossing**: `StreamPhases`'
+`Fetching`/`Syncing`/`Snapshotting`/`Holding` variants and their published
+members had only that engine as a producer — dead, and worth a pass of its own
+because the phase words are in the vocabulary and on the card.
 
 **Dynamic streams run on two planes.** The MONITOR plane (`AliasMonitor`'s
 passes: the fold, then stability, then `FitnessPass`) measures every url the
@@ -991,22 +1005,16 @@ tails, revisit-paced by each relay's recent yield. A scan whose select binds
 that stays valid however many providers join. A retracting stream
 (`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
 
-Each **static** stream declares **how** it asks for what it is missing, via
-`sync` — a dynamic stream's cadence belongs to the pool (catch-up pages; the
-audit reconciles), so the loader refuses `sync` beside `relaySource`:
-
-| mode | when | why |
-|---|---|---|
-| `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
-| `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
-| `auto` | unknown | reconcile once WE hold more than `SYNC_NEG_MIN_EVENTS` for the filter, else page. Only our own count — asking the relay too meant a NIP-45 COUNT per relay per cycle, and COUNT is optional, widely unimplemented, and slow where it exists |
-
-**It is a property of the data AND of how the stream asks — not of the relay,
-and not measurable from counts.** NIP-85 assertions were the standing example of
-`fetch` here: per-provider, millions each, no overlap. Asked per (relay,
-provider) instead of by kind, the same data overlaps almost entirely and
-`negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
-when a stream's filter changes shape rather than trusting the label.
+**No stream declares a transport any more.** `sync` (negentropy / fetch / auto)
+chose one for the engine that is gone, and the pool has one shape: page forward
+from the band's edge, live-tail, and re-check the past on the two clocks. Which
+transport re-checks a given relay is decided per RELAY by the monitor's `nip77`
+verdict, not per stream by a config line — the argument that used to justify the
+knob is why: it was "a property of the data AND of how the stream asks", and
+NIP-85 assertions were the standing example of `fetch` (per-provider, millions
+each, no overlap) until the ask narrowed to (relay, provider), where the same
+data overlaps almost entirely and `negentropy` became right. A declaration that
+inverts when a filter changes shape was never the right place for the answer.
 
 **`.onion` upstreams go through Tor, chosen per url** (`TorTransport`,
 `SYNC_TOR_SOCKS`). quartz's socket builder takes
@@ -1583,8 +1591,8 @@ retains the walk and `reset` clears it at the next cycle boundary; a walk that
 DRAINED counts 1.0 and anything else counts the share it really reached, which
 is also the only place a failed leg and a successful one stop looking alike.
 `reset` deletes only FINISHED walks, because one stream name can carry both
-`urls` and `relaySource` and a blanket clear would delete a static backfill's
-live walk out from under it — every later `mark` and `finish` on a removed key
+`urls` and `relaySource` and a blanket clear would delete a live walk out from
+under the other half — every later `mark` and `finish` on a removed key
 is silently a no-op.
 Three traps if you touch either format: both files nest **stream → filter →
 relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
@@ -1639,11 +1647,9 @@ amethyst#3871), and this class shrank to what survives a call:
 Everything inside a call is quartz's: splitting a window it cannot reconcile,
 bounding what it reads from the index (`PrimedIndex` hands it the count this
 layer already took, so the same window is not counted twice), and draining a
-second no window size will fit through the hook this class passes it. Engaged
-automatically by `StaticBackfill` once our own count passes
-`SYNC_NEG_PAGE_TARGET`; the dynamic fan-out deliberately still shares one
-snapshot across its 16k relays, where per-peer windowing would multiply the
-store work by the fan-out.
+second no window size will fit through the hook this class passes it. Engaged by every
+audit the pool runs, and by any reconcile whose own count passes
+`SYNC_NEG_PAGE_TARGET`.
 
 **Fixed, and worth knowing how.** A band used to hold one span for the whole
 filter, so a long-lived kind (0) vouched for a short-lived one (30382) and
@@ -3018,8 +3024,7 @@ and nothing else. Four consequences, each with its own home:
   every leg `bands.legs()` hands back, past and present — is one worker's job.
 - **The stream gate moved.** It used to wrap the whole fan-out; on a rotation
   that would be forever, since a stream that never finishes never releases and
-  every other id-set stream plus `StaticBackfill` would queue behind it for the
-  life of the process. It now wraps the snapshot BUILD, so two full store walks
+  every other id-set stream would queue behind it for the life of the process. It now wraps the snapshot BUILD, so two full store walks
   are still never in flight at once. **What it no longer bounds is residency** —
   a negentropy dynamic stream's set is resident continuously rather than only
   during its cycle, so worst case is one per id-set stream plus one draining
@@ -3132,15 +3137,13 @@ silent failure on the other side:
   stays in memory either way, so a url that comes back resumes rather than
   starting over.
 - **Per stream, plus an explicit `keep`, and the sweep file is left alone.** A
-  fold is applied to one dynamic stream's discovered set, so the stream name
-  scopes it — except that the name does *not* separate static from dynamic:
-  `urls` and `relaySource` may sit on ONE stream, and `downUpstreams()` hands the
-  configured urls to `StaticBackfill` under that same name. A configured upstream
-  the fan-out folds away is therefore still dialled, still recording, and would
-  have had every one of those bands filtered back out — the relay syncing while
-  the file says nothing and each restart re-walks its corpus. `dropFolded` takes
-  the pinned set for exactly that. Only static backfill sweeps, which is the same
-  reason the sweep file is untouched.
+  fold is applied to one stream's DISCOVERED set, so the stream name scopes it —
+  except that the name does *not* separate declared urls from discovered ones:
+  both may sit on ONE stream and both reach the roster under that name. A
+  declared upstream the fan-out folds away is therefore still dialled, still
+  recording, and would have had every one of those bands filtered back out — the
+  relay syncing while the file says nothing and each restart re-walks its
+  corpus. `dropFolded` takes the pinned set for exactly that.
 - **Report what left the file, not what is folded.** The count is the urls this
   stream was actually holding a band for. Counting the verdict set instead made
   every restart log a mass deletion of thousands of urls whose state the previous

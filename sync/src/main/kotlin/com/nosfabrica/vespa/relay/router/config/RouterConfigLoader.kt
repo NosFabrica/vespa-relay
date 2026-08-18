@@ -82,12 +82,13 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceIn(1, 20_000) ?: 1000
-        val negMinEvents =
-            env
-                .syncEnv("SYNC_NEG_MIN_EVENTS", "ROUTER_NEG_MIN_EVENTS")
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceAtLeast(0) ?: 5_000
+        // Sized the legacy `auto` transport choice, which no engine makes any
+        // more. Refused rather than ignored, on the rule every removed setting
+        // here follows: it was a real number in a real compose file.
+        require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank() && env["ROUTER_NEG_MIN_EVENTS"].isNullOrBlank()) {
+            "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
+                "choice any more: the pool pages forward and reconciles the past on its own clock. Unset it"
+        }
         val fallback = RelaySourceDefaults()
         val only = env.syncEnv("SYNC_STREAMS", "ROUTER_STREAMS")?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
@@ -126,7 +127,7 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents)
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults)
             .copy(
                 negPageTarget = pageTarget,
                 negPageMin = pageMin,
@@ -175,7 +176,6 @@ object RouterConfigLoader {
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
-        negMinEvents: Int = 5_000,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -200,7 +200,17 @@ object RouterConfigLoader {
 
                 val filter = parseFilter(s.getConfig("filter"))
                 val deleteMissing = parseDeleteMissing(name, s)
-                val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
+                // `sync` chose a static stream's transport for the engine that
+                // walked it once per process. Every stream rides the pool now,
+                // which has one shape — page forward from the band's edge,
+                // reconcile the past on its clock, re-fetch it on the other —
+                // so the choice has nothing left to decide and is refused
+                // rather than accepted and ignored.
+                require(!s.hasPath("sync")) {
+                    "router: stream '$name' sets `sync` — gone with the legacy backfill. Every stream is visited " +
+                        "the same way now: page forward from the band's edge, live-tail, and re-check the past on " +
+                        "`negentropySyncThePastSeconds` (reconcile) and `refetchThePastSeconds` (re-fetch)"
+                }
                 // An hour is the floor because the audit re-reconciles the
                 // WHOLE covered history: a knob under it is a re-walk loop
                 // wearing an audit's name. `verifySeconds` is the knob's old
@@ -301,7 +311,6 @@ object RouterConfigLoader {
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     discovery = discovery,
-                    sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     refetchThePastSeconds = refetchThePastSeconds,
@@ -337,7 +346,6 @@ object RouterConfigLoader {
             upIntervalSec,
             ingestConcurrency,
             ingestBatch,
-            negMinEvents,
             monitor = parseMonitor(cfg),
             // The pool's two socket numbers, floored at 1 for the same reason
             // the monitor's dial gate is: zero of either is an off switch

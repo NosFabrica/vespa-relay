@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
+import com.nosfabrica.vespa.relay.router.config.SyncDirection
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
 import com.nosfabrica.vespa.relay.router.heal.Healer
@@ -883,14 +884,19 @@ internal class VisitPool(
 
     companion object {
         /**
-         * Does [stream] ride the pool? Yes when it builds its relay list from
-         * the store at all — whether it gates that list is the operator's
-         * business, not a precondition for the engine that walks it. A
-         * retracting stream rides too: its `deleteMissing` comparison IS its
-         * audit ([RetractionAudit]), on the `negentropySyncThePastSeconds` clock the loader
-         * requires it to set.
+         * EVERY down stream rides the pool now — declared `urls` and discovered
+         * relays alike. The fork this used to draw was the crossing's, not a
+         * design: a `urls` stream ran the legacy backfill, which walked each
+         * relay ONCE per process and then live-tailed, so it had no way to
+         * reconcile or re-fetch its past on any clock. One engine, one policy:
+         * live tail, page forward from the band's edge, reconcile the past on
+         * `negentropySyncThePastSeconds`, re-fetch it on `refetchThePastSeconds`.
+         *
+         * A retracting stream rides it like any other: its `deleteMissing`
+         * comparison IS that reconcile, on the clock the loader requires it to
+         * set ([RetractionAudit]).
          */
-        internal fun ridesThePool(stream: SyncStream): Boolean = stream.discovery?.sources?.isNotEmpty() == true
+        internal fun ridesThePool(stream: SyncStream): Boolean = stream.dir != SyncDirection.UP && (stream.urls.isNotEmpty() || stream.discovery?.sources?.isNotEmpty() == true)
 
         /**
          * Did this leg's walk end in a way that makes the NEXT leg futile?

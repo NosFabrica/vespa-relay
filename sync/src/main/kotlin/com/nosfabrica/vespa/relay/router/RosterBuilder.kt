@@ -141,6 +141,17 @@ internal class RosterBuilder(
             }
         }
         for (stream in streams) {
+            // A stream's relays come from one of two places and are visited the
+            // same way after that. `urls` are DECLARED — an operator wrote them
+            // in router.conf, which is the same statement a verdict makes about
+            // a discovered one, so they skip discovery, the gate and the fold
+            // and go straight into the roster. Everything downstream of here —
+            // catch-up, the reconcile of the past, the re-fetch, the tail — is
+            // one policy for both, which is the whole point of there being one
+            // engine now.
+            for (url in stream.urls) {
+                for (filter in asksOf(stream.filter, DiscoveredRelay(url))) want(url, Ask(stream, filter))
+            }
             val discovery = stream.discovery ?: continue
             for (relay in permitted(stream, discovery)) {
                 for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))

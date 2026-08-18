@@ -1111,50 +1111,25 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `sync defaults to auto and parses the three modes`() {
-        fun mode(body: String) =
-            RouterConfigLoader
-                .parse(stream(body))
-                .streams
-                .first()
-                .sync
-
-        assertEquals(SyncMode.AUTO, mode("""urls = [ "wss://a.example" ]"""))
-        assertEquals(
-            SyncMode.FETCH,
-            mode(
-                """
-                sync = "fetch"
-                urls = [ "wss://a.example" ]
-                """.trimIndent(),
-            ),
-        )
-        assertEquals(
-            SyncMode.NEGENTROPY,
-            mode(
-                """
-                sync = "negentropy"
-                urls = [ "wss://a.example" ]
-                """.trimIndent(),
-            ),
-        )
-    }
-
-    @Test
-    fun `an unknown sync mode is rejected rather than silently defaulted`() {
-        // Defaulting a typo to `auto` would pick a strategy the operator did not
-        // ask for on a stream they went out of their way to declare — and the
-        // wrong strategy here is millions of redundant events, not a warning.
-        assertFailsWith<IllegalStateException> {
-            RouterConfigLoader.parse(
-                stream(
-                    """
-                    sync = "negantropy"
-                    urls = [ "wss://a.example" ]
-                    """.trimIndent(),
-                ),
-            )
+    fun `sync is refused, the pool has one shape`() {
+        // It chose the transport of a stream the legacy backfill walked once
+        // per process. Every stream rides the pool now — page forward,
+        // live-tail, reconcile the past, re-fetch the past — so the knob has
+        // nothing left to decide, and accepting it would claim otherwise.
+        for (mode in listOf("fetch", "negentropy", "auto")) {
+            assertFailsWith<IllegalArgumentException>("sync = \"$mode\" must be refused") {
+                RouterConfigLoader.parse(
+                    stream(
+                        """
+                        sync = "$mode"
+                        urls = [ "wss://a.example" ]
+                        """.trimIndent(),
+                    ),
+                )
+            }
         }
+        // …and a stream that says nothing about transport still parses.
+        assertEquals(1, RouterConfigLoader.parse(stream("""urls = [ "wss://a.example" ]""")).streams.size)
     }
 
     @Test

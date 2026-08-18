@@ -40,7 +40,6 @@ import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
-import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.progress.SyncProgress
@@ -48,7 +47,6 @@ import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.router.refused.RouterRefusalSink
 import com.nosfabrica.vespa.relay.server.ServingPressure
-import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
@@ -73,7 +71,6 @@ import kotlinx.coroutines.sync.Semaphore
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
@@ -82,7 +79,7 @@ import kotlin.coroutines.CoroutineContext
  * events between that relay and the served relay's store.
  *
  * Down (`dir = down`/`both`): a live REQ subscription streams new events into
- * the store through [IngestPipeline]; [StaticBackfill] catches up on history
+ * the store through [IngestPipeline]; [VisitPool] catches up on history
  * first. Up (`dir = up`/`both`): [UpstreamPush] periodically reconciles the
  * store against the upstream and publishes what it is missing. Dynamic
  * (`relaySource = [...]`): [VisitPool] builds its roster from the monitor's
@@ -223,7 +220,6 @@ class SyncEngine(
     private val fatals = AtomicLong()
 
     /** Relays with a transfer actually running, across every path. */
-    private val transferring = AtomicInteger()
 
     // One stream BUILDS its id set at a time, static and discovery both: the set
     // is a full store walk and concurrent ones sum on the heap.
@@ -272,14 +268,13 @@ class SyncEngine(
      * retracting stream rides the pool too, its comparison running as its
      * audit ([RetractionAudit]).
      */
-    private val visitStreams = discoveryStreams.filter { VisitPool.ridesThePool(it) }
+    private val visitStreams = config.streams.filter { VisitPool.ridesThePool(it) }
 
     // The relays we hold a live subscription on; a discovery sync must not drop
     // one of these sockets out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
 
     private val phases = StreamPhases()
-    private val paging = PagingProgress()
 
     /**
      * The work that is NOT a stream — the two probe passes, the NIP-66 monitor,
@@ -320,7 +315,6 @@ class SyncEngine(
                 slackSeconds = config.negPageSlackSec,
             ),
         )
-    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer, refusedIds)
 
     /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
@@ -646,7 +640,7 @@ class SyncEngine(
     private val pressure = servingPressure
 
     fun start(): SyncEngine {
-        if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && discoveryStreams.isEmpty()) {
+        if (visitStreams.isEmpty() && upUpstreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
             return this
         }
@@ -711,47 +705,30 @@ class SyncEngine(
         }
         scope.launch { healthLoop() }
 
-        // Down live tail: subscribe on each upstream from now forward.
-        // History is the backfill's job, so the tail never floods on connect.
-        val liveSince = nowSeconds()
-        downUpstreams.forEachIndexed { i, up ->
-            client.subscribe(
-                subId = "vespa-mirror-down-$i",
-                filters = mapOf(up.url to listOf(up.filter.copy(since = liveSince))),
-                listener = downListener(up),
-            )
-        }
         client.connect()
 
         // Registered BEFORE anything is launched: a configured stream must
         // appear in the report from the first tick, so silence can never be
         // read as "not configured".
-        downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
-        discoveryStreams.forEach { phases.register(it.name) }
-
-        if (downUpstreams.isNotEmpty()) {
-            backfill.begin(downUpstreams.size)
-            scope.launch { backfill.run(downUpstreams) }
-            scope.launch { backfill.progressLoop(discoveryStreams.size) }
-        }
+        visitStreams.forEach { phases.register(it.name) }
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
-        // THE FORK IN THE ROAD. A stream running purely on the monitor's
-        // verdicts rides the rotating pool — one queue, socket-owning workers,
-        // tails, the audit clock. Everything else keeps the legacy pass
-        // machinery, which is the migration posture: both engines run side by
-        // side until every stream has crossed.
+        // ONE ENGINE. Every down stream rides the rotating pool — declared
+        // `urls` and discovered relays alike — for one queue, socket-owning
+        // workers, tails, and the two clocks that re-check the past. The
+        // legacy pass machinery is gone with the last stream that needed it:
+        // it walked a static relay ONCE per process and then live-tailed, so
+        // `negentropySyncThePastSeconds` and `refetchThePastSeconds` could
+        // never mean anything there, and the tail it opened here on boot is
+        // now the pool's, opened after that relay's catch-up rather than
+        // before it.
         visitPool.start()
 
         // Only where there is something to fold for — see [monitorHasSources],
         // which is the whole of that question and NOT `discoveryStreams` alone.
         if (monitorHasSources) aliasMonitor?.start()
 
-        // The phase report runs for the life of the engine, not inside the
-        // static backfill's progress loop: a discovery-only config has no
-        // backfill loop at all, and everyone else's dynamic streams — the
-        // larger half of the fill — outlive it.
         // The heartbeat is its own loop, NOT a passenger on the phase report.
         // That report is skipped when a config has neither a down upstream nor a
         // dynamic stream — a push-only router — and with the write inside it
@@ -765,7 +742,7 @@ class SyncEngine(
                 progressFile.write(phases.snapshot(), processors.snapshot(), health, fatals.get())
             }
         }
-        if (downUpstreams.isNotEmpty() || discoveryStreams.isNotEmpty()) {
+        if (visitStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {
                     delay(PROGRESS_INTERVAL_MS)
@@ -777,8 +754,8 @@ class SyncEngine(
         scope.launch { statsLoop() }
 
         System.err.println(
-            "router: ${downUpstreams.size} down + ${upUpstreams.size} up relay(s)" +
-                (if (downUpstreams.isNotEmpty()) "; backfilling ${downUpstreams.size}" else "; live-tail only") +
+            "router: ${visitStreams.size} down stream(s) on the pool (${downUpstreams.size} declared relay(s))" +
+                " + ${upUpstreams.size} up relay(s)" +
                 (if (upUpstreams.isNotEmpty()) "; up every ${config.upIntervalSec}s" else "") +
                 (
                     if (discoveryStreams.isNotEmpty()) {
@@ -994,7 +971,6 @@ class SyncEngine(
                         }
                     ) +
                     ", $rate ev/s" +
-                    ", ${transferring.get()} relay(s) transferring" +
                     ", $open connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
                     (
@@ -1056,7 +1032,7 @@ class SyncEngine(
     fun dynamicStreamCount(): Int = discoveryStreams.size
 
     override fun close() {
-        // First: a backfill killed mid-flight still keeps the ground it gained.
+        // First: a visit killed mid-flight still keeps the ground it gained.
         runCatching { bands.flush() }
         // The same reasoning one level finer — a sweep killed between windows
         // resumes at the window it reached, not at the top of the range.
@@ -1069,7 +1045,6 @@ class SyncEngine(
         // the client before it closes, instead of racing it and counting
         // their own deaths into `aborted`.
         scope.cancel()
-        downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         ingest.closeIntake()
         // After the scope, so a worker mid-batch is cancelled rather than
