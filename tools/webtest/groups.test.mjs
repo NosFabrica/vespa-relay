@@ -10,7 +10,7 @@
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
-const { ownGroups, metaGroup, rank, where, relayLabel, isNip04, sealed, privateGroups } =
+const { ownGroups, metaGroup, postedTo, rank, where, relayLabel, isNip04, sealed, privateGroups } =
   await import(new URL("../../relay/src/main/resources/web/shared/groups.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
@@ -221,6 +221,19 @@ assert.strictEqual(where({ relayUrl: null, host: null }).text, "unknown relay", 
 
 assert.strictEqual(relayLabel("wss://x.example/"), "x.example", "the label drops the scheme and the trailing slash");
 assert.strictEqual(relayLabel("wss://x.example/inbox"), "x.example/inbox", "…and keeps a real path");
+
+// ---- which room a MESSAGE was said in ---------------------------------------
+//
+// The other direction: everything above reads a group's own record, this reads
+// an event addressed to one. NIP-29 puts it on every such event as `h`, and
+// what comes back is the bare id — the same half-identity the filter has, so a
+// card drawing it has to say where the NAME came from separately.
+assert.strictEqual(postedTo({ tags: [["h", "chachi"], ["h", "second"]] }), "chachi", "the `h` tag is the room");
+assert.strictEqual(postedTo({ tags: [["h", "  spaced  "]] }), "spaced", "trimmed like every other tag value here");
+assert.strictEqual(postedTo({ tags: [["e", "not-a-group"]] }), "", "nothing else names a group");
+assert.strictEqual(postedTo({ tags: [["h"]] }), "", "an `h` with no value names none either");
+assert.strictEqual(postedTo({}), "", "…and an event with no tags at all is not an exception");
+assert.strictEqual(postedTo({ tags: [null, ["h", "ok"]] }), "ok", "a malformed tag is stepped over, not thrown on");
 
 // ---- WHICH CONNECTION the picker asks on -----------------------------------
 //

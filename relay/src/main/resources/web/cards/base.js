@@ -17,6 +17,8 @@ import { kindLabel, kindTone } from "../shared/kinds.js";
 import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
+import { postedTo } from "../shared/groups.js";
+import { groupName } from "../shared/groupnames.js";
 
 // ---- the registry ---------------------------------------------------------
 export const renderers = new Map(); // kind -> (ev, opts) -> html
@@ -228,8 +230,54 @@ export function bylineHtml(ev, opts) {
         ? `<a class="by-date" href="${href}" title="${esc(fullDate(ev))}">${date}</a>`
         : `<span class="by-date" title="${esc(fullDate(ev))}">${date}</span>`}
       <span class="spacer"></span>
+      ${groupPillHtml(ev)}
       ${badgeHtml(ev)}
     </div>`;
+}
+
+/**
+ * The ROOM, beside the badge that says what was said in it — a NIP-29 chat
+ * line's `h` tag, drawn as a pill and linking to that group's search.
+ *
+ * A chat message is the one shape on this page whose card was missing the
+ * thing that makes it make sense. Every other card is about itself: a note is
+ * its text, an article is its title, a group's own 39000 says what the group
+ * is. A line of chat is a fragment of a conversation, and "who said it, when,
+ * and that it is a chat" left out the only thing a reader scanning a mixed
+ * list needs — WHICH conversation. Two rooms' small talk interleaved by
+ * timestamp reads as nonsense; the same list with each line labelled reads as
+ * two rooms.
+ *
+ * Beside the badge rather than above the text, because it is the same kind of
+ * fact the badge is — what this event IS, not what it says — and because a
+ * reply line already owns the space above the text on the kinds that have one.
+ *
+ * The LINK is the group's search, which is the one destination this page can
+ * offer for a room: NIP-29 gives a group no event of its own to open (its
+ * 39000 is the host relay's record, and this store may not hold it), so
+ * "everything posted here" is both the closest thing to the room and what the
+ * reader wanted anyway.
+ *
+ * The name is groupnames.js's to decide and is OPTIONAL by construction: an
+ * `h` carries the bare id, so a chat line whose group nothing on the page has
+ * ever named draws the id — which is what the card said before this existed,
+ * and still more than it said. The hover carries the id whether or not a name
+ * replaced it, since the id is what the link actually filters on.
+ *
+ * WHICH of the groups carrying that id this is, the pill does not say, and
+ * cannot: an `h` names no host, and nothing in this store records which relay
+ * an event was mirrored from. `general` is an id half the relays running
+ * NIP-29 have each minted, so the name here is "what this id is called where
+ * the sources agree", never "which room this is" — groupnames.js is the long
+ * version, and it draws the bare id wherever they disagree.
+ */
+export function groupPillHtml(ev) {
+  const id = postedTo(ev);
+  if (!id) return "";
+  const name = groupName(id);
+  const said = `the NIP-29 group this was posted to, id ${id}`;
+  const title = name ? `“${name}” — ${said}` : said;
+  return `<a class="group-pill" href="${groupHref(id)}" title="${esc(title)}">${esc(clip(name || id, 28))}</a>`;
 }
 
 /**

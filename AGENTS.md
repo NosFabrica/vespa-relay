@@ -551,7 +551,22 @@ relay/src/main/resources/
                         about a subject like the kind 0 behind a face, so
                         asking it through the observer gate would leave an
                         unmirrored reader looking at the id the pill exists to
-                        replace;
+                        replace. TWO pills read that one cache, so they can
+                        never disagree about what a group is called: the search
+                        box's, and the one a NIP-29 chat card draws beside its
+                        kind badge for the room it was said in (`postedTo` in
+                        groups.js reads the `h` tag, cards/base.js's
+                        `groupPillHtml` draws it, and it links to the `group:`
+                        search because NIP-29 gives a room no event of its own
+                        to open). A chat line is a fragment of a conversation,
+                        and two rooms interleaved by timestamp read as nonsense
+                        without it. Neither pill says WHICH of the groups
+                        sharing an id it is, and neither can: an `h` names no
+                        host, and nothing in this store records the relay an
+                        event was mirrored from — so `general`, an id half the
+                        relays running NIP-29 have each minted, is a name over
+                        a union. Fixing that is a store-side provenance
+                        question, not a drawing one;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;

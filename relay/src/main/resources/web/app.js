@@ -10,8 +10,8 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
-import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
-import { seedGroupNames, seedGroupEvents, forgetPrivateGroupNames } from "./shared/groupnames.js";
+import { ownGroups, metaGroup, postedTo, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
+import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -490,10 +490,18 @@ function hydrate(events, deep) {
   // moment that argument grows a second field somebody reads.
   const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
+  // The rooms those events were said in, on exactly the same terms as the
+  // names: a NIP-29 chat card draws the group beside its badge, an `h` tag
+  // carries nothing but the id, and the seed above has already taken whatever
+  // 39000s came back with the results — so this asks only for the ids nothing
+  // on the page can name yet, and reports how many it learned so a lookup that
+  // learned nothing costs no repaint. Not awaited, for the reason the names
+  // are not: a card should not wait on the label above it.
+  const groups = enrichGroupNames(events.map(postedTo).filter(Boolean));
   // Free, and it removes most of the asks below: a thread in the results
   // carries its own parents, and an event is ground truth about who wrote it.
   seedParentAuthors(events);
-  return { events, names, parents: deep ? replyParents(events) : null };
+  return { events, names, groups, parents: deep ? replyParents(events) : null };
 }
 
 /**
@@ -1650,19 +1658,20 @@ async function run(st, fetch, keep, render) {
     // `hitsFor` is what the SEARCH BOX would have to say for these hits to be
     // about it, and the feed's answer is "nothing does" — null, so reopening
     // the popup on focus can never show the feed under a typed query.
-    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.parents].filter(Boolean);
+    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.groups, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== st.requestId) return;
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;
   }
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
   render();
-  // The names land after the list does, and the reply parents after them, so
-  // paint each when it arrives — and only if that lookup actually learned
-  // something. Independently, because they are: chaining them meant the names
-  // could not repaint until the parents had also answered. Skipped while a raw
-  // event is expanded: a re-render would collapse a panel the reader opened,
-  // and a name appearing is not worth taking that away.
+  // The names land after the list does, the group names beside them and the
+  // reply parents after both, so paint each when it arrives — and only if that
+  // lookup actually learned something. Independently, because they are:
+  // chaining them meant the names could not repaint until the parents had also
+  // answered. Skipped while a raw event is expanded: a re-render would collapse
+  // a panel the reader opened, and a name appearing is not worth taking that
+  // away.
   for (const lookup of late) {
     lookup.then((learned) => {
       if (!learned || myId !== st.requestId) return;
