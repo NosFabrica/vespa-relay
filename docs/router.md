@@ -135,10 +135,8 @@ that hole is occasional and clears the next time the filter changes.
 ### `refetchThePastSeconds` and the audit
 
 A band narrows work; it never expires on its own evidence. So it can carry a
-period: once a band is older than `refetchThePastSeconds` — the stream's own
-value, else `SYNC_REFETCH_THE_PAST_SECONDS` (which still answers to its old
-name, `SYNC_FULL_RESYNC_SECONDS`) — it is discarded and the whole filter is
-walked again from the plausible floor. That is the only thing that can re-read a
+period: once a band is older than the stream's `refetchThePastSeconds`, it is
+discarded and the whole filter is walked again from the plausible floor. That is the only thing that can re-read a
 window a relay back-filled after we passed it, and for a stream with no
 `negentropySyncThePastSeconds` it is the only full re-check there is.
 
@@ -153,11 +151,15 @@ both periods — the reconcile short, the re-fetch long — and a stream that se
 only the reconcile leaves its non-NIP-77 relays' history never re-read, which is
 what the skipped count is there to make visible.
 
-**There is no default, deliberately.** Unset, on both the stream and the
-environment, means the past is never re-read — because re-reading a whole
+**There is no default, and no environment knob either — deliberately.** A
+stream that does not name a period never re-fetches its past. Re-reading a whole
 history is the most expensive thing this router does on a schedule, and it was
-running on a period nobody had chosen. Streams left with neither a re-fetch
-period nor an audit are named at boot:
+running on quartz's week in every deployment that had never heard of the knob;
+one number across every stream could only ever be wrong for most of them, since
+a 130-kind content mirror and a five-relay bootstrap do not want the same
+period. `SYNC_REFETCH_THE_PAST_SECONDS` and the two names before it are refused
+at boot rather than ignored, with a message naming the replacement. Streams left
+with neither a re-fetch period nor a reconcile are named at boot:
 
 ```
 router: stream(s) indexers have neither `negentropySyncThePastSeconds` nor `refetchThePastSeconds` — they page

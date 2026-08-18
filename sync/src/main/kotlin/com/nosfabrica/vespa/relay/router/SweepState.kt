@@ -80,8 +80,14 @@ import java.util.concurrent.ConcurrentHashMap
 class SweepState(
     private val file: File?,
     // A cursor claims a range was compared against the peer AT A POINT IN TIME.
-    // Past this age the claim is not worth acting on — the same reasoning (and
-    // the same default) as a band's full-resync horizon.
+    // Past this age the claim is not worth acting on and the sweep starts over.
+    //
+    // NOT the same knob as a stream's `refetchThePastSeconds`, though it read
+    // the same env var until that one became per-stream. This decides whether
+    // an INTERRUPTED sweep resumes or restarts — work already scheduled, and
+    // at most one sweep's worth either way — so it keeps a default. The other
+    // decides whether a whole history is downloaded again on a clock, which is
+    // why nothing may schedule that without being asked to.
     private val staleAfterSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
 ) : AutoCloseable {
     /** What one peer will reconcile: the window size we use, and its cap if it told us. */
@@ -460,6 +466,12 @@ class SweepState(
          * `SYNC_SWEEP_STATE_FILE` — where the learned caps and cursors live.
          * Unset, they are kept in memory and a restart re-learns them, which is
          * correct but pays the whole ladder again.
+         *
+         * `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS` is how old a resume cursor
+         * may be and still be resumed from. It used to read the same env var a
+         * band's re-walk period did, which is how one number came to mean two
+         * things; that one is `refetchThePastSeconds` on a stream now, and this
+         * kept the env because it schedules nothing — see [staleAfterSeconds].
          */
         fun fromEnv(env: Map<String, String>): SweepState =
             SweepState(
@@ -468,8 +480,7 @@ class SweepState(
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.let(::File),
-                env
-                    .syncEnv("SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
+                env["SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS"]
                     ?.trim()
                     ?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,

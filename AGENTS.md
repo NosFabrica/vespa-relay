@@ -1694,9 +1694,9 @@ ask reads, and cannot narrow it — which is a second reason to ask only for wha
 the audit compares. Where the two coincide, as they now do on `assertions`
 (`filter.kinds == ownedKinds`, so `ownedAskOf` is identity), the daily reconcile
 closes the catch-up's own older leg and the deep re-walk stops. And every
-`refetchThePastSeconds` — per stream, `SYNC_REFETCH_THE_PAST_SECONDS` for those
-that name none, and NEVER under that, since nothing this expensive runs on a
-period nobody chose —
+`refetchThePastSeconds` — per stream and ONLY per stream, unset meaning never,
+since nothing this expensive runs on a period nobody chose (the env names that
+used to carry it are refused at boot) —
 a band is STALE and `legs()` hands back the whole filter, floored on the
 wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
 `Band.widen` freezes on every non-stale merge, so it means "last walk from

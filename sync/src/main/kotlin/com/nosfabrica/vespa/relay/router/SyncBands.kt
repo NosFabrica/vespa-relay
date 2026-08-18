@@ -99,6 +99,12 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class SyncBands(
     private val file: File?,
+    /**
+     * The period for streams that name none — [NEVER] for the router, which
+     * has no other source: `fromEnv` passes nothing here, and the only
+     * production answer comes from [perStream]. A seam for tests and
+     * embedders, kept because forcing staleness is otherwise unexpressible.
+     */
     internal val refetchThePastSeconds: Long = NEVER,
     /**
      * Streams whose re-walk runs on a period of their own, by name. Fixed at
@@ -705,38 +711,63 @@ class SyncBands(
          * `SYNC_STATE_FILE` — where the bands live. Unset keeps them in memory,
          * which is the same as not having them.
          *
-         * [streams] carry the per-stream re-walk periods, so this is built
-         * AFTER the config is parsed. `SYNC_REFETCH_THE_PAST_SECONDS` is the
-         * default for every stream that does not name one, and it answers to
-         * `SYNC_FULL_RESYNC_SECONDS` and the pre-rename `ROUTER_` spelling too,
-         * loudly.
+         * [streams] are the ONLY source of a re-walk period, which is why this
+         * is built after the config is parsed. There is no environment default
+         * and no built-in one: re-reading a relay's whole history is the most
+         * expensive thing this router does on a schedule — the content mirror
+         * is ~130 kinds against every certified relay — and it was running on
+         * quartz's week in every deployment that had never heard of the knob,
+         * beside reconciles that already covered the same ground for the
+         * difference alone.
          *
-         * **Unset means NEVER, not "a week".** Re-reading a relay's whole
-         * history is the most expensive thing this router does on a schedule —
-         * the content mirror is ~130 kinds against every certified relay — and
-         * a period nobody chose was doing it on quartz's default, invisibly,
-         * beside audits that already cover the same ground for the difference
-         * alone. A schedule that costs that much is written down or it does
-         * not run. The streams left with no re-check at all are named at boot
-         * rather than left to be inferred.
+         * A schedule that costs that much belongs to the stream that pays it,
+         * written in the same file as the filter it re-reads. One number for
+         * every stream could only ever be wrong for most of them: the content
+         * mirror and a five-relay bootstrap do not want the same period, and
+         * the streams that reconcile want none at all.
+         *
+         * The env names it used to answer to are REFUSED rather than ignored —
+         * see [refuseRemovedEnv] — and the streams left with no re-check of
+         * any kind are named at boot rather than left to be inferred.
          */
         fun fromEnv(
             env: Map<String, String>,
             streams: List<SyncStream> = emptyList(),
         ): SyncBands =
-            SyncBands(
-                env
-                    .syncEnv("SYNC_STATE_FILE", "ROUTER_SYNC_STATE_FILE")
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.let(::File),
-                env
-                    .syncEnv("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
-                    ?.trim()
-                    ?.toLongOrNull()
-                    ?.takeIf { it > 0 } ?: NEVER,
-                streams.mapNotNull { stream -> stream.refetchThePastSeconds?.let { stream.name to it } }.toMap(),
-            ).also { it.announceUncheckedPasts(streams) }.startPeriodicFlush()
+            refuseRemovedEnv(env).let {
+                SyncBands(
+                    env
+                        .syncEnv("SYNC_STATE_FILE", "ROUTER_SYNC_STATE_FILE")
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let(::File),
+                    perStream = streams.mapNotNull { stream -> stream.refetchThePastSeconds?.let { stream.name to it } }.toMap(),
+                ).also { it.announceUncheckedPasts(streams) }.startPeriodicFlush()
+            }
+
+        /**
+         * The three env names that used to carry a re-walk period, refused by
+         * name rather than ignored.
+         *
+         * Ignoring one would take a deployment's schedule away on an upgrade
+         * and say nothing — the exact failure the rename machinery exists to
+         * prevent, arriving through the other door. This is the same posture
+         * `recycleSeconds` and the per-stream `concurrency` got when the cycle
+         * engine went: a setting that no longer has a meaning is an error, and
+         * the message says where the meaning moved.
+         */
+        private fun refuseRemovedEnv(env: Map<String, String>) {
+            val set =
+                listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
+                    .filter { env[it]?.isNotBlank() == true }
+            require(set.isEmpty()) {
+                "router: ${set.joinToString(", ")} is set — one number used to mean two things and now means " +
+                    "neither. Re-walking a relay's whole history is per STREAM (`refetchThePastSeconds` in " +
+                    "router.conf, unset meaning never, because one period cannot be right for a 130-kind content " +
+                    "mirror and a five-relay bootstrap at once); how old an INTERRUPTED sweep's cursor may be and " +
+                    "still resume is `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS`. Set whichever you meant and unset this"
+            }
+        }
     }
 }
 

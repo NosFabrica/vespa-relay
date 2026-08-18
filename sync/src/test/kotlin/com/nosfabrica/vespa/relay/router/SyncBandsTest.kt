@@ -35,6 +35,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -306,25 +307,23 @@ class SyncBandsTest {
     }
 
     @Test
-    fun `the re-walk period is opt-in, and answers to both of its old env names`() {
-        // SYNC_FULL_RESYNC_SECONDS shipped and is in a running deployment's
-        // compose file; a rename that ignored it would change that
-        // deployment's schedule without saying so.
-        fun period(env: Map<String, String>) = SyncBands.fromEnv(env).use { it.refetchThePastSecondsFor(mirror) }
+    fun `no stream says so, nothing re-fetches — and the removed env names are refused`() {
+        // The period used to come from the environment and default to quartz's
+        // week, so every deployment that had never heard of the knob re-read
+        // whole histories on a schedule nobody chose. Now the streams are the
+        // only source, and a config that says nothing gets nothing.
+        val quiet = SyncBands.fromEnv(emptyMap(), emptyList())
+        quiet.use { assertEquals(SyncBands.NEVER, it.refetchThePastSecondsFor(mirror)) }
 
-        // Nothing set: nothing re-read. Re-walking a whole history is the most
-        // expensive scheduled thing here, so it is written down or it does not
-        // happen — quartz's week used to apply to every deployment that had
-        // never heard of the knob.
-        assertEquals(SyncBands.NEVER, period(emptyMap()))
-        assertEquals(86_400L, period(mapOf("SYNC_REFETCH_THE_PAST_SECONDS" to "86400")))
-        assertEquals(86_400L, period(mapOf("SYNC_FULL_RESYNC_SECONDS" to "86400")))
-        assertEquals(86_400L, period(mapOf("ROUTER_FULL_RESYNC_SECONDS" to "86400")))
-        assertEquals(
-            86_400L,
-            period(mapOf("SYNC_REFETCH_THE_PAST_SECONDS" to "86400", "SYNC_FULL_RESYNC_SECONDS" to "1")),
-            "the current spelling decides when a config carries both",
-        )
+        // …and the old spellings are an ERROR rather than a no-op: ignoring one
+        // would take a running deployment's schedule away on an upgrade and say
+        // nothing, which is the failure the rename machinery exists to prevent
+        // arriving through the other door.
+        for (name in listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")) {
+            assertFailsWith<IllegalArgumentException>("$name must be refused, not ignored") {
+                SyncBands.fromEnv(mapOf(name to "604800"), emptyList())
+            }
+        }
     }
 
     @Test

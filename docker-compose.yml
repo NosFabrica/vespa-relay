@@ -334,9 +334,11 @@ services:
       # without NIP-77 resumes instead of re-reading its corpus every restart —
       # and so a `restart sync` after a config edit costs a diff, not a corpus.
       SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
-      # How long a recorded sync window narrows work before the whole filter is
-      # walked again. Nothing is capped — the full pass is periodic, not skipped.
-      SYNC_FULL_RESYNC_SECONDS: ${SYNC_FULL_RESYNC_SECONDS:-${ROUTER_FULL_RESYNC_SECONDS:-604800}}
+      # How old an INTERRUPTED sweep's resume cursor may be and still be resumed
+      # from — past it the sweep starts over. Not a schedule: re-walking a
+      # relay's whole history is `refetchThePastSeconds`, per stream, in
+      # router.conf, and unset there it does not happen at all.
+      SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS: ${SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS:-604800}
       # Automatic negentropy paging. Past SYNC_NEG_PAGE_TARGET local events on a
       # stream's filter, a backfill reconciles it in created_at windows instead
       # of one whole-filter pass — bounding the id snapshot we build and making
