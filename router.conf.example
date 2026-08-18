@@ -218,12 +218,25 @@ streams {
         # would-delete lines for a few days before flipping this.
         deleteMissing = true
         # The provider's relay is the source of truth for its OWN scores, and
-        # for nothing else here. Kind 0/10002 ride along so we pick them up if
-        # it serves them (NIP-85 says it should; measured, none do) — they are
-        # deleted only when a service's whole score set is retracted, never for
-        # being absent from a relay that was never going to have them.
+        # for nothing else here.
         ownedKinds = [30382]
-        filter = { "kinds": [0, 10002, 30382] }
+        # …and what a wholesale retraction takes WITH them: once every score a
+        # service published is gone, its kind 0 and 10002 describe a provider
+        # that no longer provides anything. Never deleted for being absent
+        # upstream — only in that cascade.
+        #
+        # They are named here rather than asked for. NIP-85 says a provider
+        # should serve its service key's 0 and 10002; measured on 12 (service,
+        # relay) pairs, not one does — they come from the indexers instead. A
+        # kind that never returns an event earns no band span, and an empty
+        # walk records no band, so `[0, 10002]` in the filter re-opened a leg
+        # over the WHOLE past on every visit of every (relay, provider) ask,
+        # forever, to be told nothing each time.
+        attachedKinds = [0, 10002]
+        # Only what this relay actually serves. Note that a band is keyed by
+        # the whole filter, so editing this line starts every (relay, provider)
+        # walk over once — the intended way to force a re-walk, and one pass.
+        filter = { "kinds": [30382] }
         refreshSeconds = 21600
         # Still a scanned source, and still author-bound: a provider stream's
         # whole meaning is "THIS service's records from THIS relay", which is

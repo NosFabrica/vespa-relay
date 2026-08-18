@@ -1662,6 +1662,39 @@ every kind in the filter, so a kind whose floor sits higher than the band's oute
 two are indistinguishable from the band. The card draws that intersection on top
 of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
 
+**A kind that never returns an event never closes its leg — so asking for one
+costs a full-past walk on EVERY visit.** A span is earned by observing events,
+and an empty walk records no band at all (`an empty fetch records nothing`:
+recording it would fabricate coverage). Both rules are right on their own, and
+together they mean a kind the relay does not serve stays outstanding forever.
+Measured through `SyncBands` with the `assertions` ask shape — filter
+`[0, 10002, 30382]`, authors bound to one provider — after a DRAINED walk that
+saw only 30382s:
+
+```
+kinds=[0, 10002]  since=null      until=null    ← the whole past, every visit
+kinds=[30382]     since=1787068103 until=null   ← correctly narrowed
+```
+
+The drain is evidence the walk reached the bottom for every kind it asked for,
+and it is thrown away because no kind produced an event to hang a span on. Two
+things follow. Fixing it properly is upstream (`record` would have to be told
+which kinds the leg ASKED for — the call here keys the band by the whole ask,
+not by the leg). What this repo did instead is stop asking: `attachedKinds`
+names the cascade's reach so the filter does not have to carry kinds the
+upstream never serves. Before assuming a stream is re-walking history for a
+reason, check whether one of its kinds simply never answers.
+
+Two more ways a paged leg reaches back that are NOT this one, worth separating
+before theorising: a `reconciledThrough` band records against the filter the
+reconcile actually compared, so a retraction audit on `ownedKinds` narrows a
+different band key than the catch-up's ask reads; and every `fullResyncSeconds`
+(quartz's `DEFAULT_FULL_RESYNC_SECONDS`, 604800 — `SYNC_FULL_RESYNC_SECONDS`
+here) a band is STALE and `legs()` hands back the whole filter, floored on the
+wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
+`Band.widen` freezes on every non-stale merge, so it means "last walk from
+nothing" and a stale band is REPLACED rather than widened.
+
 **Do not assume the leg below a floor is empty. It was measured, and it is not.**
 `RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
 exact floor each one's band carried, twice:
@@ -3722,10 +3755,13 @@ nothing; run that first, and read the number before believing it.
   falling back, so a normal return means every window was compared and an empty
   answer is the relay's answer rather than its silence. There is deliberately no
   size guard, because a mass retraction is exactly the case that matters. It is
-  scoped by `ownedKinds` (required): the rest of the filter is mirrored from the
-  same relay and dropped only when a service's whole owned set is retracted —
-  measured, no NIP-85 provider relay serves its own key's kind 0, so judging
-  those by absence would delete every healthy provider's profile.
+  scoped by `ownedKinds` (required), and `attachedKinds` — kind 0 and 10002 for
+  a service key — are dropped only when a service's whole owned set is retracted.
+  Measured, no NIP-85 provider relay serves its own key's kind 0, so judging
+  those by absence would delete every healthy provider's profile. Those kinds
+  are NAMED rather than derived from the filter, so the stream can stop asking
+  for them: the cascade keeps its reach, and see the band trap below for what
+  asking for a kind that never answers costs.
 
 The counterpart to both: a deletion is not a tombstone. A stream that still asks
 by kind re-downloads whatever was freed on its next walk, so reclaiming space and

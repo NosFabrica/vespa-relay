@@ -318,6 +318,13 @@ internal class RetractionAudit(
      * own copy of it. Scoped by [ask], so this reaches exactly the authors
      * the reconcile just judged and only the kinds it was never allowed to
      * speak for.
+     *
+     * Read from [SyncStream.attachedKinds], NOT from the ask's own kinds minus
+     * the owned ones. They were the same set for as long as a stream had to
+     * ASK for a kind to cascade it, and that is exactly what made the stream
+     * page the whole past on every visit for kinds no provider relay serves.
+     * The cascade's reach is a config statement now; the filter is free to ask
+     * only for what is there.
      */
     private suspend fun cascade(
         stream: SyncStream,
@@ -325,7 +332,7 @@ internal class RetractionAudit(
         ask: Filter,
         apply: Boolean,
     ) {
-        val attachedKinds = ask.kinds.orEmpty().filter { it !in stream.ownedKinds }
+        val attachedKinds = stream.attachedKinds.sorted()
         if (attachedKinds.isEmpty()) return
         val cascadeAsk = ask.copy(kinds = attachedKinds, ids = null, since = null, until = null, limit = null)
         val held = runCatching { store.count(cascadeAsk) }.getOrDefault(0)

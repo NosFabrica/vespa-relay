@@ -244,15 +244,33 @@ data class SyncStream(
      * it is on, and checked against [filter]: turning on deletion without
      * saying what it may delete is a config error, not a default.
      *
-     * Everything else in [filter] is ATTACHED: fetched from the same relay,
-     * never deleted for being missing there, and dropped only when the owned
-     * set for that author is retracted wholesale. NIP-85 says a provider
-     * should publish its service key's kind 0 and 10002, but measured on 12
-     * (service, relay) pairs not one provider relay actually serves them —
-     * they come from the indexers instead. Deleting on their absence here
-     * would erase the profile of every healthy provider on the stream.
+     * What the deletion must NOT touch is [attachedKinds].
      */
     val ownedKinds: Set<Int> = emptySet(),
+    /**
+     * The ATTACHED kinds: the same authors' records that are never deleted for
+     * being absent upstream, and go only when the owned set for that author is
+     * retracted wholesale — a NIP-85 service key's kind 0 and 10002, whose
+     * profile describes a provider that no longer provides anything once every
+     * score it published is gone. `RetractionAudit.cascade` reads exactly this.
+     *
+     * Declared rather than derived, and the difference is a wire ask. It used
+     * to be `filter.kinds - ownedKinds`, which forced the stream to ASK its
+     * upstreams for kinds it will never receive: NIP-85 says a provider should
+     * publish its service key's 0 and 10002, and measured on 12 (service,
+     * relay) pairs not one provider relay serves them — they come from the
+     * indexers instead. A kind that returns nothing earns no span, an empty
+     * walk records no band, so its leg re-opens on the whole past at every
+     * visit, for every (relay, provider) ask, forever. Naming them here lets
+     * the filter ask only for what the relay actually has while the cascade
+     * keeps its reach.
+     *
+     * Defaults to `filter.kinds - ownedKinds` so a config written before this
+     * existed behaves exactly as it did. Only meaningful with [deleteMissing]
+     * on, and never overlapping [ownedKinds] — a kind cannot be both the thing
+     * absence deletes and the thing absence must not.
+     */
+    val attachedKinds: Set<Int> = emptySet(),
 )
 
 /**

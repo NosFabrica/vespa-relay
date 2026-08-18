@@ -689,6 +689,99 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `attached kinds are what the cascade reaches, declared or derived`() {
+        // The cascade used to read the ask's kinds minus the owned ones, which
+        // is why a stream had to ASK for a kind to be allowed to cascade it —
+        // and a provider relay serves no kind 0 or 10002, so that ask re-walked
+        // the whole past every visit to be told nothing. Declaring the set
+        // separates the two questions: what to ask for, and what a wholesale
+        // retraction takes with it.
+        fun stream(extra: String) =
+            RouterConfigLoader
+                .parse(
+                    """
+                    streams {
+                      s {
+                        dir = "down"
+                        filter = { "kinds": [30382] }
+                        deleteMissing = true
+                        auditSeconds = 86400
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
+                        relaySource = [
+                            {
+                                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                                filter = { "kinds": [10040] }
+                            }
+                        ]
+                        $extra
+                      }
+                    }
+                    """.trimIndent(),
+                ).streams
+                .single()
+
+        // Declared: the filter asks for one kind, the cascade reaches two more.
+        assertEquals(
+            setOf(0, 10002),
+            stream(
+                """ownedKinds = [30382]
+                attachedKinds = [0, 10002]""",
+            ).attachedKinds,
+        )
+        // Nothing declared: exactly what the old derivation produced, so a
+        // config written before this knob existed cascades what it always did.
+        assertEquals(
+            setOf(0, 10002),
+            RouterConfigLoader
+                .parse(
+                    """
+                    streams {
+                      s {
+                        dir = "down"
+                        filter = { "kinds": [0, 10002, 30382] }
+                        ownedKinds = [30382]
+                        deleteMissing = true
+                        auditSeconds = 86400
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
+                        relaySource = [
+                            {
+                                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                                filter = { "kinds": [10040] }
+                            }
+                        ]
+                      }
+                    }
+                    """.trimIndent(),
+                ).streams
+                .single()
+                .attachedKinds,
+        )
+        // A kind cannot be both what absence deletes and what absence must not.
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """ownedKinds = [30382]
+                attachedKinds = [0, 30382]""",
+            )
+        }
+        // And a reach declared where nothing can delete is the same trap
+        // `ownedKinds` refuses: it activates the day someone sets deleteMissing.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(
+                """
+                streams {
+                  s {
+                    dir = "down"
+                    filter = { "kinds": [30382] }
+                    attachedKinds = [0, 10002]
+                    urls = [ "wss://a.example" ]
+                  }
+                }
+                """.trimIndent(),
+            )
+        }
+    }
+
+    @Test
     fun `the renamed knobs still answer to their old names, loudly`() {
         // verifySeconds -> auditSeconds, newUrlSeconds -> fastLaneSeconds,
         // concurrency -> dialConcurrency. A renamed key must never silently
