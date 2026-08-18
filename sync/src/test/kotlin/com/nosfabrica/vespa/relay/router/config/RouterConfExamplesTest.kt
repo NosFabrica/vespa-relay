@@ -193,11 +193,12 @@ class RouterConfExamplesTest {
         // serves no kind 0 or 10002 (measured, 12 pairs), and a kind that
         // never returns an event never earns a band span — so asking for one
         // re-opens a leg over the whole past at every visit, per (relay,
-        // provider), forever. They are still the cascade's reach; that is
-        // `attachedKinds` now, and asking is no longer the price of reaching.
+        // provider), forever.
         assertEquals(listOf(30382), assertions.filter.kinds)
+        // Every kind it asks for is a kind its upstream owns, which is what
+        // lets the retraction audit's band land on the same key the catch-up
+        // reads — see `RetractionAudit`.
         assertEquals(setOf(30382), assertions.ownedKinds)
-        assertEquals(setOf(0, 10002), assertions.attachedKinds)
         // Mirroring 30382 is the point: the scores those services publish.
         assertTrue(assertions.filter.kinds?.contains(30382) == true)
         // ...and only from the services the SAME tag paired with each relay. The

@@ -50,8 +50,7 @@ import kotlin.test.Test
  *
  * The running router must then: certify the provider relay, mirror the two
  * real scores, and — on the ask's first retraction audit — delete exactly the
- * phantom, keep both real scores, and cascade nothing (one of three is not a
- * wholesale retraction). The probe only stages and prints ids; the sync log
+ * phantom and keep both real scores. The probe only stages and prints ids; the sync log
  * and a REQ for the ids afterwards are the verdict.
  *
  * OFF by default: it publishes fabricated (tiny, ephemeral-keyed) score
@@ -112,7 +111,7 @@ class EnforceRetractionProbe {
                         "",
                     )
                 println("10040   ${tenForty.id} -> ${local.url}: ${publish(tenForty, local)}")
-                println("expect: audit deletes the phantom, keeps real1/real2, cascades nothing")
+                println("expect: audit deletes the phantom, keeps real1/real2")
                 println("=".repeat(78))
             }
         } finally {

@@ -1680,10 +1680,11 @@ The drain is evidence the walk reached the bottom for every kind it asked for,
 and it is thrown away because no kind produced an event to hang a span on. Two
 things follow. Fixing it properly is upstream (`record` would have to be told
 which kinds the leg ASKED for — the call here keys the band by the whole ask,
-not by the leg). What this repo did instead is stop asking: `attachedKinds`
-names the cascade's reach so the filter does not have to carry kinds the
-upstream never serves. Before assuming a stream is re-walking history for a
-reason, check whether one of its kinds simply never answers.
+not by the leg). What this repo did instead is stop asking: a stream asks for
+exactly the kinds its upstream owns, and the one thing that had kept kind 0 and
+10002 in the `assertions` filter — the retraction cascade — is gone with them.
+Before assuming a stream is re-walking history for a reason, check whether one
+of its kinds simply never answers.
 
 Two more ways a paged leg reaches back that are NOT this one, worth separating
 before theorising: a `reconciledThrough` band records against the filter the
@@ -3760,13 +3761,15 @@ nothing; run that first, and read the number before believing it.
   falling back, so a normal return means every window was compared and an empty
   answer is the relay's answer rather than its silence. There is deliberately no
   size guard, because a mass retraction is exactly the case that matters. It is
-  scoped by `ownedKinds` (required), and `attachedKinds` — kind 0 and 10002 for
-  a service key — are dropped only when a service's whole owned set is retracted.
-  Measured, no NIP-85 provider relay serves its own key's kind 0, so judging
-  those by absence would delete every healthy provider's profile. Those kinds
-  are NAMED rather than derived from the filter, so the stream can stop asking
-  for them: the cascade keeps its reach, and see the band trap below for what
-  asking for a kind that never answers costs.
+  scoped by `ownedKinds` (required), and a stream should ASK for no more than it
+  owns — `assertions` is `filter.kinds == ownedKinds == [30382]` now. Measured,
+  no NIP-85 provider relay serves its own key's kind 0 or 10002, so a filter
+  carrying them earned no band span and re-walked the whole past every visit
+  (the band trap below), and the reconcile's own band — stamped against the
+  owned kinds — could never narrow a wider one. There WAS a cascade taking a
+  wholly-retracted service's kind 0 and 10002 down with its scores; it deleted
+  records that arrive from the profile streams, which re-mirror them over a live
+  tail, so it never survived its own next walk. Gone.
 
 The counterpart to both: a deletion is not a tombstone. A stream that still asks
 by kind re-downloads whatever was freed on its next walk, so reclaiming space and

@@ -46,8 +46,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## What did NOT come across, and why
  *
- * The legacy class also paged — attached kinds, and any ask whose reconcile
- * failed — because in the cycle model this call was the ask's only visit. In
+ * The legacy class also paged — the attached kinds it cascaded, and any ask
+ * whose reconcile failed — because in the cycle model this call was the ask's
+ * only visit. In
  * the pool the CATCH-UP has already paged the ask's whole filter before the
  * audit runs, so the mirror side is covered whatever happens here, and a
  * failed reconcile simply decides nothing: the events are in, the deletion
@@ -117,9 +118,19 @@ internal class RetractionAudit(
      * The ids are read for THIS ask alone — this is the one place in the
      * router where a wrong filter destroys data, so they are derived from the
      * ask itself and there is no parameter to pass the wrong thing in. Kinds
-     * outside [SyncStream.ownedKinds] are not touched here at all: the
-     * catch-up mirrors them, and only [cascade] may drop them, when the owned
-     * set is retracted wholesale.
+     * outside [SyncStream.ownedKinds] are not touched here AT ALL, by anything:
+     * this class deletes what a completed reconcile says the provider stopped
+     * serving, and nothing else.
+     *
+     * It used to CASCADE as well — a wholly retracted service's own kind 0 and
+     * 10002 went with its scores, on the reasoning that a service key which
+     * signs nothing describes a provider kept alive by our own copy alone.
+     * That copy was never ours: a provider relay serves no kind 0 or 10002
+     * (measured, 12 (service, relay) pairs), so every one we hold came from the
+     * profile streams, which mirror them from relays that do — and re-mirror
+     * them, over a live tail, right after the cascade deleted them. It was a
+     * delete that could not survive its own next walk, against records another
+     * stream owns.
      *
      * [sharedAuthors] are authors the roster found at more than one relay.
      * One relay's empty answer does not retract what a sibling relay may
@@ -267,9 +278,8 @@ internal class RetractionAudit(
 
     /**
      * THE DELETE HALF: act on what we hold that a completed reconcile says
-     * the provider no longer serves — dry-run or enforce, cascade on a
-     * wholesale retraction. Only ever called after `compared` held; never
-     * feeds the download.
+     * the provider no longer serves — dry-run or enforce. Only ever called
+     * after `compared` held; never feeds the download.
      */
     private suspend fun deleteRetracted(
         stream: SyncStream,
@@ -279,8 +289,6 @@ internal class RetractionAudit(
         mine: Int,
         diff: NegentropyIdDiff,
     ) {
-        val retracted = retracts(mine, diff.needIds.size, diff.haveIds.size, diff.windows)
-
         // NO SIZE GUARD, deliberately. A provider that retracts a subject
         // usually does it because the subject turned out to be a scammer —
         // exactly the score that must not survive — and a mass retraction is
@@ -292,7 +300,6 @@ internal class RetractionAudit(
                 "router: ${stream.name} would delete ${diff.haveIds.size}/$mine record(s) (${(share * 100).toInt()}%)" +
                     " for ${url.url} after a clean ${diff.windows}-window reconcile — set deleteMissing = true to apply",
             )
-            if (retracted) cascade(stream, url, ask, apply = false)
             return
         }
         // Deleted BY ID and inside the ask: the filter that found them is the
@@ -306,70 +313,10 @@ internal class RetractionAudit(
             "router: ${stream.name} deleted ${diff.haveIds.size}/$mine record(s) (${(share * 100).toInt()}%)" +
                 " ${url.url} no longer serves, after a clean ${diff.windows}-window reconcile",
         )
-        if (retracted) cascade(stream, url, ask, apply = true)
-    }
-
-    /**
-     * The attached kinds go when the owned set does.
-     *
-     * A NIP-85 service key exists to sign scores. Once every score it ever
-     * published is retracted, its kind 0 and 10002 describe a provider that
-     * no longer provides anything — a profile kept alive by nothing but our
-     * own copy of it. Scoped by [ask], so this reaches exactly the authors
-     * the reconcile just judged and only the kinds it was never allowed to
-     * speak for.
-     *
-     * Read from [SyncStream.attachedKinds], NOT from the ask's own kinds minus
-     * the owned ones. They were the same set for as long as a stream had to
-     * ASK for a kind to cascade it, and that is exactly what made the stream
-     * page the whole past on every visit for kinds no provider relay serves.
-     * The cascade's reach is a config statement now; the filter is free to ask
-     * only for what is there.
-     */
-    private suspend fun cascade(
-        stream: SyncStream,
-        url: NormalizedRelayUrl,
-        ask: Filter,
-        apply: Boolean,
-    ) {
-        val attachedKinds = stream.attachedKinds.sorted()
-        if (attachedKinds.isEmpty()) return
-        val cascadeAsk = ask.copy(kinds = attachedKinds, ids = null, since = null, until = null, limit = null)
-        val held = runCatching { store.count(cascadeAsk) }.getOrDefault(0)
-        if (held <= 0) return
-        val what = "$held attached record(s) $attachedKinds for ${ask.authors?.size ?: 0} retracted service(s) via ${url.url}"
-        if (!apply) {
-            System.err.println("router: ${stream.name} would cascade — $what")
-            return
-        }
-        store.delete(cascadeAsk)
-        deleted.addAndGet(held.toLong())
-        System.err.println("router: ${stream.name} cascaded — deleted $what")
     }
 
     companion object {
         /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
         private const val ID_FETCH_CHUNK = 500
-
-        /**
-         * Does this reconcile say the author's owned set was RETRACTED, as
-         * opposed to rewritten, partly dropped, or never held? Only a
-         * retraction may take the attached kinds down with it.
-         *
-         * An addressable record a provider replaces arrives as its old id
-         * retracted and a new id offered, which is why [need] must be zero:
-         * that one field is the whole difference between "this provider
-         * published a fresh score" and "this provider is gone". [mine] > 0
-         * keeps it to real losses — a service we never held scores for has
-         * retracted nothing, whatever its relay serves today — and [windows]
-         * repeats the reconcile-completed check the caller already made,
-         * because the cost of getting this wrong is someone else's profile.
-         */
-        internal fun retracts(
-            mine: Int,
-            need: Int,
-            have: Int,
-            windows: Int,
-        ): Boolean = windows >= 1 && mine > 0 && need == 0 && have == mine
     }
 }

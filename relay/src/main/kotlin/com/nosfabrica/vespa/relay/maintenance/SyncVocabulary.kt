@@ -977,7 +977,8 @@ internal object SyncVocabulary {
             put(
                 "retracted",
                 "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
-                    "retracted scores, and the cascade of a wholly-retracted service's profile. The only number in " +
+                    "retracted scores, and nothing else — a provider's own profile is another stream's record and " +
+                    "stays. The only number in " +
                     "the router that goes DOWN, decided only by a completed negentropy comparison on the audit's " +
                     "clock; a failed reconcile deletes nothing.",
             )

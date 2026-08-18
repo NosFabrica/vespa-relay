@@ -263,7 +263,6 @@ object RouterConfigLoader {
                     sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
-                    attachedKinds = parseAttachedKinds(name, s, filter, deleteMissing),
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     auditSeconds = auditSeconds,
@@ -433,47 +432,6 @@ object RouterConfigLoader {
                 }
             }
         return mode
-    }
-
-    /**
-     * `attachedKinds = [0, 10002]` — the same authors' records the retraction
-     * may drop only when their owned set is retracted wholesale, and never for
-     * being absent upstream.
-     *
-     * Defaults to what it used to be derived from — the filter's kinds minus
-     * the owned ones — so an existing config is unchanged. Declaring it is what
-     * lets the FILTER stop asking for them: a provider relay serves no kind 0
-     * or 10002 (measured, 12 pairs), and a kind that never returns an event
-     * never earns a span, so it re-opens its leg over the whole past at every
-     * visit. See [RouterConfig.SyncStream.attachedKinds].
-     *
-     * Refused when deletion is off, on [parseOwnedKinds]' reasoning: a reach
-     * declared in a stream that cannot delete is a trap for whoever turns it
-     * on. Never overlapping the owned set — one kind cannot be both what
-     * absence deletes and what absence must not.
-     */
-    private fun parseAttachedKinds(
-        stream: String,
-        s: Config,
-        filter: Filter,
-        deleteMissing: DeleteMissing,
-    ): Set<Int> {
-        val declared = if (s.hasPath("attachedKinds")) s.getIntList("attachedKinds").map { it.toInt() }.toSet() else null
-        if (deleteMissing == DeleteMissing.OFF) {
-            require(declared == null) {
-                "router: stream '$stream' sets attachedKinds without deleteMissing — remove one. " +
-                    "Nothing cascades in a stream that does not delete"
-            }
-            return emptySet()
-        }
-        val owned = parseOwnedKinds(stream, s, filter, deleteMissing)
-        if (declared == null) return filter.kinds.orEmpty().toSet() - owned
-        val both = declared intersect owned
-        require(both.isEmpty()) {
-            "router: stream '$stream' lists kind(s) ${both.sorted()} as BOTH owned and attached — " +
-                "absence deletes an owned kind and must never delete an attached one, so a kind cannot be both"
-        }
-        return declared
     }
 
     /**
