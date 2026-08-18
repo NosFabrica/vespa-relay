@@ -241,6 +241,31 @@ class SyncEngine(
     private val discoveryStreams = config.discoveryStreams()
 
     /**
+     * IS THERE ANYTHING FOR THE MONITOR TO WORK ON — the one question both the
+     * start gate and the `off` rows are decided by.
+     *
+     * It was `discoveryStreams.isNotEmpty()` alone, written when a stream's own
+     * `relaySource` was the only way a url could enter the system. The
+     * `monitor { sources }` block is the other way, and [MonitorConfig]
+     * documents the posture it exists for: a deployment moves every ounce of
+     * relay-list parsing off the streams, which then run on verdict queries
+     * alone. Take that all the way — streams with static `urls` and one monitor
+     * block, the pure-monitor deployment — and `discoveryStreams` is EMPTY
+     * while the block names three sources. `aliasMonitor.start()` was never
+     * called: no fold, no stability gate, no fitness, no `prime` ever signed,
+     * and four rows on the monitor card reading `off` for the life of the
+     * process. The urls were derived correctly by [StreamWorld], which unions
+     * both, and then nothing ran over them.
+     *
+     * Decided ONCE and read from both places, because the failure mode of them
+     * disagreeing is silent in one direction: rows marked `off` under a monitor
+     * that is running. The rule itself is [hasMonitorSources], out where a test
+     * can put a config in front of it — building a whole engine to ask a
+     * question about a config file is how a gate goes untested.
+     */
+    private val monitorHasSources = hasMonitorSources(config)
+
+    /**
      * The fork's arithmetic — see [VisitPool.ridesThePool]: every relaySource
      * entry answers to the monitor, or the stream keeps the legacy pass
      * machinery (the union path for the deployment mid-crossing). A
@@ -700,10 +725,9 @@ class SyncEngine(
         // side until every stream has crossed.
         visitPool.start()
 
-        // Only where there is something to fold for. A dynamic stream is what
-        // discovers urls off other people's relay lists; a static config names
-        // its upstreams by hand and has no duplicates to find.
-        if (discoveryStreams.isNotEmpty()) aliasMonitor?.start()
+        // Only where there is something to fold for — see [monitorHasSources],
+        // which is the whole of that question and NOT `discoveryStreams` alone.
+        if (monitorHasSources) aliasMonitor?.start()
 
         // The phase report runs for the life of the engine, not inside the
         // static backfill's progress loop: a discovery-only config has no
@@ -769,7 +793,11 @@ class SyncEngine(
         // by hand and has no duplicate urls to find, so `aliasMonitor.start()`
         // is never called. Said out loud, because a row left at `starting` for
         // the life of the process reads as a pass that is about to run.
-        if (discoveryStreams.isEmpty()) {
+        //
+        // The SAME question the start gate asks, and it has to stay the same
+        // one: a row marked `off` under a monitor that is running is the more
+        // damaging half of the two ways these can disagree.
+        if (!monitorHasSources) {
             // The derivation with them: `aliasMonitor.start()` is what runs it,
             // and a row left at `starting` for the life of the process reads as
             // a collection step that is about to begin.
@@ -1040,6 +1068,18 @@ class SyncEngine(
     }
 
     companion object {
+        /**
+         * Is there anything for the monitor to work on — a stream's own
+         * `relaySource`, or the `monitor { sources }` block?
+         *
+         * A function over the config rather than a property of the engine so a
+         * test can hand it the deployment that broke: streams on static `urls`
+         * with every url entering through the monitor block, which is the
+         * posture [MonitorConfig] documents and the one the old rule
+         * (`discoveryStreams.isNotEmpty()`) answered `false` for.
+         */
+        internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
+
         /**
          * The names the progress document calls this router's non-stream jobs.
          *
