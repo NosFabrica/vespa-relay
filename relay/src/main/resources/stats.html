@@ -1981,13 +1981,20 @@ function streamBlock(s) {
 }
 
 /**
- * THE WORK THAT IS NOT A STREAM — the fold, the stability gate, fitness, the
- * pool, ingest, the healer, the push.
+ * THE WORK THAT IS NOT A STREAM — the url round-up, the fold, the stability
+ * gate, fitness, the pool, ingest, the healer, the push.
  *
  * One line each, and exactly one number: the one that says whether it is
  * getting anywhere. They are here rather than dropped because a stalled fold is
  * not a side quest — an unfolded list downloads the same relay once per url,
  * which is a sync fault that shows up nowhere else on this card.
+ *
+ * The ROUND-UP is here for the sharper version of the same complaint: it is not
+ * a pass and it decides nothing, but every pass waits on it, it walks the whole
+ * store to do its job, and while it did the card said only that the three rows
+ * under it were idle. Five minutes per sweep in which the honest reading of
+ * this card was "the monitor is between passes" and the truth was "the monitor
+ * is working, on the one part of it nothing published".
  *
  * ONE TABLE, TWO CARDS. The rows are split by `splitProcessors` into what the
  * MONITOR decides (which urls may be dialled at all) and what the SYNC does
@@ -2003,6 +2010,7 @@ function streamBlock(s) {
  * none of them is made here.
  */
 const BACKGROUND = [
+  ["aliasSource", "url round-up", "Walks the store for every relay url the streams' sources and the monitor's own block name, drops what an operator excluded and what a signed record calls dead, and hands the rest to the three passes below. Minutes on a live store, at the head of every sweep — and for all of them those three read `idle`."],
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
   ["consistency", "stability gate", "Refuses a url that answers one filter two different ways. Such a relay cannot hold a cursor still, so every cycle re-serves what the last one already took."],
   ["fitness", "fitness", "The monitor's verdict funnel: one measured certificate per relay, signed onto its NIP-66 record. `prime` is the only admitting value, and it is the whole relay list of every stream that selects on it."],
@@ -2266,6 +2274,29 @@ function processorFact(p) {
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;
   }
+  // THE ROUND-UP's own line, and the only row on this card whose numbers are
+  // about the corpus rather than about a verdict over it. Keyed on
+  // `candidates`, which no other row publishes at the top level: the passes
+  // carry theirs per stream, inside `streams[]`.
+  //
+  // It states the derivation's arithmetic in the order it happens —
+  // `sourced = excluded + heldOutDead + candidates` — with the yield LAST,
+  // because that is the number the three rows under it are each a share of and
+  // it is what a reader came to this row for. The two drops are drawn only when
+  // they are non-zero: a router excluding nothing says so by having nothing to
+  // say, where `0 excluded` is a line to read past on every poll forever.
+  if (p.candidates != null) {
+    add(`${fmt(p.sourced ?? p.candidates)} url(s) named`, "sourced");
+    if (p.excluded) add(`${fmt(p.excluded)} excluded`, "excluded");
+    if (p.heldOutDead) add(`${fmt(p.heldOutDead)} held out as dead`, "heldOutDead");
+    add(`${fmt(p.candidates)} handed to the passes`, "candidates");
+    // Not part of the derivation and drawn last for that reason: these are urls
+    // no relay list named this round, which the fold still groups against. The
+    // tree above spends a whole branch on them, so a row that omitted them here
+    // would have the card's mouth and this line disagreeing about the corpus.
+    if (p.recordedOnly) add(`${fmt(p.recordedOnly)} more we hold records about`, "recordedOnly");
+    return cell;
+  }
   const probe = probeProgress(p);
   if (probe) {
     // ONE FACT: how far it got, and how long that took. The verdicts behind it
@@ -2408,7 +2439,7 @@ function fmtDur(sec) {
  * now, with the corpus tree that describes their subject. They were here because they arrive in the same array, and the card
  * asked two questions at once: *is the mirror keeping up* is answered by
  * streams, queue depth and ingest, while *which relays may we dial at all* is
- * answered by four passes on a six-hour clock whose unit is a url and whose
+ * answered by a round-up and three passes on a six-hour clock whose unit is a url and whose
  * output is a signed record. An operator arrives with one of those questions,
  * never both. `splitProcessors` is the rule and it is a partition — nothing is
  * dropped by being sorted.
@@ -2458,14 +2489,14 @@ function syncCard(section) {
 }
 
 /**
- * WHICH RELAYS MAY BE DIALLED AT ALL — the four passes that decide it, and the
- * corpus they decide over.
+ * WHICH RELAYS MAY BE DIALLED AT ALL — the round-up and the three passes that
+ * decide it, and the corpus they decide over.
  *
  * ## Why this is not part of Sync coverage
  *
- * It was, and the card asked two questions at once. These four run on the alias
- * monitor's own clock, nothing about them is configured by a stream, their unit
- * is a RELAY URL rather than an event, and what they produce is a signed
+ * It was, and the card asked two questions at once. These four rows run on the
+ * alias monitor's own clock, nothing about them is configured by a stream, their
+ * unit is a RELAY URL rather than an event, and what they produce is a signed
  * kind-30166 record that outlives this process — the same records the card
  * below looks up one url at a time. Sync coverage answers "is the mirror
  * keeping up"; this answers "what is out there, and how much of it can we
@@ -2502,7 +2533,9 @@ function monitorCard(section) {
     heading.title =
       "What the router has decided about the relay urls it discovers — which are one server wearing several " +
       "addresses, which cannot answer the same question twice, which are graded `prime`, and which are " +
-      "unreachable. Every stream's relay list is what these passes admit; the per-url verdicts they sign are " +
+      "unreachable. The round-up at the top is where those urls come from at all: it walks the store for " +
+      "every url the relay lists name and hands the three passes their candidate set, which is minutes of " +
+      "every sweep. Every stream's relay list is what these passes admit; the per-url verdicts they sign are " +
       "in Monitor verdicts below.";
   }
   card.appendChild(backgroundPanel(rows, true));

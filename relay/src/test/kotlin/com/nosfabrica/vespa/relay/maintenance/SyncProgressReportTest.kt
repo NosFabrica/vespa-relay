@@ -659,6 +659,54 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `the round-up's row keeps its position and the yield it ends with`() {
+        // THE FIVE MINUTES NOTHING PUBLISHED. The derivation walks the store
+        // for every url the relay lists name, and until it had a row of its own
+        // the card said the three passes waiting on it were `idle` — which is
+        // the same thing it says when the monitor is asleep.
+        //
+        // Both halves are checked because they answer different questions and
+        // are carried by different code: `measuring` is where the walk has got
+        // to, allowlisted down to a unit this router can actually produce, and
+        // the counters are what it found, which is what the row still says once
+        // the walk is over.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [
+                   {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
+                    "lastPassAt": 880, "lastPassSec": 300,
+                    "measuring": {"unit": "source", "attempted": 2, "toProbe": 6},
+                    "sourced": 17584, "excluded": 40, "heldOutDead": 832, "candidates": 16712,
+                    "recordedOnly": 4102}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = (out["processors"] as JsonArray)[0].jsonObject
+
+        assertEquals("collecting", row["phase"]!!.jsonPrimitive.content)
+        // A third unit, and the reason it is neither of the other two: how many
+        // urls the walk yields is the thing it is finding out, so a position
+        // counted in them has no denominator until it is over.
+        assertEquals("source", row["measuring"]!!.jsonObject["unit"]!!.jsonPrimitive.content)
+        assertEquals(6L, row["measuring"]!!.jsonObject["toProbe"]!!.jsonPrimitive.long)
+        assertEquals(17_584L, row["sourced"]!!.jsonPrimitive.long)
+        assertEquals(40L, row["excluded"]!!.jsonPrimitive.long)
+        assertEquals(832L, row["heldOutDead"]!!.jsonPrimitive.long)
+        // The yield, which is the number the three rows under this one are each
+        // a share of — and the one the derivation's arithmetic closes on:
+        // `sourced - excluded - heldOutDead`.
+        assertEquals(16_712L, row["candidates"]!!.jsonPrimitive.long)
+        assertEquals(
+            row["sourced"]!!.jsonPrimitive.long - row["excluded"]!!.jsonPrimitive.long - row["heldOutDead"]!!.jsonPrimitive.long,
+            row["candidates"]!!.jsonPrimitive.long,
+            "the row states the derivation's own partition, so it has to close on the wire",
+        )
+        assertEquals(4_102L, row["recordedOnly"]!!.jsonPrimitive.long)
+    }
+
+    @Test
     fun `a rotating stream keeps the pair that is its whole state`() {
         // The row that drew `rotating for 58m` and nothing else. A visit stream
         // has no cycle, no fraction and no legs of its own for the rest of this
@@ -713,7 +761,8 @@ class SyncProgressReportTest {
         // other module and cannot be read from here. Restated rather than
         // imported, and the pin is still worth having: it is the page half that
         // silently stops describing a processor.
-        val processors = listOf("aliasFold", "consistency", "fitness", "visits", "ingest", "heal", "upstreamPush")
+        val processors =
+            listOf("aliasSource", "aliasFold", "consistency", "fitness", "visits", "ingest", "heal", "upstreamPush")
         val unnamed = processors.filterNot { card.contains("[\"$it\", ") }
         assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
     }

@@ -379,7 +379,7 @@ internal object SyncProgressReport {
      * unreadable member costs the object rather than half of it, and the card
      * falls back to the phase word it drew before this existed.
      *
-     * `unit` is validated against the two words the router has, exactly as
+     * `unit` is validated against the three words the router has, exactly as
      * `bottleneck` is. It is not free text like `reason`: the card renders it
      * into a sentence — "604 of 4,728 url(s)" — and a member that lands in
      * prose is one a hand-edited file must not be able to choose.
@@ -753,6 +753,13 @@ internal object SyncProgressReport {
             "sourced",
             "excluded",
             "heldOutDead",
+            // …and the yield, on the alias source's own row: what the
+            // derivation handed the passes, which is the number every count on
+            // the three rows under it is a share of. The same word the per-pass
+            // rows use inside `streams`, because it is the same population —
+            // one measured where it was derived, the other where it was worked
+            // on.
+            "candidates",
             // …and what the streams did NOT name but our own records still
             // know about, which is the rest of the funnel's mouth.
             "recordedOnly",
@@ -829,8 +836,11 @@ internal object SyncProgressReport {
     /** The four words `SyncEngine.bottleneckOf` can produce, and no others. */
     private val BOTTLENECKS = setOf("ingest", "downloads", "upstream", "mixed")
 
-    /** …and the two `Processors.UNIT_URL`/`UNIT_HOST` can, for the same reason. */
-    private val UNITS = setOf("url", "host")
+    /**
+     * …and the three `Processors.UNIT_URL`/`UNIT_HOST`/`UNIT_SOURCE` can, for
+     * the same reason.
+     */
+    private val UNITS = setOf("url", "host", "source")
 
     private val HEALTH_NUMBERS =
         listOf("eventsPerSec", "heapUsedMb", "heapMaxMb", "sockets", "socketCeiling", "servingMs")

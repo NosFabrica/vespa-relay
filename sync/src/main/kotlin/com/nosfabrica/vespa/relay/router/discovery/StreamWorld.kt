@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.router.config.MonitorConfig
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -88,6 +89,12 @@ internal class StreamWorld(
      * the monitor block is then the one place urls enter the system.
      */
     private val monitorConfig: MonitorConfig? = null,
+    /**
+     * Where this derivation reports — its position while it walks, and what it
+     * yielded when it is done. Null in a test that is asserting the numbers
+     * rather than the row.
+     */
+    override val progress: Processors.Handle? = null,
 ) : AliasMonitor.CandidateSource {
     /**
      * The monitor block dressed as a discovery config, which is all
@@ -121,6 +128,21 @@ internal class StreamWorld(
      */
     @Volatile
     var lastDerivation: Derivation = Derivation()
+        private set
+
+    /**
+     * …and whether one has actually RUN, which the numbers above cannot say.
+     *
+     * A fresh [Derivation] and a derivation that found nothing are the same
+     * five zeros, and they are opposite states: the first is a router two
+     * minutes into its boot with the walk still ahead of it, the second is a
+     * store holding no relay lists at all. The alias source's row is drawn from
+     * these counts, so without this it would open every boot claiming `0 url(s)
+     * named` — a measurement nobody has taken, which is the exact reading
+     * "absent is not zero" exists to stop.
+     */
+    @Volatile
+    var derived: Boolean = false
         private set
 
     /**
@@ -165,6 +187,18 @@ internal class StreamWorld(
          * which holds no records and is telling the truth by saying so.
          */
         val recordedOnly: Int = 0,
+        /**
+         * …and what was left for the passes — the derivation's YIELD, and the
+         * one number on this row that every number on the three rows below it
+         * is a share of.
+         *
+         * Published rather than left as `sourced - excluded - heldOutDead`,
+         * though that identity holds and the glossary states it. A reader
+         * subtracting three numbers to find the one they came for is a reader
+         * who cannot tell an arithmetic slip from a small corpus, and the row
+         * that says "this is what the fold was handed" should say it.
+         */
+        val candidates: Int = 0,
     )
 
     /**
@@ -217,13 +251,27 @@ internal class StreamWorld(
      * How many, and out of what, is [lastDerivation].
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
+        // WHAT THIS WALK SET OUT TO DO, declared before the first store read.
+        //
+        // One unit per configured source — see [Processors.UNIT_SOURCE] for why
+        // it cannot be urls. The two record reads that bracket the walk
+        // ([ownDead] above, [ownRecords] below) are deliberately outside the
+        // count: they are two queries against an index rather than a walk of
+        // the store, and folding them in would put a position on the row that
+        // jumps by a third for work nobody is waiting on.
+        progress?.measuring(derivations().size, Processors.UNIT_SOURCE)
         val dead = ownDead()
         val all = LinkedHashSet<NormalizedRelayUrl>()
         // Kept rather than only skipped, so the funnel's first branch divides.
         // An operator who excluded a hundred urls and then asks why the fan-out
         // is a hundred short is asking about a number nothing published.
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        derive("alias source", { it }) { url, kept -> if (kept) all += url else excluded += url }
+        // One tick per source as its walk ends — the sweep's position, and the
+        // only path that reports one: the fast lane runs the same `derive` and
+        // must not move a sweep's row. See the lane's comment in [AliasMonitor].
+        derive("alias source", { it }, onSourceDone = { progress?.attempted() }) { url, kept ->
+            if (kept) all += url else excluded += url
+        }
         // `exclude` is PER STREAM, so a url one stream excludes and another asks
         // for is a candidate — it is dialled, and counting it as excluded would
         // put it on both sides of a partition that has to divide exactly once.
@@ -240,7 +288,9 @@ internal class StreamWorld(
                 excluded = onlyExcluded.size,
                 heldOutDead = all.size - live.size,
                 recordedOnly = recorded.count { it !in all && it !in onlyExcluded },
+                candidates = live.size,
             )
+        derived = true
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
                 (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else "") +
@@ -282,6 +332,7 @@ internal class StreamWorld(
     private suspend fun derive(
         what: String,
         bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
+        onSourceDone: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
         for ((label, discovery) in derivations()) {
@@ -300,6 +351,11 @@ internal class StreamWorld(
                     emptyList()
                 }
             found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+            // AFTER the walk, however it ended — a source whose discovery threw
+            // is behind this derivation exactly as a source that yielded
+            // nothing is, and a position that only moved on success would sit
+            // still through the failure a reader is watching for.
+            onSourceDone()
         }
     }
 

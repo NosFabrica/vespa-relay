@@ -411,7 +411,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                             across streams and probe passes; quartz closes
                             none of its own connections
       StreamWorld.kt        the url universe the monitor measures: every
-                            stream's sources, plus the monitor's own
+                            stream's sources, plus the monitor's own. Reports as
+                            the `aliasSource` processor — the walk is minutes on
+                            a live store and sits at the head of every sweep, so
+                            without a row of its own the card had three passes
+                            reading `idle` while the monitor was working
     progress/             observability
       StreamPhases.kt       per-stream progress reporting, and the snapshot the
                             progress file is written from
@@ -700,7 +704,10 @@ relay/src/main/resources/
                         EVENTS — and last the coverage bars, which are where it
                         has WALKED rather than what it is doing. *Relay monitor*
                         answers "which relays may we dial at all": the corpus
-                        tree, then the alias fold, the stability gate and
+                        tree, then the url round-up (`aliasSource`, the store
+                        walk that derives the candidate set — its own row
+                        because it takes minutes and every pass waits on it),
+                        the alias fold, the stability gate and
                         fitness, whose unit is a URL, whose clock is the
                         monitor's own and whose output is a signed 30166 record
                         — so it sits beside the panel that reads those records
@@ -1126,13 +1133,14 @@ now, and `inFlight` rows carry `pass`.
 **…and a FIFTH member says what is running that is not a stream at all.**
 `processors` (`Processors`, published under `sync.progress.processors` and drawn
 as *Also running* on the coverage card) is the other half of "what is this
-router doing". A stream is the part an operator CONFIGURED; these six run beside
+router doing". A stream is the part an operator CONFIGURED; these run beside
 them with nothing configured about them, and until they were published the only
 trace any of them left was a stderr line on a container whose logs rotate inside
 the hour:
 
 | processor | what it is | how far along it is |
 |---|---|---|
+| `aliasSource` | `StreamWorld.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
