@@ -31,6 +31,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -436,19 +437,18 @@ class AliasFolding(
                                     dialled = true
                                     spent++
                                     taken.incrementAndGet()
-                                    sockets.claim(candidate)
-                                    try {
-                                        probe.leaderPrint(candidate, anchor, onEvent)
-                                    } finally {
-                                        sockets.release(candidate)
-                                    }
+                                    dial(candidate, sockets) { probe.leaderPrint(candidate, anchor, onEvent) }
                                 }
                             if (asked) askedUrls += candidate
                             if (attempt?.spoke == true) spoke += candidate
                             val print = attempt?.leader
-                            // Asked, and it said nothing. It failed EVERY filter,
-                            // so asking it again as a member this pass buys the
-                            // same silence at the price of a dial.
+                            // Asked, and it said nothing. It failed EVERY filter
+                            // — or [dial] ran out its deadline on it — so asking
+                            // it again as a member this pass buys the same
+                            // silence at the price of a dial. PASS-LOCAL and
+                            // never published, which is what makes the deadline
+                            // safe to fold in here: it costs this url its second
+                            // turn in this pass and says nothing about the relay.
                             if (asked && print == null) exhausted += candidate
                             if (print != null) {
                                 // IT ANSWERED, so the search stops here whether
@@ -554,12 +554,7 @@ class AliasFolding(
                                         gate.withPermit {
                                             if (!canDial(url)) return@withPermit
                                             taken.incrementAndGet()
-                                            sockets.claim(url)
-                                            try {
-                                                swept[url] = probe.leaderPrint(url, anchor, onEvent)
-                                            } finally {
-                                                sockets.release(url)
-                                            }
+                                            dial(url, sockets) { probe.leaderPrint(url, anchor, onEvent) }?.let { swept[url] = it }
                                         }
                                     }
                                 }
@@ -657,12 +652,7 @@ class AliasFolding(
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
-                                        sockets.claim(url)
-                                        try {
-                                            probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
-                                        } finally {
-                                            sockets.release(url)
-                                        }
+                                        dial(url, sockets) { probe.fingerprint(url, anchor, lead.kinds, onEvent) }?.let { prints[url] = it }
                                     }
                                 }
                             }
@@ -701,12 +691,7 @@ class AliasFolding(
                                 gate.withPermit {
                                     if (!canDial(leader)) return@withPermit null
                                     taken.incrementAndGet()
-                                    sockets.claim(leader)
-                                    try {
-                                        probe.fingerprint(leader, anchor, lead.kinds, onEvent)
-                                    } finally {
-                                        sockets.release(leader)
-                                    }
+                                    dial(leader, sockets) { probe.fingerprint(leader, anchor, lead.kinds, onEvent) }
                                 }
                             if (again == null || !aliases.reproducible(leaderPrint, again)) {
                                 val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
@@ -969,6 +954,44 @@ class AliasFolding(
     }
 
     /**
+     * ONE DIAL, BOUNDED, REFCOUNTED AND NAMED — every socket this pass opens
+     * goes through here.
+     *
+     * The bound is the reason it exists: the fold used to await each
+     * fingerprint with nothing but the transport's idle window under it, and an
+     * idle window is not a wall clock — see [AliasProbe.deadlineMs] for the two
+     * paths inside quartz's fetch that outlive one, and for what a pass on the
+     * monitor's clock costs when a single url never returns.
+     *
+     * Called INSIDE `gate.withPermit` at every site, never around it: out there
+     * it would be timing the wait for one of [concurrency] permits, which on a
+     * host wearing 55 urls is most of a dial's life and is this pass's own
+     * shape rather than any relay's.
+     *
+     * **Null is "we did not get an answer", which is what every caller already
+     * does with a walk that came back empty-handed** — the group goes
+     * undecided, nothing is written down, and the next pass asks again. No
+     * verdict is ever published off this clock: the deadline is our instrument
+     * giving up, and a `same-as` signed on it would be our timeout published as
+     * a claim about someone else's server.
+     */
+    private suspend fun <T> dial(
+        url: NormalizedRelayUrl,
+        sockets: Sockets,
+        walk: suspend () -> T,
+    ): T? =
+        withTimeoutOrNull(probe.deadlineMs(url)) {
+            progress?.holding(url.url, STAGE_FINGERPRINT)
+            sockets.claim(url)
+            try {
+                walk()
+            } finally {
+                sockets.release(url)
+                progress?.released(url.url)
+            }
+        }
+
+    /**
      * Is this group's host still inside the window a failed pass bought it?
      *
      * Keyed by host, because that is what a group IS — [RelayAliases.unresolved]
@@ -1191,6 +1214,14 @@ class AliasFolding(
          * argument; this constant only serves callers built without one.
          */
         const val DEFAULT_DIAL_CONCURRENCY = MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+
+        /**
+         * What a held url of this pass is doing — see
+         * [Processors.Holding.Held.stage]. One word, because unlike the other
+         * two passes the fold has exactly one step that touches a socket:
+         * everything else it does is store reads and arithmetic.
+         */
+        const val STAGE_FINGERPRINT = "fingerprint"
 
         /**
          * How far down a group's preference order the search for a yardstick

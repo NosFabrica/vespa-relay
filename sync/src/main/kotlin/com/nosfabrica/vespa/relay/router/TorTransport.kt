@@ -144,6 +144,15 @@ data class TorSettings(
  * relay is allowed while ANSWERING. Under `SYNC_TOR_ALL` clearnet urls route
  * through the proxy too and get the same window, for the same reason.
  *
+ * **This is the MONITOR plane's silence budget, and it is not [NEG_IDLE_MS].**
+ * The sync plane's transfers are allowed 30s of silence apiece; a probe gets
+ * `connectionTimeout` (20s) plus a circuit where it needs one. Two planes with
+ * two budgets under similar-sounding names is deliberate rather than drift —
+ * see [NEG_IDLE_MS] for which is sizing what — and a probe pass puts a hard
+ * wall clock on top of this window that no transfer has, because a probe that
+ * never returns holds the roster every stream is built from. See
+ * [AliasProbe.deadlineMs].
+ *
  * What it costs is paid only by hosts that do not answer: a leader that never
  * speaks is asked four times a pass (bare filter then [AliasProbe.FALLBACK_KINDS],
  * each retrying once at the smaller page), so a dead onion group now occupies one

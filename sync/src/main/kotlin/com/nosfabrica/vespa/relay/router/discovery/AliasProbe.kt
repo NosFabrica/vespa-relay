@@ -92,7 +92,62 @@ class AliasProbe(
      * `until` with the same events would otherwise page forever.
      */
     private val maxPages: Int = DEFAULT_MAX_PAGES,
+    /**
+     * How long ONE ask of this url may sit silent — the transport's own window,
+     * carried here so [deadlineMs] can be derived from it rather than guessed
+     * beside it.
+     *
+     * Per url, not per process, for the reason `probeIdleMs` gives: the router
+     * dials over two transports and a hidden service is allowed a circuit on
+     * top of the clearnet budget. A pass that sized its wall clock from a
+     * constant would cut every `.onion` it measured.
+     *
+     * Defaulted so a test with a synthetic [fetch] need not name a budget for a
+     * transport it does not have. [over] passes the real one.
+     */
+    private val idleMs: (NormalizedRelayUrl) -> Long = { DEFAULT_IDLE_MS },
 ) {
+    /**
+     * THE WALL CLOCK ONE URL'S WORK GETS — the bound a probe pass puts around
+     * a job, and the one thing the job's own timeouts do not add up to.
+     *
+     * ## Why an idle window is not a bound
+     *
+     * Every outbound call a probe makes is bounded — the TCP pre-probe at 5s,
+     * the NIP-11 document at 10s, each rung of the ask ladder at [idleMs], one
+     * NEG-OPEN at 10s — and a pass built out of them still hung for 74 minutes
+     * on one url of 12,374, holding the whole fitness pass, the roster and
+     * three dynamic streams behind it. The reason is in quartz's own header for
+     * `fetchAllWithHooks`: `idleTimeoutMs` is *an idle window, not a hard cap*,
+     * "there is no wall-clock ceiling parameter … a hard deadline composes at
+     * the call site". Two paths inside that loop are outside the window by
+     * construction and both are reachable from here:
+     *
+     *  - a relay that never stops sending. The window is armed only when both
+     *    channels are dry, so a relay feeding faster than we drain leaves it
+     *    disarmed forever, and the only thing that ends the fetch is the
+     *    caller's cancellation.
+     *  - the suspending `onEvent` hook, deliberately run outside the timeout
+     *    scope so a stalled write is not cancelled mid-event. This router hands
+     *    those events to ingest, whose queue is bounded and therefore blocks.
+     *
+     * So this is the call-site deadline quartz asks for, and it belongs to the
+     * probe rather than to each pass because it has to be derived from the very
+     * window it is bounding: sized from a constant it would cut every `.onion`
+     * measured, which is exactly the failure `probeIdleMs` exists to prevent.
+     *
+     * ## What a pass does when it fires, and why that is not a verdict
+     *
+     * NOTHING IS PUBLISHED ABOUT A URL THIS CUT. A deadline says our instrument
+     * gave up, not that the relay is slow, dead or unreadable — the same rule
+     * [ConsistencyPass.Unmeasured.FAILED] already carries for a probe that
+     * threw. The url is counted, named, and measured again next pass. That is
+     * what makes the number below safe to set close: the cost of cutting a
+     * relay that would have answered is one more pass, and the cost of not
+     * cutting one is the whole mirror.
+     */
+    fun deadlineMs(url: NormalizedRelayUrl): Long = WINDOWS_PER_URL * idleMs(url)
+
     /**
      * One page, and the one thing about it that ends a walk early.
      *
@@ -412,6 +467,34 @@ class AliasProbe(
         const val DEFAULT_MAX_PAGES = 32
 
         /**
+         * Idle windows one url's job may legitimately spend, and the whole
+         * sizing of [deadlineMs].
+         *
+         * Counted from what the job actually asks for rather than from
+         * [DEFAULT_MAX_PAGES], which is a spin guard and not a budget. The
+         * fitness pass is the widest of the three: three rungs, each a walk
+         * that reaches its target in one page at the default size and is
+         * retried once at the smaller one, plus a NEG-OPEN. Call it eight asks,
+         * and the three fixed steps beside them (5s pre-probe, 10s document,
+         * 10s NEG-OPEN) fit inside the slack of the remaining four.
+         *
+         * At the default `connectionTimeout = 20` that is four minutes, against
+         * a job whose own bounds sum to about ninety seconds. A relay answering
+         * anything at all never approaches it; the hang this exists for sat at
+         * 74 minutes. Through Tor it scales with the circuit budget, which is
+         * the point of deriving it per url.
+         */
+        const val WINDOWS_PER_URL = 12
+
+        /**
+         * The window assumed when nobody named one — a test's synthetic
+         * transport, and nothing the router builds. [over] always passes the
+         * real one. Quartz's own `fetchAllWithHooks` default, for the same
+         * reason: it is the number that applies when no caller has an opinion.
+         */
+        const val DEFAULT_IDLE_MS = 8_000L
+
+        /**
          * How far behind the clock an anchor sits: one minute.
          *
          * A shared anchor already stops the window sliding, but anchoring it at
@@ -532,6 +615,10 @@ class AliasProbe(
                     )
                 },
                 target = target,
+                // The same lambda the fetch above is given, held so
+                // [deadlineMs] is a multiple of the window it bounds rather
+                // than a second number kept in step with it by hand.
+                idleMs = idleMs,
             )
 
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */

@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import {
   HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, MONITOR_PROCESSORS, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  isLive, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors,
+  heldOf, isLive, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors,
 } from "../../relay/src/main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -255,6 +255,53 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(measuringOf(gate({ unit: "host", attempted: 37, toProbe: 214 })).unit, "host");
   assert.equal(measuringOf(gate({ attempted: 1, toProbe: 2 })).unit, "url", "a row with no unit still renders a sentence");
   ok("the pass in flight publishes both halves of its position, and no estimate it has not earned");
+}
+
+// ── a pass that has stopped, and the url that stopped it ────────────────────
+{
+  // THE BUG: a fitness pass sat at `12,373 of 12,374, ~0s left` for 74 minutes
+  // on one wedged url. The estimate was correct arithmetic — one unit at the
+  // rate so far rounds to nothing — so every number on the row agreed with
+  // every other one, and nothing published said the pass had stopped. Nor was
+  // the url nameable: not from this document, not from the log, not from a
+  // thread dump, since a suspended coroutine has no stack frame.
+  const stalled = measuringOf({
+    name: "fitness", phase: MEASURING,
+    measuring: { unit: "url", attempted: 12373, toProbe: 12374, etaSec: 0, quietForSec: 4454 },
+  });
+  assert.equal(stalled.etaSec, 0, "the estimate is still what the router sent");
+  assert.equal(stalled.quietForSec, 4454, "…and this is the member that separates the two readings");
+
+  // Absent is a router that predates the member, which is "not known" — never
+  // a pass that just moved. A zero here would read as the healthy case.
+  assert.equal(measuringOf({ measuring: { unit: "url", attempted: 6, toProbe: 22 } }).quietForSec, null);
+  assert.equal(measuringOf({ measuring: { unit: "url", attempted: 6, toProbe: 22, quietForSec: 0 } }).quietForSec, 0);
+
+  const held = (n, sec, over = {}) => ({ relay: `wss://r${n}.example/`, heldForSec: sec, stage: "ask ladder", ...over });
+
+  // The router sorts longest-held FIRST — the reverse of a stream's legs,
+  // because a probe leg is bounded by a deadline and a long one is the anomaly
+  // — so the card can draw the front of the list and be drawing the answer.
+  const rows = heldOf({ relays: [held(1, 4454), held(2, 12)], omitted: 0 }).rows;
+  assert.equal(rows[0].relay, "wss://r1.example/");
+  assert.equal(rows[0].heldForSec, 4454);
+  assert.equal(rows[0].stage, "ask ladder");
+  // The scheme goes and nothing else does: a truncated relay url is not a
+  // relay url, and it is the thing being looked up.
+  assert.equal(heldOf({ relays: [held(1, 9, { relay: "wss://a.example/path" })] }).rows[0].short, "a.example/path");
+
+  // A step the page has not been taught reads as "not known", never as a step.
+  assert.equal(heldOf({ relays: [held(1, 9, { stage: undefined })] }).rows[0].stage, null);
+
+  // Cut, and it says so — unlike a stream's legs, which are published whole.
+  // A probe pass at the monitor's default dial concurrency holds five hundred
+  // urls, and a list that hides its truncation reads as the whole answer.
+  const many = heldOf({ relays: Array.from({ length: 9 }, (_, i) => held(i, 30)), omitted: 4 }, 3);
+  assert.equal(many.rows.length, 3);
+  assert.equal(many.more, 10, "what the router left out plus what this cut");
+  assert.deepEqual(heldOf(null), { rows: [], more: 0 });
+  assert.deepEqual(heldOf({ relays: [] }), { rows: [], more: 0 }, "a pass holding nothing draws nothing");
+  ok("a stalled pass is told from one about to finish, and the url holding it is named");
 }
 
 // ── the monitor's work against the sync's ───────────────────────────────────

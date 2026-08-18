@@ -52,6 +52,29 @@ export const STUCK_LEG_SEC = 600;
 export const IN_FLIGHT_SHOWN = Infinity;
 
 /**
+ * Past this, a probe pass is not slow, it has stopped.
+ *
+ * Measured against what a unit costs rather than borrowed from `STUCK_LEG_SEC`:
+ * a probe job is bounded by the monitor's per-url deadline — twelve idle
+ * windows, four minutes at the default `connectionTimeout = 20` — so a pass
+ * that has finished nothing in five is a pass whose remaining jobs are all
+ * outliving a bound that is supposed to end them. Under it the number is
+ * ordinary and the line is already long, which is why it is drawn only past it.
+ */
+export const STUCK_PASS_SEC = 300;
+
+/**
+ * How many held urls a processor's line names.
+ *
+ * Not `IN_FLIGHT_SHOWN`. That one is `Infinity` because a stream's legs are
+ * bounded by its transfer pool and every row is interesting; a probe pass at
+ * the monitor's default dial concurrency is holding five hundred urls, of which
+ * 499 are ordinary dials a second old. The router sorts them longest-held
+ * first, so the few at the front are the answer and `more` discloses the rest.
+ */
+export const HELD_SHOWN = 3;
+
+/**
  * How many host names a monitor reason puts in its hover title.
  *
  * The one cut on this page that is a PRESENTATION cut rather than a data one,
@@ -214,7 +237,43 @@ export function measuringOf(p) {
     // once the last one has, and both absences are "no estimate" — where a
     // zero would be a claim that the pass is done.
     etaSec: m.etaSec ?? null,
+    // HOW LONG SINCE A UNIT LAST ENDED, and the reason it is here rather than
+    // inferred: `etaSec` reads 0 both for a pass one url from done and for a
+    // pass whose last url has wedged, so the estimate alone cannot tell them
+    // apart. `??` again — absent is a router that predates the member, not a
+    // pass that just moved.
+    quietForSec: m.quietForSec ?? null,
   };
+}
+
+/**
+ * WHICH URLS A PROBE PASS IS HOLDING — `legsOf` for a job that is a ladder
+ * rather than a transfer.
+ *
+ * Its own reader rather than a second caller of that one, because the rows are
+ * a different shape and the difference is the point: a stream leg is decided by
+ * whether events are still arriving, and a probe leg has no events to speak of
+ * and is decided by which STEP it is on. Reusing `legsOf` would draw `0 events,
+ * quiet 0s` beside every row, which reads as a stalled transfer.
+ *
+ * The router sorts LONGEST-HELD FIRST — the reverse of a stream's legs, because
+ * a probe leg is bounded by a deadline and a long one is the anomaly — so the
+ * first row is the one to draw when there is room for one.
+ */
+export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
+  const all = inFlight?.relays || [];
+  const rows = all.slice(0, limit).map((r) => ({
+    relay: r.relay,
+    // The scheme is dropped and nothing else is, exactly as in `legsOf`: a
+    // truncated relay url is not a relay url, and it is the thing being
+    // looked up.
+    short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+    heldForSec: r.heldForSec || 0,
+    // Null on a router that predates the member, which reads as "not known"
+    // and never as a step.
+    stage: r.stage || null,
+  }));
+  return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
 }
 
 /**

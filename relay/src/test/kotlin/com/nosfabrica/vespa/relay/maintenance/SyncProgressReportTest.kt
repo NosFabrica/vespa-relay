@@ -659,6 +659,58 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `a pass republishes when a unit last landed, and which urls it is holding`() {
+        // The pair that made a 74-minute stall readable. `etaSec` reads 0 both
+        // for a pass one url from done and for a pass whose last url has
+        // wedged, and the url doing the holding was not nameable from this
+        // document at all — so one member says the pass has stopped and the
+        // other says which relay stopped it.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [
+                   {"name": "fitness", "phase": "measuring",
+                    "measuring": {"unit": "url", "attempted": 12373, "toProbe": 12374, "etaSec": 0, "quietForSec": 4454},
+                    "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454, "stage": "ask ladder",
+                                             "invented": 3},
+                                            {"heldForSec": 12}],
+                                 "omitted": 7}},
+                   {"name": "consistency", "phase": "measuring",
+                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22}},
+                   {"name": "ingest", "phase": "running", "queued": 12}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val rows = out["processors"] as JsonArray
+
+        assertEquals(
+            4_454L,
+            rows[0]
+                .jsonObject["measuring"]!!
+                .jsonObject["quietForSec"]!!
+                .jsonPrimitive.long,
+        )
+        assertNull(
+            rows[1].jsonObject["measuring"]!!.jsonObject["quietForSec"],
+            "absent is a router that predates the member, and a position without it is still a position",
+        )
+
+        val held = rows[0].jsonObject["inFlight"]!!.jsonObject
+        val relays = held["relays"] as JsonArray
+        assertEquals(1, relays.size, "a row that names no url says nothing and cannot be looked up")
+        assertEquals("wss://wedged.example/", relays[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(4_454L, relays[0].jsonObject["heldForSec"]!!.jsonPrimitive.long)
+        assertEquals("ask ladder", relays[0].jsonObject["stage"]!!.jsonPrimitive.content)
+        assertNull(relays[0].jsonObject["invented"], "a member this side does not name is not passed through")
+        // The unreadable row is COUNTED rather than dropped silently, which is
+        // the whole contract `omitted` carries everywhere else in this object.
+        assertEquals(8L, held["omitted"]!!.jsonPrimitive.long)
+
+        assertNull(rows[2].jsonObject["inFlight"], "a processor holding nothing publishes no list")
+    }
+
+    @Test
     fun `a rotating stream keeps the pair that is its whole state`() {
         // The row that drew `rotating for 58m` and nothing else. A visit stream
         // has no cycle, no fraction and no legs of its own for the rest of this

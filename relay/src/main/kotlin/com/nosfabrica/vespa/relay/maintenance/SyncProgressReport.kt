@@ -354,6 +354,7 @@ internal object SyncProgressReport {
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
             measuring(o["measuring"] as? JsonObject)?.let { put("measuring", it) }
+            heldRelays(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
             for (counter in COUNTERS) (num(o[counter]) ?: LEGACY_COUNTERS[counter]?.let { num(o[it]) })?.let { put(counter, it) }
             rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
             // Uncapped for the same reason as the processor list itself: these
@@ -394,6 +395,56 @@ internal object SyncProgressReport {
             put("attempted", attempted)
             put("toProbe", toProbe)
             num(o["etaSec"])?.let { put("etaSec", it) }
+            // The one member here that may be absent without costing the
+            // object. `attempted`/`toProbe` are the position and mean nothing
+            // apart; this is a second reading BESIDE it, and a router that
+            // predates it should still draw a position rather than none.
+            num(o["quietForSec"])?.let { put("quietForSec", it) }
+        }
+    }
+
+    /**
+     * WHICH URLS A PROBE PASS IS HOLDING, rebuilt row by row.
+     *
+     * Its own reader rather than [inFlight]'s, because it is its own shape: a
+     * stream leg is a transfer and carries three clocks about delivery, a probe
+     * leg is a ladder and carries one clock and the step it is on. Sharing the
+     * reader would mean defaulting `events` and `quietForSec` to zero for every
+     * row, which is the manufactured-number failure the router side refuses at
+     * source.
+     *
+     * Same contract as every other list here: bounded a second time on this
+     * side rather than trusting the router bounded it, unreadable rows counted
+     * rather than dropped silently, and `omitted` carrying whatever either side
+     * left out.
+     */
+    private fun heldRelays(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        val kept = rows.take(MAX_HELD_ROWS)
+        var unreadable = 0
+        return buildJsonObject {
+            putJsonArray("relays") {
+                for (row in kept) {
+                    val relay =
+                        text(row["relay"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
+                    add(
+                        buildJsonObject {
+                            put("relay", relay)
+                            put("heldForSec", num(row["heldForSec"]) ?: 0)
+                            // Copied as written and never defaulted: a router
+                            // that names no step says nothing, which reads as
+                            // "not known" rather than as a wrong step.
+                            text(row["stage"])?.let { put("stage", it) }
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + unreadable + (rows.size - kept.size))
         }
     }
 
@@ -891,6 +942,17 @@ internal object SyncProgressReport {
      */
     private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
+
+    /**
+     * Held urls kept per processor, matching `Processors.MAX_HELD_RELAYS`.
+     *
+     * The two move together for the same reason [MAX_UNDECIDED_ROWS] does, and
+     * cutting below the router costs less here: the rows are sorted
+     * longest-held first, so what a short bound drops is the ordinary end of
+     * the list rather than the wedged leg the list exists for. `omitted` still
+     * carries whatever either side left out.
+     */
+    private const val MAX_HELD_ROWS = 20
 
     /**
      * Named hosts kept under one reason, matching `Processors.MAX_UNDECIDED_EXAMPLES`.
