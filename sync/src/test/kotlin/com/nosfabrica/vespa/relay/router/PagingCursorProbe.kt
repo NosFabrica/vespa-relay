@@ -48,7 +48,8 @@ import kotlin.test.Test
  * moving at all. It was written only from `onNewPage`, which fires at page
  * BOUNDARIES, so a leg inside its first page had reported nothing and sat at the
  * second the walk opened at. On the live `/stats.json` that started this, 38 of
- * 40 legs marked `doing: paging` published no cursor at all.
+ * 40 legs marked `doing: paging` (the word is `catching up (paging)` now)
+ * published no cursor at all.
  *
  * That gap cannot be measured hermetically. Its size is a property of REAL
  * relays — how long a first page takes, how many events it carries, whether the

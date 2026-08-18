@@ -158,6 +158,13 @@ class InFlight(
          * stopped delivering). [transferringForSec] separates the first two from
          * the rest; nothing separated the last two. Null before a leg reaches a
          * stage worth the word.
+         *
+         * A working leg's word names the JOB and then the TRANSPORT — `catching
+         * up (paging)`, `auditing history (negentropy)` — because neither
+         * implies the other: the audit is the full-past pass, whatever it uses
+         * to download with, and an audit does page the windows a peer will not
+         * reconcile. See `VisitPool.STAGE_PAGING` and its neighbours for the
+         * pool's own set.
          */
         val stage: String? = null,
         /**
@@ -168,7 +175,7 @@ class InFlight(
          * publishing the window's `until` here read as `back to <today>` for
          * the whole of a sweep with years still to compare.
          *
-         * [doing] `paging` beside a large [quietForSec] is two legs that look
+         * [doing] `catching up (paging)` beside a large [quietForSec] is two legs that look
          * identical here: one deep in a real backlog and one whose cursor has
          * stopped. Read twice, this separates them. The stream's `reached` cannot
          * — it is the MINIMUM over every live walk, one date describing the

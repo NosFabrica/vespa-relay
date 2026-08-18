@@ -918,13 +918,29 @@ internal class VisitPool(
         const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
 
         /**
-         * The visit's two stages worth a word, in the in-flight rows' `doing`
-         * column. Constants because the `auditing` gauge counts rows by the
-         * audit stage — a reworded string there would silently zero the gauge.
+         * The visit's stages worth a word, in the in-flight rows' `doing`
+         * column. Two independent axes, and each word names both:
+         *
+         *  - **What for.** CATCHING UP is everything new since the band's last
+         *    pass; AUDITING is the whole past re-checked on the `auditSeconds`
+         *    clock, whose purpose is to find what a catch-up never saw.
+         *  - **How.** Paging walks a REQ newest-first; negentropy compares set
+         *    reconciliation windows and downloads only the difference.
+         *
+         * They do not imply each other, which is the whole reason the words
+         * carry both: negentropy is not "the audit" — an audit can page (a
+         * window the peer will not reconcile is drained over REQ inside the
+         * sweep, and a static stream backfills either way), and a catch-up
+         * could reconcile. This pool happens to page its catch-up and
+         * reconcile its audits, and a reader must be able to see that rather
+         * than infer it from the transport.
+         *
+         * Constants because the `auditing` gauge counts rows by the two audit
+         * stages — a reworded string there would silently zero the gauge.
          */
-        const val STAGE_PAGING = "paging"
+        const val STAGE_PAGING = "catching up (paging)"
         const val STAGE_AUDITING = "auditing history (negentropy)"
-        const val STAGE_RETRACTING = "reconciling the provider's own records (negentropy)"
+        const val STAGE_RETRACTING = "auditing the provider's own records (negentropy)"
 
         /**
          * Held tails, the pool's steady-state socket count — `tailBudget` in

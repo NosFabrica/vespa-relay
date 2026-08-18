@@ -69,7 +69,7 @@ import java.nio.file.StandardCopyOption
  *       "phaseForSec": 412,
  *       "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
  *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
- *                                "doing": "paging", "pagingUntil": 1689857148}],
+ *                                "doing": "catching up (paging)", "pagingUntil": 1689857148}],
  *                    "omitted": 118},
  *       "cycle": {
  *         "number": 12, "owner": "dynamic", "startedAt": 1769999000, "outcome": "running",

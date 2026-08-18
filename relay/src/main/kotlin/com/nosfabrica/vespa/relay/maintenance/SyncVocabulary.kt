@@ -269,7 +269,14 @@ internal object SyncVocabulary {
                     "it is reconciling, where a long silence is negentropy computing a difference; or it is paging, " +
                     "where the same silence is a walk that has stopped delivering. `transferringForSec` separates " +
                     "the first two from the rest and nothing separated the last two. Absent until a leg reaches a " +
-                    "stage worth the word.",
+                    "stage worth the word. A working leg's word names TWO things, because they do not imply each " +
+                    "other: what for — `catching up` is everything new since this relay's last pass, `auditing` is " +
+                    "the whole past re-checked on the stream's `auditSeconds` clock to find what no catch-up ever " +
+                    "saw — and, in the bracket, how: `paging` walks a REQ newest-first, `negentropy` compares " +
+                    "reconciliation windows and downloads only the difference. Negentropy is NOT a synonym for the " +
+                    "audit and paging is not a synonym for the catch-up: an audit pages the windows a peer will not " +
+                    "reconcile, and a static stream backfills either way. This pool pages its catch-up and " +
+                    "reconciles its audits, which is a fact about the pool and not about the words.",
             )
             put(
                 "pagingUntil",
@@ -280,7 +287,7 @@ internal object SyncVocabulary {
                     "took — every fresh leg reporting `back to <today>` whether it was streaming a backlog or " +
                     "receiving nothing at all. It now moves with the events, so a leg that has been running for " +
                     "minutes and still names its own start date has received nothing in that window. " +
-                    "`doing: paging` beside a long `quietForSec` is two different legs from here: one deep in a " +
+                    "`doing: catching up (paging)` beside a long `quietForSec` is two different legs from here: one deep in a " +
                     "real backlog and working its way down, and one whose cursor is not moving at all. Read this " +
                     "twice and they separate — it either advanced or it did not. The stream's own `reached` cannot " +
                     "answer it, being the MINIMUM over every live walk: one date describing the deepest leg, while " +
@@ -957,7 +964,9 @@ internal object SyncVocabulary {
                 "Audits RUNNING right now — the gauge beside `auditsRun`'s odometer. A deep history's audit " +
                     "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
                     "not be told from a catch-up. The relay under audit is named in its stream's in-flight " +
-                    "rows, stage `auditing history (negentropy)`, with the window it has reached.",
+                    "rows, stage `auditing history (negentropy)` — or `auditing the provider's own records " +
+                    "(negentropy)` for the retraction comparison, which is the same clock and the same full-past " +
+                    "sweep — with how far BACK it has reached.",
             )
             put(
                 "auditsRun",
