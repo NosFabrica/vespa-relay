@@ -326,7 +326,7 @@ class FitnessPass(
                         "guard). A network does not go dark in one pass — this router could not dial. " +
                         "${outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
                 )
-                report(label, candidates.size, emptyMap(), startedMs, abandonedCount.get(), abandoned, unmeasured.size)
+                report(label, candidates.size, emptyMap(), startedMs, abandonedCount.get(), abandoned, unmeasured.size, downloaded.get())
                 return downloaded.get()
             }
 
@@ -352,6 +352,7 @@ class FitnessPass(
                 abandonedCount.get(),
                 abandoned,
                 unmeasured.size,
+                downloaded.get(),
             )
         } finally {
             progress.finish()
@@ -662,10 +663,22 @@ class FitnessPass(
          * read as a pass that found a clean partition.
          */
         unmeasuredCount: Int,
+        /**
+         * How many events the dials pulled down on the way to these verdicts.
+         *
+         * REPORTED, because it was the monitor plane's largest effect on the
+         * system and nothing said it out loud: the pass hands every event it
+         * receives to ingest, so this number is what the sweep wrote into the
+         * store to decide "does it answer" — and everything it writes makes the
+         * next sweep's reads slower, the candidate derivation's projection
+         * included. See [AliasProbe.over]'s `page`.
+         */
+        downloadedCount: Int,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
-            "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts",
+            "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts" +
+                "; $downloadedCount event(s) downloaded",
         )
         // ON ITS OWN LINE, and only when there were any. These urls carry no
         // verdict at all, so they are absent from the counts above by
