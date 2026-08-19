@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -92,6 +94,87 @@ class VisitQueueTest {
                     assertEquals(3, visits.get())
                 }
             } finally {
+                scope.cancel()
+            }
+        }
+
+    /**
+     * **THE TIMER THAT LOST ITS SLOT USED TO BE LEAKED, NOT CANCELLED.**
+     *
+     * `armRevisit` builds the timer with `scope.launch(start = LAZY)` before
+     * claiming the url's slot, and deliberately so — the body clears its own
+     * entry, so a job that could run before the map knew about it would clear a
+     * successor's. But `launch` parents the job at CREATION; LAZY defers only
+     * the body. The loser of `putIfAbsent` was then dropped on the floor: never
+     * started, never cancelled, and an incomplete child of a scope that lives
+     * as long as the router.
+     *
+     * The race is staged rather than hoped for, in this class's usual way.
+     * `revisitDelayMs` is the caller's lambda and runs INSIDE `armRevisit`
+     * before the slot is claimed, so blocking the first call holds one worker
+     * exactly there while the other arms the same url and wins.
+     */
+    @Test
+    fun `a revisit timer that loses the slot is cancelled, not left parented forever`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val q = VisitQueue(scope)
+            val entered = Channel<Unit>(Channel.UNLIMITED)
+            val inArmRevisit = Channel<Unit>(Channel.UNLIMITED)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val armCalls = AtomicInteger()
+            repeat(2) {
+                scope.launch {
+                    q.visitLoop(
+                        stillWanted = { true },
+                        revisitDelayMs = {
+                            // The FIRST worker to finish parks here, inside
+                            // armRevisit and before the slot is claimed.
+                            if (armCalls.incrementAndGet() == 1) {
+                                inArmRevisit.trySend(Unit)
+                                release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                            }
+                            3_600_000L
+                        },
+                    ) { entered.send(Unit) }
+                }
+            }
+            try {
+                withTimeout(20_000) {
+                    q.offer(url)
+                    entered.receive()
+                    // Worker A is now held inside armRevisit with no slot taken.
+                    inArmRevisit.receive()
+
+                    // Worker B takes the whole url through a visit and arms it,
+                    // winning the slot A is about to ask for.
+                    q.offer(url)
+                    entered.receive()
+                    while (armCalls.get() < 2) delay(10)
+                    delay(100)
+
+                    // …and now A asks, and loses.
+                    release.countDown()
+                    delay(300)
+
+                    // Two worker loops plus the ONE armed timer that won. The
+                    // loser must not still be here: before the fix this counted
+                    // four, and grew by one for every lost race the router ran.
+                    // NOT `isActive`, which is the trap this assertion fell
+                    // into first: a LAZY job that was never started is in the
+                    // New state, so `isActive` is false for it and the leak is
+                    // exactly what such a filter hides. `isCompleted` is the
+                    // question — a cancelled job reaches it, an abandoned one
+                    // never does.
+                    val children = scope.coroutineContext[Job]!!.children.count { !it.isCompleted }
+                    assertEquals(
+                        3,
+                        children,
+                        "the timer that lost the slot is still parented to the scope — one leaked Job per lost race",
+                    )
+                }
+            } finally {
+                release.countDown()
                 scope.cancel()
             }
         }

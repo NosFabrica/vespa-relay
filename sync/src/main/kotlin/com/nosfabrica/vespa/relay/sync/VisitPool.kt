@@ -557,6 +557,18 @@ internal class VisitPool(
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             ongoingVisit.stage = STAGE_PAGING
+            // PER LEG, like the three locals above it — and it is on the shared
+            // visit object only because the status row reads it live.
+            //
+            // It only ever DECREASES (`event.createdAt < pagingUntil` is the
+            // guard that assigns it), and one visit serves every stream's asks
+            // on that relay in turn, each with its own legs. So once any leg
+            // walked deep, every later leg's events were newer than the value
+            // and the guard never fired again: the in-flight row went on
+            // reporting the deepest point of an EARLIER stream's walk beside
+            // `stream`, which IS updated per ask. Two facts from different legs
+            // on one line, and the older one wins.
+            ongoingVisit.pagingUntil = null
             val onEvent: suspend (Event) -> Unit = { event ->
                 arrived(url, ongoingVisit)
                 // Newest-first is the walk's own order, so the oldest event
