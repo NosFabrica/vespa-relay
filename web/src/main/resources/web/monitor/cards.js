@@ -11,10 +11,10 @@
 // The rows come from the monitor's own `Processors` now, so nothing sorts them
 // by name at render time.
 
-import { ago, cardHead, el, fmt, isoOf, short, shownOf } from "/web/shared/page.js";
-import { backgroundPanel, setTerms } from "/web/shared/processors.js";
-import { Relay } from "/web/shared/relay.js";
-import { MONITOR_KIND, PRIME, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
+import { ago, cardHead, el, fmt, isoOf, short, shownOf } from "../shared/page.js";
+import { backgroundPanel, setTerms } from "../shared/processors.js";
+import { Relay } from "../shared/relay.js";
+import { MONITOR_KIND, PRIME, groupByHost, summarise, walkRecords } from "../shared/verdicts.js";
 
 /**
  * WHICH RELAYS MAY BE DIALLED AT ALL — the round-up and the three passes that

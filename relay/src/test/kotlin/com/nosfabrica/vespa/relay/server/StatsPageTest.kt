@@ -107,8 +107,14 @@ class StatsPageTest {
 
             // Its one import must actually resolve — the kind names come from
             // the search UI's registry so a second table cannot go stale.
-            for (spec in Regex("""from "(/web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
-                assertNotNull(WebAssets.get(spec.removePrefix("/web/")), "$spec is imported but not servable")
+            // The specifiers are document-RELATIVE — `./web/…` — so this one
+            // page survives being mounted behind a path prefix; see its head.
+            // Matched as that literal spelling: an absolute `/web/…` would be
+            // asked of the host root wherever the page was mounted, and on a
+            // deployment where the relay sits there it is answered, with the
+            // relay's copy of the same file name.
+            for (spec in Regex("""from "(\./web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
+                assertNotNull(WebAssets.get(spec.removePrefix("./web/")), "$spec is imported but not servable")
             }
         }
 

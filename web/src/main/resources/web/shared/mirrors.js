@@ -23,8 +23,16 @@
 // actively edited, and a JS copy would drift silently — in the direction of the
 // same wrong number.
 
-/** Where the relay publishes what it holds. Same origin, public, ETag'd. */
-const STATS_URL = "/stats.json";
+/**
+ * Where the relay publishes what it holds. Same origin, public, ETag'd.
+ *
+ * Document-RELATIVE, like every other reference a page in `:web` makes, so a
+ * page mounted behind a path prefix asks its OWN service rather than whatever
+ * sits at the host root. On the search UI — the only reader today — this
+ * resolves to `/stats.json` either way: that page is served at `/` and at
+ * `/npub1…`, and both have the root as their base directory.
+ */
+const STATS_URL = "stats.json";
 
 /**
  * The kind bound for a count against this relay, out of a `/stats.json`

@@ -109,8 +109,8 @@ class RelayIconTest {
         // The half that would silently do nothing: Chrome, Firefox and Edge all
         // prefer an SVG icon, so an override left beside the built-in one loses
         // everywhere except Safari.
-        assertFalse(themed.contains("/web/favicon.svg"), "the built-in svg must be gone, not merely outnumbered")
-        assertFalse(themed.contains("/web/favicon.ico"))
+        assertFalse(themed.contains("web/favicon.svg"), "the built-in svg must be gone, not merely outnumbered")
+        assertFalse(themed.contains("web/favicon.ico"))
         // Nothing else about the page moved.
         assertEquals(html.lines().size - 1, themed.lines().size, "exactly one line fewer")
         assertTrue(themed.contains("<title>SearchOverTrust</title>"))
@@ -131,16 +131,16 @@ class RelayIconTest {
 
     @Test
     fun `a page re-themes when the icon moves, and keeps its identity when it does not`() {
-        val page = IconedPage("<head>\n<link rel=\"icon\" href=\"/web/favicon.svg\" />\n</head>\n", null)
+        val page = IconedPage("<head>\n<link rel=\"icon\" href=\"./web/favicon.svg\" />\n</head>\n", null)
         val before = page.page
-        assertTrue(before.html.contains("/web/favicon.svg"))
+        assertTrue(before.html.contains("./web/favicon.svg"))
 
         page.icon(null)
         assertSame(before, page.page, "an rpc that changed something else must not re-hash 25KB of markup")
 
         page.icon("https://cdn.example/logo.png")
         assertTrue(page.page.html.contains("https://cdn.example/logo.png"))
-        assertFalse(page.page.html.contains("/web/favicon.svg"))
+        assertFalse(page.page.html.contains("./web/favicon.svg"))
         // The etag has to move with it, or a reader who already has the page
         // keeps the old icon until the cache expires — which for a `no-cache`
         // page is never.

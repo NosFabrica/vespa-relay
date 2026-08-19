@@ -123,10 +123,14 @@ const bare = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: 
   assert.equal(await readMirrorScope(async () => null), null);
 
   // It asks this relay, not the reader's write relay — the kind list is a fact
-  // about the mirror and nobody else can state it.
+  // about the mirror and nobody else can state it. Document-relative, which on
+  // the page that reads it (served at `/` and at `/npub1…`, both with the root
+  // as their base directory) is the same url and, on a page mounted behind a
+  // path prefix, is the difference between this service's document and
+  // whatever answers at the host root — see paths.test.mjs.
   let asked = null;
   await readMirrorScope(async (url) => { asked = url; return { ok: true, json: async () => doc({ kinds: [1] }) }; });
-  assert.equal(asked, "/stats.json");
+  assert.equal(asked, "stats.json");
   ok("the scope is read from this relay, and every failure to read it is null");
 }
 

@@ -22,9 +22,18 @@
   and 48 rendered separately. The .ico ALSO answers /favicon.ico — the path a
   browser guesses when it is showing something that is not this markup, which
   here is every JSON endpoint and every 404.
+
+  Document-RELATIVE, like every asset reference this page makes and every one
+  the status page makes — see stats.html's head for the reasoning and for the
+  two properties that make it safe there. This page is served at `/` and at
+  `/npub1…`, and the root is the base directory of both, so the two spellings
+  resolve to the same url on every route that exists. Note that being relative
+  does not make THIS page prefix-mountable: it is a SPA whose history writes are
+  anchored at the root by construction (`currentUrl` returns `"/" + qs`), so a
+  prefix would survive the first load and be lost by the first navigation.
 -->
-<link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
-<link rel="icon" href="/web/favicon.ico" sizes="16x16 32x32 48x48" />
+<link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
 <!--
   The SearchOverTrust UI: no build step, no third-party code, and NO http API —
   this page is a tiny Nostr client. It opens a WebSocket to the very server that
@@ -325,44 +334,44 @@
   still runs it after the DOM is parsed, which is what app.js's top-level
   getElementById calls require.
 -->
-<link rel="modulepreload" href="/web/cards.js" />
-<link rel="modulepreload" href="/web/cards/apps.js" />
-<link rel="modulepreload" href="/web/cards/article.js" />
-<link rel="modulepreload" href="/web/cards/base.js" />
-<link rel="modulepreload" href="/web/cards/code.js" />
-<link rel="modulepreload" href="/web/cards/generic.js" />
-<link rel="modulepreload" href="/web/cards/lists.js" />
-<link rel="modulepreload" href="/web/cards/live.js" />
-<link rel="modulepreload" href="/web/cards/market.js" />
-<link rel="modulepreload" href="/web/cards/media.js" />
-<link rel="modulepreload" href="/web/cards/note.js" />
-<link rel="modulepreload" href="/web/cards/people.js" />
-<link rel="modulepreload" href="/web/cards/profile.js" />
-<link rel="modulepreload" href="/web/cards/relays.js" />
-<link rel="modulepreload" href="/web/cards/social.js" />
-<link rel="modulepreload" href="/web/entity.js" />
-<link rel="modulepreload" href="/web/feed.js" />
-<link rel="modulepreload" href="/web/readiness.js" />
-<link rel="modulepreload" href="/web/related.js" />
-<link rel="modulepreload" href="/web/searchfield.js" />
-<link rel="modulepreload" href="/web/shared/avatar.js" />
-<link rel="modulepreload" href="/web/shared/calendar.js" />
-<link rel="modulepreload" href="/web/shared/conn.js" />
-<link rel="modulepreload" href="/web/shared/format.js" />
-<link rel="modulepreload" href="/web/shared/groupnames.js" />
-<link rel="modulepreload" href="/web/shared/groups.js" />
-<link rel="modulepreload" href="/web/shared/keynav.js" />
-<link rel="modulepreload" href="/web/shared/kinds.js" />
-<link rel="modulepreload" href="/web/shared/mirrors.js" />
-<link rel="modulepreload" href="/web/shared/nip05.js" />
-<link rel="modulepreload" href="/web/shared/nip19.js" />
-<link rel="modulepreload" href="/web/shared/parents.js" />
-<link rel="modulepreload" href="/web/shared/profiles.js" />
-<link rel="modulepreload" href="/web/shared/query.js" />
-<link rel="modulepreload" href="/web/shared/readiness.js" />
-<link rel="modulepreload" href="/web/shared/relay.js" />
-<link rel="modulepreload" href="/web/shared/relayurl.js" />
-<script type="module" src="/web/app.js"></script>
+<link rel="modulepreload" href="./web/cards.js" />
+<link rel="modulepreload" href="./web/cards/apps.js" />
+<link rel="modulepreload" href="./web/cards/article.js" />
+<link rel="modulepreload" href="./web/cards/base.js" />
+<link rel="modulepreload" href="./web/cards/code.js" />
+<link rel="modulepreload" href="./web/cards/generic.js" />
+<link rel="modulepreload" href="./web/cards/lists.js" />
+<link rel="modulepreload" href="./web/cards/live.js" />
+<link rel="modulepreload" href="./web/cards/market.js" />
+<link rel="modulepreload" href="./web/cards/media.js" />
+<link rel="modulepreload" href="./web/cards/note.js" />
+<link rel="modulepreload" href="./web/cards/people.js" />
+<link rel="modulepreload" href="./web/cards/profile.js" />
+<link rel="modulepreload" href="./web/cards/relays.js" />
+<link rel="modulepreload" href="./web/cards/social.js" />
+<link rel="modulepreload" href="./web/entity.js" />
+<link rel="modulepreload" href="./web/feed.js" />
+<link rel="modulepreload" href="./web/readiness.js" />
+<link rel="modulepreload" href="./web/related.js" />
+<link rel="modulepreload" href="./web/searchfield.js" />
+<link rel="modulepreload" href="./web/shared/avatar.js" />
+<link rel="modulepreload" href="./web/shared/calendar.js" />
+<link rel="modulepreload" href="./web/shared/conn.js" />
+<link rel="modulepreload" href="./web/shared/format.js" />
+<link rel="modulepreload" href="./web/shared/groupnames.js" />
+<link rel="modulepreload" href="./web/shared/groups.js" />
+<link rel="modulepreload" href="./web/shared/keynav.js" />
+<link rel="modulepreload" href="./web/shared/kinds.js" />
+<link rel="modulepreload" href="./web/shared/mirrors.js" />
+<link rel="modulepreload" href="./web/shared/nip05.js" />
+<link rel="modulepreload" href="./web/shared/nip19.js" />
+<link rel="modulepreload" href="./web/shared/parents.js" />
+<link rel="modulepreload" href="./web/shared/profiles.js" />
+<link rel="modulepreload" href="./web/shared/query.js" />
+<link rel="modulepreload" href="./web/shared/readiness.js" />
+<link rel="modulepreload" href="./web/shared/relay.js" />
+<link rel="modulepreload" href="./web/shared/relayurl.js" />
+<script type="module" src="./web/app.js"></script>
 <style>
   /* ---- tokens ------------------------------------------------------------ */
   :root {

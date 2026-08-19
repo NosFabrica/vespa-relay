@@ -364,7 +364,12 @@ export function mountStatsPage({
   panels: panelTable,
   schema: schemaVersion,
   tiers: tierNames = [],
-  docUrl: url = "/stats.json",
+  // Document-RELATIVE, and that is what lets one page be served behind a path
+  // prefix. `/stats.json` would be asked of the host root wherever the page
+  // itself was mounted, so a relay sitting at that root would answer it — with
+  // its own document, 200, silently drawing the wrong service's numbers. See
+  // stats.html's head for the two properties that make relative safe here.
+  docUrl: url = "stats.json",
   pendingNote: pending = "",
   beforePanels: hook = () => {},
 }) {
@@ -392,7 +397,7 @@ export function mountStatsPage({
 let panels = [];
 let schema = 0;
 let tiers_ = [];
-let docUrl = "/stats.json";
+let docUrl = "stats.json";
 let pendingNote = "";
 let beforePanels = () => {};
 let bodyEl = null;

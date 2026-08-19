@@ -59,6 +59,28 @@ states its own admission rule:
   numbers cover come from that document's `title`, `scope` and `counted`,
   because the page cannot know which service answered.
 
+  **Every reference the markup makes is DOCUMENT-RELATIVE** — `./web/…` for
+  assets and imports, `stats.json` for the document — and `paths.test.mjs` holds
+  it. The routes are unchanged and still absolute (`GET /web/{path...}`,
+  `GET /stats.json`); what is relative is only what the page ASKS FOR. That is
+  what lets the one page above be mounted behind `/sync/` or `/monitor/` with a
+  plain strip rewrite, so three services fit one hostname and one certificate.
+  An absolute ref does not 404 there — it is asked of the host ROOT, where the
+  relay serves its own copy of every one of those file names and answers 200, so
+  the page renders its chrome and silently draws another service's modules and
+  another service's numbers. That is the failure mode to keep in mind, and it is
+  invisible from both sides of the wire.
+
+  Two things make relative safe here, and neither generalises: the imports sit in
+  an INLINE `<script type="module">`, whose specifiers resolve against the
+  DOCUMENT base url, and the stats page never rewrites its own url. The search UI
+  has both the other way round — an external entry module, and pushState paths
+  anchored at `/` — so it stays root-only; its refs are relative because at `/`
+  and at `/npub1…` the root is the base directory either way, not because it
+  could be prefix-mounted. And the leading `./` is load-bearing: a bare
+  `web/shared/page.js` is an IMPORT MAP key, not a relative url, and fails the
+  whole module graph in a browser with no import map.
+
 ## Commands
 
 ```bash
