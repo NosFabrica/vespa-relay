@@ -6,9 +6,9 @@
 // already in `shared/sync.js` — the split moved the RENDERING to the service
 // that produces the numbers, and changed neither.
 
-import { cardHead, dayOf, el, fmt, fmtDur, short } from "/web/shared/page.js";
-import { backgroundPanel, chip, setTerms, term } from "/web/shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, legsOf, rotationOf } from "/web/shared/sync.js";
+import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
+import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
+import { STUCK_LEG_SEC, constraintOf, legsOf, rotationOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.

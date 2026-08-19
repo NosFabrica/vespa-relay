@@ -232,6 +232,29 @@ is up:
   is measured in relay urls and asks which of them may be dialled at all. An
   operator arrives with one of the two.
 
+### Three services, one hostname
+
+Each of the three binds its own port, but nothing requires three hostnames and
+three certificates to read them. Every reference the pages make is
+**document-relative** — the assets under `web/…`, and the `stats.json` each page
+charts — so a service can be mounted behind a path prefix with a plain strip
+rewrite and nothing else:
+
+```nginx
+location /sync/    { proxy_pass http://sync:7778/;    }
+location /monitor/ { proxy_pass http://monitor:7779/; }
+```
+
+The **trailing slash matters on both sides**. `https://host/sync/` has `/sync/`
+as its base directory and every asset is asked for under it; `https://host/sync`
+has the ROOT as its base, and the page then asks the relay for its modules —
+which the relay answers, 200, with its own copy of the same file names. Redirect
+the bare prefix to the slashed one, the way ingresses normally do.
+
+The search UI is the exception and is root-only: it is a single-page app whose
+history writes are anchored at `/` by construction, so a prefix would survive
+the first load and be lost by the first navigation.
+
 ## Supported NIPs
 
 | NIP | | In this relay |

@@ -94,9 +94,13 @@ class RelayWebAssetsTest {
         // them. A hint whose href does not resolve here is 23 wasted requests
         // and a silent return to the three-wave waterfall.
         val html = assertNotNull(javaClass.getResource("/index.html")?.readText())
-        val hrefs = Regex("""<link rel="modulepreload" href="/web/([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
+        // The hints are document-relative — `./web/…`, the spelling every
+        // reference in :web carries so a page survives a path-prefix mount.
+        // The ROUTE is unchanged and still absolute: what moved is only what
+        // the markup asks for.
+        val hrefs = Regex("""<link rel="modulepreload" href="\./web/([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
         assertTrue(hrefs.isNotEmpty(), "the landing page still carries preload hints")
-        for (href in hrefs) assertNotNull(WebAssets.get(href), "/web/$href is hinted but not servable")
+        for (href in hrefs) assertNotNull(WebAssets.get(href), "./web/$href is hinted but not servable")
     }
 
     @Test

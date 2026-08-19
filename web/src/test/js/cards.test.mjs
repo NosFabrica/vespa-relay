@@ -197,7 +197,7 @@ assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
 // grouping histogram behind stats.html enumerates the store instead. What must
 // not come back is a private copy of the labels.
 const statsPage = readFileSync(new URL("../../main/resources/stats.html", import.meta.url), "utf8");
-assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\/web\/shared\/kinds\.js"/.test(statsPage),
+assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\.\/web\/shared\/kinds\.js"/.test(statsPage),
   "stats.html must take kind names from shared/kinds.js, not carry a second copy");
 
 for (const [kind, fixture, expect] of FIXTURES) {
