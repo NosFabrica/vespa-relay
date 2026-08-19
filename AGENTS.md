@@ -345,7 +345,9 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
   StreamWorld.kt          the candidate set all three measure over
-  AliasMonitor.kt         their clock, and the fast lane
+  AliasMonitor.kt         their clock, and the fast lane — which runs the
+                          stability gate then fitness over urls named since its
+                          last look, and never the fold (per-host work)
 
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt          entrypoint; reads env, deploys the schema, wires the
@@ -1487,6 +1489,25 @@ indistinguishable from here, so the loader says which streams have no `gatedBy`
 at boot and the config is the authority. **This is a deliberate safety
 downgrade**: it was a hard error and is now a line on stderr, bought in exchange
 for gates the router does not have to understand.
+
+**The fast lane runs the STABILITY GATE and then FITNESS, and it used to run
+fitness alone.** The lane's whole reason to exist is that `prime` is the
+admission decision for every visit-mode stream and the sweep is on a six-hour
+clock, so it grades urls named since its last look straight away. But the
+stability gate rode the sweep, so a url could be graded `prime` — and admitted
+to every roster — before anything had asked whether it answers the same question
+twice. `Verdict.INCONSISTENT` exists because such a relay *"would poison bands
+and coverage"*, and the window was up to a whole `sweepSeconds` of one doing
+exactly that. The gate is per-url (two REQs, compared against nothing but that
+url's own second answer), so the lane can run it; the FOLD cannot go here,
+because it elects a leader out of a host's whole group and a since-bound set
+holds whichever urls of that host were named in the last tick.
+
+It costs no extra dials over a sweep: a stability verdict stands for
+`RelayVerdictRecord.DEFAULT_TTL_SECONDS`, so a url the lane measures is one the
+sweep then skips — the work moves earlier, it does not repeat. Both halves are
+pinned in `FastLaneTest`, including the control that shows the shuffler passing
+the fitness ladder on its own, which is why the lane could not see it before.
 
 **Cheap sources must be allowed to run far more often than expensive ones.** A
 kind-30166 read is one indexed query bounded by `maxAgeSeconds`; a 10002 scan

@@ -312,52 +312,41 @@ class MonitorEngine(
             )
         }
 
+    /**
+     * One pass as [AliasMonitor] sees it: the work, plus the row it reports on.
+     *
+     * A named builder rather than an anonymous object per use, because the
+     * stability gate and fitness each appear in TWO lists now — the sweep and
+     * the fast lane — and two wrappers over one pass are two places for the
+     * handle to drift from the object writing to it.
+     */
+    private fun entry(
+        handle: Processors.Handle?,
+        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int,
+    ) = object : AliasMonitor.Pass {
+        // The same handle the pass itself writes into, so the monitor's clock —
+        // when the pass ran, how long it took, when the next one is due — lands
+        // on the row the pass is filling in. See [AliasMonitor.Pass.progress].
+        override val progress = handle
+
+        override suspend fun measure(
+            label: String,
+            candidates: List<NormalizedRelayUrl>,
+            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            onEvent: suspend (Event) -> Unit,
+            sockets: Sockets,
+        ): Int = run(label, candidates, canDial, onEvent, sockets)
+    }
+
+    private val foldEntry = folding?.let { f -> entry(f.progress, f::measure) }
+
+    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress, g::measure) }
+
+    private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::measure) }
+
     private val aliasMonitor: AliasMonitor? =
-        listOfNotNull<AliasMonitor.Pass>(
-            // Each wrapper carries the same handle its pass writes into, so the
-            // monitor's clock — when the pass ran, how long it took, when the
-            // next one is due — lands on the row the pass is filling in. See
-            // [AliasMonitor.Pass.progress].
-            folding?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            consistencyPass?.let { g ->
-                object : AliasMonitor.Pass {
-                    override val progress = g.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = g.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            fitness?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-        ).takeIf { it.isNotEmpty() }
+        listOfNotNull(foldEntry, stabilityEntry, fitnessEntry)
+            .takeIf { it.isNotEmpty() }
             ?.let { passes ->
                 AliasMonitor(
                     passes,
@@ -366,24 +355,15 @@ class MonitorEngine(
                     // historical six hours otherwise.
                     intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
                     source = world,
-                    // The fast lane runs FITNESS alone: a first `prime` is
-                    // what a new relay waits on; fold and consistency verdicts
-                    // ride the next sweep.
+                    // The fast lane runs THE STABILITY GATE AND THEN FITNESS:
+                    // a first `prime` is what a new relay waits on, and it must
+                    // not be handed one before anything has asked whether the
+                    // relay answers the same question twice. The FOLD still
+                    // rides the sweep — it needs a host's whole group, and a
+                    // since-bound set holds only what was named in the last
+                    // tick. See [AliasMonitor.fastLanePasses].
                     fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
-                    fastLanePass =
-                        fitness?.let { f ->
-                            object : AliasMonitor.Pass {
-                                override val progress = f.progress
-
-                                override suspend fun measure(
-                                    label: String,
-                                    candidates: List<NormalizedRelayUrl>,
-                                    canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                                    onEvent: suspend (Event) -> Unit,
-                                    sockets: Sockets,
-                                ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                            }
-                        },
+                    fastLanePasses = listOfNotNull(stabilityEntry, fitnessEntry),
                 )
             }
             // WHERE THE CANDIDATE SET CAME FROM, on both passes' rows.
