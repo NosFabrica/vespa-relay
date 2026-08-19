@@ -608,7 +608,20 @@ relay/src/main/resources/
                         filter — single letter, so `tag_index` holds it exactly
                         as it holds `t` — plus the group's own kind 39000 keyed
                         by `d`, which is the half that names its HOST: NIP-29
-                        has the relay sign its groups' records. shared/groups.js
+                        has the relay sign its groups' records. A CARD MAY ONLY
+                        MINT THAT TOKEN FOR AN ID THAT READS BACK AS ITSELF —
+                        `groupTokenizes`, compiled from the tokenizer's own
+                        `GROUP_ID` so the two cannot drift. A group id is a
+                        stranger's string and two of its shapes fail silently:
+                        whitespace ENDS a token, so `group:my group` asks for
+                        the group `my`, and a trailing `.,;!?` is sentence
+                        punctuation, so `group:hello.` asks for `hello` — the
+                        wrong room, no error, under this room's name. All three
+                        places that draw a group (the pill on a chat card, a
+                        39000's title, a `group` tag on a list) go through
+                        base.js's `groupHref`, which returns null for those and
+                        leaves the label as text: a link that searches for
+                        something else is worse than no link. shared/groups.js
                         is the decision behind the picker, and its whole
                         argument is a refusal. A group is the pair (id, host)
                         — quartz's `GroupId` — and this page holds that pair in
@@ -689,12 +702,35 @@ relay/src/main/resources/
                         about a subject like the kind 0 behind a face, so
                         asking it through the observer gate would leave an
                         unmirrored reader looking at the id the pill exists to
-                        replace;
+                        replace. TWO pills read that one cache, so they can
+                        never disagree about what a group is called: the search
+                        box's, and the one a NIP-29 chat card draws beside its
+                        kind badge for the room it was said in (`postedTo` in
+                        groups.js reads the `h` tag, cards/base.js's
+                        `groupPillHtml` draws it, and it links to the `group:`
+                        search because NIP-29 gives a room no event of its own
+                        to open). A chat line is a fragment of a conversation,
+                        and two rooms interleaved by timestamp read as nonsense
+                        without it. Neither pill says WHICH of the groups
+                        sharing an id it is, and neither can: an `h` names no
+                        host, and nothing in this store records the relay an
+                        event was mirrored from — so `general`, an id half the
+                        relays running NIP-29 have each minted, is a name over
+                        a union. Fixing that is a store-side provenance
+                        question, not a drawing one;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths, with related.js
+                        renders /npub1…//note1…//naddr1… paths — and re-renders
+                        them from `rerun()` like every other view, because it is
+                        the one that GATES on the reader's web of trust: a
+                        permalink fetched signed in is a different page signed
+                        out, and it is also the one view `$q` is empty on, so it
+                        used to fall through the "nothing typed" branch and be
+                        left standing under an identity the page no longer had.
+                        `entitySeg`/`openEntity` are the single pair the router
+                        and the re-run both open it through — with related.js
                         the second ask a git permalink makes AFTER its card is
                         up — a repository's state, issues, patches and releases
                         (`#a` its address), an issue's or a patch's verdict and

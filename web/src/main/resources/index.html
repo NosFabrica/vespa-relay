@@ -1240,6 +1240,33 @@
   [data-tone="list"]     { --h: 95;  --s: 40%; }
   [data-tone="apps"]     { --h: 250; --s: 30%; }
 
+  /* ---- the room a chat was said in, beside the badge that says it is one ---
+     A NIP-29 chat line is a fragment of a conversation, so which conversation
+     is the context its byline was missing. It reads as a link because it is
+     one — into this page's own `group:` search — and it takes the accent
+     rather than the badge's family tint, so a scan down a mixed list separates
+     "what this is" (every badge, tinted by family) from "where it was said"
+     (one accent, only on the kinds that have an answer). It shrinks and
+     ellipsises where the badge never does: a group's name is a stranger's
+     string and the badge is one of ours — and it shrinks FASTER than the
+     author beside it, which is the whole of the `2`. Both are ellipsised text
+     with an automatic minimum of zero, so an equal shrink let a long room name
+     hold its width while the byline squeezed the author's name away to
+     nothing; who posted it outranks where they posted it. */
+  .byline .group-pill {
+    flex-shrink: 2;
+    max-width: 14em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 1.5px 8px;
+    text-decoration: none;
+  }
+  .byline a.group-pill:hover { text-decoration: underline; }
+
   /* ---- results ------------------------------------------------------------ */
   .results { padding: 20px 0 64px; }
   .list-head {

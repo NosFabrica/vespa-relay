@@ -43,9 +43,15 @@ import {
 function groupRows(rows, opts) {
   const shown = opts && opts.full ? rows : rows.slice(0, 6);
   const more = rows.length - shown.length;
-  const cells = shown.map(([id, url, name]) =>
-    `<li><a href="${groupHref(id)}">${esc(name || id)}</a>` +
-    (url ? `<span class="muted-note mono"> ${esc(relayLabel(url))}</span>` : "") + `</li>`);
+  // The link is refused for an id the token language cannot carry — see
+  // base.js's groupHref — and the row then reads as the plain name it always
+  // was, rather than as a link to somebody else's group.
+  const cells = shown.map(([id, url, name]) => {
+    const href = groupHref(id);
+    const label = esc(name || id);
+    return `<li>${href ? `<a href="${href}">${label}</a>` : label}` +
+      (url ? `<span class="muted-note mono"> ${esc(relayLabel(url))}</span>` : "") + `</li>`;
+  });
   return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 

@@ -81,6 +81,29 @@ const SCOPE_VALUE = "\\S*[^\\s.,;!?]";
 // really minted.
 const GROUP_ID = SCOPE_VALUE;
 
+/**
+ * Can this id be WRITTEN as a `group:` token that reads back as itself?
+ *
+ * The other direction of [tokenize], and the only honest way to ask it: the
+ * same source string compiled anchored, so the answer cannot drift from what
+ * the tokenizer will actually do with the link.
+ *
+ * A card that draws a group draws a SEARCH for it, and the id in that search is
+ * a stranger's string — an `h` tag on somebody's chat message, a `d` on a
+ * relay's 39000. Two shapes come back as a different filter than the one the
+ * card meant, silently: whitespace ENDS a token, so `group:my group` asks for
+ * the group `my` and searches for the word `group`; a trailing `.,;!?` is
+ * sentence punctuation, so `group:hello.` asks for `hello`. Neither errors, and
+ * both return somebody else's room under this room's name.
+ *
+ * So the link is refused rather than mis-aimed, and the label stands as text.
+ * The alternative is quoting in the token language, which is a real feature and
+ * a much larger one; this is the guard that keeps a wrong answer off the screen
+ * until there is one.
+ */
+const GROUP_ONLY = new RegExp(`^${GROUP_ID}$`);
+export const groupTokenizes = (id) => GROUP_ONLY.test(String(id ?? ""));
+
 // Every token in one scan, because they interleave and their order in the
 // string is what the field measures its caret against — two passes would have
 // to be merged back together in position order anyway.
