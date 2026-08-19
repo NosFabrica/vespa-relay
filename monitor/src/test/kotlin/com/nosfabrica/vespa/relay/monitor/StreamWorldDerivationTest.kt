@@ -38,6 +38,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -392,6 +393,67 @@ class StreamWorldDerivationTest {
             val d = world.lastDerivation
             assertEquals(1, d.sourced, "one url is what the relay lists name")
             assertEquals(2, d.recordedOnly, "the two nothing names any more are still urls this router knows of")
+        }
+
+    @Test
+    fun `a url our own records know about is MEASURED again, not merely counted`() =
+        runBlocking {
+            // THE CORPUS IS OURS TO RE-MEASURE. Counting these urls was half the
+            // fix; the other half is that they are candidates. Measured on
+            // staging: one derivation yielded 127 urls out of a store holding
+            // 3.09M relay lists and records for 19,844 relays, and because the
+            // candidate set was that derivation's yield, a short read took the
+            // whole corpus with it — 583 relays graded prime where there had
+            // been 1,600, and no way back, since a url nothing named could not
+            // be re-measured to earn its grade again.
+            //
+            // A url we hold a signed record about is one we have measured and
+            // are telling the network about. Re-measuring it does not need
+            // somebody's 10002 to name it a second time.
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(event(10002, arrayOf("r", "wss://named.example", "write")))
+            val record = RelayVerdictRecord(store, monitor)
+            val forgotten = RelayUrlNormalizer.normalize("wss://forgotten.example")
+            // `prime`, not `dead`: a dead verdict is held out for its own 24h
+            // reason, and the url this test is about is one that WORKS and that
+            // no list happens to name this round.
+            record.publishFitness(forgotten, "prime", "answered at a settled anchor", pageable = null, nip77 = null)
+
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
+            val candidates = world.candidates()
+
+            assertTrue(forgotten in candidates, "a url only our own records name must still be re-measured")
+            assertEquals(2, world.lastDerivation.candidates, "both the named url and the recorded one are the corpus")
+            assertEquals(1, world.lastDerivation.sourced, "…and `sourced` still means what a relay list named this round")
+            assertEquals(1, world.lastDerivation.recordedOnly, "…with the other side of the union named as its own number")
+        }
+
+    @Test
+    fun `a derivation that collapses says what the round before it named`() =
+        runBlocking {
+            // A SHORT READ AND A SHRUNK NETWORK ARE THE SAME PICTURE, and the
+            // only thing that separates them is the round before. Staging went
+            // from naming five figures of urls to naming 127 with nothing
+            // anywhere saying so, because every number on this row described
+            // one round and no number described the change.
+            //
+            // The corpus is safe either way now — it is the union with our own
+            // records — so this is a REPORT, and reporting it needs both sides
+            // of the comparison to be readable from outside.
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            for (i in 0 until 140) {
+                store.insert(event(10002, arrayOf("r", "wss://relay$i.example", "write")))
+            }
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
+
+            world.candidates()
+            assertEquals(140, world.lastDerivation.sourced)
+            assertNull(world.lastDerivation.sourcedLastRound, "the first round has nothing to be compared against")
+
+            world.candidates()
+            assertEquals(140, world.lastDerivation.sourcedLastRound, "the second round carries what the first one named")
         }
 
     @Test

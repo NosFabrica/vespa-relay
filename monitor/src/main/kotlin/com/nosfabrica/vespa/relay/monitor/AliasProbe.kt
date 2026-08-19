@@ -581,6 +581,25 @@ class AliasProbe(
         fun over(
             client: NostrClient,
             target: Int,
+            /**
+             * How big an ask each page is — and it is SIZED FROM THE TARGET by
+             * default, which it was not.
+             *
+             * [over] used to leave this at the fold's [RelayAliases.DEFAULT_PROBE_PAGE]
+             * (500) for every caller, so the fitness pass — whose whole target
+             * is twenty events ([FitnessPass.FITNESS_TARGET]) — asked each relay
+             * for five hundred and threw 96% of them at the ingest queue on the
+             * way to a verdict it had after twenty. Measured here: one sweep
+             * over 923 urls grew a 20,347-event store to 369,210. On a corpus
+             * of 20,000 urls that is millions of events per sweep, every sweep,
+             * downloaded to answer "does it answer" — and every one of them
+             * makes the NEXT sweep's reads slower, including the projection the
+             * candidate derivation is built on.
+             *
+             * A page smaller than the target would page needlessly, so the
+             * default is the target itself: one round trip, nothing spare.
+             */
+            page: Int = maxOf(target, MIN_PAGE),
             idleMs: (NormalizedRelayUrl) -> Long,
         ): AliasProbe =
             AliasProbe(
@@ -615,11 +634,26 @@ class AliasProbe(
                     )
                 },
                 target = target,
+                page = page,
+                // Never above the page itself: the humbler retry exists for a
+                // relay that refuses the first ask as too large, and a fallback
+                // BIGGER than what was just refused is not a humbler ask.
+                fallbackPage = minOf(RelayAliases.FALLBACK_PROBE_PAGE, page),
                 // The same lambda the fetch above is given, held so
                 // [deadlineMs] is a multiple of the window it bounds rather
                 // than a second number kept in step with it by hand.
                 idleMs = idleMs,
             )
+
+        /**
+         * The smallest page [over] will ask for, whatever the target.
+         *
+         * A one-event ask reads as a probe rather than as a read to some
+         * relays, and a page this small pays a round trip per event on any
+         * caller whose target is larger than it looks. Ten is enough to be an
+         * ordinary REQ.
+         */
+        const val MIN_PAGE = 10
 
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
         private const val CANNOT_CONNECT = "cannot:"

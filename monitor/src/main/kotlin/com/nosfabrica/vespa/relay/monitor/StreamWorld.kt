@@ -191,6 +191,17 @@ internal class StreamWorld(
          */
         val recordedOnly: Int = 0,
         /**
+         * What the relay lists named the round BEFORE this one, or null on the
+         * first round of a process.
+         *
+         * Published rather than left to the log, for the reason every other
+         * number on this row is: a reader asking "did the corpus shrink or did
+         * our read of it" needs both sides of the comparison, and a log line is
+         * not somewhere a card or an alert can look. See the shrink check in
+         * [candidates] for why the question matters at all.
+         */
+        val sourcedLastRound: Int? = null,
+        /**
          * …and what was left for the passes — the derivation's YIELD, and the
          * one number on this row that every number on the three rows below it
          * is a share of.
@@ -292,35 +303,83 @@ internal class StreamWorld(
         // for is a candidate — it is dialled, and counting it as excluded would
         // put it on both sides of a partition that has to divide exactly once.
         val onlyExcluded = excluded - all
-        val live = all.filterNot { it in dead }
-        // WHAT WE KNOW BEYOND WHAT WAS NAMED — see [Derivation.recordedOnly].
-        // Counted here rather than derived from the passes, because it is a
-        // property of the DERIVATION: it is exactly the urls this walk did not
-        // reach and the store has already measured.
+        // WHAT WE KNOW BEYOND WHAT WAS NAMED — and it is CANDIDATE SET, not a
+        // number on a card.
+        //
+        // These urls used to be counted and dropped: the corpus was whatever
+        // the relay lists happened to yield this round, so a derivation that
+        // came back short took the corpus with it. Measured on staging, one
+        // round yielded 127 urls out of a store holding 3.09M relay lists and
+        // records for 19,844 relays — and the card, drawn from what came back,
+        // reported the other 19,717 as urls "no relay list names now". A short
+        // read and a shrunk network are the same picture from in here.
+        //
+        // A url we hold a signed record about is a url we have measured and are
+        // telling the network about. Re-measuring it is OUR job on OUR clock,
+        // and it does not need somebody's 10002 to name it again first. So the
+        // corpus is the union, and a bad derivation now costs freshness on the
+        // urls it failed to name rather than the whole population.
         val recorded = ownRecords()
+        val recordedOnly = recorded.filterNot { it in all || it in onlyExcluded }
+        val known = all + recordedOnly
+        val live = known.filterNot { it in dead }
         lastDerivation =
             Derivation(
                 sourced = all.size + onlyExcluded.size,
                 excluded = onlyExcluded.size,
-                heldOutDead = all.size - live.size,
-                recordedOnly = recorded.count { it !in all && it !in onlyExcluded },
+                heldOutDead = known.size - live.size,
+                recordedOnly = recordedOnly.size,
                 candidates = live.size,
+                sourcedLastRound = lastSourced,
             )
         derived = true
+        // A DERIVATION THAT COLLAPSED IS A FAULT, NOT A NEW BASELINE.
+        //
+        // The read that yields these urls is a projection over every relay list
+        // in the store, and it can come back short for reasons that have
+        // nothing to do with the network: a content node still loading answers
+        // a query with `coverage: 100, full: true` over zero documents, and a
+        // degraded or soft-timed-out search returns a partial answer that looks
+        // exactly like a small one. Nothing downstream can tell those apart —
+        // which is how staging went from naming ~17,000 urls to naming 127
+        // without a single line of log saying anything had gone wrong.
+        //
+        // The corpus itself is no longer at risk (the candidate set is the
+        // union with our own records above), so this does not refuse or retry.
+        // It says so, loudly, once, which is the one thing that was missing.
+        val previous = lastSourced
+        if (previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE) {
+            System.err.println(
+                "router: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
+                    "a drop of ${(100 - 100 * all.size / previous)}%. The relay lists in the store do not change that " +
+                    "fast; suspect the read (a loading content node, a degraded search) before believing the network. " +
+                    "The passes still walk ${live.size} url(s), because the corpus is our own records too.",
+            )
+        }
+        lastSourced = all.size
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
-                (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else "") +
-                // The number that says a shrinking corpus is a shrinking RELAY
-                // LIST and not a shrinking store — see [Derivation.recordedOnly].
+                "; ${all.size} named by a relay list this round" +
+                (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
+                // The number that says a shrinking DERIVATION from a shrinking
+                // relay list — it no longer shrinks the corpus, but it is still
+                // the first thing to look at when the lists go quiet.
                 (
                     lastDerivation.recordedOnly
                         .takeIf { it > 0 }
-                        ?.let { "; $it more we hold records about that nothing named this round" }
+                        ?.let { "; $it more from our own records that nothing named this round" }
                         .orEmpty()
                 ),
         )
         return live
     }
+
+    /**
+     * What the last round's relay lists named, for the shrink check in
+     * [candidates]. Null until a round has run — the first derivation has
+     * nothing to be compared against and must not warn about itself.
+     */
+    private var lastSourced: Int? = null
 
     /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
     private fun derivations(): List<Pair<String, RelayDiscoveryConfig>> =
@@ -437,5 +496,25 @@ internal class StreamWorld(
          * much longer one starves a host that came back.
          */
         const val DEAD_TTL_SECONDS = 24L * 60 * 60
+
+        /**
+         * How far a derivation may fall against the round before it without
+         * being called out — see the shrink check in [candidates].
+         *
+         * Half, which is far looser than any honest movement in a corpus of
+         * relay lists: authors revise a 10002 one at a time, and the population
+         * that names a relay does not halve between two sweeps. Loose on
+         * purpose — this line has to be believable when it fires, so it is set
+         * where nothing but a broken read can reach it.
+         */
+        const val SHRINK_SHARE = 0.5
+
+        /**
+         * …and the size below which the comparison is not worth making. A
+         * deployment deriving a dozen urls is a cold store or a small
+         * configuration, and both move by whole percentages for ordinary
+         * reasons.
+         */
+        const val SHRINK_FLOOR = 100
     }
 }
