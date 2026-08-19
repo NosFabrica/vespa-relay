@@ -89,7 +89,7 @@ function groupCard(ev, opts) {
     <div class="result-main">
       ${picture ? avatarHtml(picture, ev.pubkey) : ""}
       <div class="text">
-        ${titleHtml(opts, tagOf(ev, "name") || id, 120, id ? groupHref(id) : null)}
+        ${titleHtml(opts, tagOf(ev, "name") || id, 120, groupHref(id))}
         ${bodyHtml(opts, tagOf(ev, "about") || "", 400)}
       </div>
     </div>`;

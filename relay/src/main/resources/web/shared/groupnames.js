@@ -1,6 +1,7 @@
 // What a NIP-29 group is CALLED — the kind-39000 cache, and the batched REQ
-// that fills it. For the one place on the page that holds a group id with no
-// row beside it to read a name off: the `group:<id>` pill in the search box.
+// that fills it. For the two places on the page that hold a group id with no
+// row beside it to read a name off: the `group:<id>` pill in the search box,
+// and the pill a chat card draws beside its badge for the room it was said in.
 //
 // profiles.js's shape, and deliberately so — one cache the whole page shares,
 // a lookup that reports how many names it LEARNED so a caller only repaints

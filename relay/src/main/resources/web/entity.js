@@ -25,6 +25,8 @@ import { refConn, relay } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { enrichProfiles } from "./shared/profiles.js";
 import { unknownParents, loadParentAuthors } from "./shared/parents.js";
+import { postedTo } from "./shared/groups.js";
+import { enrichGroupNames } from "./shared/groupnames.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
 import { kindLabel } from "./shared/kinds.js";
@@ -165,9 +167,15 @@ async function enrichMentions(ev) {
   // skipped entirely, though: on a reply whose `e` tag names no author, WHO
   // the parent is only becomes answerable once the parent event has been
   // fetched, and namedPubkeys cannot declare a pubkey nothing here knows yet.
+  // The ROOM rides along in the same wave, for the same reason and at the same
+  // cost: a NIP-29 chat's byline names the group it was posted to, an `h` tag
+  // carries nothing but the id, and this page renders ONCE — a name that
+  // arrives after the paint would never be drawn here at all.
+  const room = postedTo(ev);
   await Promise.all([
     loadParentAuthors(unknownParents([ev])),
     enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev, FULL)])]),
+    room ? enrichGroupNames([room]) : null,
   ]);
   // Which is what this second pass is for — the parent's own profile, and a
   // no-op when the lookup above learned nobody new.

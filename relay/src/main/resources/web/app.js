@@ -10,8 +10,8 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
-import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
-import { seedGroupNames, seedGroupEvents, forgetPrivateGroupNames } from "./shared/groupnames.js";
+import { ownGroups, metaGroup, postedTo, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
+import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -490,10 +490,18 @@ function hydrate(events, deep) {
   // moment that argument grows a second field somebody reads.
   const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
+  // The rooms those events were said in, on exactly the same terms as the
+  // names: a NIP-29 chat card draws the group beside its badge, an `h` tag
+  // carries nothing but the id, and the seed above has already taken whatever
+  // 39000s came back with the results — so this asks only for the ids nothing
+  // on the page can name yet, and reports how many it learned so a lookup that
+  // learned nothing costs no repaint. Not awaited, for the reason the names
+  // are not: a card should not wait on the label above it.
+  const groups = enrichGroupNames(events.map(postedTo).filter(Boolean));
   // Free, and it removes most of the asks below: a thread in the results
   // carries its own parents, and an event is ground truth about who wrote it.
   seedParentAuthors(events);
-  return { events, names, parents: deep ? replyParents(events) : null };
+  return { events, names, groups, parents: deep ? replyParents(events) : null };
 }
 
 /**
@@ -936,6 +944,14 @@ $me.addEventListener("click", async () => {
       // rows themselves on the next lookup; this is the copy the search box
       // draws from.
       forgetPrivateGroupNames();
+      // Clearing the cache is only half of forgetting: both pills that read it
+      // are ALREADY DRAWN, and neither repaints on its own — the two repaint
+      // call sites on this page both fire only when a lookup LEARNED
+      // something, and forgetting is the opposite of learning. So the field is
+      // repainted here, and `rerun()` in the finally below redraws the cards —
+      // including the entity view, which is where a chat permalink would
+      // otherwise sit with a private label on it for whoever uses this tab next.
+      field.repaint();
       // The render-only half: the finally below reruns the search once for
       // the whole click, and setViewingAs here meant every sign-out searched
       // twice — two REQs for one action, with the first result thrown away.
@@ -1707,19 +1723,20 @@ async function run(st, fetch, keep, render) {
     // `hitsFor` is what the SEARCH BOX would have to say for these hits to be
     // about it, and the feed's answer is "nothing does" — null, so reopening
     // the popup on focus can never show the feed under a typed query.
-    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.parents].filter(Boolean);
+    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.groups, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== st.requestId) return;
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;
   }
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
   render();
-  // The names land after the list does, and the reply parents after them, so
-  // paint each when it arrives — and only if that lookup actually learned
-  // something. Independently, because they are: chaining them meant the names
-  // could not repaint until the parents had also answered. Skipped while a raw
-  // event is expanded: a re-render would collapse a panel the reader opened,
-  // and a name appearing is not worth taking that away.
+  // The names land after the list does, the group names beside them and the
+  // reply parents after both, so paint each when it arrives — and only if that
+  // lookup actually learned something. Independently, because they are:
+  // chaining them meant the names could not repaint until the parents had also
+  // answered. Skipped while a raw event is expanded: a re-render would collapse
+  // a panel the reader opened, and a name appearing is not worth taking that
+  // away.
   for (const lookup of late) {
     lookup.then((learned) => {
       if (!learned || myId !== st.requestId) return;
@@ -1847,6 +1864,16 @@ function openPicked(ev) {
 const onFeed = () => document.body.classList.contains("feed");
 
 function rerun() {
+  // The entity view answers to the lens harder than either of the others: it
+  // GATES on the reader's web of trust, so a permalink fetched signed in is a
+  // different page signed out. It is also the one view `$q` is empty on, so
+  // without this it fell through the "nothing typed" branch below and was left
+  // standing — a card fetched under an identity the page no longer has, with
+  // whatever that identity's caches had written on it. Every caller of this is
+  // a deliberate act (sign-in/out, a lens, a chip, a sort), so the re-fetch is
+  // one round trip per decision the reader made.
+  const seg = entitySeg();
+  if (seg) { openEntity(seg); return; }
   // The feed has no query to re-run, but it does have an answer that changes
   // with who is asking and with which chip is on: signing in applies the trust
   // floor, signing out lifts it, and the line under the head says which. Same
@@ -2180,6 +2207,34 @@ function syncUrl() {
   history.pushState(null, "", url);
 }
 
+// A NIP-19 path is the third view: not the hero, not the results — the one
+// thing the identifier names. The shape test only ROUTES; whether the
+// identifier validates is entity.js's question, so a bad checksum still lands
+// on a page that explains itself.
+const ENTITY_PATH = /^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i;
+
+/** The identifier this page is showing, or null when it is showing anything else. */
+function entitySeg() {
+  const seg = location.pathname.slice(1);
+  return ENTITY_PATH.test(seg) ? seg : null;
+}
+
+/**
+ * Draw the entity view for [seg] — the ONE call, so the router and [rerun]
+ * cannot open it two different ways.
+ *
+ * The entity view hands its drawn events BACK: the `json` toggle looks an
+ * event up by id among the page's current results, and a permalink used to
+ * leave that empty — so the one card on the page answered "no longer in the
+ * current results" about itself.
+ */
+// A declaration rather than a const: [rerun] sits three hundred lines above
+// this and calls it, and a const would only be safe there by the accident of
+// nothing calling rerun during module evaluation.
+function openEntity(seg) {
+  return showEntity(seg, { paintScores, ensureLogin, setHits: (evs) => { s.hits = evs; } });
+}
+
 /**
  * URL -> page, the single restore path: initial load, Back, and Forward all
  * come through here. Returns whether it started a search, so the boot path
@@ -2189,12 +2244,8 @@ function syncUrl() {
 function applyUrl() {
   navRestoring = true;
   try {
-    // A NIP-19 path is the third view: not the hero, not the results — the
-    // one thing the identifier names. The shape test only routes; whether
-    // the identifier VALIDATES is entity.js's question, so a bad checksum
-    // still lands on a page that explains itself.
-    const seg = location.pathname.slice(1);
-    if (/^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(seg)) {
+    const seg = entitySeg();
+    if (seg) {
       clearTimeout(debounceTimer);
       s.requestId++; // cancel any in-flight search render
       s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
@@ -2204,11 +2255,7 @@ function applyUrl() {
       document.body.classList.add("searching");
       closePopup();
       $results.hidden = false;
-      // The entity view hands its drawn events BACK: the `json` toggle looks an
-      // event up by id among the page's current results, and a permalink used
-      // to leave that empty — so the one card on the page answered "no longer
-      // in the current results" about itself.
-      showEntity(seg, { paintScores, ensureLogin, setHits: (evs) => { s.hits = evs; } });
+      openEntity(seg);
       return false; // no search running — boot still signs in eagerly
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch

@@ -149,6 +149,27 @@ assert.strictEqual(knowsGroup("dropped"), false, "a dropped connection states no
 // store applies the observer as a FILTER, so asking on that socket would leave
 // a reader with no scores mirrored here looking at the hex id the pill is
 // there to replace.
+// ---- forgetting has a DRAWN half, and only app.js can show it -------------
+//
+// The cache half is asserted above: a private name goes when the reader does.
+// What that cannot see is the pill already on the screen. Two of them read
+// this cache now — the search box's, and a chat card's — and neither repaints
+// on its own: both repaint call sites on that page fire only when a lookup
+// LEARNED something, and forgetting is the opposite of learning. So a chat
+// permalink would sit there with a label out of somebody's decrypted list on
+// it for whoever uses the tab next, which is the exact thing this module's
+// forget exists to prevent.
+const app = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const forgetAt = app.indexOf("forgetPrivateGroupNames();");
+assert(forgetAt > 0, "app.js forgets the private group names when the reader signs out");
+assert(/field\.repaint\(\)/.test(app.slice(forgetAt, forgetAt + 900)),
+  "…and repaints the search field's pill there, which nothing else on that path does");
+const rerunAt = app.indexOf("function rerun()");
+assert(rerunAt > 0, "app.js re-runs the current view after a sign-out");
+const rerunSrc = app.slice(rerunAt, rerunAt + 1200);
+assert(/entitySeg\(\)/.test(rerunSrc) && /openEntity\(/.test(rerunSrc),
+  "…including the ENTITY view, the one view with no query to re-run — so a permalink's card is redrawn too");
+
 const src = readFileSync(new URL("../../relay/src/main/resources/web/shared/groupnames.js", import.meta.url), "utf8");
 assert(/await refConn\(\)/.test(src),
   "the name lookup asks on the ANONYMOUS reference connection, like every other fact about a subject");

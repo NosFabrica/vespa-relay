@@ -10,6 +10,7 @@ const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await impor
 const { parsePatch } = await import(new URL("../../relay/src/main/resources/web/cards/code.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
+const { seedGroupEvents } = await import(new URL("../../relay/src/main/resources/web/shared/groupnames.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
@@ -633,6 +634,84 @@ assert.strictEqual(new URLSearchParams(groupHrefOf(groupRec).slice(1)).get("q"),
   "the record's title is the search for its own posts");
 assert(groupRec.includes("chachi") && groupRec.includes("group id"), "the id is on the card, not only in its json");
 assert(groupRec.includes("members only"), "a bare `private` tag is a flag, and its PRESENCE is the value");
+
+// ---- a chat line says WHICH chat -------------------------------------------
+//
+// The card a NIP-29 message draws is the one card on this page that was
+// missing its subject. A note is its text and an article is its title, but a
+// line of chat is a fragment of a conversation, and a byline reading "Alice ·
+// 4m ago · chat" leaves out the only thing a reader scanning a mixed list
+// needs: which room. So the `h` tag draws as a pill beside the badge, linking
+// into the same `group:` search every other route to a group uses.
+const chatIn = (tags, opts) => card(ev(9, tags, "a chat line"), opts);
+const pillOf = (html) => (/<a class="group-pill" href="([^"]+)" title="([^"]*)">([^<]*)<\/a>/.exec(html) || null);
+
+let pill = pillOf(chatIn([["h", "unknown-room"]], { full: true }));
+assert(pill, "a chat line names the room it was said in");
+assert.strictEqual(new URLSearchParams(pill[1].slice(pill[1].indexOf("?"))).get("q"), "group:unknown-room",
+  "and the room is a search for everything posted in it");
+assert.strictEqual(pill[3], "unknown-room",
+  "with nothing on the page able to name it, the ID stands — which is still more than the card said before");
+assert(pillOf(chatIn([["h", "unknown-room"]])), "…at both depths: a result row needs the context more than a permalink does");
+assert(!pillOf(card(ev(1, [], "a plain note"), { full: true })), "an event with no `h` names no room");
+assert(!pillOf(card(ev(9, [], "a chat line with no room"), { full: true })),
+  "…and neither does a chat line that carries none");
+
+// The pill sits to the LEFT of the badge, which is the whole of its placement:
+// the two are the same kind of fact — what this event is, and where it was
+// said — and the reader's eye finds them together at the end of the byline.
+const bylinePill = chatIn([["h", "unknown-room"]], { full: true });
+assert(bylinePill.indexOf('class="group-pill"') < bylinePill.indexOf('class="kind-badge"'),
+  "the room comes before the badge that says it is a chat");
+
+// A name replaces the id the moment anything on the page can say one — the
+// search pill's bargain, in the one other place that holds a bare group id.
+// Both halves come from the same cache, so a card and the search box can never
+// disagree about what a group is called.
+seedGroupEvents([{ id: eid, kind: 39000, pubkey: pk2, created_at: now, content: "",
+  tags: [["d", "nos"], ["name", "nos engineers"]] }]);
+pill = pillOf(chatIn([["h", "nos"]], { full: true }));
+assert.strictEqual(pill[3], "nos engineers", "a group the page has met draws its name");
+assert(pill[2].includes("nos"), "…and the hover still carries the id, which is what the filter actually asks for");
+
+// What the pill does NOT claim. Two relays that signed one id under different
+// names is groupnames.js's disagreement case, and it reaches this card as the
+// bare id — which is the only honest drawing: an `h` names no host, nothing
+// here records which relay an event came from, and a name over a colliding id
+// would say this line is from one room when the search returns several.
+seedGroupEvents([
+  { id: eid, kind: 39000, pubkey: pk, created_at: now, content: "", tags: [["d", "general"], ["name", "General"]] },
+  { id: eid, kind: 39000, pubkey: pk2, created_at: now, content: "", tags: [["d", "general"], ["name", "Generalists"]] },
+]);
+assert.strictEqual(pillOf(chatIn([["h", "general"]], { full: true }))[3], "general",
+  "an id its hosts disagree about keeps the id, on the card exactly as in the search box");
+
+// AN ID THE SEARCH LANGUAGE CANNOT CARRY LOSES ITS LINK, not its label. A
+// group token ends at whitespace and drops a trailing sentence stop, so
+// `group:my group` asks for the group `my` — the wrong room, silently. The
+// room is still what the pill is for, so the name stands as text.
+for (const bad of ["my group", "hello.", "x?"]) {
+  const html = chatIn([["h", bad]], { full: true });
+  assert(!pillOf(html), `\`${bad}\` must not be drawn as a link to another group`);
+  const span = /<span class="group-pill" title="([^"]*)">([^<]*)<\/span>/.exec(html);
+  assert(span, `\`${bad}\` still names the room it was posted to`);
+  assert.strictEqual(span[2], bad, "…as its own id, unlinked");
+}
+// The same guard, at the two older call sites that mint the same href — a
+// group's own record, and a group on somebody's list.
+const badRec = card(ev(39000, [["d", "my group"], ["name", "Mine"]]), { full: true });
+assert(!/href="\/\?q=group/.test(badRec), "a 39000 whose `d` cannot be tokenized links nowhere");
+assert(badRec.includes("Mine"), "…and still draws the group");
+const badList = card(ev(10009, [["group", "my group", "wss://r.example/", "Listed"]]), { full: true });
+assert(!/href="\/\?q=group/.test(badList), "the same for a `group` tag on a list");
+assert(badList.includes("Listed"), "…which also keeps its name");
+
+// The pill is an interpolation site like any other, and its id is a stranger's
+// string: the poison loop below cannot reach it, since an `h` tag on a fixture
+// that has none is a tag it never gets.
+const hostileRoom = card(ev(9, [["h", `"><b BAD>`]], "x"), { full: true });
+assert(!hostileRoom.includes("<b BAD>"), "a group id reached the card as MARKUP");
+assert(!/href="[^"]*<b/.test(hostileRoom), "…and its href is a query string, not a document");
 
 // ---- a picture post is an album --------------------------------------------
 //

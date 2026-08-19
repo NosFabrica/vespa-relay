@@ -10,7 +10,7 @@
 // is asserted here rather than any particular arrangement of the DOM.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, dateAt, groupAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
+const { tokenize, parseQuery, mentionAt, dateAt, groupAt, groupTokenizes, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
@@ -727,6 +727,29 @@ assert.strictEqual(effectiveSort("alisort:recent"), "", "…and must start its t
 // option list speak one vocabulary (filters.test.mjs holds the other half).
 for (const v of ["recent", "rank", "rank:asc", "followers", "text"]) {
   assert.strictEqual(effectiveSort(`cats sort:${v}`), v, `sort:${v} reads back as itself`);
+}
+
+// ---- can an id be WRITTEN as the token that finds it? ----------------------
+//
+// The property, not the regex: whatever [groupTokenizes] says yes to must read
+// back as ITSELF through the tokenizer, and a card is only allowed to mint a
+// `group:` link for those. A group id is a stranger's string — an `h` tag on a
+// chat message, a `d` on a relay's 39000 — and the two shapes that fail are
+// the ones that fail SILENTLY: whitespace ends a token, so `my group` links to
+// the group `my`, and a trailing sentence stop is punctuation, so `hello.`
+// links to `hello`. Both return somebody else's room under this room's name.
+for (const id of ["chachi", "0fe5c432fe61", "nos-engineers", "a", "a,b", "10.1000/182", "Ünï_çode"]) {
+  assert.strictEqual(groupTokenizes(id), true, `\`${id}\` is an id the search language can carry`);
+  assert.deepStrictEqual(parseQuery(`group:${id}`).groups, [id], `…and it reads back as itself`);
+}
+for (const id of ["my group", "hello.", "x?", "a;", "b!", "c,", "trailing ", "", null, undefined]) {
+  assert.strictEqual(groupTokenizes(id), false, `\`${id}\` cannot be written as a token that means itself`);
+}
+// The two halves are one source, so this cannot drift: every id the predicate
+// rejects either parses to something ELSE or to nothing at all.
+for (const id of ["my group", "hello.", "x?"]) {
+  assert.notDeepStrictEqual(parseQuery(`group:${id}`).groups, [id],
+    `\`${id}\` is rejected precisely because the tokenizer would read it as another group`);
 }
 
 console.log("query: from:/to:, since:/until:, #hashtags and NIP-73 scopes tokenize, build their REQ, and complete consistently");

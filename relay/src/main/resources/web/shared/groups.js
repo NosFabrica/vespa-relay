@@ -151,6 +151,26 @@ export function privateGroups(plaintext) {
   return ownGroups({ tags }).map((g) => ({ ...g, secret: true }));
 }
 
+/**
+ * The group an event was POSTED TO — NIP-29's `h` tag — or "".
+ *
+ * The other direction to everything above: those read a group's own record,
+ * this reads a MESSAGE and asks which room it was said in. NIP-29 puts that on
+ * every event addressed to a group, in one place and one spelling, which is
+ * why one line here answers it for a chat line, a thread, a reply and a
+ * moderation event alike.
+ *
+ * The bare id, because that is all an `h` carries — the same half-identity the
+ * `#h` filter and the `group:` token have, and the same reason both of them
+ * can be ambiguous: the host relay is nowhere in the message. Whoever draws it
+ * has to say where the NAME came from separately, which is groupnames.js's
+ * job.
+ */
+export const postedTo = (ev) => {
+  const tag = ((ev && ev.tags) || []).find((t) => Array.isArray(t) && t[0] === "h");
+  return tag ? at(tag, 1) : "";
+};
+
 /** One kind-39000 as a candidate: its `d` is the id, its AUTHOR is the host. */
 export function metaGroup(ev) {
   if (!ev || ev.kind !== 39000) return null;
