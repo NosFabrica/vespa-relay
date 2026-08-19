@@ -10,8 +10,8 @@ import assert from "assert";
 import { readFileSync } from "node:fs";
 
 const { avatarHtml, SIZES, hueOf, BLANK } =
-  await import(new URL("../../relay/src/main/resources/web/shared/avatar.js", import.meta.url));
-const html = readFileSync(new URL("../../relay/src/main/resources/index.html", import.meta.url), "utf8");
+  await import(new URL("../../web/src/main/resources/web/shared/avatar.js", import.meta.url));
+const html = readFileSync(new URL("../../web/src/main/resources/index.html", import.meta.url), "utf8");
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 

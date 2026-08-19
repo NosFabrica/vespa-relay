@@ -21,9 +21,9 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { FEED_KINDS, feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } =
-  await import(new URL("../../relay/src/main/resources/web/feed.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/feed.js", import.meta.url));
 const { buildFilters } =
-  await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/query.js", import.meta.url));
 
 const NOW = 1_800_000_000;
 const id = (n) => String(n).padStart(64, "0");
@@ -63,7 +63,7 @@ assert.deepStrictEqual(feedKinds([0]), [0], "a chip REPLACES the default — the
 // app.js the same way cards.test.mjs parses the same table — the tabs are page
 // state, not a module, and a second copy of them here would be the thing that
 // goes stale.
-const appJs = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const appJs = readFileSync(new URL("../../web/src/main/resources/web/app.js", import.meta.url), "utf8");
 const tabs = [...appJs.matchAll(/slug:\s*"([a-z]+)",\s*kinds:\s*(null|\[([^\]]*)\])/g)]
   .map((m) => [m[1], m[3] ? m[3].split(",").map((s) => Number(s.trim())).filter(Number.isFinite) : null]);
 assert.ok(tabs.length >= 2, "the tab table parsed");
@@ -109,7 +109,7 @@ assert.ok(
 // The chips have to be ON SCREEN on the feed page for any of that to be
 // reachable: the whole bar used to be hidden there, which took the one working
 // control off the page along with the three that could not work on it.
-const html = readFileSync(new URL("../../relay/src/main/resources/index.html", import.meta.url), "utf8");
+const html = readFileSync(new URL("../../web/src/main/resources/index.html", import.meta.url), "utf8");
 assert.ok(/body\.feed \.bar-right \{ display: none/.test(html), "the feed hides the Filters half of the bar");
 assert.ok(!/body\.feed \.bar \{ display: none/.test(html), "…and not the chips, which are the half that acts on it");
 

@@ -38,14 +38,26 @@ states its own admission rule:
   `RelayVerdictRecord` and the `Verdict` vocabulary both planes speak,
   `RelayDiscovery`, the `RouterConfig` both read, the `IngestPipeline` both
   write through, and `Processors`. It sits ABOVE `:common` and must stay there.
-- **`:web`** — how a service serves a page: the Ktor scaffolding
-  (`installPageDefaults`, `serveStatusSite`), the classpath asset cache and its
-  content-derived validators (`WebAssets`, `webModules`, `favicon`), the page
-  cache (`CachedPage`, `IconedPage`, `pageWithIcon`) and the stats document
-  holder (`StatsSnapshot`). Domain-free by construction — it depends on Ktor and
-  kotlinx.serialization and on nothing of ours, `:common` included. Assets are
-  looked up on the CLASSPATH rather than under a module root, so a service ships
-  its own page beside the shared ones and one `/web/…` route serves both.
+- **`:web`** — THE FRONT END, and the scaffolding that serves it. Every `.html`,
+  `.js` and `.css` in the repo — the search UI, the stats page, both planes'
+  cards — plus the Ktor plumbing (`installPageDefaults`, `serveStatusSite`), the
+  asset cache and its content-derived validators (`WebAssets`, `webModules`,
+  `favicon`), the page cache (`CachedPage`, `IconedPage`, `pageWithIcon`) and
+  the stats document holder (`StatsSnapshot`). Its Kotlin depends on Ktor and
+  kotlinx.serialization and on nothing of ours, `:common` included.
+
+  **The rule: engines produce documents, `:web` renders them, and the seam is
+  `/stats.json`.** No other module may ship a browser file, and
+  `NoBrowserFilesInEngineModulesTest` holds it — "a page belongs next to the
+  thing that serves it" is the argument that produced the layout this replaced,
+  and it sounds right every time. It also cost a resolver hook in the JS suite,
+  whose only job was undoing the split.
+
+  **ONE stats page**, served by the relay, the mirror and the monitor alike.
+  Every panel is guarded on the section it reads, so the page draws whatever
+  document it is pointed at; the heading, the tab and the line about what the
+  numbers cover come from that document's `title`, `scope` and `counted`,
+  because the page cannot know which service answered.
 
 ## Commands
 
@@ -280,6 +292,13 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
                             measured in HttpServer), statsDocument, and
                             serveStatusSite — one page + its document + its
                             assets, which is a whole background service's UI
+  resources/stats.html      THE page. Panels guarded on the section they read,
+                            so the relay's, the mirror's and the monitor's
+                            documents each draw their own cards from one file
+  resources/web/            every module the pages import: shared/ (the design,
+                            the render engine, the protocol clients), sync/ and
+                            monitor/ (each plane's cards), cards/ (the search
+                            UI's per-kind renderers)
   CachedPages.kt            CachedPage/IconedPage and the ETag exchange every
                             page and document answers with
   WebAssets.kt              /web/… off the classpath, hashed once, and /favicon.ico

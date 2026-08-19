@@ -113,6 +113,14 @@ function staleBanner(stale) {
  */
 
 function render(doc) {
+  // WHOSE PAGE THIS IS, from the document rather than from the markup. One
+  // file is served by the relay, the mirror and the monitor, and the reader has
+  // two or three of them open at once — a tab reading "Relay stats" on the
+  // monitor's port is worse than no title at all.
+  if (doc.title) {
+    document.title = doc.title;
+    if (titleEl) titleEl.textContent = doc.title;
+  }
   scopeEl.textContent = doc.scope || "";
   settlePoll(doc);
   // The containers are laid out once and then kept, which is the whole point:
@@ -196,7 +204,7 @@ function renderFoot(doc) {
     footEl.appendChild(line);
   }
   if (!rows.length) footEl.append("Rolled up at an unknown time. ");
-  if (footNote) footEl.append(footNote + " ");
+  if (doc.counted) footEl.append(doc.counted + " ");
   const a = el("a", null, docUrl);
   a.href = docUrl;
   footEl.append("Source: ");
@@ -204,8 +212,8 @@ function renderFoot(doc) {
   footEl.append(` (schema ${doc.schema}).`);
   // A document written by a newer relay may mean things this page does not
   // know; saying so beats charting fields we are guessing at.
-  if (doc.schema > schema) {
-    footEl.appendChild(el("p", "err", `This page was written for schema ${schema} — some panels may be missing or misread.`));
+  if (doc.schema > schemaFor(doc)) {
+    footEl.appendChild(el("p", "err", `This page was written for schema ${schemaFor(doc)} — some panels may be missing or misread.`));
   }
 }
 
@@ -309,6 +317,20 @@ function settlePoll(doc) {
 }
 
 /**
+ * WHICH DOCUMENT IS THIS, and therefore which schema was it written against.
+ *
+ * One page, three services. The section a document carries is what names its
+ * publisher, and each plane versions its own document — so a page that checked
+ * one number would report the mirror's schema 1 as ancient against the relay's
+ * 2 and offer to explain itself in terms of neither.
+ *
+ * An unrecognised document falls back to the relay's, which is the oldest and
+ * strictest of the three: the page then reports a mismatch it may not have,
+ * rather than staying quiet about one it does.
+ */
+const schemaFor = (doc) => (doc.monitor ? schema.monitor : doc.sync && !doc.corpus ? schema.sync : schema.relay);
+
+/**
  * Mount a stats page: lay out its panels, draw the document, and keep it drawn.
  *
  * Everything a page differs in is an argument, and there are only five things:
@@ -320,7 +342,10 @@ function settlePoll(doc) {
  *  - [tiers]       the cadences to name in the footer, in reading order
  *  - [pendingNote] what to say while nothing has been computed yet — the one
  *                  string that has to name the service's own settings
- *  - [footNote]    a line about what the numbers cover, or nothing
+ *
+ * What the numbers COVER is not an argument: the document says so itself, in
+ * `counted`. It is a fact about the data, and the service that computed it is
+ * the only one that can state it.
  *
  * [beforePanels] is the one hook, and it exists for exactly one caller: the
  * relay's activity panel has to settle on a grain the document still carries
@@ -332,7 +357,6 @@ export function mountStatsPage({
   tiers: tierNames = [],
   docUrl: url = "/stats.json",
   pendingNote: pending = "",
-  footNote: note = "",
   beforePanels: hook = () => {},
 }) {
   panels = panelTable;
@@ -340,9 +364,9 @@ export function mountStatsPage({
   tiers_ = tierNames;
   docUrl = url;
   pendingNote = pending;
-  footNote = note;
   beforePanels = hook;
   bodyEl = document.getElementById("body");
+  titleEl = document.querySelector("h1");
   scopeEl = document.getElementById("scope");
   footEl = document.getElementById("foot");
   // A chain rather than setInterval: each read waits for the previous one to
@@ -361,9 +385,9 @@ let schema = 0;
 let tiers_ = [];
 let docUrl = "/stats.json";
 let pendingNote = "";
-let footNote = "";
 let beforePanels = () => {};
 let bodyEl = null;
+let titleEl = null;
 let scopeEl = null;
 let footEl = null;
 

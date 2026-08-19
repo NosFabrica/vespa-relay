@@ -8,8 +8,8 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { relatedAsk, relatedShape, relatedHtml, relatedPeople } =
-  await import(new URL("../../relay/src/main/resources/web/related.js", import.meta.url));
-const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/related.js", import.meta.url));
+const { seedProfiles } = await import(new URL("../../web/src/main/resources/web/shared/profiles.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";

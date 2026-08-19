@@ -52,11 +52,11 @@ import kotlin.test.assertTrue
  * of failure `RelayWebAssetsTest` exists for on the relay's side.
  */
 class SyncStatusSiteTest {
-    /** The page as `SyncMain` loads it: off this module's own classpath, no fallback. */
+    /** The page as `SyncMain` loads it: off the classpath, no fallback. */
     private fun page(): String =
         assertNotNull(
-            SyncStatus::class.java.getResourceAsStream("/sync_stats.html")?.use { it.readBytes().decodeToString() },
-            "sync_stats.html is not on the :sync classpath — the status page would be unservable",
+            SyncStatus::class.java.getResourceAsStream("/stats.html")?.use { it.readBytes().decodeToString() },
+            "stats.html is not on the classpath from :sync — no status page could be served",
         )
 
     @Test
@@ -76,8 +76,11 @@ class SyncStatusSiteTest {
 
             val html = client.get("/")
             assertEquals(HttpStatusCode.OK, html.status)
-            val body = html.bodyAsText()
-            assertTrue(body.contains("Mirror status"), "the page is the mirror's, not the relay's")
+            // ONE page for three services: what it draws is decided by the
+            // section the document carries, and its heading comes from that
+            // document's `title`. So what is asserted here is that the page is
+            // served and mounts — not whose it is.
+            assertTrue(html.bodyAsText().contains("mountStatsPage"))
 
             // EVERY `import` and `<link>` the page names, fetched. A page whose
             // engine 404s renders a heading and nothing else, and the heading
@@ -105,14 +108,13 @@ class SyncStatusSiteTest {
         }
 
     @Test
-    fun `the page and its modules are found across BOTH jars, which is the whole classpath argument`() {
-        // `/web/shared/page.js` ships in :web and `/web/sync/cards.js` in
-        // :sync. One route serves both because WebAssets resolves off the
-        // CLASSPATH rather than under any module's resource root — see its
-        // KDoc. Asserted directly as well as over HTTP so a failure names which
-        // half is missing.
-        assertNotNull(WebAssets.get("shared/page.js"), "the shared page module ships in :web")
-        assertNotNull(WebAssets.get("sync/cards.js"), "the mirror's cards ship in :sync")
+    fun `every browser file this page needs is one module's, and it is not this one`() {
+        // :web owns all of it — the page, the cards, the engine. This module
+        // ships none, which is the rule `NoBrowserFilesInEngineModulesTest`
+        // holds; here it is asserted from the consuming side, because what
+        // matters at runtime is that the files RESOLVE, not where they live.
+        assertNotNull(WebAssets.get("shared/page.js"))
+        assertNotNull(WebAssets.get("sync/cards.js"))
     }
 
     private companion object {

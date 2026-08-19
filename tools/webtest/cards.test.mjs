@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs';
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
-const { card, rowOf, popupRow, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam, nip19Parse, npub, noteId, shortNpub } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
-const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
-const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
-const { parsePatch } = await import(new URL("../../relay/src/main/resources/web/cards/code.js", import.meta.url));
-const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
-const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
-const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
+const { card, rowOf, popupRow, namedPubkeys } = await import(new URL("../../web/src/main/resources/web/cards.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId, shortNpub } = await import(new URL("../../web/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { buildFilters } = await import(new URL("../../web/src/main/resources/web/shared/query.js", import.meta.url));
+const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../web/src/main/resources/web/cards/base.js", import.meta.url));
+const { parsePatch } = await import(new URL("../../web/src/main/resources/web/cards/code.js", import.meta.url));
+const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../web/src/main/resources/web/shared/kinds.js", import.meta.url));
+const { seedProfiles } = await import(new URL("../../web/src/main/resources/web/shared/profiles.js", import.meta.url));
+const { REPLY_KINDS } = await import(new URL("../../web/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -195,7 +195,7 @@ assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
 // already knows to name cannot answer "what does this relay hold", and the
 // grouping histogram behind stats.html enumerates the store instead. What must
 // not come back is a private copy of the labels.
-const statsPage = readFileSync(new URL("../../relay/src/main/resources/stats.html", import.meta.url), "utf8");
+const statsPage = readFileSync(new URL("../../web/src/main/resources/stats.html", import.meta.url), "utf8");
 assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\/web\/shared\/kinds\.js"/.test(statsPage),
   "stats.html must take kind names from shared/kinds.js, not carry a second copy");
 
@@ -691,7 +691,7 @@ for (const [kind, fixture] of FIXTURES) {
 // which is three chances to write `kind 0 ? npub : note` again and have two of
 // them disagree. app.js did exactly that for the picker, without selfHref's
 // guard, so an event with no id opened "/" and looked like a page reset.
-const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const appSrc = readFileSync(new URL("../../web/src/main/resources/web/app.js", import.meta.url), "utf8");
 assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
   "app.js builds an entity path by hand — ask cards/base.js's selfHref instead, so every route to an event agrees");
 
@@ -899,7 +899,7 @@ for (const kind of renderers.keys()) {
 // cannot find it under any chip. "Media" carried 31922 — a calendar date the
 // live family renders — while 1986 audio was in no tab at all.
 const TAB_TONE = { people: "people", notes: "note", articles: "article", media: "media", code: "code", live: "live", lists: "list" };
-const appJs = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const appJs = readFileSync(new URL("../../web/src/main/resources/web/app.js", import.meta.url), "utf8");
 const tabs = [...appJs.matchAll(/slug:\s*"([a-z]+)",\s*kinds:\s*(null|\[([^\]]*)\])/g)]
   .map((m) => [m[1], m[3] ? m[3].split(",").map((s) => Number(s.trim())).filter(Number.isFinite) : []]);
 assert(tabs.length >= 2, "the tab table parsed");

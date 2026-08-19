@@ -110,6 +110,9 @@ class MonitorStatus(
 
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
+            // See SyncStatus: one markup file, three services, so the heading
+            // and the tab are the document's to state.
+            put("title", "Relay monitor")
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put(
                 "scope",
@@ -118,6 +121,7 @@ class MonitorStatus(
                     "which are unreachable. NOT what the mirror is doing with them: that is the sync service's page.",
             )
             put("timezone", "UTC")
+            put("counted", "Counted over the relay urls this router discovers, not over its corpus.")
             // See [relayUrl]: this page is not served by the relay, so the
             // websocket the verdict panel opens has to be named for it.
             relayUrl?.let { put("relay", it) }

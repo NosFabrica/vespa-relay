@@ -133,6 +133,11 @@ class SyncStatus(
         snapshot.publish(
             buildJsonObject {
                 put("schema", SCHEMA_VERSION)
+                // WHOSE PAGE THIS IS. One markup file is served by all three
+                // services, so the heading and the tab come from the document
+                // rather than from the page — a tab reading "Relay stats" on
+                // the mirror's port is worse than no title at all.
+                put("title", "Mirror status")
                 put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                 put(
                     "scope",
@@ -140,6 +145,9 @@ class SyncStatus(
                         "for what the store holds, read the relay's own /stats.html.",
                 )
                 put("timezone", "UTC")
+                // What the numbers cover, stated by the service that computed
+                // them — the page cannot know, and the three answers differ.
+                put("counted", "Counted against this mirror's own state, not the relay's corpus.")
                 putJsonObject("tiers") {
                     putJsonObject(TIER) {
                         put("generatedAt", Instant.ofEpochMilli(startedMs).toString())

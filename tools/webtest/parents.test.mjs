@@ -26,7 +26,7 @@ class FakeWS {
 globalThis.WebSocket = FakeWS;
 
 const { replyTarget, replyAuthor, replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } =
-  await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const hex = (c) => c.repeat(64);
 const alice = hex("a"), bob = hex("b");

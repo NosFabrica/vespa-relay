@@ -25,7 +25,7 @@ class FakeWS {
 }
 globalThis.WebSocket = FakeWS;
 
-const { profiles, enrichProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
+const { profiles, enrichProfiles } = await import(new URL("../../web/src/main/resources/web/shared/profiles.js", import.meta.url));
 
 const pk = (c) => c.repeat(64);
 const profileEvent = (pubkey, name) => ({ id: pk("e"), pubkey, kind: 0, created_at: 1, tags: [], content: JSON.stringify({ name }) });

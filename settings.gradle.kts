@@ -31,10 +31,20 @@ rootProject.name = "vespa-relay"
 //             the processes share over HTTP. It must never gain a dependency on
 //             quartz's relay CLIENT or on Ktor — the day it does, it has stopped
 //             being "what both read" and become the junk drawer.
-//   :web    — how a service serves a page: the Ktor scaffolding, the classpath
-//             asset cache with its content-derived validators, and the stats
-//             document holder. Domain-free by construction — it depends on Ktor
-//             and kotlinx.serialization and on nothing of ours.
+//   :web    — THE FRONT END, and the scaffolding that serves it. Every .html,
+//             .js and .css in this repo, plus the Ktor plumbing, the asset cache
+//             with its content-derived validators, and the stats document
+//             holder. Its Kotlin knows nothing about relays and must stay that
+//             way; its JavaScript knows the shape of /stats.json, which is what
+//             a front end is for.
+//
+//             THE RULE: engines produce documents, :web renders them, and the
+//             seam is /stats.json. No other module may ship a browser file —
+//             `NoBrowserFilesInEngineModulesTest` holds it, because "a page
+//             belongs next to the thing that serves it" is the argument that
+//             produced the layout this replaced, and it sounds right every
+//             time. One markup file is served by the relay, the mirror and the
+//             monitor; each panel is guarded on the section it reads.
 //   :peers  — how this deployment talks to OTHER relays, shared by the two
 //             client-side planes and by neither of the above: the websocket
 //             client and its socket budget, Tor, the NIP-66 verdict record,

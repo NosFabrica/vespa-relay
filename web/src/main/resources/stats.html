@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta name="color-scheme" content="light dark" />
-<meta name="description" content="What this relay's store holds: events, publishing pubkeys, kinds, and activity over time." />
+<meta name="description" content="What this deployment holds and is doing: the relay's corpus, the mirror's coverage, and the monitor's verdicts — one page, served by whichever of the three you point it at." />
 <title>Relay stats</title>
 <!-- The same tab icon the search page carries; see its head for why there are
      two of them. -->
@@ -92,6 +92,8 @@
 </head>
 <body>
 <main>
+  <!-- Replaced from the document's own `title` on the first render: this one
+       file is served by the relay, the mirror and the monitor. -->
   <h1>Relay stats</h1>
   <p class="sub" id="scope">Loading…</p>
 
@@ -109,6 +111,12 @@ import { kindLabel } from "/web/shared/kinds.js";
 // than a rewrite. See `mountStatsPage` for the whole contract.
 import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "/web/shared/page.js";
 import { mountStatsPage } from "/web/shared/statspage.js";
+// The two planes' cards. Imported unconditionally because this ONE page is
+// served by all three services, and each draws what its own document carries —
+// see PANELS. About 35KB of module the relay's copy never draws, against three
+// copies of the page chrome to keep in step, which is the trade this reverses.
+import { syncCard } from "/web/sync/cards.js";
+import { monitorCard, verdictsCard } from "/web/monitor/cards.js";
 
 /**
  * What to call a kind, best source first.
@@ -911,42 +919,77 @@ function activityPanel(activity) {
  * nothing else on this page changes when that happens. The two reference tables
  * are last, in the order of how far you have to scroll to get past them.
  */
+/**
+ * The body, panel by panel — what each draws and which sections it reads from.
+ *
+ * The `reads` list is the REDRAW KEY: a panel is rebuilt when a section it
+ * reads has been recomputed, and left alone when none has. That is what makes
+ * two cadences liveable on one page — the document changes every minute, and
+ * rebuilding the whole body destroys what the reader was doing: both search
+ * boxes lose what they typed and every bounded scroll box jumps to the top.
+ *
+ * IT IS ALSO THE PRESENCE TEST, and that half is new. One page is served by
+ * three services and their documents carry disjoint sections, so a panel whose
+ * section is absent must draw NOTHING — not an empty card. The two are opposite
+ * claims: "this deployment mirrors nothing" against "this document is not the
+ * mirror's". `has()` is that check, applied to every panel rather than to the
+ * ones that happened to need it, because which sections a document carries is
+ * now a property of which service answered.
+ */
+const has = (doc, ...members) => members.some((m) => doc[m]);
+
 const PANELS = [
-  { name: "totals", reads: ["corpus", "authors", "kinds"], build: (doc) => tiles(doc) },
-  { name: "trust", reads: ["trust"], build: (doc) => [trustCard(doc.trust)] },
-  { name: "activity", reads: ["activity"], build: (doc) => [activityPanel(doc.activity)] },
-  { name: "kindActivity", reads: ["kindActivity"], build: (doc) => [kindActivityCard(doc.kindActivity)] },
-  { name: "zaps", reads: ["zaps"], build: (doc) => [zapsCard(doc.zaps)] },
-  { name: "relays", reads: ["relayDistribution"], build: (doc) => [relaysCard(doc.relayDistribution)] },
-  { name: "kinds", reads: ["kinds"], build: (doc) => [kindsCard(doc.kinds)] },
-  // NEITHER PLANE OF THE ROUTER IS ON THIS PAGE, and both absences are
-  // deliberate. Sync coverage and the relay monitor were cards here, drawn from
-  // JSON files the sync process wrote to a shared volume; each plane serves its
-  // own page now, where its numbers are produced — see `SyncStatus` and
-  // `MonitorStatus`. The per-url verdict panel went with the monitor: it reads
-  // signed kind-30166 records, which are that plane's whole output.
+  { name: "totals", reads: ["corpus", "authors", "kinds"], build: (doc) => (has(doc, "corpus") ? tiles(doc) : []) },
+  { name: "trust", reads: ["trust"], build: (doc) => (has(doc, "trust") ? [trustCard(doc.trust)] : []) },
+  { name: "activity", reads: ["activity"], build: (doc) => (has(doc, "activity") ? [activityPanel(doc.activity)] : []) },
+  { name: "kindActivity", reads: ["kindActivity"], build: (doc) => (has(doc, "kindActivity") ? [kindActivityCard(doc.kindActivity)] : []) },
+  { name: "zaps", reads: ["zaps"], build: (doc) => (has(doc, "zaps") ? [zapsCard(doc.zaps)] : []) },
+  { name: "relays", reads: ["relayDistribution"], build: (doc) => (has(doc, "relayDistribution") ? [relaysCard(doc.relayDistribution)] : []) },
+  { name: "kinds", reads: ["kinds"], build: (doc) => (has(doc, "kinds") ? [kindsCard(doc.kinds)] : []) },
+  // THE ROUTER'S TWO PLANES, drawn by whichever service is serving this page.
   //
-  // This page keeps the one member of that section the RELAY genuinely owns:
-  // the manifest, which bounds a mirror-scoped count and has to answer while
-  // the sync process is down.
+  // One page again, and it is the same list it always was — what changed is
+  // that a document no longer has to carry every section. Three pages
+  // duplicated the chrome — head, title, footer, poll, the mount call — so a
+  // change to how a page BEHAVES had to be made three times or silently
+  // diverge. The plane split belongs in the SERVICE that publishes the numbers,
+  // which is where it is; it does not have to be in the markup as well.
+  //
+  // The mirror's card is guarded on the coverage itself, not on the section:
+  // the RELAY's document carries a `sync` section too, holding the manifest and
+  // nothing else — a fact about this relay that clients read — and a coverage
+  // card over it would report a mirror that has walked nothing.
+  { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams ? [syncCard(doc.sync)] : []) },
+  { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
+  // `reads: []` on purpose: built ONCE and never rebuilt by the poller, because
+  // it holds what the reader asked for over a websocket and what they typed
+  // into its filter. Empty on any document with no `monitor` section — the
+  // verdicts are that plane's whole output, and a panel offering to read them
+  // beside a corpus histogram is answering a question nobody asked there.
+  //
+  // `doc.relay` is the SERVED relay's ws url, published by every one of the
+  // three documents: a page on the monitor's port must not derive its socket
+  // from `location`, or it dials the status site.
+  { name: "verdicts", reads: [], build: (doc) => (has(doc, "monitor") ? [verdictsCard(doc.relay)] : []) },
 ];
 
 mountStatsPage({
   panels: PANELS,
-  // StatsRollup.SCHEMA_VERSION — bumped when a RELEASED field changes meaning
-  // or leaves. One constant because it was two: the comparison and the sentence
-  // it prints both carried a literal, and raising the rollup's number left the
-  // page comparing against one and offering to explain itself in terms of
-  // another. A version check that can disagree with itself is worse than none.
-  schema: SCHEMA,
-  // The two cadences, in the order they are READ rather than the order the
-  // document happens to list them.
-  tiers: [["counters", "Counters"], ["charts", "Charts"]],
+  // Every schema this page can read. It used to be one number because there was
+  // one document; there are three now, versioned independently by the planes
+  // that publish them, and the page checks the one it was handed. A document
+  // whose service is not listed is drawn anyway and says so in the footer.
+  schema: { relay: SCHEMA, sync: 1, monitor: 1 },
+  // The cadences to name in the footer, in the order they are READ. A tier a
+  // document carries and this list does not still gets a line under its own
+  // name — a page that silently omits half of a document it does not recognise
+  // is how a third cadence would go unnoticed for a release.
+  tiers: [["counters", "Counters"], ["charts", "Charts"], ["status", "Status"]],
   pendingNote:
-    "The relay computes these behind the server; the counters land within seconds and the first pass over a " +
-    "large corpus takes a while. If this persists, check the relay log for `stats:` lines — and that " +
-    "STATS_COUNTERS_INTERVAL_SECONDS and STATS_INTERVAL_SECONDS are not both 0.",
-  footNote: "Counted anonymously against the whole store.",
+    "This is computed behind the server. On the relay the counters land within seconds and the first pass over a " +
+    "large corpus takes a while (check the log for `stats:` lines, and that STATS_COUNTERS_INTERVAL_SECONDS and " +
+    "STATS_INTERVAL_SECONDS are not both 0); on the mirror and the monitor it is a fold over state already in " +
+    "memory and lands on the first tick (check the sync log for `router:` lines).",
   // The activity panel draws whichever grain this settles on, and a document
   // may have stopped carrying the one on screen.
   beforePanels: (doc) => settleGrain(doc.activity),

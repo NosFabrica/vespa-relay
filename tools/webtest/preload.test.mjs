@@ -7,7 +7,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
-const RES = "relay/src/main/resources";
+const RES = "web/src/main/resources";
 const entry = "/web/app.js";
 
 const reached = new Set();

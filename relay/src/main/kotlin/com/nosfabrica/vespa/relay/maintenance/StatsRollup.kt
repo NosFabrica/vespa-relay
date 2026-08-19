@@ -275,6 +275,10 @@ internal class StatsRollup(
         }
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
+            // WHOSE PAGE THIS IS. One markup file is served by this relay, the
+            // mirror and the monitor, so the heading and the tab come from the
+            // document — see the same member on `SyncStatus`.
+            put("title", "Relay stats")
             put("relay", relayUrl)
             // When this document was last TOUCHED, by either tier. The honest
             // per-half timestamps are in `tiers` and on every section, and a
@@ -287,6 +291,9 @@ internal class StatsRollup(
                     "a total below a network-wide dashboard's is this mirror's coverage, not a fault.",
             )
             put("countedAs", "anonymous")
+            // What the numbers cover, in the page's footer. The service that
+            // computed them is the only one that can say.
+            put("counted", "Counted anonymously against the whole store.")
             put("timezone", "UTC")
             putJsonObject("tiers") {
                 putJsonObject(tier.member) {

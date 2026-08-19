@@ -11,7 +11,7 @@ import assert from "assert";
 import { readFileSync } from "node:fs";
 
 const { ownGroups, metaGroup, rank, where, relayLabel, isNip04, sealed, privateGroups } =
-  await import(new URL("../../relay/src/main/resources/web/shared/groups.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/groups.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
 const HOST_B = "b".repeat(64);
@@ -239,7 +239,7 @@ assert.strictEqual(relayLabel("wss://x.example/inbox"), "x.example/inbox", "…a
 // showing a reader content the relay has otherwise decided it cannot rank for
 // them. No chain here, no personal groups — deliberately, with readiness.js
 // explaining it rather than a special case in the search box.
-const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const appSrc = readFileSync(new URL("../../web/src/main/resources/web/app.js", import.meta.url), "utf8");
 const ownRead = /(\w+)\.req\(\{ kinds: \[10009\]/.exec(appSrc);
 assert(ownRead, "app.js must read the reader's own kind 10009 somewhere");
 assert.strictEqual(ownRead[1], "relay",

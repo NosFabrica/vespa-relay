@@ -11,7 +11,7 @@
 import assert from "assert";
 
 const { tokenize, parseQuery, mentionAt, dateAt, groupAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
-  await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
 const HEX_A = "a".repeat(64);

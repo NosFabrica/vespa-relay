@@ -26,7 +26,7 @@ class FakeWS {
 globalThis.WebSocket = FakeWS;
 
 const { groupName, knowsGroup, seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } =
-  await import(new URL("../../relay/src/main/resources/web/shared/groupnames.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/groupnames.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
 const HOST_B = "b".repeat(64);
@@ -149,7 +149,7 @@ assert.strictEqual(knowsGroup("dropped"), false, "a dropped connection states no
 // store applies the observer as a FILTER, so asking on that socket would leave
 // a reader with no scores mirrored here looking at the hex id the pill is
 // there to replace.
-const src = readFileSync(new URL("../../relay/src/main/resources/web/shared/groupnames.js", import.meta.url), "utf8");
+const src = readFileSync(new URL("../../web/src/main/resources/web/shared/groupnames.js", import.meta.url), "utf8");
 assert(/await refConn\(\)/.test(src),
   "the name lookup asks on the ANONYMOUS reference connection, like every other fact about a subject");
 assert(!/\brelay\.req\(/.test(src), "…and never on the trust-gated socket, which would narrow it to nothing");

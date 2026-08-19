@@ -1,6 +1,6 @@
 import assert from 'assert';
 const { npub, noteId, naddr: mintAddr, nevent: mintEvent, shortAddr, pubkeyParam, nip19Parse } =
-  await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+  await import(new URL("../../web/src/main/resources/web/shared/nip19.js", import.meta.url));
 
 // A test-side bech32+TLV ENCODER, written independently from the page's
 // decoder so the two paths check each other.

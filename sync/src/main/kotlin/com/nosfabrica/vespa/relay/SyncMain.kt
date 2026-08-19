@@ -32,7 +32,6 @@ import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
-import com.nosfabrica.vespa.relay.monitor.MonitorStatus
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.SyncProgress
@@ -86,20 +85,22 @@ private fun statusInterval(env: Map<String, String>): Long =
     } ?: DEFAULT_STATUS_INTERVAL_SECONDS
 
 /**
- * The status page's markup, off this module's own classpath.
+ * The status page's markup, off the classpath.
+ *
+ * ONE page for all three services — the relay's, the mirror's and the
+ * monitor's. Every panel on it is guarded on the section it reads, so it draws
+ * whatever document it is pointed at and nothing else; the title, the scope
+ * line and what the numbers cover come from that document too. Three copies of
+ * the chrome was three places for a change to how a page BEHAVES to be made, or
+ * silently diverge.
  *
  * An error rather than a fallback if it is missing: the page is a resource of
- * this jar, so an absent one means a broken build, and serving a blank page
- * would hide that behind something that looks like an empty mirror.
+ * the :web jar, so an absent one means a broken build, and serving a blank page
+ * would hide that behind something that looks like an empty deployment.
  */
 private fun statusPage(): String =
-    SyncStatus::class.java.getResourceAsStream("/sync_stats.html")?.use { it.readBytes().decodeToString() }
-        ?: error("sync_stats.html is missing from the :sync jar — the status page cannot be served.")
-
-/** The monitor's page, off ITS module's classpath, on the same terms. */
-private fun monitorPage(): String =
-    MonitorStatus::class.java.getResourceAsStream("/monitor_stats.html")?.use { it.readBytes().decodeToString() }
-        ?: error("monitor_stats.html is missing from the :monitor jar — the monitor page cannot be served.")
+    SyncStatus::class.java.getResourceAsStream("/stats.html")?.use { it.readBytes().decodeToString() }
+        ?: error("stats.html is missing from the :web jar — no status page can be served.")
 
 /**
  * Run the sync engine — "the router" — as its own process against a Vespa the
@@ -353,7 +354,7 @@ fun main() {
             StatusRollup("monitor", everySeconds, ::publish).start() to
                 serveStatusSite(
                     port = monitorPort,
-                    page = monitorPage(),
+                    page = statusPage(),
                     snapshot = monitorSnapshot,
                     icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
                 )

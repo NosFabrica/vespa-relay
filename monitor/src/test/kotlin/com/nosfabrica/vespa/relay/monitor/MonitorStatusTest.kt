@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.web.CachedPage
-import com.nosfabrica.vespa.relay.web.WebAssets
 import com.nosfabrica.vespa.relay.web.favicon
 import com.nosfabrica.vespa.relay.web.installPageDefaults
 import com.nosfabrica.vespa.relay.web.respondPage
@@ -44,14 +43,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The monitor plane's own status document and the page over it.
+ * The monitor plane's own status document, and the one page that draws it.
  *
- * The properties here are the ones the split created: the rows are THIS plane's
- * (nothing sorts a shared array by name any more), the glossary is the subset
- * this document publishes, and the page and every module it imports resolve
- * across two jars — `/web/monitor/cards.js` from here and the shared modules
- * under `/web/shared/` from :web. A missing resource is a blank page that
- * compiles perfectly.
+ * The rows are THIS plane's — nothing sorts a shared array by name any more —
+ * and the glossary is the subset this document publishes. The page itself ships
+ * in :web and is served by all three services; what makes it draw the MONITOR's
+ * cards is the `monitor` section this document carries, which is the property
+ * worth pinning here.
  */
 class MonitorStatusTest {
     private fun rows(): Processors =
@@ -98,12 +96,12 @@ class MonitorStatusTest {
     }
 
     @Test
-    fun `the page is served, and every module it imports resolves across both jars`() =
+    fun `the shared page is served, and every module it imports resolves`() =
         testApplication {
             val page =
                 assertNotNull(
-                    MonitorStatus::class.java.getResourceAsStream("/monitor_stats.html")?.use { it.readBytes().decodeToString() },
-                    "monitor_stats.html is not on the :monitor classpath — the page would be unservable",
+                    MonitorStatus::class.java.getResourceAsStream("/stats.html")?.use { it.readBytes().decodeToString() },
+                    "stats.html is not on the classpath from :monitor — no page could be served",
                 )
             val cached = CachedPage(page)
             application {
@@ -115,16 +113,27 @@ class MonitorStatusTest {
                 }
             }
 
-            assertTrue(client.get("/").bodyAsText().contains("Relay monitor"))
+            // The markup is one file for three services, so what it says on
+            // disk is the relay's heading — the monitor's comes from this
+            // document's `title` on the first render. What this asserts is that
+            // the page is SERVED and mounts at all.
+            assertTrue(client.get("/").bodyAsText().contains("mountStatsPage"))
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the monitor page")
             }
         }
 
     @Test
-    fun `the cards ship here and the shared modules in web, and one route serves both`() {
-        assertNotNull(WebAssets.get("monitor/cards.js"), "the monitor's cards ship in :monitor")
-        assertNotNull(WebAssets.get("shared/processors.js"), "the processor card is shared, in :web")
+    fun `the document names itself, because one page is served by three services`() {
+        val doc = MonitorStatus(rows(), everySeconds = 30, relayUrl = "ws://localhost:7777").document(nowSeconds = 1_000)
+
+        // The heading and the browser tab. A reader has two or three of these
+        // open at once, and a tab reading "Relay stats" on the monitor's port
+        // is worse than no title at all.
+        assertEquals("Relay monitor", doc["title"]!!.jsonPrimitive.content)
+        // …and the relay to dial. Deriving it from `location` would open a
+        // websocket against this page's own port, which is the status site.
+        assertEquals("ws://localhost:7777", doc["relay"]!!.jsonPrimitive.content)
     }
 
     private companion object {
