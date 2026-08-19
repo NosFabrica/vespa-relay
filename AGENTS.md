@@ -470,7 +470,20 @@ relay/src/main/resources/
                         filter — single letter, so `tag_index` holds it exactly
                         as it holds `t` — plus the group's own kind 39000 keyed
                         by `d`, which is the half that names its HOST: NIP-29
-                        has the relay sign its groups' records. shared/groups.js
+                        has the relay sign its groups' records. A CARD MAY ONLY
+                        MINT THAT TOKEN FOR AN ID THAT READS BACK AS ITSELF —
+                        `groupTokenizes`, compiled from the tokenizer's own
+                        `GROUP_ID` so the two cannot drift. A group id is a
+                        stranger's string and two of its shapes fail silently:
+                        whitespace ENDS a token, so `group:my group` asks for
+                        the group `my`, and a trailing `.,;!?` is sentence
+                        punctuation, so `group:hello.` asks for `hello` — the
+                        wrong room, no error, under this room's name. All three
+                        places that draw a group (the pill on a chat card, a
+                        39000's title, a `group` tag on a list) go through
+                        base.js's `groupHref`, which returns null for those and
+                        leaves the label as text: a link that searches for
+                        something else is worse than no link. shared/groups.js
                         is the decision behind the picker, and its whole
                         argument is a refusal. A group is the pair (id, host)
                         — quartz's `GroupId` — and this page holds that pair in
@@ -571,7 +584,15 @@ relay/src/main/resources/
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths, with related.js
+                        renders /npub1…//note1…//naddr1… paths — and re-renders
+                        them from `rerun()` like every other view, because it is
+                        the one that GATES on the reader's web of trust: a
+                        permalink fetched signed in is a different page signed
+                        out, and it is also the one view `$q` is empty on, so it
+                        used to fall through the "nothing typed" branch and be
+                        left standing under an identity the page no longer had.
+                        `entitySeg`/`openEntity` are the single pair the router
+                        and the re-run both open it through — with related.js
                         the second ask a git permalink makes AFTER its card is
                         up — a repository's state, issues, patches and releases
                         (`#a` its address), an issue's or a patch's verdict and

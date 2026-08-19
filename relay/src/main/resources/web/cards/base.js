@@ -17,6 +17,7 @@ import { kindLabel, kindTone } from "../shared/kinds.js";
 import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
+import { groupTokenizes } from "../shared/query.js";
 import { postedTo } from "../shared/groups.js";
 import { groupName } from "../shared/groupnames.js";
 
@@ -277,7 +278,13 @@ export function groupPillHtml(ev) {
   const name = groupName(id);
   const said = `the NIP-29 group this was posted to, id ${id}`;
   const title = name ? `“${name}” — ${said}` : said;
-  return `<a class="group-pill" href="${groupHref(id)}" title="${esc(title)}">${esc(clip(name || id, 28))}</a>`;
+  const label = esc(clip(name || id, 28));
+  // An id the search language cannot carry still NAMES the room, and the room
+  // is the whole point of the pill — so it keeps its label and loses its link.
+  const href = groupHref(id);
+  return href
+    ? `<a class="group-pill" href="${href}" title="${esc(title)}">${label}</a>`
+    : `<span class="group-pill" title="${esc(title)}">${label}</span>`;
 }
 
 /**
@@ -444,8 +451,19 @@ export function relayRows(rows, opts) {
 export const searchHref = (q) => `/?${new URLSearchParams({ q })}`;
 /** A topic, however it was written: `t` tags carry `scotland`, cards show `#scotland`. */
 export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#${t}`);
-/** A NIP-29 group, as the search that finds what was posted in it. */
-export const groupHref = (id) => searchHref(`group:${id}`);
+/**
+ * A NIP-29 group, as the search that finds what was posted in it — or null
+ * when that search would ask for a DIFFERENT group.
+ *
+ * A group id is a stranger's string with no shape to it, and two of its shapes
+ * do not survive being written into the token language: whitespace ends a
+ * token and a trailing `.,;!?` is sentence punctuation, so `my group` links to
+ * the group `my` and `hello.` to `hello` — the wrong room, with no error
+ * anywhere. [groupTokenizes] is the tokenizer's own answer to "would this read
+ * back as itself"; where it says no, every caller here draws the label as text
+ * instead. A link that searches for something else is worse than no link.
+ */
+export const groupHref = (id) => (groupTokenizes(id) ? searchHref(`group:${id}`) : null);
 
 /**
  * Hashtags, words, mime types — short values that read as chips, not rows.

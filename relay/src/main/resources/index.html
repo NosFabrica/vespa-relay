@@ -1146,10 +1146,13 @@
      "what this is" (every badge, tinted by family) from "where it was said"
      (one accent, only on the kinds that have an answer). It shrinks and
      ellipsises where the badge never does: a group's name is a stranger's
-     string and the badge is one of ours. */
+     string and the badge is one of ours — and it shrinks FASTER than the
+     author beside it, which is the whole of the `2`. Both are ellipsised text
+     with an automatic minimum of zero, so an equal shrink let a long room name
+     hold its width while the byline squeezed the author's name away to
+     nothing; who posted it outranks where they posted it. */
   .byline .group-pill {
-    flex-shrink: 1;
-    min-width: 3em;
+    flex-shrink: 2;
     max-width: 14em;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 11px;

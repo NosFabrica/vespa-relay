@@ -686,6 +686,26 @@ seedGroupEvents([
 assert.strictEqual(pillOf(chatIn([["h", "general"]], { full: true }))[3], "general",
   "an id its hosts disagree about keeps the id, on the card exactly as in the search box");
 
+// AN ID THE SEARCH LANGUAGE CANNOT CARRY LOSES ITS LINK, not its label. A
+// group token ends at whitespace and drops a trailing sentence stop, so
+// `group:my group` asks for the group `my` — the wrong room, silently. The
+// room is still what the pill is for, so the name stands as text.
+for (const bad of ["my group", "hello.", "x?"]) {
+  const html = chatIn([["h", bad]], { full: true });
+  assert(!pillOf(html), `\`${bad}\` must not be drawn as a link to another group`);
+  const span = /<span class="group-pill" title="([^"]*)">([^<]*)<\/span>/.exec(html);
+  assert(span, `\`${bad}\` still names the room it was posted to`);
+  assert.strictEqual(span[2], bad, "…as its own id, unlinked");
+}
+// The same guard, at the two older call sites that mint the same href — a
+// group's own record, and a group on somebody's list.
+const badRec = card(ev(39000, [["d", "my group"], ["name", "Mine"]]), { full: true });
+assert(!/href="\/\?q=group/.test(badRec), "a 39000 whose `d` cannot be tokenized links nowhere");
+assert(badRec.includes("Mine"), "…and still draws the group");
+const badList = card(ev(10009, [["group", "my group", "wss://r.example/", "Listed"]]), { full: true });
+assert(!/href="\/\?q=group/.test(badList), "the same for a `group` tag on a list");
+assert(badList.includes("Listed"), "…which also keeps its name");
+
 // The pill is an interpolation site like any other, and its id is a stranger's
 // string: the poison loop below cannot reach it, since an `h` tag on a fixture
 // that has none is a tag it never gets.
