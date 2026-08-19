@@ -114,9 +114,6 @@ class PeerClient(
      */
     fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
 
-    /** Does [url] go through Tor — asked by the passes that report which transport measured a relay. */
-    fun routesThroughTor(url: NormalizedRelayUrl): Boolean = tor?.routes(url) == true
-
     // Per URL, not one client for the process: quartz's builder takes
     // (NormalizedRelayUrl) -> OkHttpClient precisely so a relay can be dialled
     // over the transport that can reach it.

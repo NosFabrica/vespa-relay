@@ -311,8 +311,9 @@ class Processors {
      *
      * ## WHOLE, like [InFlight] and for the same reason
      *
-     * A row is a JOB, so the monitor's `dialConcurrency` already bounds the set
-     * — 128 by default, and whatever an operator chose when it is not. That
+     * A row is a JOB, so the monitor's own gates already bound the set —
+     * `dialConcurrency` (128 by default) for clearnet plus the narrower Tor one
+     * beside it, see `peers.DialGate`, and whatever an operator chose. That
      * puts it on the side of the line this file draws elsewhere: a cap is for a
      * list the network can grow, and capping one our own configuration bounds
      * only picks which rows an operator is not shown. It was cut to twenty
@@ -336,7 +337,7 @@ class Processors {
          *
          * This was a cut of twenty, and the cut broke the rule the rest of this
          * file holds — a cap is for a list the NETWORK can grow, and a held row
-         * is a JOB, so `dialConcurrency` already bounds it. Capping it only
+         * is a JOB, so the pass's own gates already bound it. Capping it only
          * picked which rows an operator is not shown, and picked them from the
          * one list that exists because a row was not shown.
          */
@@ -347,7 +348,7 @@ class Processors {
             val relay: String,
             /**
              * Since the job took its permit — which is after the wait for one,
-             * not before. A pass at `dialConcurrency` has urls queued behind
+             * not before. A pass at its gate's width has urls queued behind
              * every leg here and their wait is the pass's shape rather than any
              * relay's, so the queue is deliberately outside this clock and
              * outside the deadline it is read against.

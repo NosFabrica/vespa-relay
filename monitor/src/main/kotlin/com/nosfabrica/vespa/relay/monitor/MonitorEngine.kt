@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -188,6 +189,10 @@ class MonitorEngine(
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(FOLD_PROCESSOR),
+                // The gate, not the dial: a hidden service waits on Tor's own
+                // socket budget instead of on the clearnet fan-out's permits.
+                // See [DialGate] for what the shared one cost.
+                tor = tor,
             )
         }
 
@@ -210,6 +215,7 @@ class MonitorEngine(
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
+                tor = tor,
             )
         }
 
@@ -300,7 +306,8 @@ class MonitorEngine(
                 // this the direct client would both fail and put a hidden
                 // service through the local resolver — see [TorTransport].
                 document = RelayDocument(peers::httpFor),
-                routesThroughTor = peers::routesThroughTor,
+                // What the `n` tag names AND what the gate is sized from.
+                tor = tor,
                 concurrency = monitorConcurrency,
             )
         }
@@ -472,6 +479,12 @@ class MonitorEngine(
             consistencyPass?.progress?.phase(Processors.OFF)
             return false
         }
+        // WHAT THE PASSES ARE BOUNDED BY, said once and only when they really
+        // run. `dialConcurrency` is the CLEARNET number: the Tor half is capped
+        // at the Tor dispatcher's own width, so an operator who raises the knob
+        // to buy onion throughput can see from this line that it did not move,
+        // and reach for `SYNC_TOR_MAX_SOCKETS` instead. See [DialGate].
+        System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
         aliasMonitor?.start()
         return true
     }

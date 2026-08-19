@@ -322,6 +322,9 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
     RelayDiscovery.kt     which urls a relay list names, and which a `dead`
                           verdict of ours holds out
     TorTransport.kt       the .onion transport, and probeIdleMs
+    DialGate.kt           what bounds a probe pass's dials — ONE GATE PER
+                          TRANSPORT, since the clearnet dispatcher and the
+                          Tor one are separate budgets. Not ingest/ProbeGate
   config/                 RouterConfig + its HOCON loader — one file configures
                           both planes, so it sits under both
   ingest/                 IngestPipeline (on an IngestTuning, not the whole
@@ -1205,6 +1208,23 @@ follow from the same place: the TCP pre-probe is skipped for onion urls (it is
 a DNS lookup, and it would publish `UnknownHostException` as proof of a dead
 relay), and nothing negative is ever published about one — reaching a hidden
 service depends on our circuit as much as on their server.
+
+**…and a probe pass gates the two transports SEPARATELY** (`DialGate`), because
+they are two budgets: the clearnet dispatcher is 1,024 sockets wide and the Tor
+one is `SYNC_TOR_MAX_SOCKETS` (32). One shared `Semaphore(dialConcurrency)`
+covered both, and on staging at 100 permits the gate ran saturated with `.onion`
+— 10% of the candidate urls — holding 60-74% of it, at a median hold of 34-72s
+against clearnet's 9-21s. It is the summed budget doing that (`probeIdleMs`, 90s
++ 20s against 20s) and the summed budget is right; charging it to the clearnet
+fan-out was not. Worse, 30-40 of those permits had NO SOCKET behind them: past
+the 32nd, an onion sits in the Tor dispatcher's queue while still holding a probe
+slot a clearnet relay would have finished with in nine seconds — so raising
+`dialConcurrency` could not buy Tor throughput, only convert clearnet permits
+into Tor queue slots. The Tor gate is now `min(dialConcurrency, maxSockets)`, so
+a permit there means a socket, and `dialConcurrency` means dials again. Which
+gate a url waits on is `TorTransport.routes` — the same predicate that picks its
+OkHttp client, so the gate and the dispatcher cannot disagree, `SYNC_TOR_ALL`
+included.
 
 **Sync bands** record the `created_at` span already walked for a
 `(stream, filter, relay)` triple, so a re-run asks only outside it. Keyed by the
@@ -3383,9 +3403,12 @@ window (summed, not maxed — one buys the connect, the other is the silence eve
 relay is allowed while answering) and `SYNC_TOR_ALL` carries it to clearnet urls
 with everything else. What it costs is paid by hosts that never answer: a silent
 leader is asked four times a pass (bare filter, then the kinds fallback, each
-retrying once at the smaller page), so a dead onion group holds one of the fold's
-16 permits for minutes rather than seconds — background work on a 6h clock
-against the handful of relays Tor reaches.
+retrying once at the smaller page), so a dead onion group holds a permit for
+minutes rather than seconds. WHOSE permit is the part of that which has since
+been corrected: it was written when the gate was 16 undifferentiated permits and
+Tor was "the handful of relays Tor reaches" — true of the population, and not of
+the occupancy. See `DialGate` in the Tor section above for what that cost at
+`dialConcurrency = 100` and for the split that replaced it.
 
 **A relay that cannot reproduce its own answers made the fold a coin flip, and
 signed the result for a month.** `fiatjaf.com` was the second host found in the

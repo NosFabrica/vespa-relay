@@ -136,10 +136,19 @@ monitor {
     # minutes. 0 turns the lane off.
     fastLaneSeconds = 120
 
-    # Relays a probe pass dials at once — the sweep's wall clock, since most
-    # of a discovered corpus is dead and a dead relay costs a full timeout.
-    # Also the most sockets the monitor ever holds (its passes run one at a
-    # time), so size it against the socket budget the sync plane leaves free.
+    # CLEARNET relays a probe pass dials at once — the sweep's wall clock,
+    # since most of a discovered corpus is dead and a dead relay costs a full
+    # timeout. Size it against the socket budget the sync plane leaves free;
+    # the monitor's passes run one at a time, so this is the most clearnet
+    # sockets it ever holds.
+    #
+    # `.onion` urls do NOT come out of this number. They wait on a second gate
+    # of their own, `min(dialConcurrency, SYNC_TOR_MAX_SOCKETS)` wide, because
+    # Tor is a separate dispatcher with a separate budget and a hidden service
+    # is allowed the circuit timeout ON TOP of `connectionTimeout`. Shared,
+    # 10% of the urls held 60-74% of this gate and the clearnet corpus queued
+    # behind dead onions; raise SYNC_TOR_MAX_SOCKETS, not this, to buy onion
+    # throughput.
     dialConcurrency = 128
 }
 

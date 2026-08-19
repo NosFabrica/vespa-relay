@@ -21,8 +21,10 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.MonitorConfig
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -31,8 +33,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -99,7 +99,20 @@ class AliasFolding(
      * to land in one row.
      */
     val progress: Processors.Handle? = null,
+    /**
+     * The proxy, where there is one — for the GATE, not for the dial: which
+     * client a url gets is quartz's per-url builder's business, and this pass
+     * never sees it. A `.onion` waits on the Tor dispatcher's own permits
+     * rather than on the clearnet fan-out's. See [DialGate].
+     */
+    tor: TorTransport? = null,
 ) {
+    /**
+     * ONE GATE OBJECT, not one per pass: [AliasMonitor] serialises passes behind
+     * its own mutex, and every permit is returned in `withPermit`'s `finally`.
+     */
+    private val gate = DialGate.over(concurrency, tor)
+
     /**
      * Hosts a pass DIALLED and could not decide anything about, and the moment
      * each becomes worth trying again.
@@ -290,7 +303,6 @@ class AliasFolding(
             // are dials, not answers, and a position counted in them would jump
             // by 55 for one verdict and by 1 for the next.
             progress?.measuring(groups.size, Processors.UNIT_HOST)
-            val gate = Semaphore(concurrency)
             // The pass-wide count of folds, and nothing else: a second map of
             // the cleared urls was accumulated here and never read, and the
             // verdicts themselves are held per group, where they are written.
@@ -415,7 +427,7 @@ class AliasFolding(
                         for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
                             var asked = false
                             val attempt =
-                                gate.withPermit {
+                                gate.withPermit(candidate) {
                                     if (!canDial(candidate)) return@withPermit null
                                     asked = true
                                     dialled = true
@@ -535,7 +547,7 @@ class AliasFolding(
                             coroutineScope {
                                 for (url in rest) {
                                     launch {
-                                        gate.withPermit {
+                                        gate.withPermit(url) {
                                             if (!canDial(url)) return@withPermit
                                             taken.incrementAndGet()
                                             dial(url, sockets) { probe.leaderPrint(url, anchor, onEvent) }?.let { swept[url] = it }
@@ -633,7 +645,7 @@ class AliasFolding(
                             // never measured and is still worth a dial here.
                             for (url in members.filter { it != leader && it !in exhausted }) {
                                 launch {
-                                    gate.withPermit {
+                                    gate.withPermit(url) {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
                                         dial(url, sockets) { probe.fingerprint(url, anchor, lead.kinds, onEvent) }?.let { prints[url] = it }
@@ -672,7 +684,7 @@ class AliasFolding(
                         // never run.
                         if (result.distinct.isNotEmpty()) {
                             val again =
-                                gate.withPermit {
+                                gate.withPermit(leader) {
                                     if (!canDial(leader)) return@withPermit null
                                     taken.incrementAndGet()
                                     dial(leader, sockets) { probe.fingerprint(leader, anchor, lead.kinds, onEvent) }
