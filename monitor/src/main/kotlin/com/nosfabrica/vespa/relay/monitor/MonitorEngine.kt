@@ -152,6 +152,9 @@ class MonitorEngine(
     /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
+    /** How often the fast lane looks, or null for a lane that is off — see [fastLaneSecondsFor]. */
+    private val fastLaneSeconds = fastLaneSecondsFor(config)
+
     /**
      * THE ROW THE DERIVATION REPORTS ON, and it is declared HERE, above the
      * passes it feeds, on purpose: [Processors.of] registers in call order and
@@ -362,7 +365,25 @@ class MonitorEngine(
                     // rides the sweep — it needs a host's whole group, and a
                     // since-bound set holds only what was named in the last
                     // tick. See [AliasMonitor.fastLanePasses].
-                    fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
+                    // DEFAULTED LIKE ITS NEIGHBOURS, and it was the only one
+                    // that was not — but the two nulls here mean OPPOSITE
+                    // things and collapsing them with `?:` would be worse than
+                    // the bug.
+                    //
+                    // No `monitor` block at all is a deployment discovering
+                    // through stream `relaySource` blocks alone — a shape
+                    // [MonitorGateTest] exists to keep working — and there this
+                    // read carried the null all the way out and turned the lane
+                    // OFF, so a new relay waited a full `sweepSeconds` for its
+                    // first `prime` on exactly the configs least likely to
+                    // notice one missing. `sweepSeconds` and `dialConcurrency`
+                    // both take their default on that path.
+                    //
+                    // A null INSIDE a block is the operator writing
+                    // `fastLaneSeconds = 0`, the documented off switch. That
+                    // one has to survive: a fallback that read it as "unset"
+                    // would restart a lane somebody turned off by hand.
+                    fastLaneEveryMs = fastLaneSeconds?.times(1000L),
                     fastLanePasses = listOfNotNull(stabilityEntry, fitnessEntry),
                 )
             }
@@ -457,6 +478,14 @@ class MonitorEngine(
             sourceProgress?.phase(Processors.OFF)
             folding?.progress?.phase(Processors.OFF)
             consistencyPass?.progress?.phase(Processors.OFF)
+            // …AND FITNESS, which was missing from a list whose whole job is
+            // that no row is left reading as a pass about to run. It is the one
+            // that only ever sets its phase from INSIDE `measure`, so on a
+            // deployment with no sources it never set one at all — the row sat
+            // at `starting` for the life of the process, which is the exact
+            // state these three lines exist to prevent, on the row an operator
+            // checks first because `prime` is what the streams select on.
+            fitness?.progress?.phase(Processors.OFF)
             return false
         }
         // WHAT THE PASSES ARE BOUNDED BY, said once and only when they really
@@ -526,6 +555,30 @@ class MonitorEngine(
          * (`discoveryStreams.isNotEmpty()`) answered `false` for.
          */
         internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
+
+        /**
+         * How often the fast lane looks, or null for a lane that is off.
+         *
+         * **The two ways of reading null here mean opposite things**, which is
+         * why this is a named function rather than one `?.` in the constructor
+         * — where it was, and where it was wrong.
+         *
+         * NO `monitor` BLOCK is a deployment discovering through stream
+         * `relaySource` blocks alone, a shape [hasMonitorSources] exists to
+         * keep working. `config.monitor?.fastLaneSeconds` is null there, and
+         * carrying that null out turned the lane OFF — so a new relay waited a
+         * full `sweepSeconds` for its first `prime` on exactly the configs
+         * least likely to notice the lane was missing. `sweepSeconds` and
+         * `dialConcurrency` both take their documented default on that path;
+         * this now does too.
+         *
+         * A null INSIDE a block is the operator writing `fastLaneSeconds = 0`,
+         * the documented off switch — see [MonitorConfig.fastLaneSeconds] and
+         * the loader that maps 0 to null. That one has to survive, so a plain
+         * `?: DEFAULT_FAST_LANE_SECONDS` would be a worse bug than the one it
+         * fixes: it would restart a lane somebody turned off by hand.
+         */
+        internal fun fastLaneSecondsFor(config: RouterConfig): Long? = config.monitor?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { config.monitor == null }
 
         /**
          * The names the progress document calls the monitor's jobs.

@@ -20,9 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -125,5 +127,58 @@ class MonitorGateTest {
         // Unchanged by the fix, and asserted so the widening cannot be mistaken
         // for a replacement: this is the deployment the old rule was right for.
         assertTrue(MonitorEngine.hasMonitorSources(config(streamDiscovers)))
+    }
+
+    /**
+     * **A LANE THAT IS OFF AND A LANE NOBODY CONFIGURED READ THE SAME**, and
+     * they are opposite intentions. `config.monitor?.fastLaneSeconds` is null
+     * for both, and the engine used to carry that null straight out — so the
+     * deployment above, which is a supported shape and has no `monitor` block,
+     * ran no fast lane at all and made a new relay wait a whole `sweepSeconds`
+     * for its first `prime`. Its two neighbours, `sweepSeconds` and
+     * `dialConcurrency`, both defaulted on that path; only this one did not.
+     *
+     * The other direction is the reason this cannot simply be `?: DEFAULT`:
+     * `fastLaneSeconds = 0` is the documented off switch and the loader maps it
+     * to null, so a blanket fallback would restart a lane an operator stopped.
+     */
+    @Test
+    fun `a config with no monitor block still gets the default fast lane`() {
+        assertEquals(
+            MonitorConfig.DEFAULT_FAST_LANE_SECONDS,
+            MonitorEngine.fastLaneSecondsFor(config(streamDiscovers)),
+            "a stream-discovering deployment has no monitor block, and lost its fast lane to that",
+        )
+        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, MonitorEngine.fastLaneSecondsFor(config(staticOnly)))
+    }
+
+    @Test
+    fun `an operator who turned the lane off keeps it off`() {
+        val off =
+            config(
+                """
+                streams { pinned { dir = "down", filter = { "kinds": [1] }, urls = [ "wss://upstream.example" ] } }
+                monitor {
+                    fastLaneSeconds = 0
+                    sources = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+                }
+                """,
+            )
+        assertNull(
+            MonitorEngine.fastLaneSecondsFor(off),
+            "0 is the documented off switch; a default that overrode it would restart a lane by hand-tuning",
+        )
+        // …and the same block WITHOUT the off switch takes the default, so the
+        // assertion above is about the 0 rather than about the block.
+        val on =
+            config(
+                """
+                streams { pinned { dir = "down", filter = { "kinds": [1] }, urls = [ "wss://upstream.example" ] } }
+                monitor {
+                    sources = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+                }
+                """,
+            )
+        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, MonitorEngine.fastLaneSecondsFor(on))
     }
 }

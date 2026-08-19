@@ -304,6 +304,26 @@ class SyncEngine(
             // arrived at by configuration instead of by a relay.
             ingest.start()
             registerProcessors()
+            // …AND THE CLIENT HAS TO BE CONNECTED, which this path did not do.
+            //
+            // `NostrClient.subscribe` registers the request locally and then
+            // guards BOTH `sendToRelayIfChanged` and `reconnect` behind
+            // `isActive()` — a flag only `connect()` sets. Verified against the
+            // pinned jar: the bytecode branches straight to `return` when it is
+            // false. So on this path every probe REQ was recorded and none was
+            // ever sent, every ladder rung lapsed on its idle window, and a
+            // deployment whose whole job is to publish verdicts published
+            // almost none: `dialVerdict` answers null when nothing came back at
+            // all (the 3,945-relay rule), so the passes correctly wrote nothing
+            // — and the one grade that could still be reached was `dead`, off
+            // the TCP pre-probe, which is a raw socket and never needed the
+            // client. A monitor-only node graded corpses and nothing else.
+            //
+            // Silent in both directions, which is what made it survive: the
+            // rows moved, the passes ran, the counts were honest about a
+            // measurement nobody could take.
+            peers.announceTor()
+            peers.connect()
             monitor.start()
             return this
         }
