@@ -122,6 +122,56 @@ class ProbeDeadlineTest {
     private fun probe(fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page) = AliasProbe(fetch = fetch, target = 40, page = 40, fallbackPage = 40, idleMs = { tinyIdleMs })
 
     @Test
+    fun `a pass whose dials all come back empty publishes NOTHING, including the verdicts that looked fine`() =
+        runBlocking {
+            // THE BATCH GUARD. Every other rule here is per url, and the failure
+            // it exists for is not: when this router's dialling breaks it breaks
+            // for the whole batch at once, and a pass judging each url honestly
+            // on its own still signs one wrong verdict per url.
+            //
+            // Staged as the incident ran: most of the batch answers nothing at
+            // all, and a handful answer normally. The handful are dropped WITH
+            // the rest, because the same socket layer produced them and a batch
+            // this blind cannot vouch for any of its own readings.
+            val store = newStore()
+            val blind = (0 until 90).map { RelayUrlNormalizer.normalize("wss://blind$it.example") }
+            val fine = (0 until 10).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        probe { url, _, _, _ ->
+                            if (url in fine) AliasProbe.Page(corpus()) else AliasProbe.Page(events = null, reason = null)
+                        },
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                )
+            pass.measure("blind batch", blind + fine, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+
+            for (url in blind + fine) {
+                assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
+            }
+
+            // …AND THE GUARD IS NOT A CEILING ON REFUSALS. A corpus of genuinely
+            // dead hosts is the ordinary case here and every one of them
+            // ANSWERED — with a refused connection, which is a transport word
+            // and a fact about the host. Those still publish, or the guard would
+            // have replaced one silence with another.
+            val dead = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(dead, signer),
+                probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
+                client = EmptyNostrClient(),
+                foldedAway = { emptyMap() },
+                inconsistent = { emptySet() },
+                progress = Processors().of("fitness"),
+            ).measure("dead corpus", blind, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.DEAD.value, gradeOf(dead, blind.first()), "a transport word is evidence and must still publish")
+        }
+
+    @Test
     fun `the deadline is a multiple of the very window it bounds`() {
         // Per URL, not per process — a `.onion` is allowed its circuit on top of
         // the clearnet budget, and a deadline sized from a constant would cut
@@ -302,20 +352,28 @@ class ProbeDeadlineTest {
         }
 
     @Test
-    fun `a relay that connects and then says nothing is silent, not restricted`() =
+    fun `a relay that connects and then says nothing is graded NOTHING AT ALL`() =
         runBlocking {
             // MEASURED ON `quietplace.xyz`, one of the urls a stalled pass was
             // holding: it accepts a websocket, serves a NIP-11 document, and
             // then answers no REQ on any of the three rungs and no NEG-OPEN
             // either — every window simply lapses.
             //
-            // `Verdict.SILENT` is "connected, then nothing: no EOSE, no CLOSED,
-            // the window lapsed", word for word. `Verdict.RESTRICTED` is
-            // "answers only shaped queries this router cannot generally send",
-            // which requires the relay to have ANSWERED. The branches were
-            // swapped, so the one case with no terminal reason at all — the
-            // definition of silence — was published to the whole network as a
-            // relay with a narrow query policy.
+            // This graded `silent` (and `restricted` before that), and BOTH
+            // were claims this router cannot make. The state has no terminal
+            // reason of any kind, which is exactly what our OWN socket layer
+            // produces when it is the broken thing — measured on staging, where
+            // one pass signed `silent` about 3,945 relays and a re-dial found
+            // more than half answering in under two seconds, most with an
+            // immediate CLOSED. From inside the pass those two situations are
+            // one picture.
+            //
+            // So the rule is [AliasProbe.deadlineMs]'s, one branch over:
+            // nothing is published when the instrument came back with nothing.
+            // A genuinely mute relay is simply never graded, which keeps it off
+            // every roster — the outcome `silent` was wanted for — without
+            // signing a false claim about the relays that were merely behind a
+            // broken dialler.
             val store = newStore()
             val pass =
                 FitnessPass(
@@ -330,7 +388,7 @@ class ProbeDeadlineTest {
                     progress = Processors().of("fitness"),
                 )
             pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
-            assertEquals(Verdict.SILENT.value, gradeOf(store, wedged))
+            assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
             // …AND THE OTHER SIDE OF THE SWAP HAS NO PATH TO IT. A relay that
             // CLOSES every rung has SPOKEN as far as the probe is concerned, so

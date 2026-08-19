@@ -217,6 +217,13 @@ class FitnessPass(
         // fault into 12,374 log lines.
         val abandonedCount = AtomicInteger()
         val abandoned = ConcurrentHashMap.newKeySet<String>()
+        // …and the urls this pass ASKED and got no answer of any kind about:
+        // no EOSE, no CLOSED, no transport word, or a throw on our side of the
+        // socket. Kept apart from [outcomes] because they are not verdicts and
+        // must never be published — see the null branch in [dialVerdict] — and
+        // apart from [abandoned] because a deadline and a silence are different
+        // faults with different fixes.
+        val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
         try {
             // THE FREE REFUSALS FIRST. Both are standing verdicts other passes
             // already paid dials for; turning them into a status costs a store
@@ -263,7 +270,7 @@ class FitnessPass(
                             val ran =
                                 withTimeoutOrNull(probe.deadlineMs(url)) {
                                     try {
-                                        measureOne(url, anchor, canDial, sockets, outcomes, readings, downloaded, onEvent)
+                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, onEvent)
                                     } finally {
                                         // Whatever ended it — a verdict, a
                                         // throw, the deadline, a shutdown — the
@@ -291,6 +298,38 @@ class FitnessPass(
                 }
             }
 
+            // THE BATCH GUARD, AND IT IS THE LAST THING BETWEEN A BROKEN
+            // INSTRUMENT AND THE NETWORK.
+            //
+            // Every rule above is per url, and the failure this exists for is
+            // not: when our own dialling breaks, it breaks for ALL of them at
+            // once, and a pass that judged each url honestly on its own still
+            // signs one wrong verdict per url. Measured on staging — 3,945
+            // relays graded `silent` in a single pass, of which a re-dial found
+            // more than half answering in under two seconds, most with an
+            // immediate CLOSED.
+            //
+            // A relay network does not go dark in one pass. So a batch where
+            // that share of the dials came back with NOTHING is a fact about
+            // this router, and the honest thing to do with it is to publish
+            // none of it — including the verdicts that look fine, because the
+            // same broken socket layer produced those too.
+            //
+            // Floored at [GUARD_FLOOR] urls: on a handful of candidates one
+            // dead host is a large share and means nothing.
+            val dialled = toDial.size
+            val blind = unmeasured.size + abandonedCount.get()
+            if (dialled >= GUARD_FLOOR && blind > dialled * GUARD_SHARE) {
+                System.err.println(
+                    "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $dialled dial(s) came back with no " +
+                        "answer at all (${(100.0 * blind / dialled).toInt()}%, over the ${(100 * GUARD_SHARE).toInt()}% " +
+                        "guard). A network does not go dark in one pass — this router could not dial. " +
+                        "${outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
+                )
+                report(label, candidates.size, emptyMap(), startedMs, abandonedCount.get(), abandoned, unmeasured.size)
+                return downloaded.get()
+            }
+
             // The writes, serial and after the dials: the record edit is a
             // read-modify-write with no CAS, and this pass is its only writer
             // for these tags — see [AliasMonitor] for why passes never overlap.
@@ -312,6 +351,7 @@ class FitnessPass(
                 startedMs,
                 abandonedCount.get(),
                 abandoned,
+                unmeasured.size,
             )
         } finally {
             progress.finish()
@@ -339,6 +379,7 @@ class FitnessPass(
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         sockets: Sockets,
         outcomes: ConcurrentHashMap<NormalizedRelayUrl, Outcome>,
+        unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
@@ -350,7 +391,10 @@ class FitnessPass(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                outcomes[url] = Outcome(Verdict.DEAD, "the reachability probe itself failed: ${e.javaClass.simpleName}")
+                // OUR instrument, not the relay: the pre-probe throwing says
+                // this box could not ask, which is not evidence about the
+                // server. Was `dead`. See [measure]'s unmeasured branch.
+                unmeasured[url] = "the reachability probe itself threw ${e.javaClass.simpleName}"
                 return
             }
         if (!reachable) {
@@ -366,15 +410,23 @@ class FitnessPass(
         progress.holding(url.url, STAGE_LADDER)
         sockets.claim(url)
         try {
-            outcomes[url] =
+            val outcome =
                 dialVerdict(url, anchor) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
                 }
+            if (outcome != null) {
+                outcomes[url] = outcome
+            } else {
+                unmeasured[url] = "no EOSE, no CLOSED and no transport reason on any rung"
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            outcomes[url] = Outcome(Verdict.SILENT, "the dial threw ${e.javaClass.simpleName} before the relay said anything")
+            // Same rule: a throw on our side of the socket is our instrument
+            // giving up. [ConsistencyPass.Unmeasured.FAILED] has always read it
+            // that way; this published `silent` about the relay instead.
+            unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
         } finally {
             sockets.release(url)
         }
@@ -391,7 +443,7 @@ class FitnessPass(
         url: NormalizedRelayUrl,
         anchor: Long,
         onEvent: suspend (Event) -> Unit,
-    ): Outcome {
+    ): Outcome? {
         // Events ABOVE the anchor are the relay answering a question it was not
         // asked: the walk's `until` is the anchor, so an honest relay never
         // sends one. Counted across every rung — the shape of the ask does not
@@ -466,7 +518,24 @@ class FitnessPass(
                         // OUR socket failing as the relay having a query
                         // policy, which is the same class of mistake this
                         // branch is being fixed for.
-                        Outcome(Verdict.SILENT, "connected, then nothing: no EOSE and no CLOSED on any rung of the ladder")
+                        // NOT A VERDICT, AND THIS IS THE LINE THAT COST 3,945
+                        // RELAYS. Every rung's window lapsed with no EOSE, no
+                        // CLOSED and no transport word — which is precisely the
+                        // state our own socket layer produces when it is the
+                        // thing that is broken, and is indistinguishable from
+                        // the relay's silence from in here. A pass whose dials
+                        // were failing published `silent` about thousands of
+                        // relays that answer a REQ in under two seconds, and
+                        // each of those verdicts took its url off every roster.
+                        //
+                        // So this is [AliasProbe.deadlineMs]'s rule, one branch
+                        // over: NOTHING IS PUBLISHED when the instrument
+                        // returned nothing. The url is counted, named, and
+                        // measured again next pass — see [measure]. A relay
+                        // that genuinely never answers costs one re-dial a
+                        // pass, which is the cheaper of the two mistakes by
+                        // several orders of magnitude.
+                        null
                     } else {
                         // A reason we could not place. Still silence — and note
                         // it can only be a TRANSPORT word: quartz reports a
@@ -585,6 +654,14 @@ class FitnessPass(
         startedMs: Long,
         abandonedCount: Int,
         abandoned: Set<String>,
+        /**
+         * How many urls this pass ASKED and learned nothing from — see the
+         * unmeasured map in [measure]. On its own line for [abandonedCount]'s
+         * reason: these carry no verdict either, so they are absent from the
+         * counts by construction, and a pass that measured nothing must not
+         * read as a pass that found a clean partition.
+         */
+        unmeasuredCount: Int,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -596,6 +673,12 @@ class FitnessPass(
         // report a clean partition over the ones it managed to reach. Named,
         // because the whole reason this line exists is that the held url was
         // not nameable from anywhere in the system.
+        if (unmeasuredCount > 0) {
+            System.err.println(
+                "router: fitness [$label] — $unmeasuredCount url(s) answered nothing at all, no verdict written: " +
+                    "no EOSE, no CLOSED and no transport reason on any rung, or a throw on our side of the socket",
+            )
+        }
         if (abandonedCount > 0) {
             val named = abandoned.sorted().joinToString()
             val more = if (abandonedCount > abandoned.size) " (+${abandonedCount - abandoned.size} more)" else ""
@@ -879,5 +962,26 @@ class FitnessPass(
          * beside the names is always the whole truth.
          */
         const val MAX_ABANDONED_NAMED = 32
+
+        /**
+         * The share of a batch's dials that may come back with NO answer
+         * before the whole pass is refused — see the batch guard in [measure].
+         *
+         * A quarter, and it is deliberately far below the share the incident
+         * produced (about half) rather than tuned to just catch it: the number
+         * has to be a statement about what a relay network does, not about one
+         * outage. Real corpora are full of dead urls, but a dead url ANSWERS —
+         * with a refused connection, an NXDOMAIN, a TLS failure — and lands in
+         * a verdict. Coming back with nothing at all is our socket layer, and
+         * one dial in four failing that way has never been normal here.
+         */
+        const val GUARD_SHARE = 0.25
+
+        /**
+         * …and the batch size below which the guard does not apply. On five
+         * candidates, two silent hosts is 40% and means nothing; the guard is a
+         * statement about a population.
+         */
+        const val GUARD_FLOOR = 50
     }
 }

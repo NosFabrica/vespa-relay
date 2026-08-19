@@ -292,30 +292,46 @@ internal class StreamWorld(
         // for is a candidate — it is dialled, and counting it as excluded would
         // put it on both sides of a partition that has to divide exactly once.
         val onlyExcluded = excluded - all
-        val live = all.filterNot { it in dead }
-        // WHAT WE KNOW BEYOND WHAT WAS NAMED — see [Derivation.recordedOnly].
-        // Counted here rather than derived from the passes, because it is a
-        // property of the DERIVATION: it is exactly the urls this walk did not
-        // reach and the store has already measured.
+        // WHAT WE KNOW BEYOND WHAT WAS NAMED — and it is CANDIDATE SET, not a
+        // number on a card.
+        //
+        // These urls used to be counted and dropped: the corpus was whatever
+        // the relay lists happened to yield this round, so a derivation that
+        // came back short took the corpus with it. Measured on staging, one
+        // round yielded 127 urls out of a store holding 3.09M relay lists and
+        // records for 19,844 relays — and the card, drawn from what came back,
+        // reported the other 19,717 as urls "no relay list names now". A short
+        // read and a shrunk network are the same picture from in here.
+        //
+        // A url we hold a signed record about is a url we have measured and are
+        // telling the network about. Re-measuring it is OUR job on OUR clock,
+        // and it does not need somebody's 10002 to name it again first. So the
+        // corpus is the union, and a bad derivation now costs freshness on the
+        // urls it failed to name rather than the whole population.
         val recorded = ownRecords()
+        val recordedOnly = recorded.filterNot { it in all || it in onlyExcluded }
+        val known = all + recordedOnly
+        val live = known.filterNot { it in dead }
         lastDerivation =
             Derivation(
                 sourced = all.size + onlyExcluded.size,
                 excluded = onlyExcluded.size,
-                heldOutDead = all.size - live.size,
-                recordedOnly = recorded.count { it !in all && it !in onlyExcluded },
+                heldOutDead = known.size - live.size,
+                recordedOnly = recordedOnly.size,
                 candidates = live.size,
             )
         derived = true
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
-                (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else "") +
-                // The number that says a shrinking corpus is a shrinking RELAY
-                // LIST and not a shrinking store — see [Derivation.recordedOnly].
+                "; ${all.size} named by a relay list this round" +
+                (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
+                // The number that says a shrinking DERIVATION from a shrinking
+                // relay list — it no longer shrinks the corpus, but it is still
+                // the first thing to look at when the lists go quiet.
                 (
                     lastDerivation.recordedOnly
                         .takeIf { it > 0 }
-                        ?.let { "; $it more we hold records about that nothing named this round" }
+                        ?.let { "; $it more from our own records that nothing named this round" }
                         .orEmpty()
                 ),
         )
