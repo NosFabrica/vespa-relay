@@ -120,7 +120,7 @@ class RelayFaviconTest {
         assertEquals(listOf(16, 32, 48), sizes)
         // The markup advertises exactly what is in the file. A `sizes` that
         // over-promises makes a browser pick this over the SVG and then scale.
-        assertTrue(index.contains("""href="/web/favicon.ico" sizes="16x16 32x32 48x48""""), "index.html says so too")
+        assertTrue(index.contains("""href="./web/favicon.ico" sizes="16x16 32x32 48x48""""), "index.html says so too")
     }
 
     @Test
@@ -128,12 +128,17 @@ class RelayFaviconTest {
         for (page in listOf("/index.html", "/stats.html", "/observer_stats.html")) {
             val html = assertNotNull(javaClass.getResource(page)?.readText(), "$page is on the classpath")
             val hrefs =
-                Regex("""<link rel="icon" href="/web/([^"]+)"""")
+                // Document-relative, which is the spelling every reference in
+                // :web carries so a page survives a path-prefix mount — see
+                // stats.html's head. Asserted as the literal `./web/`, so a
+                // reference that quietly went back to the host root fails here
+                // rather than half-loading against another service.
+                Regex("""<link rel="icon" href="\./web/([^"]+)"""")
                     .findAll(html)
                     .map { it.groupValues[1] }
                     .toList()
             assertEquals(listOf("favicon.svg", "favicon.ico"), hrefs, "$page hints both, SVG first")
-            for (href in hrefs) assertNotNull(WebAssets.get(href), "$page hints /web/$href, which does not resolve")
+            for (href in hrefs) assertNotNull(WebAssets.get(href), "$page hints ./web/$href, which does not resolve")
         }
         val svg = assertNotNull(WebAssets.get("favicon.svg"))
         assertEquals("image/svg+xml", "${svg.contentType.contentType}/${svg.contentType.contentSubtype}")

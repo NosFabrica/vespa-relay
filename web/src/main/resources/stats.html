@@ -7,9 +7,32 @@
 <meta name="description" content="What this deployment holds and is doing: the relay's corpus, the mirror's coverage, and the monitor's verdicts — one page, served by whichever of the three you point it at." />
 <title>Relay stats</title>
 <!-- The same tab icon the search page carries; see its head for why there are
-     two of them. -->
-<link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
-<link rel="icon" href="/web/favicon.ico" sizes="16x16 32x32 48x48" />
+     two of them.
+
+     Every reference on this page is document-RELATIVE — these two, the
+     stylesheet below, the module imports, and `stats.json` inside
+     `shared/statspage.js`. This one file is served by the relay, the mirror and
+     the monitor, and an operator putting all three behind one hostname mounts
+     two of them under a path prefix (`/sync/`, `/monitor/`). An absolute
+     `/web/…` would then be asked of the host ROOT, where the relay answers 200
+     with ITS copy of the same file name — a page that renders its chrome and
+     silently draws another service's modules, which is worse than a 404. At the
+     root the two spellings resolve identically, so nothing changes there.
+
+     Relative is safe here for two reasons, and neither is general. The imports
+     are in an INLINE `<script type="module">`, whose specifiers resolve against
+     the DOCUMENT base url rather than a module's own. And this page never
+     rewrites its own url — no pushState, no replaceState, no location
+     assignment — so that base cannot drift under the reader. The search UI has
+     both of those the other way round and stays a root-only page.
+
+     The leading `./` is not decoration on the imports: a specifier that starts
+     with a bare name — `web/shared/page.js` — is not a relative url at all but
+     an IMPORT MAP key, and a browser with no import map fails the whole module
+     graph on it. The `<link>` hrefs would take either spelling; they are
+     written the same way so that neither can be copied into the other. -->
+<link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
 <!--
   The corpus this relay holds, charted from GET /stats.json.
 
@@ -88,7 +111,7 @@
     author in the week and seven in the sum of that week's days, so a weekly
     pubkey count has to be asked of the engine at weekly granularity.
 -->
-<link rel="stylesheet" href="/web/shared/stats.css" />
+<link rel="stylesheet" href="./web/shared/stats.css" />
 </head>
 <body>
 <main>
@@ -104,19 +127,19 @@
 <div class="tip" id="tip"></div>
 
 <script type="module">
-import { kindLabel } from "/web/shared/kinds.js";
+import { kindLabel } from "./web/shared/kinds.js";
 // The page's shared vocabulary and its engine, both in :web: every stats page
 // in this repo draws the same cards, polls the same way and keeps the reader's
 // place the same way, and the mirror's page proved it by being a MOVE rather
 // than a rewrite. See `mountStatsPage` for the whole contract.
-import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "/web/shared/page.js";
-import { mountStatsPage } from "/web/shared/statspage.js";
+import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "./web/shared/page.js";
+import { mountStatsPage } from "./web/shared/statspage.js";
 // The two planes' cards. Imported unconditionally because this ONE page is
 // served by all three services, and each draws what its own document carries —
 // see PANELS. About 35KB of module the relay's copy never draws, against three
 // copies of the page chrome to keep in step, which is the trade this reverses.
-import { syncCard } from "/web/sync/cards.js";
-import { monitorCard, verdictsCard } from "/web/monitor/cards.js";
+import { syncCard } from "./web/sync/cards.js";
+import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
 
 /**
  * What to call a kind, best source first.

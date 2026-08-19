@@ -13,7 +13,11 @@ import path from "node:path";
 // crawler that silently finds no files reports a graph with nothing in it and
 // calls the hints stale.
 const RES = fileURLToPath(new URL("../../main/resources/", import.meta.url));
-const entry = "/web/app.js";
+// Resource-root-relative, with no leading slash, because that is what both
+// sides of this comparison normalise to: the hints in the markup are written
+// document-relative (`./web/…`, so the page survives a path-prefix mount — see
+// stats.html's head), and the crawler walks the file tree.
+const entry = "web/app.js";
 
 const reached = new Set();
 const queue = [entry];
@@ -39,7 +43,7 @@ reached.delete(entry);
 
 const html = readFileSync(path.join(RES, "index.html"), "utf8");
 const hinted = new Set(
-  [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1]),
+  [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)].map((m) => path.posix.normalize(m[1])),
 );
 
 const missing = [...reached].filter((m) => !hinted.has(m)).sort();
