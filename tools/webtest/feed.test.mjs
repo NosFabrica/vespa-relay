@@ -109,9 +109,15 @@ assert.ok(
 // The chips have to be ON SCREEN on the feed page for any of that to be
 // reachable: the whole bar used to be hidden there, which took the one working
 // control off the page along with the three that could not work on it.
+//
+// So the rule names the PANEL — the three controls that ride on a search
+// string this view does not send — and not the row they sit in, which also
+// carries the chips and the Syntax sheet's button. Both of those act here: a
+// chip narrows the feed, and every prefix the sheet explains can be typed into
+// the box above it.
 const html = readFileSync(new URL("../../relay/src/main/resources/index.html", import.meta.url), "utf8");
-assert.ok(/body\.feed \.bar-right \{ display: none/.test(html), "the feed hides the Filters half of the bar");
-assert.ok(!/body\.feed \.bar \{ display: none/.test(html), "…and not the chips, which are the half that acts on it");
+assert.ok(/body\.feed #adv \{ display: none/.test(html), "the feed hides the Filters panel");
+assert.ok(!/body\.feed \.bar(-right)? \{ display: none/.test(html), "…and not the row it sits in, which carries the chips and the syntax button");
 
 // ---- the over-ask ---------------------------------------------------------
 // Replies are dropped AFTER the relay answers, because NIP-01 cannot ask for
