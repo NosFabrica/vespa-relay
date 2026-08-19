@@ -285,6 +285,26 @@ class SyncEngine(
     fun start(): SyncEngine {
         if (visitStreams.isEmpty() && upUpstreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
+            // …AND THE MONITOR PLANE IS NOT THE MIRROR'S PASSENGER. It was
+            // split into its own engine because measuring relays is not
+            // mirroring them, and a `monitor { sources }` block with no stream
+            // beside it is a whole deployment on its own: a node that publishes
+            // verdicts for other routers to read. Behind this return it started
+            // nothing and said nothing — the boot log went straight from
+            // "nothing to mirror" to serving pages, and the monitor's rows sat
+            // at their registered phase for the life of the process, which is
+            // indistinguishable from a monitor that is running and finding
+            // nothing.
+            //
+            // Ingest starts with it, and that pairing is load-bearing rather
+            // than tidy: a probe hands everything it downloaded to
+            // [IngestPipeline.submit], whose channel is bounded, so a monitor
+            // running beside a pipeline nobody drains parks its first pass on a
+            // full queue — the exact wedge [AliasProbe.deadlineMs] exists for,
+            // arrived at by configuration instead of by a relay.
+            ingest.start()
+            registerProcessors()
+            monitor.start()
             return this
         }
 
