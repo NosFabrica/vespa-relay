@@ -64,12 +64,26 @@ const known = new Set([
   }),
   "group",
 ]);
+// A whole NEW family would be invisible to the two reads above — they ask for
+// the groups this test already knows the names of, so `(?<lang>(?:lang):)`
+// added to the tokenizer would leave `known` unchanged and every check below
+// passing over a prefix the sheet has never heard of. So the group names are
+// pinned as a set: adding one fails here, which is the prompt to teach this
+// file and the sheet about it together.
+const groups = [...new Set([...query.matchAll(/\(\?<([a-z]+)>/g)].map((m) => m[1]))].sort();
+assert.deepStrictEqual(
+  groups,
+  ["day", "ext", "grp", "gid", "key", "lead", "when", "who", "sid"].sort(),
+  `query.js's tokenizer grew or lost a named group (${groups.join(", ")}) — the syntax sheet has to keep up with it`,
+);
+
 // The families the tokenizer knows about, spot-checked so a regex change that
 // silently stops matching cannot make the rest of this file vacuous.
 assert.ok(known.has("from") && known.has("until") && known.has("group") && known.has("podcast:item:guid"), `read the wrong prefixes off query.js: ${[...known].join(", ")}`);
 
 // ---- the sheet -------------------------------------------------------------
-const sheet = html.slice(html.indexOf('<dialog id="help"'), html.indexOf("</dialog>"));
+const sheetAt = html.indexOf('<dialog id="help"');
+const sheet = html.slice(sheetAt, html.indexOf("</dialog>", sheetAt));
 assert.ok(sheet.length > 500, "index.html has no <dialog id=\"help\"> to check");
 const btn = html.slice(html.indexOf("<button id=\"helpbtn\""), html.indexOf("</button>", html.indexOf("<button id=\"helpbtn\"")));
 assert.ok(btn, "nothing on the page opens the syntax sheet");
@@ -172,6 +186,36 @@ assert.deepStrictEqual(
   `the sheet's example does not filter the way it says it does: ${example}`,
 );
 assert.strictEqual(q.terms, "sort:recent", `the sheet's example leaves ${JSON.stringify(q.terms)} as search words`);
+
+// ---- the observer token is HEX, and the sheet must not suggest otherwise ----
+//
+// MEASURED against wss://search-staging.brainstorm.world with a real 10040
+// observer: `observer:<64 hex>` reorders the answer, and `observer:<npub>` for
+// the SAME key returns byte-identical results to sending no observer at all.
+// The store ignores the bech32 form rather than refusing it, so a reader who
+// copies the npub this page shows everywhere — `?as=npub1…` is in its own URL —
+// gets an unranked answer and no error. An example spelt that way here would be
+// the sheet teaching the one mistake it exists to prevent.
+for (const tok of store.tokens) {
+  if (!tok.startsWith("observer:")) continue;
+  assert.ok(/hex/i.test(tok), `\`${tok}\` must say hex: the store ignores an npub observer silently`);
+}
+assert.ok(
+  store.tokens.some((t) => t.startsWith("observer:")),
+  "the sheet stopped documenting `observer:` — the check above went vacuous with it",
+);
+
+// ---- one Escape dismisses one thing ----------------------------------------
+//
+// `?` opens the sheet from the Filters panel's own summary button (a button is
+// not a field, so isTyping() lets the key through), which leaves that panel
+// open BEHIND the modal. The <dialog> closes itself on Escape; the panel's own
+// Escape handler is a document listener that still runs on the same press, and
+// without a guard it closed the panel too — two things dismissed by one key,
+// which is the thing that handler's own comment says not to do.
+const esc = app.slice(app.indexOf("// ONE Escape handler"), app.indexOf("// ---- the syntax sheet"));
+assert.ok(esc.length > 200, "app.js's Escape handler moved — this pin cannot see it any more");
+assert.ok(esc.includes("$help.open"), "the Filters panel's Escape handler must stand down while the syntax sheet is up");
 
 // ---- and the page really opens it ------------------------------------------
 //

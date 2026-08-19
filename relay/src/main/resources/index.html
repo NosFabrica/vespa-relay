@@ -1768,7 +1768,7 @@
           somewhere else entirely, and a screen reader should say so first.
         -->
         <button id="helpbtn" type="button" class="adv-btn" aria-haspopup="dialog" aria-label="Search syntax"
-                title="Search syntax (?) — people, days, topics, and the tokens that rank the answer">
+                title="Search syntax — people, days, topics, and the tokens that rank the answer. Shortcut: ?">
           <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
             <circle cx="12" cy="12" r="9" />
             <path d="M9.4 9.4a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .8-1 1.5v.4" stroke-linecap="round" />
@@ -1967,7 +1967,7 @@
 
     <section class="help-sec">
       <h3>Ranking and order</h3>
-      <p>These reach the relay as typed. The <b>Filters</b> button writes the first three for you.</p>
+      <p>These reach the relay as typed. The <b>Filters</b> button writes every one of them except the last.</p>
       <dl class="help-rows">
         <dt><code class="tok">sort:recent</code></dt>
         <dd>Newest first, ignoring how well anything matched.</dd>
@@ -1977,8 +1977,10 @@
         <dd>Most followed authors first.</dd>
         <dt><code class="tok">sort:text</code></dt>
         <dd>Text match alone, trust not consulted. With none of these you get the default: best match.</dd>
-        <dt><code class="tok">observer:<em>pubkey</em></code></dt>
-        <dd>Rank through <b>that</b> pubkey's web of trust instead of your own. Signing in does this for you.</dd>
+        <dt><code class="tok">observer:<em>hex pubkey</em></code></dt>
+        <dd>Rank through <b>that</b> pubkey's web of trust instead of your own — the 64-character hex key, since an
+            <code class="tok">npub1…</code> here is ignored rather than refused. Signing in does this for you, and
+            "Ranking as" under Filters writes it.</dd>
         <dt><code class="tok">include:spam</code></dt>
         <dd>Lift the trust floor: also show what your web of trust does not rank.</dd>
         <dt><code class="tok">filter:rank:gte:<em>50</em></code></dt>

@@ -1026,6 +1026,14 @@ document.addEventListener("click", (e) => {
 // including ones written later that have no idea this field exists.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  // The syntax sheet is innermost of all when it is up, and the <dialog> closes
+  // itself on this very press — so anything here would be the second thing
+  // dismissed by one key. The panel can genuinely be open behind it: `?` opens
+  // the sheet from the panel's own summary button, which is not a field, so
+  // isTyping() lets the key through. This listener still sees `open === true`
+  // at that moment (the element closes on the default action, after dispatch),
+  // which is what makes the guard readable rather than a race.
+  if ($help.open) return;
   // Innermost first — the list is drawn INSIDE the panel, so closing the panel
   // on the same press would dismiss two things for one key.
   if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
@@ -1064,6 +1072,15 @@ document.getElementById("helpclose").addEventListener("click", () => $help.close
 // target BEING the dialog is what "outside" means here — the same test the
 // popups above make with closest(), asked the way this element allows.
 $help.addEventListener("click", (e) => { if (e.target === $help) $help.close(); });
+
+// Back closes it. This page answers popstate by re-rendering the view rather
+// than leaving the site, so a sheet left open would hang over a page that just
+// changed underneath it — and on a phone, Back IS the gesture for dismissing
+// something that is in the way. It does not push a history entry of its own:
+// one press should get you back to what you were reading, not out of a sheet
+// you would then have to press Back again to leave. `close()` on a shut dialog
+// is a no-op, so this needs no guard.
+window.addEventListener("popstate", () => $help.close());
 
 // `?` opens it, the way `/` focuses the box — one key, guarded by the same
 // rule, because a `?` typed INTO a query is a question mark. Shift is how the
