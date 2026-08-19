@@ -10,7 +10,7 @@
 // quietly offers the wrong date under the reader's finger.
 import assert from "assert";
 
-const cal = await import(new URL("../../web/src/main/resources/web/shared/calendar.js", import.meta.url));
+const cal = await import(new URL("../../main/resources/web/shared/calendar.js", import.meta.url));
 const { midnight, shiftDays, shiftMonths, sameDay, sameMonth, monthGrid, typedMonth, quickPicks, dowNames, dayLabel } = cal;
 
 const D = (y, m, d) => new Date(y, m - 1, d);

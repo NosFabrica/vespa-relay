@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import {
   mirrorScope, scopedTo, readMirrorScope,
-} from "../../web/src/main/resources/web/shared/mirrors.js";
+} from "../../main/resources/web/shared/mirrors.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 

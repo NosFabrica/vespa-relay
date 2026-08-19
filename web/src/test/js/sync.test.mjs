@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import {
   IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
   heldOf, legsOf, measuringOf, probeProgress, rotationOf,
-} from "../../web/src/main/resources/web/shared/sync.js";
+} from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 

@@ -17,8 +17,8 @@
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
-const html = readFileSync(new URL("../../web/src/main/resources/index.html", import.meta.url), "utf8");
-const app = readFileSync(new URL("../../web/src/main/resources/web/app.js", import.meta.url), "utf8");
+const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
+const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 
 /** The source of a top-level `function name() { … }`, closing brace included. */
 function bodyOf(src, name) {

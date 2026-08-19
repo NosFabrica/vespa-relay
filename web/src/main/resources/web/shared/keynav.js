@@ -4,7 +4,7 @@
 //
 // The two halves worth pinning live here rather than in app.js, which cannot
 // be imported without a DOM: which keypresses are a move at all, and where a
-// move lands. tools/webtest/keynav.test.mjs holds both. What is left in app.js
+// move lands. web/src/test/js/keynav.test.mjs holds both. What is left in app.js
 // is the part that needs the page — which cards exist, and drawing the cursor
 // on one.
 

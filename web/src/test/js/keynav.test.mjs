@@ -10,7 +10,7 @@
 // here rather than trusted.
 
 import assert from "assert";
-import { isTyping, navKey, stepIndex } from "../../web/src/main/resources/web/shared/keynav.js";
+import { isTyping, navKey, stepIndex } from "../../main/resources/web/shared/keynav.js";
 
 const key = (k, mods = {}) => ({ key: k, ...mods });
 const el = (tagName, editable = false) => ({ tagName, isContentEditable: editable });

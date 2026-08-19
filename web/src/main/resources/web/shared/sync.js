@@ -16,7 +16,7 @@
 //
 // So the decisions live here, as functions over plain data, and stats.html is
 // left with DOM and the glossary. Numbers come out; the page formats them and
-// hangs the document's own words on them. `tools/webtest/sync.test.mjs` is the
+// hangs the document's own words on them. `web/src/test/js/sync.test.mjs` is the
 // half that can now be asserted.
 //
 // It is SMALL on purpose. The card's rebuild dropped the per-leg table, the

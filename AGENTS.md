@@ -166,7 +166,8 @@ D=$(mktemp -d)
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 
-node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
+./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
+node web/src/test/js/run.mjs       # …the same suite, run directly
 
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
@@ -235,7 +236,7 @@ and silently ranks like an anonymous read, which is the failure mode this key
 exists to avoid.
 
 Node 22's global `WebSocket` is enough to ask it anything — no dependency, same
-plain-node rule as `tools/webtest`:
+plain-node rule as `web/src/test/js`:
 
 ```js
 // node probe.mjs — search, ranked through that observer
@@ -587,7 +588,7 @@ relay/src/main/resources/
                         become the comment pair alone (scopeIds spells each id
                         the way NIP-73 fixes it, plus as typed), with the page
                         state passed IN so the whole thing is testable —
-                        tools/webtest/query.test.mjs asserts the filters, and
+                        web/src/test/js/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them.
                         `group:<id>` is the NIP-29 one, and the only subject
                         with a PICKER: a group id is opaque (`chachi`, a hex

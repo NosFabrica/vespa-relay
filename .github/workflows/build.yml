@@ -38,6 +38,16 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      # `:web:jsTest` runs the browser code's own suite in plain node, and
+      # `build` depends on it. The runner image happens to ship a node, but a
+      # verification step that works by accident of the image is one that
+      # disappears the day the image changes — and it would disappear as a
+      # BUILD FAILURE naming a missing binary, or worse, silently if the task
+      # were ever made lenient. Pinned here so the version is a decision.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Build and test
         run: ./gradlew build
       # The Docker image runs these two dist trees by exact path

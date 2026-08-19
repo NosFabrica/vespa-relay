@@ -5,9 +5,14 @@
 // hint quietly returns to the slow path. Neither shows up as a failure anywhere
 // else, so it is asserted here.
 import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const RES = "web/src/main/resources";
+// Resolved from THIS FILE, not from the working directory. Gradle runs the
+// suite from the module root and a human runs it from wherever they are; a
+// crawler that silently finds no files reports a graph with nothing in it and
+// calls the hints stale.
+const RES = fileURLToPath(new URL("../../main/resources/", import.meta.url));
 const entry = "/web/app.js";
 
 const reached = new Set();

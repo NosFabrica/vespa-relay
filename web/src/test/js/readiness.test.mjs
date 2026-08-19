@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   assess, fraction, counted, worthShowing, REFUSED, TIMED_OUT,
-} from "../../web/src/main/resources/web/shared/readiness.js";
+} from "../../main/resources/web/shared/readiness.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
@@ -79,7 +79,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   // avatar.test.mjs checks the stylesheet it cannot import — readiness.js
   // reads the document at import and cannot be loaded here.
   const src = readFileSync(
-    new URL("../../web/src/main/resources/web/readiness.js", import.meta.url), "utf8"
+    new URL("../../main/resources/web/readiness.js", import.meta.url), "utf8"
   );
   const chainFn = src.slice(src.indexOf("function chainHtml"), src.indexOf("function fetchFormHtml"));
   assert.ok(chainFn, "chainHtml has moved — this assertion no longer reads it");
@@ -228,7 +228,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 // import and cannot be loaded here.
 {
   const src = readFileSync(
-    new URL("../../web/src/main/resources/web/readiness.js", import.meta.url), "utf8"
+    new URL("../../main/resources/web/readiness.js", import.meta.url), "utf8"
   );
   const fn = src.slice(src.indexOf("async function postCounts"), src.indexOf("async function askRemote"));
   assert.ok(fn.includes("scopedTo"), "postCounts has moved — this assertion no longer reads it");
@@ -288,7 +288,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 {
   globalThis.location = { protocol: "https:" };
   const { normalizeRelay, whyNotDialable } = await import(
-    "../../web/src/main/resources/web/shared/relayurl.js"
+    "../../main/resources/web/shared/relayurl.js"
   );
 
   assert.equal(normalizeRelay("wss://relay.damus.io"), "wss://relay.damus.io");

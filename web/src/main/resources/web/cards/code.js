@@ -185,7 +185,7 @@ function codeBlock(opts, src, { name = null, lang = null, classes = null } = {})
 /**
  * `git format-patch` output, taken apart: `{subject, markers, message, diff}`.
  *
- * Exported because tools/webtest/cards.test.mjs holds it against real patches —
+ * Exported because web/src/test/js/cards.test.mjs holds it against real patches —
  * this is the one place in the card layer doing real parsing, and every field
  * of a patch card is downstream of it.
  *

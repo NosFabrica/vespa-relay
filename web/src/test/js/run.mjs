@@ -1,7 +1,8 @@
 // The web UI's test suite, plain node — no test framework, no dependencies,
 // matching the pages under test. Run from anywhere:
 //
-//     node tools/webtest/run.mjs           # every module suite
+//     ./gradlew :web:jsTest                  # …and `build` depends on it
+//     node web/src/test/js/run.mjs           # every module suite, directly
 //
 // nip19.test.mjs   decoder vs an independently written test-side encoder
 // query.test.mjs   the search box's from:/to:, since:/until: and #hashtag

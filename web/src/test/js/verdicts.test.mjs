@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import {
   MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
   FOLD_EPOCH, CONSISTENCY_EPOCH, FITNESS_EPOCH, FITNESS_NAMESPACE, PRIME,
-} from "../../web/src/main/resources/web/shared/verdicts.js";
+} from "../../main/resources/web/shared/verdicts.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 

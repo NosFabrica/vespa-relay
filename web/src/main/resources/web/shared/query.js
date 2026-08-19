@@ -41,7 +41,7 @@
 // (searchfield.js) and the query builder (app.js) must agree exactly about
 // where a token starts and ends, and they agree by both asking here. It is
 // also the only part of the feature that can be tested without a browser, and
-// tools/webtest/query.test.mjs does.
+// web/src/test/js/query.test.mjs does.
 
 import { pubkeyParam } from "./nip19.js";
 

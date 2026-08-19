@@ -13,7 +13,7 @@
 //     elegant way to count a month's days or an off-by-one waiting to happen,
 //     depending entirely on whether anything checks.
 //
-// tools/webtest/calendar.test.mjs checks. Everything here is a pure function of
+// web/src/test/js/calendar.test.mjs checks. Everything here is a pure function of
 // its arguments and the locale; the field renderer (searchfield.js) turns what
 // comes back into buttons, and owns nothing about which days exist.
 //

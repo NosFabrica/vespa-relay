@@ -240,7 +240,7 @@ export function bylineHtml(ev, opts) {
  * theoretical rule: four cards passed `fmtTs(tagOf(ev, …))` straight in, and
  * fmtTs hands back its argument verbatim when it is not a number, so
  * `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed in the page.
- * tools/webtest/cards.test.mjs now renders every registered kind with a payload
+ * web/src/test/js/cards.test.mjs now renders every registered kind with a payload
  * in every tag and fails if it survives, so the next one is caught here rather
  * than in the wild.
  */

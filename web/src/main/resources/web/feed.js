@@ -30,7 +30,7 @@
 // the whole mirror in time order. The hero draws its preview only for the
 // first case; the full view serves either, and says which one it is showing.
 //
-// Three exported rules and no DOM, so tools/webtest/feed.test.mjs can hold
+// Three exported rules and no DOM, so web/src/test/js/feed.test.mjs can hold
 // them.
 
 import { replyTarget } from "./shared/parents.js";

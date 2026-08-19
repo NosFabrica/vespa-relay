@@ -9,7 +9,7 @@
 // that belongs to a repository, `#e` for everything that answers an event).
 //
 // The rules are split from the fetching on purpose: what to ASK and how to
-// SHAPE what comes back are pure functions, held by tools/webtest/related.test.mjs.
+// SHAPE what comes back are pure functions, held by web/src/test/js/related.test.mjs.
 //
 // It renders the SAME cards as everything else, at preview depth — so a repo's
 // issues below its card look exactly like that issue in a search result, open

@@ -992,7 +992,7 @@ document.addEventListener("click", (e) => {
 // The disclosure itself is the <details> element's job — open/closed, the
 // keyboard, the ARIA. What is left for this file is the part hiding a control
 // costs: the badge, which is the only thing on screen that admits a filter is
-// on while the panel is shut. tools/webtest/filters.test.mjs holds the three
+// on while the panel is shut. web/src/test/js/filters.test.mjs holds the three
 // of them — panel control, badge fact, URL param — in step.
 const $adv = document.getElementById("adv");
 const $advBtn = document.getElementById("advbtn");

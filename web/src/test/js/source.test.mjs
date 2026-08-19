@@ -27,7 +27,7 @@
 import assert from "assert";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 
-const root = new URL("../../web/src/main/resources/", import.meta.url);
+const root = new URL("../../main/resources/", import.meta.url);
 
 /** Every file the page ships, module tree and markup alike. */
 function sources(dir, out = []) {
