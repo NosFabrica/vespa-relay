@@ -4,24 +4,69 @@ A Nostr relay with trust-ranked NIP-50 search. Quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays.
 
-Three Gradle modules, JVM only (toolchain 21), two processes over one store:
+Six Gradle modules, JVM only (toolchain 21), two processes over one store:
 
 - **`:relay`** — the serving side. `RelayMain` is its entrypoint.
-- **`:sync`** — the router, as its own process so it restarts without the
-  relay or Vespa noticing. `SyncMain` is its entrypoint; the package keeps the
-  `router` name on purpose (see below).
-- **`:common`** — only what both genuinely read: `RelayIdentity`,
+- **`:sync`** — the MIRROR, and the process that hosts the monitor beside it so
+  the pair restarts without the relay or Vespa noticing. `SyncMain` is its
+  entrypoint and builds both engines over one `PeerClient`. Operators know the
+  subsystem as the router (`router.conf`, the `router:` log prefix), and that is
+  a separate name from these.
+- **`:monitor`** — the MONITOR plane: the alias fold, the consistency gate and
+  the fitness grades, signing kind-30166 records the mirror's roster selects on.
+  **It may not depend on `:sync`**, and the compiler enforces that now. What it
+  still takes from the mirror — the ingest queue a probe dial's events land in,
+  the socket refcount, the pinned urls — arrives through `MonitorEngine`'s
+  constructor, which is where that debt is accounted for. Reading the other way
+  is already clean: the mirror asks the STORE for verdicts, a plain NIP-01 read
+  that would survive a process boundary untouched.
+
+…over three shared modules, which are shared with DIFFERENT audiences. That is
+the distinction to hold when deciding where something goes, and each module
+states its own admission rule:
+
+- **`:common`** — only what the SERVING relay also reads: `RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
   whose mean crosses the process boundary over the relay's `GET /pressure`,
   polled by the sync process to yield ingest when client reads slow down.
-  Anything one process owns lives in that process's module.
+  Anything one process owns lives in that process's module. It must never gain
+  a dependency on quartz's relay CLIENT or on Ktor: the day it does, it has
+  stopped being "what both read" and become the junk drawer.
+- **`:peers`** — how this deployment talks to OTHER relays, shared by the two
+  client-side planes and by neither of the other two modules: `PeerClient` (the
+  websocket client, the 1,024-socket dispatcher, Tor, NIP-42), `RelaySockets`,
+  `RelayVerdictRecord` and the `Verdict` vocabulary both planes speak,
+  `RelayDiscovery`, the `RouterConfig` both read, the `IngestPipeline` both
+  write through, and `Processors`. It sits ABOVE `:common` and must stay there.
+- **`:web`** — THE FRONT END, and the scaffolding that serves it. Every `.html`,
+  `.js` and `.css` in the repo — the search UI, the stats page, both planes'
+  cards — plus the Ktor plumbing (`installPageDefaults`, `serveStatusSite`), the
+  asset cache and its content-derived validators (`WebAssets`, `webModules`,
+  `favicon`), the page cache (`CachedPage`, `IconedPage`, `pageWithIcon`) and
+  the stats document holder (`StatsSnapshot`). Its Kotlin depends on Ktor and
+  kotlinx.serialization and on nothing of ours, `:common` included.
+
+  **The rule: engines produce documents, `:web` renders them, and the seam is
+  `/stats.json`.** No other module may ship a browser file, and
+  `NoBrowserFilesInEngineModulesTest` holds it — "a page belongs next to the
+  thing that serves it" is the argument that produced the layout this replaced,
+  and it sounds right every time. It also cost a resolver hook in the JS suite,
+  whose only job was undoing the split.
+
+  **ONE stats page**, served by the relay, the mirror and the monitor alike.
+  Every panel is guarded on the section it reads, so the page draws whatever
+  document it is pointed at; the heading, the tab and the line about what the
+  numbers cover come from that document's `title`, `scope` and `counted`,
+  because the page cannot know which service answered.
 
 ## Commands
 
 ```bash
 ./gradlew build                    # compile + test + spotless check, all modules
 ./gradlew :relay:test              # serving-side tests
-./gradlew :sync:test               # router tests (moved with the module)
+./gradlew :sync:test               # the mirror plane
+./gradlew :monitor:test            # the fold, the consistency gate, the grades
+./gradlew :peers:test              # the plumbing, the verdict record, ingest
 ./gradlew :sync:test --tests "*SyncBands*"
 
 # Dials the five real indexer relays and reports two things: how each ENDS an
@@ -52,7 +97,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # a store looks like before the boot migration has run. The nsec must be the
 # relay's own RELAY_NSEC or the panel correctly counts them as another monitor's.
 # Then open /stats.html and press "Read verdicts from this relay".
-./gradlew :sync:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
+./gradlew :monitor:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
   -DseedVerdictsNsec=nsec1... -DseedVerdictsCount=600 --rerun -i
 #   …a different relay, or more/fewer legacy rows:
 #   -DseedVerdictsUrl=ws://localhost:7777 -DseedVerdictsLegacy=15
@@ -68,7 +113,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # decide from each. Answers the three ways a `.onion` fails to fold — window too
 # short, relay will not answer a fingerprint, paths genuinely distinct — which
 # are the same silence from the outside. Asserts nothing.
-./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
+./gradlew :monitor:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
   -DonionFoldSocks=127.0.0.1:9050 --rerun -i
 
 # Runs a REAL pass of the fold against REAL relays and prints the numbers the
@@ -77,7 +122,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # published, and whether every socket the pass claimed came back. This is the
 # one that tells our reading of a relay apart from the relay — three claims in
 # the sections below were corrected by running it. Asserts nothing.
-./gradlew :sync:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
+./gradlew :monitor:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
 #   …or a group of your own, `;` between groups and `,` within one:
 #   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
 
@@ -87,7 +132,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # fake page says: its unrecognised bucket either is empty or names the strings
 # the table still has to learn. Asserts only what cannot depend on the network —
 # that the partition closes and the rows sum to `unmeasured`.
-./gradlew :sync:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
+./gradlew :monitor:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
 #   …or urls of your own:
 #   -DliveConsistencyUrls='wss://relay.example,wss://other.example'
 
@@ -97,7 +142,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # anchor fixes it) or because it does not answer the same question twice (an
 # older anchor does not). Those are different facts and want different responses
 # — see the self-consistency section below. Asserts nothing.
-./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
+./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
@@ -105,22 +150,24 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # beside them. Pins that this router's client really does have a NIP-42
 # responder, which is what makes quartz's derived default the value AliasProbe
 # used to hardcode. Asserts nothing.
-./gradlew :sync:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
+./gradlew :monitor:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
 #   …or a relay of your own: -DauthGatedUrl='wss://relay.example'
 
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
-# 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
-# and after.json in $D; the :relay half charts both through SyncCoverageReport,
-# so the coverage card can be read before and after. Same `--rerun` rule.
+# 9,689 bands. The first probe loads/prunes/rewrites it and leaves before.json
+# and after.json in $D; the second charts both through SyncCoverageReport, so
+# the coverage card can be read before and after. Both in :sync now — the card
+# is the mirror's own page. Same `--rerun` rule.
 D=$(mktemp -d)
-./gradlew :sync:test  --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
-./gradlew :relay:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :sync:test --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :sync:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 
-node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
+./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
+node web/src/test/js/run.mjs       # …the same suite, run directly
 
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
@@ -189,7 +236,7 @@ and silently ranks like an anonymous read, which is the failure mode this key
 exists to avoid.
 
 Node 22's global `WebSocket` is enough to ask it anything — no dependency, same
-plain-node rule as `tools/webtest`:
+plain-node rule as `web/src/test/js`:
 
 ```js
 // node probe.mjs — search, ranked through that observer
@@ -240,6 +287,62 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
                             piece of it both processes read
     SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
   util/Format.kt            fmtDuration — the one formatter both processes print
+
+web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
+  StatusSite.kt             installPageDefaults (compression + CORS, on the terms
+                            measured in HttpServer), statsDocument, and
+                            serveStatusSite — one page + its document + its
+                            assets, which is a whole background service's UI
+  resources/stats.html      THE page. Panels guarded on the section they read,
+                            so the relay's, the mirror's and the monitor's
+                            documents each draw their own cards from one file
+  resources/web/            every module the pages import: shared/ (the design,
+                            the render engine, the protocol clients), sync/ and
+                            monitor/ (each plane's cards), cards/ (the search
+                            UI's per-kind renderers)
+  CachedPages.kt            CachedPage/IconedPage and the ETag exchange every
+                            page and document answers with
+  WebAssets.kt              /web/… off the classpath, hashed once, and /favicon.ico
+  PageIcon.kt               pageWithIcon — every <link rel="icon"> replaced by one
+  StatsSnapshot.kt          the served document: two writers merged, persisted
+
+peers/src/main/kotlin/com/nosfabrica/vespa/relay/
+  peers/
+    PeerClient.kt         the websocket client, the 1,024-socket dispatcher, Tor
+                          and NIP-42 — one of each, for BOTH planes, which is
+                          why RelaySockets can refcount across them
+    RelaySockets.kt       who is still using this socket: one refcount across
+                          every stream and every probe pass
+    RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
+                          the mirror reads. The contract between the planes
+    Verdict.kt            …and the label vocabulary they are written in. In
+                          :peers because a vocabulary only one side can name is
+                          not a contract
+    RelayFacts.kt         the NIP-66 fact tags that ride the same record
+    RelayDiscovery.kt     which urls a relay list names, and which a `dead`
+                          verdict of ours holds out
+    TorTransport.kt       the .onion transport, and probeIdleMs
+  config/                 RouterConfig + its HOCON loader — one file configures
+                          both planes, so it sits under both
+  ingest/                 IngestPipeline (on an IngestTuning, not the whole
+                          config), ParseAudit, the refusal filters, ProbeGate
+  progress/               Processors and InFlight — the report both planes
+                          register rows in
+
+monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
+  MonitorStatus.kt        this plane's OWN /stats.json — its four pass rows, the
+                          subset of the glossary they need, and the served
+                          relay's ws url, which the verdict panel has to be told
+                          because this page is not served by the relay
+  MonitorEngine.kt        the plane: the three passes, the derivation, the boot
+                          retirement of verdicts this router would no longer
+                          sign. Its CONSTRUCTOR is the account of what the
+                          monitor still takes from the mirror
+  AliasFolding.kt         which urls are one server wearing several addresses
+  ConsistencyPass.kt      which cannot answer the same question twice
+  FitnessPass.kt          …and the grades for what survives, signed
+  StreamWorld.kt          the candidate set all three measure over
+  AliasMonitor.kt         their clock, and the fast lane
 
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt          entrypoint; reads env, deploys the schema, wires the
@@ -337,11 +440,25 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
 sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
                               report — lives here because ingest is what feeds it
-  util/SyncFormat.kt          fmtDay / fmtCount / nowSeconds, internal again
-  router/               the mirror (see below)
-    SyncMain.kt           entrypoint; env, store, engine, block
-    SyncEngine.kt         wiring, live tails, health/stats lines
-    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+  util/SyncFormat.kt          fmtCount / nowSeconds, internal again
+  SyncMain.kt           entrypoint; env, store, engine, block
+  SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
+                        which is why it sits above both: it starts them
+  sync/                 THE MIRROR — everything that moves events into the store
+    VisitPool.kt          EVERY down stream's engine: the roster (declared
+                          `urls` plus the relays the monitor's 30166 verdicts
+                          admit), rotating visits (catch-up, the reconcile of
+                          the past, heal drain), earned live tails,
+                          yield-paced revisits
+    VisitQueue.kt         whose turn it is, and when a relay may be revisited
+    RosterBuilder.kt      the asks a stream makes of each relay it may dial
+    RetractionAudit.kt    the deleteMissing comparison, run as a retracting
+                          ask's `negentropySyncThePastSeconds` reconcile:
+                          compare both ways, delete what the provider no
+                          longer serves
+    NegentropyPager.kt    the windowed history sweep every reconcile runs
+    SweepState.kt         per-peer window sizes and the in-progress cursor
+    SyncBands.kt          covered created_at bands per (relay, filter)
     IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
                           batchInsert, poison isolation. Dropping FIRST is the
                           point: a schnorr check is ~48us isolated and ~70-95us
@@ -349,98 +466,108 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           per relay holding it — and older VERSIONS of it from
                           the relays that never got the newest
     ProbeGate.kt          whether either drop-probe still earns its round trip,
-                          learned from what it drops. Replaces telling ingest
-                          which phase a stream is in
+                          learned from what it drops
     BisectingInsert.kt    the batch-bisecting write
-    StaticBackfill.kt     history catch-up for configured upstreams
-    VisitPool.kt          relaySource streams' whole engine: the roster the
-                          monitor's 30166 verdicts admit to, rotating visits
-                          (catch-up, audit, heal drain), earned live tails,
-                          yield-paced revisits
-    RetractionAudit.kt    the deleteMissing comparison, run as a retracting
-                          ask's auditSeconds audit: reconcile both ways,
-                          delete what the provider no longer serves
-    NegentropyPager.kt    the windowed history sweep the pool's non-retracting
-                          audits run
     UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
-    SyncBands.kt          covered created_at bands per (relay, filter)
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
                           streams and their kinds — written once at boot so the
                           relay can publish it. The kind list exists in
                           router.conf and nowhere else, and a count taken
                           against this relay is wrong without it
+    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+    RouterTuning.kt       the constants the mirror is paced by
+    heal/                 pushing back what an upstream is missing
+    refused/              what the store refused, so it is not re-downloaded
+  monitor/              THE MEASURING PLANE — what to believe about a relay,
+                        published as signed NIP-66 records. It decides nothing
+                        about syncing; the mirror reads its verdicts back
+    AliasMonitor.kt       the schedule the passes run on: fold, then stability,
+                          then fitness
+    AliasProbe.kt         the fingerprint: a relay's newest events, as ids
+    AliasFolding.kt       apply() reads verdicts; measure() earns them
+    RelayAliases.kt       which discovered urls are ONE relay (see below)
+    ConsistencyPass.kt    the pass that measures the stability gate
+    RelayConsistency.kt   which relays answer one filter the same way twice
+    FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
+                          the 30166 record, earned by answering a settled-anchor
+                          probe — the tag [VisitPool]'s roster selects on
+    ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
+    Silence.kt            classifying what a quiet socket actually said
+    Unreachability.kt     which failures may be published as NIP-66 records
+    HostStrikes.kt        per-authority strikes and eviction
+    RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
+                          rtts, `R`, `s` (+version), `N`. Absent writes no tag
+                          rather than a zero, and everything it writes it also
+                          OWNS, so a reading cannot outlive the dial that took
+                          it. Says which fields are deliberately unwritten
+                          (`rtt-write`, `g`, `T`, a `v` tag) and why
+    RelayDocument.kt      the relay's own NIP-11 document, for the fields no
+                          dial can measure — and the connect that carries it,
+                          which IS the `rtt-open` we publish. Pure `parse`,
+                          because it is somebody else's json
+    StreamWorld.kt        the url universe the monitor measures: every stream's
+                          sources, plus the monitor's own. Reports as the
+                          `aliasSource` processor
+  shared/               WHAT BOTH PLANES TOUCH, and the whole of it — the split
+                        was derived from the imports, not guessed
+    RelayDiscovery.kt     pulling relay urls out of stored events: the mirror
+                          builds its roster from them, the monitor its universe
+    RelayVerdictRecord.kt the signed 30166 edit — the monitor writes every
+                          verdict through it, the mirror reads the fold and the
+                          `nip77` measurement back out. OWNERSHIP IS A
+                          PREDICATE, not a set of tag names, because `l`/`L`
+                          are shared: the fitness writer may replace its own
+                          NIP-32 namespace and must carry every other
+                          labeller's through
+    RelaySockets.kt       WHO IS STILL USING THIS SOCKET — the one refcount
+                          across streams and probe passes; quartz closes none
+                          of its own connections
     TorTransport.kt       SYNC_TOR_SOCKS: the second OkHttp client, chosen per
                           url, whose .onion names resolve INSIDE the proxy
-    config/               the declarative side
-      RouterConfig.kt       the stream model (streams, directions, sync modes)
-      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
-      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
-    discovery/            which relays to dial, and what to believe about them
-      RelayDiscovery.kt     pulling relay urls out of stored events
-      HostStrikes.kt        per-authority strikes and eviction
-      Unreachability.kt     which failures may be published as NIP-66 records
-      RelayAliases.kt       which discovered urls are ONE relay (see below)
-      AliasProbe.kt         the fingerprint: a relay's newest events, as ids
-      AliasFolding.kt       apply() reads verdicts; measure() earns them
-      AliasMonitor.kt       the schedule the probe passes run on, off the sync
-                            plane entirely: fold, then stability, then fitness
-      RelayVerdictRecord.kt the signed 30166 edit every pass writes through:
-                            `same-as`, the consistency tag, the fitness grade.
-                            OWNERSHIP IS A PREDICATE, not a set of tag names,
-                            because `l`/`L` are shared: the fitness writer may
-                            replace its own NIP-32 namespace and must carry
-                            every other labeller's through
-      RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
-                            rtts, `R`, `s` (+version), `N`. Absent writes no tag
-                            rather than a zero, and everything it writes it also
-                            OWNS, so a reading cannot outlive the dial that took
-                            it. Says which fields are deliberately unwritten
-                            (`rtt-write`, `g`, `T`, a `v` tag) and why
-      RelayDocument.kt      the relay's own NIP-11 document, for the fields no
-                            dial can measure — and the connect that carries it,
-                            which IS the `rtt-open` we publish. Pure `parse`,
-                            because it is somebody else's json
-      RelayConsistency.kt   which relays answer one filter the same way twice
-      ConsistencyPass.kt    the pass that measures it (the stability gate)
-      Silence.kt            classifying what a quiet socket actually said
-      FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on the
-                            30166 record, earned by answering a settled-anchor
-                            probe — the tag [VisitPool]'s roster selects on
-      ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
-      RelaySockets.kt       WHO IS STILL USING THIS SOCKET — the one refcount
-                            across streams and probe passes; quartz closes
-                            none of its own connections
-      StreamWorld.kt        the url universe the monitor measures: every
-                            stream's sources, plus the monitor's own. Reports as
-                            the `aliasSource` processor — the walk is minutes on
-                            a live store and sits at the head of every sweep, so
-                            without a row of its own the card had three passes
-                            reading `idle` while the monitor was working
-    progress/             observability
-      StreamPhases.kt       per-stream progress reporting, and the snapshot the
-                            progress file is written from
-      PagingProgress.kt     time-axis progress for paged walks
-      CycleTally.kt         where every url a cycle took on ENDED UP — a
-                            partition that sums to what discovery handed over,
-                            not a bag of counters
-      InFlight.kt           WHICH relays a stream is holding right now, which
-                            those counts never said. UNBOUNDED, and the one list
-                            here that is: a row is a WORKER, so the pool's
-                            visitConcurrency already bounds it, and a top-N
-                            answered "what is this mirror connected to" with a
-                            sixth of the answer on a card that looked whole.
-                            Quietest first — held is not risk. Attributed by the
-                            ask RUNNING NOW, so a cheap stream showing one row
-                            beside an expensive one is them sharing workers
-      Processors.kt         the work that is NOT a stream: the alias fold, the
-                            stability gate, fitness, the rotating pool, ingest,
-                            the healer, the push. Same shape as a stream — a phase
-                            and a clock — plus either a pass schedule and an
-                            `outstanding` count, or live gauges read through a
-                            supplier
-      SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
-                            the heartbeat that tells a quiet router from a
-                            stopped one
+  config/               the declarative side, read by both planes
+    RouterConfig.kt       the stream model (streams, directions, the two
+                          re-check clocks)
+    RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+    RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped), and
+                          every removed knob's refusal
+  progress/             observability for both planes
+    StreamPhases.kt       per-stream progress reporting, and the snapshot the
+                          progress file is written from
+    InFlight.kt           WHICH relays a stream is holding right now, which
+                          those counts never said. UNBOUNDED, and the one list
+                          here that is: a row is a WORKER, so the pool's
+                          visitConcurrency already bounds it, and a top-N
+                          answered "what is this mirror connected to" with a
+                          sixth of the answer on a card that looked whole.
+                          Quietest first — held is not risk
+    Processors.kt         the work that is NOT a stream: the alias fold, the
+                          stability gate, fitness, the rotating pool, ingest,
+                          the healer, the push. Same shape as a stream — a phase
+                          and a clock — plus either a pass schedule and an
+                          `outstanding` count, or live gauges read through a
+                          supplier
+    SyncProgress.kt       what each stream is doing, republished on the
+                          progress tick and read by this process's own status
+                          site off the same heap. It was SYNC_PROGRESS_FILE,
+                          written for the relay to read off a shared volume;
+                          that knob is REFUSED at boot now
+  status/
+    SyncStatus.kt         the mirror's own /stats.json — the coverage fold, the
+                          progress document and the glossary, in the relay's
+                          envelope so both pages share one engine
+    StatusRollup.kt       its timer, on its own daemon thread so a saturated
+                          Dispatchers.IO cannot stop the page refreshing
+    SyncCoverageReport.kt bands + sweep cursors folded into per-stream groups
+                          and depth buckets. Real computation, which is why it
+                          survived the move whole
+    GaugeSeries.kt        the last hour of the four process gauges — the one
+                          thing a single tick cannot state, and all that is
+                          left of SyncProgressReport
+    SyncVocabulary.kt     what every number in the `sync` section means, shipped
+                          inside the document as `sync.terms`. Pinned in both
+                          directions by SyncVocabularyTest: no published count
+                          without a term, no term without a count
+
 
 relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/
@@ -461,13 +588,13 @@ relay/src/main/resources/
                         become the comment pair alone (scopeIds spells each id
                         the way NIP-73 fixes it, plus as typed), with the page
                         state passed IN so the whole thing is testable —
-                        tools/webtest/query.test.mjs asserts the filters, and
+                        web/src/test/js/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them.
                         That whole language is also written down for the READER,
                         in the syntax sheet the `?` beside Filters opens: a
                         <dialog> of markup at the end of index.html, four lines
                         of app.js (showModal, the two ways out, and the `?`
-                        shortcut), and tools/webtest/help.test.mjs holding it to
+                        shortcut), and web/src/test/js/help.test.mjs holding it to
                         this file — a prefix query.js lifts and the sheet never
                         names fails there, and so does a token the sheet names
                         that query.js leaves in the query as words, which is the
@@ -762,11 +889,10 @@ relay/src/main/resources/
                         it is a PARTITION: a processor name the page has not been
                         taught draws on the sync side rather than nowhere, since
                         dropping a row to keep a card tidy is how a new job runs
-                        unwatched. Two pins keep the JS honest against the
-                        Kotlin that feeds it, and both are in
-                        `SyncProgressReportTest`: every `taken` outcome must have
-                        a `DISPOSITION` row and every published gauge a line in
-                        `processorCounts`, because a name added on one side only
+                        unwatched. The pin that keeps the JS honest against the
+                        Kotlin that feeds it is `SyncVocabularyTest`: every
+                        published member must have a term, and every term a
+                        published member, because a name added on one side only
                         does not fail — the number silently stops being drawn on
                         a card that still looks complete.
                         ONE panel is not. Monitor verdicts (kind 30166) have no
@@ -827,13 +953,11 @@ jobs, and talks to Vespa directly rather than through the store:
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/
-    SyncProgressReport.kt  the router's progress file as `sync.progress` —
-                     staleness against THIS rollup's clock, and the disposition
-                     partition re-derived rather than forwarded
-    SyncVocabulary.kt  what every number in the `sync` section means, shipped
-                     inside the document as `sync.terms`. Pinned in both
-                     directions by `SyncVocabularyTest`: no published count
-                     without a term, no term without a count
+    MirrorReport.kt  the kind set this relay mirrors, from SYNC_MANIFEST_FILE
+                     — the LAST of the router's files this side reads. What the
+                     mirror has walked and what it is doing moved to the sync
+                     service's own status site; see `SyncStatus` for why a file
+                     could not answer "is it running" and an HTTP request can
     StatsYql.kt      the grouping pipelines and the readers for what comes
                      back — pure, so both halves are tested against captured
                      engine output rather than against an assumed shape
@@ -843,11 +967,12 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                      direction)
     StatsRollup.kt   the document, section by section, each failing on its own
                      — and `StatsTier`, the two schedules it is computed on
-  server/
-    StatsSnapshot.kt what GET /stats.json serves — held in memory with an
+  (:web) StatsSnapshot.kt
+                     what GET /stats.json serves — held in memory with an
                      ETag, written through to STATS_FILE so a deploy does not
                      blank the page for the minutes a first rollup takes, and
-                     the MERGE point for the two tiers
+                     the MERGE point for the two tiers. In :web because every
+                     service publishes a document this way, not just the relay
 ```
 
 **The document is computed in two passes, and the split is by measured cost.**
@@ -911,11 +1036,29 @@ It is its own process (`SyncMain`, the compose `sync` service behind
 relay outage — and the sync bands make the re-run resume rather than
 re-download. The relay hard-errors if `SYNC_CONFIG*` is aimed at it: that
 setting used to start the mirror in-process, and accepting-but-ignoring it
-would be a mirror that quietly stopped mirroring. Two kinds of stream:
+would be a mirror that quietly stopped mirroring. A stream's relays come from
+one of two places and are walked the same way after that:
 
-- **static** — relays listed in `urls` in `router.conf`
-- **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
-  outbox lists, NIP-85 provider lists, relay hints)
+- **declared** — relays listed in `urls` in `router.conf`
+- **discovered** — relays found in stored events via `relaySource` (NIP-65
+  outbox lists, NIP-85 provider lists, relay hints), admitted by the monitor's
+  verdicts
+
+**ONE ENGINE walks both** — `VisitPool`, since the crossing finished. Declared
+urls skip discovery, the gate and the fold and go straight into the roster;
+everything downstream is identical, which is the point. `StaticBackfill` is
+gone with the `sync` knob, `SYNC_NEG_MIN_EVENTS` and `PagingProgress`: it
+walked a declared relay ONCE per process and then live-tailed, so
+`negentropySyncThePastSeconds` and `refetchThePastSeconds` could never mean
+anything on those streams, and both are refused at parse time now rather than
+accepted and ignored. Pruned with it: `StreamPhases` is two phases now
+(`starting`, `rotating`) where it was eleven plus the passes each cycled
+through, `CycleTally` is gone, and the stream row on `/stats.json` carries the
+phase word, its clock, `roster`/`tails` and the in-flight legs — no cycle, no
+passes, no fraction, no ETA. A stream has no walk to be a phase OF, and where
+each relay has got to is per relay, which is what the phase words were standing
+in for. The card and the glossary followed: 30 terms describing the fan-out's
+vocabulary went with the members they described.
 
 **Dynamic streams run on two planes.** The MONITOR plane (`AliasMonitor`'s
 passes: the fold, then stability, then `FitnessPass`) measures every url the
@@ -1030,7 +1173,7 @@ out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
 why the router does its own author-bound read instead of using it. **Admitting
 widens, holding out forecloses — do not give them the same default.** The pool
-then rotates VISITS (per-ask catch-up, the `auditSeconds` audit, the heal
+then rotates VISITS (per-ask catch-up, the `negentropySyncThePastSeconds` audit, the heal
 drain) across `visitConcurrency` workers and holds up to `tailBudget` live
 tails, revisit-paced by each relay's recent yield. A scan whose select binds
 `authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
@@ -1038,22 +1181,16 @@ tails, revisit-paced by each relay's recent yield. A scan whose select binds
 that stays valid however many providers join. A retracting stream
 (`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
 
-Each **static** stream declares **how** it asks for what it is missing, via
-`sync` — a dynamic stream's cadence belongs to the pool (catch-up pages; the
-audit reconciles), so the loader refuses `sync` beside `relaySource`:
-
-| mode | when | why |
-|---|---|---|
-| `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
-| `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
-| `auto` | unknown | reconcile once WE hold more than `SYNC_NEG_MIN_EVENTS` for the filter, else page. Only our own count — asking the relay too meant a NIP-45 COUNT per relay per cycle, and COUNT is optional, widely unimplemented, and slow where it exists |
-
-**It is a property of the data AND of how the stream asks — not of the relay,
-and not measurable from counts.** NIP-85 assertions were the standing example of
-`fetch` here: per-provider, millions each, no overlap. Asked per (relay,
-provider) instead of by kind, the same data overlaps almost entirely and
-`negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
-when a stream's filter changes shape rather than trusting the label.
+**No stream declares a transport any more.** `sync` (negentropy / fetch / auto)
+chose one for the engine that is gone, and the pool has one shape: page forward
+from the band's edge, live-tail, and re-check the past on the two clocks. Which
+transport re-checks a given relay is decided per RELAY by the monitor's `nip77`
+verdict, not per stream by a config line — the argument that used to justify the
+knob is why: it was "a property of the data AND of how the stream asks", and
+NIP-85 assertions were the standing example of `fetch` (per-provider, millions
+each, no overlap) until the ask narrowed to (relay, provider), where the same
+data overlaps almost entirely and `negentropy` became right. A declaration that
+inverts when a filter changes shape was never the right place for the answer.
 
 **`.onion` upstreams go through Tor, chosen per url** (`TorTransport`,
 `SYNC_TOR_SOCKS`). quartz's socket builder takes
@@ -1097,7 +1234,7 @@ on every non-stale merge (it means "last walk from nothing"; read as "last
 verified" it made every audit re-fire on each visit — 13 sweeps of one relay
 in 40 minutes, measured). Callers fall back to `fullAt` where no stamp exists,
 so a fresh ask that DELIVERED pages still runs its first audit one
-`auditSeconds` after its catch-up, and one whose pages came back empty (no
+`negentropySyncThePastSeconds` after its catch-up, and one whose pages came back empty (no
 band) audits on its very first visit. `VisitPool.attemptSpacingSeconds` is the
 other half: an audit that cannot COMPLETE advances no clock, so attempts
 themselves are spaced instead of retried on the revisit floor.
@@ -1117,10 +1254,14 @@ the FIRST space and rejoining with one. The stream level is this repo's too —
 quartz knows nothing about streams, so `SyncBands` holds one `SyncCoverage` per
 stream name.
 
-**Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
-mount both containers share, and charted as the *Sync coverage* card on
-`/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
-A third file rides the same mount for a different job: `SYNC_MANIFEST_FILE` is
+**Both state files are read by the ROUTER'S OWN status site**, on its own port,
+and charted there as the *Sync coverage* card — see `SyncCoverageReport`. They
+used to be read by the relay off the `/var/lib/vespa-relay` mount both
+containers share; `SyncStatus` has the account of what that boundary cost. The
+router is still the only writer either way, and the files stay on the volume
+because they are what a restart reloads.
+A third file rides the same mount for a different job, and is the ONE the relay
+still reads: `SYNC_MANIFEST_FILE` is
 CONFIG, not state — the streams this router runs and the kinds they ask for,
 written once at boot (`SyncManifest`) and published as `sync.mirrors` by
 `MirrorReport`. It exists because the mirror is a *filtered* subset and nothing
@@ -1140,15 +1281,20 @@ the same wrong shape, so the tests agreed with it; a fixture that is not the
 shape of the thing it stands in for tests the fixture. Do not fold it into the band file:
 bands are rewritten every 30 seconds and this changes only on a restart.
 
-**A FOURTH file says what the router is DOING.** `SYNC_PROGRESS_FILE`
-(`SyncProgress`, published as `sync.progress` by `SyncProgressReport`) is
-rewritten on the progress tick with each stream's phase and the disposition of
-every url its current cycle took on. Three things it fixes, all of which were
+**THE ROUTER'S OWN PAGE says what it is DOING.** `SyncProgress` republishes, on
+every progress tick, each stream's phase and the disposition of every url its
+current cycle took on; `SyncStatus` serves it at `SYNC_STATUS_PORT` (7778).
+This was a FOURTH file — `SYNC_PROGRESS_FILE`, read back and re-narrated by the
+relay through a `SyncProgressReport` that no longer exists — and the knob is
+refused at boot rather than ignored. Three things it fixes, all of which were
 unanswerable from the serving side:
 
-- **`writtenAt` is a HEARTBEAT**, not a modification time — it advances every
-  tick whatever the streams are doing, so the relay can publish `staleForSec`,
-  and a mirror that stopped an hour ago stops looking like one between cycles.
+- **"Is it running" is answered by the REQUEST.** The document used to carry a
+  `writtenAt` heartbeat and the relay turned it into a `staleForSec`, because a
+  file says nothing about whether the process writing it still exists — without
+  them a mirror down for a day published exactly the card a mirror mid-cycle
+  did. A page served by the process it describes needs neither, and neither is
+  in the document any more.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
   refusedUnstable + excluded + taken`, and the ten outcomes under `taken` sum to
   it exactly, with
@@ -1156,7 +1302,7 @@ unanswerable from the serving side:
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a
   disposition the router knew at the time. `balanced` is the router's own check;
-  the relay recomputes it as `accountedFor`, and the two disagreeing localises
+  the page recomputes it as `accountedFor`, and the two disagreeing localises
   the fault to the read or to the writer.
 - **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
   and one that finished left the identical trace — both simply stopped saying
@@ -1389,9 +1535,15 @@ absent row is a fact rather than missing data, and a zeroed one would say the
 opposite. And **the gauges are read through a supplier at snapshot time**, never
 pushed: they are live atomics owned by the component, and a copy kept in step by
 hand is the shape that produces a report disagreeing with the thing it reports
-on. The relay side re-derives nothing but bounds everything: `COUNTERS` in
-`SyncProgressReport` is an ALLOWLIST, so a name that is not in it (and therefore
-in `SyncVocabulary`) cannot reach a document served under this relay's name.
+on. NOTHING RE-DERIVES THESE ANY MORE, and the allowlist that used to went with
+the boundary. `SyncProgressReport` rebuilt the document member by member on the
+RELAY's side, which was right while the relay was reading another process's
+file: a hand-edited or half-migrated one must not put arbitrary JSON into a page
+served under the relay's name. The mirror serves its own page, so the writer and
+the reader are one object on one heap, and ~700 lines of re-copying our own
+members are gone. What survived is `SyncVocabulary`, pinned in both directions:
+a member with no term is a number a reader needs the source to understand, and
+now that nothing filters on the way out, the pin is a stronger claim than it was.
 
 **A CAP IS FOR A LIST THE NETWORK CAN GROW, and for nothing else.** The rollup
 bounds `foldedOnto` and the undecided reasons because discovery decides how long
@@ -1537,6 +1689,19 @@ our callback, so the leg reads as genuinely silent. That is the true finding
 rather than a missing one. `events` was checked against `fetchAllPages`'
 own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
 
+**`doing` names the JOB and then the TRANSPORT, and neither implies the other.**
+`catching up (paging)` is what is new since this relay's last pass; `auditing
+history (negentropy)` is the whole past re-checked on the stream's
+`negentropySyncThePastSeconds` clock, whose purpose is to find what no catch-up ever saw; and
+`auditing the provider's own records (negentropy)` is the retraction comparison,
+the same clock and the same full-past sweep. Negentropy is NOT a synonym for the
+audit: the sweep pages any window a peer will not reconcile, and a static
+stream's whole backfill goes either way on `sync` — so "reconciling" alone never
+told a reader which of the two jobs was running, which is the half they were
+asking about. The `auditing` gauge counts rows by the two audit stages, so the
+strings live in `VisitPool`'s companion and a reword goes through it or silently
+zeroes the gauge.
+
 **Verified end to end against a real Vespa and real relays**, not only by
 probe: `docker compose` with the schema deployed, a `profileViaOutbox` stream
 discovering 579 urls off stored 10002s, and 348,770 events mirrored. What the
@@ -1617,8 +1782,8 @@ retains the walk and `reset` clears it at the next cycle boundary; a walk that
 DRAINED counts 1.0 and anything else counts the share it really reached, which
 is also the only place a failed leg and a successful one stop looking alike.
 `reset` deletes only FINISHED walks, because one stream name can carry both
-`urls` and `relaySource` and a blanket clear would delete a static backfill's
-live walk out from under it — every later `mark` and `finish` on a removed key
+`urls` and `relaySource` and a blanket clear would delete a live walk out from
+under the other half — every later `mark` and `finish` on a removed key
 is silently a no-op.
 Three traps if you touch either format: both files nest **stream → filter →
 relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
@@ -1673,11 +1838,9 @@ amethyst#3871), and this class shrank to what survives a call:
 Everything inside a call is quartz's: splitting a window it cannot reconcile,
 bounding what it reads from the index (`PrimedIndex` hands it the count this
 layer already took, so the same window is not counted twice), and draining a
-second no window size will fit through the hook this class passes it. Engaged
-automatically by `StaticBackfill` once our own count passes
-`SYNC_NEG_PAGE_TARGET`; the dynamic fan-out deliberately still shares one
-snapshot across its 16k relays, where per-peer windowing would multiply the
-store work by the fan-out.
+second no window size will fit through the hook this class passes it. Engaged by every
+audit the pool runs, and by any reconcile whose own count passes
+`SYNC_NEG_PAGE_TARGET`.
 
 **Fixed, and worth knowing how.** A band used to hold one span for the whole
 filter, so a long-lived kind (0) vouched for a short-lived one (30382) and
@@ -1695,6 +1858,52 @@ every kind in the filter, so a kind whose floor sits higher than the band's oute
 `min` may just have started existing later, not "we stopped walking there" — the
 two are indistinguishable from the band. The card draws that intersection on top
 of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
+
+**A kind that never returns an event never closes its leg — so asking for one
+costs a full-past walk on EVERY visit.** A span is earned by observing events,
+and an empty walk records no band at all (`an empty fetch records nothing`:
+recording it would fabricate coverage). Both rules are right on their own, and
+together they mean a kind the relay does not serve stays outstanding forever.
+Measured through `SyncBands` with the `assertions` ask shape — filter
+`[0, 10002, 30382]`, authors bound to one provider — after a DRAINED walk that
+saw only 30382s:
+
+```
+kinds=[0, 10002]  since=null      until=null    ← the whole past, every visit
+kinds=[30382]     since=1787068103 until=null   ← correctly narrowed
+```
+
+The drain is evidence the walk reached the bottom for every kind it asked for,
+and it is thrown away because no kind produced an event to hang a span on. Two
+things follow. Fixing it properly is upstream (`record` would have to be told
+which kinds the leg ASKED for — the call here keys the band by the whole ask,
+not by the leg). What this repo did instead is stop asking: a stream asks for
+exactly the kinds its upstream owns, and the one thing that had kept kind 0 and
+10002 in the `assertions` filter — the retraction cascade — is gone with them.
+Before assuming a stream is re-walking history for a reason, check whether one
+of its kinds simply never answers.
+
+Two more ways a paged leg reaches back that are NOT this one, worth separating
+before theorising: a `reconciledThrough` band records against the filter the
+reconcile actually COMPARED, so a retraction audit whose `ownedKinds` are a
+strict subset of the filter's stamps a different band key than the catch-up's
+ask reads, and cannot narrow it — which is a second reason to ask only for what
+the audit compares. Where the two coincide, as they now do on `assertions`
+(`filter.kinds == ownedKinds`, so `ownedAskOf` is identity), the daily reconcile
+closes the catch-up's own older leg and the deep re-walk stops. And every
+`refetchThePastSeconds` — per stream and ONLY per stream, unset meaning never,
+since nothing this expensive runs on a period nobody chose (the env names that
+used to carry it are refused at boot) —
+a band is STALE and `legs()` hands back the whole filter, floored on the
+wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
+`Band.widen` freezes on every non-stale merge, so it means "last walk from
+nothing" and a stale band is REPLACED rather than widened — a completed
+reconcile does NOT reset it, which is why an audited stream still expires on
+this clock. The catch-up runs before the audit inside a visit, so a stream
+whose two periods coincide re-pages its whole history and then reconciles the
+same ground; the example runs the outbox streams monthly against their weekly
+audit, and the loader warns when a period sits at or under its own
+`negentropySyncThePastSeconds`.
 
 **Do not assume the leg below a floor is empty. It was measured, and it is not.**
 `RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
@@ -2562,12 +2771,13 @@ nothing published them anywhere; they are the tree's business now, and a line
 repeating what a chart six rows above it says is a line a reader has to
 reconcile.
 
-Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
-`SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the
-router already bounded, and it sat at 6 against a gate that can reach 7 — cutting
-below the writer is not bounding, it is dropping, and the dropped reason's urls
-then surface as an arithmetic fault on a document that was complete when it
-arrived.
+`Processors.MAX_UNDECIDED_REASONS` (8) is now the ONLY cap on that list, and
+that is the point of the note. There used to be a second, `MAX_UNDECIDED_ROWS`
+on the relay's re-read, and it sat at 6 against a gate that can reach 7 —
+cutting below the writer is not bounding, it is dropping, and the dropped
+reason's urls then surfaced as an arithmetic fault on a document that was
+complete when it arrived. Two caps on one list is the shape of that bug; the
+re-read is gone and so is the second cap.
 
 Two things that partition made visible and then fixed. `dialled` was
 `wanted.size`, so urls the transport declined were reported as dials that never
@@ -2916,19 +3126,23 @@ than `0 of 0`: that is not a rare state, it is the one both passes work towards
 and hold for most of a monthly TTL, and two zeroes read as a broken pass. Caught
 by rendering the real card against a live `/stats.json`, not by a unit test.
 
-> **The engine this next stretch describes is DELETED.** `DynamicSync`,
-> `DeleteMissingSync`, `RelayRotation`, `CachedRelayList` and `LegProgress`
-> went with the two-plane split: dynamic streams ride `VisitPool` (see the
-> router intro above), retraction is `RetractionAudit`, and the loader refuses
-> the era's knobs by name — `concurrency`, `recycleSeconds`, `authorsPerLeg`,
-> `sync` beside `relaySource`, an ungated scan — each with a migration note.
+> **The engine this next stretch describes is DELETED**, and so is the one that
+> outlived it. `DynamicSync`, `DeleteMissingSync`, `RelayRotation`,
+> `CachedRelayList` and `LegProgress` went with the two-plane split;
+> `StaticBackfill`, `PagingProgress`, `CycleTally` and every phase but
+> `rotating` went when the declared-`urls` streams crossed onto the pool too.
+> EVERY down stream rides `VisitPool` now (see the router intro above),
+> retraction is `RetractionAudit`, and the loader refuses the era's knobs by
+> name — `concurrency`, `recycleSeconds`, `authorsPerLeg`, `sync`,
+> `SYNC_NEG_MIN_EVENTS`, an ungated scan — each with a migration note.
 > The war stories are KEPT because their lessons transferred: the two gates
 > became `visitConcurrency` against `tailBudget`; the leg give-up
 > (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
 > `dropFolded` runs in `certifiedScan`; `refusedOutright` ends a visit as it
-> ended a leg; `SharedIdSet`, bands and `CycleTally` survive unchanged. Read
-> what follows as the record of WHY those rules exist, not as a map of the
-> current code.
+> ended a leg; the bands survive unchanged. `SharedIdSet` and `CycleTally` do
+> NOT — they went with the second wave, so read every mention of them below as
+> history too. Read what follows as the record of WHY those rules exist, not as
+> a map of the current code.
 
 **The fan-out no longer JOINS, and that is the change to understand before
 touching the dynamic engine.** A dynamic stream used to launch every discovered relay,
@@ -3006,8 +3220,7 @@ and nothing else. Four consequences, each with its own home:
   every leg `bands.legs()` hands back, past and present — is one worker's job.
 - **The stream gate moved.** It used to wrap the whole fan-out; on a rotation
   that would be forever, since a stream that never finishes never releases and
-  every other id-set stream plus `StaticBackfill` would queue behind it for the
-  life of the process. It now wraps the snapshot BUILD, so two full store walks
+  every other id-set stream would queue behind it for the life of the process. It now wraps the snapshot BUILD, so two full store walks
   are still never in flight at once. **What it no longer bounds is residency** —
   a negentropy dynamic stream's set is resident continuously rather than only
   during its cycle, so worst case is one per id-set stream plus one draining
@@ -3120,15 +3333,13 @@ silent failure on the other side:
   stays in memory either way, so a url that comes back resumes rather than
   starting over.
 - **Per stream, plus an explicit `keep`, and the sweep file is left alone.** A
-  fold is applied to one dynamic stream's discovered set, so the stream name
-  scopes it — except that the name does *not* separate static from dynamic:
-  `urls` and `relaySource` may sit on ONE stream, and `downUpstreams()` hands the
-  configured urls to `StaticBackfill` under that same name. A configured upstream
-  the fan-out folds away is therefore still dialled, still recording, and would
-  have had every one of those bands filtered back out — the relay syncing while
-  the file says nothing and each restart re-walks its corpus. `dropFolded` takes
-  the pinned set for exactly that. Only static backfill sweeps, which is the same
-  reason the sweep file is untouched.
+  fold is applied to one stream's DISCOVERED set, so the stream name scopes it —
+  except that the name does *not* separate declared urls from discovered ones:
+  both may sit on ONE stream and both reach the roster under that name. A
+  declared upstream the fan-out folds away is therefore still dialled, still
+  recording, and would have had every one of those bands filtered back out — the
+  relay syncing while the file says nothing and each restart re-walks its
+  corpus. `dropFolded` takes the pinned set for exactly that.
 - **Report what left the file, not what is folded.** The count is the urls this
   stream was actually holding a band for. Counting the verdict set instead made
   every restart log a mass deletion of thousands of urls whose state the previous
@@ -3412,6 +3623,19 @@ replacement of the mechanism it covers. Conversely, a test that asserted
 `everReconciled`'s exact behaviour passed while shipping a bug, because it
 encoded the implementation's own opinion of itself.
 
+**A period knob says WHAT it repeats and over WHICH ground — and names the
+transport only where the transport IS the distinction.** `refreshSeconds`,
+`sweepSeconds`, `fastLaneSeconds` name a job and nothing else, because there is
+only one way to do each. The pair over a relay's history is the exception, and
+deliberately: `negentropySyncThePastSeconds` and `refetchThePastSeconds` are one
+job — re-check what we already walked — over two mechanisms, and which one a
+relay gets is a MEASURED FACT about that relay (the monitor's `nip77` verdict),
+not an implementation detail. Naming them `auditSeconds` and `fullResyncSeconds`
+hid exactly that: two clocks that looked unrelated, one of them attempted every
+six hours against relays that could never answer it. Renames go through
+`syncEnv(new, *legacy)` for env vars and a boot warning for config keys — both
+of these have two generations of old spelling — and never silently.
+
 **A configured component must never be silently inert.** Several bugs here were
 a switch that was read, accepted, and did nothing. If a flag needs something else
 to be true, make it true and say so.
@@ -3529,6 +3753,17 @@ statement about someone else's server.
   endpoint paths: [docs/migrations.md](docs/migrations.md).
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
+- **A `@Test` that returns a value does not run, and nothing says so.** JUnit 5
+  silently ignores a non-void test method, and Kotlin's expression bodies hand
+  it one whenever the last statement HAS a value — `assertNotNull` returns what
+  it checked, `zipWithNext` returns the list of its lambda's results. Two tests
+  here were dead this way and passed the eye test for months: they were in the
+  source, in the class file, and never in the run. Declaring `(): Unit =`
+  discards the value and the method comes back void; that annotation is
+  load-bearing wherever you find it. To sweep for more:
+  `javap -p <class> | grep 'public final' | grep -v void` over
+  `*/build/classes/kotlin/test`, or compare the test names in the source
+  against `build/test-results/test/TEST-*.xml`, which lists what ACTUALLY ran.
 - **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
   nine months apart group as `"2025-1-5"` and `"2025-10-9"`. Unpadded values
   misorder as text wherever the digit count differs in the same position —
@@ -3745,10 +3980,15 @@ nothing; run that first, and read the number before believing it.
   falling back, so a normal return means every window was compared and an empty
   answer is the relay's answer rather than its silence. There is deliberately no
   size guard, because a mass retraction is exactly the case that matters. It is
-  scoped by `ownedKinds` (required): the rest of the filter is mirrored from the
-  same relay and dropped only when a service's whole owned set is retracted —
-  measured, no NIP-85 provider relay serves its own key's kind 0, so judging
-  those by absence would delete every healthy provider's profile.
+  scoped by `ownedKinds` (required), and a stream should ASK for no more than it
+  owns — `assertions` is `filter.kinds == ownedKinds == [30382]` now. Measured,
+  no NIP-85 provider relay serves its own key's kind 0 or 10002, so a filter
+  carrying them earned no band span and re-walked the whole past every visit
+  (the band trap below), and the reconcile's own band — stamped against the
+  owned kinds — could never narrow a wider one. There WAS a cascade taking a
+  wholly-retracted service's kind 0 and 10002 down with its scores; it deleted
+  records that arrive from the profile streams, which re-mirror them over a live
+  tail, so it never survived its own next walk. Gone.
 
 The counterpart to both: a deletion is not a tombstone. A stream that still asks
 by kind re-downloads whatever was freed on its next walk, so reclaiming space and

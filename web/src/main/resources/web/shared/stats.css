@@ -1,0 +1,846 @@
+/*
+ * The stats pages' stylesheet — the relay's and every background service's.
+ *
+ * Shared because the pages are one design: a reader who opens the mirror's page
+ * from the relay's should not have to re-learn what a card, a chip or a bounded
+ * scroll box looks like. It lives in :web with the routes that serve it, and is
+ * linked rather than inlined so the browser caches one copy across both.
+ *
+ * Every rule here was arrived at with a reason, and the reasons are in the
+ * comments. Read them before changing a number.
+ */
+/* `--good` and the two soft tones are for CHIPS only — a chip is a filled
+   label, so it needs a background its own text stays legible on, and
+   `--warn` at 15% is not that. Nothing else on the page paints a fill behind
+   text, which is why the palette went this long without them. */
+:root {
+  --bg: #f6f7f9; --surface: #fff; --text: #14171a; --muted: #6b7580;
+  --line: #e3e6ea; --accent: #4a5fd9; --warn: #a8611a; --bar: #d9def7;
+  --grid: #eceef1; --good: #2f7d55; --good-soft: #dcefe4; --warn-soft: #f7ead9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --surface: #1c1f24; --text: #e8eaed; --muted: #9aa3ad;
+    --line: #2b3038; --accent: #8b9cf0; --warn: #d99b56; --bar: #2c3350;
+    --grid: #242830; --good: #6cc294; --good-soft: #1e3529; --warn-soft: #3a2c1b;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1.5rem; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 60rem; margin: 0 auto; }
+h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+h2 { font-size: 1rem; margin: 0 0 .15rem; }
+/* A heading and its own `.card-sub` are ONE unit and stay at the .15rem
+   above; a heading standing directly over a chart, a table or a row of tiles
+   is a LABEL and needs the gap. Every card here was the second case, so a
+   1rem bold heading sat 2.4px off the mark below it and read as part of that
+   mark rather than as the thing naming it. Collapses with the .15rem rather
+   than adding to it, so this is 8px in both cases and not 8+2.4. */
+h2 + :not(.card-sub) { margin-top: .5rem; }
+.sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
+.card-sub { color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; }
+/* A note UNDER a bounded scroll box wants its gap on the other side.
+   `.card-sub` carries all of its margin on the bottom — correct for the
+   subtitle under a heading, which is every other use — so the sync card's
+   frame note began 0px below a coverage row the box had clipped in half, and
+   a sentence starting flush against a half-cut relay name reads as that
+   row's own text. The trailing margin goes with it: as a card's last child it
+   was doubling the card's own 1rem of bottom padding. */
+.wrap + .card-sub { margin: .7rem 0 0; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
+  /* Symmetric. It was `1rem 1.1rem`, so the horizontal inset sat 1.6px wider
+     than the vertical for no reason anyone could name, and every child
+     inherited the discrepancy as its left margin. */
+  padding: 1rem; margin-bottom: 1rem;
+}
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+/* A titled row of tiles standing on the page background instead of inside a
+   card — see trustCard. A .card here would put the tiles' own border inside
+   the card's, on the same surface colour, and the four numbers would read as
+   boxes in a box rather than as the same kind of headline the corpus totals
+   directly above them are. It needs no heading rule of its own: the general
+   `h2 + :not(.card-sub)` gives this heading the same 8px it gives every
+   card's, and the tiles carry their own bottom margin. */
+/* Prose the panel ENDS on — the "no pubkey carries trust state" warning —
+   needs the gap a card would have given it. Without this it inherits `.err`'s
+   zero bottom margin and sits closer to the next card than to the tiles it is
+   about, which on a page of stacked cards reads as that card's subtitle. */
+.panel > p:last-child { margin-bottom: 1rem; }
+/* A container, so the number inside can size itself to THIS TILE. The tiles
+   are an auto-fit grid: the track width is what the number has to fit in and
+   the viewport says nothing about it, so `vw` would be measuring the wrong
+   box. */
+.tile {
+  background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
+  padding: .9rem 1.1rem; container-type: inline-size;
+}
+/* Sized from the tile's width AND from the number's own length, because a
+   fixed 1.9rem overflowed its own border on an ordinary deployment: ten
+   tabular digits are ~6.3em, the 11rem track affords 190px, and 1.9rem wants
+   192 — so "68,412,907" crossed the tile's right edge at a 1100px window, and
+   the Zaps row's narrower 8rem track cut "1,882,401" off mid-digit against
+   the tile beside it. Both are the page's headline numbers and neither was
+   recoverable by scrolling.
+   [--len] is a character count, inherited from the row — `fitTiles` sets it
+   there, from the LONGEST value in the row, so the row reads at one size. No
+   CSS unit expresses "the width of my own text", since `ch` is defined in
+   terms of the font size the declaration is trying to compute. .64 is a
+   conservative per-character
+   em for tabular digits (commas are narrower, so this over-reserves, which is
+   the safe direction). Capped at the original 1.9rem so nothing moves where
+   it already fit, floored so a phone still reads as a headline. */
+.tile .v {
+  /* Declared TWICE on purpose. A browser too old for container queries drops
+     the `cqw` declaration whole — and an unparsed `font-size` does not fall
+     back to 1.9rem, it inherits the body's 15px and the headline stops being
+     one. The first line is what that browser keeps: the size this was before,
+     overflow and all, which is the right failure. */
+  font-size: 1.9rem;
+  font-size: clamp(1rem, calc(100cqw / (var(--len, 10) * .64)), 1.9rem);
+  font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15;
+}
+/* A phone spends its width on the tile's own gutters: at 360px the Zaps row's
+   two tracks are 129px each, of which the 1.1rem sides took 35 — so the
+   narrowest screen gave the longest number the least room to be a number in,
+   and the clamp floor above (a legibility floor, not a fitting one) could not
+   absorb it. Buying the digits 16px back here is what keeps that floor from
+   having to be chosen around today's largest count. A container query cannot
+   do this: `@container` styles a container's descendants, never the container
+   itself, and the box that needs the narrower padding IS the tile. */
+@media (max-width: 30rem) {
+  .tile { padding: .9rem .75rem; }
+}
+.tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+.tile .v.stale { color: var(--warn); }
+.chart { width: 100%; display: block; overflow: visible; }
+.chart .grid { stroke: var(--grid); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart .mark { fill: var(--accent); }
+.chart .hit { fill: transparent; }
+.chart .mark.on { fill: var(--text); }
+.wrap { overflow-x: auto; }
+/* The long tables — every kind in the store is thousands of rows, and the
+   relay list runs to the cap. Bounded height with a sticky header, so a
+   table is scannable without owning the whole page, and so the column
+   labels are still there when you are 400 rows down. */
+.wrap.tall { max-height: 32rem; overflow-y: auto; }
+.wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
+/* ---- sync coverage -----------------------------------------------------
+   A row is a FRAME plus what is covered, drawn as percentages rather than
+   SVG so the whole thing reflows with the card and never re-measures.
+
+   The frame is full width on purpose. A bar sized to its own extent makes
+   every relay look finished; against a common frame the uncovered time is
+   the loud part, which is the question this card is here to answer. */
+/* The label column, and the one number on this card that has to give way.
+   It was a flat 11rem: at 380px that left the url 176px and the TRACK 109px —
+   62% of every row spent on an address the box then ellipsises anyway, and
+   38% on the bars, which are the content. `clamp` keeps the desktop width and
+   lets the column shrink to a still-readable 6.5rem as the card narrows, so
+   the data always holds the majority of the row. `22vw` rather than a
+   breakpoint because the loss is continuous — there is no width at which the
+   url suddenly stops mattering.
+
+   The 8rem FLOOR is not a round number: below it the tail of a
+   `*.nostr.land` family clips to `…s.nostr.land` / `…n.nostr.land`, three
+   rows that no longer identify three different relays. 8rem keeps the label
+   distinguishable and still leaves the track the majority of the row at
+   380px (128px of label against ~162px of track, against 176/109 before). */
+.cov { --lab: clamp(8rem, 22vw, 11rem); }
+.cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
+/* The url filter hides rows with `[hidden]`, and `[hidden] { display: none }`
+   is a UA rule — which ANY author `display` outranks, whatever the
+   specificity, because author sheets beat the UA sheet before specificity is
+   even consulted. So `display: grid` one line up would keep every
+   filtered-out row on screen without this. The Kinds table needs no such rule
+   only because nothing here gives `tr` a display of its own. */
+.cov-row[hidden] { display: none; }
+/* Off-screen rows cost nothing to lay out. A fan-out puts thousands of rows
+   in a 32rem box that shows about forty, and the url filter turns "lay them
+   all out" from a once-per-load cost into a per-keystroke one. Measured on a
+   6,025-row document, median of six cycles, three interleaved runs: CLEARING
+   the box — every row back on screen — cost 240–337ms of layout, and 57–61ms
+   with this; narrowing to two rows, 39–46ms against 18–19ms. Nothing else
+   here needs it — no other list on the page runs to thousands of rows inside
+   a scroll box.
+
+   `contain-intrinsic-size` is what keeps the scrollbar honest while those
+   rows are skipped, and the size is not a guess: a row is `max(12px, .78rem)`
+   tall by construction — the track's height against the label's font-size at
+   `line-height: 1` — which is why it is written that way rather than as the
+   12.48px it computes to at a 16px root. Measured against the same document,
+   that lands the scroll height within 0.1% of laying every row out. `auto`
+   then replaces the estimate with the real size once a row has been on
+   screen, so even that error anneals as the reader scrolls. */
+.cov-row { content-visibility: auto; contain-intrinsic-size: auto max(12px, .78rem); }
+/* The "your filter matched nothing" line, which stands where the whole list
+   was. `.why` is margin-free because it normally ends a card; this one is
+   followed by the frame note in the same muted register, and flush against it
+   the two read as one paragraph. Tag-qualified on purpose: `.why` is declared
+   further down this sheet, so at equal specificity it would win on order. */
+p.cov-none { margin-bottom: .5rem; }
+/* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
+   taller than the 12px track beside it, and the overflow slid under the
+   sticky header above — every group's first row lost its top third. */
+/* `direction: rtl` is here to put the ELLIPSIS ON THE LEFT — the inline
+   direction decides which end overflows, and for a relay url the tail is the
+   end worth keeping. It must not reach the text itself, though: the url is an
+   LTR construct full of bidi-NEUTRAL characters (`/ : . [ ] @ ? &`), and in an
+   rtl paragraph a trailing neutral takes the paragraph's direction and moves
+   to the other side. That is not a truncation artefact, it mis-renders urls
+   that FIT — `nos.lol/` drew as `/nos.lol`, and an IPv6 authority
+   `[2001:db8:85a3::8a2e:370:7334]:7777/` reordered into a plausible but
+   DIFFERENT address, which is worse than clipping because a reader cannot see
+   that anything was lost. So the url goes inside an LTR isolate (see `row`)
+   and only the box stays rtl. */
+.cov-lab {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1;
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+}
+/* Belt and braces with `row`'s `dir` attribute: the UA stylesheet gives
+   `[dir]` an isolate, but saying it here means the rule cannot be lost to a
+   future refactor that drops the attribute. */
+.cov-lab > span { direction: ltr; unicode-bidi: isolate; }
+/* `overflow: hidden` is load-bearing, not tidiness. Every mark carries a
+   minimum width so a one-day band is still visible, and a band that starts
+   at the frame's right edge — a future-dated `created_at`, which quartz
+   accepts up to about a day out — then puts that minimum sliver OUTSIDE the
+   track. Clipping here makes the whole class of overshoot impossible rather
+   than relying on the arithmetic above staying exact. */
+.track { position: relative; height: 12px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+.track > i { position: absolute; top: 0; bottom: 0; border-radius: 2px; display: block; }
+/* Walked by paging: we asked and stored what came back, and cannot claim
+   nothing was missed. */
+.cov-seg.paged { background: var(--bar); }
+/* Reconciled — a finished negentropy pass. The strong tone is the point:
+   this is the only bar that means "provably identical". */
+.cov-seg.done { background: var(--accent); }
+/* Still sweeping. Warm, because it is the only mark here that will look
+   different in a minute. */
+.cov-seg.live { background: var(--warn); opacity: .55; }
+.cov-seg.edge { width: 2px; border-radius: 0; background: var(--warn); }
+/* The window no kind in the filter is missing from — drawn only when the
+   per-kind spans disagree, which is the band bug made visible. */
+.cov-seg.every { top: 4px; bottom: 4px; background: var(--text); opacity: .35; border-radius: 1px; }
+
+/* ---- the cycle's disposition -------------------------------------------
+   One stacked bar per stream, over the urls it took on. A bar rather than a
+   table because the reader's question is proportional — "what became of the
+   fan-out" — and because a stack CANNOT be drawn unless the parts sum to the
+   whole, which is exactly the property the numbers behind it now have. */
+/* 12px, the SAME height as a coverage `.track`. Two bar systems on one card
+   drawn 2px apart read as two different kinds of measurement; they are both
+   "a proportion of a whole" and should look it. */
+.disp { display: flex; height: 12px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .4rem 0 .35rem; }
+.disp > i { display: block; height: 100%; }
+/* Reached and gave us something / reached and had nothing to give. Both are
+   the relay working, which is why they share the accent and differ in weight
+   rather than in hue. */
+/* One rule per outcome, covering BOTH the bar segment and the key's swatch,
+   so the key cannot drift from the thing it is a key to. That was the point of
+   the `getComputedStyle` probe this replaces — which read a card still
+   DETACHED from the document, so no rule and no `var()` resolved and every
+   swatch rendered fully transparent (measured: `rgba(0, 0, 0, 0)`). It also
+   forced a style recalc per bucket per render, on a page that re-renders every
+   poll. */
+.disp > i.delivered, .keys b.delivered { background: var(--accent); }
+.disp > i.nothingNew, .keys b.nothingNew { background: var(--accent); opacity: .45; }
+/* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
+   case on a fan-out this wide, not an incident. */
+.disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut,
+.keys b.unreachable, .keys b.noRoute, .keys b.hostStruckOut { background: var(--warn); opacity: .6; }
+/* Skipped on a DURABLE verdict rather than on anything measured this cycle —
+   the one segment whose relays were never dialled at all, and the one whose
+   retry is a TTL rather than the next cycle. */
+.disp > i.knownDead, .keys b.knownDead { background: var(--warn); opacity: .35; }
+/* Our own fault, or at least our own side: the transfer broke after a
+   handshake, or our proxy was down. */
+.disp > i.transferFailed, .disp > i.torUnavailable,
+.keys b.transferFailed, .keys b.torUnavailable { background: var(--warn); }
+.disp > i.pending, .keys b.pending { background: var(--bar); }
+/* OUR pool, not their relay — the same family as `pending` and deliberately
+   not the warm "not reached" one, because a busy url is a url this rotation
+   declined to redial while a worker still had it. Lighter, so the two read as
+   a pair without the bar claiming two segments of the same thing. */
+.disp > i.busy, .keys b.busy { background: var(--bar); opacity: .5; }
+.keys b { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px; vertical-align: -.01em; margin-right: .28rem; }
+
+/* The URL partition, which divides a DIFFERENT whole: `discovered`, not
+   `taken`. Same bar element, deliberately different family of tones — the
+   part that got dialled in the accent, and the three that did not in our own
+   neutral, because none of them is a verdict about a relay. `foldedOntoAnother`
+   especially: that url's server IS being dialled, under another name. */
+.disp > i.taken, .keys b.taken { background: var(--accent); }
+.disp > i.foldedOntoAnother, .keys b.foldedOntoAnother { background: var(--bar); }
+/* The one that IS a measurement: the relay answered, it just answered the
+   same question two different ways. */
+.disp > i.refusedUnstable, .keys b.refusedUnstable { background: var(--warn); opacity: .6; }
+.disp > i.excluded, .keys b.excluded { background: var(--muted); opacity: .35; }
+
+/* ---- the router's state, as marks --------------------------------------
+   Everything in this block exists to keep the live half of the card OFF
+   prose. The measured version of the sentence-based card ran 520 words for
+   two streams; the same facts as chips, bars and one table run 66. Words are
+   not free here — they are read serially, they do not compare, and a number
+   inside a sentence cannot be scanned down a column.
+
+   The rule the whole block follows: a mark carries the QUANTITY, and the
+   glossary the router already ships carries the meaning, on the mark's
+   `title`. See `term()` — the words are the document's, not this page's. */
+.chip {
+  display: inline-block; font-size: .68rem; font-weight: 650; padding: .08rem .4rem;
+  border-radius: .3rem; background: var(--grid); color: var(--muted); white-space: nowrap;
+}
+/* Three states worth a tone, and only three. `live` is the one green thing
+   on the page and it answers the question asked first; `busy` is work in
+   progress; `warn` is a phase that will not move on its own. Everything else
+   is a neutral chip, because a page where every chip is coloured has no
+   colour. */
+.chip.live { background: var(--good-soft); color: var(--good); }
+.chip.busy { background: var(--bar); color: var(--accent); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+
+/* THE LAST HOUR of a gauge, inside the chip that carries its level.
+   A level and its trend are one fact and belong on one mark: `heap 45%` says
+   nothing, `heap 45%` over a line climbing out of the left edge says
+   everything. `currentColor` on purpose — the trace inherits the chip's tone,
+   so a gauge at its ceiling draws a warm line without a second rule. */
+/* `.trend`, NOT `.spark` — the kind-activity card has carried `chart spark`
+   sparklines since long before this, and the three rules below were quietly
+   restyling them and nudging every one of them .32rem to the right. */
+.trend { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
+.trend path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
+/* A sample with a gap on either side. Without this a lone reading between two
+   outages draws nothing at all, which is the one case where the series has
+   something to say and the line cannot say it. */
+.trend circle { fill: currentColor; opacity: .75; }
+
+/* The NOW line: what the router is, in chips, above the streams. */
+.now { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; margin: 0 0 .9rem; }
+.now .fact { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* One stream. The rule above it is what separates two streams' rows —
+   without it, a stream and its legs panel read as two streams. */
+.stream { padding: .65rem 0; border-top: 1px solid var(--line); }
+.stream:first-of-type { border-top: 0; padding-top: 0; }
+.sh { display: flex; align-items: center; gap: .35rem; margin-bottom: .4rem; }
+.sh .nm { font-weight: 650; font-size: .92rem; }
+.sh .grow { flex: 1; }
+.sh .r { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* The key under a bar. The NUMBER is the reading and the word is the label,
+   so the number is inked and the word is muted — the old key put them in one
+   weight and the eye had to parse ten phrases to find the big one. */
+.keys { display: flex; flex-wrap: wrap; gap: .1rem .7rem; font-size: .72rem; color: var(--muted); margin-top: .25rem; }
+.keys span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.keys em { font-style: normal; color: var(--text); font-weight: 620; }
+
+/* Two pools, nested: the workers a stream is running, and the few of them
+   holding a transfer slot. Nested rather than side by side because one is a
+   subset of the other — that containment is the whole reason `pending` runs
+   to five thousand while `transferring` sits at eight. */
+.pools { display: flex; align-items: center; gap: .4rem; margin-top: .35rem; font-size: .72rem; color: var(--muted); }
+.pools .bar { position: relative; height: 8px; flex: 0 0 7rem; background: var(--grid); border-radius: 2px; overflow: hidden; }
+.pools .bar i { position: absolute; left: 0; top: 0; height: 100%; }
+.pools .bar i.w { background: var(--bar); }
+.pools .bar i.t { background: var(--accent); }
+
+/* The held legs, as a TABLE. Five relays × four clocks is a matrix, and it
+   was being read out as a sentence per relay — which is the one shape that
+   makes "which of these is the worst" un-scannable. */
+table.legs { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .76rem; }
+table.legs th {
+  text-align: left; font-size: .64rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); font-weight: 700; padding: .15rem .45rem .15rem 0; border-bottom: 1px solid var(--line);
+}
+table.legs td { padding: .18rem .45rem .18rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.legs td.u { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .71rem; word-break: break-all; }
+table.legs td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+/* QUIET is a bar, not a duration, because "is anything still arriving" is
+   the question that separates a relay with a real backlog from one whose
+   walk cannot terminate — and both are "held for hours". */
+.qbar { position: relative; height: 7px; background: var(--grid); border-radius: 2px; min-width: 3rem; }
+.qbar i { position: absolute; left: 0; top: 0; height: 100%; border-radius: 2px; background: var(--accent); }
+.qbar i.hot { background: var(--warn); }
+
+/* A processor, as one row: name, state, how far along, and the one number
+   that matters for it. A grid rather than a paragraph so the meters line up
+   down the column — which is what makes "the fold is stuck and ingest is
+   not" a glance instead of a read. */
+.dec {
+  display: grid; grid-template-columns: 9.5rem 7.5rem 1fr 7rem; gap: .5rem;
+  align-items: center; padding: .42rem 0; border-top: 1px solid var(--line); font-size: .82rem;
+}
+.dec:first-of-type { border-top: 0; }
+.dec .nm { font-weight: 620; }
+.dec .r { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .76rem; }
+/* TWO KINDS OF METER, and they must never be read as one.
+   A progress meter is a fraction COMPLETED — monotonic, full means done. An
+   occupancy meter is a LEVEL — full means backpressured. Drawn identically
+   they were: a fold at 50% and an ingest queue at 50% were the same picture
+   in the same column meaning unrelated things, and a full bar meant "finished"
+   on one row and "ingest is the limit" on the next.
+   So progress keeps the accent, and occupancy takes the neutral this card
+   already spends on `pending` and `busy` — facts about OUR OWN pool rather
+   than verdicts about anything — going warm only at the ceiling, where it
+   stops being a level and becomes a fault. */
+/* The meter cell: the bar, and beside it the line that says how it got here.
+   A wrapper rather than putting the line inside the bar — `.frac` is a flex
+   container clipped to its own height, so an svg child would be squeezed into
+   the track and cut off. */
+.meter { display: flex; align-items: center; gap: .4rem; }
+.meter .frac { flex: 1; min-width: 0; }
+.frac { height: 10px; border-radius: 2px; background: var(--grid); overflow: hidden; display: flex; }
+.frac i { display: block; height: 100%; background: var(--accent); }
+.frac i.level { background: var(--bar); }
+.frac i.warn { background: var(--warn); }
+/* The one register left for words, and it is spent only on damage: a fatal
+   error, a partition that does not hold, events lost to the store. */
+.alarm { color: var(--warn); font-weight: 620; font-size: .8rem; margin: .45rem 0 0; }
+.foot { color: var(--muted); font-size: .74rem; margin: .35rem 0 0; font-variant-numeric: tabular-nums; }
+[title] { cursor: help; }
+
+.axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
+.axis-track span {
+  position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.axis-track span.first { transform: none; }
+.axis-track span.last { transform: translateX(-100%); }
+/* Two elements, not one. The opaque strip must span the FULL width or relay
+   labels scroll up through the gap beside the ticks; the ticks themselves
+   are percentages of the TRACK, which starts after the label column. And it
+   lives INSIDE the scroll box, like `thead th` does — an axis above would
+   keep the scrollbar's width while the tracks below lost it, putting every
+   bar a few pixels off the date that labels it. */
+.axis.pin {
+  position: sticky; top: 0; z-index: 3; background: var(--surface);
+  padding: .15rem 0 .3rem; border-bottom: 1px solid var(--line);
+}
+.grp { margin-bottom: 1.1rem; }
+.grp:last-child { margin-bottom: 0; }
+/* Pinned under the axis: 900 rows into a fan-out, "which stream is this" is
+   the other question the numbers stop answering. */
+/* `nowrap`, so the head is one line whatever the filter holds. It used to
+   wrap, which meant a stream naming twenty kinds pushed its own counts onto a
+   second line — and this head is sticky, so those lines are taken off the top
+   of the rows scrolling under it. The filter chip is the item that gives:
+   it ellipsises (below), the counts do not. */
+.grp-head {
+  display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: nowrap;
+  position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface);
+  /* `.6rem` below, against `.35rem` above. The head is 51px of name, filter
+     chip and counts (100px on a phone, where it stacks) and it sat 4.8px off
+     its own data while 17.6px separated one group from the next — the
+     heaviest element on the card had the least room around it. Asymmetric on
+     purpose: this is a heading, and a heading belongs to what follows it. */
+  padding: .35rem 0 .6rem;
+}
+/* The first group's head sat flush on the axis (measured: 0px), so the pinned
+   ruler and the first stream name touched. */
+.axis.pin + .grp > .grp-head { padding-top: .55rem; }
+/* ONE line, ellipsised. A stream filtering a dozen kinds prints a chip that
+   wrapped to three lines, and this head is STICKY — every wrapped line is
+   taken off the top of the coverage rows scrolling under it, on every group,
+   for a list of numbers whose tail is the least informative part of it. The
+   full list is on the title, same bargain as .spark-kind. `min-width: 0`
+   is what lets it shrink at all: a flex item floors at its content width
+   without it, and the chip would push the stat off the card instead. */
+.grp-name { font-weight: 650; font-size: .85rem; flex: 1 1 auto; min-width: 0; }
+/* `inline-block` with a cap, not `block`: a block chip stretches to the whole
+   flex item and paints a full-width bar behind "every kind". This shrinks to
+   its text and ellipsises only once the text outgrows the row. */
+.grp-name code {
+  background: var(--bar); padding: .05rem .3rem; border-radius: .25rem; font-size: .75rem;
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The stream's name, ahead of its filter chip: the name is what a reader
+   matches against `router.conf`, so it leads and the chip explains it. Not
+   ellipsised — a name is short, and clipping the one identifier the config
+   shares with this page would defeat the point. */
+.grp-stream { margin-right: .4rem; }
+.grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; }
+/* On a phone the counts alone are wider than the card, and `nowrap` had them
+   running off its right edge with the chip crushed to an ellipsis beside
+   them. Below this width they take their own row — which still leaves the
+   filter on ONE line, now a full-width one. */
+@media (max-width: 45rem) {
+  .grp-head { flex-wrap: wrap; }
+  /* `nowrap` is dropped along with the row, not kept with it. It earns its
+     place at desktop widths, where the counts fit on the line it saves; here
+     they do not — on a 390px phone the string ran 50px past the card and
+     "relays walked" was clipped away entirely, which loses a number rather
+     than a line. A head that has already taken a second row can afford a
+     third. */
+  .grp-stat { flex-basis: 100%; white-space: normal; }
+}
+/* How many of a group's relays cover each bucket — the mark that answers
+   "how much of the list is in sync" for a fan-out, where a row each is
+   reachable but not readable. Indented to the track: it is a chart on the
+   SAME axis, and flush left its 2023 bucket sat over the rows' 2022.
+
+   The TOP margin keeps the tallest bucket off the sticky head above it: the
+   strip is bottom-aligned and a full-depth bucket reaches the whole 24px, so
+   at 0 the bars touched the filter chip's own box and the chart read as
+   hanging off the heading rather than as the first mark under it. */
+.depth {
+  position: relative; height: 24px; margin: .3rem 0 .3rem calc(var(--lab) + .6rem);
+  display: flex; align-items: flex-end;
+}
+.depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
+.depth i.thin { background: var(--bar); }
+/* The two halves of this card answer different questions — what the router is
+   doing NOW, and how far it has walked — and every gap in it was 12-14px, so
+   they never separated. The rule is the boundary; the space above it is
+   larger than the gap between two cycle blocks, which is what makes the
+   blocks read as members of the panel rather than as peers of it. */
+.cyc-end { margin: 1.4rem 0 1.1rem; border: 0; border-top: 1px solid var(--line); }
+/* Sits directly above the scroll box it describes. It used to sit under the
+   cycle bars — 14px from what it does not explain, 60px from what it does. */
+.legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .55rem; }
+.legend b { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -.05em; margin-right: .3rem; }
+.bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
+.bar-row input {
+  font: inherit; font-size: .9rem; padding: .35rem .6rem; border-radius: .4rem;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 18rem; max-width: 100%;
+}
+.status { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+
+/* ---- monitor verdicts --------------------------------------------------
+   The one panel on this page that speaks the PROTOCOL rather than reading
+   the rollup, so it is the one panel that is not drawn until asked: it opens
+   a websocket to this relay and pages kind 30166 out of it, which is not a
+   cost to put on a page that polls itself every minute.
+
+   A row is a url and what the store says about it. The verdict word is the
+   column that matters, so it is fixed-width and first after the url; the
+   evidence is the monitor's own sentence and wraps under it, because
+   truncating the thing that says WHY defeats the panel. */
+/* A HOST IS THE UNIT, so it gets a box. The flat list this replaced ran host
+   names and url rows down one column at the same weight, and on a store
+   holding a thousand hosts there was nothing to tell you where one ended and
+   the next began — least of all when the filter was on, which is exactly when
+   you are looking at one host. */
+.vd-group {
+  border: 1px solid var(--line); border-radius: .45rem; overflow: hidden; margin-bottom: .5rem;
+  /* On the GROUP as well as the row, and measured: clearing the filter — every
+     host back on screen — cost 155-162ms with it only on `.vd-row`, because a
+     thousand group boxes still had to be laid out to find out how tall their
+     (skipped) rows made them. The intrinsic size is a guess at a small host
+     and only has to be in the right order of magnitude; being wrong costs a
+     scrollbar that settles, not a wrong render. */
+  content-visibility: auto; contain-intrinsic-size: auto 6rem;
+}
+.vd-group[hidden] { display: none; }
+.vd-ghead {
+  display: grid; grid-template-columns: 1fr auto auto; gap: .6rem; align-items: center;
+  padding: .4rem .55rem; background: var(--grid);
+}
+.vd-name { font-weight: 600; font-size: .85rem; word-break: break-all; }
+.vd-count { color: var(--muted); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* How much of this host collapsed, as a proportion — the same read the
+   coverage card gives a relay's walk. One glance says whether a host is
+   folded, half-folded or untouched, which is the question the panel is for
+   and which no column of words answers at a thousand rows. */
+.vd-meter { width: 4rem; height: .35rem; border-radius: 999px; background: var(--line); overflow: hidden; }
+.vd-meter i { display: block; height: 100%; background: var(--accent); }
+.vd-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 0 .6rem; align-items: baseline;
+  padding: .22rem .55rem; border-top: 1px solid var(--grid);
+  /* Thousands of rows in a bounded box: the same content-visibility the
+     coverage rows use, for the same measured reason. */
+  content-visibility: auto; contain-intrinsic-size: auto 1.4rem;
+}
+.vd-row[hidden] { display: none; }
+/* The SURVIVOR leads its group and is the url actually dialled, so it is the
+   one row drawn at full strength; everything under it folded into it. */
+.vd-row.vd-keep { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.vd-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; word-break: break-all; }
+.vd-into { color: var(--muted); }
+.vd-when { color: var(--muted); font-size: .74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* ONE line, ellipsised, full text on hover. The evidence is the sentence the
+   monitor signed and it is the reason to trust the row — but wrapped, it
+   doubled the height of every row on the page and turned a scannable list
+   into a wall. */
+.vd-why {
+  grid-column: 1 / -1; color: var(--muted); font-size: .72rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.vd-pill {
+  font-size: .65rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+  padding: .05rem .3rem; border-radius: .25rem; white-space: nowrap;
+}
+.vd-pill.fold { color: var(--accent); background: var(--bar); }
+.vd-pill.keep { color: var(--muted); border: 1px solid var(--line); }
+/* QUIET, and that is the point. "Not folded" is the resting state of a url
+   the fold has not reached yet — on a store mid-pass it is most rows on the
+   page, and drawn in the warn colour it made every ordinary host look like a
+   fault. The warn colour is kept for the one state that IS one: a verdict
+   that has aged out and is no longer being acted on. */
+.vd-pill.none { color: var(--muted); opacity: .75; }
+.vd-pill.expired { color: var(--warn); border: 1px solid currentColor; }
+/* THE FITNESS GRADE, beside the url rather than in the verdict column: that
+   column answers "what did the fold decide", and a second pill in it would
+   read as a competing answer to the same question. Its own class rather than
+   `.badge`, which has no admitting tone — the panel needs `prime` to look
+   like a pass and every refusal to look like the same kind of thing. */
+.vd-grade {
+  display: inline-block; font-size: .65rem; text-transform: uppercase; letter-spacing: .05em;
+  padding: 0 .3rem; border-radius: .25rem; font-weight: 700; vertical-align: .1em;
+  color: var(--muted); border: 1px solid var(--line);
+}
+.vd-grade.prime { color: var(--accent); border-color: currentColor; }
+.vd-grade.refused { color: var(--warn); border-color: currentColor; }
+/* Retired — aged out or measured under rules we no longer apply. Struck
+   rather than hidden, the same bargain the two verdict pills make: a reader
+   seeing a stale grade and its age can act on it, where a hidden one reads
+   as a url nothing has ever measured. */
+.vd-grade.retired { color: var(--muted); opacity: .7; text-decoration: line-through; }
+.vd-stale { color: var(--warn); }
+/* The panel's controls on one line: the action, the filter, and whatever the
+   read has to say about itself. */
+.vd-bar { display: flex; flex-wrap: wrap; gap: .5rem .7rem; align-items: center; margin-bottom: .7rem; }
+.vd-bar input[type=search] { flex: 1 1 12rem; max-width: 20rem; }
+/* WHAT THE OTHER WRITERS PUT ON THE RECORD — quartz's monitor, mostly. Dim
+   and small: it is context for the verdict above it, not a second subject. */
+.vd-meta { grid-column: 1 / -1; color: var(--muted); font-size: .72rem; display: flex; flex-wrap: wrap; gap: .1rem .6rem; }
+.vd-meta .k { color: var(--text); opacity: .8; }
+/* A requirement is the one piece of metadata that CHANGES how a row reads: a
+   relay gating reads behind NIP-42 is the first explanation for a url that
+   will not fold, so it is the one that gets a colour. */
+.vd-req { color: var(--warn); }
+/* The summary strip over the list: the counts as their own row of numbers
+   rather than a run-on sentence in the status line. */
+.vd-sum { display: flex; flex-wrap: wrap; gap: .15rem 1.1rem; margin: .1rem 0 .7rem; }
+.vd-sum div { font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.vd-sum b { display: block; font-size: 1.05rem; font-weight: 600; color: var(--text); }
+table { border-collapse: collapse; width: 100%; min-width: 30rem; }
+th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+/* A numeric header sits over its own column. Without this the values are
+   right-aligned under a left-aligned label, which reads as two columns. */
+th.n { text-align: right; }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.kind { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+td.name { color: var(--muted); }
+/* The share-of-corpus bar rides behind the row rather than in a column of
+   its own — the number is the data, this is only its shape. */
+td.share { position: relative; min-width: 6rem; }
+td.share i { display: block; height: .5rem; border-radius: 0 2px 2px 0; background: var(--bar); }
+/* The "nothing here to draw" states, in the same muted register as
+   `.card-sub` — "Not in this document." is the same KIND of line. This rule
+   was scoped to `.pending`, so the identical sentence in a chart card had NO
+   styling at all: it fell through to the UA's `margin: 1em 0` and the body's
+   full size and colour, which printed an absence louder than the numbers
+   around it and left those cards 15px of extra floor. Unscoping it also lets
+   `h2 + :not(.card-sub)` reach these paragraphs, which `.pending .why` was
+   outspecifying — that is why the pending card kept the 2.4px gap the rest of
+   the page had already lost. */
+.why { color: var(--muted); font-size: .85rem; margin: 0; }
+/* SCOPED TO THE CARD, and the scope is the whole point: `.pending` on its own
+   also matches the disposition bar's `pending` segment and the swatch in its
+   key, both of which carry that class so one rule can paint bar and key
+   alike. `border-style` with no width resolves to `medium`, so the segment
+   for "still in flight" — the largest one on a live fan-out — drew as a 3px
+   dashed black box over its own colour. Caught on a running mirror, not in
+   review. */
+.card.pending { border-style: dashed; }
+.card.pending h2 { color: var(--muted); }
+.badge {
+  display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
+  padding: .1rem .4rem; border-radius: .25rem; background: var(--bar); color: var(--muted);
+  vertical-align: .15em; margin-left: .4rem; font-weight: 700;
+}
+.badge.bad { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
+.err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
+/* The granularity toggle: one row above the series it drives. */
+.seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }
+.seg button {
+  font: inherit; font-size: .85rem; padding: .35rem .8rem; border: 0; cursor: pointer;
+  background: transparent; color: var(--muted); border-right: 1px solid var(--line);
+}
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--bar); color: var(--text); font-weight: 600; }
+
+/* ---- controls ----------------------------------------------------------
+   THE SEARCH BOXES WERE NEVER STYLED — all three of them, on a page that
+   styles everything else. A raw `input[type=search]` inherits the platform's
+   chrome: a different border radius from every card around it, a font that is
+   not the page's, and in dark mode a white field with black text sitting in
+   the middle of a dark card. Styled once, at the element, because the
+   alternative is a class the next search box forgets and the page goes back
+   to having two of them look different. */
+input[type=search] {
+  font: inherit; font-size: .85rem; padding: .35rem .6rem;
+  border: 1px solid var(--line); border-radius: .4rem;
+  background: var(--surface); color: var(--text);
+  min-width: 0; width: 100%; max-width: 22rem;
+}
+input[type=search]::placeholder { color: var(--muted); }
+/* A focus ring rather than the UA outline: the outline sits hard against a
+   .4rem radius and squares off the corner it is drawn around. */
+input[type=search]:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+/* The platform's clear button is drawn as a black glyph whatever the field is
+   on, so on dark it is a black × on a dark ground — invisible until hovered. */
+input[type=search]::-webkit-search-cancel-button { cursor: pointer; opacity: .55; }
+input[type=search]::-webkit-search-cancel-button:hover { opacity: 1; }
+@media (prefers-color-scheme: dark) {
+  input[type=search]::-webkit-search-cancel-button { filter: invert(1); }
+}
+/* A standalone action, as opposed to `.seg`'s joined toggle. Same family:
+   surface, hairline, the card radius. */
+.btn {
+  font: inherit; font-size: .85rem; padding: .35rem .8rem; cursor: pointer;
+  border: 1px solid var(--line); border-radius: .4rem;
+  background: var(--surface); color: var(--text); white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.btn:disabled { opacity: .55; cursor: progress; }
+.sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .9rem 1.2rem; }
+.spark-cell { min-width: 0; }
+.spark-head { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; font-size: .8rem; margin-bottom: .2rem; }
+.spark-kind { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spark-peak { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart.spark { height: 2.5rem; }
+.tiles.inline { grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); margin-bottom: 1rem; }
+td.relay { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; word-break: break-all; }
+.err code { word-break: break-all; }
+footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
+/* One line per cadence, tight enough to read as one block: the two tiers are
+   a pair of facts about the same document, not two paragraphs. */
+footer .foot-tier { margin: 0 0 .2rem; }
+code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
+a { color: var(--accent); }
+.tip {
+  position: fixed; pointer-events: none; opacity: 0; transition: opacity .08s;
+  background: var(--surface); border: 1px solid var(--line); border-radius: .35rem;
+  padding: .3rem .5rem; font-size: .8rem; box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 10;
+}
+
+/* ── SYNC COVERAGE ────────────────────────────────────────────────────────
+   Two questions only: is the sync working, and how far has it got. Every
+   mark here answers one of them. Anything that read the same on a healthy
+   system every time — the worker/transfer pair, the per-leg table, the
+   outcome partition, 10,462 per-relay rows — is gone: a mark with one value
+   is not a mark, it is decoration that costs a scroll. */
+.sy-status { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 13px; margin: 0 0 4px; }
+.sy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; flex: none; }
+.sy-dot.bad { background: var(--warn); }
+.sy-h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+        margin: 16px 0 7px; border-top: 1px solid var(--line); padding-top: 10px; }
+.sy-stream { margin: 0 0 13px; }
+.sy-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+.sy-name { font-weight: 600; }
+.sy-meta, .sy-sub { color: var(--muted); }
+.sy-sub { font-size: 12px; }
+/* The loud tone inside a stream's sub line, matching `.sy-bg s` below: the
+   tag is `s` because that is what this card marks a fault with, and the
+   browser's own strikethrough is the one thing it must not mean. */
+.sy-sub s { text-decoration: none; color: var(--warn); }
+/* A LEVEL the reader can compare across streams, so the track is always the
+   full width and only the fill moves. */
+.sy-track { position: relative; height: 7px; border-radius: 4px; background: var(--bar); overflow: hidden; margin: 6px 0 4px; }
+.sy-track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.sy-bg { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 14px; font-size: 12.5px; align-items: baseline; }
+.sy-bg b { font-weight: 600; }
+.sy-bg em { font-style: normal; color: var(--muted); }
+.sy-bg s { text-decoration: none; color: var(--warn); }
+/* EVERY DISCOVERED URL, ONCE, INTO WHAT BECAME OF IT — one row per node,
+   nesting carried by indentation.
+
+   This replaced an icicle: one row per LEVEL, each a share of one width, a
+   child drawn under the parent it subdivides. That was correct, and it needed
+   three captions and a legend to say what indentation says for free — the
+   nesting was carried by horizontal offset, which is the one visual channel
+   already spent on proportion. Rendered on the real card it read as four
+   unrelated bars. Here depth IS the relationship and the bar is only ever
+   proportion. */
+/* CAPPED, and narrower than the card. The three columns are a label, its
+   count and a bar; stretched to a wide card the label and its own number end
+   up an inch apart, which is the one association every row exists to make.
+   The rule down the left edge groups the block: it sits at the HEAD of the
+   section, above a run of one-line processors, and without it the first
+   `alias fold` line reads as one more row of the tree. */
+.sy-funnel { grid-column: 1 / -1; max-width: 760px; margin: 1px 0 12px;
+             padding-left: 10px; border-left: 2px solid var(--line); }
+/* Whose numbers these are. The tree is the widest thing on the card and it is
+   still ONE pass's reading, so it is named rather than left to be assumed. */
+.sy-tr-cap { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); margin: 2px 0 0; }
+/* WHICH urls a probe pass is holding, under the line that counts them. Spans
+   the grid because a relay url does not fit a 120px fact column, and indented
+   against the same rule the funnel uses so the rows read as belonging to the
+   pass above rather than as more passes. */
+.sy-held { grid-column: 1 / -1; font-size: 11.5px; line-height: 1.7; margin: 0 0 6px;
+           padding-left: 10px; border-left: 2px solid var(--line);
+           font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sy-dim { color: var(--muted); }
+/* The one thing on a processor line that is a FINDING rather than a reading:
+   a pass that has not finished a unit for longer than one takes. */
+.sy-hot { color: var(--warn); font-weight: 620; }
+.sy-tr { display: grid; grid-template-columns: 1fr auto 120px; gap: 0 10px; align-items: center;
+         font-size: 12px; line-height: 1.8; }
+.sy-tr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Monospace, and the only monospace on this card: the guides are box-drawing
+   characters that must align vertically down every level, which a
+   proportional face cannot promise. */
+.sy-tr-guide { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal;
+               color: var(--line); white-space: pre; }
+.sy-tr-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px;
+             vertical-align: -.01em; margin-right: .35rem; background: var(--bar); }
+/* The four tones, and each is a claim: `good` is a relay we can sync against,
+   `warn` is a fault worth an operator's attention, `ours` is a failure on
+   THIS side (a transport we do not have, a probe that broke) and must never
+   colour like a relay misbehaving, and the default is a fact that is neither. */
+.sy-tr-dot.good, .sy-tr-track i.good { background: var(--accent); }
+.sy-tr-dot.warn, .sy-tr-track i.warn { background: var(--warn); }
+.sy-tr-dot.ours, .sy-tr-track i.ours { background: var(--muted); opacity: .5; }
+.sy-tr-dot.mute, .sy-tr-track i.mute { background: var(--bar); opacity: .55; }
+.sy-tr-hosts { font-style: normal; color: var(--muted); }
+.sy-tr-n { font-variant-numeric: tabular-nums; font-weight: 600; }
+.sy-tr-track { position: relative; height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+/* `min-width` because the row that matters most is the smallest one:
+   `inconsistent` is twelve urls in seventeen thousand — 0.07%, which rounds
+   to nothing — and a fault drawn at zero pixels is a fault nobody sees. */
+.sy-tr-track i { display: block; height: 100%; min-width: 2px; border-radius: 3px; background: var(--bar); }
+.sy-tr-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.sy-tr-note.warn { color: var(--warn); font-weight: 600; }
+/* HOW MANY RELAYS REACH EACH POINT IN THE FRAME — the one picture that says
+   whether coverage is deep or only recent, over every row at once. */
+.sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
+.sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
+.sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+/* EVERY LEG, not a sample. The list is the thing an operator scans for the
+   one bad row, so it scrolls on its own rather than pushing the rest of the
+   card off screen. */
+.sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: 6px 0 0; }
+table.sy-legs { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.sy-legs th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600;
+                   color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.sy-legs tr:last-child td { border-bottom: 0; }
+table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+/* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
+   row, so the warning colour owns the whole row. */
+table.sy-legs .sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
+table.sy-legs tr.hot .sy-at { color: inherit; }
+/* Quiet past the stuck threshold. The row is the finding, so the row is what
+   is marked — a coloured cell would put the emphasis on the clock rather than
+   on the relay it belongs to. */
+table.sy-legs tr.hot td { color: var(--warn); }

@@ -1,0 +1,2028 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="Nostr search, ranked by your web of trust." />
+<title>SearchOverTrust</title>
+<!--
+  The tab icon: the brand mark below, in white on an accent tile.
+
+  It is deliberately not that mark verbatim, for two reasons that are only
+  visible at 16 pixels. The mark is drawn in `currentColor`, and a tab strip has
+  no `currentColor` to inherit — nor one background, so no single ink survives
+  both themes on a transparent icon; the tile fixes the ground and the ink is
+  white in either. And the mark's 1.7-unit stroke is 0.9 device pixels at 16px,
+  which antialiases into a smudge, so the icon's is 2.6 with less margin.
+
+  Both formats, in this order, on purpose. A browser that understands `type` takes the
+  SVG and scales it to whatever the tab strip, the bookmark bar and the history
+  list each want; one that does not falls back to the .ico, which carries 16, 32
+  and 48 rendered separately. The .ico ALSO answers /favicon.ico — the path a
+  browser guesses when it is showing something that is not this markup, which
+  here is every JSON endpoint and every 404.
+-->
+<link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/web/favicon.ico" sizes="16x16 32x32 48x48" />
+<!--
+  The SearchOverTrust UI: no build step, no third-party code, and NO http API —
+  this page is a tiny Nostr client. It opens a WebSocket to the very server that
+  serves it, searches with NIP-50 REQs (so the filter chips are literal `kinds`
+  filters and the sort menu appends NIP-50 `sort:`/`include:spam` extensions),
+  signs in automatically with NIP-07 against the relay's NIP-42 challenge —
+  which ranks every search by YOUR web of trust. Without an extension it stays
+  anonymous and shows the whole corpus, unranked; there is no house lens
+  standing in for you.
+
+  Signing in does NOT enrol you in anything — this header claimed it did, and
+  so did app.js, while the relay's enrolment hook was wired to nothing. The
+  store treats your lens as a FILTER, so a reader whose trust chain has not
+  been mirrored here gets an empty ranked search rather than a degraded one,
+  and the page said nothing at all about that. web/readiness.js is the panel
+  that does: which link of the chain is missing (your relay list, your kind
+  10040, your provider's scores), how far the import has got as a percentage
+  when a denominator honestly exists, and — for the one failure that cannot
+  fix itself, a relay that has never seen your kind 10002 — a field to name a
+  relay you post to, so the page can read your lists off it and copy them here
+  verbatim for the router to pick up.
+
+  This file is the markup and the styles; the behavior is native ES modules
+  under /web, served straight off the classpath — view-source is still the real
+  source, there is still no toolchain, and the zero-dependency rule is a rule:
+  the relay client, the bech32 codec, the rendering are all hand-rolled here,
+  so adding an npm library is a constitutional change, not an import. This page
+  WAS "one file" and says so in old commits; that ended when per-kind entity
+  renderers (the /npub…, /note… views) became the plan — one file cannot hold
+  a renderer per kind worth rendering, and a registry of small card modules
+  can. app.js is the page's state and wiring; shared/ is the stateless client,
+  codec and caches; cards/ is where renderers live and grow (a registry keyed
+  by kind, with a generic floor for kinds nobody has dressed yet); entity.js
+  renders any /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… path as the
+  thing it names, with the same cards at permalink depth.
+
+  ONE control decides whose trust ranks the page: "ranking as", defaulting to
+  you and offering the pubkeys that published a kind 10040 (the only ones whose
+  scores the store projects — 271 here against 12.28M profiles), applied with
+  NIP-50 `observer:`. It replaced a login toggle sitting beside a lens picker,
+  a pair whose off-plus-somebody combination was legal and did nothing at all.
+
+  That control, the sort menu and include:spam are the page's THREE advanced
+  filters, and they live behind one "Filters" disclosure. Spread across the bar
+  they were permanent furniture for the few searches that use them, and on a
+  phone they took a line of their own and pushed the kind chips — the control
+  most searches do use — into a sideways scroll. What the disclosure owes back
+  is the count on its button: these three change what comes back, `?sort=…`,
+  `?spam=1` and `?as=…` mean a shared link can arrive with all three already
+  set, and a filter nothing on screen admits to is worse than a crowded bar.
+
+  The other button in that bar is a question mark, and it opens the SYNTAX
+  SHEET: `from:`, `to:`, `since:`, `until:`, `#hashtag`, `group:`, the NIP-73
+  scopes, and the NIP-50 tokens the Filters panel writes. Everything the box
+  understands was findable only by typing it, or by reading query.js — which
+  is a language nobody can be expected to guess a colon at a time. The sheet
+  is markup at the end of this file rather than a module, because it is prose
+  about a parser and not behaviour: app.js writes only what a <dialog> leaves
+  to be written, and web/src/test/js/help.test.mjs holds every claim the sheet
+  makes against what query.js really lifts, both ways round.
+
+  Every kind the index holds renders as a card: profiles, notes, articles,
+  media, code, live events, listings, the reactive kinds (reactions, reposts,
+  zaps, comments), the whole NIP-51 list and set table, this relay's own
+  NIP-66 and NIP-85 records — and a generic floor for the rest. "The whole
+  table" is a checked claim, not a boast: web/src/test/js/cards.test.mjs fails
+  if a kind registers a renderer without a fixture, a badge label or a family
+  tone, which is how a bookmark set came to render its twelve saved articles
+  under a badge that still read "kind 30003".
+
+  A reply leads with WHO it answers — "in reply to <name>", linking the parent
+  EVENT rather than that person's profile, because a reader following it wants
+  the thing that was said. Which `e` tag is the parent is NIP-10's rule and
+  lives in web/shared/parents.js; who wrote it is a hint on the tag when the
+  posting client left one and a lookup by id when it did not, which is why the
+  line can fill in a beat after the card. It replaced a props row reading
+  "note1qqq…" — an identifier that places nobody, and the thing no other client
+  shows.
+
+  A result card opens its own page when clicked, which the hover lift had been
+  promising since it was written while only the links inside it navigated. The
+  card carries the destination as `data-href` and app.js yields to any real
+  control and to a text selection; the byline DATE is the same destination as
+  an ordinary anchor, so middle-click, copy-link and Tab still work — a div
+  that navigates can do none of the three. Those two together are what let the
+  `note:` and `id:` props rows go: they existed because a card had no other
+  route to itself, and read as a truncated bech32 nobody wanted.
+
+  The results are walkable from the keyboard: `j` down, `k` up, Enter opens
+  the card the cursor is on, and "/" puts the caret back in the search box.
+  The feed page walks the same way and for free — it is the same list of cards
+  in the same box, and the cursor asks the DOM which cards open something
+  rather than asking the page which view it is. That is the vocabulary mail
+  clients, timelines and code review already share, so it is the one this page
+  speaks rather than one of its own. What it
+  has to be careful about is everything the keys already meant, and
+  web/shared/keynav.js is that half — the testable one, held by
+  web/src/test/js/keynav.test.mjs. A `j` typed INTO the search box is the letter
+  j: the box is a contenteditable div, so a tag test alone eats it, which is
+  the trap "/" fell into first and the reason both shortcuts now ask one
+  function. Enter belongs to whatever has the focus ring when that thing is a
+  chip, a link or the json toggle — Tab-then-Enter is how this page was
+  operable before there was a cursor, and a cursor must not take it back. The
+  cursor itself tracks the EVENT rather than the row, because names and reply
+  parents land after the cards do and repaint them. And submitting a search
+  blurs the field, which is what makes any of it reachable — and on a phone
+  puts away a keyboard that was covering the answer.
+
+  The search box is a FIELD, not an input. `from:npub1…` and `to:npub1…`
+  narrow a search to a person — the author, or whoever they named — and both
+  draw as that person's face and name rather than 63 characters of bech32,
+  which no <input> can do: an input's value is characters and nothing else.
+  Typing `from:` or `to:` opens a people picker (web/searchfield.js) over the
+  authenticated socket, so the candidates are ranked by YOUR web of trust; the
+  "ranking as" list under Filters is deliberately anonymous for the opposite
+  reason. The two popups are never open together — they share this box and the
+  arrow keys. On submit the tokens leave the NIP-50 search entirely and become
+  the NIP-01 filter fields they are, `authors` and `#p`.
+
+  `since:2026-08-06` and `until:2026-08-06` narrow it to a stretch of time, and
+  typing either prefix opens a CALENDAR in the same box the people picker uses
+  — never both, because one caret is inside one token. They become the NIP-01
+  `since` and `until`, a window over `created_at` that rides every filter the
+  rest of the query turns into. The token is ISO on purpose (`06/08/2026` is
+  two different days depending on who is reading) and the pill respells it the
+  reader's way; `since` is 00:00 of its day and `until` is 23:59 of its own, in
+  the reader's timezone, because NIP-01's `until` is inclusive and a window from
+  a day to itself has to be a day wide.
+
+  A `#hashtag` draws as a pill in the same field, for a different reason: it is
+  already the word it means, so nothing is being hidden — the pill is the box
+  saying that word left the search string and became a tag filter. Quieter than
+  a person (an outline, no face, no lookup) and it appears only when the caret
+  leaves the tag, because a hashtag is a token one character in and a pill that
+  formed at `#n` would re-render the field on every keystroke.
+
+  `#hashtag` leaves the search string too, and becomes a union, because Nostr
+  writes a topic down three ways: `#t` for the events that TAG it, kind 1111
+  with the NIP-73 external id in `i` or `I` for the NIP-22 comments written ON
+  it (which carry no `t` at all), and the NIP-32 label `#l` for the events
+  LABELLED with it — the author's own label, or somebody else's kind 1985
+  saying so. The label filter asks the value alone: NIP-32 only RECOMMENDS the
+  `L` namespace beside it, and the mark that would name the vocabulary is the
+  tag's second value, which NIP-01 does not index. All of them ride in one REQ
+  — NIP-01 ORs the filters of a subscription — because which convention a topic
+  was written down under is not something a reader searching for `#nostr`
+  should have to know.
+
+  The other NIP-73 subjects get the same door with their own prefixes:
+  `site:<url>`, `isbn:`, `geo:`, `isan:`, `doi:`, `podcast:guid:`,
+  `podcast:item:guid:` and `podcast:publisher:` narrow the search to the kind
+  1111 comments written ON that page, book, place, film, paper or podcast —
+  `#I` for the threads rooted at it (the full limit; every comment in such a
+  thread names it), `#i` for the odd event whose parent it is (a side limit).
+  No `t`/`l` half, because nothing tags a book from the outside the way notes
+  tag topics — the comment filters ARE the question, which is also why they
+  keep kind 1111 whatever the tab says: gating them off would leave the token
+  visible in the box and inert in the REQ. The ask carries the id's spellings
+  the way the hashtag ask carries case (shared/query.js scopeIds): NIP-73
+  normalizes per family — bare fragmentless url for the web, hyphens dropped
+  for isbn:, lowercase for geo:/doi: — and commenters do not reliably comply,
+  so the canonical spelling and the typed one ride the same OR list. The pill
+  settles like a hashtag's, because the token grows a character at a time;
+  there is no picker — a url or an isbn is pasted, not chosen from a list.
+
+  `group:<id>` is the NIP-29 door, and it is the one subject here that DOES get
+  a picker — for exactly the reason the scopes above do not. A url or an ISBN
+  is copied from the thing itself; a group id is an opaque string its host
+  relay minted (`chachi`, a hex blob), so it is precisely what nobody can type
+  from memory. The rows offer the NAME and a pick writes the id; `group:` with
+  nothing after it opens on the reader's own groups, read off their kind 10009.
+  That read is on the AUTHENTICATED socket like every other, so a reader whose
+  scores and 10040 have not been mirrored here sees no personal groups — which
+  looks like a fault and is the relay being consistent: it has already decided
+  it cannot rank for them, and the group picker is not the place to make an
+  exception. The readiness panel under the box is what says so.
+
+  Half of that list can be locked, and this is the one place the page asks the
+  signer for something other than a signature. A 10009 is a NIP-51 private-tag
+  event: items may sit NIP-44-encrypted in `.content`, self-encrypted to the
+  author's own key. So when a reader with an encrypted payload uses `group:`,
+  the page asks their extension to decrypt it — at that moment and not on page
+  load, where a permission dialog would arrive with no question attached to it.
+  Three rules keep that dialog from becoming noise: no payload means no ask;
+  one prompt per reader however many keystrokes (the in-flight promise is
+  shared); and a refusal is final until the reader clicks "Unlock your private
+  groups" themselves, because reopening a dialog somebody just dismissed is
+  what a page should never do on its own. The ask is fired and NOT awaited —
+  their public groups are already in hand and a human answers a dialog on their
+  own schedule — so the rows draw immediately with a note about what is still
+  pending, and the list re-asks when the answer lands.
+
+  Two facts about that payload are worth knowing before reading the code. An
+  EMPTY private list encrypts the empty STRING rather than `[]`, so a payload
+  is not evidence there is anything in it — a reader who deleted their last
+  private group still carries a valid ciphertext, and the only way to learn it
+  is empty is to ask. And nothing records which SCHEME was used, so `isNip04`
+  ports quartz's shape test byte for byte (`?iv=` exactly 28 from the end, after
+  a `-null` strip that exists for a client bug that shipped): guessing wrong
+  does not corrupt anything, it just spends a permission prompt for nothing.
+  The filter is two questions: `#h` for what was posted in the group — one
+  letter, so the store indexes it exactly as it indexes `t`, and it KEEPS the
+  tab's kinds because a group post is an ordinary event that happens to carry
+  an `h` — and the group's own kind 39000 keyed by `d`, which names its own
+  kind for the scope filters' reason.
+
+  What that picker cannot do is the honest part. A NIP-29 group is the pair
+  (id, host relay) and an `h` tag carries only the id, so two relays with a
+  `general` are one filter and the results are the union. Worse, the two things
+  this page knows about a group name its host in incompatible ways: a 10009
+  `group` tag gives a URL, a 39000 gives the PUBKEY that signed it (NIP-29 has
+  the relay sign its own records), and nothing here joins the two — no
+  per-relay provenance in the store, no such tag on a NIP-66 record. So
+  shared/groups.js keeps them as separate rows rather than inventing the join,
+  and flags any id that more than one row carries. The 39000s themselves stay
+  apart correctly, being addressable per (kind, pubkey, `d`) — which is what
+  lets the picker warn about an ambiguity the results cannot resolve.
+
+  Two things the union has to get right, both asserted by
+  RelayProtocolTest."the search page's hashtag union": tag values compare CASED
+  here (the engine schema says so), so the ask carries the spellings —
+  `nostr`, `Nostr`, `NOSTR` — or every note tagged in mixed case is invisible;
+  and `#I` must stay uppercase all the way through Quartz's REQ parse, or the
+  root-scope filter would quietly match the wrong events. `limit` is per FILTER,
+  so the `t` filter keeps the view's limit and the other three ride at a quarter
+  of it rather than multiplying the page by four.
+
+  What comes back is ONE order over all four, not each filter's run one after
+  another: the store merges the filters of a REQ that share a rank profile, and
+  these four always do — they carry the same search string. That is what makes
+  the quarter above a real budget rather than a tail cut, since a side filter's
+  hits compete for the top of the page against the `t` filter's. Pinned by
+  RelayProtocolTest."a ranked union is served as one order", which fails against
+  the store this page was written for and passes against the one it pins.
+
+  The landing page is not an empty page any more: signed in, three of the
+  newest content cards sit under the box, and "see more" opens `/?feed=1` with
+  a hundred. That feed IS an empty search — web/feed.js says so at length — the
+  page's own filter builder with no words, no sort, no spam toggle and no lens,
+  which leaves `{kinds, limit}`: a plain NIP-01 read, which the store answers
+  newest-first. The trust gate comes from the CONNECTION rather than from the
+  query, so a signed-in reader's feed is already their web of trust's view of
+  the network. That is also why the preview is drawn only for a signed-in
+  reader — signed out the identical read is the whole mirror in time order,
+  which the hero should not be handing anybody unasked — and why the feed hides
+  the Filters disclosure: those three cannot ride on an ask with no search
+  string. A control that cannot act on the page it is drawn on is what the
+  Filters badge exists to prevent, one level up.
+
+  The kind chips are the half of that bar which CAN act here, and they do: they
+  are the `kinds` field of that same plain read, not an extension on a search
+  string, so picking Media narrows the feed exactly as it narrows a search —
+  under the hero and on the full page alike. They used to be the other kind of
+  dead control, drawn on the landing page over a preview that ignored them. A
+  chip REPLACES the feed's content kinds rather than intersecting them, because
+  four of the seven narrowing chips share no kind with that default and would
+  have gone from ignoring the reader to answering "nothing here yet".
+
+  The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
+  whole results view on load, every submitted search and every filter change
+  pushes a history entry, and Back walks them in order down to the hero.
+  `/?feed=1&tab=…` is the one view whose whole state is a flag and a chip — it
+  takes none of the other four, and it is a parameter on the ROOT rather than a
+  `/feed` path because the root is already served and a new path would need a
+  route.
+  The type-ahead popup deliberately never touches the URL — a keystroke is not a
+  place. Before this, the page held all of that in JS only: Back left the
+  site from the middle of a search, reload emptied it, and a result list
+  could not be handed to anyone.
+
+  To develop against a remote server, set RELAY_URL in web/shared/conn.js to
+  its ws:// url.
+-->
+
+<!--
+  Every module the page runs, requested from the FIRST byte of the document.
+
+  Without these the browser discovers the graph a level at a time: fetch
+  index.html, then app.js, then the 7 it imports, then the 4 behind those —
+  three dependency waves, each costing a full round trip before any code runs.
+  On localhost that is 188ms and invisible; over a Cloudflare tunnel it measured
+  1,513ms, almost all of it waiting rather than transferring.
+
+  A preload hint starts every fetch in the FIRST wave, so the cost becomes one
+  round trip plus the bytes. The list is checked against the real import graph
+  by web/src/test/js/preload.test.mjs — a renamed or new module fails there rather
+  than silently falling back to the slow path.
+
+  Both the hints and the entry script live HERE, ahead of the stylesheet,
+  because "first wave" is a claim about position. They sat at the very END of
+  the body: the hints were the LAST thing in a 25KB document, so the fetches
+  they exist to start early could not be issued until the parser had walked past
+  530 lines of CSS and all of the markup. app.js was worse — it is the entry
+  module and the preload crawler drops it, so it is hinted by nobody
+  (the crawler drops it), so its own fetch began after ALL of that while its
+  dependencies were already in flight. `type="module"` is deferred by
+  definition, so moving the tag up starts the download in the first wave and
+  still runs it after the DOM is parsed, which is what app.js's top-level
+  getElementById calls require.
+-->
+<link rel="modulepreload" href="/web/cards.js" />
+<link rel="modulepreload" href="/web/cards/apps.js" />
+<link rel="modulepreload" href="/web/cards/article.js" />
+<link rel="modulepreload" href="/web/cards/base.js" />
+<link rel="modulepreload" href="/web/cards/code.js" />
+<link rel="modulepreload" href="/web/cards/generic.js" />
+<link rel="modulepreload" href="/web/cards/lists.js" />
+<link rel="modulepreload" href="/web/cards/live.js" />
+<link rel="modulepreload" href="/web/cards/market.js" />
+<link rel="modulepreload" href="/web/cards/media.js" />
+<link rel="modulepreload" href="/web/cards/note.js" />
+<link rel="modulepreload" href="/web/cards/people.js" />
+<link rel="modulepreload" href="/web/cards/profile.js" />
+<link rel="modulepreload" href="/web/cards/relays.js" />
+<link rel="modulepreload" href="/web/cards/social.js" />
+<link rel="modulepreload" href="/web/entity.js" />
+<link rel="modulepreload" href="/web/feed.js" />
+<link rel="modulepreload" href="/web/readiness.js" />
+<link rel="modulepreload" href="/web/related.js" />
+<link rel="modulepreload" href="/web/searchfield.js" />
+<link rel="modulepreload" href="/web/shared/avatar.js" />
+<link rel="modulepreload" href="/web/shared/calendar.js" />
+<link rel="modulepreload" href="/web/shared/conn.js" />
+<link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/groupnames.js" />
+<link rel="modulepreload" href="/web/shared/groups.js" />
+<link rel="modulepreload" href="/web/shared/keynav.js" />
+<link rel="modulepreload" href="/web/shared/kinds.js" />
+<link rel="modulepreload" href="/web/shared/mirrors.js" />
+<link rel="modulepreload" href="/web/shared/nip05.js" />
+<link rel="modulepreload" href="/web/shared/nip19.js" />
+<link rel="modulepreload" href="/web/shared/parents.js" />
+<link rel="modulepreload" href="/web/shared/profiles.js" />
+<link rel="modulepreload" href="/web/shared/query.js" />
+<link rel="modulepreload" href="/web/shared/readiness.js" />
+<link rel="modulepreload" href="/web/shared/relay.js" />
+<link rel="modulepreload" href="/web/shared/relayurl.js" />
+<script type="module" src="/web/app.js"></script>
+<style>
+  /* ---- tokens ------------------------------------------------------------ */
+  :root {
+    --bg: #f6f7f9;
+    --surface: #fff;
+    --surface-2: #f1f3f6;
+    --fg: #14161a;
+    --muted: #5f6675;
+    --faint: #8a90a0;
+    --border: #e3e6ec;
+    --border-strong: #cdd2dc;
+    --accent: #2563eb;
+    --accent-fg: #fff;
+    --accent-soft: #eaf0ff;
+    --danger: #c0332b;
+    --warn: #a8611a;
+    /* a diff's two colours, and the git verdicts that borrow them */
+    --add: #1a7f37;
+    --del: #b42318;
+    /* The green observer_stats.html marks a SYNCED service with, to the digit:
+       two pages that both say "this is in sync" should not say it in two
+       colours. Near-identical to --add and deliberately not merged with it —
+       that one is a diff's added-line green, tuned against a tinted row, and
+       the two vocabularies are free to drift apart. */
+    --ok: #1a7f4b;
+    --ring: rgba(37, 99, 235, .35);
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
+    --shadow-md: 0 4px 16px rgba(16, 24, 40, .08);
+    --shadow-lg: 0 18px 44px rgba(16, 24, 40, .14);
+    --radius: 12px;
+    /* The stack was written out at every use — five of them by the time the
+       readiness panel wanted a sixth. One name, because a monospace face is a
+       decision about this page and not about one rule in it. */
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --skel: linear-gradient(90deg, var(--surface-2) 25%, #e7eaf0 37%, var(--surface-2) 63%);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f12;
+      --surface: #15181d;
+      --surface-2: #1c2028;
+      --fg: #e6e8ec;
+      --muted: #99a1b0;
+      --faint: #6f7787;
+      --border: #242932;
+      --border-strong: #333a45;
+      --accent: #7aa2ff;
+      --accent-fg: #0d0f12;
+      --accent-soft: #1a2233;
+      --danger: #ff8a80;
+      --warn: #d99b56;
+      --add: #57ab5a;
+      --del: #f47067;
+      --ok: #6dd39b;
+      --ring: rgba(122, 162, 255, .4);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, .45);
+      --shadow-lg: 0 18px 44px rgba(0, 0, 0, .6);
+      --skel: linear-gradient(90deg, var(--surface-2) 25%, #262c36 37%, var(--surface-2) 63%);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { overflow-y: scroll; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { min-height: 100vh; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .page { max-width: 780px; margin: 0 auto; padding: 0 16px; }
+
+  /* ---- hero: centered while idle, a sticky bar once results are up ------- */
+  .hero { padding-top: 12vh; transition: padding-top .2s ease; }
+  .hero-inner { display: flex; flex-direction: column; align-items: center; }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 25px;
+    font-weight: 680;
+    letter-spacing: -.022em;
+    color: inherit;
+    text-decoration: none;
+    margin-bottom: 4px;
+  }
+  .brand .mark { width: 1.05em; height: 1.05em; color: var(--accent); flex-shrink: 0; }
+  .brand em { font-style: normal; color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; }
+
+  .search-wrap { position: relative; width: 100%; }
+  .search-icon {
+    position: absolute; left: 17px; top: 50%; transform: translateY(-50%);
+    width: 17px; height: 17px; color: var(--faint); pointer-events: none;
+  }
+  #q {
+    width: 100%;
+    padding: 13px 50px 13px 44px;
+    font: inherit;
+    font-size: 16px;
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: 26px;
+    outline: none;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    transition: border-color .15s, box-shadow .15s;
+    /* An input's single line, restored on a div: `pre` keeps the spaces that
+       separate one from:npub… from the next (a collapsed space stops being a
+       token boundary), and the overflow scrolls sideways the way an input's
+       does — scrollbar hidden, because a text field does not have one. */
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    cursor: text;
+  }
+  #q::-webkit-scrollbar { display: none; }
+  /* The field is EMPTY only when searchfield.js has cleared it — a
+     contenteditable leaves a <br> behind otherwise, and :empty would never
+     match again after the first character was typed and deleted. */
+  #q:empty::before { content: attr(data-placeholder); color: var(--faint); }
+  #q:hover { border-color: var(--muted); }
+  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  #clear {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    display: none; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0;
+    border: 0; border-radius: 50%; background: none;
+    color: var(--faint); font-size: 17px; line-height: 1; cursor: pointer;
+  }
+  #clear:hover { background: var(--surface-2); color: var(--fg); }
+  body.has-query #clear { display: flex; right: 46px; }
+
+  /* Who you are, in the field. Signed in shows your picture; signed out shows a
+     neutral mark. Clicking toggles — and signing OUT means a new connection,
+     because NIP-42 auth belongs to the socket, not to the page.
+
+     Three states, not two. `.pending` is the window between the extension
+     naming you and the relay accepting your AUTH: the face is already drawn,
+     from the account the extension named, but nothing has been proven yet — so
+     it is faded and the hover reads "signing in as", and it must NOT look like
+     `.in`. Still clickable, unlike `.busy`, which is a click already in
+     progress. */
+  .me {
+    /* Pinned to the field's own box rather than sized in pixels: top, bottom and
+       right are the same gap by construction, and stay equal if the font or the
+       field padding ever changes. */
+    position: absolute; right: 6px; top: 6px; bottom: 6px;
+    width: auto; aspect-ratio: 1 / 1; padding: 0; border: 1px solid var(--border);
+    border-radius: 50%; background: var(--surface-2); cursor: pointer;
+    display: grid; place-items: center; overflow: hidden;
+    color: var(--faint); font-size: 12px; font-weight: 700; line-height: 1;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .me:hover { border-color: var(--accent); }
+  .me .avatar { border: 0; border-radius: 0; }
+  /* No score on your own face in the toolbar: the lens IS you, the button is
+     28px, and the badge would be clipped by its own frame. Written against
+     `.on` because that is the rule it has to beat — the chip is shown by
+     `.score-chip.on`, and an equally specific selector earlier in the file
+     loses to it. */
+  .me .score-chip.on { display: none; }
+  .me.in { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .me.pending { opacity: .6; }
+  .me.busy { opacity: .55; pointer-events: none; }
+
+  /* ---- the control bar --------------------------------------------------- */
+  .bar {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px 14px;
+    width: 100%;
+    margin-top: 12px;
+  }
+  .chips { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; padding-bottom: 1px; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip {
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .chip:hover { border-color: var(--border-strong); color: var(--fg); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; flex-shrink: 0; }
+
+  .select {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--surface) no-repeat right 8px center/9px 6px;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 13px center, right 8px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 12.5px;
+    padding: 5px 24px 5px 10px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .select:hover { border-color: var(--border-strong); color: var(--fg); }
+
+  /* ---- the advanced filters, behind a disclosure --------------------------
+     Why they are hidden at all is in the header; what is here is how a
+     <summary> is made to look like the buttons beside it, and the badge that
+     pays for the hiding. */
+  .adv { position: relative; flex-shrink: 0; }
+  .adv-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    list-style: none;               /* the disclosure triangle, Firefox */
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-size: 12.5px;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .adv-btn::-webkit-details-marker { display: none; }   /* …and Safari's */
+  .adv-btn:hover { border-color: var(--border-strong); color: var(--fg); }
+  .adv-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .adv[open] .adv-btn { border-color: var(--border-strong); color: var(--fg); }
+  .adv-icon { width: 14px; height: 14px; flex-shrink: 0; }
+  .adv-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+    background: var(--accent); color: var(--accent-fg);
+    font-size: 10.5px; font-weight: 600;
+  }
+  /* `hidden` alone loses to the display above on specificity, and the button
+     would carry a permanent "0" — asserted by web/src/test/js/filters.test.mjs */
+  .adv-count[hidden] { display: none; }
+  .adv-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 45;
+    width: min(17rem, calc(100vw - 32px));   /* 32px = .page's gutter, both sides */
+    display: flex; flex-direction: column; gap: 11px; padding: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-md);
+  }
+  .adv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  /* the two rows that ARE labels: the whole row is the control's hit area */
+  label.adv-row { cursor: pointer; }
+  .adv-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+  .adv-label { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+
+  /* "as" — whose web of trust ranks the results */
+  .obsbox { position: relative; display: flex; align-items: center; gap: 6px; }
+  .obscurrent { font-size: 13px; font-weight: 600; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .obsbox.active .obscurrent { color: var(--accent); }
+  .obsbox.anon .obsfilter { opacity: .5; pointer-events: none; }
+  .obsfilter { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
+               border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+  .obsbox.active .obsreset { display: inline; }
+  /* Capped, because the rows are `nowrap` and a display name is whatever its
+     owner typed: one 60-character name sized this list at 438px and gave the
+     whole PAGE a horizontal scrollbar on a phone. The name ellipsises; the row
+     still carries the npub as its title. */
+  .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
+             list-style: none; min-width: 16rem; max-width: min(20rem, calc(100vw - 32px));
+             max-height: 15rem; overflow-y: auto;
+             background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+             box-shadow: var(--shadow-md); }
+  .obslist:empty { display: none; }
+  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .obslist li:hover { background: var(--surface-2); }
+  .obslist li.muted { color: var(--faint); cursor: default; }
+  /* the include-spam switch — the page's only one, so it is scoped to #spam
+     rather than carrying a class the markup uses once */
+  .switch { display: inline-flex; align-items: center; }
+  #spam { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-track { position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--border-strong); flex-shrink: 0; transition: background .15s; }
+  .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
+  #spam:checked + .toggle-track { background: var(--accent); }
+  #spam:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
+  #spam:focus-visible + .toggle-track { box-shadow: 0 0 0 3px var(--ring); }
+
+  /* ---- the syntax sheet --------------------------------------------------
+     A <dialog>, opened with showModal(), for the reason the Filters
+     disclosure is a <details>: Escape, the backdrop, the focus ring staying
+     inside while it is up and the page under it going inert are the
+     element's, and this page does not hand-roll what an element already does.
+     The button beside it borrows .adv-btn outright — two controls sitting
+     side by side in the same bar are one button with two labels, and a second
+     near-identical block of padding and border is how they drift apart. What
+     a <button> does not inherit from that <summary> is the font, so it is
+     named here. */
+  button.adv-btn { font: inherit; font-size: 12.5px; }
+  /* The mark alone, so the row does not wrap — the markup says what that costs.
+     Square padding, and an icon a shade larger than the labelled button's,
+     because at this size the mark IS the button rather than a hint beside a
+     word. */
+  #helpbtn { padding: 5px 7px; }
+  #helpbtn .adv-icon { width: 15px; height: 15px; }
+
+  /* `[open]`, and it has to be: a `display` on the dialog itself replaces the
+     `display: none` the UA gives a CLOSED one, and the sheet would sit at the
+     bottom of every page. The column is what lets the head stay put while the
+     body alone scrolls, without either of them being told a pixel height. */
+  .help-sheet[open] { display: flex; flex-direction: column; }
+  .help-sheet {
+    width: min(40rem, calc(100vw - 32px));
+    max-height: min(80vh, 44rem);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;                       /* the ROUNDING; the body scrolls */
+  }
+  .help-sheet::backdrop { background: rgba(16, 24, 40, .45); }
+  @media (prefers-color-scheme: dark) { .help-sheet::backdrop { background: rgba(0, 0, 0, .6); } }
+  /* Fixed by the column above rather than by `position`, so the close button —
+     the way out for anybody not reaching for Escape — is on screen at every
+     scroll position of the body under it. */
+  .help-head {
+    flex: 0 0 auto;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 14px 16px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .help-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+  .help-head p { margin: 0; flex: 1 1 auto; font-size: 12px; color: var(--muted); }
+  .help-close {
+    flex-shrink: 0; border: 0; background: none; color: var(--muted);
+    font: inherit; font-size: 19px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+  .help-close:hover { color: var(--fg); }
+  .help-close:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+  /* `min-height: 0`, or the flex item refuses to shrink below its content and
+     the sheet grows past its own max-height instead of scrolling. */
+  .help-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 16px 16px; }
+  .help-sec { margin-top: 14px; }
+  .help-sec h3 { margin: 0 0 2px; font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .help-sec > p { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+  /* Two columns while there is room for the token to keep its own: a token
+     wrapping mid-`podcast:item:guid:` is the one thing this sheet must not do.
+     Under 560px the grid becomes one column and each token sits above its
+     sentence, which is what a phone has room for. */
+  .help-rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; align-items: baseline; }
+  .help-rows dt { min-width: 0; }
+  .help-rows dd { margin: 0; font-size: 12.5px; color: var(--muted); }
+  .help-rows dd b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 560px) {
+    .help-rows { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .help-rows dd { margin-bottom: 6px; }
+    /* The one line the head can afford here. Beside a two-word title in a
+       340px sheet the subtitle wrapped BOTH of them into two lines each, for a
+       sentence the sections underneath immediately say again. */
+    .help-head p { display: none; }
+    /* …and with it gone, the title is what holds the close button out at the
+       far edge, where the subtitle was doing that job. */
+    .help-head h2 { white-space: nowrap; flex: 1 1 auto; }
+  }
+  /* The token as the field will hold it: the same monospace the json panel and
+     the props rows use, so a thing you type reads as a thing you type. */
+  .tok {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 5px;
+    white-space: nowrap;
+  }
+  .tok em { font-style: normal; color: var(--faint); }
+  .help-note { margin: 14px 0 0; font-size: 12px; color: var(--faint); }
+  .help-note a { color: var(--accent); text-decoration: none; }
+  .help-note a:hover { text-decoration: underline; }
+
+  .whoami { font-size: 12px; color: var(--muted); margin-top: 8px; width: 100%; }
+  .whoami:empty { display: none; }
+  .whoami b { color: var(--fg); font-weight: 600; }
+  .whoami .err { color: var(--danger); }
+
+  /* ---- "is search ready for you yet" ------------------------------------ */
+  /* One card, seven states. The state is a DOT beside the sentence that
+     states it, not a tinted bar down the edge of the card: the severity
+     belongs next to the words, and a rail puts it everywhere except there. */
+  .readiness { width: 100%; margin-top: 12px; }
+  .readiness[hidden] { display: none; }
+  .rdy {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px 16px 15px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    text-align: left;
+  }
+  .rdy-top { display: flex; align-items: flex-start; gap: 10px; }
+  .rdy-dot {
+    width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; margin-top: 6px;
+    background: var(--faint);
+  }
+  .rdy.is-blocked .rdy-dot { background: var(--danger); }
+  .rdy.is-working .rdy-dot { background: var(--accent); }
+  .rdy.is-partial .rdy-dot { background: var(--warn); }
+  .rdy.is-ok .rdy-dot { background: var(--ok); }
+  .rdy-headline { margin: 0; flex: 1 1 auto; font-size: 15px; font-weight: 620; letter-spacing: -.01em; }
+  .rdy-state {
+    padding-top: 4px; white-space: nowrap;
+    font: 500 10.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .rdy-x {
+    border: 0; background: none; padding: 0 0 0 4px; margin-top: -1px;
+    color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer;
+  }
+  .rdy-x:hover { color: var(--fg); }
+  /* 19px = the dot's 9 plus the row's 10 gap, so everything under the headline
+     hangs off the same left edge as the headline itself. */
+  .rdy-body { margin: 0 0 0 19px; color: var(--muted); font-size: 13.5px; max-width: 62ch; }
+  .rdy-body b { color: var(--fg); font-weight: 600; }
+  .rdy-body code, .rdy-figures code {
+    font-family: var(--mono); font-size: .9em;
+    background: var(--surface-2); border-radius: 4px; padding: .5px 4px;
+  }
+  .rdy-hint { margin: 0 0 0 19px; color: var(--faint); font-size: 12.5px; max-width: 60ch; }
+
+  .rdy-meter { margin-left: 19px; display: flex; flex-direction: column; gap: 6px; }
+  .rdy-track { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+  /* Warn until parity and green only AT it, so "partly there" can never read
+     as "done" from across the room. */
+  .rdy-fill { height: 100%; border-radius: 3px; background: var(--warn); }
+  .rdy.is-working .rdy-fill { background: var(--accent); }
+  .rdy.is-ok .rdy-fill { background: var(--ok); }
+  .rdy-figures {
+    margin: 0 0 0 19px; display: flex; flex-wrap: wrap; gap: 4px 10px;
+    font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; color: var(--faint);
+  }
+  .rdy-meter .rdy-figures { margin-left: 0; }
+  .rdy-figures b { color: var(--muted); font-weight: 600; }
+
+  .rdy-actions { margin-left: 19px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .rdy-field {
+    flex: 1 1 15rem; min-width: 0; font: inherit; font-size: 13.5px; padding: 8px 11px;
+    border: 1px solid var(--border-strong); border-radius: 8px;
+    background: var(--surface); color: var(--fg);
+  }
+  .rdy-field::placeholder { color: var(--faint); }
+  .rdy-field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  .rdy-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13.5px; font-weight: 600;
+    padding: 8px 14px; border: 1px solid transparent; border-radius: 8px;
+    background: var(--accent); color: var(--accent-fg);
+    cursor: pointer; white-space: nowrap; text-decoration: none;
+  }
+  .rdy-btn:hover { filter: brightness(1.06); }
+  .rdy-btn.quiet {
+    background: var(--surface); color: var(--muted); border-color: var(--border); font-weight: 500;
+  }
+  .rdy-btn.quiet:hover { color: var(--fg); border-color: var(--border-strong); filter: none; }
+  .rdy-ext { font-size: 11px; opacity: .75; }
+  .rdy-more {
+    margin-left: 19px; align-self: flex-start;
+    font: inherit; font-size: 12.5px; color: var(--muted);
+    background: none; border: 0; padding: 0; cursor: pointer;
+  }
+  .rdy-more:hover { color: var(--fg); }
+
+  /* The chain. The gates are a real dependency chain — your relay list is how
+     the router finds your write relays, those are where your scores list is
+     read, and that names the service whose scores get imported — so the list
+     draws one: solid down to the link that broke, dashed below it, because
+     everything under a break is WAITING and not failing. */
+  .rdy-chain { margin: 2px 0 0 19px; display: flex; flex-direction: column; }
+  .rdy-chain[hidden] { display: none; }
+  .rdy-link { display: grid; grid-template-columns: 16px 1fr auto; gap: 0 10px; align-items: start; }
+  .rdy-rail { position: relative; width: 16px; align-self: stretch; }
+  .rdy-rail::before {
+    content: ""; position: absolute; left: 7px; top: 14px; bottom: -4px; width: 2px;
+    background: var(--ok);
+  }
+  .rdy-link:last-child .rdy-rail::before { display: none; }
+  /* The segment BELOW a link takes that link's colour: a green run of rail
+     under an amber mark reads as "everything past here is fine", which is the
+     opposite of what a partial link means. */
+  .rdy-link.partial .rdy-rail::before, .rdy-link.aside .rdy-rail::before { background: var(--warn); }
+  .rdy-link.waiting .rdy-rail::before,
+  .rdy-link.broken .rdy-rail::before { background: none; width: 0; border-left: 2px dashed var(--border-strong); }
+  .rdy-mark {
+    position: absolute; left: 0; top: 4px; width: 16px; height: 16px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 10px; font-weight: 700; line-height: 1;
+    background: var(--ok); color: var(--surface);
+  }
+  .rdy-link.broken .rdy-mark { background: var(--danger); }
+  .rdy-link.partial .rdy-mark, .rdy-link.aside .rdy-mark { background: var(--warn); }
+  .rdy-link.waiting .rdy-mark { background: none; border: 2px dashed var(--border-strong); }
+  .rdy-what { padding: 2px 0 12px; font-size: 13.5px; }
+  .rdy-what small { display: block; color: var(--muted); font-size: 12.5px; }
+  .rdy-link.waiting .rdy-what, .rdy-link.waiting .rdy-what small { color: var(--faint); }
+  .rdy-verdict {
+    padding-top: 3px; text-align: right; white-space: nowrap;
+    font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  .rdy-link.broken .rdy-verdict { color: var(--danger); }
+  .rdy-link.partial .rdy-verdict { color: var(--warn); }
+  .rdy-link.waiting .rdy-verdict { color: var(--faint); }
+  .rdy-link.aside { opacity: .82; }
+
+  .rdy-found { margin: 0 0 0 19px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  .rdy-found li { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--muted); }
+  .rdy-found b { color: var(--fg); font-weight: 600; }
+  .rdy-found .tick { color: var(--ok); font-weight: 700; width: 1em; }
+  .rdy-found .cross { color: var(--warn); font-weight: 700; width: 1em; }
+  .rdy-found .dash { color: var(--faint); width: 1em; }
+  .rdy-found .kind { font: 11.5px/1 var(--mono); color: var(--faint); }
+
+  .rdy-spinner {
+    width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto; margin-top: 4px;
+    border: 2px solid var(--border-strong); border-top-color: var(--accent);
+    animation: rdy-spin .8s linear infinite;
+  }
+  @keyframes rdy-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .rdy-spinner { animation-duration: 3s; } }
+
+  @media (max-width: 620px) {
+    .rdy-state { display: none; }
+    .rdy-actions .rdy-btn { flex: 1 1 auto; justify-content: center; }
+  }
+
+  /* ---- type-ahead popup --------------------------------------------------- */
+  .popup {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0; right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+    z-index: 30;
+    display: none;
+    max-height: 62vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .popup.open { display: block; }
+  .popup-head {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
+    padding: 9px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; display: flex; justify-content: space-between; z-index: 1;
+  }
+  .popup-head .timing { font-variant-numeric: tabular-nums; }
+  .popup-item {
+    display: flex; gap: 11px; align-items: center;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .popup-item:last-child { border-bottom: 0; }
+  .popup-item:hover { background: var(--surface-2); }
+  .popup-item.active { background: var(--surface-2); border-left-color: var(--accent); }
+  .row-main { flex: 1; min-width: 0; }
+  .row-name { font-weight: 550; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Not a result: the picker saying what it is doing, or that it found
+     nobody. A row would be clickable and this is not. */
+  .popup-note { padding: 13px 14px; color: var(--faint); font-size: 12.5px; }
+
+  /* ---- a person, inside the text field ------------------------------------ */
+  /* The field's VALUE here is still `from:npub1…`; this is only how it draws.
+     Sized in em throughout so it follows the field into the sticky toolbar,
+     where the font shrinks — a chip measured in pixels would grow relative to
+     its own line and push the bar taller. */
+  .mention {
+    display: inline-flex; align-items: center; gap: .35em;
+    vertical-align: middle;
+    max-width: 15em;
+    padding: .1em .6em .1em .2em;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+  }
+  /* The one face measured in em rather than px (av-xs is its px fallback):
+     this pill follows the field into the sticky toolbar, where the font
+     shrinks, and a face measured in pixels would grow relative to its own
+     line and push the bar taller. No border — the pill is the frame. */
+  .mention .av-wrap { --av: 1.5em; }
+  .mention .avatar { border: 0; }
+  /* The badge hangs further off the corner here than anywhere else so the
+     digits clear the name beside them, and its ring is cut out of the pill's
+     own background rather than the card surface. */
+  .mention .score-chip {
+    right: calc(var(--chip) * -.45); bottom: calc(var(--chip) * -.3);
+    box-shadow: 0 0 0 calc(var(--chip) * .16) var(--accent-soft);
+  }
+  /* The pill's own left padding is cut for a FACE, which is round and fills a
+     rounded corner by itself. `from` / `to` is square text and needs the room
+     back — on the label rather than the pill, so a chip that leads with a face
+     keeps the tighter inset. */
+  .mention-kind { opacity: .65; font-weight: 700; margin-left: .35em; }
+  .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ---- a hashtag, inside the text field ----------------------------------
+     Deliberately NOT a .mention. A person chip replaces something unreadable
+     with a face; `#nostr` is already the word it means, so the pill is not
+     hiding anything — it is the field saying this word LEFT the search string
+     and became a tag filter. So: no avatar, no lookup, no repaint, and quieter
+     than a person — an outline rather than a filled chip, because it marks a
+     word rather than standing in for one. Same em sizing for the same reason
+     the person chip has it: the field shrinks in the sticky toolbar. */
+  .hashtag {
+    display: inline-flex; align-items: center;
+    vertical-align: middle;
+    max-width: 15em;
+    padding: .1em .55em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    background: transparent;
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
+  }
+
+  /* ---- a date, inside the text field --------------------------------------
+     An outline, like a hashtag and unlike a person: `since:2026-08-06` is
+     readable, so the pill is not standing in for it. What the pill DOES do is
+     respell it — the token is ISO because `06/08/2026` names two different days
+     to two readers, and the pill is whichever of the two this reader writes. */
+  .datepill {
+    display: inline-flex; align-items: baseline; gap: .4em;
+    vertical-align: middle;
+    padding: .1em .6em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .datepill b { font-weight: 700; opacity: .65; }
+
+  /* ---- a NIP-73 scope, inside the text field -------------------------------
+     The date pill's outline and split — the prefix bold, the value beside it —
+     because the token divides the same way: `site:` / `isbn:` / `doi:` is the
+     language's word, the value is the reader's. Unlike a date the value can be
+     a whole url, so it clips the way a person's name does: min-width 0 and an
+     ellipsis on the value span, never on the flex container, where
+     text-overflow does not reach. The token stays intact underneath — the
+     ellipsis is the drawing, the title is the truth. */
+  .scopepill {
+    display: inline-flex; align-items: baseline; gap: .15em;
+    vertical-align: middle;
+    max-width: 18em;
+    padding: .1em .6em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .scopepill b { font-weight: 700; opacity: .65; }
+  .scopepill .scope-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* A group is a scope pill that FILLED IN, because unlike `site:` or `isbn:`
+     its value was almost certainly picked rather than typed — the solid ground
+     is the field saying so, the same way a person's chip is solid and a
+     hashtag's outline is not. */
+  .grouppill { background: var(--accent-soft); border-color: transparent; }
+
+  /* ---- a group, inside the picker ---------------------------------------- */
+  /* Three things a group row can say that a person row cannot, all of them
+     about provenance rather than decoration. */
+  /* Yours: it came out of your own kind 10009, which is also the only source
+     that knows a relay url. Reads "private" for the rows that were behind the
+     encrypted half of that list — same chip, because both are equally yours,
+     and the word is the only part that differs. */
+  .group-mine {
+    margin-left: .5em; padding: .05em .45em;
+    border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    vertical-align: middle;
+  }
+  /* A host named by its own kind 0 rather than by a tagged url — a claim the
+     signing key made about itself, so it is drawn as prose while an exact url
+     keeps the `.mono` every other url on this page has. */
+  .group-host { font-style: italic; }
+  /* The id is carried by more than one group here, and an `h` filter cannot
+     tell them apart. Not an error — the search still works — so it reads as a
+     note, not a warning colour. */
+  .group-warn {
+    flex-shrink: 0; padding: .1em .5em;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    color: var(--muted); font-size: 10.5px; white-space: nowrap;
+  }
+  /* The footer about the ENCRYPTED half of a group list. Under the rows, never
+     among them: what the arrows walk is `.popup-item`, and a notice that could
+     be arrowed onto and picked would splice a group that does not exist. */
+  .group-lock { border-top: 1px solid var(--border); }
+  /* The one ACTION in the list, so it is a row like the groups above it and the
+     arrows walk onto it — it was a button outside the walk and outside the tab
+     order, which left a keyboard-only reader no way to reopen a dialog they had
+     dismissed. Tinted rather than shaped differently: it is reachable the same
+     way an option is, and only what it DOES is different. */
+  .group-unlock .row-name { color: var(--accent); }
+
+  /* ---- the calendar `since:` and `until:` open ----------------------------
+     Inside the same popup box the people picker uses — they are never open
+     together, because one caret is inside one token. Sized in px rather than
+     em: unlike the pills this is not inside the field, so it does not have to
+     shrink with it in the sticky toolbar. */
+  .cal { padding: 10px 12px 12px; }
+  .cal-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .cal-month { font-weight: 600; font-size: 13px; }
+  .cal-step {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 8px; width: 27px; height: 27px; padding: 0;
+    font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  }
+  .cal-step:hover { border-color: var(--accent); color: var(--accent); }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .cal-dow {
+    text-align: center; padding: 5px 0;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint);
+  }
+  .cal-day {
+    border: 0; background: none; color: var(--fg);
+    padding: 6px 0; border-radius: 8px;
+    font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .cal-day:hover { background: var(--surface-2); }
+  /* Today is a ring, the keyboard's day is filled: one is a landmark that is
+     always there, the other is a choice about to be made, and a reader has to
+     be able to see both at once on the day they coincide. */
+  .cal-day.today { box-shadow: inset 0 0 0 1px var(--accent-soft); color: var(--accent); }
+  .cal-day.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+  /* A future bound is legal — an event carries the created_at its author
+     claimed — so a day ahead of today is muted, not disabled and not faint:
+     half a month is usually in the future, and at --faint that half of the
+     grid reads as switched off. */
+  .cal-day.ahead { color: var(--muted); }
+  .cal-quick {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  .cal-pick {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .cal-pick:hover { border-color: var(--accent); color: var(--accent); }
+
+  .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
+  .export {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 7px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .export:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* The raw event, for whoever needs it, invisible to whoever does not. */
+  .raw { margin-top: 10px; }
+  .raw-toggle {
+    border: 0; background: none; padding: 0; cursor: pointer;
+    color: var(--faint); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .raw-toggle:hover { color: var(--muted); text-decoration: underline; }
+  .raw-body {
+    margin: 8px 0 0; padding: 10px; max-height: 320px; overflow: auto;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    font: 11px/1.5 var(--mono); color: var(--fg);
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* A nip05 is a claim until the domain agrees; the chip is the answer. */
+  .nip05 { display: inline-flex; align-items: center; gap: 5px; }
+  .n5chip {
+    display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 4px;
+    border-radius: 8px; font-size: 10px; font-weight: 800; line-height: 1;
+    background: var(--surface-2); color: var(--faint);
+  }
+  .n5chip.ok { background: #128a4b; color: #fff; }
+  .n5chip.bad { background: var(--danger); color: #fff; }
+  .n5chip.unknown { background: var(--surface-2); color: var(--muted); }
+
+  /* ---- avatars ------------------------------------------------------------ */
+  /* THE face table. Every picture of a person on this page comes out of
+     shared/avatar.js, which names a size and leaves the pixels here — one row
+     per size, rather than a width restated inside each container that happens
+     to hold a face.
+
+     Three numbers per row: `--av` is the face, `--chip` the score badge on it,
+     `--chip-text` its digits. The badge is a fraction of the face because one
+     15px badge for every size was right on a 34px result face and nearly the
+     whole of a 22px byline one — and the TEXT shrinks less than the badge,
+     because strictly proportional digits are 6px by the time the face is
+     22px, which is a smudge rather than a number.
+
+     In px like the nip05 chip, and unlike everything else drawn inside the
+     search field: a badge stuck on a face is a fixed affordance, not part of
+     the running text, and it should not follow the type down. */
+  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; --av: 34px; --chip: 15px; --chip-text: 9px; }
+  .av-xs   { --av: 20px; --chip: 10px;   --chip-text: 7.5px; }   /* the field's from:/to: pill */
+  .av-sm   { --av: 22px; --chip: 11px;   --chip-text: 7.5px; }   /* a card's byline */
+  .av-md   { --av: 30px; --chip: 13px;   --chip-text: 8.5px; }   /* a face strip */
+  .av-lg   { --av: 34px; --chip: 15px;   --chip-text: 9px; }     /* a result row, a card's own picture */
+  .av-xl   { --av: 46px; --chip: 18px;   --chip-text: 10.5px; }  /* the profile card's header */
+  .av-xxl  { --av: 64px; --chip: 24px;   --chip-text: 12px; }    /* a people grid cell */
+  /* As big as the box it was put in — the toolbar's "me" button, which is
+     pinned to the field's height rather than sized in pixels. */
+  .av-fill { --av: 100%; display: block; width: 100%; height: 100%; }
+  .score-chip {
+    position: absolute; display: none;
+    right: calc(var(--chip) * -.2); bottom: calc(var(--chip) * -.2);
+    min-width: var(--chip); height: var(--chip); padding: 0 calc(var(--chip) * .2);
+    border-radius: calc(var(--chip) / 2); background: var(--accent); color: var(--accent-fg);
+    font-size: var(--chip-text); font-weight: 800; line-height: var(--chip); text-align: center;
+    box-shadow: 0 0 0 calc(var(--chip) * .14) var(--surface);
+  }
+  .score-chip.on { display: block; }
+  .avatar {
+    width: var(--av); height: var(--av);
+    border-radius: 50%;
+    background: var(--surface-2);
+    object-fit: cover;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+  }
+  .avatar.gen { background-image: linear-gradient(140deg, hsl(var(--h) 62% 72%), hsl(calc(var(--h) + 45) 58% 60%)); }
+
+  /* ---- the kind badge, tinted by family so a mixed list stays scannable --- */
+  .kind-badge {
+    --h: 225; --s: 9%;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .055em;
+    color: hsl(var(--h) var(--s) 34%);
+    background: hsl(var(--h) var(--s) 96%);
+    border: 1px solid hsl(var(--h) var(--s) 88%);
+    border-radius: 999px;
+    padding: 1.5px 8px;
+    white-space: nowrap;
+  }
+  @media (prefers-color-scheme: dark) {
+    .kind-badge {
+      color: hsl(var(--h) var(--s) 76%);
+      background: hsl(var(--h) calc(var(--s) / 2) 17%);
+      border-color: hsl(var(--h) calc(var(--s) / 2) 26%);
+    }
+  }
+  [data-tone="people"]   { --h: 265; --s: 62%; }
+  [data-tone="note"]     { --h: 220; --s: 62%; }
+  [data-tone="article"]  { --h: 35;  --s: 68%; }
+  [data-tone="media"]    { --h: 330; --s: 58%; }
+  [data-tone="code"]     { --h: 152; --s: 48%; }
+  [data-tone="live"]     { --h: 5;   --s: 65%; }
+  [data-tone="market"]   { --h: 185; --s: 52%; }
+  [data-tone="social"]   { --h: 285; --s: 40%; }
+  [data-tone="list"]     { --h: 95;  --s: 40%; }
+  [data-tone="apps"]     { --h: 250; --s: 30%; }
+
+  /* ---- the room a chat was said in, beside the badge that says it is one ---
+     A NIP-29 chat line is a fragment of a conversation, so which conversation
+     is the context its byline was missing. It reads as a link because it is
+     one — into this page's own `group:` search — and it takes the accent
+     rather than the badge's family tint, so a scan down a mixed list separates
+     "what this is" (every badge, tinted by family) from "where it was said"
+     (one accent, only on the kinds that have an answer). It shrinks and
+     ellipsises where the badge never does: a group's name is a stranger's
+     string and the badge is one of ours — and it shrinks FASTER than the
+     author beside it, which is the whole of the `2`. Both are ellipsised text
+     with an automatic minimum of zero, so an equal shrink let a long room name
+     hold its width while the byline squeezed the author's name away to
+     nothing; who posted it outranks where they posted it. */
+  .byline .group-pill {
+    flex-shrink: 2;
+    max-width: 14em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 1.5px 8px;
+    text-decoration: none;
+  }
+  .byline a.group-pill:hover { text-decoration: underline; }
+
+  /* ---- results ------------------------------------------------------------ */
+  .results { padding: 20px 0 64px; }
+  .list-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 0 2px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+  }
+  .list-title { font-weight: 620; font-size: 14px; letter-spacing: -.01em; }
+  .list-stats { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  .result {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+    transition: border-color .12s, box-shadow .12s, transform .12s;
+  }
+  /* The lift says "click me", so it belongs only to the cards that DO open
+     something: `data-href` is the same attribute app.js navigates on, which
+     makes the promise and the behaviour one condition rather than two rules
+     that can drift. A permalink card carries none — it is already the page it
+     would open, and it used to rise under the cursor to offer that. */
+  .result[data-href] { cursor: pointer; }
+  .result[data-href]:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  /* Where j/k are. Drawn as focus is drawn a few hundred lines up — the page
+     already has one way of saying "the keyboard is here", and a second one
+     invented for this would read as a different kind of thing. It rides on
+     the same cards the lift does, since the cursor and the pointer open the
+     same page. */
+  .result.cursor { border-color: var(--border-strong); box-shadow: var(--shadow-md); outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .result-header .who { flex: 1; min-width: 0; }
+  .result-name { font-size: 16.5px; font-weight: 650; letter-spacing: -.012em; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-name a { color: inherit; text-decoration: none; }
+  .result-name a:hover { color: var(--accent); }
+  .result-display { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .byline { display: flex; gap: 7px; align-items: center; margin-bottom: 8px; }
+  .byline .dot { margin: 0 -2px; }
+  .byline .by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .byline .by-date { font-size: 12px; color: var(--faint); flex-shrink: 0; }
+  /* The date is the card's permalink — the keyboard-reachable, middle-
+     clickable half of the clickable card. It keeps the date's voice rather
+     than the link colour: it should read as a timestamp, not as a call to
+     action, and the whole card is the primary target anyway. */
+  .byline a.by-date { text-decoration: none; }
+  .byline a.by-date:hover { color: var(--accent); text-decoration: underline; }
+  .byline .dot { color: var(--border-strong); }
+  .byline .spacer { flex: 1; }
+
+  /* centered so a title-only card doesn't leave a hole beside its thumbnail */
+  .result-main { display: flex; gap: 14px; align-items: center; }
+  .result-main .text { flex: 1; min-width: 0; }
+  .result-title { font-size: 16px; font-weight: 620; letter-spacing: -.012em; line-height: 1.35; margin: 0 0 4px; }
+  .result-title a { color: inherit; text-decoration: none; }
+  .result-title a:hover { color: var(--accent); }
+  .result-body { font-size: 13.5px; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .result-body.muted { color: var(--muted); }
+  .result-body.clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
+  .thumb {
+    width: 92px; height: 92px; flex-shrink: 0;
+    object-fit: cover; border-radius: 10px;
+    background: var(--surface-2); border: 1px solid var(--border);
+  }
+  /* An article's image is a COVER — a wide banner an author chose the framing
+     of — not an avatar. Square-cropped it lost a third of every one from each
+     side, and centred it left the title floating beside the middle of the
+     picture instead of starting level with it. */
+  /* `height: auto` is load-bearing: an explicit height BEATS aspect-ratio, and
+     .thumb's square one is inherited here, so without it the ratio below is
+     ignored and every cover draws 168x92. */
+  .thumb.cover { width: 168px; height: auto; aspect-ratio: 16 / 10; align-self: flex-start; }
+
+  .props { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; margin: 10px 0 0; }
+  .props dt { color: var(--faint); }
+  .props dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .props .mono { font-family: var(--mono); font-size: 12px; }
+  .props a { color: var(--accent); text-decoration: none; }
+  .props a:hover { text-decoration: underline; }
+
+  /* ---- the hero's feed ---------------------------------------------------
+     The same cards as a results list, under the landing page's search box.
+     It reuses .list-head, so the only thing new here is the room it needs and
+     the link out of it — and the hero gives some of its own height back, since
+     a feed nobody can see without scrolling is a feed nobody reads. */
+  .feed-preview { padding: 26px 0 56px; }
+  body.has-feed-preview .hero { padding-top: 7vh; }
+  .feed-more { font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .feed-more:hover { text-decoration: underline; }
+  /* The feed sends no NIP-50 search string at all, so the three controls behind
+     Filters have nothing to ride on and go. The chips stay: `kinds` is a field
+     of the plain read this view DOES send, so they narrow the feed the same way
+     they narrow a search — and the whole row used to go with the panel, which
+     left the one working control off the page for the sake of the three that
+     could not work on it. Which is why this names the PANEL and not the row it
+     sits in: the Syntax button beside it explains the search box, and that box
+     is on this page too — every prefix in the sheet works from here, they just
+     leave the feed for the results the moment one is submitted. */
+  body.feed #adv { display: none; }
+
+  .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
+  .error { color: var(--danger); }
+  .empty b { display: block; color: var(--fg); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+
+  /* ---- entity (permalink) pages and the richer card bodies ---------------- */
+  /* Links inside a card body follow the page's link voice, not the browser's
+     default blue underline — the score card's "scores <name>" was the one
+     place that default leaked through. */
+  .result-body a { color: var(--accent); text-decoration: none; }
+  .result-body a:hover { text-decoration: underline; }
+  /* A summary followed by the full body (the article permalink) needs air
+     between the two, or the muted line reads as the body's first paragraph. */
+  .result .result-body + .result-body { margin-top: 10px; }
+  /* Who a reply answers, above the words it answers with. Quiet — this is
+     context for the text, not the text — but the person's name carries the
+     link voice, because it IS a link and it is the one on the card most worth
+     following. One line: a long display name truncates rather than pushing
+     the body down. */
+  .reply-line { font-size: 12.5px; color: var(--muted); margin: 0 0 6px;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reply-line a { color: var(--accent); text-decoration: none; font-weight: 550; }
+  .reply-line a:hover { text-decoration: underline; }
+  .reply-line a.mono { font-family: var(--mono); font-size: 12px; font-weight: 400; }
+  /* The permalink is a destination: its title carries the page and earns a
+     size the list variant deliberately doesn't have. */
+  .result.full .result-title { font-size: 20px; }
+  .result.full .result-name { font-size: 20px; }
+  .entity-head { display: flex; align-items: center; gap: 12px; padding: 16px 2px 10px; font-size: 13px; }
+  /* Where a hint-fetched event came from, and this relay's verdict on it —
+     or, in .warn, that the reader chose to step outside their lens. */
+  .prov { margin: 0 2px 10px; font-size: 12.5px; color: var(--muted); }
+  .prov .mono { font-family: var(--mono); font-size: 11.5px; }
+  .prov.warn { color: var(--warn); }
+  /* The entity page narrates its wait; the pulse says "working", the text
+     says on what. Reduced-motion zeroes the pulse via the global rule. */
+  .entity-stage { text-align: center; color: var(--faint); font-size: 12.5px; padding: 2px 0 18px;
+                  animation: stage-pulse 1.4s ease-in-out infinite alternate; }
+  @keyframes stage-pulse { from { opacity: .45; } to { opacity: 1; } }
+  .reveal-btn { margin-top: 14px; border: 1px solid var(--border-strong); background: var(--surface);
+                color: var(--fg); border-radius: 8px; padding: 7px 16px; font: inherit; font-size: 13px; cursor: pointer; }
+  .reveal-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .entity-head a { color: var(--muted); text-decoration: none; white-space: nowrap; }
+  .entity-head a:hover { color: var(--accent); }
+  .entity-head .ident { flex: 1; text-align: center; color: var(--faint); font: 12px var(--mono);
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .byline a.by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); text-decoration: none;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .byline a.by-name:hover { color: var(--accent); }
+  .embed { margin: 4px 0 10px; }
+  .embed img, .embed video { display: block; max-width: 100%; max-height: 70vh; border-radius: 10px;
+                             border: 1px solid var(--border); background: var(--surface-2); }
+  .embed audio { width: 100%; }
+  /* A video plays in the results list, not just on its permalink — the frame
+     IS the card for kinds 21/22 (cards/media.js says why). The renderer puts
+     the event's `dim` on this box as an aspect-ratio plus the max-width that
+     the cap below implies, so the space is reserved at the right SHAPE before
+     the first byte arrives and a portrait video does not read as a black band
+     with a slot in it. The two caps are the card's two depths: a list of
+     videos still has to scroll, a permalink is a destination. */
+  /* Centred, because a portrait video is narrower than the card and the text
+     around it is not: left-aligning the frame hangs the caption off the side
+     of a tall picture. Auto margins do it in both modes — the sized frame is
+     a block clamped by max-width, the unsized one is fit-content. */
+  .media-frame { position: relative; display: flex; justify-content: center; margin: 4px auto 10px;
+                 width: fit-content; max-width: 100%; max-height: 360px; overflow: hidden; border-radius: 12px;
+                 border: 1px solid var(--border); background: var(--surface-2); }
+  .result.full .media-frame { max-height: 70vh; }
+  .media-frame video, .media-frame img { display: block; max-width: 100%; max-height: inherit; }
+  /* `.sized` is the frame that knows its shape: it takes the width its
+     aspect-ratio and the cap above imply, and the video fills it. Without a
+     `dim` there is no shape to reserve, so the frame hugs whatever the video
+     turns out to be instead of standing a full-width black band in the feed
+     until the metadata says otherwise. */
+  .media-frame.sized { width: auto; }
+  .media-frame.sized video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  /* `contain`, like the video: the frame IS the picture's own aspect ratio, so
+     the two agree and nothing is letterboxed — unless the `dim` tag lied, and
+     then a bar is the honest outcome. `cover` would silently crop a stranger's
+     photo to fit a number the same stranger wrote down wrong. */
+  .media-frame.sized img { width: 100%; height: 100%; object-fit: contain; }
+  /* An album: NIP-68 gives a picture post one imeta per image. Square cells,
+     because a grid of mixed aspect ratios reads as a mistake, and the frame
+     above is what a single picture gets instead. */
+  .media-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+                margin: 4px auto 10px; max-width: 460px; }
+  .media-grid img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+                    border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); }
+  /* "…and 2 more" belongs to the grid above it, so it sits under it rather
+     than at the card's left edge, where it read as the start of the caption. */
+  .media-grid + .muted-note { text-align: center; margin-bottom: 8px; }
+  /* The length, where every video player in the world puts it — but out of the
+     controls' way, which own the bottom edge the moment the card is hovered. */
+  .media-chip { position: absolute; top: 8px; right: 8px; padding: 1px 7px; border-radius: 999px;
+                background: rgba(0,0,0,.72); color: #fff; font-size: 11.5px; font-weight: 600;
+                letter-spacing: .02em; pointer-events: none; }
+  .codeblock { margin: 6px 0 0; padding: 12px; overflow: auto; max-height: 60vh;
+               background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+               font: 12px/1.5 var(--mono); white-space: pre; }
+  /* ---- code & git ---------------------------------------------------------
+     A file's name belongs ON the file — a bar across the top of the block, the
+     way every code host draws one. It used to be a props row reading "name",
+     which is a fact ABOUT the card rather than a label on the thing. */
+  .code-head { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; padding: 6px 12px;
+               background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0;
+               border-radius: 8px 8px 0 0; font-size: 12px; }
+  .code-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               font-family: var(--mono); font-weight: 620; }
+  .code-lang { margin-left: auto; flex: none; color: var(--faint); }
+  .codeblock.headed { margin-top: 0; border-radius: 0 0 8px 8px; }
+  /* A diff's two voices, as TEXT colour and never as a filled row: the block
+     scrolls sideways, so a background would stop at the fold and a wide diff
+     would show green lines going grey halfway across. */
+  .codeblock.diff .d-add { color: var(--add); }
+  .codeblock.diff .d-del { color: var(--del); }
+  .codeblock.diff .d-hunk { color: var(--accent); }
+  .codeblock.diff .d-file { color: var(--muted); font-weight: 620; }
+  /* How big the change is, in the one line a reviewer reads first. */
+  .diffstat { display: flex; gap: 12px; margin: 6px 0 0; font-size: 12px; color: var(--faint);
+              font-family: var(--mono); }
+  .diffstat .d-add { color: var(--add); }
+  .diffstat .d-del { color: var(--del); }
+  /* Which repository an event belongs to, and who keeps it — context above the
+     words, in the reply line's quiet voice, because it is the same kind of
+     thing: where this card sits, not what it says. */
+  .repo-line, .meta-line { font-size: 12.5px; color: var(--muted);
+                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-line { margin: 0 0 6px; }
+  .meta-line { margin: 8px 0 0; }
+  .repo-line a, .meta-line a { color: var(--accent); text-decoration: none; font-weight: 550; }
+  .repo-line a:hover, .meta-line a:hover { text-decoration: underline; }
+  .repo-line .mono, .meta-line .mono { font-family: var(--mono); font-size: 12px; }
+  /* A ref carries its commit: same chip, the id trailing in the quiet voice. */
+  .ref-chip .mono { margin-left: 7px; color: var(--faint); font-family: var(--mono); }
+  .ref-chip.head { border-color: var(--border-strong); color: var(--fg); }
+  /* ---- what a permalink shows under its card (web/related.js) -------------
+     A repository's issues, a patch's replies: the same cards a search draws,
+     under headings that count them. The rule wants to be visible — everything
+     below it is ABOUT the card above, not more of it. */
+  .related { margin-top: 22px; border-top: 1px solid var(--border); }
+  .rel-section + .rel-section { margin-top: 20px; }
+  .rel-section .section-head { margin: 18px 2px 8px; }
+  /* The verdict on an issue or a patch — the one thing a reader opening one
+     came to find out, so it sits against the card rather than in the list. */
+  .resolution { display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+                margin: 14px 2px 0; font-size: 13px; color: var(--muted); }
+  .resolution a { color: var(--accent); text-decoration: none; }
+  .resolution a:hover { text-decoration: underline; }
+  .quote { margin: 0 0 6px; padding: 8px 12px; border-left: 3px solid var(--accent);
+           background: var(--surface-2); border-radius: 0 8px 8px 0; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .face-strip { display: flex; align-items: center; margin-top: 8px; }
+  .face-strip .av-wrap + .av-wrap { margin-left: -9px; }
+  /* Overlapping faces need a rim to read as separate ones. */
+  .face-strip .avatar { box-shadow: 0 0 0 2px var(--surface); }
+  .face-strip .face-more { margin-left: 8px; font-size: 12px; color: var(--faint); }
+  /* The people a LIST holds — its contents, not a decoration on it, so they
+     get a cell each instead of a row of overlapping thumbnails.
+
+     How many columns is the WIDTH's answer — it was `repeat(3, …)` at first,
+     which put ~250px between two 64px faces on a laptop and read as three
+     separate things per row rather than as one list. But the count STEPS
+     through divisors of the cell caps (base.js: 6 and 24) instead of flowing
+     freely, and that is the whole trick: a grid that ends in a ragged row ends
+     in an orphan, and the last cell here is the `+1.2k more` count. `auto-fill`
+     with a minimum cell was the first answer and it put that count alone on a
+     second row at every width where the columns did not divide the cap — 5 of
+     them, at ~700px. 6 and 3 divide both caps, so every row is full at every
+     width and the count always closes one.
+
+     Free auto-fill would also buy nothing above `.page`'s 780px: the card
+     cannot grow past it, so there is no wide end for the columns to keep
+     filling. `minmax(0, 1fr)` on the cells (with `min-width: 0` below) is what
+     lets a long name ellipse rather than widen its column — a bare `1fr` is
+     min-content, and one long name would push the others out.
+
+     Two depths, two densities, off the same `full` class the card frame
+     carries: a preview is one card in a list of them and keeps to a row or two
+     of smaller faces, while the permalink IS the page about this list. */
+  .people-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+                 gap: 14px 8px; margin-top: 10px; }
+  .people-grid.full { gap: 18px 10px; }
+  .person-cell { display: flex; flex-direction: column; align-items: center; gap: 7px;
+                 min-width: 0; text-align: center; text-decoration: none; color: inherit; }
+  .person-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 font-size: 12px; font-weight: 600; line-height: 1.25; }
+  .people-grid.full .person-name { font-size: 13px; }
+  /* The npub fallback is deliberately quieter than a name: it is the absence
+     of one, and it should not be the loudest text in the grid. */
+  .person-name.mono { font-family: var(--mono);
+                      font-size: 11px; font-weight: 500; color: var(--muted); }
+  .people-grid.full .person-name.mono { font-size: 11.5px; }
+  a.person-cell:hover .person-name { color: var(--accent); }
+  /* Who did NOT fit, as the last cell: the count lands where the eye already
+     is and the row stays rectangular, where a line of text under the grid read
+     as a caption for whoever happened to be last. Sized off `--av` so it tracks
+     the faces beside it at either depth. */
+  .person-cell.more .person-name { color: var(--faint); font-weight: 500; }
+  .more-face { display: flex; align-items: center; justify-content: center;
+               background: var(--surface-2); border-style: dashed; color: var(--muted);
+               font-size: calc(var(--av) * .26); font-weight: 700; letter-spacing: -.02em; }
+  /* Its own breakpoint, below the page's: six columns hold their shape down to
+     ~70px each, which is a good deal narrower than where the FACES shrink. The
+     step can only be to a divisor of the caps, so it is a halving — and the
+     max-width is what stops three columns from sprawling to 150px each on the
+     wide side of it, which is the same "one list or three things" complaint
+     that started this, one breakpoint down. */
+  @media (max-width: 525px) {
+    .people-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 400px; }
+  }
+  .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .relay-list .mono { font-family: var(--mono); font-size: 12px; }
+  .relay-list a { color: var(--accent); text-decoration: none; }
+  .muted-note { color: var(--faint); font-size: 11.5px; }
+  .emoji-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .emoji-grid img { width: 26px; height: 26px; object-fit: contain; }
+  .status-pill { display: inline-block; vertical-align: middle; margin-left: 6px; padding: 1px 8px;
+                 border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: .04em; background: var(--surface-2); color: var(--muted); }
+  .status-pill.live { background: var(--danger); color: #fff; }
+  /* the NIP-52 rsvp answers, which are the whole content of a 31925 */
+  .status-pill.accepted { background: var(--accent); color: var(--accent-fg); }
+  .status-pill.declined { background: var(--danger); color: #fff; }
+  .status-pill.tentative { background: var(--warn); color: #fff; }
+  /* The NIP-34 verdicts. `--accent-fg` is the label colour rather than #fff
+     because these fills invert with the theme — it is the token for "the text
+     that reads on a saturated background here", light on the dark fills this
+     palette uses in day mode and dark on the pale ones it uses at night. */
+  .status-pill.open { background: var(--add); color: var(--accent-fg); }
+  .status-pill.merged { background: var(--accent); color: var(--accent-fg); }
+  .status-pill.closed { background: var(--del); color: var(--accent-fg); }
+  /* A pill that LEADS its line, rather than trailing a title. */
+  .status-pill.lead { margin-left: 0; margin-right: 4px; }
+  /* …and the row a card falls back to when it has pills but no title at all. */
+  .pill-row { margin: 0 0 4px; }
+  .pill-row .status-pill:first-child { margin-left: 0; }
+  .price-line { margin: 2px 0 6px; font-size: 15px; font-weight: 650; }
+  .rank-big { margin: 2px 0; font-size: 28px; font-weight: 700; color: var(--accent); }
+  /* what a list POINTS AT — e tags to notes, a tags to addressable entities */
+  .ref-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .ref-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ref-list a { color: var(--accent); text-decoration: none; }
+  .ref-list a:hover { text-decoration: underline; }
+  .ref-list .mono { font-family: var(--mono); font-size: 12px; }
+  /* hashtags, muted words, git branches, supported NIPs — short values that
+     read as a wrapped row, never as a table of one-word rows */
+  /* NOT `.chip` — that is the filter tab above, and this rule sits later in
+     the sheet, so sharing the name restyled the whole filter bar. */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .tag-chip { padding: 1.5px 9px; border-radius: 999px; font-size: 11.5px; max-width: 100%;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+              color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
+  .tag-chip.more { color: var(--faint); background: none; border-color: transparent; }
+  /* A hashtag chip is a link to the search for it. It keeps the chip's quiet
+     voice until it is hovered, where it picks up the page's accent — the same
+     bargain the byline date makes: a real anchor that does not shout. */
+  a.tag-chip { text-decoration: none; }
+  a.tag-chip:hover { color: var(--accent); border-color: var(--accent); }
+  /* a list at permalink depth names each section it holds */
+  .list-section + .list-section { margin-top: 12px; }
+  .section-head { font-size: 11.5px; font-weight: 600; text-transform: uppercase;
+                  letter-spacing: .04em; color: var(--faint); }
+  .react-glyph { font-size: 18px; vertical-align: middle; }
+  .react-emoji { width: 22px; height: 22px; vertical-align: middle; object-fit: contain; }
+
+  /* ---- loading skeletons -------------------------------------------------- */
+  .skel-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; margin-bottom: 10px; }
+  .skel-row { display: flex; gap: 11px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .skel-line, .skel-dot {
+    background: var(--skel); background-size: 400% 100%;
+    animation: shimmer 1.3s linear infinite;
+    border-radius: 5px; height: 10px;
+  }
+  .skel-card .skel-line + .skel-line { margin-top: 9px; }
+  .skel-dot { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; }
+  @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  /* ---- searching: the hero collapses into a sticky toolbar ---------------- */
+  body.searching .hero {
+    position: sticky; top: 0; z-index: 20;
+    padding: 10px 0 9px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  @supports (backdrop-filter: blur(8px)) {
+    body.searching .hero { background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(12px); }
+  }
+  body.searching .hero-inner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 16px;
+    row-gap: 9px;
+  }
+  body.searching .brand { font-size: 15.5px; gap: 7px; margin: 0; }
+  body.searching .brand .full { display: none; }
+  body.searching .tagline { display: none; }
+  body.searching #q { padding-top: 9px; padding-bottom: 9px; font-size: 14.5px; }
+  body.searching .search-icon { left: 15px; width: 15px; height: 15px; }
+  body.searching .bar { grid-column: 1 / -1; margin-top: 0; }
+  body.searching .whoami { grid-column: 1 / -1; margin-top: 0; }
+  /* Every row below the first has to say `1 / -1`, and the readiness panel is
+     the widest of them. Auto-placed, it lands in column 1 — the `auto` track
+     the brand sits in — and a track sized to a card of prose takes the whole
+     line, leaving the `minmax(0, 1fr)` beside it to collapse to nothing. The
+     symptom is the SEARCH FIELD shrinking to a stub the moment the panel
+     appears, which is why this rule reads like a duplicate of the two above
+     and is not one. */
+  body.searching .readiness { grid-column: 1 / -1; margin-top: 0; }
+
+  @media (max-width: 620px) {
+    .hero { padding-top: 7vh; }
+    /* the chip row takes the whole line here, so the button wraps below it at
+       the LEFT — and a panel hung off its right edge would run off screen */
+    .adv-panel { left: 0; right: auto; }
+    /* the chip row scrolls sideways; fade its right edge so that reads as more */
+    .chips {
+      flex: 1 1 100%; margin: 0 -16px; padding: 0 16px 1px;
+      mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    }
+    body.searching .hero-inner { grid-template-columns: minmax(0, 1fr); }
+    body.searching .brand { display: none; }
+    .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
+    /* A 64px face wants a ~116px column, which is a third of a phone. */
+    .av-xxl { --av: 52px; --chip: 20px; --chip-text: 11px; }
+    .people-grid { gap: 12px 6px; }
+    .people-grid.full { gap: 14px 8px; }
+    .thumb { width: 72px; height: 72px; }
+    /* .thumb.cover outranks .thumb whatever the viewport, so the narrow frame
+       has to be named too or the cover keeps its desktop width here. Width
+       ONLY: the ratio above is what makes the covers read as a set, and it is
+       the same set on a phone. */
+    .thumb.cover { width: 116px; }
+    .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
+    .props dt { margin-top: 6px; font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="page hero-inner">
+    <a class="brand" href="/" aria-label="SearchOverTrust — home">
+      <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" />
+        <circle cx="4.2" cy="6.4" r="2.1" />
+        <circle cx="4.2" cy="17.6" r="2.1" />
+        <circle cx="19.8" cy="12" r="2.1" />
+        <!-- The third link was `M14.9 12h2.8`, which draws the identical line.
+             Spelled as an endpoint like the other two so favicon.svg can carry
+             this `d` VERBATIM and RelayFaviconTest can compare the two by
+             string — the mark and the tab icon drifting apart is exactly the
+             thing a generated icon invites. -->
+        <path d="M6.1 7.5 9.4 10.2M6.1 16.5 9.4 13.8M14.9 12 17.7 12" stroke-linecap="round" />
+      </svg>
+      <span>Search<em>Over</em>Trust</span>
+    </a>
+    <p class="tagline">Nostr search, ranked by your web of trust</p>
+
+    <div class="search-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+        <circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" stroke-linecap="round" />
+      </svg>
+      <!--
+        A contenteditable, not an <input>: `from:npub1…` renders as a face and
+        a name, and there is no way to put a picture inside an input's value.
+        web/searchfield.js gives back everything the input gave for free —
+        `value`, `select()`, the placeholder, single-line behaviour, paste as
+        text — so app.js still just reads $q.value.
+      -->
+      <!-- autocorrect/autocapitalize off for the same reason spellcheck is:
+           a phone that "fixes" a 63-character npub, or capitalises the `from:`
+           that starts an empty field, is editing a token, not a sentence.
+
+           inputmode AND enterkeyhint, both saying "search", because they are
+           answered by different halves of the keyboard: enterkeyhint asks for
+           the action key's LABEL, while inputmode is what an Android IME reads
+           to pick the action at all — and a contenteditable defaults to a
+           newline key, since a div is somewhere a line break can go. It has
+           nowhere to go here (`white-space: pre`, one line by construction),
+           and searchfield.js refuses the break itself for the keyboards that
+           send one anyway. -->
+      <div id="q" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off"
+           data-placeholder="Search Nostr&hellip;" enterkeyhint="search" inputmode="search"
+           role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list"
+           aria-multiline="false" aria-label="Search"></div>
+      <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
+      <button id="me" type="button" class="me" aria-label="Sign in"></button>
+      <div id="popup" class="popup" role="listbox" aria-label="Quick results"></div>
+      <!-- The other popup: who `from:`/`to:` means, or which day `since:`/
+           `until:` does. Never open at the same time as the one above, or as
+           each other — they share this box and the arrow keys, and the label
+           says which of the two is currently in it. -->
+      <div id="mentions" class="popup" role="listbox" aria-label="People"></div>
+    </div>
+
+    <div class="bar">
+      <div id="chips" class="chips" role="tablist" aria-label="Filter by kind"></div>
+      <div class="bar-right">
+        <!--
+          The syntax sheet's button, and it comes FIRST: this row sits under
+          the search box, and what can be typed into that box is the question
+          somebody has before they have any question about sorting. It borrows
+          the disclosure's own class rather than a look of its own — see the
+          .help-sheet block in the styles.
+
+          The MARK ALONE, where "Filters" beside it carries a word, and that is
+          measured rather than preferred. This row is 748px at the page's widest
+          (.page caps at 780), the kind chips are ~598 of it, and a labelled
+          button here made the row wrap — which costs a permanent 38px off the
+          top of every results page, since the bar is sticky once results are
+          up. A question mark in a circle is the one icon that needs no label
+          to be read as help; `aria-label` is what says it to everybody else.
+
+          The mark alone fits with nothing to spare, and that is fine: a ninth
+          chip, or a font whose chips measure wider, wraps this row exactly as
+          it already wraps on a phone — a line, not a broken control.
+
+          `aria-haspopup="dialog"` because the sheet is not drawn beside the
+          button like the panel next to it: the press moves focus into a modal
+          somewhere else entirely, and a screen reader should say so first.
+        -->
+        <button id="helpbtn" type="button" class="adv-btn" aria-haspopup="dialog" aria-label="Search syntax"
+                title="Search syntax — people, days, topics, and the tokens that rank the answer. Shortcut: ?">
+          <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M9.4 9.4a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .8-1 1.5v.4" stroke-linecap="round" />
+            <path d="M12 16.9h.01" stroke-linecap="round" stroke-width="2.3" />
+          </svg>
+        </button>
+        <!-- A <details>, not a button and a div: the open/closed state, the
+             keyboard and the ARIA are the element's, and this page does not
+             pay for them twice. app.js only dismisses it and keeps the count
+             on the button. -->
+        <details id="adv" class="adv">
+          <summary id="advbtn" class="adv-btn" title="Sorting, whose web of trust ranks the page, and whether unranked results are shown">
+            <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke-linecap="round" />
+              <circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" />
+            </svg>
+            <span>Filters</span>
+            <span id="advcount" class="adv-count" hidden></span>
+          </summary>
+          <div class="adv-panel">
+            <!-- Every option below is a NIP-50 `sort:` token app.js appends to
+                 the search string, so this list is the store's grammar and
+                 nothing more — a new one costs no code on this side.
+                 "Newest" is the odd one out and worth the line: the other five
+                 all order by how WELL something matched — relevance, the
+                 author's trust either way up, followers, text alone — while
+                 `sort:recent` does not consult match quality at all. The same words recall the same set and it
+                 comes back `created_at desc` like a feed — a trigram-level hit
+                 from a minute ago above a perfect one from yesterday. What that
+                 does NOT turn off is the other two controls in this panel: the
+                 lens and the trust floor still GATE the set, they have just
+                 stopped ordering it. -->
+            <label class="adv-row">
+              <span class="adv-label">Sort</span>
+              <select id="sort" class="select" title="NIP-50 sort: extension">
+                <option value="">Best match</option>
+                <option value="recent">Newest</option>
+                <option value="rank">Most trusted</option>
+                <option value="rank:asc">Least trusted</option>
+                <option value="followers">Followers</option>
+                <option value="text">Text only</option>
+              </select>
+            </label>
+            <div class="adv-row adv-stack" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes. Only pubkeys with a kind 10040 can rank anything.">
+              <span class="adv-label">Ranking as</span>
+              <span id="obsbox" class="obsbox">
+                <span id="obscurrent" class="obscurrent">me</span>
+                <input id="obsfilter" class="obsfilter" placeholder="view as…" autocomplete="off" aria-label="View as somebody else" />
+                <button id="obsreset" class="obsreset" type="button" title="Back to your own web of trust">×</button>
+                <ul id="obslist" class="obslist"></ul>
+              </span>
+            </div>
+            <label class="adv-row" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
+              <span class="adv-label">Include spam</span>
+              <span class="switch">
+                <input id="spam" type="checkbox" />
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              </span>
+            </label>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div id="whoami" class="whoami" aria-live="polite"></div>
+    <!--
+      Whether this relay can RANK for the reader who just signed in. Signing in
+      switches search to their web of trust and the store treats that lens as a
+      filter, so a reader whose trust chain has not been mirrored here gets an
+      empty ranked search — and until this panel there was nothing on screen
+      that could tell that apart from a broken relay. web/readiness.js fills it,
+      and leaves it hidden for everyone whose chain is complete.
+    -->
+    <div id="readiness" class="readiness" aria-live="polite" hidden></div>
+  </div>
+</header>
+
+<main class="page">
+  <!--
+    The hero's own feed: the three newest content cards, under the box, for a
+    signed-in reader — and "see more" opens /?feed=1, a hundred of them. Its own
+    element rather than a mode of #results, because it belongs to the landing
+    page: it is on screen exactly when the results are not, and the two would
+    otherwise be one container taking turns clearing the other's state.
+  -->
+  <section id="feed-preview" class="feed-preview" hidden aria-label="Latest"></section>
+  <div id="results" class="results" hidden aria-live="polite"></div>
+</main>
+
+<!--
+  What the search box understands, in one sheet.
+
+  It lives HERE, at the end of the body, rather than beside the button that
+  opens it: a modal dialog is painted in the top layer, so its position in the
+  markup decides nothing about where it appears — while inside `.hero-inner` it
+  would be one more child of that layout every time it opened (a flex column
+  while the page is idle, a grid once results are up), sized against tracks
+  that exist for the brand and the search field.
+
+  The sheet is TWO languages, split into sections in that order, because the
+  halves fail differently and a reader who confuses them writes a query that
+  quietly means nothing:
+
+    - The prefixes are this PAGE's. web/shared/query.js lifts them out of the
+      string and buildFilters turns them into ordinary NIP-01 filter fields —
+      `authors`, `#p`, `since`, `until`, `#t`, `#h`, `#i`/`#I` — so the store
+      never sees the word `from:` at all. That is why a mistyped one is not an
+      error anywhere: it stays in the text and is searched for as words.
+    - Everything under "Ranking and order" is NIP-50's, passed through to the
+      store verbatim. Three of those four are exactly what the Filters panel
+      writes for you, which is said here rather than left for somebody to
+      discover by diffing two queries.
+
+  Every prefix below is checked against the tokenizer by
+  web/src/test/js/help.test.mjs, in both directions: a family query.js learns and
+  this sheet does not name fails there, and so does a token named here that
+  query.js would leave sitting in the text as words. The sort values are held
+  to the Filters menu's <option> list the same way. A help page that has
+  drifted from the parser is worse than no help page — it is a page that reads
+  like an answer.
+-->
+<dialog id="help" class="help-sheet" aria-labelledby="help-title">
+  <div class="help-head">
+    <h2 id="help-title">Search syntax</h2>
+    <p>Type words. These narrow what comes back.</p>
+    <button id="helpclose" type="button" class="help-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="help-body">
+
+    <section class="help-sec">
+      <h3>Words</h3>
+      <dl class="help-rows">
+        <dt><code class="tok">bitcoin mining</code></dt>
+        <dd>Both words, anywhere in the event.</dd>
+        <dt><code class="tok">"exact phrase"</code></dt>
+        <dd>Those words, in that order.</dd>
+        <dt><code class="tok">-word</code></dt>
+        <dd>Everything <b>except</b> results with that word.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>People</h3>
+      <p>Start typing a name after the colon and pick from the list — the page writes the key.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">from:<em>npub1…</em></code></dt>
+        <dd>Only what that person wrote.</dd>
+        <dt><code class="tok">to:<em>npub1…</em></code></dt>
+        <dd>Only events that mention them.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Days</h3>
+      <p>Whole days, in your own timezone, and a calendar opens as you type one.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">since:<em>2026-08-06</em></code></dt>
+        <dd>Written that day or after.</dd>
+        <dt><code class="tok">until:<em>2026-08-06</em></code></dt>
+        <dd>Written that day or before — the whole of it, midnight to midnight.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Topics and groups</h3>
+      <dl class="help-rows">
+        <dt><code class="tok">#<em>hashtag</em></code></dt>
+        <dd>Events tagged with that topic, plus the labels and the comments written on it.</dd>
+        <dt><code class="tok">group:<em>id</em></code></dt>
+        <dd>A NIP-29 relay group. Type a few letters and pick one; the ids are not memorable.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Things people commented on</h3>
+      <p>Comments about something that lives outside Nostr, found by what it is (NIP-73).</p>
+      <dl class="help-rows">
+        <dt><code class="tok">site:<em>example.com/page</em></code></dt>
+        <dd>A web page.</dd>
+        <dt><code class="tok">isbn:<em>9780593330005</em></code></dt>
+        <dd>A book.</dd>
+        <dt><code class="tok">doi:<em>10.1000/182</em></code></dt>
+        <dd>A paper.</dd>
+        <dt><code class="tok">geo:<em>u4pruyd</em></code></dt>
+        <dd>A place, as a geohash.</dd>
+        <dt><code class="tok">isan:<em>0000-0000-401A-0000-7</em></code></dt>
+        <dd>A film.</dd>
+        <dt><code class="tok">podcast:guid:<em>guid</em></code></dt>
+        <dd>A podcast feed…</dd>
+        <dt><code class="tok">podcast:item:guid:<em>guid</em></code></dt>
+        <dd>…one episode of it…</dd>
+        <dt><code class="tok">podcast:publisher:<em>guid</em></code></dt>
+        <dd>…or everything from its publisher.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Ranking and order</h3>
+      <p>These reach the relay as typed. The <b>Filters</b> button writes every one of them except the last.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">sort:recent</code></dt>
+        <dd>Newest first, ignoring how well anything matched.</dd>
+        <dt><code class="tok">sort:rank</code></dt>
+        <dd>Most trusted authors first. <code class="tok">sort:rank:asc</code> turns it upside down.</dd>
+        <dt><code class="tok">sort:followers</code></dt>
+        <dd>Most followed authors first.</dd>
+        <dt><code class="tok">sort:text</code></dt>
+        <dd>Text match alone, trust not consulted. With none of these you get the default: best match.</dd>
+        <dt><code class="tok">observer:<em>hex pubkey</em></code></dt>
+        <dd>Rank through <b>that</b> pubkey's web of trust instead of your own — the 64-character hex key, since an
+            <code class="tok">npub1…</code> here is ignored rather than refused. Signing in does this for you, and
+            "Ranking as" under Filters writes it.</dd>
+        <dt><code class="tok">include:spam</code></dt>
+        <dd>Lift the trust floor: also show what your web of trust does not rank.</dd>
+        <dt><code class="tok">filter:rank:gte:<em>50</em></code></dt>
+        <dd>Raise it instead — drop authors ranking below that, 0 to 100.</dd>
+      </dl>
+    </section>
+
+    <p class="help-note">
+      Everything above combines, in any order: <code class="tok">#nostr from:<em>npub1…</em> since:2026-01-01 sort:recent</code>.
+      The prefixes are filters, not words — they are lifted out of the query before the text is matched. The rest is
+      <a href="https://github.com/nostr-protocol/nips/blob/master/50.md" target="_blank" rel="noopener">NIP-50</a>,
+      as this relay extends it.
+    </p>
+  </div>
+</dialog>
+
+</body>
+</html>

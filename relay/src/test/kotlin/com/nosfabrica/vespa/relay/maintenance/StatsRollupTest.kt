@@ -102,8 +102,17 @@ class StatsRollupTest {
 
     private fun rollup(queries: FakeQueries) = StatsRollup(queries, relayUrl = "wss://relay.example", nowSeconds = { NOW })
 
-    /** The members that are the document's envelope rather than one of its sections. */
-    private fun sectionsOf(doc: JsonObject) = doc.keys - setOf("schema", "relay", "generatedAt", "scope", "countedAs", "timezone", "tiers")
+    /**
+     * The members that are the document's envelope rather than one of its
+     * sections.
+     *
+     * `title` and `counted` joined it when one markup file started serving all
+     * three services: the heading, the tab and the line about what the numbers
+     * cover cannot be in the page any more, because the page does not know
+     * which service is serving it. They describe the document, so they are
+     * envelope — a section is a thing a panel reads.
+     */
+    private fun sectionsOf(doc: JsonObject) = doc.keys - setOf("schema", "relay", "title", "generatedAt", "scope", "counted", "countedAs", "timezone", "tiers")
 
     // ---- the tiering itself -------------------------------------------------
 

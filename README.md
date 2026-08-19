@@ -169,7 +169,8 @@ guards that make absence trustworthy enough to act on.
 
 ## Operator pages
 
-Served on the relay's own port, next to the search UI:
+Served on the relay's own port, next to the search UI (the mirror serves its
+own, on its own port — see below):
 
 - **`/observer_stats.html`** — every kind-10040 observer, with its providers'
   kind-30382 score counts here and on the relay its 10040 names, side by side.
@@ -202,6 +203,34 @@ Served on the relay's own port, next to the search UI:
   author's own relay's unfiltered total measured 31,118 of 89,485 and read as
   *35% mirrored* on a mirror that was missing nothing, the entire gap being
   kinds — reactions, DMs, gift wraps — that no stream here ever asks for.
+
+And on the mirror's own port (`SYNC_STATUS_PORT`, 7778) when the `sync` profile
+is up:
+
+- **`/` on the sync service** — what the mirror is doing right now: which relays
+  each stream is riding and what each leg has delivered, what the background
+  passes are measuring, and how far back the walk has reached per stream.
+  Charted from that service's own **`GET /stats.json`**.
+
+  It is served by the process doing the work, and that is the point rather than
+  a detail. These were two cards on the relay's page, drawn from JSON files the
+  mirror wrote to a shared volume — an arrangement that could not answer "is the
+  mirror running", because a file says nothing about the process writing it. The
+  document needed a heartbeat and the relay needed to age it, and a mirror down
+  for a day still drew the card a mirror mid-cycle drew. A request answers it.
+
+- **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779) — what this router has
+  decided about the relay urls it discovers: which are one server wearing
+  several addresses, which cannot answer the same question twice, which are
+  graded `prime`, and which are unreachable. Below the passes, a panel reads the
+  signed **kind-30166** records themselves out of the relay over its own
+  websocket, which makes it a protocol check as much as a view: a verdict that
+  cannot be read there cannot be read by any client either.
+
+  Its own page because it asks a different question in a different unit. Sync
+  coverage is measured in events and asks whether the mirror is keeping up; this
+  is measured in relay urls and asks which of them may be dialled at all. An
+  operator arrives with one of the two.
 
 ## Supported NIPs
 

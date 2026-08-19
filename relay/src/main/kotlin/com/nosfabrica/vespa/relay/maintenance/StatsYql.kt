@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -362,44 +361,6 @@ internal object StatsYql {
         pair: String,
         letter: Char,
     ): String? = if (pair.length > 2 && pair[0] == letter && pair[1] == ':') pair.substring(2) else null
-
-    /**
-     * One relay, spelled one way — so the distribution counts relays and not
-     * the strings people typed.
-     *
-     * A grouping over [TAG] returns the `r` values BYTE FOR BYTE as their
-     * authors signed them, and relay lists are hand-written: `wss://nos.lol`
-     * and `wss://nos.lol/` are the same relay and were two rows, each holding
-     * part of that relay's lists. That does not merely look untidy, it
-     * MISRANKS a table sorted by count — a relay split three ways across a
-     * trailing slash, a capitalised host and an explicit `:443` sits below
-     * relays it actually outnumbers, and `total` counts spellings.
-     *
-     * Quartz's [RelayUrlNormalizer] is the same one the router dials with and
-     * the same one [com.nosfabrica.vespa.relay.config.RelayAddresses] admits
-     * urls through, so this panel now identifies a relay the way the rest of
-     * the stack does rather than inventing a third rule.
-     *
-     * A url the normalizer REJECTS is kept as its trimmed self rather than
-     * dropped. This panel is a census of what our users' lists name, and a
-     * silently vanishing row would understate `total` while leaving the
-     * heading claiming otherwise — junk in the corpus is a finding, not
-     * something for this function to hide.
-     *
-     * The trailing slash comes off AFTER normalising, never instead of it.
-     * That ordering is the whole safety argument: the normalizer is what
-     * decides two spellings are one relay, and trimming a suffix from its
-     * output is a deterministic rename applied to every member of a group at
-     * once, so it can tidy how a relay is displayed but can never split one
-     * back into two.
-     */
-    fun canonicalRelay(raw: String): String {
-        val trimmed = raw.trim()
-        val normalized = RelayUrlNormalizer.normalizeOrNull(trimmed)?.url ?: trimmed
-        // "wss://nos.lol/" is what the normalizer emits for a bare host; the
-        // slash is noise in a column of urls read side by side.
-        return normalized.removeSuffix("/").ifEmpty { trimmed }
-    }
 
     // ---- the query ----------------------------------------------------------
 
