@@ -74,6 +74,10 @@
 //                  only pins that code ever had were string greps for member
 //                  names in stats.html, and a grep cannot see a wrong
 //                  denominator: five bugs shipped behind one
+// processors.test.mjs the status pages' glossary lookup — that a member named
+//                  after something on Object.prototype comes back as nothing
+//                  rather than as a function assigned to an element's title.
+//                  Several call sites look up a key the DOCUMENT chose
 // source.test.mjs  every file the page ships is TEXT — one NUL byte made git
 //                  call searchfield.js binary, and four undiffable commits
 //                  later one of them had deleted a function still being called
@@ -81,7 +85,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

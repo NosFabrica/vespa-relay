@@ -157,7 +157,16 @@ function render(doc) {
   beforePanels(doc);
   for (const panel of panels) {
     const stamp = panel.reads.map((member) => stampOf(doc[member])).join("|");
-    if (drawn.get(panel.name) === stamp) continue;
+    // The memo is what preserves reader state — a panel whose sections have not
+    // moved keeps its scroll, its filter and whatever it fetched itself. But it
+    // must not preserve EMPTINESS: a panel that built nothing has no reader
+    // state to protect, and one memoised on an empty stamp (`reads: []`, which
+    // the verdicts panel uses deliberately) would then be frozen on the first
+    // document for the life of the page. That is reachable — the monitor's
+    // document omits its whole section until the first pass registers a row, so
+    // a reader who opens the page inside that window would watch the monitor
+    // card appear on the next poll beside a verdicts panel that never does.
+    if (drawn.get(panel.name) === stamp && panelBox(panel.name).hasChildNodes()) continue;
     drawn.set(panel.name, stamp);
     fill(panelBox(panel.name), panel.build(doc));
   }

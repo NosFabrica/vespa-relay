@@ -170,9 +170,6 @@ class PeerClient(
             }
         }
 
-    /** How many sockets are open right now, against [socketCeiling]. */
-    fun openSockets(): Int = client.connectedRelaysFlow().value.size
-
     fun connect() {
         client.connect()
     }

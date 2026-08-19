@@ -34,9 +34,17 @@ function setTerms(terms) {
   TERMS = terms || {};
 }
 
-/** What the document says a member means, or nothing at all. */
+/**
+ * What the document says a member means, or nothing at all.
+ *
+ * `hasOwn`, not a plain read: `TERMS` is parsed JSON, so it carries
+ * Object.prototype, and several call sites look up a key the DOCUMENT chose —
+ * a funnel slice, a phase word. A member named `constructor` or `toString`
+ * would come back as a function and be set as an element's `title`. The same
+ * rule `funnelOf` in shared/sync.js already holds, and for the same reason.
+ */
 function term(key) {
-  return TERMS[key] || "";
+  return Object.hasOwn(TERMS, key) ? TERMS[key] || "" : "";
 }
 
 /** One labelled pill. `tone` is `live`, `busy`, `warn`, or nothing. */

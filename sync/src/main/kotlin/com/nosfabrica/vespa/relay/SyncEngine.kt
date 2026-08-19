@@ -22,12 +22,10 @@ package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
-import com.nosfabrica.vespa.relay.config.SyncUpstream
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
-import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
 import com.nosfabrica.vespa.relay.monitor.MonitorStatus
@@ -54,10 +52,6 @@ import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
-import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
@@ -458,30 +452,6 @@ class SyncEngine(
             }
         }
     }
-
-    private fun downListener(up: SyncUpstream): SubscriptionListener =
-        object : SubscriptionListener {
-            override suspend fun onEvent(
-                event: Event,
-                isLive: Boolean,
-                relay: NormalizedRelayUrl,
-                forFilters: List<Filter>?,
-            ) {
-                // Bind trust to the relay we dialed, and re-check scope so a
-                // broken upstream can't widen what we ingest.
-                if (relay != up.url) return
-                if (!up.filter.match(event)) return
-                ingest.submit(event, up.trusted, IngestOrigin(up.url, up.healContent, up.healRetractions))
-            }
-
-            override fun onCannotConnect(
-                relay: NormalizedRelayUrl,
-                message: String,
-                forFilters: List<Filter>?,
-            ) {
-                System.err.println("router: cannot connect ${up.url.url}: $message")
-            }
-        }
 
     /**
      * WHERE THE CONSTRAINT IS, decided once and read twice.
