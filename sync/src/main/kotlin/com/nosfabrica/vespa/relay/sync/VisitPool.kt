@@ -515,7 +515,13 @@ internal class VisitPool(
                     )
                     return
                 }
+                // THE TWO MOVE TOGETHER OR THE ROW LIES. `stream` changes
+                // here, per ask; the depth beside it is the previous ask's
+                // until a leg overwrites it — and an ask whose band has no
+                // outstanding legs never enters the loop that would, so the
+                // reset inside `catchUp` is not enough on its own.
                 ongoingVisit.stream = ask.stream.name
+                ongoingVisit.pagingUntil = null
                 val clean = catchUp(ask, url, ongoingVisit)
                 // A refusal ends the whole visit, not just this ask's part:
                 // the next ask is the same conversation with the same relay,
@@ -565,9 +571,9 @@ internal class VisitPool(
             // on that relay in turn, each with its own legs. So once any leg
             // walked deep, every later leg's events were newer than the value
             // and the guard never fired again: the in-flight row went on
-            // reporting the deepest point of an EARLIER stream's walk beside
-            // `stream`, which IS updated per ask. Two facts from different legs
-            // on one line, and the older one wins.
+            // reporting the deepest point of an EARLIER leg's walk. The ask
+            // loop resets it too, for the ask that has no legs at all; this one
+            // is for the second and later legs of an ask that does.
             ongoingVisit.pagingUntil = null
             val onEvent: suspend (Event) -> Unit = { event ->
                 arrived(url, ongoingVisit)

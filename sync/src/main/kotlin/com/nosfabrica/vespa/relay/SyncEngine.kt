@@ -323,8 +323,19 @@ class SyncEngine(
             // rows moved, the passes ran, the counts were honest about a
             // measurement nobody could take.
             peers.announceTor()
+            watchForFatals()
+            scope.launch { healthLoop() }
             peers.connect()
             monitor.start()
+            // …AND THE DOCUMENT, which this path also returned above. The block
+            // that publishes it reasons about exactly this case in its own
+            // comment — "there are no streams to report" is where a process
+            // description matters most — and then never ran here, so a
+            // monitor-only node moved its rows in memory and published none of
+            // them. The per-stream report loop is not wanted: it is already
+            // guarded on `visitStreams`, and there are none.
+            publishProgressLoop()
+            scope.launch { statsLoop() }
             return this
         }
 
@@ -333,17 +344,7 @@ class SyncEngine(
 
         peers.announceTor()
 
-        // Make a fatal error visible instead of leaving a silent process that
-        // looks merely quiet — four OOMs once passed unnoticed while the
-        // phases still read healthy.
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            if (error is VirtualMachineError) {
-                fatals.incrementAndGet()
-                System.err.println("router: FATAL ${error.javaClass.simpleName} killed thread ${thread.name} — the router is now degraded")
-            }
-            previous?.uncaughtException(thread, error)
-        }
+        watchForFatals()
         scope.launch { healthLoop() }
 
         peers.connect()
@@ -378,12 +379,7 @@ class SyncEngine(
         // rendered as a stopped one. This document describes the PROCESS as
         // much as its streams, and "there are no streams to report" is exactly
         // the case where that distinction matters.
-        scope.launch {
-            while (scope.isActive) {
-                delay(PROGRESS_INTERVAL_MS)
-                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get())
-            }
-        }
+        publishProgressLoop()
         if (visitStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {
@@ -518,6 +514,41 @@ class SyncEngine(
     /** The latest health, for the progress tick to publish — see [bottleneckOf]. */
     @Volatile
     private var health: SyncProgress.Health? = null
+
+    /**
+     * Make a fatal error visible instead of leaving a silent process that looks
+     * merely quiet — four OOMs once passed unnoticed while the phases still
+     * read healthy.
+     *
+     * A named function rather than an inline block because BOTH boot paths need
+     * it and only one had it: a monitor-only node is a whole deployment, and it
+     * was the one running without this.
+     */
+    private fun watchForFatals() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            if (error is VirtualMachineError) {
+                fatals.incrementAndGet()
+                System.err.println("router: FATAL ${error.javaClass.simpleName} killed thread ${thread.name} — the router is now degraded")
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    /**
+     * The status document, on its own clock — hoisted for the same reason
+     * [watchForFatals] is, and it is the one that matters most: this document
+     * describes the PROCESS as much as its streams, so a deployment with no
+     * streams at all is precisely where it must still be written.
+     */
+    private fun publishProgressLoop() {
+        scope.launch {
+            while (scope.isActive) {
+                delay(PROGRESS_INTERVAL_MS)
+                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get())
+            }
+        }
+    }
 
     /**
      * Why the machine is idle, once a minute. A full heap, a full queue and

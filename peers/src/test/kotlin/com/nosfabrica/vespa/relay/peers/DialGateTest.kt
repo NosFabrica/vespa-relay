@@ -180,6 +180,26 @@ class DialGateTest {
         }
     }
 
+    /**
+     * TWO EQUAL NUMBERS IS NOT ONE NUMBER. At `dialConcurrency = 16` against
+     * the default 32 sockets both gates are 16, and a line that collapsed to
+     * "16 dial(s)" there would read exactly like the no-Tor deployment while
+     * the real ceiling is 32. The boot line is the only place an operator sees
+     * this split, so it has to say which shape it is.
+     */
+    @Test
+    fun `the boot line tells a proxied gate from an unproxied one, even at the same width`() {
+        assertEquals(
+            "16 clearnet dial(s), 16 over Tor",
+            DialGate.over(concurrency = 16, tor = tor(maxSockets = 32)).describe(),
+        )
+        assertEquals("16 dial(s)", DialGate.over(concurrency = 16, tor = null).describe())
+        assertEquals(
+            "100 clearnet dial(s), 32 over Tor",
+            DialGate.over(concurrency = 100, tor = tor(maxSockets = 32)).describe(),
+        )
+    }
+
     @Test
     fun `no proxy means one gate, exactly as before`() {
         val gate = DialGate.over(concurrency = 16, tor = null)

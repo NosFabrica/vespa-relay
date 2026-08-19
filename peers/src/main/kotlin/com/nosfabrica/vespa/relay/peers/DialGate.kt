@@ -59,12 +59,22 @@ import kotlinx.coroutines.sync.withPermit
  * raising `dialConcurrency` past `maxSockets` could not buy Tor throughput, only
  * convert clearnet permits into Tor queue slots.
  *
- * So the Tor gate is sized to the Tor dispatcher — see [torPermits] — and a
- * permit on it means a socket rather than a place in a queue. The ceiling on
- * dials in flight rises from `dialConcurrency` to `dialConcurrency + torPermits`
- * and that is deliberate: the two draw on different dispatchers, and holding
- * them to one number is what made `dialConcurrency` mean dials-plus-Tor-queueing
- * instead of dials.
+ * So the Tor gate is sized to the Tor dispatcher — see [torPermits]. The
+ * ceiling on dials in flight rises from `dialConcurrency` to
+ * `dialConcurrency + torPermits` and that is deliberate: the two draw on
+ * different dispatchers, and holding them to one number is what made
+ * `dialConcurrency` mean dials-plus-Tor-queueing instead of dials.
+ *
+ * **What this does NOT buy is "a permit is a socket", and the difference is
+ * worth stating rather than hoping nobody checks.** The Tor dispatcher is
+ * process-wide — one [TorTransport] behind `PeerClient.httpFor`, shared with
+ * the mirror — so the mirror's onion tails and catch-ups hold slots in the same
+ * 32, and a monitor permit can still be a place in a queue behind them. What it
+ * can no longer be is a place in that queue held WHILE occupying a clearnet
+ * permit, which is the whole of the measurement above. Sizing the monitor's
+ * share against live dispatcher occupancy would be the next step if onion
+ * relays ever stop being a handful of the roster; it is not worth a moving
+ * target today.
  *
  * Nothing here decides WHICH transport a url takes. [routesTor] is
  * [TorTransport.routes], the same predicate that picks the OkHttp client, so the
@@ -83,6 +93,14 @@ import kotlinx.coroutines.sync.withPermit
 class DialGate(
     /** Dials in flight over the direct client — the operator's `monitor { dialConcurrency }`. */
     val clearnetPermits: Int,
+    /**
+     * Is there a proxy at all? Only [describe] reads it, and only because the
+     * two numbers being EQUAL is not the same fact as there being one number:
+     * at `dialConcurrency = 16` against the default 32 sockets both gates are
+     * 16, and a line that printed "16 dial(s)" there would read exactly like
+     * the no-Tor deployment while the real ceiling is 32.
+     */
+    private val proxied: Boolean = false,
     /**
      * …and over the proxy. Sized to the Tor dispatcher rather than to the
      * operator's knob, and capped by it: more than [TorSettings.maxSockets] buys
@@ -111,7 +129,7 @@ class DialGate(
     ): T = (if (routesTor(url)) tor else clearnet).withPermit { block() }
 
     /** What a pass is actually bounded by, for the line the router prints when the monitor starts. */
-    fun describe(): String = if (clearnetPermits == torPermits) "$clearnetPermits dial(s)" else "$clearnetPermits clearnet dial(s), $torPermits over Tor"
+    fun describe(): String = if (!proxied) "$clearnetPermits dial(s)" else "$clearnetPermits clearnet dial(s), $torPermits over Tor"
 
     companion object {
         /**
@@ -131,6 +149,7 @@ class DialGate(
             } else {
                 DialGate(
                     clearnetPermits = concurrency,
+                    proxied = true,
                     torPermits = minOf(concurrency, tor.settings.maxSockets),
                     routesTor = tor::routes,
                 )
