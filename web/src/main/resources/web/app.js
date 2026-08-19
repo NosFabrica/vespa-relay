@@ -1026,6 +1026,14 @@ document.addEventListener("click", (e) => {
 // including ones written later that have no idea this field exists.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  // The syntax sheet is innermost of all when it is up, and the <dialog> closes
+  // itself on this very press — so anything here would be the second thing
+  // dismissed by one key. The panel can genuinely be open behind it: `?` opens
+  // the sheet from the panel's own summary button, which is not a field, so
+  // isTyping() lets the key through. This listener still sees `open === true`
+  // at that moment (the element closes on the default action, after dispatch),
+  // which is what makes the guard readable rather than a race.
+  if ($help.open) return;
   // Innermost first — the list is drawn INSIDE the panel, so closing the panel
   // on the same press would dismiss two things for one key.
   if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
@@ -1036,6 +1044,55 @@ document.addEventListener("keydown", (e) => {
   const inside = $adv.contains(document.activeElement);
   $adv.open = false;
   if (inside) $advBtn.focus();
+});
+
+// ---- the syntax sheet -----------------------------------------------------
+//
+// What the search box understands, as a modal <dialog> — index.html holds the
+// sheet itself and says why it is written there rather than generated here.
+// This is the whole of its behaviour, and it is this short for a reason: a
+// <dialog> opened with showModal() already closes on Escape, already keeps Tab
+// inside itself, already makes the page behind it inert, and already returns
+// focus to whatever opened it. The only things left are the two ways OUT that
+// the element does not have an opinion about — the close button and a click on
+// the backdrop — and the shortcut in.
+const $help = document.getElementById("help");
+const $helpBtn = document.getElementById("helpbtn");
+
+/** Open it, or shut it if it is already up — the `?` press is a toggle. */
+function toggleHelp() {
+  if ($help.open) $help.close();
+  else $help.showModal();
+}
+
+$helpBtn.addEventListener("click", () => $help.showModal());
+document.getElementById("helpclose").addEventListener("click", () => $help.close());
+// The backdrop is not an element to hang a listener on: a click on it is
+// dispatched at the <dialog> itself, and one on the sheet hits a child. So the
+// target BEING the dialog is what "outside" means here — the same test the
+// popups above make with closest(), asked the way this element allows.
+$help.addEventListener("click", (e) => { if (e.target === $help) $help.close(); });
+
+// Back closes it. This page answers popstate by re-rendering the view rather
+// than leaving the site, so a sheet left open would hang over a page that just
+// changed underneath it — and on a phone, Back IS the gesture for dismissing
+// something that is in the way. It does not push a history entry of its own:
+// one press should get you back to what you were reading, not out of a sheet
+// you would then have to press Back again to leave. `close()` on a shut dialog
+// is a no-op, so this needs no guard.
+window.addEventListener("popstate", () => $help.close());
+
+// `?` opens it, the way `/` focuses the box — one key, guarded by the same
+// rule, because a `?` typed INTO a query is a question mark. Shift is how the
+// key is reached on most layouts and is therefore not a modifier to refuse
+// here; the other three still are, since ⌘? and Alt-? belong to the browser
+// and to a screen reader.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "?" || e.metaKey || e.ctrlKey || e.altKey) return;
+  const el = document.activeElement;
+  if (isTyping(el)) return;
+  e.preventDefault();
+  toggleHelp();
 });
 
 // ---- the field renders its own contents ----------------------------------
@@ -1874,11 +1931,16 @@ $clear.addEventListener("click", reset);
 
 // "/" anywhere focuses the search box, the way every search page does it.
 // Not while something is being typed into — see keynav.js's isTyping(), which
-// is that rule, written once for the two shortcuts that need it.
+// is that rule, written once for the three shortcuts that need it.
+//
+// And not while the syntax sheet is up. The page under a modal <dialog> is
+// inert to the mouse and to Tab, but a document-level keydown listener is
+// neither: the key still arrives here, and focusing an inert field is a
+// preventDefault() spent on nothing. j/k below is the same story.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
   const el = document.activeElement;
-  if (!el || isTyping(el)) return;
+  if (!el || isTyping(el) || $help.open) return;
   e.preventDefault();
   $q.focus();
   $q.select();
@@ -1936,7 +1998,7 @@ function moveCursor(cards, delta) {
 
 document.addEventListener("keydown", (e) => {
   const move = navKey(e, document.activeElement);
-  if (!move || $results.hidden) return;
+  if (!move || $results.hidden || $help.open) return;
   const cards = cursorCards();
   // Nothing to walk — a permalink, an empty result set, the error card — so
   // the key is not ours. This has to be decided BEFORE preventDefault(): a

@@ -76,6 +76,16 @@
   `?spam=1` and `?as=…` mean a shared link can arrive with all three already
   set, and a filter nothing on screen admits to is worse than a crowded bar.
 
+  The other button in that bar is a question mark, and it opens the SYNTAX
+  SHEET: `from:`, `to:`, `since:`, `until:`, `#hashtag`, `group:`, the NIP-73
+  scopes, and the NIP-50 tokens the Filters panel writes. Everything the box
+  understands was findable only by typing it, or by reading query.js — which
+  is a language nobody can be expected to guess a colon at a time. The sheet
+  is markup at the end of this file rather than a module, because it is prose
+  about a parser and not behaviour: app.js writes only what a <dialog> leaves
+  to be written, and web/src/test/js/help.test.mjs holds every claim the sheet
+  makes against what query.js really lifts, both ways round.
+
   Every kind the index holds renders as a card: profiles, notes, articles,
   media, code, live events, listings, the reactive kinds (reactions, reposts,
   zaps, comments), the whole NIP-51 list and set table, this relay's own
@@ -647,6 +657,98 @@
   #spam:checked + .toggle-track { background: var(--accent); }
   #spam:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
   #spam:focus-visible + .toggle-track { box-shadow: 0 0 0 3px var(--ring); }
+
+  /* ---- the syntax sheet --------------------------------------------------
+     A <dialog>, opened with showModal(), for the reason the Filters
+     disclosure is a <details>: Escape, the backdrop, the focus ring staying
+     inside while it is up and the page under it going inert are the
+     element's, and this page does not hand-roll what an element already does.
+     The button beside it borrows .adv-btn outright — two controls sitting
+     side by side in the same bar are one button with two labels, and a second
+     near-identical block of padding and border is how they drift apart. What
+     a <button> does not inherit from that <summary> is the font, so it is
+     named here. */
+  button.adv-btn { font: inherit; font-size: 12.5px; }
+  /* The mark alone, so the row does not wrap — the markup says what that costs.
+     Square padding, and an icon a shade larger than the labelled button's,
+     because at this size the mark IS the button rather than a hint beside a
+     word. */
+  #helpbtn { padding: 5px 7px; }
+  #helpbtn .adv-icon { width: 15px; height: 15px; }
+
+  /* `[open]`, and it has to be: a `display` on the dialog itself replaces the
+     `display: none` the UA gives a CLOSED one, and the sheet would sit at the
+     bottom of every page. The column is what lets the head stay put while the
+     body alone scrolls, without either of them being told a pixel height. */
+  .help-sheet[open] { display: flex; flex-direction: column; }
+  .help-sheet {
+    width: min(40rem, calc(100vw - 32px));
+    max-height: min(80vh, 44rem);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;                       /* the ROUNDING; the body scrolls */
+  }
+  .help-sheet::backdrop { background: rgba(16, 24, 40, .45); }
+  @media (prefers-color-scheme: dark) { .help-sheet::backdrop { background: rgba(0, 0, 0, .6); } }
+  /* Fixed by the column above rather than by `position`, so the close button —
+     the way out for anybody not reaching for Escape — is on screen at every
+     scroll position of the body under it. */
+  .help-head {
+    flex: 0 0 auto;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 14px 16px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .help-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+  .help-head p { margin: 0; flex: 1 1 auto; font-size: 12px; color: var(--muted); }
+  .help-close {
+    flex-shrink: 0; border: 0; background: none; color: var(--muted);
+    font: inherit; font-size: 19px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+  .help-close:hover { color: var(--fg); }
+  .help-close:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+  /* `min-height: 0`, or the flex item refuses to shrink below its content and
+     the sheet grows past its own max-height instead of scrolling. */
+  .help-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 16px 16px; }
+  .help-sec { margin-top: 14px; }
+  .help-sec h3 { margin: 0 0 2px; font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .help-sec > p { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+  /* Two columns while there is room for the token to keep its own: a token
+     wrapping mid-`podcast:item:guid:` is the one thing this sheet must not do.
+     Under 560px the grid becomes one column and each token sits above its
+     sentence, which is what a phone has room for. */
+  .help-rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; align-items: baseline; }
+  .help-rows dt { min-width: 0; }
+  .help-rows dd { margin: 0; font-size: 12.5px; color: var(--muted); }
+  .help-rows dd b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 560px) {
+    .help-rows { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .help-rows dd { margin-bottom: 6px; }
+    /* The one line the head can afford here. Beside a two-word title in a
+       340px sheet the subtitle wrapped BOTH of them into two lines each, for a
+       sentence the sections underneath immediately say again. */
+    .help-head p { display: none; }
+    /* …and with it gone, the title is what holds the close button out at the
+       far edge, where the subtitle was doing that job. */
+    .help-head h2 { white-space: nowrap; flex: 1 1 auto; }
+  }
+  /* The token as the field will hold it: the same monospace the json panel and
+     the props rows use, so a thing you type reads as a thing you type. */
+  .tok {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 5px;
+    white-space: nowrap;
+  }
+  .tok em { font-style: normal; color: var(--faint); }
+  .help-note { margin: 14px 0 0; font-size: 12px; color: var(--faint); }
+  .help-note a { color: var(--accent); text-decoration: none; }
+  .help-note a:hover { text-decoration: underline; }
 
   .whoami { font-size: 12px; color: var(--muted); margin-top: 8px; width: 100%; }
   .whoami:empty { display: none; }
@@ -1236,8 +1338,11 @@
      of the plain read this view DOES send, so they narrow the feed the same way
      they narrow a search — and the whole row used to go with the panel, which
      left the one working control off the page for the sake of the three that
-     could not work on it. */
-  body.feed .bar-right { display: none; }
+     could not work on it. Which is why this names the PANEL and not the row it
+     sits in: the Syntax button beside it explains the search box, and that box
+     is on this page too — every prefix in the sheet works from here, they just
+     leave the feed for the results the moment one is submitted. */
+  body.feed #adv { display: none; }
 
   .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
   .error { color: var(--danger); }
@@ -1639,6 +1744,37 @@
     <div class="bar">
       <div id="chips" class="chips" role="tablist" aria-label="Filter by kind"></div>
       <div class="bar-right">
+        <!--
+          The syntax sheet's button, and it comes FIRST: this row sits under
+          the search box, and what can be typed into that box is the question
+          somebody has before they have any question about sorting. It borrows
+          the disclosure's own class rather than a look of its own — see the
+          .help-sheet block in the styles.
+
+          The MARK ALONE, where "Filters" beside it carries a word, and that is
+          measured rather than preferred. This row is 748px at the page's widest
+          (.page caps at 780), the kind chips are ~598 of it, and a labelled
+          button here made the row wrap — which costs a permanent 38px off the
+          top of every results page, since the bar is sticky once results are
+          up. A question mark in a circle is the one icon that needs no label
+          to be read as help; `aria-label` is what says it to everybody else.
+
+          The mark alone fits with nothing to spare, and that is fine: a ninth
+          chip, or a font whose chips measure wider, wraps this row exactly as
+          it already wraps on a phone — a line, not a broken control.
+
+          `aria-haspopup="dialog"` because the sheet is not drawn beside the
+          button like the panel next to it: the press moves focus into a modal
+          somewhere else entirely, and a screen reader should say so first.
+        -->
+        <button id="helpbtn" type="button" class="adv-btn" aria-haspopup="dialog" aria-label="Search syntax"
+                title="Search syntax — people, days, topics, and the tokens that rank the answer. Shortcut: ?">
+          <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M9.4 9.4a2.7 2.7 0 1 1 3.6 2.5c-.7.3-1 .8-1 1.5v.4" stroke-linecap="round" />
+            <path d="M12 16.9h.01" stroke-linecap="round" stroke-width="2.3" />
+          </svg>
+        </button>
         <!-- A <details>, not a button and a div: the open/closed state, the
              keyboard and the ARIA are the element's, and this page does not
              pay for them twice. app.js only dismisses it and keeps the count
@@ -1721,6 +1857,145 @@
   <section id="feed-preview" class="feed-preview" hidden aria-label="Latest"></section>
   <div id="results" class="results" hidden aria-live="polite"></div>
 </main>
+
+<!--
+  What the search box understands, in one sheet.
+
+  It lives HERE, at the end of the body, rather than beside the button that
+  opens it: a modal dialog is painted in the top layer, so its position in the
+  markup decides nothing about where it appears — while inside `.hero-inner` it
+  would be one more child of that layout every time it opened (a flex column
+  while the page is idle, a grid once results are up), sized against tracks
+  that exist for the brand and the search field.
+
+  The sheet is TWO languages, split into sections in that order, because the
+  halves fail differently and a reader who confuses them writes a query that
+  quietly means nothing:
+
+    - The prefixes are this PAGE's. web/shared/query.js lifts them out of the
+      string and buildFilters turns them into ordinary NIP-01 filter fields —
+      `authors`, `#p`, `since`, `until`, `#t`, `#h`, `#i`/`#I` — so the store
+      never sees the word `from:` at all. That is why a mistyped one is not an
+      error anywhere: it stays in the text and is searched for as words.
+    - Everything under "Ranking and order" is NIP-50's, passed through to the
+      store verbatim. Three of those four are exactly what the Filters panel
+      writes for you, which is said here rather than left for somebody to
+      discover by diffing two queries.
+
+  Every prefix below is checked against the tokenizer by
+  web/src/test/js/help.test.mjs, in both directions: a family query.js learns and
+  this sheet does not name fails there, and so does a token named here that
+  query.js would leave sitting in the text as words. The sort values are held
+  to the Filters menu's <option> list the same way. A help page that has
+  drifted from the parser is worse than no help page — it is a page that reads
+  like an answer.
+-->
+<dialog id="help" class="help-sheet" aria-labelledby="help-title">
+  <div class="help-head">
+    <h2 id="help-title">Search syntax</h2>
+    <p>Type words. These narrow what comes back.</p>
+    <button id="helpclose" type="button" class="help-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="help-body">
+
+    <section class="help-sec">
+      <h3>Words</h3>
+      <dl class="help-rows">
+        <dt><code class="tok">bitcoin mining</code></dt>
+        <dd>Both words, anywhere in the event.</dd>
+        <dt><code class="tok">"exact phrase"</code></dt>
+        <dd>Those words, in that order.</dd>
+        <dt><code class="tok">-word</code></dt>
+        <dd>Everything <b>except</b> results with that word.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>People</h3>
+      <p>Start typing a name after the colon and pick from the list — the page writes the key.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">from:<em>npub1…</em></code></dt>
+        <dd>Only what that person wrote.</dd>
+        <dt><code class="tok">to:<em>npub1…</em></code></dt>
+        <dd>Only events that mention them.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Days</h3>
+      <p>Whole days, in your own timezone, and a calendar opens as you type one.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">since:<em>2026-08-06</em></code></dt>
+        <dd>Written that day or after.</dd>
+        <dt><code class="tok">until:<em>2026-08-06</em></code></dt>
+        <dd>Written that day or before — the whole of it, midnight to midnight.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Topics and groups</h3>
+      <dl class="help-rows">
+        <dt><code class="tok">#<em>hashtag</em></code></dt>
+        <dd>Events tagged with that topic, plus the labels and the comments written on it.</dd>
+        <dt><code class="tok">group:<em>id</em></code></dt>
+        <dd>A NIP-29 relay group. Type a few letters and pick one; the ids are not memorable.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Things people commented on</h3>
+      <p>Comments about something that lives outside Nostr, found by what it is (NIP-73).</p>
+      <dl class="help-rows">
+        <dt><code class="tok">site:<em>example.com/page</em></code></dt>
+        <dd>A web page.</dd>
+        <dt><code class="tok">isbn:<em>9780593330005</em></code></dt>
+        <dd>A book.</dd>
+        <dt><code class="tok">doi:<em>10.1000/182</em></code></dt>
+        <dd>A paper.</dd>
+        <dt><code class="tok">geo:<em>u4pruyd</em></code></dt>
+        <dd>A place, as a geohash.</dd>
+        <dt><code class="tok">isan:<em>0000-0000-401A-0000-7</em></code></dt>
+        <dd>A film.</dd>
+        <dt><code class="tok">podcast:guid:<em>guid</em></code></dt>
+        <dd>A podcast feed…</dd>
+        <dt><code class="tok">podcast:item:guid:<em>guid</em></code></dt>
+        <dd>…one episode of it…</dd>
+        <dt><code class="tok">podcast:publisher:<em>guid</em></code></dt>
+        <dd>…or everything from its publisher.</dd>
+      </dl>
+    </section>
+
+    <section class="help-sec">
+      <h3>Ranking and order</h3>
+      <p>These reach the relay as typed. The <b>Filters</b> button writes every one of them except the last.</p>
+      <dl class="help-rows">
+        <dt><code class="tok">sort:recent</code></dt>
+        <dd>Newest first, ignoring how well anything matched.</dd>
+        <dt><code class="tok">sort:rank</code></dt>
+        <dd>Most trusted authors first. <code class="tok">sort:rank:asc</code> turns it upside down.</dd>
+        <dt><code class="tok">sort:followers</code></dt>
+        <dd>Most followed authors first.</dd>
+        <dt><code class="tok">sort:text</code></dt>
+        <dd>Text match alone, trust not consulted. With none of these you get the default: best match.</dd>
+        <dt><code class="tok">observer:<em>hex pubkey</em></code></dt>
+        <dd>Rank through <b>that</b> pubkey's web of trust instead of your own — the 64-character hex key, since an
+            <code class="tok">npub1…</code> here is ignored rather than refused. Signing in does this for you, and
+            "Ranking as" under Filters writes it.</dd>
+        <dt><code class="tok">include:spam</code></dt>
+        <dd>Lift the trust floor: also show what your web of trust does not rank.</dd>
+        <dt><code class="tok">filter:rank:gte:<em>50</em></code></dt>
+        <dd>Raise it instead — drop authors ranking below that, 0 to 100.</dd>
+      </dl>
+    </section>
+
+    <p class="help-note">
+      Everything above combines, in any order: <code class="tok">#nostr from:<em>npub1…</em> since:2026-01-01 sort:recent</code>.
+      The prefixes are filters, not words — they are lifted out of the query before the text is matched. The rest is
+      <a href="https://github.com/nostr-protocol/nips/blob/master/50.md" target="_blank" rel="noopener">NIP-50</a>,
+      as this relay extends it.
+    </p>
+  </div>
+</dialog>
 
 </body>
 </html>

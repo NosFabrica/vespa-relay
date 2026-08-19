@@ -590,6 +590,17 @@ relay/src/main/resources/
                         state passed IN so the whole thing is testable —
                         web/src/test/js/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them.
+                        That whole language is also written down for the READER,
+                        in the syntax sheet the `?` beside Filters opens: a
+                        <dialog> of markup at the end of index.html, four lines
+                        of app.js (showModal, the two ways out, and the `?`
+                        shortcut), and web/src/test/js/help.test.mjs holding it to
+                        this file — a prefix query.js lifts and the sheet never
+                        names fails there, and so does a token the sheet names
+                        that query.js leaves in the query as words, which is the
+                        worse half: the page would be promising a filter while
+                        searching for the literal string. Its sort values are
+                        held to the Filters menu's <option> list the same way.
                         `group:<id>` is the NIP-29 one, and the only subject
                         with a PICKER: a group id is opaque (`chachi`, a hex
                         blob) where a hashtag is already the word it means, so
