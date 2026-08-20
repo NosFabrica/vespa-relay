@@ -545,7 +545,7 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get())
+                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get(), visitPool.visits())
             }
         }
     }

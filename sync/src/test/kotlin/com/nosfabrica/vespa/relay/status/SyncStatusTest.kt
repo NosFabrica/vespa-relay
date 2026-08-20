@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
+import com.nosfabrica.vespa.relay.progress.VisitLedger
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
@@ -101,6 +102,43 @@ class SyncStatusTest {
         // And the glossary ships with the numbers, so a chip can never describe
         // a member in words the router would not use.
         assertTrue(data["terms"]!!.jsonObject.isNotEmpty())
+    }
+
+    @Test
+    fun `the per-relay rows reach the page, glossary and all`() {
+        // The whole seam, end to end: the pool writes a row, the progress
+        // document carries it, and the status document serves it with the
+        // definitions for the members it just published — which is what stops
+        // a card describing `syncedAt` in words the router would not use.
+        val (status, progress, snapshot) = status()
+        val row =
+            VisitLedger.Row(
+                relay = "wss://slow.example/",
+                outcome = "refused",
+                detail = "The relay ended a walk with nothing delivered",
+                syncedAt = 700,
+                lastVisitAt = 880,
+                lastEventAt = 700,
+                events = 0,
+                failures = 14,
+                onRoster = true,
+                tailed = false,
+                nextVisitInSec = 240,
+                heldForSec = null,
+                streams = listOf("content"),
+            )
+        progress.publish(emptyList(), visits = VisitLedger.Snapshot(listOf(row), omitted = 3), nowSeconds = 900)
+
+        status.publish(nowSeconds = 1_000)
+
+        val data = snapshot.doc()["sync"]!!.jsonObject["data"]!!.jsonObject
+        val visits = data["progress"]!!.jsonObject["visits"]!!.jsonObject
+        assertEquals("wss://slow.example/", (visits["relays"] as JsonArray)[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(3L, visits["omitted"]!!.jsonPrimitive.long, "a bounded list that does not say so reads as the whole answer")
+        val terms = data["terms"]!!.jsonObject
+        for (member in listOf("visits", "outcome", "syncedAt", "lastEventAt", "onRoster", "failures", "nextVisitInSec")) {
+            assertTrue(member in terms, "the document defines the members it carries: $member")
+        }
     }
 
     @Test

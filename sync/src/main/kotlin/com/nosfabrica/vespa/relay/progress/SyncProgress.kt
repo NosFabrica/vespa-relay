@@ -109,9 +109,26 @@ import kotlinx.serialization.json.putJsonArray
  *                                 "omitted": 0}}]},
  *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
  *      "accepted": 3910233, "rejected": 41002}
- *   ]
+ *   ],
+ *   "visits": {
+ *     "relays": [{"relay": "wss://slow.example/", "outcome": "refused", "detail": "The relay ended a walk with …",
+ *                 "syncedAt": 1769900000, "lastVisitAt": 1769998800, "lastEventAt": 1769900012,
+ *                 "events": 0, "failures": 14, "onRoster": true, "tailed": false,
+ *                 "nextVisitInSec": 240, "streams": ["content"]}],
+ *     "omitted": 0
+ *   }
  * }
  * ```
+ *
+ * `visits` is the per-relay half, and the one thing here that OUTLIVES the work
+ * it describes: `inFlight` names the relays a worker is on this instant and
+ * forgets them the moment the visit ends, the pool's counters say how many
+ * visits ran without saying against what, and a band says how far back a walk
+ * reached but not when anything last touched it. So "when was this relay last
+ * synced, and if it is not being synced, why" was answerable only from a log
+ * line that had usually rotated away. See [VisitLedger] for what a row does and
+ * does not claim — in particular that `syncedAt` is a clean VISIT and not a
+ * completeness claim, which is the coverage card's `settled`.
  *
  * `passes` is the half `cycle` could not say. A walk ends when its last url is
  * handed out, not when its last worker returns, so a rotation normally has the
@@ -216,9 +233,15 @@ class SyncProgress {
          * unnoticed. It reached a stderr line and stopped there.
          */
         fatals: Long = 0,
+        /**
+         * WHEN EACH RELAY WAS LAST SYNCED and what happened last time — see
+         * [VisitLedger]. Null for a router with no visit pool behind it, which
+         * publishes no such list rather than an empty one.
+         */
+        visits: VisitLedger.Snapshot? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
-        latest = document(streams, processors, fatals, health, nowSeconds)
+        latest = document(streams, processors, fatals, health, visits, nowSeconds)
     }
 
     companion object {
@@ -233,6 +256,7 @@ class SyncProgress {
             processors: List<Processors.Snapshot> = emptyList(),
             fatals: Long = 0,
             health: Health? = null,
+            visits: VisitLedger.Snapshot? = null,
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
@@ -336,6 +360,51 @@ class SyncProgress {
                 // such claim.
                 processors.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
+                }
+                // WHEN EACH RELAY WAS LAST SYNCED — one row per relay the pool
+                // knows about, worst first. Omitted entirely when the ledger is
+                // empty, for the same reason `processors` is: a router with no
+                // visit pool makes no claim about any relay, and an empty list
+                // reads as "none of them are syncing".
+                visits?.takeIf { it.relays.isNotEmpty() }?.let { v ->
+                    put(
+                        "visits",
+                        buildJsonObject {
+                            putJsonArray("relays") { for (r in v.relays) add(visited(r)) }
+                            // Never silent, on the same terms as every other
+                            // bounded list here.
+                            put("omitted", v.omitted)
+                        },
+                    )
+                }
+            }
+
+        /**
+         * One relay's row.
+         *
+         * Absent beats zero on every clock here: a relay that has never been
+         * visited, one whose events have never arrived, and one with no revisit
+         * armed each publish NOTHING rather than a `0` that reads as "just now"
+         * or "due now". `events`, `failures` and the two booleans are always
+         * present — zero and false are readings there, and a reader must be
+         * able to tell "nothing arrived" from "this router does not say".
+         */
+        private fun visited(r: VisitLedger.Row): JsonObject =
+            buildJsonObject {
+                put("relay", r.relay)
+                put("outcome", r.outcome)
+                r.detail?.let { put("detail", it) }
+                r.syncedAt?.let { put("syncedAt", it) }
+                r.lastVisitAt?.let { put("lastVisitAt", it) }
+                r.lastEventAt?.let { put("lastEventAt", it) }
+                put("events", r.events)
+                put("failures", r.failures)
+                put("onRoster", r.onRoster)
+                put("tailed", r.tailed)
+                r.nextVisitInSec?.let { put("nextVisitInSec", it) }
+                r.heldForSec?.let { put("heldForSec", it) }
+                r.streams.takeIf { it.isNotEmpty() }?.let { names ->
+                    putJsonArray("streams") { for (n in names) add(n) }
                 }
             }
 

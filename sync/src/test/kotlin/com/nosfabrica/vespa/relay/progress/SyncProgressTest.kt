@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.progress
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -301,6 +302,60 @@ class SyncProgressTest {
         // with no signer genuinely has no fold and no NIP-66 monitor, and one
         // built before this existed made no claim either way.
         assertNull(SyncProgress.document(emptyList(), nowSeconds = 1_000)["processors"])
+    }
+
+    @Test
+    fun `a visits row publishes an absent clock rather than a zero`() {
+        // Every clock on this row means "when", and a `0` on any of them reads
+        // as an epoch date or as "now" depending on which. A relay just
+        // admitted to the roster has never been visited, never delivered and
+        // has no revisit armed, and all three of those are absences.
+        val fresh =
+            VisitLedger.Row(
+                relay = "wss://new.example/",
+                outcome = VisitLedger.NEVER,
+                detail = null,
+                syncedAt = null,
+                lastVisitAt = null,
+                lastEventAt = null,
+                events = 0,
+                failures = 0,
+                onRoster = true,
+                tailed = false,
+                nextVisitInSec = null,
+                heldForSec = null,
+                streams = listOf("content"),
+            )
+
+        val row =
+            (
+                SyncProgress
+                    .document(emptyList(), visits = VisitLedger.Snapshot(listOf(fresh), omitted = 0), nowSeconds = 1_000)["visits"]!!
+                    .jsonObject["relays"] as JsonArray
+            )[0].jsonObject
+
+        assertEquals("never", row["outcome"]!!.jsonPrimitive.content)
+        assertNull(row["syncedAt"])
+        assertNull(row["lastVisitAt"])
+        assertNull(row["lastEventAt"])
+        assertNull(row["nextVisitInSec"])
+        assertNull(row["detail"], "a row with nothing to explain explains nothing")
+        // …and the readings that ARE readings at zero stay, because "nothing
+        // arrived" and "this router does not say" are different answers.
+        assertEquals(0L, row["events"]!!.jsonPrimitive.long)
+        assertEquals(0L, row["failures"]!!.jsonPrimitive.long)
+        assertEquals(true, row["onRoster"]!!.jsonPrimitive.booleanOrNull)
+        assertEquals(false, row["tailed"]!!.jsonPrimitive.booleanOrNull)
+    }
+
+    @Test
+    fun `a router with no visit pool publishes no visits list, rather than an empty one`() {
+        // The same rule `processors` follows: an empty list is a claim that no
+        // relay is syncing, and a push-only router makes no claim about any.
+        assertNull(SyncProgress.document(emptyList(), nowSeconds = 1_000)["visits"])
+        assertNull(
+            SyncProgress.document(emptyList(), visits = VisitLedger.Snapshot(emptyList(), omitted = 0), nowSeconds = 1_000)["visits"],
+        )
     }
 
     private fun streamWith(

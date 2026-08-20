@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.config.SyncDirection
+import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -173,6 +175,15 @@ class VisitPoolTest {
                     .filter.kinds,
                 "and it carries the stream's own filter, unnarrowed",
             )
+
+            // …and the ledger is told WHO asked for each url, which is what
+            // makes a relay that later leaves the roster attributable: a row
+            // reading "nothing dials this any more" and naming no stream is
+            // one nobody can act on.
+            assertEquals(
+                mapOf("wss://a.example/" to listOf("declared"), "wss://b.example/" to listOf("declared")),
+                VisitPool.rosterStreams(roster.asks),
+            )
         }
 
     @Test
@@ -254,6 +265,15 @@ class VisitPoolTest {
         // A select that binds nothing keeps one ask: the stream's own filter.
         val unbound = RosterBuilder.asksOf(base, DiscoveredRelay(url))
         assertEquals(listOf(base), unbound)
+
+        // …and the ledger names the STREAM once however many asks that split
+        // into. A relay paired with forty providers is forty asks of one
+        // stream, and the row would have read `content` forty times.
+        val stream = SyncStream(name = "content", dir = SyncDirection.DOWN, filter = base, urls = emptyList(), trusted = false)
+        assertEquals(
+            mapOf("wss://provider.example/" to listOf("content")),
+            VisitPool.rosterStreams(mapOf(url to paired.map { RosterBuilder.Ask(stream, it) })),
+        )
     }
 
     @Test

@@ -11,8 +11,9 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  heldOf, legsOf, measuringOf, probeProgress, rotationOf,
+  IN_FLIGHT_SHOWN, MEASURING, NOT_SYNCING_SEC, ROTATING, STUCK_LEG_SEC, SYNCED_RECENTLY_SEC,
+  VIEW_ALL, VIEW_PROBLEMS, VIEW_RECENT, constraintOf, funnelOf, heldOf, legsOf, measuringOf,
+  probeProgress, rotationOf, visitsOf, whyNotSyncing,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -604,4 +605,187 @@ const leg = (n, quiet, over = {}) => ({
   // A router too old to make the claim is not a router making a false one.
   assert.equal(funnelOf(doc({})).accountedFor, null, "absent is not a verdict either way");
   ok("the relay's own arithmetic check rides on the tree, and absent is not false");
+}
+
+// ── when each relay was last synced ─────────────────────────────────────────
+//
+// The three readings this half exists to keep apart, each written in the
+// direction it goes wrong: the last ATTEMPT read as the last SUCCESS, a quiet
+// relay read as a failing one, and "it stopped syncing" read as a broken relay
+// when it is this router that stopped dialling it.
+const NOW = 1_770_000_000;
+
+/** A relay row as `VisitLedger` publishes one. */
+const seen = (over = {}) => ({
+  relay: "wss://a.example/", outcome: "synced", syncedAt: NOW - 60, lastVisitAt: NOW - 60,
+  lastEventAt: NOW - 30, events: 12, failures: 0, onRoster: true, tailed: true,
+  nextVisitInSec: 240, streams: ["content"], ...over,
+});
+
+{
+  // A relay this router will not dial says so FIRST. Every other reading on
+  // its row is history — the last visit succeeded, the clocks look ordinary —
+  // and a page that ranked staleness above this would report a decertified
+  // relay as one that is merely slow.
+  const why = whyNotSyncing(seen({ onRoster: false }), NOW);
+  assert.match(why, /monitor no longer certifies it/);
+  // …even though nothing about it has failed.
+  assert.equal(whyNotSyncing(seen(), NOW), null, "a relay syncing on schedule has no reason line");
+  ok("a relay off the roster is named as this router's decision, not as the relay's fault");
+}
+
+{
+  // THE PAIR THAT TELLS AN ATTEMPT FROM A SUCCESS. This row was visited a
+  // minute ago and last synced two days ago, which is a relay being tried and
+  // failing — the state a single "last sync" number cannot express.
+  const failing = seen({ outcome: "refused", failures: 14, syncedAt: NOW - 2 * 24 * 3600, lastVisitAt: NOW - 60,
+    detail: "The relay ended a walk with nothing delivered" });
+  assert.match(whyNotSyncing(failing, NOW), /nothing delivered/, "the router's own words, not the page's");
+
+  // …and with no detail published, the page still says something rather than
+  // leaving a fault with no cause.
+  assert.match(whyNotSyncing({ ...failing, detail: null }, NOW), /14 visit\(s\) did not finish \(refused\)/);
+  ok("a failing relay reports the router's reason, and falls back to the count when there is none");
+}
+
+{
+  // A relay whose visits all succeed and that the pool simply is not getting
+  // back to. Nothing failed, so the outcome word says `synced` — and it has
+  // not been synced for two days.
+  const stale = seen({ syncedAt: NOW - 2 * 24 * 3600, lastVisitAt: NOW - 2 * 24 * 3600, failures: 0 });
+  assert.match(whyNotSyncing(stale, NOW), /not getting back to it/);
+  // The threshold itself is not yet a complaint: between an hour and a day is
+  // a wide roster rotating slowly, which is the mirror working.
+  assert.equal(whyNotSyncing(seen({ syncedAt: NOW - NOT_SYNCING_SEC + 60 }), NOW), null);
+  assert.equal(whyNotSyncing(seen({ syncedAt: NOW - NOT_SYNCING_SEC }), NOW) === null, false, "the threshold itself is stale");
+  ok("staleness is the last reason tried, and only past a day");
+}
+
+{
+  // A relay admitted to the roster a moment ago has never synced, and that is
+  // ordinary — but it is not nothing, and the page must not silently show it
+  // as healthy. Being visited RIGHT NOW is the one form of it that is not a
+  // complaint at all.
+  assert.match(whyNotSyncing(seen({ outcome: "never", syncedAt: null, lastVisitAt: null, heldForSec: null }), NOW),
+    /No visit has finished yet/);
+  assert.match(whyNotSyncing(seen({ outcome: "never", syncedAt: null, lastVisitAt: null, heldForSec: 12 }), NOW),
+    /Being synced right now/);
+  ok("a relay with no finished visit says which of the two states it is in");
+}
+
+{
+  // A CLEAN VISIT THAT CARRIED NOTHING IS NOT A FAULT — the normal state of a
+  // tailed relay, whose tail already delivered what the visit would have
+  // fetched. Read as a failure, every quiet relay on the roster would be a row
+  // in the complaint view.
+  const quiet = visitsOf({ relays: [seen({ events: 0, lastEventAt: NOW - 7 * 24 * 3600 })], omitted: 0 }, {}, NOW);
+  assert.equal(quiet.rows.length, 0, "nothing to complain about");
+  assert.equal(quiet.counts.recent, 1, "…and it counts as synced lately, because it was");
+  ok("a clean visit that delivered nothing is a synced relay");
+}
+
+{
+  // The two clocks, and that neither is derived from the other. This relay's
+  // last VISIT was an hour ago and its tail delivered a second ago; the row
+  // has to carry both, because a tail is how a tailed relay stays fresh
+  // between visits and a visit is what "synced properly" means.
+  const r = visitsOf({ relays: [seen({ syncedAt: NOW - 3600, lastEventAt: NOW - 1 })], omitted: 0 }, { view: VIEW_ALL }, NOW).rows[0];
+  assert.equal(r.syncedForSec, 3600);
+  assert.equal(r.lastEventForSec, 1);
+  assert.equal(r.fresh, false, "freshness is the VISIT — an arrival is not a sync");
+  ok("the visit clock and the arrival clock are both carried, and freshness is the visit");
+}
+
+{
+  // The counts are computed over the WHOLE list, before the view and the
+  // filter — a table showing nothing must still say how many rows the other
+  // views hold, or an empty complaint list reads as an empty roster.
+  const doc = {
+    relays: [
+      seen({ relay: "wss://good.example/" }),
+      seen({ relay: "wss://dead.example/", outcome: "refused", failures: 3, syncedAt: NOW - 3 * 24 * 3600 }),
+      seen({ relay: "wss://gone.example/", onRoster: false }),
+      seen({ relay: "wss://new.example/", outcome: "never", syncedAt: null, lastVisitAt: null, lastEventAt: null, nextVisitInSec: null }),
+    ],
+    omitted: 7,
+  };
+  const problems = visitsOf(doc, { view: VIEW_PROBLEMS }, NOW);
+  assert.deepEqual(problems.rows.map((r) => r.relay),
+    ["wss://dead.example/", "wss://gone.example/", "wss://new.example/"]);
+  // `recent` counts the decertified relay too, and that is deliberate: it DID
+  // sync a minute ago, and a view that hid it would be the page overruling a
+  // fact the row itself carries. Its own row says both — the reason line names
+  // the roster, the clock says a minute — and the two are not in conflict.
+  assert.deepEqual(problems.counts, { all: 4, problems: 3, recent: 2, tailed: 4, offRoster: 1, failing: 1, never: 1 });
+  // WHAT THE ROUTER LEFT OUT IS STILL DISCLOSED, even in a view that dropped
+  // rows of its own: a truncated list that does not say so reads as the whole
+  // answer, and here the whole answer is what is being chased.
+  assert.equal(problems.more, 7);
+  ok("the views filter, and the counts describe the list they were filtered from");
+}
+
+{
+  const doc = {
+    relays: [
+      seen({ relay: "wss://old.example/", syncedAt: NOW - 1800 }),
+      seen({ relay: "wss://newest.example/", syncedAt: NOW - 5 }),
+      seen({ relay: "wss://stale.example/", syncedAt: NOW - SYNCED_RECENTLY_SEC - 1 }),
+    ],
+    omitted: 0,
+  };
+  // NEWEST FIRST, which is the reverse of the document's own worst-first order
+  // — "what has synced lately" read oldest-first is the same list upside down.
+  assert.deepEqual(visitsOf(doc, { view: VIEW_RECENT }, NOW).rows.map((r) => r.relay),
+    ["wss://newest.example/", "wss://old.example/"]);
+  // The window's own edge is outside it, so a row cannot be both stale and
+  // lately-synced.
+  assert.equal(visitsOf(doc, { view: VIEW_RECENT }, NOW).counts.recent, 2);
+  // …and `all` keeps the document's order untouched: the router sorted it
+  // worst-first, and re-sorting it here would be a second opinion about which
+  // row matters.
+  assert.deepEqual(visitsOf(doc, { view: VIEW_ALL }, NOW).rows.map((r) => r.relay),
+    ["wss://old.example/", "wss://newest.example/", "wss://stale.example/"]);
+  ok("`synced lately` is newest-first and `all` leaves the router's own ordering alone");
+}
+
+{
+  // The filter is over the url, in every view, and it does not disturb the
+  // counts — the denominator has to stay on screen while filtering.
+  const doc = { relays: [seen({ relay: "wss://a.example/" }), seen({ relay: "wss://b.other/" })], omitted: 0 };
+  const hit = visitsOf(doc, { view: VIEW_ALL, q: " OTHER " }, NOW);
+  assert.deepEqual(hit.rows.map((r) => r.relay), ["wss://b.other/"]);
+  assert.equal(hit.matched, 1);
+  assert.equal(hit.counts.all, 2, "the filter narrows the rows, never the totals");
+  ok("the filter matches a host case-insensitively and leaves the totals alone");
+}
+
+{
+  // A roster of thousands is not a scroll. What the table cuts is added to
+  // what the ROUTER cut, because the reader's question — "am I seeing all of
+  // it" — is the same either way.
+  const many = { relays: Array.from({ length: 20 }, (_, i) => seen({ relay: `wss://r${i}.example/`, onRoster: false })), omitted: 3 };
+  const cut = visitsOf(many, { view: VIEW_ALL, limit: 5 }, NOW);
+  assert.equal(cut.rows.length, 5);
+  assert.equal(cut.matched, 20, "…and the reader is told how many matched, not just how many are drawn");
+  assert.equal(cut.more, 18, "3 the router left out + 15 this table did");
+  // …and separately, because they are different answers to whoever acts on
+  // them: narrowing the filter brings this table's cut back, and can never
+  // reach the router's.
+  assert.equal(cut.cut, 15);
+  assert.equal(cut.omitted, 3);
+  ok("both cuts are disclosed, as one number and as the two facts behind it");
+}
+
+{
+  // A router that predates these members must not be read as making claims it
+  // does not make: no `onRoster` is not "off the roster", and no `tailed` is
+  // not "untailed and therefore stale".
+  const bare = visitsOf({ relays: [{ relay: "wss://a.example/", outcome: "synced", syncedAt: NOW - 10 }] }, { view: VIEW_ALL }, NOW).rows[0];
+  assert.equal(bare.onRoster, true);
+  assert.equal(bare.tailed, false);
+  assert.equal(bare.events, 0);
+  assert.equal(bare.lastEventForSec, null, "absent is not a zero-second-old arrival");
+  assert.equal(bare.state, "queued");
+  assert.equal(visitsOf(null, { view: VIEW_ALL }, NOW).rows.length, 0, "and no list at all draws no table");
+  ok("an older router's absences read as absences");
 }

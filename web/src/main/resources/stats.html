@@ -138,7 +138,7 @@ import { mountStatsPage } from "./web/shared/statspage.js";
 // served by all three services, and each draws what its own document carries —
 // see PANELS. About 35KB of module the relay's copy never draws, against three
 // copies of the page chrome to keep in step, which is the trade this reverses.
-import { syncCard } from "./web/sync/cards.js";
+import { relaySyncCard, syncCard } from "./web/sync/cards.js";
 import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
 
 /**
@@ -983,6 +983,16 @@ const PANELS = [
   // nothing else — a fact about this relay that clients read — and a coverage
   // card over it would report a mirror that has walked nothing.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams ? [syncCard(doc.sync)] : []) },
+  // WHEN EACH RELAY WAS LAST SYNCED — its own panel rather than a section of
+  // the card above, because it answers a different question (this relay,
+  // rather than the pool) and because it holds reader state: a filter box, a
+  // view, a scroll position. A panel is the unit the engine preserves those
+  // across a rebuild, so a table inside another card would have its own state
+  // restored by position rather than by name.
+  //
+  // Guarded on the list itself, like the coverage card above it: the relay's
+  // document carries a `sync` section too, and it has no visit pool behind it.
+  { name: "visits", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress?.visits ? [relaySyncCard(doc.sync)] : []) },
   { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
   // `reads: []` on purpose: built ONCE and never rebuilt by the poller, because
   // it holds what the reader asked for over a websocket and what they typed

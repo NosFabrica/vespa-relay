@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
+import com.nosfabrica.vespa.relay.progress.VisitLedger
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -209,6 +210,35 @@ internal class VisitPool(
 
     private val yields = ConcurrentHashMap<NormalizedRelayUrl, Yield>()
 
+    /**
+     * WHEN EACH RELAY WAS LAST SYNCED, and what happened the last time it was
+     * tried — the one piece of per-relay state here that OUTLIVES the visit it
+     * describes. Everything else the pool publishes is either live ([ongoing],
+     * dropped the instant a visit ends) or an odometer over the whole roster.
+     * See [VisitLedger].
+     */
+    private val ledger = VisitLedger()
+
+    /**
+     * The ledger's rows, with the live half read HERE rather than stored there:
+     * a tail can open and a revisit can be re-armed between two status ticks,
+     * and the three lookups below are what keep a published row internally
+     * consistent. One pass per collection, not a lookup per row — this walks
+     * every relay the pool has ever visited.
+     */
+    fun visits(): VisitLedger.Snapshot {
+        val nowMs = System.currentTimeMillis()
+        val tailed = tails.keys.mapTo(HashSet()) { it.url }
+        val due = queue.revisitsDueInSec(nowMs)
+        val held = ongoing.entries.associate { (url, row) -> url.url to ((nowMs - row.startedMs) / 1000).coerceAtLeast(0) }
+        return ledger.snapshot(
+            nowMs = nowMs,
+            tailed = { it in tailed },
+            nextVisitInSec = { due[it] },
+            heldForSec = { held[it] },
+        )
+    }
+
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
     /**
@@ -249,11 +279,19 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit?,
     ) {
+        val nowMs = System.currentTimeMillis()
         poolReceived.incrementAndGet()
         yieldOf(url).arrived.incrementAndGet()
+        // WHEN THIS RELAY LAST DELIVERED ANYTHING. Recorded per event, and
+        // therefore here rather than at the end of a visit, because for a
+        // tailed relay the TAIL is the sync: a freshness reading taken only at
+        // visit boundaries calls a relay streaming events right now half an
+        // hour stale. One map lookup and one volatile write, the same order of
+        // cost as the yield fold on the line above it.
+        ledger.received(url.url, nowMs)
         ongoingVisit?.let {
             it.events.incrementAndGet()
-            it.lastActivityMs = System.currentTimeMillis()
+            it.lastActivityMs = nowMs
         }
     }
 
@@ -459,6 +497,10 @@ internal class VisitPool(
             // decayed memory of what it was.
             yields.remove(url)
         }
+        // WHAT THE ROSTER WANTS, into the ledger, so a relay that has LEFT it
+        // says so on its row: "it stopped syncing" reads as a broken relay and
+        // is as often this router declining to dial one.
+        ledger.roster(rosterStreams(next))
         var enqueued = 0
         for ((url, asks) in next) {
             // (Re)queued when the url's ASK SET is news — a relay new to the
@@ -477,22 +519,48 @@ internal class VisitPool(
         phasesChanged()
     }
 
-    /** One visit, its failures counted and said — the shape [VisitQueue.visitLoop] expects. */
+    /**
+     * One visit, its failures counted and said, and its ENDING recorded — the
+     * shape [VisitQueue.visitLoop] expects.
+     *
+     * The row is written here rather than inside [visit] so that every exit
+     * writes exactly one, the throw included: a visit that dies is the state an
+     * operator is most often chasing, and it was the one that left no trace
+     * beyond a log line. The row is written AFTER [visit] returns, so the
+     * relay has already left [ongoing] and no reader can see it both held and
+     * finished.
+     */
     private suspend fun guardedVisit(url: NormalizedRelayUrl) {
+        val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         try {
-            visit(url)
+            val ending = visit(url, ongoingVisit)
+            ledger.visited(url.url, ongoingVisit.startedMs, ending, ongoingVisit.events.get())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             abortedVisits.incrementAndGet()
-            System.err.println("router: visit ${url.url} failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            val what = "${e.javaClass.simpleName}: ${e.message?.take(80)}"
+            ledger.visited(
+                url.url,
+                ongoingVisit.startedMs,
+                VisitLedger.Ending.FAILED,
+                ongoingVisit.events.get(),
+                detail = "The visit threw and was abandoned — $what",
+            )
+            System.err.println("router: visit ${url.url} failed: $what")
         }
     }
 
-    /** One relay's turn: every stream's catch-up, the audit where due, the heal drain, then the tail. */
-    private suspend fun visit(url: NormalizedRelayUrl) {
+    /**
+     * One relay's turn: every stream's catch-up, the audit where due, the heal
+     * drain, then the tail. Returns HOW IT ENDED, which is what the ledger row
+     * — and the page's "why is this relay not syncing" column — is built from.
+     */
+    private suspend fun visit(
+        url: NormalizedRelayUrl,
+        ongoingVisit: OngoingVisit,
+    ): VisitLedger.Ending {
         visitsRun.incrementAndGet()
-        val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         ongoing[url] = ongoingVisit
         sockets.claim(url)
         // One generation for the whole visit: the asks below and the shared
@@ -513,7 +581,7 @@ internal class VisitPool(
                     System.err.println(
                         "router: visit ${url.url} gave up after ${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s) — the revisit takes the remaining asks",
                     )
-                    return
+                    return VisitLedger.Ending.QUIET
                 }
                 // THE TWO MOVE TOGETHER OR THE ROW LIES. `stream` changes
                 // here, per ask; the depth beside it is the previous ask's
@@ -529,7 +597,7 @@ internal class VisitPool(
                 // re-admits it.
                 if (!clean) {
                     abortedVisits.incrementAndGet()
-                    return
+                    return VisitLedger.Ending.REFUSED
                 }
                 auditIfDue(
                     ask,
@@ -542,6 +610,7 @@ internal class VisitPool(
             ongoingVisit.stage = "draining queued heals, then the tail"
             healer.drain(url)
             openTail(url)
+            return VisitLedger.Ending.SYNCED
         } finally {
             ongoing.remove(url)
             sockets.release(url)
@@ -916,6 +985,17 @@ internal class VisitPool(
          * set ([RetractionAudit]).
          */
         internal fun ridesThePool(stream: SyncStream): Boolean = stream.dir != SyncDirection.UP && (stream.urls.isNotEmpty() || stream.discovery?.sources?.isNotEmpty() == true)
+
+        /**
+         * url → the streams asking for it, as the ledger keys them: url
+         * STRINGS, and each stream named once however many asks it split into.
+         *
+         * Distinct is the whole point. A `relaySource` that binds authors
+         * makes one ask PER PROVIDER against one relay, so a relay paired with
+         * forty providers arrives here as forty asks of one stream — and the
+         * row would have read `content, content, content, …` forty times.
+         */
+        internal fun rosterStreams(asks: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>>): Map<String, List<String>> = asks.entries.associate { (url, a) -> url.url to a.map { it.stream.name }.distinct() }
 
         /**
          * Did this leg's walk end in a way that makes the NEXT leg futile?

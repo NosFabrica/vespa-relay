@@ -578,6 +578,14 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           site off the same heap. It was SYNC_PROGRESS_FILE,
                           written for the relay to read off a shared volume;
                           that knob is REFUSED at boot now
+    VisitLedger.kt        WHEN EACH RELAY WAS LAST SYNCED, and what happened the
+                          last time it was tried — the only per-relay state in
+                          this process that OUTLIVES the visit it describes.
+                          `inFlight` forgets a relay the moment its visit ends
+                          and the pool's counters name nobody, so "when was this
+                          relay last synced, and if not, why" lived in a log
+                          line that had rotated away. Published as
+                          `progress.visits`, worst first
   status/
     SyncStatus.kt         the mirror's own /stats.json — the coverage fold, the
                           progress document and the glossary, in the relay's

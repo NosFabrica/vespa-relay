@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -175,6 +176,64 @@ class VisitQueueTest {
                 }
             } finally {
                 release.countDown()
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `an armed revisit says when it is due, and a url with none says nothing`() =
+        runBlocking {
+            // The countdown the status page draws per relay. Absent is the
+            // answer for a url being visited or waiting in the queue — the
+            // timer is armed when a visit FINISHES — and a `0` there would read
+            // as "due now" on a relay nothing is counting down to.
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue(scope)
+            val entered = Channel<Unit>(Channel.UNLIMITED)
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 600_000L }) {
+                    entered.send(Unit)
+                    // Held open, so the assertion below is taken while the
+                    // visit is genuinely running rather than after it.
+                    delay(60_000)
+                }
+            }
+            try {
+                withTimeout(10_000) {
+                    assertEquals(emptyMap(), q.revisitsDueInSec(), "nothing has finished, so nothing is armed")
+                    q.offer(url)
+                    entered.receive()
+                    assertEquals(emptyMap(), q.revisitsDueInSec(), "a url being visited is counting down to nothing")
+                }
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a revisit that is due but has not fired counts down to zero, never past it`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue(scope)
+            val entered = Channel<Unit>(Channel.UNLIMITED)
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 600_000L }) { entered.send(Unit) }
+            }
+            try {
+                withTimeout(10_000) {
+                    q.offer(url)
+                    entered.receive()
+                    // The visit has finished and a ten-minute timer is armed.
+                    delay(200)
+                    val due = q.revisitsDueInSec()[url.url]
+                    assertNotNull(due)
+                    assertTrue(due in 590..600, "ten minutes out, read in seconds: was $due")
+                    // …and read from an instant past the deadline, which is
+                    // reachable whenever the dispatcher is busy: a countdown
+                    // running backwards would draw a revisit overdue by hours.
+                    assertEquals(0L, q.revisitsDueInSec(System.currentTimeMillis() + 3_600_000)[url.url])
+                }
+            } finally {
                 scope.cancel()
             }
         }

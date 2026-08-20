@@ -174,7 +174,9 @@ object StatusVocabulary {
                     "pre-probe and the wait for a transfer slot, not just the download. On its own it says only that " +
                     "the leg is long; read it with `transferringForSec` (is it even on a socket) and `quietForSec` " +
                     "(is anything still arriving), which is what separates a relay with a real backlog from a walk " +
-                    "that will not end.",
+                    "that will not end. On a `visits` row it means the same clock and appears only while a visit is " +
+                    "running, which is that row's way of saying the relay is being synced RIGHT NOW rather than " +
+                    "waiting for its next turn.",
             )
             put(
                 "transferringForSec",
@@ -190,8 +192,10 @@ object StatusVocabulary {
                 "events",
                 "Events that leg has received at the socket so far — its own count, where `received` is every leg of " +
                     "the cycle added together. Counted as they ARRIVE rather than when the leg ends, because the leg " +
-                    "worth watching is the one that has not ended. Inside `rejections` the same name counts the " +
-                    "events refused for one reason, which is the only other place this document counts events.",
+                    "worth watching is the one that has not ended. Two other places carry the same name for a " +
+                    "different total: inside `rejections` it counts the events refused for one reason, and on a " +
+                    "`visits` row it is what that relay's LAST visit received — zero there is ordinary on a tailed " +
+                    "relay, whose tail already delivered it.",
             )
             put(
                 "quietForSec",
@@ -793,6 +797,80 @@ object StatusVocabulary {
                 "Events the pool's visits and tails have delivered to ingest since boot, counted at the socket. The " +
                     "same larger-than-stored caveat as every `received` on this card: ingest drops the copies other " +
                     "relays already delivered.",
+            )
+            put(
+                "visits",
+                "WHEN EACH RELAY WAS LAST SYNCED, one row per relay, WORST FIRST — never synced before long-ago " +
+                    "before just-now. The only per-relay state here that outlives the work it describes: `inFlight` " +
+                    "names the relays a worker is on this instant and forgets them when the visit ends, and the " +
+                    "pool's counters say how many visits ran without saying against what. Bounded, with `omitted` " +
+                    "naming what the cut left out; the order is what makes that cut fall on the healthy rows.",
+            )
+            put(
+                "outcome",
+                "HOW THE LAST VISIT ENDED, in one word. `synced` walked every ask and left a tail. `refused` means " +
+                    "the relay ended a walk with nothing delivered and no more to give (closed, auth-gated, " +
+                    "unpageable, unreachable), which stops the whole visit rather than the one ask. `quiet` means " +
+                    "nothing arrived for long enough that the visit gave up its remaining asks — slow or wedged, not " +
+                    "closed. `failed` means the visit threw. `never` means no visit has finished yet, which for a " +
+                    "relay just admitted to the roster is ordinary. `detail` beside it says the same thing at length.",
+            )
+            put(
+                "detail",
+                "The `outcome` in the router's own words, including the exception where there was one. Absent when " +
+                    "the word is the whole story.",
+            )
+            put(
+                "syncedAt",
+                "When the last CLEAN visit finished — every outstanding leg of every ask walked, the heal queue " +
+                    "drained, the tail (re)opened. NOT A COMPLETENESS CLAIM: whether that relay's history is fully " +
+                    "covered is the band's question (`settled` on the coverage card), and the two disagree " +
+                    "routinely — a relay can be synced every five minutes and stay `paged` forever, and one settled " +
+                    "to its floor can have failed every visit since. Also not a delivery claim: a clean visit that " +
+                    "carried nothing is the normal state of a tailed relay, because the tail already had it.",
+            )
+            put(
+                "lastVisitAt",
+                "When the last visit STARTED, cleanly or not — the visit's own start, not the moment it gave up, so " +
+                    "a five-hour wedge does not read as having begun when it ended. Read against `syncedAt`: the " +
+                    "two far apart is a relay being tried and failing, which is a different fault from one nothing " +
+                    "has tried.",
+            )
+            put(
+                "lastEventAt",
+                "When anything last arrived from this relay, BY ANY PATH — a catch-up page, an audit's diff, or the " +
+                    "live tail. The tail is why this is not derivable from the visit rows: a tailed relay delivers " +
+                    "between visits, and a freshness reading taken at visit boundaries alone would call a relay " +
+                    "streaming events right now half an hour stale. Absent means nothing has ever arrived, which on " +
+                    "a relay with a healthy `outcome` means it has nothing this router asked for.",
+            )
+            put(
+                "failures",
+                "Visits that did not end cleanly since the last one that did. Zero on a healthy relay, and the " +
+                    "number that separates a blip from a relay that has failed every visit for a week — the row's " +
+                    "`outcome` says what went wrong, this says how long it has been going wrong.",
+            )
+            put(
+                "onRoster",
+                "Whether the roster still wants this relay AT ALL. False is the answer to \"why is it not being " +
+                    "synced\" for a url this router has stopped dialling: the roster is the monitor's certified set, " +
+                    "so a relay that loses its verdict leaves it and nothing here will visit it again until a " +
+                    "verdict brings it back. Its row stays, with the streams that used to ask for it, because " +
+                    "\"nothing is dialling this\" and \"this relay is broken\" are the two readings most often " +
+                    "confused.",
+            )
+            put(
+                "tailed",
+                "Whether a live tail is carrying this relay's present — a held subscription on a held socket. A " +
+                    "tailed relay's freshness is `lastEventAt`, not its visit cadence, and its revisits run six " +
+                    "times slower BY DESIGN, because the tail already delivers what a revisit would fetch.",
+            )
+            put(
+                "nextVisitInSec",
+                "When this relay's revisit is due. Absent while it is being visited or waiting in the queue — the " +
+                    "timer is armed when a visit finishes, so there is nothing to count down to before that, and a " +
+                    "`0` would read as overdue. The delay is earned: half an hour tailed, five minutes untailed, " +
+                    "shrunk by how much the relay has delivered lately and floored at a minute.",
             )
         }
 

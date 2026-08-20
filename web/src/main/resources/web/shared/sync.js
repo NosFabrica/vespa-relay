@@ -641,3 +641,212 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
 }
 
+
+/**
+ * WHAT COUNTS AS "SYNCED LATELY" — the window the relay table's own view is
+ * built on, and the one it colours a row for reaching.
+ *
+ * An hour, taken from the pool's own cadences rather than picked: an untailed
+ * relay's revisit base is five minutes and a tailed one's is thirty, so every
+ * relay the pool is actually rotating over should be re-visited well inside an
+ * hour. A row that has not, has missed several turns.
+ */
+export const SYNCED_RECENTLY_SEC = 60 * 60;
+
+/**
+ * Past this without a clean visit, a relay is not slow, it has stopped syncing.
+ *
+ * A day, and deliberately far above [SYNCED_RECENTLY_SEC] rather than a second
+ * threshold near it. Between the two sits everything ordinary — a relay whose
+ * visits are failing but whose tail still delivers, a wide roster whose
+ * rotation is genuinely slower than its base cadence — and calling that broken
+ * is how a warning stops being read. Past a day the pool has had dozens of
+ * turns at it and none of them finished.
+ */
+export const NOT_SYNCING_SEC = 24 * 60 * 60;
+
+/**
+ * How many relay rows the table draws before deferring to the filter box.
+ *
+ * Not `Infinity`, unlike `IN_FLIGHT_SHOWN`, and the difference is the same
+ * argument in the other direction: an in-flight list is bounded by the pool's
+ * worker count, and this one is bounded by the ROSTER — several thousand rows
+ * on a discovered corpus, each with a chip and seven cells. The row being
+ * looked for is reachable two ways that a scroll of three thousand is not: the
+ * default view is the ones that are not syncing, and the filter box takes a
+ * host. What is cut is named, as everywhere else here.
+ */
+export const VISIT_ROWS_SHOWN = 300;
+
+/**
+ * The three questions the relay table gets asked, as views over one list.
+ *
+ * `problems` is the default because it is the question that brings someone to
+ * this card: "which relays are not being synced". `recent` is the same data
+ * read the other way — what HAS synced lately, newest first — and it exists
+ * because "is anything working at all" is answered by the shape of that list
+ * rather than by any one row. `all` is the fallback for looking a specific url
+ * up, which is what the filter box is for.
+ */
+export const VIEW_PROBLEMS = "problems";
+export const VIEW_RECENT = "recent";
+export const VIEW_ALL = "all";
+
+/**
+ * WHY THIS RELAY IS NOT BEING SYNCED — one line, or null when it is.
+ *
+ * The order is the order the answers rule each other out, and it is the whole
+ * reason this is a function rather than a chip colour:
+ *
+ *  - **Off the roster first.** Nothing here will visit it again until a verdict
+ *    brings it back, so every other reading on the row is history. This is the
+ *    answer that gets mistaken for a broken relay most often — "it stopped
+ *    syncing" is as often this router declining to dial it.
+ *  - **Then the last visit's own words.** `detail` is the router's, published
+ *    beside the outcome; a page that reworded it would be a second vocabulary
+ *    to keep in step, and one that dropped it would leave the operator with a
+ *    word and no cause.
+ *  - **Then never-visited**, which on a relay admitted a minute ago is ordinary
+ *    and on one admitted yesterday is not — so it says which it cannot tell.
+ *  - **Then staleness**, which is the only one of the four that is inferred
+ *    from a clock rather than stated by the router.
+ */
+export function whyNotSyncing(r, nowSec) {
+  if (!r) return null;
+  if (r.onRoster === false) {
+    return "Not on the roster: the monitor no longer certifies it, so nothing here will dial it until a verdict brings it back.";
+  }
+  if (r.failures > 0) {
+    return r.detail || `The last ${r.failures} visit(s) did not finish (${r.outcome}).`;
+  }
+  if (r.syncedAt == null) {
+    // The one state this page cannot date: the row exists because the roster
+    // named it, and the roster does not say when.
+    return r.heldForSec != null
+      ? "Being synced right now — its first visit has not finished yet."
+      : "No visit has finished yet. Ordinary for a relay just admitted to the roster; not, if it has been here a while.";
+  }
+  const since = nowSec - r.syncedAt;
+  if (since >= NOT_SYNCING_SEC) return `Last clean visit was over ${Math.floor(since / 3600)}h ago, with nothing failing since — the pool is not getting back to it.`;
+  return null;
+}
+
+/**
+ * THE PER-RELAY TABLE: when each relay was last synced, and why it is not.
+ *
+ * ## Why this exists at all
+ *
+ * Everything else on this card is a live position or a total. `inFlight` names
+ * the relays a worker is on this instant and forgets them when the visit ends;
+ * the pool's counters say how many visits ran without saying against what; the
+ * coverage strip says how far back the bands reach, so a walk that finished in
+ * March and one that finished a minute ago draw the same bar. "When was
+ * wss://relay.example last synced, and if it is not being synced, why" was
+ * answerable only from a log line that had usually rotated away.
+ *
+ * ## The two clocks, kept apart
+ *
+ * `syncedAt` is the last CLEAN VISIT and `lastEventAt` is the last ARRIVAL, and
+ * folding them would be wrong in both directions. A tailed relay delivers
+ * continuously between visits, so arrivals alone would call every relay synced;
+ * and a healthy relay this router asks a narrow filter of may honestly have
+ * nothing to send for weeks, so visits alone would call it dead. Both are
+ * carried, and `fresh` — the one the views are built on — is the VISIT, because
+ * that is what "synced properly" means.
+ *
+ * ## What it decides, and what the page draws
+ *
+ * The filtering, the ordering, the freshness verdict and the reason line. The
+ * counts are computed over the WHOLE list before any of that, so a view that
+ * shows nothing still says how many rows the other two hold — a filtered table
+ * that reads as an empty one is how a mirror looks broken to its own operator.
+ */
+export function visitsOf(visits, options = {}, at = Date.now() / 1000) {
+  const { q = "", view = VIEW_PROBLEMS, limit = VISIT_ROWS_SHOWN } = options;
+  // FLOORED ONCE, here. `Date.now() / 1000` is fractional, and every duration
+  // below is a difference against it — un-floored, a row reads
+  // `44.07599997520447s`, which is what shipped to a screenshot before this
+  // line existed. Every clock in the document is a whole second.
+  const nowSec = Math.floor(at);
+  const all = (visits?.relays || []).map((r) => {
+    const why = whyNotSyncing(r, nowSec);
+    const syncedForSec = r.syncedAt != null ? Math.max(0, nowSec - r.syncedAt) : null;
+    return {
+      relay: r.relay,
+      // The scheme and nothing else, exactly as in `legsOf` and `heldOf`: a
+      // truncated relay url is not a relay url, and it is the thing being
+      // looked up.
+      short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+      outcome: r.outcome || "never",
+      detail: r.detail || null,
+      why,
+      syncedAt: r.syncedAt ?? null,
+      syncedForSec,
+      // Both forms of the two other clocks: the INSTANT, which the page draws
+      // as an age and hangs an exact timestamp off, and the elapsed seconds,
+      // which is what a threshold is compared against. Deriving one from the
+      // other at each call site is how a reader's clock ends up in a
+      // comparison it has no business being in.
+      lastVisitAt: r.lastVisitAt ?? null,
+      lastVisitForSec: r.lastVisitAt != null ? Math.max(0, nowSec - r.lastVisitAt) : null,
+      lastEventAt: r.lastEventAt ?? null,
+      lastEventForSec: r.lastEventAt != null ? Math.max(0, nowSec - r.lastEventAt) : null,
+      events: r.events || 0,
+      failures: r.failures || 0,
+      // Presence, not truthiness: a router that predates these members says
+      // nothing about the roster or the tail, and `!!undefined` would say no.
+      onRoster: r.onRoster !== false,
+      tailed: r.tailed === true,
+      nextVisitInSec: r.nextVisitInSec ?? null,
+      heldForSec: r.heldForSec ?? null,
+      streams: r.streams || [],
+      // WHAT IT IS DOING, in the order that decides it: a worker on it now
+      // beats a countdown, and a relay with neither is in the queue waiting
+      // for a worker — which is a state, not a gap.
+      state: r.heldForSec != null ? "syncing now" : r.nextVisitInSec != null ? "waiting" : "queued",
+      fresh: syncedForSec != null && syncedForSec < SYNCED_RECENTLY_SEC,
+    };
+  });
+
+  // OVER THE WHOLE LIST, before the filter and the view: a table showing
+  // nothing must still be able to say how many rows the other views hold.
+  const counts = {
+    all: all.length,
+    problems: all.filter((r) => r.why).length,
+    recent: all.filter((r) => r.fresh).length,
+    tailed: all.filter((r) => r.tailed).length,
+    offRoster: all.filter((r) => !r.onRoster).length,
+    failing: all.filter((r) => r.failures > 0).length,
+    never: all.filter((r) => r.syncedAt == null).length,
+  };
+
+  const needle = q.trim().toLowerCase();
+  let rows = all;
+  if (view === VIEW_PROBLEMS) rows = rows.filter((r) => r.why);
+  if (view === VIEW_RECENT) {
+    // Newest first — the reverse of the document's own order, which is
+    // worst-first. This view is the one place the page re-sorts, and it does
+    // so because "what has synced lately" read oldest-first is the same list
+    // upside down.
+    rows = rows.filter((r) => r.fresh).slice().sort((a, b) => b.syncedAt - a.syncedAt);
+  }
+  if (needle) rows = rows.filter((r) => r.relay.toLowerCase().includes(needle));
+
+  const shown = rows.slice(0, limit);
+  const omitted = visits?.omitted || 0;
+  const cut = rows.length - shown.length;
+  return {
+    rows: shown,
+    // TWO DIFFERENT CUTS, both disclosed, and separately — they are the same
+    // question to a reader ("am I seeing all of it") and different answers to
+    // anyone acting on it. `omitted` is rows the ROUTER left out of the
+    // document, which no filter here can reach; `cut` is rows this table left
+    // off the screen, which narrowing the filter brings back. `more` is the
+    // sum, for the one-number line.
+    omitted,
+    cut,
+    more: omitted + cut,
+    matched: rows.length,
+    counts,
+  };
+}

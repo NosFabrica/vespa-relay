@@ -6,9 +6,11 @@
 // already in `shared/sync.js` — the split moved the RENDERING to the service
 // that produces the numbers, and changed neither.
 
-import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
+import { ago, cardHead, dayOf, el, fmt, fmtDur, isoOf, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, legsOf, rotationOf } from "../shared/sync.js";
+import {
+  STUCK_LEG_SEC, VIEW_ALL, VIEW_PROBLEMS, VIEW_RECENT, constraintOf, legsOf, rotationOf, visitsOf,
+} from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -429,4 +431,236 @@ function syncCard(section) {
 }
 
 
-export { syncCard };
+/**
+ * WHICH VIEW OF THE RELAY TABLE IS OPEN — module state, exactly like the
+ * activity card's `grain`, and for the same reason: the panel is rebuilt on
+ * every status tick, so anything held in the card's own closure is gone
+ * fifteen seconds after the reader chooses it. The engine already carries the
+ * FILTER text across a rebuild (by the input's `name`) and the scroll position
+ * (by `.wrap.tall`); a segmented control is neither, so it lives here.
+ */
+let visitView = VIEW_PROBLEMS;
+
+/** What each outcome word looks like. `live` is the page's good tone; a fault is `warn`. */
+const OUTCOME_TONE = {
+  // The key is a word off the wire — a router this page has not been taught
+  // still gets a neutral chip rather than resolving `constructor` to a
+  // function, the same rule `BOTTLENECK` and the funnel tones follow.
+  __proto__: null,
+  synced: "live",
+  refused: "warn",
+  quiet: "warn",
+  failed: "warn",
+  never: null,
+};
+
+/**
+ * One relay's row.
+ *
+ * Two clocks side by side and they are NOT the same reading: `last synced` is
+ * the last clean visit and `last event` is the last arrival, from a page or
+ * from the live tail. A tailed relay delivers between visits, so a table with
+ * only the second would call every relay synced; a relay this router asks a
+ * narrow filter of may honestly have nothing to send for a week, so a table
+ * with only the first would call it dead. Both, with the reason line last.
+ */
+function visitRow(r) {
+  const tr = el("tr", r.why ? "hot" : null);
+
+  const url = el("td", "relay");
+  const inner = el("span", null, r.short);
+  // The url in its own LTR isolate, exactly as in the legs table: a relay
+  // address must not be rewritten by the cell's direction.
+  inner.dir = "ltr";
+  url.appendChild(inner);
+  // WHO WANTS IT and whether a tail is carrying it — on the title rather than
+  // in columns of their own, because both are usually the same on every row
+  // and a mark that reads the same on every row is not a mark.
+  url.title =
+    `${r.relay}\n${r.streams.length ? `asked by ${r.streams.join(", ")}` : "no stream currently asks for it"}` +
+    `${r.tailed ? "\nholding a live tail" : ""}`;
+  tr.appendChild(url);
+
+  const synced = el("td", "n", r.syncedAt == null ? "never" : ago(r.syncedAt));
+  if (r.syncedAt != null) synced.title = isoOf(r.syncedAt);
+  tr.appendChild(synced);
+
+  // An em dash, not "never": nothing has ever arrived is a different claim
+  // from nothing has arrived lately, and on a relay whose filter it holds
+  // nothing for, it is not a fault at all. Drawn with `ago`, the same
+  // formatter as the column beside it — the two are read against each other,
+  // and `6d ago` beside `144h 1m` is a subtraction the reader has to do.
+  const heard = el("td", "n", ago(r.lastEventAt));
+  if (r.lastEventAt != null) heard.title = isoOf(r.lastEventAt);
+  tr.appendChild(heard);
+
+  tr.appendChild(el("td", "n", fmt(r.events)));
+
+  const outcome = el("td");
+  const tone = Object.hasOwn(OUTCOME_TONE, r.outcome) ? OUTCOME_TONE[r.outcome] : null;
+  // The failure RUN, on the chip: `refused ×14` and `refused` are a relay that
+  // has been down for a day and one that missed a turn, and the word alone
+  // cannot tell them apart.
+  outcome.appendChild(chip(r.failures > 1 ? `${r.outcome} ×${fmt(r.failures)}` : r.outcome, tone, term("outcome")));
+  if (!r.onRoster) outcome.appendChild(chip("off the roster", null, term("onRoster")));
+  tr.appendChild(outcome);
+
+  // WHAT HAPPENS NEXT, which is what turns "it has not synced in a day" from a
+  // complaint into a diagnosis: a relay with a countdown is waiting its turn,
+  // and one that is being held right now is not stuck at all.
+  const next = el(
+    "td",
+    "n",
+    r.heldForSec != null ? `syncing now (${fmtDur(r.heldForSec)})` : r.nextVisitInSec != null ? `in ${fmtDur(r.nextVisitInSec)}` : "queued",
+  );
+  next.title = term(r.heldForSec != null ? "heldForSec" : "nextVisitInSec");
+  tr.appendChild(next);
+
+  // The ROUTER's own words where there are any — see `whyNotSyncing` for the
+  // order they rule each other out in. Full text on the title, because the
+  // column is one line and the exception on a `failed` row is the whole
+  // message.
+  const why = el("td", "why", r.why || "—");
+  if (r.why) why.title = r.why;
+  tr.appendChild(why);
+  return tr;
+}
+
+/**
+ * WHEN EACH RELAY WAS LAST SYNCED, AND WHY THE REST ARE NOT.
+ *
+ * ## Why this is its own card and not a panel of the one above
+ *
+ * The card above answers "is the mirror keeping up" — one status line, one
+ * block per stream, the pipeline, the depth strip — and every mark on it is
+ * about the POOL. This one is about a relay, and it is the question an
+ * operator arrives with when something specific is missing from the store:
+ * *this* relay, when did we last get anything from it, and if we did not, what
+ * happened. Nothing on the other card can answer it. `inFlight` names the
+ * relays a worker is on this instant and forgets them the moment the visit
+ * ends; the counters say how many visits ran without saying against what; the
+ * depth strip draws a band that finished in March exactly like one that
+ * finished a minute ago.
+ *
+ * ## Three views over one list, and the default is the complaint
+ *
+ * `not syncing` opens first because that is what brings someone here, and
+ * because on a healthy mirror it is empty — which is itself the answer. The
+ * counts sit ON the other two buttons so an empty table can never read as an
+ * empty roster. `synced lately` is the same rows newest-first, which is how
+ * "is anything working at all" is answered without reading any single row.
+ *
+ * ## What the table refuses to do
+ *
+ * **It does not merge the two clocks.** See [visitRow].
+ *
+ * **It does not colour a healthy relay green.** Only rows with a reason line
+ * are marked, so the eye lands on the fault rather than on a wall of chips —
+ * the same rule the legs table follows with `quietForSec`.
+ *
+ * **It does not silently cut.** The router's `omitted` and this table's own
+ * row cap are added and named together: a truncated list that does not say so
+ * reads as the whole answer, and here the whole answer is what is being
+ * chased.
+ */
+function relaySyncCard(section) {
+  const d = (section && section.data) || {};
+  const visits = d.progress && d.progress.visits;
+  const card = el("div", "card");
+  cardHead(card, "Relay sync", visits ? null : "No per-relay sync state in this document.", section);
+  setTerms(d.terms);
+  if (!visits) return card;
+
+  // The whole-roster facts, before any view narrows anything: the denominator
+  // every count below is a share of.
+  const first = visitsOf(visits, { view: VIEW_ALL, limit: 0 });
+  const c = first.counts;
+  card.appendChild(el("div", "sy-sub",
+    [`${fmt(c.all)} relay(s) this mirror has visited or been asked to visit`,
+     `${fmt(c.tailed)} holding a live tail`,
+     `${fmt(c.recent)} synced in the last hour`,
+     `${fmt(c.never)} never synced`].join(" · ")));
+
+  const bar = el("div", "bar-row");
+  const seg = el("div", "seg");
+  const filter = el("input");
+  const status = el("span", "status");
+  const table = el("table", "sy-visits");
+  const tbody = el("tbody");
+
+  const draw = () => {
+    const { rows, more, cut, omitted, matched } = visitsOf(visits, { q: filter.value, view: visitView });
+    tbody.replaceChildren(...rows.map(visitRow));
+    if (!rows.length) {
+      const tr = el("tr");
+      const td = el("td", "why none",
+        visitView === VIEW_PROBLEMS && !filter.value.trim()
+          ? "Every relay on the roster has synced, and none has failed a visit since."
+          : "No relay here matches that.");
+      td.colSpan = 7;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    // The denominator stays on screen while filtering — a filtered table that
+    // only says "5" reads as a mirror with five relays on it. What is not
+    // shown is one number beside it and TWO facts on its title: narrowing the
+    // filter brings this table's own cut back and can never reach the
+    // router's.
+    status.textContent = `${fmt(matched)} of ${fmt(c.all)}${more ? ` · ${fmt(more)} not shown` : ""}`;
+    status.title = more
+      ? [cut ? `${fmt(cut)} more match than this table draws at once — narrow the filter.` : "",
+         omitted ? `${fmt(omitted)} relay(s) the router left out of the document; no filter here can reach them.` : ""]
+        .filter(Boolean).join("\n")
+      : "";
+  };
+
+  for (const [key, label, n] of [[VIEW_PROBLEMS, "not syncing", c.problems],
+                                 [VIEW_RECENT, "synced lately", c.recent],
+                                 [VIEW_ALL, "all", c.all]]) {
+    const b = el("button", key === visitView ? "on" : null, `${label} (${fmt(n)})`);
+    b.addEventListener("click", () => {
+      visitView = key;
+      [...seg.children].forEach((x) => x.classList.toggle("on", x === b));
+      draw();
+    });
+    seg.appendChild(b);
+  }
+  filter.type = "search";
+  // Named, so the engine restores what was typed into THIS box across a
+  // rebuild and not into the one on Kinds — see `fill` in statspage.js.
+  filter.name = "visits";
+  filter.placeholder = "filter by host or url";
+  filter.setAttribute("aria-label", "filter relays by host or url");
+  filter.addEventListener("input", draw);
+  bar.append(seg, filter, status);
+  card.appendChild(bar);
+
+  const wrap = el("div", "wrap tall");
+  const thead = el("thead");
+  const hr = el("tr");
+  for (const [label, cls, key] of [["Relay", "", null], ["Last synced", "n", "syncedAt"],
+                                   ["Last event", "n", "lastEventAt"], ["Events", "n", "events"],
+                                   ["Last visit", "", "outcome"], ["Next visit", "n", null],
+                                   ["Why not", "", null]]) {
+    const th = el("th", cls, label);
+    if (key) th.title = term(key);
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.append(thead, tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  draw();
+
+  // THE ONE CAVEAT WORTH THE WORDS, and it is the reading this card is most
+  // likely to be misused for: a clean visit is not a full one. Whether a
+  // relay's history is covered is the band's question, one card up.
+  card.appendChild(el("p", "card-sub",
+    "“Synced” here means the last visit walked every ask and left a tail — not that this relay's history is " +
+    "fully covered, which is the coverage card's “settled”. A clean visit that carried nothing is the normal " +
+    "state of a tailed relay: the tail already had it."));
+  return card;
+}
+
+
+export { relaySyncCard, syncCard };

@@ -57,10 +57,19 @@ internal class VisitQueue(
     private val parked = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
     /**
-     * The pending revisit per url, as a CANCELLABLE job rather than a bare
-     * membership mark — see [disarm] for what a mark could not express.
+     * The pending revisit per url — the CANCELLABLE job (see [disarm] for what
+     * a bare membership mark could not express) and when it comes due.
+     *
+     * The deadline rides beside the job rather than in a second map so the two
+     * cannot disagree about which revisit is armed: every path that replaces or
+     * cancels a job replaces or removes the pair.
      */
-    private val armed = ConcurrentHashMap<NormalizedRelayUrl, Job>()
+    private class Armed(
+        val job: Job,
+        val dueAtMs: Long,
+    )
+
+    private val armed = ConcurrentHashMap<NormalizedRelayUrl, Armed>()
 
     /** Guards the two compound reads that decide a park — see [visitLoop]. */
     private val handoff = Any()
@@ -68,6 +77,19 @@ internal class VisitQueue(
     val waiting: Int get() = queued.size
 
     val visiting: Int get() = inFlight.size
+
+    /**
+     * EVERY ARMED REVISIT, in seconds from [nowMs] and keyed by url STRING —
+     * the form the status document publishes, so the caller walking thousands
+     * of ledger rows does one pass here rather than a lookup per row.
+     *
+     * A url that is being visited right now, or waiting in the queue, is
+     * absent: the timer is armed when a visit FINISHES, and there is nothing to
+     * count down to before that. Never negative — a timer that is due but has
+     * not run yet reads as `0`, and a countdown running backwards would read as
+     * a revisit that is overdue by hours.
+     */
+    fun revisitsDueInSec(nowMs: Long = System.currentTimeMillis()): Map<String, Long> = armed.entries.associate { (url, a) -> url.url to ((a.dueAtMs - nowMs) / 1000).coerceAtLeast(0) }
 
     /** Queue [url] now. False when it is already waiting (running is fine). */
     fun offer(url: NormalizedRelayUrl): Boolean {
@@ -143,7 +165,7 @@ internal class VisitQueue(
      * armed is a no-op.
      */
     fun disarm(url: NormalizedRelayUrl) {
-        armed.remove(url)?.cancel()
+        armed.remove(url)?.job?.cancel()
     }
 
     private fun armRevisit(
@@ -159,8 +181,11 @@ internal class VisitQueue(
             scope.launch(start = CoroutineStart.LAZY) {
                 delay(delayMs)
                 // Only OUR OWN entry — a [disarm] and re-arm in between put a
-                // different job there, and that one still owes a revisit.
-                if (armed.remove(url, coroutineContext[Job])) {
+                // different one there, and that one still owes a revisit. The
+                // map holds (job, deadline) pairs now, so the identity is read
+                // off the pair's job and the removal is still atomic on it.
+                val current = armed[url]
+                if (current != null && current.job === coroutineContext[Job] && armed.remove(url, current)) {
                     if (stillWanted(url)) offer(url)
                 }
             }
@@ -178,7 +203,8 @@ internal class VisitQueue(
         // another worker can draw it, visit it and arm it in the gap — and the
         // gap is as wide as `revisitDelayMs`, which is the caller's lambda and
         // reads the roster.
-        if (armed.putIfAbsent(url, job) != null) {
+        val entry = Armed(job, System.currentTimeMillis() + delayMs)
+        if (armed.putIfAbsent(url, entry) != null) {
             job.cancel()
             return
         }

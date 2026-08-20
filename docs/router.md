@@ -845,6 +845,82 @@ the three different things the word "done" used to cover: a fan-out leg that
 so a chip on the page can never describe a member in words the router would not
 use.
 
+### When was this relay last synced
+
+Everything above is a live position or a total, and none of it answers the
+question an operator actually arrives with when something specific is missing
+from the store: *this* relay — when did we last get anything from it, and if we
+did not, why. `inFlight` names the relays a worker is on this instant and
+forgets them the moment the visit ends. The pool's counters say how many visits
+ran without saying against what. A band says how far back a walk reached, so one
+that finished in March draws exactly like one that finished a minute ago. The
+answer existed only in a `router: visit … failed` line, for as long as the
+container kept it — and for the relays that were working, not even that.
+
+So the document carries one row per relay, worst first, as `progress.visits`,
+and the mirror's page draws it as the **Relay sync** card:
+
+```json
+{"relays": [{"relay": "wss://slow.example/", "outcome": "refused",
+             "detail": "The relay ended a walk with nothing delivered and no more to give — …",
+             "syncedAt": 1769900000, "lastVisitAt": 1769998800, "lastEventAt": 1769900012,
+             "events": 0, "failures": 14, "onRoster": true, "tailed": false,
+             "nextVisitInSec": 240, "streams": ["content"]}],
+ "omitted": 0}
+```
+
+Four things are load-bearing.
+
+**`syncedAt` is the last CLEAN VISIT, and not a completeness claim.** A clean
+visit walked every outstanding leg of every ask the roster had for that relay,
+drained the heal queue and left a tail. Whether that relay's *history* is
+covered is the band's question — `settled` on the coverage card — and the two
+disagree routinely: a relay can be synced every five minutes and stay `paged`
+forever, and one settled to its floor can have failed every visit since.
+
+**A clean visit that carried nothing is still a clean visit.** Most are: a
+tailed relay's catch-up normally finds nothing, because the tail already
+delivered it. `events` therefore sits *beside* `syncedAt` rather than deciding
+it — folding them would report every quiet relay on the roster as broken.
+
+**`syncedAt` and `lastVisitAt` are the pair that tells an attempt from a
+success.** A relay that has failed every visit for a week has a `lastVisitAt`
+of minutes ago and a `syncedAt` of a week; one nothing has tried has neither
+moving. A single "last sync" number cannot say which, and `failures` — visits
+that have not ended cleanly since the last one that did — is how long it has
+been going on.
+
+**`onRoster: false` is the answer to "why is it not being synced" for a url this
+router has stopped dialling.** The roster is the monitor's certified set, so a
+relay that loses its verdict leaves it and nothing here will visit it again
+until a verdict brings it back. Its row stays, naming the streams that used to
+ask for it, because *"nothing is dialling this"* and *"this relay is broken"*
+are the two readings most often confused — and only one of them is about the
+relay.
+
+`outcome` is one word for how the last visit ended, and the four are different
+faults with different fixes:
+
+| outcome | means | what happens next |
+|---|---|---|
+| `synced` | every ask walked, heal queue drained, tail (re)opened | the revisit, on the earned cadence |
+| `refused` | the relay ended a walk with nothing delivered and no more to give — closed, auth-gated, unpageable, unreachable | the whole visit stopped there; the monitor's next sweep decides whether it stays certified |
+| `quiet` | nothing arrived for long enough that the visit gave up its remaining asks — slow or wedged, never closed | the revisit takes what was left |
+| `failed` | the visit threw; the exception is in `detail` | the revisit, like any other |
+| `never` | no visit has finished yet | ordinary for a relay just admitted; not, if it has been on the roster a while |
+
+`lastEventAt` is when anything last arrived **by any path** — a catch-up page,
+an audit's diff, or the live tail. It is not derivable from the visit rows and
+that is the point: a tailed relay delivers between visits, so a freshness
+reading taken at visit boundaries alone would call a relay streaming events
+right now half an hour stale.
+
+The list is bounded and says so with `omitted`, on the same terms as every other
+list here. The ledger itself drops rows for relays the roster no longer wants
+before it drops one it does — a roster larger than the cap is kept whole, since
+a ledger that forgets the relay being looked up is worth more heap than it
+saves.
+
 ## Enabling it under docker compose
 
 The router is the `sync` service, behind the `sync` profile — the profile is

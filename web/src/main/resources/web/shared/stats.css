@@ -844,3 +844,34 @@ table.sy-legs tr.hot .sy-at { color: inherit; }
    is marked — a coloured cell would put the emphasis on the clock rather than
    on the relay it belongs to. */
 table.sy-legs tr.hot td { color: var(--warn); }
+
+/* ---- when each relay was last synced -----------------------------------
+   The per-relay table on the mirror's page. It uses the page's own table
+   rules (`.wrap.tall` for the scroll and the sticky head), so only the two
+   things that table does not already have are here: the reason column, which
+   is prose in a table of numbers, and the row mark for a relay that has one.
+
+   The reason is CLAMPED rather than wrapped. It is one sentence of the
+   router's own words, the full text is on the cell's title, and letting it
+   wrap would make a row with a long exception four times the height of the
+   rows around it — in a table whose whole job is being scanned down. */
+table.sy-visits td.why { color: var(--muted); font-size: .85rem; max-width: 24ch; overflow: hidden;
+                         text-overflow: ellipsis; white-space: nowrap; }
+/* The url is CLAMPED, not wrapped. `td.relay` breaks anywhere by default,
+   which in a seven-column table turned every address into a three-line
+   column of four-character fragments. The cell is rtl so the ellipsis lands
+   on the LEFT — where the host is common and the PATH is what differs
+   between one server's aliases — and the url itself sits in an ltr isolate
+   inside it, which is what stops the direction rewriting the address. Same
+   pair as the legs table's `td.u`, which learned it first. */
+table.sy-visits td.relay { max-width: 26ch; overflow: hidden; text-overflow: ellipsis;
+                           white-space: nowrap; word-break: normal; direction: rtl; }
+/* …except the one that IS the whole table: an empty view says why in a
+   sentence, and clamping that to one line would truncate the answer. */
+table.sy-visits td.why.none { max-width: none; white-space: normal; }
+/* A relay with a reason is the finding, so the RELAY is what is marked — the
+   same rule the legs table follows, and for the same reason: colouring the
+   clock cell would put the emphasis on the number rather than on the row it
+   belongs to. Not the whole row: the reason column is already muted prose and
+   a warning-coloured paragraph reads as the fault rather than as its cause. */
+table.sy-visits tr.hot td.relay { color: var(--warn); }

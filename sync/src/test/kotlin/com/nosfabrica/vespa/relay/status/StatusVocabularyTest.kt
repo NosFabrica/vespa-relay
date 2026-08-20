@@ -160,7 +160,14 @@ class StatusVocabularyTest {
                        {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                         "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
                         "visitsRun": 90, "auditing": 1, "auditsRun": 4, "auditsSkipped": 3, "retracted": 2, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
-                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
+                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
+                     "visits": {"relays": [
+                       {"relay": "wss://slow.example/", "outcome": "refused", "detail": "The relay ended a walk with nothing delivered",
+                        "syncedAt": 700, "lastVisitAt": 880, "lastEventAt": 700, "events": 0, "failures": 14,
+                        "onRoster": true, "tailed": false, "nextVisitInSec": 240, "streams": ["content"]},
+                       {"relay": "wss://busy.example/", "outcome": "synced", "syncedAt": 900, "lastVisitAt": 900,
+                        "lastEventAt": 901, "events": 4120, "failures": 0, "onRoster": true, "tailed": true,
+                        "heldForSec": 12, "streams": ["content"]}], "omitted": 0}}
                     """.trimIndent(),
                 ).jsonObject
 
@@ -299,6 +306,22 @@ class StatusVocabularyTest {
                     "abortedVisits",
                     "evictedTails",
                     "poolReceived",
+                ) +
+                // WHEN EACH RELAY WAS LAST SYNCED — the per-relay half, which
+                // is the one part of this document that outlives the work it
+                // describes. Every member of a row either has a term or is an
+                // identifier in `selfDescribing` above.
+                setOf(
+                    "visits",
+                    "outcome",
+                    "detail",
+                    "syncedAt",
+                    "lastVisitAt",
+                    "lastEventAt",
+                    "failures",
+                    "onRoster",
+                    "tailed",
+                    "nextVisitInSec",
                 ) +
                 // What the phase itself knows, which used to reach a log line
                 // and stop there — plus the two facts about the process rather
