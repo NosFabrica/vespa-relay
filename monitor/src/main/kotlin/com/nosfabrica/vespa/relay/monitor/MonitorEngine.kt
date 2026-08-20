@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -151,6 +152,9 @@ class MonitorEngine(
     /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
+    /** How often the fast lane looks, or null for a lane that is off — see [fastLaneSecondsFor]. */
+    private val fastLaneSeconds = fastLaneSecondsFor(config)
+
     /**
      * THE ROW THE DERIVATION REPORTS ON, and it is declared HERE, above the
      * passes it feeds, on purpose: [Processors.of] registers in call order and
@@ -188,6 +192,10 @@ class MonitorEngine(
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(FOLD_PROCESSOR),
+                // The gate, not the dial: a hidden service waits on Tor's own
+                // socket budget instead of on the clearnet fan-out's permits.
+                // See [DialGate] for what the shared one cost.
+                tor = tor,
             )
         }
 
@@ -210,6 +218,7 @@ class MonitorEngine(
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
+                tor = tor,
             )
         }
 
@@ -300,57 +309,47 @@ class MonitorEngine(
                 // this the direct client would both fail and put a hidden
                 // service through the local resolver — see [TorTransport].
                 document = RelayDocument(peers::httpFor),
-                routesThroughTor = peers::routesThroughTor,
+                // What the `n` tag names AND what the gate is sized from.
+                tor = tor,
                 concurrency = monitorConcurrency,
             )
         }
 
+    /**
+     * One pass as [AliasMonitor] sees it: the work, plus the row it reports on.
+     *
+     * A named builder rather than an anonymous object per use, because the
+     * stability gate and fitness each appear in TWO lists now — the sweep and
+     * the fast lane — and two wrappers over one pass are two places for the
+     * handle to drift from the object writing to it.
+     */
+    private fun entry(
+        handle: Processors.Handle?,
+        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int,
+    ) = object : AliasMonitor.Pass {
+        // The same handle the pass itself writes into, so the monitor's clock —
+        // when the pass ran, how long it took, when the next one is due — lands
+        // on the row the pass is filling in. See [AliasMonitor.Pass.progress].
+        override val progress = handle
+
+        override suspend fun measure(
+            label: String,
+            candidates: List<NormalizedRelayUrl>,
+            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            onEvent: suspend (Event) -> Unit,
+            sockets: Sockets,
+        ): Int = run(label, candidates, canDial, onEvent, sockets)
+    }
+
+    private val foldEntry = folding?.let { f -> entry(f.progress, f::measure) }
+
+    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress, g::measure) }
+
+    private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::measure) }
+
     private val aliasMonitor: AliasMonitor? =
-        listOfNotNull<AliasMonitor.Pass>(
-            // Each wrapper carries the same handle its pass writes into, so the
-            // monitor's clock — when the pass ran, how long it took, when the
-            // next one is due — lands on the row the pass is filling in. See
-            // [AliasMonitor.Pass.progress].
-            folding?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            consistencyPass?.let { g ->
-                object : AliasMonitor.Pass {
-                    override val progress = g.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = g.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-            fitness?.let { f ->
-                object : AliasMonitor.Pass {
-                    override val progress = f.progress
-
-                    override suspend fun measure(
-                        label: String,
-                        candidates: List<NormalizedRelayUrl>,
-                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
-                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                }
-            },
-        ).takeIf { it.isNotEmpty() }
+        listOfNotNull(foldEntry, stabilityEntry, fitnessEntry)
+            .takeIf { it.isNotEmpty() }
             ?.let { passes ->
                 AliasMonitor(
                     passes,
@@ -359,24 +358,33 @@ class MonitorEngine(
                     // historical six hours otherwise.
                     intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
                     source = world,
-                    // The fast lane runs FITNESS alone: a first `prime` is
-                    // what a new relay waits on; fold and consistency verdicts
-                    // ride the next sweep.
-                    fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
-                    fastLanePass =
-                        fitness?.let { f ->
-                            object : AliasMonitor.Pass {
-                                override val progress = f.progress
-
-                                override suspend fun measure(
-                                    label: String,
-                                    candidates: List<NormalizedRelayUrl>,
-                                    canDial: suspend (NormalizedRelayUrl) -> Boolean,
-                                    onEvent: suspend (Event) -> Unit,
-                                    sockets: Sockets,
-                                ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
-                            }
-                        },
+                    // The fast lane runs THE STABILITY GATE AND THEN FITNESS:
+                    // a first `prime` is what a new relay waits on, and it must
+                    // not be handed one before anything has asked whether the
+                    // relay answers the same question twice. The FOLD still
+                    // rides the sweep — it needs a host's whole group, and a
+                    // since-bound set holds only what was named in the last
+                    // tick. See [AliasMonitor.fastLanePasses].
+                    // DEFAULTED LIKE ITS NEIGHBOURS, and it was the only one
+                    // that was not — but the two nulls here mean OPPOSITE
+                    // things and collapsing them with `?:` would be worse than
+                    // the bug.
+                    //
+                    // No `monitor` block at all is a deployment discovering
+                    // through stream `relaySource` blocks alone — a shape
+                    // [MonitorGateTest] exists to keep working — and there this
+                    // read carried the null all the way out and turned the lane
+                    // OFF, so a new relay waited a full `sweepSeconds` for its
+                    // first `prime` on exactly the configs least likely to
+                    // notice one missing. `sweepSeconds` and `dialConcurrency`
+                    // both take their default on that path.
+                    //
+                    // A null INSIDE a block is the operator writing
+                    // `fastLaneSeconds = 0`, the documented off switch. That
+                    // one has to survive: a fallback that read it as "unset"
+                    // would restart a lane somebody turned off by hand.
+                    fastLaneEveryMs = fastLaneSeconds?.times(1000L),
+                    fastLanePasses = listOfNotNull(stabilityEntry, fitnessEntry),
                 )
             }
             // WHERE THE CANDIDATE SET CAME FROM, on both passes' rows.
@@ -470,8 +478,22 @@ class MonitorEngine(
             sourceProgress?.phase(Processors.OFF)
             folding?.progress?.phase(Processors.OFF)
             consistencyPass?.progress?.phase(Processors.OFF)
+            // …AND FITNESS, which was missing from a list whose whole job is
+            // that no row is left reading as a pass about to run. It is the one
+            // that only ever sets its phase from INSIDE `measure`, so on a
+            // deployment with no sources it never set one at all — the row sat
+            // at `starting` for the life of the process, which is the exact
+            // state these three lines exist to prevent, on the row an operator
+            // checks first because `prime` is what the streams select on.
+            fitness?.progress?.phase(Processors.OFF)
             return false
         }
+        // WHAT THE PASSES ARE BOUNDED BY, said once and only when they really
+        // run. `dialConcurrency` is the CLEARNET number: the Tor half is capped
+        // at the Tor dispatcher's own width, so an operator who raises the knob
+        // to buy onion throughput can see from this line that it did not move,
+        // and reach for `SYNC_TOR_MAX_SOCKETS` instead. See [DialGate].
+        System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
         aliasMonitor?.start()
         return true
     }
@@ -533,6 +555,30 @@ class MonitorEngine(
          * (`discoveryStreams.isNotEmpty()`) answered `false` for.
          */
         internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
+
+        /**
+         * How often the fast lane looks, or null for a lane that is off.
+         *
+         * **The two ways of reading null here mean opposite things**, which is
+         * why this is a named function rather than one `?.` in the constructor
+         * — where it was, and where it was wrong.
+         *
+         * NO `monitor` BLOCK is a deployment discovering through stream
+         * `relaySource` blocks alone, a shape [hasMonitorSources] exists to
+         * keep working. `config.monitor?.fastLaneSeconds` is null there, and
+         * carrying that null out turned the lane OFF — so a new relay waited a
+         * full `sweepSeconds` for its first `prime` on exactly the configs
+         * least likely to notice the lane was missing. `sweepSeconds` and
+         * `dialConcurrency` both take their documented default on that path;
+         * this now does too.
+         *
+         * A null INSIDE a block is the operator writing `fastLaneSeconds = 0`,
+         * the documented off switch — see [MonitorConfig.fastLaneSeconds] and
+         * the loader that maps 0 to null. That one has to survive, so a plain
+         * `?: DEFAULT_FAST_LANE_SECONDS` would be a worse bug than the one it
+         * fixes: it would restart a lane somebody turned off by hand.
+         */
+        internal fun fastLaneSecondsFor(config: RouterConfig): Long? = config.monitor?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { config.monitor == null }
 
         /**
          * The names the progress document calls the monitor's jobs.

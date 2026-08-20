@@ -95,13 +95,31 @@ class AliasMonitor(
     private val source: CandidateSource? = null,
     /**
      * The fast lane: how often to look for urls named by relay-list events
-     * ingested since the last look, and the ONE pass to run over them —
-     * fitness, in practice, because a first `prime` is what a new relay is
-     * waiting on where a fold or consistency verdict can ride the next sweep.
-     * Null (either of them) turns the lane off.
+     * ingested since the last look, and the passes to run over them, IN ORDER
+     * and on the same terms as [passes].
+     *
+     * **This is the STABILITY GATE and then FITNESS, and it used to be fitness
+     * alone.** A first `prime` is what a new relay is waiting on, which is why
+     * the lane exists and why the fold still rides the sweep — a fold needs a
+     * host's WHOLE group to elect a leader, and a since-bound set holds
+     * whichever urls of that host were named in the last two minutes.
+     *
+     * The stability gate has no such requirement: it is two REQs per url,
+     * compared against nothing but that url's own second answer. Leaving it on
+     * the sweep meant a new relay could be graded `prime` — and admitted to
+     * every visit-mode stream's roster — before anything had asked whether it
+     * answers the same question twice. `Verdict.INCONSISTENT` exists because
+     * such a relay "would poison bands and coverage", so that window was up to
+     * a whole [intervalMs] of a relay writing bands it cannot reproduce.
+     *
+     * It costs nothing over a sweep: a stability verdict stands for
+     * [RelayVerdictRecord.DEFAULT_TTL_SECONDS], so a url measured here is one
+     * the sweep then skips. The work moves earlier, it does not repeat.
+     *
+     * Null [fastLaneEveryMs] or an empty list turns the lane off.
      */
     private val fastLaneEveryMs: Long? = null,
-    private val fastLanePass: Pass? = null,
+    private val fastLanePasses: List<Pass> = emptyList(),
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -279,8 +297,7 @@ class AliasMonitor(
         // simply waits, and its since-bound means it then reads the same
         // minutes of events it would have.
         val everyMs = fastLaneEveryMs
-        val lane = fastLanePass
-        if (everyMs != null && lane != null && source != null) {
+        if (everyMs != null && fastLanePasses.isNotEmpty() && source != null) {
             scope.launch {
                 delay(startupDelayMs)
                 // From the boot, not from zero: everything older is the
@@ -292,22 +309,7 @@ class AliasMonitor(
                     val lookFrom = lastLookSec
                     lastLookSec = System.currentTimeMillis() / 1000
                     try {
-                        passGate.withLock {
-                            // NOT bracketed onto the source's row, though it is
-                            // the same object deriving. That row is the SWEEP's
-                            // derivation: the lane reads minutes of events
-                            // where a sweep walks the store, so counting a lane
-                            // tick as a pass there would run `passesRun` up by
-                            // the hour and overwrite a `lastPassSec` measured in
-                            // minutes with one measured in milliseconds. The
-                            // lane's work is reported on the pass it runs, which
-                            // brackets itself.
-                            val fresh = source.candidatesSince(lookFrom)
-                            if (fresh.isNotEmpty()) {
-                                System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
-                                lane.measure("fast lane", fresh, source::canDial, source::onEvent, source.sockets)
-                            }
-                        }
+                        passGate.withLock { runFastLane(lookFrom) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -317,6 +319,61 @@ class AliasMonitor(
             }
         }
         return this
+    }
+
+    /**
+     * One lane tick: the urls named since [sinceSec], through every
+     * [fastLanePasses] entry in order.
+     *
+     * Public for the same reason [runPass] is — the loop that drives it sleeps
+     * for minutes, and a test that had to wait one out could only assert that
+     * the lane exists. The caller holds [passGate]; this does not take it,
+     * exactly as [runPass] does not.
+     *
+     * NOT bracketed onto the source's row, though it is the same object
+     * deriving. That row is the SWEEP's derivation: the lane reads minutes of
+     * events where a sweep walks the store, so counting a lane tick as a pass
+     * there would run `passesRun` up by the hour and overwrite a `lastPassSec`
+     * measured in minutes with one measured in milliseconds. The passes it runs
+     * are bracketed, on their own rows, by the same begin/finish [runPass] uses.
+     *
+     * **Which does stamp those rows with lane-sized numbers**, and that is not
+     * new: [FitnessPass.measure] has always bracketed itself, so the fitness row
+     * has been reporting a `lastPassSec` measured in milliseconds ever since the
+     * lane existed. The stability row now joins it. The alternative is worse —
+     * a pass publishes its position from inside ([Processors.Handle.measuring]),
+     * so an unbracketed lane tick would draw a position on a row whose phase
+     * reads `idle`.
+     */
+    suspend fun runFastLane(sinceSec: Long): Int {
+        val src = source ?: return 0
+        val fresh = src.candidatesSince(sinceSec)
+        if (fresh.isEmpty()) return 0
+        System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
+        var learned = 0
+        for (pass in fastLanePasses) {
+            pass.progress?.begin()
+            try {
+                // Guarded one at a time, for the reason [runPass] guards each
+                // stream: a lane that let the stability gate's failure skip
+                // fitness would cost a new relay its first `prime` over a fault
+                // in the pass before it.
+                learned += pass.measure(FAST_LANE, fresh, src::canDial, src::onEvent, src.sockets)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("router: fast lane pass failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            } finally {
+                pass.progress?.finish()
+            }
+        }
+        // DELIBERATELY NOT [learnedTotal], which is what [generation] reports.
+        // The lane has never moved it and this change does not start: the
+        // counter has no reader in the router today, so making the lane bump it
+        // would be an unobservable behaviour change smuggled in beside a fix.
+        // Worth revisiting the day something reads a generation — a lane that
+        // learns a `prime` and leaves the number still is arguably wrong.
+        return learned
     }
 
     /** Serializes the sweep and the fast lane — see the lane's comment in [start]. */
@@ -466,6 +523,9 @@ class AliasMonitor(
          * was never folded.
          */
         const val ALL_STREAMS = "all streams"
+
+        /** What a lane tick reports under, where a sweep reports under [ALL_STREAMS]. */
+        const val FAST_LANE = "fast lane"
 
         /**
          * How often the fold re-probes. Six hours, matching the default stream

@@ -155,11 +155,19 @@ data class TorSettings(
  *
  * What it costs is paid only by hosts that do not answer: a leader that never
  * speaks is asked four times a pass (bare filter then [AliasProbe.FALLBACK_KINDS],
- * each retrying once at the smaller page), so a dead onion group now occupies one
- * of the fold's 16 permits for minutes rather than seconds. That is background
- * work on a 6h clock against the handful of relays Tor reaches — see
- * [TorSettings.DEFAULT_MAX_SOCKETS] — and the alternative is what it replaces:
+ * each retrying once at the smaller page), so a dead onion group occupies a
+ * permit for minutes rather than seconds. The alternative is what it replaces:
  * never folding a hidden service at all.
+ *
+ * **WHOSE permit is the part of that argument that has been corrected.** It was
+ * written when the fold's gate was 16 undifferentiated permits and Tor was "the
+ * handful of relays Tor reaches" — true of the population and not of the
+ * occupancy. Measured on staging at `dialConcurrency = 100`, `.onion` was 10% of
+ * the candidate urls and held 60-74% of a saturated gate, with 30-40 of those
+ * permits waiting on a Tor dispatcher only [TorSettings.maxSockets] wide. The
+ * budget below is still right; what was wrong was charging it to the clearnet
+ * fan-out. The passes now gate the two transports separately — see [DialGate],
+ * which carries the readings.
  */
 fun probeIdleMs(
     url: NormalizedRelayUrl,

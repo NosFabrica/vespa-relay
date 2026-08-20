@@ -20,10 +20,12 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -129,17 +131,20 @@ class FitnessPass(
      */
     private val document: RelayDocument? = null,
     /**
-     * Does this url go through Tor? Bound to the same predicate the dial
-     * consults, so `n` cannot disagree with the transport that carried the
-     * measurement.
-     *
-     * A function rather than the transport itself: `TorTransport` is internal
-     * to the router module and this class is not, and the only thing the
-     * question needs is the answer.
+     * The proxy, where this deployment has one. TWO things read it, and both
+     * have to be the transport itself rather than a predicate copied off it:
+     * the `n` tag this pass publishes must name the transport that actually
+     * carried the measurement, and the gate below has to be sized from the
+     * dispatcher that transport dials on. Handing in a `(url) -> Boolean` gave
+     * the first and not the second, and a second argument for the second is a
+     * second thing to keep in step with the first.
      */
-    private val routesThroughTor: (NormalizedRelayUrl) -> Boolean = { false },
+    private val tor: TorTransport? = null,
     private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
+    /** One gate object for every pass this component runs — see [DialGate], and [AliasFolding]. */
+    private val gate = DialGate.over(concurrency, tor)
+
     /**
      * One url's outcome, for the pass's own funnel — carrying the measured
      * facts that ride the same record edit. Fields on the return value
@@ -246,7 +251,6 @@ class FitnessPass(
             // position it did not earn and mislead the rate the ETA is drawn
             // from.
             progress.measuring(toDial.size, Processors.UNIT_URL)
-            val gate = Semaphore(concurrency)
             // A week back, for the same reason the consistency pass anchors
             // there: an anchored ask against a settled window is the only way
             // "events above the anchor" can mean "ignored the cursor" rather
@@ -255,7 +259,7 @@ class FitnessPass(
             coroutineScope {
                 for (url in toDial) {
                     launch {
-                        gate.withPermit {
+                        gate.withPermit(url) {
                             // THE DEADLINE, AND IT IS INSIDE THE PERMIT.
                             //
                             // Around the `launch` instead, it would be counting
@@ -646,7 +650,7 @@ class FitnessPass(
      * it — and from the same predicate the dial itself uses, so a record can
      * never say `clearnet` about a url the fan-out sends through Tor.
      */
-    private fun network(url: NormalizedRelayUrl): String = if (routesThroughTor(url)) NETWORK_TOR else NETWORK_CLEARNET
+    private fun network(url: NormalizedRelayUrl): String = if (tor?.routes(url) == true) NETWORK_TOR else NETWORK_CLEARNET
 
     private fun report(
         label: String,

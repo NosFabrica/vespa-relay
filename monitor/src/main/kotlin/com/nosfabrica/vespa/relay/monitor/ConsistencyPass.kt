@@ -20,8 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
@@ -33,8 +35,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -103,7 +103,15 @@ class ConsistencyPass(
      * the argument. Null says nothing, which is every caller but the router.
      */
     val progress: Processors.Handle? = null,
+    /**
+     * The proxy, where there is one — for the GATE alone; see
+     * [AliasFolding]'s parameter of the same name and [DialGate].
+     */
+    tor: TorTransport? = null,
 ) {
+    /** One gate object for every pass this component runs — see [DialGate], and [AliasFolding]. */
+    private val gate = DialGate.over(concurrency, tor)
+
     /** Urls the last [adopt] saw a fold verdict for — never worth measuring. */
     @Volatile
     private var folded: Set<NormalizedRelayUrl> = emptySet()
@@ -247,7 +255,6 @@ class ConsistencyPass(
         // already carrying a verdict was dropped above, and on a settled corpus
         // that is most of it.
         progress?.measuring(wanted.size, Processors.UNIT_URL)
-        val gate = Semaphore(concurrency)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
         // Urls a socket was actually opened for. NOT `wanted.size`, which this
@@ -271,7 +278,7 @@ class ConsistencyPass(
         coroutineScope {
             for (url in wanted) {
                 launch {
-                    gate.withPermit {
+                    gate.withPermit(url) {
                         // THE DEADLINE, AND IT IS INSIDE THE PERMIT — see
                         // [AliasProbe.deadlineMs] for what it is made of, and
                         // [FitnessPass.measure] for why it cannot go around the

@@ -131,15 +131,33 @@ monitor {
     sweepSeconds = 21600
 
     # The fast lane: how often to look for urls named by relay-list events
-    # ingested since the last look, and run the fitness probe over just those.
-    # This is what bounds a NEW relay's wait for its first `prime` at
-    # minutes. 0 turns the lane off.
+    # ingested since the last look, and run the STABILITY GATE and then the
+    # FITNESS probe over just those. This is what bounds a NEW relay's wait for
+    # its first `prime` at minutes. 0 turns the lane off.
+    #
+    # The gate is in the lane rather than only in the sweep because `prime` is
+    # the whole admission decision: without it a relay that answers the same
+    # question two different ways was admitted to every roster on the tick that
+    # discovered it, and poisoned bands until the next sweep re-graded it. It
+    # costs no extra dials over a sweep — a stability verdict stands for a
+    # month, so a url measured here is one the sweep skips. The alias FOLD
+    # stays on the sweep: it needs a host's whole group, and this set holds
+    # only what was named in the last tick.
     fastLaneSeconds = 120
 
-    # Relays a probe pass dials at once — the sweep's wall clock, since most
-    # of a discovered corpus is dead and a dead relay costs a full timeout.
-    # Also the most sockets the monitor ever holds (its passes run one at a
-    # time), so size it against the socket budget the sync plane leaves free.
+    # CLEARNET relays a probe pass dials at once — the sweep's wall clock,
+    # since most of a discovered corpus is dead and a dead relay costs a full
+    # timeout. Size it against the socket budget the sync plane leaves free;
+    # the monitor's passes run one at a time, so this is the most clearnet
+    # sockets it ever holds.
+    #
+    # `.onion` urls do NOT come out of this number. They wait on a second gate
+    # of their own, `min(dialConcurrency, SYNC_TOR_MAX_SOCKETS)` wide, because
+    # Tor is a separate dispatcher with a separate budget and a hidden service
+    # is allowed the circuit timeout ON TOP of `connectionTimeout`. Shared,
+    # 10% of the urls held 60-74% of this gate and the clearnet corpus queued
+    # behind dead onions; raise SYNC_TOR_MAX_SOCKETS, not this, to buy onion
+    # throughput.
     dialConcurrency = 128
 }
 

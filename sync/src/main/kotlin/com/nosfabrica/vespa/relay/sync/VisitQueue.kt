@@ -164,7 +164,24 @@ internal class VisitQueue(
                     if (stillWanted(url)) offer(url)
                 }
             }
-        if (armed.putIfAbsent(url, job) != null) return
+        // THE LOSER OF THE SLOT HAS TO BE CANCELLED, not merely dropped.
+        //
+        // `scope.launch` registers the job as a child of the scope's Job the
+        // moment it is created — LAZY defers the BODY, not the parenting. A
+        // job that is never started and never cancelled therefore stays an
+        // incomplete child for the life of the process: one retained Job per
+        // lost race, on a scope that lives as long as the router, and a parent
+        // that can never complete normally while it is there.
+        //
+        // The race is narrow but real. `armRevisit` runs after the
+        // synchronized block has already dropped the url from `inFlight`, so
+        // another worker can draw it, visit it and arm it in the gap — and the
+        // gap is as wide as `revisitDelayMs`, which is the caller's lambda and
+        // reads the roster.
+        if (armed.putIfAbsent(url, job) != null) {
+            job.cancel()
+            return
+        }
         job.start()
     }
 }
