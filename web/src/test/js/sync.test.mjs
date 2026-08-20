@@ -728,3 +728,63 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(odd.groups.every((g) => typeof g.label === "string"), true);
   ok("a pool word this page has not been taught is drawn with the unpooled, never as a group of its own");
 }
+
+// ── how big the pool is ─────────────────────────────────────────────────────
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // ONE POOL, shared by every visit-mode stream, so its SIZE is a count of
+  // urls off the rotating pool's own row. Adding the stream rows' `roster`
+  // shares would double-count every relay two streams both want, which on this
+  // deployment is most of them.
+  const doc = {
+    processors: [
+      { name: "ingest", queued: 3 },
+      { name: "visits", roster: 412, awaitingVisit: 7, visiting: 3, tails: 2 },
+    ],
+    streams: [
+      { name: "content", inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+        held("wss://b.example/", { pool: POOL_AUDITING }),
+      ], omitted: 0 } },
+      { name: "indexers", inFlight: { relays: [held("wss://c.example/", { pool: POOL_REFETCHING })], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE }), held("wss://g.example/", { pool: POOL_LIVE })], omitted: 0 },
+  };
+  const { totals } = poolsOf(doc);
+  assert.equal(totals.roster, 412, "the pool's whole world, from the pool's own row");
+  assert.equal(totals.working, 3, "counted off the ROWS, so the summary cannot disagree with the tables under it");
+  assert.equal(totals.queued, 7);
+  assert.equal(totals.waiting, 402, "the remainder: on a revisit timer, neither running nor queued");
+  assert.equal(totals.roster, totals.working + totals.queued + totals.waiting, "those three partition the roster");
+  // …and the tail count crosses them rather than joining them: a tailed relay
+  // keeps its tail while it is revisited, so it is in both at once.
+  assert.equal(totals.tailed, 2);
+  ok("the pool's size is one number off one row, and three of the four marks partition it");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A ROUTER THAT PUBLISHES NO POOL ROW IS NOT A ROUTER WITH AN EMPTY POOL.
+  // `0 in the pool` beside a table of relays is the arithmetic that gets a
+  // whole panel disbelieved, so the total goes away instead.
+  const silent = poolsOf({ streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 0 } }] }).totals;
+  assert.equal(silent.roster, null);
+  assert.equal(silent.queued, null);
+  assert.equal(silent.waiting, null, "no roster is no remainder to compute");
+  assert.equal(silent.working, 1, "what the rows say is still said");
+  assert.equal(silent.tailed, 0);
+
+  // The three counts are read at one tick but not one instant, so a roster
+  // that shrank between them can leave the subtraction short. `-2 between
+  // visits` reads as a bug in the router rather than as the rounding it is.
+  const raced = poolsOf({
+    processors: [{ name: "visits", roster: 1, awaitingVisit: 4 }],
+    streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 0 } }],
+  }).totals;
+  assert.equal(raced.waiting, 0, "the remainder floors at zero rather than going negative");
+  ok("a pool the document does not size says nothing, and a raced subtraction never goes negative");
+}

@@ -728,6 +728,20 @@ export const POOL_LABELS = {
  *
  * Null when the mirror is holding nothing anywhere — no visit, no tail — which
  * is the one state where four empty tables say less than no panel.
+ *
+ * ## …and how big the pool is
+ *
+ * `totals` is the denominator every group count is a share of, because the
+ * tables alone answer "how many are working" and never "out of how many". The
+ * pool is ONE pool — one queue, one set of workers, one tail budget, shared by
+ * every visit-mode stream — so its size is a count of URLS and comes from the
+ * rotating pool's own row (`roster`, `awaitingVisit`), not from adding the
+ * streams' shares, which double-count every relay two streams both want.
+ *
+ * The rows are what the tables draw, so `working` and `tailed` are counted off
+ * the groups rather than read from `visiting`/`tails`: a summary that
+ * disagreed with the tables under it would be worse than no summary. See
+ * [poolTotals].
  */
 export function poolsOf(progress) {
   const rows = [];
@@ -779,5 +793,49 @@ export function poolsOf(progress) {
       streams: found.some((r) => r.stream),
     });
   }
-  return { groups, omitted };
+  return { groups, omitted, totals: poolTotals(progress, groups) };
+}
+
+/** The rotating pool's own processor row — the only place its SIZE is published. */
+const VISITS_PROCESSOR = "visits";
+
+/**
+ * HOW BIG THE POOL IS, and how its relays are split right now.
+ *
+ * Four numbers and one subtraction:
+ *
+ *  - `roster`      every relay in rotation. The pool's whole world, and the
+ *                  denominator the group counts are shares of.
+ *  - `working`     has a worker this instant — the four visit tables, which
+ *                  partition it.
+ *  - `queued`      waiting for a worker, `awaitingVisit`.
+ *  - `waiting`     the remainder: on a revisit timer, neither running nor
+ *                  queued, which is where most of a healthy roster sits.
+ *  - `tailed`      holds a live tail. NOT a fifth share of the same whole —
+ *                  a tailed relay keeps its tail while it is revisited, so it
+ *                  is in this number AND in `working` at the same time. The
+ *                  three above sum to `roster`; this one crosses them.
+ *
+ * Null members rather than zeroes wherever the document does not say. A router
+ * that publishes no pool row is not a router with an empty pool, and "0 in the
+ * pool" beside four tables of relays is the kind of arithmetic that gets a
+ * panel disbelieved.
+ */
+export function poolTotals(progress, groups) {
+  const working = groups.filter((g) => g.key !== POOL_LIVE).reduce((a, g) => a + g.rows.length, 0);
+  const tailed = groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0;
+  const row = (progress?.processors || []).find((p) => p && p.name === VISITS_PROCESSOR);
+  const roster = Number.isFinite(row?.roster) ? row.roster : null;
+  const queued = Number.isFinite(row?.awaitingVisit) ? row.awaitingVisit : null;
+  return {
+    roster,
+    working,
+    queued,
+    tailed,
+    // Never negative. The three counts are read at one tick but not one
+    // instant, so a roster that shrank between them can leave the subtraction
+    // short — and "-2 between visits" reads as a bug in the router rather than
+    // as the rounding it is.
+    waiting: roster == null ? null : Math.max(0, roster - working - (queued || 0)),
+  };
 }

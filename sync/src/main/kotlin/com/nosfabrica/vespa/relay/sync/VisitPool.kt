@@ -625,6 +625,19 @@ internal class VisitPool(
         // One generation for the whole visit: the asks below and the shared
         // authors the retraction consults were computed together.
         val snapshot = currentRoster
+        // NAMED BEFORE THE FIRST ASK RUNS, because [inFlightFor] selects by
+        // stream and a visit with none belongs to no list at all. The window
+        // was small — the claim, and the read above it — and it dropped
+        // exactly the rows worth keeping: a worker wedged on a socket claim
+        // was counted in `visiting` and appeared under no stream, so the pool
+        // tables added up to less than the number beside them with nothing
+        // saying why. The first ask is the one this visit is about to serve;
+        // the loop re-states it per ask from there.
+        ongoingVisit.stream =
+            snapshot.asks[url]
+                ?.firstOrNull()
+                ?.stream
+                ?.name
         try {
             for (ask in snapshot.asks[url].orEmpty()) {
                 // The legacy leg give-up, kept across the port: [NEG_IDLE_MS]

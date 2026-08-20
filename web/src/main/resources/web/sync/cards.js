@@ -187,7 +187,8 @@ function poolsPanel(progress) {
   const pools = poolsOf(progress);
   if (!pools) return null;
   const box = el("div");
-  for (const group of pools.groups) box.appendChild(poolBlock(group));
+  box.appendChild(poolLine(pools.totals));
+  for (const group of pools.groups) box.appendChild(poolBlock(group, pools.totals));
   // What no pool can account for. Zero from this router — a row IS a worker or
   // a tail, and both sets are published whole — and drawn when it is not,
   // because a panel that adds up to less than the counts beside it must say so
@@ -199,8 +200,48 @@ function poolsPanel(progress) {
   return box;
 }
 
-/** One pool: its heading, what it means, and the relays in it. */
-function poolBlock(group) {
+/**
+ * HOW BIG THE POOL IS — one line, above the four tables that divide it.
+ *
+ * The tables answer "how many are doing this" and cannot answer "out of how
+ * many", which is the first thing asked of any of them: nine relays working is
+ * a healthy rotation against a roster of four hundred and a stalled one
+ * against a roster of twelve.
+ *
+ * ONE POOL, not one per stream, and the line says so — every visit-mode stream
+ * shares the queue, the workers and the tail budget, and a relay two streams
+ * both want is one relay here. That is also why the size cannot be added up
+ * from the stream rows above: those are shares, and they overlap.
+ *
+ * The first three marks PARTITION the roster; the tail count crosses them,
+ * because a tailed relay keeps its tail while it is revisited. Drawn last and
+ * said in its title, so the line is never read as four parts of one whole.
+ */
+function poolLine(totals) {
+  const line = el("div", "sy-sub");
+  const mark = (text, why) => {
+    const span = el("span", null, line.children.length ? ` · ${text}` : text);
+    if (why) span.title = why;
+    line.appendChild(span);
+  };
+  // A router that publishes no pool row is not a router with an empty pool, so
+  // the total simply goes away rather than rendering as zero.
+  if (totals.roster != null) mark(`${fmt(totals.roster)} relay(s) in the pool`, term("roster"));
+  mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
+  if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
+  if (totals.waiting != null) {
+    mark(`${fmt(totals.waiting)} between visits`,
+      "The rest of the roster: neither running nor queued, waiting out the revisit delay its last visit earned. " +
+      "Most of a healthy pool is here — a relay is revisited on what it has been yielding lately, not on a shared clock.");
+  }
+  mark(`${fmt(totals.tailed)} holding a live tail`,
+    "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
+    "relay is counted here and in `with a worker now` at once. " + term("tails"));
+  return line;
+}
+
+/** One pool: its heading, how much of the pool is in it, and the relays. */
+function poolBlock(group, totals) {
   const box = el("div", "sy-pool");
   const head = el("div", "sy-pool-head");
   const name = el("span", "sy-pool-name", group.label);
@@ -209,7 +250,12 @@ function poolBlock(group) {
   // get rid of; the meaning belongs on the mark, like every other one here.
   name.title = group.what;
   head.appendChild(name);
-  head.appendChild(el("span", "sy-pool-n", `${fmt(group.rows.length)} relay(s)`));
+  // OUT OF HOW MANY, on every heading. The count alone is the mark that cannot
+  // be read without scrolling back to the line above — and the denominator is
+  // the ROSTER rather than the rows on screen, because a pool is a share of
+  // the mirror's whole world and not of whatever is busy this second.
+  head.appendChild(el("span", "sy-pool-n",
+    totals.roster ? `${fmt(group.rows.length)} of ${fmt(totals.roster)} relay(s)` : `${fmt(group.rows.length)} relay(s)`));
   // The shared stage word, lifted out of a column that would have repeated it
   // on every row.
   if (group.doing) {
