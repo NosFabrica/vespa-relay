@@ -61,6 +61,29 @@ export const FITNESS_NAMESPACE = "relay.fitness";
 export const PRIME = "prime";
 
 /**
+ * NIP-66's value for a url this router reached over a circuit — written on `n`
+ * by the fitness pass, which is the same pass that writes the grade, so the two
+ * are always one dial's reading of one url.
+ */
+export const NETWORK_TOR = "tor";
+
+/**
+ * Did this url's measurement go over Tor?
+ *
+ * The record's own `n` is the answer whenever it has one: it is what the pass
+ * actually did, which on a deployment routing everything through a circuit
+ * includes clearnet hosts. A `.onion` with no `n` still counts, and that is not
+ * a guess — an onion address has no other transport, so a record about one was
+ * taken over Tor or was not taken at all. Records signed before the fitness
+ * pass wrote facts are exactly that case, and reading the host is the only way
+ * they are counted at all rather than silently landing in "clearnet".
+ */
+export function onTor(rec) {
+  if (rec.network) return rec.network === NETWORK_TOR;
+  return rec.host.endsWith(".onion");
+}
+
+/**
  * The tags this reader RENDERS besides the verdicts — the NIP-66 payload
  * proper, which the monitor's fitness pass now writes on every record it
  * grades.
@@ -363,13 +386,23 @@ export function groupByHost(events, nowSec) {
   }
   const hosts = new Map();
   for (const rec of newest.values()) {
-    if (!hosts.has(rec.host)) hosts.set(rec.host, { host: rec.host, urls: [], folded: 0, cleared: 0, unstable: 0, expired: 0, graded: 0, prime: 0 });
+    if (!hosts.has(rec.host)) {
+      hosts.set(rec.host, { host: rec.host, urls: [], folded: 0, cleared: 0, unstable: 0, expired: 0, graded: 0, prime: 0, primeTor: 0 });
+    }
     const group = hosts.get(rec.host);
     const current = isCurrent(rec.foldMeasuredAt, nowSec, rec.foldEpoch, FOLD_EPOCH);
     const gradeCurrent = isCurrent(rec.gradeMeasuredAt, nowSec, rec.gradeEpoch, FITNESS_EPOCH);
     group.urls.push({ ...rec, foldCurrent: current, gradeCurrent });
     if (rec.grade && gradeCurrent) group.graded++;
-    if (rec.grade === PRIME && gradeCurrent) group.prime++;
+    if (rec.grade === PRIME && gradeCurrent) {
+      group.prime++;
+      // The SAME grade, narrowed by transport. Counted here rather than derived
+      // from the rows later because `prime` is already counted here and the two
+      // must not be able to disagree: a tile saying more urls are prime over
+      // Tor than are prime at all is the one arithmetic a reader cannot recover
+      // from.
+      if (onTor(rec)) group.primeTor++;
+    }
     // Counted on what the router would ACT on. A fold whose verdict has aged
     // out is not folding anything today, and counting it would draw a host as
     // collapsed while every url of it is back in the fan-out.
@@ -569,6 +602,11 @@ export function summarise(groups, nowSec) {
   let inferred = 0;
   let graded = 0;
   let prime = 0;
+  // The tile the operator of a hidden-service deployment opens this for: how
+  // much of what we admit is reachable over a circuit. `prime` alone cannot
+  // answer it — a roster of a thousand clearnet relays and a roster of a
+  // thousand onions are the same number there.
+  let primeTor = 0;
   for (const group of groups) {
     urls += group.urls.length;
     folded += group.folded;
@@ -578,6 +616,7 @@ export function summarise(groups, nowSec) {
     inferred += group.inferred || 0;
     graded += group.graded;
     prime += group.prime;
+    primeTor += group.primeTor;
     for (const u of group.urls) {
       // A synthesised survivor carries no verdict BY CONSTRUCTION — it is the
       // url the others point at. Counting it as silent would inflate the one
@@ -593,5 +632,5 @@ export function summarise(groups, nowSec) {
       if (u.stable === true) stable++;
     }
   }
-  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred, graded, prime };
+  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred, graded, prime, primeTor };
 }

@@ -207,10 +207,18 @@ function verdictsCard(relayUrl) {
         // comparing the tile to the rows under it saw one number contradict
         // the column beneath it.
         ["no verdict yet", sum.silent],
-        // The GRADE's two numbers, which no tile carried while the grade was
+        // The GRADE's numbers, which no tile carried while the grade was
         // hidden inside the software column. `prime` is the one that answers
-        // "how much of this store is actually in a roster right now".
-        ...(sum.graded ? [["graded", sum.graded], ["prime", sum.prime]] : []),
+        // "how much of this store is actually in a roster right now", and
+        // `prime on Tor` splits it by the transport that decides whether this
+        // deployment can reach any of it without a circuit.
+        //
+        // The Tor tile is drawn at zero, unlike `expired` and the two below it.
+        // Those say "this state does not occur here"; this one says "nothing we
+        // admit is behind a hidden service", which is an answer an operator
+        // running Tor came for — and hiding it would read as a panel that does
+        // not know the difference rather than as a store with none.
+        ...(sum.graded ? [["graded", sum.graded], ["prime", sum.prime], ["prime on Tor", sum.primeTor]] : []),
         ...(sum.expired ? [["verdict expired", sum.expired]] : []),
         ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
       ]));
