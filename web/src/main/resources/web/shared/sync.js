@@ -633,6 +633,10 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // glossary. Null on a router that predates the member, which reads as
       // "not known" and never as a stage.
       doing: r.doing || null,
+      // …and WHICH POOL that puts it in — the stable word `poolsOf` groups by,
+      // never the sentence above it. Null is a row in none of the four, which
+      // is a state (claiming a socket, draining the healer) and not a gap.
+      pool: r.pool || null,
       // `??`, not `||`: `created_at = 0` is a real second relays serve and the
       // deepest a walk can reach, not a leg with no cursor.
       pagingUntil: r.pagingUntil ?? null,
@@ -641,3 +645,139 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
 }
 
+
+/**
+ * THE FOUR POOLS, as the router names them — `pool` on every held row, and the
+ * word this module groups by. See `VisitPool.POOL_LIVE` and its neighbours.
+ *
+ * Read off the document rather than derived from `doing`. The stage sentences
+ * are written to be read once and have been reworded twice; grouping rows by
+ * prose would put a table's contents at the mercy of an edit to a sentence,
+ * which is the failure the router split these two members to avoid.
+ */
+export const POOL_LIVE = "live";
+export const POOL_CATCHING_UP = "catching-up";
+export const POOL_REFETCHING = "re-fetching";
+export const POOL_AUDITING = "auditing";
+
+/**
+ * …and the fifth group, which is NOT a pool: a visit still claiming its socket
+ * or draining the healer's queue on its way out is in none of the four, and the
+ * router says so by publishing no `pool` for it.
+ *
+ * It is a group rather than a filter because the alternative is dropping rows.
+ * A relay held for an hour "claiming the socket" is exactly the row an operator
+ * is looking for, and a panel that showed only the four named pools would be
+ * the one place it could not appear.
+ */
+export const POOL_BETWEEN = "between";
+
+/** The order the panel draws them in: the steady state first, then the work. */
+export const POOL_ORDER = [POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_AUDITING];
+
+/**
+ * What each one is called on the page, and what it MEANS — the sentence a
+ * heading cannot carry.
+ *
+ * Held here rather than in the card for the same reason every other judgement
+ * in this module is: the four keys and the four descriptions have to agree, and
+ * a mapping split across two files agrees until someone edits one of them.
+ */
+export const POOL_LABELS = {
+  __proto__: null,
+  [POOL_LIVE]: ["live", "Tail subscriptions held open. No worker sits on these — events arrive the moment they exist, and the socket is the whole cost."],
+  [POOL_CATCHING_UP]: ["catching up", "Paging forward over what each relay's band does not cover yet — the ordinary sync, newest-first towards the last pass."],
+  [POOL_REFETCHING]: ["re-fetching the past", "Paging over history the band ALREADY covers, because the stream's `refetchThePastSeconds` expired it. Same walk as a catch-up and a completely different bill: these relays are re-downloading years."],
+  [POOL_AUDITING]: ["auditing", "Reconciling the covered past over negentropy and downloading only the difference — the pass that finds what no catch-up ever saw."],
+  [POOL_BETWEEN]: ["between jobs", "In none of the four: claiming a socket, working out what an ask still owes, or draining the healer's queue on the way out of a visit. Ordinary and usually brief — a row that sits here is one to look at."],
+};
+
+/**
+ * EVERY RELAY THIS MIRROR IS HOLDING, SPLIT BY WHAT IT IS BEING ASKED FOR.
+ *
+ * ## The question
+ *
+ * One rotating pool runs all four workloads (see `VisitPool`), so every number
+ * that used to describe it added them together: `visiting: 100` counted a
+ * catch-up, a history audit and a whole-corpus re-walk as one, and `tails: 412`
+ * counted the fourth without naming anybody. Those are not degrees of one
+ * thing — a mirror paging forward is keeping up, and the same mirror
+ * re-fetching is spending its whole budget re-downloading history it already
+ * has. Four lists is the shape of the question actually being asked.
+ *
+ * ## Where the rows come from
+ *
+ * The visiting three are per stream in the document (`streams[].inFlight`),
+ * because a visit serves whichever stream's ask it is on at that instant; the
+ * live pool is at the ROOT, because a tail carries every wanting stream's
+ * filter and belongs to none of them. So a visiting row keeps the stream it
+ * came from as a column and a live row has none — which is a fact about tails
+ * and not a missing value.
+ *
+ * ## What it will not do
+ *
+ * DROP A ROW. Every held relay the document names appears in exactly one group,
+ * including one whose `pool` the router did not publish — see [POOL_BETWEEN].
+ * And `omitted` is summed rather than attributed: what a truncated list left
+ * out has no pool by definition, so counting it against one would be inventing
+ * the very fact it is missing.
+ *
+ * Empty groups are KEPT. "Nothing is auditing right now" is an answer, and a
+ * panel that drew only the non-empty pools would answer it by looking identical
+ * to a build that had no audit pool at all.
+ *
+ * Null when the mirror is holding nothing anywhere — no visit, no tail — which
+ * is the one state where four empty tables say less than no panel.
+ */
+export function poolsOf(progress) {
+  const rows = [];
+  let omitted = 0;
+  for (const s of progress?.streams || []) {
+    const legs = legsOf(s.inFlight);
+    omitted += legs.more;
+    // The stream is the row's, not the group's: one visit serves every stream's
+    // asks in turn, so two rows in one pool can belong to different streams.
+    for (const r of legs.rows) rows.push({ ...r, stream: s.name || null });
+  }
+  const live = legsOf(progress?.live);
+  omitted += live.more;
+  for (const r of live.rows) rows.push({ ...r, stream: null });
+  if (!rows.length) return null;
+
+  const byPool = new Map([...POOL_ORDER, POOL_BETWEEN].map((key) => [key, []]));
+  for (const r of rows) {
+    // An unknown word lands with the unpooled rather than making a group of its
+    // own: a page inventing a heading from a string off the wire is how a typo
+    // becomes a pool.
+    byPool.get(byPool.has(r.pool) && r.pool !== POOL_BETWEEN ? r.pool : POOL_BETWEEN).push(r);
+  }
+
+  const groups = [];
+  for (const key of [...POOL_ORDER, POOL_BETWEEN]) {
+    const found = byPool.get(key);
+    // The leftover group appears only when something is in it; the four named
+    // pools appear always. An empty `between` is the healthy case and a heading
+    // for it every tick would be a mark that reads the same every time.
+    if (key === POOL_BETWEEN && !found.length) continue;
+    // Quietest first, the router's own order — and re-applied here because the
+    // merge across streams interleaves lists that were each sorted alone.
+    found.sort((a, b) => b.quietForSec - a.quietForSec || b.heldForSec - a.heldForSec || a.relay.localeCompare(b.relay));
+    const [label, what] = POOL_LABELS[key] || [key, ""];
+    groups.push({
+      key,
+      label,
+      what,
+      rows: found,
+      // ONE WORD FOR THE WHOLE GROUP, or null where its rows disagree. A column
+      // whose every cell reads `holding a live tail` is not a column, so the
+      // page lifts it into the heading instead — and the audit pool, whose two
+      // stages are a history sweep and a provider's retraction comparison,
+      // keeps the column that tells them apart.
+      doing: found.length && found.every((r) => r.doing === found[0].doing) ? found[0].doing : null,
+      // …and the same test for the stream column, which the live pool has no
+      // answer for at all.
+      streams: found.some((r) => r.stream),
+    });
+  }
+  return { groups, omitted };
+}

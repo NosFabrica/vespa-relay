@@ -24,10 +24,13 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
+import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -361,5 +364,79 @@ class VisitPoolTest {
                 """.trimIndent(),
             )
         assertEquals(3600L, cfg.streams.single().negentropySyncThePastSeconds)
+    }
+
+    /** A band recorded over [min, max], as `refetchThePastSeconds` finds one before expiring it. */
+    private fun band(
+        min: Long,
+        max: Long,
+    ) = SyncCoverage.Band(mapOf(1 to SyncCoverage.Span(min, max, true)), max)
+
+    @Test
+    fun `a leg walking time the band already covers is the re-fetch, not the catch-up`() {
+        // THE READING THIS SEPARATES. Both walks are `fetchAllPages` over a
+        // REQ, both fill the same rows, and one is a mirror keeping up while
+        // the other is the same mirror re-downloading years of history because
+        // `refetchThePastSeconds` expired the band. `visiting: 100` counted
+        // them as one number, and so did the in-flight row's stage word.
+        // Real seconds, because one of the edges IS a real second: an unfloored
+        // leg is walked as `flooredForPaging`, from `PLAUSIBLE_FLOOR`, and a
+        // recorded band can never start below that — quartz refuses to observe
+        // an implausible `created_at` in the first place. A band written with
+        // toy numbers would sit UNDER the floor and every case below would
+        // answer backwards.
+        val covered = band(min = 1_600_000_000, max = 1_700_000_000)
+
+        // The expired band's leg: the whole filter again, unfloored at both
+        // ends, straight through everything already recorded.
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), covered))
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_650_000_000, until = 1_660_000_000), covered))
+
+        // …and the two ordinary legs, which TOUCH the band exactly at its
+        // edges: quartz asks for the newer one from the band's max and the
+        // older one down to its min. A `<=` on either side here would file
+        // every routine catch-up on this deployment as a re-walk of everything.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_700_000_000), covered),
+            "forward from the band's edge",
+        )
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), until = 1_600_000_000), covered),
+            "deeper than the band reaches",
+        )
+        assertTrue(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_699_999_999), covered),
+            "one second inside the band is inside it",
+        )
+    }
+
+    @Test
+    fun `nothing recorded yet is a first walk, and a first walk is a catch-up`() {
+        // An ask with no band has never been walked, so its whole range is new
+        // — reading that as a re-fetch would put every fresh relay on the
+        // deployment into the pool that means "re-downloading history we have".
+        assertFalse(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), null))
+        // …and the same for a band carrying no spans, which is the shape a
+        // restored file with an unreadable entry leaves behind. It has no min
+        // or max to compare against either, which is the other reason this
+        // answers before reading them.
+        assertFalse(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), SyncCoverage.Band(emptyMap(), 0)))
+    }
+
+    @Test
+    fun `the four pool words are the wire's, and the glossary defines every one of them`() {
+        // These four strings ARE the contract: the page groups its four tables
+        // by them (`poolsOf` in `web/shared/sync.js`) and a reader looks them
+        // up in the document's own glossary. Renaming one here without the
+        // other two would empty a table on the page and leave the word it drew
+        // undefined — the same silent break the pool/stage split exists to
+        // stop, one level up.
+        val words = listOf(VisitPool.POOL_LIVE, VisitPool.POOL_CATCHING_UP, VisitPool.POOL_REFETCHING, VisitPool.POOL_AUDITING)
+        assertEquals(listOf("live", "catching-up", "re-fetching", "auditing"), words)
+
+        val defined = StatusVocabulary.TERMS["pool"]!!.jsonPrimitive.content
+        for (word in words) {
+            assertTrue("`$word`" in defined, "the glossary's `pool` entry does not name $word, so a reader meets it undefined")
+        }
     }
 }

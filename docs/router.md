@@ -194,8 +194,9 @@ where it is due, then a live tail on the socket the visit already holds. The
 process and then live-tailed, which is why it could not re-check its own past on
 any clock; its `sync` knob (and `SYNC_NEG_MIN_EVENTS`, which sized its `auto`
 mode) are refused at parse time now rather than accepted and ignored. What the
-pool is doing is in `/stats.json` — the streams' phases and their in-flight
-rows — rather than in a boot-time ETA line.
+pool is doing is in `/stats.json` — the streams' phases, their in-flight rows
+split by `pool`, and the `live` list of held tails — rather than in a boot-time
+ETA line.
 
 ## Paging a negentropy sync
 
@@ -349,6 +350,19 @@ Two consequences worth knowing:
   the in-flight list under it (`doing`, `heldForSec`, `events`, `quietForSec`,
   and the cursor). A stream-wide percentage would be an average over workers
   doing unrelated things.
+- **…and which of four jobs it is doing is `pool`.** One rotating pool runs all
+  of them, so every count over it added them together: `visiting` covered a
+  catch-up, a history audit and a whole-corpus re-walk alike, while `tails`
+  counted the fourth and named nobody. Each held row now carries a stable word
+  beside its `doing` sentence — `catching-up` (paging forward from the band's
+  edge), `re-fetching` (paging over history the band already covers, because
+  `refetchThePastSeconds` expired it), `auditing` (reconciling that history over
+  negentropy), `live` (a held tail) — and the status page draws one table per
+  word. The live pool is the document's own `live` member at the root rather
+  than a per-stream list, because a tail carries every wanting stream's filter
+  and counts its arrivals at the url. A row in none of the four (claiming a
+  socket, draining the healer) carries no `pool` and is drawn under its own
+  `doing`.
 
 ### Re-deriving the relay list
 

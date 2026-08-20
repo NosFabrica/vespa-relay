@@ -225,12 +225,42 @@ object StatusVocabulary {
                     "stage worth the word. A working leg's word names TWO things, because they do not imply each " +
                     "other: what for — `catching up` is everything new since this relay's last pass, `auditing` is " +
                     "the whole past re-checked on the stream's `negentropySyncThePastSeconds` clock to find what no " +
-                    "catch-up ever " +
-                    "saw — and, in the bracket, how: `paging` walks a REQ newest-first, `negentropy` compares " +
+                    "catch-up ever saw, `re-fetching the past` is that same history walked again from scratch on " +
+                    "the stream's `refetchThePastSeconds` — and, in the bracket, how: `paging` walks a REQ " +
+                    "newest-first, `negentropy` compares " +
                     "reconciliation windows and downloads only the difference. Negentropy is NOT a synonym for the " +
                     "audit and paging is not a synonym for the catch-up: an audit pages the windows a peer will not " +
                     "reconcile, and a static stream backfills either way. This pool pages its catch-up and " +
                     "reconciles its audits, which is a fact about the pool and not about the words.",
+            )
+            put(
+                "pool",
+                "WHICH OF THE MIRROR'S FOUR WORKLOADS this relay is in right now, as one word a reader can group " +
+                    "by: `live` is a held tail subscription — no worker, events as they exist; `catching-up` is " +
+                    "paging forward over what this relay's band does not cover yet; `re-fetching` is paging over " +
+                    "what it DOES, the whole-history re-walk a stream's `refetchThePastSeconds` schedules; " +
+                    "`auditing` is reconciling the covered past, both kinds. One rotating pool runs all four, " +
+                    "which is why the split had to be published rather than inferred: `visiting` counts a " +
+                    "catch-up, an audit and a whole-corpus re-walk as one number, and the first is a mirror " +
+                    "keeping up while the third is one re-downloading years of history — the same transport, the " +
+                    "same rows, opposite readings. It is `doing`'s counterpart and not a second copy of it: that " +
+                    "one is a sentence written to be read once, this one is a stable word, and grouping rows by " +
+                    "prose is how a reworded string empties a table. ABSENT is ordinary and is not one of the " +
+                    "four — a visit between jobs, claiming its socket or working out what an ask still owes or " +
+                    "draining the healer's queue on its way out — and such a row is shown under its own `doing` " +
+                    "rather than dropped.",
+            )
+            put(
+                "live",
+                "THE LIVE POOL: every relay holding an open tail subscription right now, named, with the same " +
+                    "clocks a visiting leg carries. This is the pool's steady state — `tails` counts it and this " +
+                    "is what those sockets are — and it sits at the document's ROOT rather than under a stream " +
+                    "because a tail is not a stream's: one subscription per relay carries every wanting stream's " +
+                    "filter, and its arrivals are counted at the url. `held` is the age of the subscription, not " +
+                    "of the visit that opened it; `events` is what has come down it since; and `quiet` beside " +
+                    "them is the one that decides, because the two ways a tail is wasted look identical from the " +
+                    "count alone — a relay that has published nothing in a week, and a subscription that died " +
+                    "upstream while we went on holding its socket.",
             )
             put(
                 "pagingUntil",
@@ -736,7 +766,8 @@ object StatusVocabulary {
                     "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
                     "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
                     "has delivered least. On a STREAM's row it counts the tails held on that stream's `roster` " +
-                    "share; on the pool's row, every tail this router holds.",
+                    "share; on the pool's row, every tail this router holds. WHICH relays those are is `live` at " +
+                    "the document's root — the count and the names, like `roster` and the in-flight rows.",
             )
             put(
                 "evictedTails",

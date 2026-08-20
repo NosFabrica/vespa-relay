@@ -172,6 +172,7 @@ class SyncProgressTest {
                                             events = 2,
                                             quietForSec = 41_000,
                                             stage = "paging",
+                                            pool = "catching-up",
                                             pagingUntil = 1_689_857_148L,
                                         ),
                                         InFlight.Relay("wss://probing.example/", heldForSec = 4, transferringForSec = null, events = 0, quietForSec = 4),
@@ -202,6 +203,60 @@ class SyncProgressTest {
             "absent means NOT paging — a leg still in the guards has no cursor to report",
         )
         assertEquals(118, stream["inFlight"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "the cap discloses itself")
+        assertEquals(
+            "catching-up",
+            rows[0].jsonObject["pool"]!!.jsonPrimitive.content,
+            "the word a reader groups by, beside the sentence a reader reads",
+        )
+        assertNull(
+            rows[1].jsonObject["pool"],
+            "a row in none of the four says nothing rather than claiming one — it is drawn under its own `doing`",
+        )
+    }
+
+    @Test
+    fun `the live pool is named too, at the root, and only when something is tailed`() {
+        // The other half of the same complaint. `tails: 412` is a number every
+        // healthy deployment renders and nobody can act on: which relay holds
+        // a socket, for how long, and whether anything has ever come down it
+        // were all unanswerable from outside the process.
+        val live =
+            InFlight(
+                relays =
+                    listOf(
+                        InFlight.Relay(
+                            "wss://nos.lol/",
+                            heldForSec = 41_400,
+                            transferringForSec = 41_400,
+                            events = 91_002,
+                            quietForSec = 3,
+                            stage = "holding a live tail",
+                            pool = "live",
+                        ),
+                    ),
+                omitted = 0,
+            )
+        val doc = SyncProgress.document(listOf(streamWith(name = "content")), live = live, nowSeconds = 1_000)
+
+        // AT THE ROOT, not under a stream: one subscription per relay carries
+        // every wanting stream's filter and counts its arrivals at the url, so
+        // dividing it per stream would publish one undivided number once per
+        // stream — each copy carrying the whole url's event count.
+        val rows = doc["live"]!!.jsonObject["relays"] as JsonArray
+        assertEquals("wss://nos.lol/", rows[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(91_002L, rows[0].jsonObject["events"]!!.jsonPrimitive.long)
+        assertEquals(3L, rows[0].jsonObject["quietForSec"]!!.jsonPrimitive.long)
+        assertEquals("live", rows[0].jsonObject["pool"]!!.jsonPrimitive.content)
+        assertNull((doc["streams"] as JsonArray)[0].jsonObject["live"], "the stream row keeps its COUNT and nothing more")
+        assertEquals(0, doc["live"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "bounded by the tail budget, and it says so")
+
+        // Absent rather than empty, on the same terms `inFlight` is: an empty
+        // list is a claim that this router holds no tails, and a router with no
+        // visit pool at all makes no such claim.
+        assertNull(SyncProgress.document(listOf(streamWith(name = "content")), nowSeconds = 1_000)["live"])
+        assertNull(
+            SyncProgress.document(listOf(streamWith(name = "content")), live = InFlight.NONE, nowSeconds = 1_000)["live"],
+        )
     }
 
     @Test

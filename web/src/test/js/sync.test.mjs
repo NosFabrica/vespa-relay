@@ -11,8 +11,9 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  heldOf, legsOf, measuringOf, probeProgress, rotationOf,
+  IN_FLIGHT_SHOWN, MEASURING, POOL_AUDITING, POOL_BETWEEN, POOL_CATCHING_UP,
+  POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
+  funnelOf, heldOf, legsOf, measuringOf, poolsOf, probeProgress, rotationOf,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -604,4 +605,126 @@ const leg = (n, quiet, over = {}) => ({
   // A router too old to make the claim is not a router making a false one.
   assert.equal(funnelOf(doc({})).accountedFor, null, "absent is not a verdict either way");
   ok("the relay's own arithmetic check rides on the tree, and absent is not false");
+}
+
+// ── the four pools ──────────────────────────────────────────────────────────
+{
+  // THE COMPLAINT this answers: one rotating pool runs four workloads, and
+  // every number describing it added them together. `visiting: 100` covered a
+  // catch-up, a history audit and a whole-corpus re-walk — a mirror keeping up
+  // and one re-downloading years read identically — while `tails: 412` counted
+  // the fourth and named nobody.
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  const doc = {
+    streams: [
+      { name: "content", inFlight: { relays: [
+        held("wss://a.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP, quietForSec: 1 }),
+        held("wss://b.example/", { doing: "auditing history (negentropy)", pool: POOL_AUDITING, quietForSec: 900 }),
+      ], omitted: 0 } },
+      { name: "indexers", inFlight: { relays: [
+        held("wss://c.example/", { doing: "re-fetching the past (paging)", pool: POOL_REFETCHING }),
+        held("wss://d.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP, quietForSec: 400 }),
+        held("wss://e.example/", { doing: "claiming the socket" }),
+      ], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { doing: "holding a live tail", pool: POOL_LIVE })], omitted: 0 },
+  };
+  const pools = poolsOf(doc);
+  const at = (key) => pools.groups.find((g) => g.key === key);
+
+  assert.deepEqual(pools.groups.map((g) => g.key), [...POOL_ORDER, POOL_BETWEEN],
+    "the four the router names, in one order, and the leftovers last");
+  assert.deepEqual(at(POOL_CATCHING_UP).rows.map((r) => r.relay), ["wss://d.example/", "wss://a.example/"],
+    "quietest first ACROSS streams — the merge interleaves two lists that were each sorted alone");
+  assert.deepEqual(at(POOL_AUDITING).rows.map((r) => r.relay), ["wss://b.example/"]);
+  assert.deepEqual(at(POOL_REFETCHING).rows.map((r) => r.relay), ["wss://c.example/"]);
+  assert.deepEqual(at(POOL_LIVE).rows.map((r) => r.relay), ["wss://f.example/"]);
+
+  // NOTHING IS DROPPED. A visit between jobs publishes no pool word, and the
+  // row an operator is chasing — held for an hour, still "claiming the socket"
+  // — is exactly the one a four-pool panel could lose.
+  assert.deepEqual(at(POOL_BETWEEN).rows.map((r) => r.relay), ["wss://e.example/"]);
+  assert.equal(pools.groups.reduce((a, g) => a + g.rows.length, 0), 6, "every row published is in exactly one group");
+
+  // The stream a row came from rides on the ROW: one visit serves every
+  // stream's asks over one dial, so a pool spans streams.
+  assert.deepEqual(at(POOL_CATCHING_UP).rows.map((r) => r.stream), ["indexers", "content"]);
+  // …and a tail belongs to no stream at all — it carries every wanting
+  // stream's filter — which is a fact about tails and not a missing value.
+  assert.equal(at(POOL_LIVE).rows[0].stream, null);
+  assert.equal(at(POOL_LIVE).streams, false, "so the live table draws no stream column");
+  assert.equal(at(POOL_CATCHING_UP).streams, true);
+  ok("every held relay lands in exactly one pool, quietest first, and none is dropped for want of a word");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A COLUMN WHOSE EVERY CELL READS THE SAME IS NOT A COLUMN. The pool's word
+  // is lifted into its heading when the rows agree, and kept as a column where
+  // they do not — the audit pool's two stages are a history sweep and a
+  // provider's retraction comparison, which is the distinction worth the width.
+  const one = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
+    held("wss://b.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
+  ], omitted: 0 } }] });
+  assert.equal(one.groups.find((g) => g.key === POOL_CATCHING_UP).doing, "catching up (paging)");
+
+  const two = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { doing: "auditing history (negentropy)", pool: POOL_AUDITING }),
+    held("wss://b.example/", { doing: "auditing the provider's own records (negentropy)", pool: POOL_AUDITING }),
+  ], omitted: 0 } }] });
+  assert.equal(two.groups.find((g) => g.key === POOL_AUDITING).doing, null, "two stages keep their column");
+  ok("a pool's stage word is lifted out of the table only where every row agrees on it");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // EMPTY IS AN ANSWER. "No relay is auditing right now" is a finding; a pool
+  // that vanished when it emptied would be indistinguishable from a build with
+  // no such pool, which is the reading the four names exist to prevent.
+  const sparse = poolsOf({ live: { relays: [held("wss://f.example/", { pool: POOL_LIVE })], omitted: 0 } });
+  assert.deepEqual(sparse.groups.map((g) => g.key), POOL_ORDER, "the four are always drawn…");
+  assert.deepEqual(sparse.groups.find((g) => g.key === POOL_AUDITING).rows, []);
+  // …and the fifth group is not one of them: an empty `between` is the healthy
+  // case, and a heading for it on every tick is a mark that never varies.
+  assert.equal(sparse.groups.some((g) => g.key === POOL_BETWEEN), false);
+
+  // Holding nothing at all is the one state where four empty tables say less
+  // than no panel.
+  assert.equal(poolsOf({ streams: [{ name: "content" }] }), null);
+  assert.equal(poolsOf(null), null);
+
+  // WHAT NO POOL CAN ACCOUNT FOR is summed, never attributed: a row the router
+  // left out has no pool by definition, and filing it under one would invent
+  // the fact that is missing.
+  const cut = poolsOf({
+    streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 7 } }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE })], omitted: 2 },
+  });
+  assert.equal(cut.omitted, 9);
+  ok("an empty pool still says so, an empty mirror draws no panel, and what was cut is counted once");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A word off the wire is not a heading. A router naming a pool this page has
+  // not been taught puts the row with the unpooled rather than inventing a
+  // group from a string — and `__proto__` cannot reach Object.prototype
+  // through the label map on the way.
+  const odd = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { pool: "quantum-sync" }),
+    held("wss://b.example/", { pool: "__proto__" }),
+  ], omitted: 0 } }] });
+  assert.deepEqual(odd.groups.find((g) => g.key === POOL_BETWEEN).rows.map((r) => r.relay),
+    ["wss://a.example/", "wss://b.example/"]);
+  assert.equal(odd.groups.every((g) => typeof g.label === "string"), true);
+  ok("a pool word this page has not been taught is drawn with the unpooled, never as a group of its own");
 }

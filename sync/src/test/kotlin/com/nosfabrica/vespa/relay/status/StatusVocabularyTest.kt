@@ -126,8 +126,13 @@ class StatusVocabularyTest {
                      "roster": 412, "tails": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
                                               "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                               "doing": "catching up (paging)", "pagingUntil": 1689857148}],
+                                               "doing": "catching up (paging)", "pool": "catching-up",
+                                               "pagingUntil": 1689857148}],
                                   "omitted": 118}}],
+                     "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400,
+                                          "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
+                                          "doing": "holding a live tail", "pool": "live"}],
+                              "omitted": 0},
                      "processors": [
                        {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
                         "lastPassAt": 880, "lastPassSec": 300,
@@ -228,6 +233,14 @@ class StatusVocabularyTest {
                     "events",
                     "quietForSec",
                     "doing",
+                    // …and `doing`'s OTHER counterpart: the stable word four
+                    // tables are grouped by, where `doing` is the sentence
+                    // inside them.
+                    "pool",
+                    // The fourth of those tables, which is the only one that is
+                    // a document member of its own — the tails are pool-wide,
+                    // so they sit at the root rather than under a stream.
+                    "live",
                     // …and `doing`'s counterpart on the other kind of held row:
                     // a probe leg is a ladder, not a transfer, so what it
                     // publishes is which STEP it is on.

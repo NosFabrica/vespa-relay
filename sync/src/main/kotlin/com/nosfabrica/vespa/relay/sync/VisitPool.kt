@@ -80,6 +80,16 @@ import java.util.concurrent.atomic.AtomicLong
  * claim, not a parked worker — the worker moves on, and the revisit only has
  * to cover what a dropped tail missed.
  *
+ * ## Four jobs, one pool, and a word that says which
+ *
+ * The tail, the catch-up, the audit and the `refetchThePastSeconds` re-walk all
+ * run out of the same queue and the same workers, so every count over the pool
+ * added them together: `visiting` covered a mirror keeping up and a mirror
+ * re-downloading years alike, and `tails` counted the fourth without naming
+ * anybody. Each held row carries a POOL word beside its stage sentence for
+ * exactly that reason, and the tails are published as a list of their own —
+ * see the `POOL_` constants, [livePool] and [Stage].
+ *
  * ## What bounds a visit
  *
  * quartz's own endings, believed: every page ends inside one idle window, and
@@ -171,7 +181,33 @@ internal class VisitPool(
     private class Tail(
         val subId: String,
         val wantsAtOpen: Set<String>,
-    )
+        /**
+         * Since the subscription was opened — the live pool's own `held`
+         * clock, and NOT the visit's: the worker that opened this tail moved
+         * on seconds later, and dating the row from the visit would report
+         * every tail as a few seconds old forever.
+         */
+        val openedMs: Long = System.currentTimeMillis(),
+    ) {
+        /**
+         * What has arrived ON THE TAIL, and when the last one did.
+         *
+         * The pair that makes a live row worth listing at all. A tail costs a
+         * socket for as long as it is held, and the two failure modes are
+         * invisible from the count of tails: a relay that has published
+         * nothing in a week is holding a socket for nothing, and a tail whose
+         * subscription died upstream looks identical to a quiet relay from
+         * here. Both read off `quiet` beside `events`, which is the same
+         * reading a visiting leg's row is drawn for.
+         *
+         * Counted here rather than folded into the yield score because the
+         * score is decayed and shared with the visits — a priority hint, not
+         * a ledger, and not a number to show anyone.
+         */
+        val events = AtomicLong()
+
+        @Volatile var lastEventMs: Long = openedMs
+    }
 
     private val tails = ConcurrentHashMap<NormalizedRelayUrl, Tail>()
     private val tailSeq = AtomicInteger()
@@ -212,6 +248,25 @@ internal class VisitPool(
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
     /**
+     * ONE ROW'S WORKLOAD, as the pair that must never come apart: the pool a
+     * reader groups by, and the sentence a reader reads.
+     *
+     * The gauge below counts audits by [pool] rather than by the words, which
+     * is the fragility this class removes — `auditing` used to be a count of
+     * rows whose stage string equalled one of two literals, so rewording
+     * either would have zeroed it silently. A [pool] of null is honest and
+     * ordinary: a visit between jobs — claiming its socket, working out what
+     * an ask still owes, draining the healer's queue — is in none of the four,
+     * and the page draws it under its own word rather than dropping it.
+     */
+    private class Stage(
+        /** The machine word — one of the `POOL_` constants, or null for a row in none of them. */
+        val pool: String?,
+        /** …and the sentence it is published beside, in the words the glossary defines. */
+        val word: String,
+    )
+
+    /**
      * ONE RELAY MID-VISIT, for the in-flight list — the clocks and the stage,
      * on the same terms as the legacy engine's [InFlight.Relay] so the same
      * card column reads both. Removed the moment the visit ends: a tail is not
@@ -224,7 +279,14 @@ internal class VisitPool(
         /** Which stream's asks the visit is on right now — visits serve streams in turn. */
         @Volatile var stream: String? = null
 
-        @Volatile var stage: String = "claiming the socket"
+        /**
+         * WHAT THIS VISIT IS DOING, as the one value that carries both the
+         * sentence and the pool word — see [Stage]. One field rather than two
+         * because the pool is what the page GROUPS by and the sentence is what
+         * it prints, and a row whose two halves disagreed would file a
+         * catch-up under the audits.
+         */
+        @Volatile var stage: Stage = CLAIMING
 
         /** The `created_at` second the walk or audit window is at — time-axis progress. */
         @Volatile var pagingUntil: Long? = null
@@ -242,18 +304,25 @@ internal class VisitPool(
      * pool's odometer, the relay's yield score, and — when a visit is on the
      * socket — its event count and quiet clock. One helper because four
      * paths repeated it, and the fifth someone adds must not be able to
-     * forget a counter. A null [ongoingVisit] is a tail: arrivals there belong to no
-     * visit's clocks.
+     * forget a counter. Exactly one of [ongoingVisit] and [tail] carries the
+     * arrival's own clocks — a visit's leg has no tail and a tail has no
+     * visit — and passing neither is a caller that has decided this event
+     * belongs to nobody's row.
      */
     private fun arrived(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit?,
+        tail: Tail? = null,
     ) {
         poolReceived.incrementAndGet()
         yieldOf(url).arrived.incrementAndGet()
         ongoingVisit?.let {
             it.events.incrementAndGet()
             it.lastActivityMs = System.currentTimeMillis()
+        }
+        tail?.let {
+            it.events.incrementAndGet()
+            it.lastEventMs = System.currentTimeMillis()
         }
     }
 
@@ -295,7 +364,8 @@ internal class VisitPool(
                         transferringForSec = ((nowMs - row.startedMs) / 1000).coerceAtLeast(0),
                         events = row.events.get(),
                         quietForSec = ((nowMs - row.lastActivityMs) / 1000).coerceAtLeast(0),
-                        stage = row.stage,
+                        stage = row.stage.word,
+                        pool = row.stage.pool,
                         pagingUntil = row.pagingUntil,
                     )
                 }.sortedWith(compareByDescending<InFlight.Relay> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
@@ -303,6 +373,63 @@ internal class VisitPool(
         // that a list says what it dropped, and a reader that finds the member
         // missing cannot tell "nothing was dropped" from "this router does not
         // disclose". Kept so the answer stays explicit.
+        return InFlight(relays = rows, omitted = 0)
+    }
+
+    /**
+     * THE LIVE POOL — every relay whose tail subscription is open right now,
+     * quietest first.
+     *
+     * The pool's steady state, and the half of it that published nothing but
+     * its own SIZE until this existed. `tails: 412` is a number every healthy
+     * deployment renders and no operator can act on: which relay holds a
+     * socket, how long it has held it, and whether anything has ever come down
+     * it were all unanswerable from outside this process — the same complaint
+     * [InFlight] was written for, one pool over.
+     *
+     * POOL-WIDE, not per stream, because that is what a tail is. One
+     * subscription per relay carries every wanting stream's filter, and its
+     * arrivals are counted at the url — so attributing a row to a stream would
+     * mean publishing one stream's share of a number that was never divided,
+     * once per stream, and each copy would carry the whole url's event count.
+     * The per-stream share that IS defined stays where it was: the `tails`
+     * count on the stream's own row, which is the tailed part of that stream's
+     * roster.
+     *
+     * WHOLE, on [InFlight]'s rule: the set is bounded by [tailBudget] —
+     * configuration, not the network — so publishing all of it is bounded by
+     * construction, and a cut would only pick which sockets an operator is not
+     * shown.
+     *
+     * Same shape as a visiting row, deliberately, down to the `doing` sentence
+     * and the `pool` word: one table renderer, one glossary, one truncation
+     * promise. The two clocks read the same way they do there — `held` is the
+     * age of the subscription and `quiet` is how long since it last delivered,
+     * which together separate a relay that has nothing to say from a tail that
+     * has silently died upstream.
+     */
+    internal fun livePool(): InFlight {
+        val nowMs = System.currentTimeMillis()
+        val rows =
+            tails
+                .entries
+                .map { (url, tail) ->
+                    val heldForSec = ((nowMs - tail.openedMs) / 1000).coerceAtLeast(0)
+                    InFlight.Relay(
+                        relay = url.url,
+                        heldForSec = heldForSec,
+                        // A tail IS a socket for its whole life — the claim is
+                        // taken before the subscribe and released only when the
+                        // roster drops the relay — so the two clocks agree by
+                        // construction, exactly as they do on a visit's row.
+                        transferringForSec = heldForSec,
+                        events = tail.events.get(),
+                        quietForSec = ((nowMs - tail.lastEventMs) / 1000).coerceAtLeast(0),
+                        stage = TAILING.word,
+                        pool = TAILING.pool,
+                    )
+                }.sortedWith(compareByDescending<InFlight.Relay> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
+        // Zero, always, and published anyway — see [inFlightFor].
         return InFlight(relays = rows, omitted = 0)
     }
 
@@ -371,7 +498,7 @@ internal class VisitPool(
                 // auditsRun's total. A deep history's audit holds a worker for
                 // minutes, and without this the only trace was one unit of
                 // `visiting` that could not be told from a catch-up.
-                Processors.Count("auditing", ongoing.values.count { it.stage == STAGE_AUDITING || it.stage == STAGE_RETRACTING }.toLong()),
+                Processors.Count("auditing", ongoing.values.count { it.stage.pool == POOL_AUDITING }.toLong()),
                 Processors.Count("auditsRun", auditsRun.get()),
                 Processors.Count("auditsSkipped", auditsSkipped.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
@@ -515,13 +642,24 @@ internal class VisitPool(
                     )
                     return
                 }
-                // THE TWO MOVE TOGETHER OR THE ROW LIES. `stream` changes
+                // ALL THREE MOVE TOGETHER OR THE ROW LIES. `stream` changes
                 // here, per ask; the depth beside it is the previous ask's
                 // until a leg overwrites it — and an ask whose band has no
                 // outstanding legs never enters the loop that would, so the
                 // reset inside `catchUp` is not enough on its own.
+                //
+                // The STAGE is here for the same reason and it costs more:
+                // most asks on a many-provider relay owe nothing and run no
+                // audit, so a row left holding the previous ask's word went on
+                // reporting `auditing history` for the rest of the visit — and
+                // now that the page files rows into a table by that word, it
+                // would keep a relay in the audit pool long after the audit
+                // ended. What is true between them is that the visit is
+                // working out what this ask owes, which is in none of the four
+                // pools and says so by carrying no pool word.
                 ongoingVisit.stream = ask.stream.name
                 ongoingVisit.pagingUntil = null
+                ongoingVisit.stage = ASKING
                 val clean = catchUp(ask, url, ongoingVisit)
                 // A refusal ends the whole visit, not just this ask's part:
                 // the next ask is the same conversation with the same relay,
@@ -539,7 +677,7 @@ internal class VisitPool(
                     snapshot.speaksNegentropy[url],
                 )
             }
-            ongoingVisit.stage = "draining queued heals, then the tail"
+            ongoingVisit.stage = FINISHING
             healer.drain(url)
             openTail(url)
         } finally {
@@ -558,11 +696,19 @@ internal class VisitPool(
         ongoingVisit: OngoingVisit,
     ): Boolean {
         val stream = ask.stream
+        // WHAT THIS ASK ALREADY HAD when the visit opened, read once and read
+        // BEFORE the first `record` below widens it. It is the only thing that
+        // tells the pool's two paging workloads apart: a leg that walks time
+        // outside the band is the ordinary catch-up, and one that walks time
+        // the band already covers is the `refetchThePastSeconds` re-walk —
+        // the same transport, the same rows, an entirely different answer to
+        // "why is this relay downloading its whole history again".
+        val covered = bands.band(stream.name, url, ask.filter)
         for (leg in bands.legs(stream.name, url, ask.filter)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-            ongoingVisit.stage = STAGE_PAGING
+            ongoingVisit.stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // PER LEG, like the three locals above it — and it is on the shared
             // visit object only because the status row reads it live.
             //
@@ -668,7 +814,7 @@ internal class VisitPool(
         if (!bands.claimAudit(stream.name, url, ask.filter, negentropySyncThePastSeconds, now)) return
         val auditStarted = now
         var received = 0
-        ongoingVisit.stage = STAGE_AUDITING
+        ongoingVisit.stage = AUDITING
         val outcome =
             pager.sweep(
                 stream.name,
@@ -734,7 +880,7 @@ internal class VisitPool(
     ) {
         val retraction = retraction ?: return
         if (!retraction.claimAudit(ask.stream, url, ask.filter, negentropySyncThePastSeconds)) return
-        ongoingVisit.stage = STAGE_RETRACTING
+        ongoingVisit.stage = RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,
             url,
@@ -784,6 +930,14 @@ internal class VisitPool(
             evictWeakestTail(sparing = url)
         }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
+        // BUILT BEFORE THE LISTENER CLOSES OVER IT, so the row's counters are
+        // the ones the subscription feeds. Built and published as ONE object
+        // for the same reason: a tail whose counters were looked up per event
+        // in `tails` would lose everything that arrived between `subscribe`
+        // and the `putIfAbsent` below — which on a busy relay is the whole
+        // first burst, and the row would open reading `0 events` on a socket
+        // that had already delivered thousands.
+        val tail = Tail(subId, wantsNow)
         // CLAIM AND SUBSCRIBE BEFORE PUBLISHING: a concurrent dropTail — a
         // roster drop, another worker's eviction — must only ever meet a
         // FULLY-FORMED tail, a subscription it can unsubscribe and a claim it
@@ -804,7 +958,7 @@ internal class VisitPool(
                         forFilters: List<Filter>?,
                     ) {
                         if (relay != url) return
-                        arrived(url, ongoingVisit = null)
+                        arrived(url, ongoingVisit = null, tail = tail)
                         // Bind trust per stream, and re-check scope so a broken
                         // relay cannot widen what we ingest — the same rule the
                         // static tails follow. Matching is against each ASK's
@@ -839,7 +993,7 @@ internal class VisitPool(
             System.err.println("router: tail ${url.url} failed to open: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             return
         }
-        if (tails.putIfAbsent(url, Tail(subId, wantsNow)) != null) {
+        if (tails.putIfAbsent(url, tail) != null) {
             // Another opener won this url. Visits are inFlight-guarded, so
             // this is nearly unreachable — handled because ours would
             // otherwise leak a subscription and a claim.
@@ -991,12 +1145,88 @@ internal class VisitPool(
          * reconcile its audits, and a reader must be able to see that rather
          * than infer it from the transport.
          *
-         * Constants because the `auditing` gauge counts rows by the two audit
-         * stages — a reworded string there would silently zero the gauge.
+         * Each word is paired with the POOL it belongs to below, and the two
+         * travel as one [Stage] value — the gauge and the page group by the
+         * pool word, so rewording a sentence here can no longer silently zero
+         * a count or empty a table.
          */
         const val STAGE_PAGING = "catching up (paging)"
+        const val STAGE_REFETCHING = "re-fetching the past (paging)"
         const val STAGE_AUDITING = "auditing history (negentropy)"
         const val STAGE_RETRACTING = "auditing the provider's own records (negentropy)"
+        const val STAGE_TAILING = "holding a live tail"
+        const val STAGE_CLAIMING = "claiming the socket"
+        const val STAGE_ASKING = "checking what this ask still owes"
+        const val STAGE_FINISHING = "draining queued heals, then the tail"
+
+        /**
+         * THE POOL'S FOUR WORKLOADS, as the words a reader may group rows by —
+         * `pool` on every row the mirror publishes, and the four lists the
+         * status page draws from them.
+         *
+         * They are not four pieces of machinery. One rotating queue and one
+         * set of workers run all of it (see this class's head); what differs is
+         * what a relay is being asked FOR at this instant, and that was the
+         * question nothing could answer. `visiting: 100` counted a catch-up, a
+         * history audit and a whole-corpus re-walk as one number, and
+         * `tails: 412` counted the fourth without naming anybody.
+         *
+         *  - [POOL_LIVE] a held subscription: no worker, events as they exist.
+         *  - [POOL_CATCHING_UP] paging forward over what the band does not cover.
+         *  - [POOL_REFETCHING] paging over what it DOES — `refetchThePastSeconds`.
+         *  - [POOL_AUDITING] reconciling the covered past, both audits.
+         *
+         * A visit between them — claiming its socket, working out what an ask
+         * still owes, draining the healer — carries no pool word at all, and
+         * the page draws it under its own sentence rather than filing it under
+         * one of these.
+         */
+        const val POOL_LIVE = "live"
+        const val POOL_CATCHING_UP = "catching-up"
+        const val POOL_REFETCHING = "re-fetching"
+        const val POOL_AUDITING = "auditing"
+
+        /** The pairings themselves — the only place a word and a pool are put together. */
+        private val CLAIMING = Stage(null, STAGE_CLAIMING)
+        private val ASKING = Stage(null, STAGE_ASKING)
+        private val CATCHING_UP = Stage(POOL_CATCHING_UP, STAGE_PAGING)
+        private val REFETCHING = Stage(POOL_REFETCHING, STAGE_REFETCHING)
+        private val AUDITING = Stage(POOL_AUDITING, STAGE_AUDITING)
+        private val RETRACTING = Stage(POOL_AUDITING, STAGE_RETRACTING)
+        private val FINISHING = Stage(null, STAGE_FINISHING)
+        private val TAILING = Stage(POOL_LIVE, STAGE_TAILING)
+
+        /**
+         * Is this leg walking time the band ALREADY COVERS — the re-fetch — or
+         * time outside it, which is the ordinary catch-up?
+         *
+         * Derived from the leg and the band rather than from the clock that
+         * produced them. `refetchThePastSeconds` expires a band inside quartz's
+         * [SyncCoverage], and re-deriving its dueness here would be a second
+         * copy of a rule we do not own — right until the day it changes, when
+         * the row would name the wrong pool and nothing would fail. What a leg
+         * OVERLAPS is observable, holds whatever the rule is, and is the fact
+         * the reader actually wants.
+         *
+         * STRICT overlap on both edges, because the two ordinary legs touch the
+         * band exactly at its edges: quartz asks for the newer leg from the
+         * band's max and the older one down to its min, so a `<=` here would
+         * file every routine catch-up as a re-walk of everything.
+         *
+         * A band with no spans covers nothing — nothing has been recorded for
+         * this ask yet — so its first walk is a catch-up, not a re-fetch. It
+         * also has no min or max to compare against, which is the other reason
+         * this returns before reading them.
+         */
+        internal fun rewalksCovered(
+            leg: Filter,
+            covered: SyncCoverage.Band?,
+        ): Boolean {
+            if (covered == null || covered.spans.isEmpty()) return false
+            val from = leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR
+            val to = leg.until ?: Long.MAX_VALUE
+            return from < covered.maxCreatedAt && to > covered.minCreatedAt
+        }
 
         /**
          * Held tails, the pool's steady-state socket count — `tailBudget` in
