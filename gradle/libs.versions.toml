@@ -31,55 +31,68 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 1866007e99 = amethyst main through #3908, and the whole six-commit range is
-# the `fetchAll` cleanup the previous pin's note flagged as worth watching:
+# 159afc0423 = amethyst main through #3958. The range over 1866007e99 is wide
+# (NIP-19 scanning, PoW mining, Cashu, the content parsers) and almost none of it
+# is ours; the two commits that reach this repo are the fix for the pool-registry
+# leak we reported as #154:
 #
-#   4b8d143376  drop maxTotalMs from fetchAll and fetchAllWithHooks
-#   c5b45a49cc  make the fetchAll drain loop observe cancellation
-#   a12dda31e9  return a FetchAllResult instead of three out-parameters
-#   94d5f18fef  repair doc rot and dead imports left by that refactor
-#   e1ab4d6c56  drop the unused diagnoseSlow drain flag
+#   ca89b30f  release pool request/count state rows when a sub is removed
+#   18bd078a  release the sub row on unsubscribe even while the client is inactive
 #
-# The first one retires the concern recorded here last bump: `maxTotalMs =
-# idleTimeoutMs * 10` was a WALL-CLOCK ceiling on `fetchAll`, and this repo has
-# been burned by exactly that shape once already. It is gone, so the "a timeout
-# is an idle window, not a deadline" rule now holds on every accessory rather
-# than only on `fetchAllPages`.
+# WHAT WAS WRONG, because the shape matters more than the commit titles.
+# `PoolRequests.remove()` dropped a sub from `desiredSubs` and dropped its
+# listener, but left its `RequestSubscriptionState` in `relayState` — and
+# `onConnecting` / `onDisconnected` / `onCannotConnect` scan that map IN FULL on
+# every relay lifecycle event. Every `fetchAll*` mints a fresh `newSubId()`, so
+# the map was not "requests we hold", it was "every request either plane has ever
+# made", and a connect cost O(all subs ever created). Measured here, driving
+# `PoolRequests` through NostrClient's exact subscribe/unsubscribe sequence with
+# ZERO live subs the whole time — every entry timed is garbage:
 #
-# THIS ONE IS A SOURCE-BREAKING CHANGE, and the only one in the range that
-# reaches us. `fetchAllWithHooks` no longer takes `doneOut` / `deadOut` /
-# `onTimeout` out-parameters; it returns `FetchAllResult`, carrying `events`,
-# `doneReasons` and `stalled`. `AliasProbe.over` is the single call site and is
-# migrated to read `result.doneReasons` and `result.events`.
+#   subs churned        1,000    5,000   20,000   50,000  100,000
+#   1866007e99 ms/conn   0.067    0.570    2.063    6.204   21.038
+#   159afc0423 ms/conn   0.000    0.002    0.000    0.001    0.001
 #
-# NOTE WHAT IT WAS NOT MIGRATED TO. `FetchAllResult.anyRelayServed` looks like
-# the tidy replacement for our predicate and is strictly narrower: it is
-# `== DONE_REASON_EOSE`, while the probe must count a relay that answered with a
-# CLOSED as having SPOKEN. Measured on `purplepag.es`, which refuses a bare
-# filter:
+# That is the staging collapse in one line: at ~100 connects/s a registry of that
+# size IS the 6.42 of 12 cores the thread dumps found inside the scan, and it is
+# why the fitness pass ran 3h09m for zero passes while the probe executor sat at
+# 0.0s of CPU. On this pin the registry holds LIVE subs only, so the scan is
+# bounded by what we actually hold: 200 open tails cost 0.077 ms per connect.
 #
-#   0 event(s), done=closed:blocked: filters must specify at least one kind
+# THE FIX IS NOT THE OBVIOUS ONE-LINER, which is worth knowing before anyone
+# "simplifies" it. The row cannot be dropped inside `remove()`: the CLOSE frame is
+# decided from the filters that row still holds, so dropping it there stops the
+# CLOSE being sent and leaks the subscription ON THE RELAY instead. Quartz
+# releases the row after the CLOSE has been handed to the socket, and its
+# `PoolRequestsRegistryLeakTest` guards both directions. Our own probe confirmed
+# the same on this pin: 100,000 removals, 100,000 CLOSEs still sent.
 #
-# Our predicate (`!startsWith("cannot:")`) reads that as spoke, returns an EMPTY
-# list, and `fingerprint`'s empty-page retry drops to FALLBACK_PROBE_PAGE — and
-# `leaderPrint`'s kinds fallback then recovers the host. `anyRelayServed` would
-# read the same answer as silence, return null, and take every relay that
-# refuses a bare filter or caps under DEFAULT_PROBE_PAGE straight back out of
-# the fold — 892 urls behind 46 leaders, by the sweep recorded in AGENTS.md.
-# The predicate stays ours.
+# NOT SOURCE-BREAKING. `PoolRequests.subState` became private — no call site here,
+# and none in the store's jars either (checked; the store never touches the pool).
+# `INostrClient` gains `registrySizes()` WITH a default, so `FitnessPass.client`
+# and `Healer.client` still compile untouched. That accessor exists so a host can
+# alarm on registry growth, which is #154's third ask and is still unwired here.
 #
-# DIRECTION: 1ff1077d58 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates), and the store pin below compiles against
-# EXACTLY 1866007e99 — the equality case again. Both pins move together.
+# WATCH AT RUNTIME, since the rest of the range was written for an app and we are
+# a server: `NostrClient` now ages out `CachingEventDecoder` every 30s while
+# active and clears it outright on `disconnect()`. It is a parse-dedup cache, so
+# the cost of dropping it is re-parses and never correctness, and nothing here
+# reads or configures the decoder.
 #
-# LEXICOGRAPHIC: '1866…' < '1ff1…' ('8' < 'f'), so this sorts BELOW the pin it
-# replaces — the dangerous direction, as the last quartz bump also was. Nothing
-# else on the graph brings quartz in at a different hash (the store asks for
-# this one), and `resolutionStrategy { force(libs.quartz) }` in every module is
-# what makes that survivable rather than lucky. Ordering settles nothing about
-# whether the pin took; only the resolved graph does:
+# DIRECTION: 1866007e99 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates). The store pin below is UNCHANGED and asks for
+# 1866007e99 — an ancestor this time, not the equality case the last bump had, and
+# the only quartz change in the range is one the store never calls.
+#
+# LEXICOGRAPHIC: '159…' < '186…' ('5' < '8'), so this sorts BELOW the pin it
+# replaces — the dangerous direction, as the last two quartz bumps also were, and
+# here the store is actively asking for the higher string. `resolutionStrategy {
+# force(libs.quartz) }` in every module is what makes that survivable rather than
+# lucky. Ordering settles nothing about whether the pin took; only the resolved
+# graph does, and on this bump it reads `1866007e99 -> 159afc0423` under the store
+# with no unforced line left:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "1866007e99"
+quartz = "159afc0423"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # 84664f9ab0 = store main through PR #81 (`Bound requested hits`). The whole
