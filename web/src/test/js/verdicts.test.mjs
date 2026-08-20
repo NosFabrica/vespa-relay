@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import {
   MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
-  FOLD_EPOCH, CONSISTENCY_EPOCH, FITNESS_EPOCH, FITNESS_NAMESPACE, PRIME,
+  FOLD_EPOCH, CONSISTENCY_EPOCH, FITNESS_EPOCH, FITNESS_NAMESPACE, PRIME, NETWORK_TOR,
 } from "../../main/resources/web/shared/verdicts.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -254,6 +254,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
   assert.deepEqual(groupByHost([], NOW), []);
   assert.deepEqual(summarise([], NOW), {
     hosts: 0, urls: 0, folded: 0, cleared: 0, expired: 0, silent: 0, stable: 0, unstable: 0, inferred: 0, graded: 0, prime: 0,
+    primeTor: 0,
   });
   // A record with no `d` tag is not addressed at anything and cannot be drawn.
   assert.equal(readRecord({ tags: [["same-as", "wss://x.example/"]], created_at: NOW }), null);
@@ -311,6 +312,44 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
   assert.equal(dead[0].graded, 1);
   assert.equal(dead[0].prime, 0);
   ok("a grade admits only inside its TTL and its epoch, and only `prime` admits");
+}
+
+// ---- prime, split by the transport it was measured over --------------------
+{
+  // The tile answers "how much of what we admit needs a circuit". It is a
+  // NARROWING of `prime` and nothing else: same TTL, same epoch, same grade —
+  // so anything the grade tiles refuse, this one refuses too, or the header
+  // would say more relays are prime over Tor than are prime at all.
+  const onion = `wss://${"v".repeat(56)}.onion/`;
+  const sum = summarise(groupByHost([
+    rec(onion, [grade(PRIME, "e", NOW), ["n", NETWORK_TOR]]),
+    rec("wss://routed.example/", [grade(PRIME, "e", NOW), ["n", NETWORK_TOR]]),
+    rec("wss://plain.example/", [grade(PRIME, "e", NOW), ["n", "clearnet"]]),
+    // Graded over a circuit, and REFUSED. Not in a roster, so not in this tile.
+    rec("wss://dead.example/", [grade("dead", "no answer through the circuit", NOW), ["n", NETWORK_TOR]]),
+    // Prime over Tor a month ago, which is a url the router is re-measuring.
+    rec("wss://aged.example/", [grade(PRIME, "e", NOW - TTL_SECONDS - 1), ["n", NETWORK_TOR]]),
+  ], NOW), NOW);
+  assert.equal(sum.prime, 3);
+  assert.equal(sum.primeTor, 2, "a clearnet prime is not counted, and a routed clearnet host is");
+  assert.ok(sum.primeTor <= sum.prime, "the split can never exceed what it splits");
+  ok("`prime on Tor` counts the current prime grades whose measurement went over a circuit");
+}
+
+{
+  // A `.onion` WITH NO `n` IS STILL TOR, and that is not a guess — an onion
+  // address has no other transport. Records signed before the fitness pass
+  // wrote facts are exactly this shape, and reading them as clearnet would put
+  // the one thing a hidden-service operator opened the panel for into the tile
+  // that says the opposite.
+  const bare = `wss://${"w".repeat(56)}.onion/`;
+  const sum = summarise(groupByHost([rec(bare, [grade(PRIME, "e", NOW)])], NOW), NOW);
+  assert.equal(sum.primeTor, 1);
+  // …and the reverse is not inferred. A clearnet host with no `n` is a url this
+  // pass did not say how it reached, which is not a claim that it used Tor.
+  const quiet = summarise(groupByHost([rec("wss://quiet.example/", [grade(PRIME, "e", NOW)])], NOW), NOW);
+  assert.equal(quiet.primeTor, 0, "silence about the transport is not a claim of one");
+  ok("an onion with no network tag counts as Tor; a clearnet host with none does not");
 }
 
 {
