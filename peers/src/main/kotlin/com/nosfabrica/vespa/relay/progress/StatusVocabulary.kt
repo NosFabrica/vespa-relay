@@ -269,7 +269,9 @@ object StatusVocabulary {
                     "duplicate the router worked out for itself are different facts with different fixes; they were " +
                     "one number while the fold count was inferred from a subtraction. Published in two places with the " +
                     "same meaning and different scopes: on a CYCLE it is after that stream's fold, and on a PROBE PASS " +
-                    "it is over the union of every stream, where `sourced = excluded + heldOutDead + candidates`. " +
+                    "it is over the union of every stream, where `excluded + heldOutDead + candidates = sourced + " +
+                    "recordedOnly` — the identity that actually holds, since the derivation takes the recorded-only " +
+                    "urls into the corpus before it splits it. " +
                     "`exclude` is per stream, so a url one stream excludes and another asks for counts as a candidate " +
                     "there — it is dialled, and counting it on both sides would break the one partition it belongs to.",
             )
@@ -318,8 +320,9 @@ object StatusVocabulary {
                     "against, and NOT the number that was dialled: most of a candidate set already carries a current " +
                     "verdict and is never asked again until it ages out. Published in two places for one population: " +
                     "inside a pass's `streams` row it is what that pass was handed, and on the ALIAS SOURCE's row it " +
-                    "is what the derivation yielded — `sourced - excluded - heldOutDead`, stated rather than left to " +
-                    "a subtraction, because it is the number every count on the passes below is a share of.",
+                    "is what the derivation yielded — `sourced - excluded - heldOutDead + recordedOnly`, stated " +
+                    "rather than left to a subtraction, because it is the number every count on the passes below is " +
+                    "a share of.",
             )
             put(
                 "newUrls",
@@ -363,28 +366,31 @@ object StatusVocabulary {
             )
             put(
                 "corpus",
-                "The coverage tree's root: every relay url this router knows of, which is `sourced + recordedOnly` — " +
-                    "what a relay list named this round, plus what only our own signed records still know about. Its " +
-                    "own name because `sourced` means one of those two and the root means both: a row labelled " +
-                    "\"everything this router knows of\" carrying `sourced`'s definition would document the wrong " +
-                    "number for the widest row on the card. Not a published member — the page synthesises it from " +
-                    "the two that are.",
+                "The coverage tree's root: every relay url this router knows of, which is what its two branches add " +
+                    "up to — `excluded + heldOutDead + candidates`, and equally `sourced + recordedOnly`. Its own name " +
+                    "because `sourced` means only what a relay list named this round: a row labelled \"everything this " +
+                    "router knows of\" carrying `sourced`'s definition would document the wrong number for the widest " +
+                    "row on the card. Not a published member — the page adds up the ones that are.",
             )
             put(
                 "recordedOnly",
-                "Urls this router holds a signed verdict record about that NO relay list named this round — the rest " +
-                    "of the funnel's mouth, beside `sourced` rather than inside it, so the tree's root is " +
-                    "`sourced + recordedOnly`. Not a drop and not a refusal: nothing was decided against these urls, " +
-                    "they simply were not asked for, because the author who listed one revised their relay list or a " +
-                    "source was reconfigured. The store still holds every measurement ever taken of them and the " +
-                    "alias fold still groups a new url against them, which is why counting the corpus as one " +
-                    "derivation's yield understated it. Zero on a router with no signer and no named monitors: it " +
-                    "holds no records of its own.",
+                "Urls this router holds a signed verdict record about that NO relay list named this round. Outside " +
+                    "`sourced`, which is why the corpus is `sourced + recordedOnly` — and INSIDE `candidates` and " +
+                    "`heldOutDead`, because the derivation takes them into the corpus before it splits it. So the " +
+                    "tree cannot give them a branch of their own without counting every one of them twice: it is a " +
+                    "cross-cutting fact about the corpus rather than a slice of it, and it is stated on this row's " +
+                    "own line. Not a drop and not a refusal — nothing was decided against these urls, they simply " +
+                    "were not asked for, because the author who listed one revised their relay list or a source was " +
+                    "reconfigured. The store still holds every measurement ever taken of them and the alias fold " +
+                    "still groups a new url against them, which is why counting the corpus as one derivation's " +
+                    "yield understated it. Zero on a router with no signer and no named monitors: it holds no " +
+                    "records of its own.",
             )
             put(
                 "heldOutDead",
                 "…of those, how many carried a current signed unreachability record and were dropped before either " +
-                    "probe pass saw them. `sourced - heldOutDead = candidates`. Not permanent: the record ages out " +
+                    "probe pass saw them, over the corpus rather than over `sourced` alone — the recorded-only urls " +
+                    "are in this count too. Not permanent: the record ages out " +
                     "(24h) or the host delivers something, and the url is back in the next derivation. Distinct from " +
                     "the monitor's own `knownDead`, which is the size of the whole dead set rather than its overlap " +
                     "with what the streams asked for.",

@@ -331,11 +331,10 @@ const FUNNEL_TONE = {
   consistent: "good",
   inconsistent: "warn",
   // Neither a fault nor a finding: a duplicate url leaving the fan-out is the
-  // fold working, a url held out on a signed record is one we already measured,
-  // and a url only our records know is one nobody asked for this round.
+  // fold working, and a url held out on a signed record is one we already
+  // measured.
   foldedAway: "mute",
   heldOutDead: "mute",
-  recordedOnly: "mute",
   // Ours, in both senses: we could not carry it, or our probe broke.
   "declined by our own transport": "ours",
   "the probe failed mid-walk": "ours",
@@ -383,6 +382,11 @@ const FUNNEL_TONE = {
  * truncated, surfaces as a named row in the fault tone instead of quietly
  * shrinking the tree.
  *
+ * **The root is what its branches add up to.** `recordedOnly` is not one of
+ * them: the derivation takes those urls into the corpus before it splits it, so
+ * they are already inside `heldOutDead` and `candidates`, and a branch of their
+ * own counted every one of them twice.
+ *
  * **Absent is not zero.** A pass that publishes none of the three verdict
  * members measures no verdicts — the alias fold, and any router older than the
  * partition — and gets NO tree, rather than one claiming every url it checked
@@ -413,19 +417,33 @@ export function funnelOf(p) {
   const excluded = Math.max(0, p.excluded || 0);
   const heldOutDead = Math.max(0, p.heldOutDead || 0);
   const dropped = excluded + heldOutDead;
-  // …AND WHAT THE STREAMS DID NOT NAME. A url leaves the relay lists for
-  // reasons of its own — the author who listed it revised their 10002, a source
-  // was reconfigured — and every measurement this router took of it is still in
-  // the store, still read by the fold. Rooted at `sourced` alone the tree lost
-  // those without a word, on a card whose caption says "every relay url this
-  // router knows of": a deployment holding records for five figures of urls
-  // whose current lists name a couple of thousand drew an eighth of its corpus.
-  const recordedOnly = Math.max(0, p.recordedOnly || 0);
-  // The root: everything this router knows of. `sourced` is the honest count of
-  // what was named when the router publishes it; without it the root is what we
-  // can still account for, and the tree simply starts lower rather than
-  // inventing a mouth.
-  const total = Math.max(candidates + dropped, p.sourced || 0) + recordedOnly;
+  // THE ROOT: everything this router knows of, which is what its two branches
+  // add up to and nothing else.
+  //
+  // `recordedOnly` — urls we hold a signed record about that no relay list
+  // named this round — is NOT a third branch, and it was, which double-counted
+  // every one of them. The derivation takes them into the corpus at the top:
+  // `StreamWorld.derive` builds `known = named + recordedOnly` and splits THAT
+  // into what a `dead` record holds out and what the passes get, so they are
+  // already inside `heldOutDead` and `candidates`. The identity that actually
+  // holds is `excluded + heldOutDead + candidates = sourced + recordedOnly`,
+  // and on production that is 403 + 8,632 + 11,021 = 17,808 + 2,248 = 20,056 —
+  // where the tree drew 22,304 and hung a 2,248 branch under it that every
+  // other row already contained.
+  //
+  // The concern that put the branch there stands and is answered by the root
+  // itself: rooted at `sourced` alone, a deployment holding records for five
+  // figures of urls whose current lists name a couple of thousand drew a tenth
+  // of its own corpus under a caption reading "every relay url this router
+  // knows of". `candidates + dropped` IS that corpus. How much of it no relay
+  // list names any more is a cross-cutting fact rather than a slice — the urls
+  // are spread across the two branches — so it is stated on the round-up's own
+  // line, where it cannot be added to anything.
+  //
+  // `sourced` stays as a floor for a router that publishes a partition the two
+  // branches cannot account for: the tree starts lower rather than inventing a
+  // mouth, and `unattributed` names whatever is missing.
+  const total = Math.max(candidates + dropped, p.sourced || 0);
 
   /** One node. `children` is built by the callers below, never inferred. */
   const node = (key, label, value, children = []) => ({
@@ -453,12 +471,6 @@ export function funnelOf(p) {
     node("inconsistent", "inconsistent — refused", member("inconsistent")),
     node("unmeasured", "no verdict", member("unmeasured"), states),
   ];
-  // A branch only where the router counted it: a zero row under a mouth that
-  // has always been "what the streams named" is a claim about a corpus a router
-  // this old never measured.
-  const beyond = recordedOnly
-    ? [node("recordedOnly", "known from our own records — no relay list names it now", recordedOnly)]
-    : [];
   // KEYED `corpus`, NOT `sourced`. `sourced` is a published member with an
   // exact meaning — what the streams named this round — and the root is now
   // that plus what only our records know. One key, one meaning: a root labelled
@@ -470,7 +482,6 @@ export function funnelOf(p) {
         node("excluded", "excluded by config, or our own url", excluded),
         node("heldOutDead", "known dead — a signed unreachability record", heldOutDead),
       ]),
-      ...beyond,
       node("candidates", "in reach — the candidate set", candidates, kept),
     ]);
   // WHAT THE RELAY THINKS OF THE ARITHMETIC, which is not the same question as

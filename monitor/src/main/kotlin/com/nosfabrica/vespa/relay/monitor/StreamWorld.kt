@@ -184,10 +184,16 @@ internal class StreamWorld(
          * couple of thousand, the card claimed to draw "every relay url this
          * router knows of" and drew an eighth of it.
          *
-         * Its own branch and NOT folded into `dropped`, because it is not a
-         * drop: nothing decided against these urls this round, they simply were
-         * not asked for. Zero on a router with no signer and no named monitors,
-         * which holds no records and is telling the truth by saying so.
+         * NOT a branch of the card's tree, and it was: these urls are already
+         * inside [candidates] and [heldOutDead] by the time they are counted
+         * here — `known` is the union and the split comes after — so a row of
+         * their own double-counts every one of them. It is a cross-cutting fact
+         * about the corpus, how much of it no relay list names any more, rather
+         * than a slice of it, and it is stated on the round-up's own line where
+         * nothing can add it to anything. Not a drop either: nothing was decided
+         * against these urls this round, they simply were not asked for. Zero on
+         * a router with no signer and no named monitors, which holds no records
+         * and is telling the truth by saying so.
          */
         val recordedOnly: Int = 0,
         /**

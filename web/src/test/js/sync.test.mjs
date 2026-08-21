@@ -416,34 +416,44 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // THE CORPUS IS NOT ONE DERIVATION'S YIELD. A url leaves the relay lists for
-  // reasons of its own and every measurement of it stays in the store — the
-  // fold still groups new urls against it — so rooted at `sourced` alone the
-  // tree lost it silently, on a card captioned "every relay url this router
-  // knows of". A deployment holding records for 17,584 urls whose current lists
-  // name 1,754 drew a tenth of its own corpus.
+  // THE CORPUS IS NOT ONE DERIVATION'S YIELD, AND IT IS NOT ITS YIELD PLUS
+  // SOMETHING EITHER.
+  //
+  // A url leaves the relay lists for reasons of its own and every measurement of
+  // it stays in the store — the fold still groups new urls against it — so
+  // rooted at `sourced` alone the tree lost it silently, on a card captioned
+  // "every relay url this router knows of": a deployment holding records for
+  // 17,584 urls whose current lists name 1,754 drew a tenth of its own corpus.
+  //
+  // The branch that fixed that counted them TWICE. `StreamWorld.derive` builds
+  // `known = named + recordedOnly` and splits THAT into what a `dead` record
+  // holds out and what the passes get, so those urls are already inside
+  // `heldOutDead` and `candidates` — and the identity that holds is
+  // `excluded + heldOutDead + candidates = sourced + recordedOnly`. On
+  // production: 403 + 8,632 + 11,021 = 17,808 + 2,248 = 20,056, where the tree
+  // drew 22,304.
   const shrunk = (over = {}) => funnelOf({
     name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50, recordedOnly: 15830,
-    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+    // 1,754 named − 4 excluded − 50 dead + 15,830 held records about.
+    streams: [{ candidates: 17530, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 16830 }],
     ...over,
   });
   const f = shrunk();
   const at = (key) => f.rows.find((r) => r.key === key);
-  assert.equal(f.total, 17584, "the mouth is what was named PLUS what only our records know");
-  assert.equal(at("recordedOnly").value, 15830);
-  assert.equal(at("recordedOnly").depth, 1, "a sibling of the candidate set, not a slice of it");
-  assert.equal(at("recordedOnly").tone, "mute", "nothing was decided against them — nobody asked");
-  // The three children still divide the root exactly once.
-  assert.equal(at("dropped").value + at("recordedOnly").value + at("candidates").value, f.total);
+  assert.equal(f.total, 17584, "the corpus is what the two branches add up to — and it IS sourced + recordedOnly");
+  assert.equal(f.rows.some((r) => r.key === "recordedOnly"), false,
+    "…so a branch of their own would count every one of them a second time");
+  assert.equal(at("dropped").value + at("candidates").value, f.total, "two branches, dividing the root exactly once");
   assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
 
-  // Absent, and the tree is exactly what it always was — a router older than
-  // this member never measured that corpus and must not be shown a zero row
-  // claiming it did.
-  const old = shrunk({ recordedOnly: undefined });
-  assert.equal(old.total, 1754);
-  assert.equal(old.rows.some((r) => r.key === "recordedOnly"), false);
-  ok("the tree's mouth is every url the router knows of, not what one derivation named");
+  // A router that publishes none of it is a router whose corpus is what its
+  // lists named, and the tree is exactly what it always was.
+  const plain = funnelOf({
+    name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50,
+    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+  });
+  assert.equal(plain.total, 1754);
+  ok("the tree's mouth is what its own branches account for, counted once");
 }
 
 {

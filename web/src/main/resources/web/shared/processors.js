@@ -495,11 +495,13 @@ function processorFact(p) {
     if (p.excluded) add(`${fmt(p.excluded)} excluded`, "excluded");
     if (p.heldOutDead) add(`${fmt(p.heldOutDead)} held out as dead`, "heldOutDead");
     add(`${fmt(p.candidates)} handed to the passes`, "candidates");
-    // Not part of the derivation and drawn last for that reason: these are urls
-    // no relay list named this round, which the fold still groups against. The
-    // tree above spends a whole branch on them, so a row that omitted them here
-    // would have the card's mouth and this line disagreeing about the corpus.
-    if (p.recordedOnly) add(`${fmt(p.recordedOnly)} more we hold records about`, "recordedOnly");
+    // …and how much of the corpus no relay list names any more. Drawn last, and
+    // ONLY here: these urls are outside `sourced` and already inside
+    // `candidates` and `heldOutDead`, so this line is the one place on the card
+    // that can state them without something adding them to a total that
+    // contains them. The tree used to give them a branch, which counted 2,248
+    // urls twice and drew a root of 22,304 over a corpus of 20,056.
+    if (p.recordedOnly) add(`${fmt(p.recordedOnly)} of them named by no relay list now`, "recordedOnly");
     return cell;
   }
   const probe = probeProgress(p);

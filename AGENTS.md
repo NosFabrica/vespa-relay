@@ -2775,19 +2775,18 @@ fan-out still needs two real windows.
 every relay url this router knows of                                  17,584
 ├─ dropped before a pass could see it                                    832
 │  ├─ excluded by config, or our own url                                   3
-│  └─ known dead — one of our own signed `dead` verdicts               829
-├─ known from our own records — no relay list names it now                 0
+│  └─ known dead — one of our own signed `dead` verdicts                 829
 └─ in reach — the candidate set                                       16,752
    ├─ folded onto another url                                         11,429
    ├─ consistent                                                         583
    ├─ inconsistent — refused                                              12
    └─ no verdict                                                       4,728
       ├─ never answered a REQ                                          3,902
-      │  ├─ the name does not resolve  on 1,502 host(s), largest 44    2,140
-      │  ├─ it never answered in time  on 611 host(s), largest 61      1,204
-      │  ├─ the connection was refused  on 388 host(s)                   402
-      │  └─ the TLS handshake failed  on 121 host(s)                     156
-      └─ refused our auth  on 4 host(s), largest 600                     826
+      │  ├─ the name does not resolve — 1,502 host(s), largest 44      2,140
+      │  ├─ it never answered in time — 611 host(s), largest 61        1,204
+      │  ├─ the connection was refused — 388 host(s)                     402
+      │  └─ the TLS handshake failed — 121 host(s)                       156
+      └─ refused our auth — 4 host(s), largest 600                       826
 ```
 
 **The corpus's `no verdict` divides by what the STORE holds, not by what the
@@ -2836,6 +2835,17 @@ overlap twice and `hosts` cannot be added at all, since the same server sits in
 both rows' tallies. So `corpusRow` picks the widest candidate set — the sweep's,
 the lane's being always a slice of it — and what a single PASS did is a
 different question, answered elsewhere.
+
+**The root is what its two branches add up to, and `recordedOnly` is not a
+third.** `excluded + heldOutDead + candidates = sourced + recordedOnly` is the
+identity that holds — `StreamWorld.derive` builds `known = named + recordedOnly`
+and splits THAT into what a `dead` record holds out and what the passes get, so
+the recorded-only urls are already inside `heldOutDead` and `candidates` by the
+time they are counted. A branch of their own beside the other two counted every
+one of them twice: on production, 2,248 urls drawn again under a root of 22,304
+where the corpus is 20,056. How much of the corpus no relay list names any more
+is a cross-cutting fact rather than a slice, so it is stated on the round-up's
+own line, where nothing can add it to a total that already contains it.
 
 **The mouth is `sourced + recordedOnly`, not one derivation's yield.** It was
 `sourced` alone — every url the streams' relay lists named THIS round — under a
