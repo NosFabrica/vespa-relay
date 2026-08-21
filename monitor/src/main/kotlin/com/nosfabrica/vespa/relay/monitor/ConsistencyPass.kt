@@ -117,6 +117,18 @@ class ConsistencyPass(
     private var folded: Set<NormalizedRelayUrl> = emptySet()
 
     /**
+     * …and what the STORE says about the urls that carry no verdict — url to
+     * the pass's own sentence for why, from a record signed on some earlier
+     * pass. See [RelayVerdictRecord.Verdicts.unmeasured] and [report].
+     *
+     * Read back rather than remembered, and that is the point: it is a property
+     * of the corpus rather than of this run, so it covers urls this run never
+     * reached and survives between passes.
+     */
+    @Volatile
+    private var recordedUnmeasured: Map<NormalizedRelayUrl, String> = emptyMap()
+
+    /**
      * EVERY WAY A URL SURVIVES A PASS WITH NOTHING WRITTEN DOWN.
      *
      * One of these is assigned to every url the pass attempted and did not
@@ -140,9 +152,33 @@ class ConsistencyPass(
      */
     enum class Unmeasured(
         val reason: String,
+        /**
+         * Whether this outcome may be written into a SIGNED, PUBLIC record
+         * about somebody else's server.
+         *
+         * The same cut the two families above draw, and it is the reason the
+         * families were worth naming: a finding ABOUT THE FAR END is a claim we
+         * observed and can stand behind — it asked and nothing came back, it
+         * turned our credentials down, it served every filter we know with
+         * nothing, it holds nine events. A finding ABOUT US is not a claim
+         * about the relay at all: our transport would not carry the url, our
+         * probe threw, our own wall clock ran out. Publishing one of those as a
+         * 30166 would tell every crawler in the network that a relay we never
+         * managed to dial had failed something.
+         *
+         * "Don't publish claims you can't support" is the repository's rule and
+         * `Unreachability.proves` is its other half — the same conservatism, one
+         * layer down, deciding which SILENCES prove unreachability. This decides
+         * which OUTCOMES are ours to report at all.
+         *
+         * A url whose outcome is not publishable simply gets no tag, which reads
+         * back as "nothing recorded" — the honest state, and the one that has it
+         * re-measured on the next pass.
+         */
+        val publishable: Boolean = true,
     ) {
         /** Our own transport would not carry it — no Tor for a `.onion`, or nothing listening. */
-        TRANSPORT("declined by our own transport"),
+        TRANSPORT("declined by our own transport", publishable = false),
 
         /** Dialled, and nothing came back through any filter. */
         SILENT("never answered a REQ"),
@@ -167,7 +203,7 @@ class ConsistencyPass(
         TOO_THIN("too few events to judge on"),
 
         /** The probe threw. Ours to fix, and never a claim about the relay. */
-        FAILED("the probe failed mid-walk"),
+        FAILED("the probe failed mid-walk", publishable = false),
 
         /**
          * The job ran out its wall clock — see [AliasProbe.deadlineMs].
@@ -179,7 +215,7 @@ class ConsistencyPass(
          * would have held the whole pass open before there was a deadline to
          * end it.
          */
-        ABANDONED("gave up at the per-url deadline"),
+        ABANDONED("gave up at the per-url deadline", publishable = false),
     }
 
     /**
@@ -198,6 +234,18 @@ class ConsistencyPass(
         val label: String get() = cause?.reason ?: reason.reason
 
         val parent: String? get() = cause?.let { reason.reason }
+
+        /**
+         * …and whether it may be SIGNED AND PUBLISHED — see
+         * [Unmeasured.publishable] and [Silence.publishable].
+         *
+         * Both halves have to agree, and the cause is the stricter of the two:
+         * `never answered a REQ` is a supportable claim when the transport told
+         * us the name does not resolve, and is not one when the transport said
+         * something this build could not read. A finding we cannot explain is
+         * not a finding to put our signature on.
+         */
+        val publishable: Boolean get() = reason.publishable && (cause?.publishable ?: true)
     }
 
     /**
@@ -313,6 +361,27 @@ class ConsistencyPass(
             }
         }
 
+        // WHAT THE PASS ASKED AND COULD NOT DECIDE, written where the next one —
+        // and the card — can read it.
+        //
+        // Only the findings that are claims about the RELAY, and only the leaf
+        // sentence: `the TLS handshake failed`, not `never answered a REQ: the
+        // TLS handshake failed`. The record is read by strangers, so it carries
+        // one complete sentence about the far end; the grouping is this pass's
+        // own vocabulary and [report] puts it back from the enum rather than by
+        // splitting a string somebody might change.
+        //
+        // Guarded per url for [publishConsistency]'s reason: these are signed
+        // public statements and one failing to write must not take the pass
+        // down. Sequential and after the dials rather than inside them — every
+        // one is a store read, a signature and an insert, and putting that
+        // inside the permit would have it competing with the sockets the pass
+        // is actually there to open.
+        for ((url, finding) in silent) {
+            if (!finding.publishable) continue
+            runCatching { record.publishUnmeasured(url, finding.label) }
+        }
+
         if (decided.get() > 0 || silent.isNotEmpty()) {
             System.err.println(
                 "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) ? ${decided.get()} decided " +
@@ -392,12 +461,45 @@ class ConsistencyPass(
         var consistent = 0
         var inconsistent = 0
         var unmeasured = 0
+        // …AND WHAT THE STORE SAYS ABOUT THE ONES WITH NO VERDICT, which is not
+        // the same question as what THIS run found and is the reason the two
+        // lists below are two lists.
+        //
+        // `undecided` is a run's findings: it describes the urls this pass
+        // dialled and it is empty on a pass that ran over nothing. This is the
+        // CORPUS, read back from records signed on earlier passes — one row per
+        // url, deduplicated by the record's own `d`, standing between passes for
+        // as long as the record does. On a card carrying a sweep's row beside a
+        // fast lane tick's, the run's findings were being drawn as the corpus,
+        // twice.
+        //
+        // Urls with no record land under [NO_RECORD] rather than under a reason
+        // invented for them: it is what the store actually knows, and it covers
+        // both a url nothing has ever measured and one whose record aged out —
+        // which cannot be told apart without a second unbounded read, so they
+        // are not claimed to be.
+        val standingUrls = HashMap<String, Int>()
+        val standingHosts = HashMap<String, HashMap<String, Int>>()
         for (url in candidates) {
             when {
-                url in folded -> foldedAway++
-                consistency.isConsistent(url) -> consistent++
-                consistency.isInconsistent(url) -> inconsistent++
-                else -> unmeasured++
+                url in folded -> {
+                    foldedAway++
+                }
+
+                consistency.isConsistent(url) -> {
+                    consistent++
+                }
+
+                consistency.isInconsistent(url) -> {
+                    inconsistent++
+                }
+
+                else -> {
+                    unmeasured++
+                    val why = recordedUnmeasured[url] ?: NO_RECORD
+                    standingUrls.merge(why, 1, Int::plus)
+                    standingHosts.getOrPut(why) { HashMap() }.merge(RelayAliases.hostOf(url.url), 1, Int::plus)
+                }
             }
         }
         val urls = HashMap<Finding, Int>()
@@ -406,26 +508,11 @@ class ConsistencyPass(
             urls.merge(finding, 1, Int::plus)
             hosts.getOrPut(finding) { HashMap() }.merge(RelayAliases.hostOf(url.url), 1, Int::plus)
         }
-        val rows =
-            order(urls).map { (finding, count) ->
-                val byHost = hosts[finding].orEmpty()
-                Processors.Undecided(
-                    reason = finding.label,
-                    parent = finding.parent,
-                    urls = count,
-                    // Beside the urls, never instead: the url count closes the
-                    // partition, the host count says how many SERVERS those urls
-                    // are, and the ranked head says whether they concentrate.
-                    hosts = byHost.size,
-                    // Ranked by host name within a count, so two passes over an
-                    // unchanged network publish the same document.
-                    top =
-                        byHost.entries
-                            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-                            .take(Processors.MAX_UNDECIDED_HOSTS)
-                            .map { Processors.HostCount(it.key, it.value) },
-                )
-            }
+        val rows = order(urls).map { (finding, count) -> undecidedRow(finding.label, finding.parent, count, hosts[finding].orEmpty()) }
+        val standing =
+            standingUrls.entries
+                .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                .map { (why, count) -> undecidedRow(why, parentOf(why), count, standingHosts[why].orEmpty()) }
         handle.record(
             Processors.Work(
                 stream = label,
@@ -448,9 +535,58 @@ class ConsistencyPass(
                 // to protect — see [Processors.Work.undecidedOmitted] for the
                 // two times one was short of its own enumeration.
                 undecided = rows,
+                standing = standing,
             ),
         )
     }
+
+    /**
+     * One published row: the url count that closes a partition, and beside it
+     * what those urls resolve to as SERVERS.
+     *
+     * Shared by the run's findings and the corpus's stored states, because the
+     * two are the same shape drawn from different populations and a second copy
+     * of the ranking is a second place for them to disagree about what `top`
+     * means.
+     */
+    private fun undecidedRow(
+        reason: String,
+        parent: String?,
+        urls: Int,
+        byHost: Map<String, Int>,
+    ) = Processors.Undecided(
+        reason = reason,
+        parent = parent,
+        urls = urls,
+        // Beside the urls, never instead: the url count closes the
+        // partition, the host count says how many SERVERS those urls
+        // are, and the ranked head says whether they concentrate.
+        hosts = byHost.size,
+        // Ranked by host name within a count, so two passes over an
+        // unchanged network publish the same document.
+        top =
+            byHost.entries
+                .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                .take(Processors.MAX_UNDECIDED_HOSTS)
+                .map { Processors.HostCount(it.key, it.value) },
+    )
+
+    /**
+     * Which group a STORED reason belongs under, from this pass's own
+     * enumerations rather than from the string.
+     *
+     * The record carries one complete sentence about the far end — `the TLS
+     * handshake failed` — because it is read by strangers who have never heard
+     * of our grouping. The grouping is still ours and still wanted on the card,
+     * so it is put back by asking [Silence] whether it owns the sentence, which
+     * is exact. Splitting `never answered a REQ: the TLS handshake failed` on a
+     * separator would work until somebody writes a reason with a colon in it.
+     *
+     * A sentence neither enumeration knows — a record signed by an older build
+     * whose wording has since changed — gets no parent and stands as its own
+     * row, which is honest: it is a reason this build cannot place.
+     */
+    private fun parentOf(reason: String): String? = if (reason in SILENCE_REASONS) Unmeasured.SILENT.reason else null
 
     /**
      * One url's pair of answers through ONE filter, and how much they are worth.
@@ -704,6 +840,7 @@ class ConsistencyPass(
                 return
             }
         consistency.replace(candidates, held.consistent, held.inconsistent)
+        recordedUnmeasured = held.unmeasured
         // Urls a FOLD has already taken out of the fan-out. They will never be
         // dialled, so measuring their stability is budget spent on a question
         // nobody asks: on a polluted store two thirds of a candidate set folds
@@ -735,5 +872,20 @@ class ConsistencyPass(
         const val STAGE_REACHABILITY = "pre-probe"
 
         const val STAGE_LADDER = "paired walk"
+
+        /**
+         * What the card calls a url the store knows nothing about.
+         *
+         * NOT a reason: it is the absence of one, and it says so. It covers a
+         * url nothing has ever measured and one whose record has aged out —
+         * indistinguishable without a second unbounded read of the store, so
+         * the row does not claim to tell them apart — and it also covers every
+         * url whose finding was about US rather than about the relay, since
+         * those are deliberately never signed. See [Unmeasured.publishable].
+         */
+        const val NO_RECORD = "nothing recorded — never measured, or the record aged out"
+
+        /** [Silence]'s sentences, for [parentOf]. Built once: the enum cannot change at runtime. */
+        private val SILENCE_REASONS = Silence.entries.mapTo(HashSet()) { it.reason }
     }
 }

@@ -60,6 +60,25 @@ package com.nosfabrica.vespa.relay.monitor
  */
 enum class Silence(
     val reason: String,
+    /**
+     * Whether this cause may be written into a SIGNED, PUBLIC record about
+     * somebody else's server — see `ConsistencyPass.Unmeasured.publishable`.
+     *
+     * Six of the eight are: a name that does not resolve, a port that refuses,
+     * no route, a TLS handshake that fails, something that is not a websocket,
+     * a window that lapses — each is a fact about the far end, observed at our
+     * socket, and each is what NIP-66 monitors publish routinely.
+     *
+     * [UNKNOWN] and [RATE_LIMITED] are not, for opposite reasons. An
+     * unrecognised string is one we could not read: it may be a fault on this
+     * side, and a record signed from it would be a claim built out of text we
+     * did not understand — the exact claim `Unreachability.proves` is careful
+     * not to make. A rate limit IS about the far end, but it is a statement
+     * about how it treated THIS client's pacing on THIS run, transient by
+     * definition, and publishing it would put our own traffic shaping into a
+     * public record about their server.
+     */
+    val publishable: Boolean = true,
 ) {
     /** `UnknownHostException`: nothing answers for this name any more. */
     NAME("the name does not resolve"),
@@ -83,10 +102,10 @@ enum class Silence(
     TIMEOUT("it never answered in time"),
 
     /** 429, or the words for it. Transient by definition, and our own pacing's business. */
-    RATE_LIMITED("we were rate limited"),
+    RATE_LIMITED("we were rate limited", publishable = false),
 
     /** Text this table has not been taught. Counted, sampled to stderr, never forced. */
-    UNKNOWN("gave up for a reason we do not recognise"),
+    UNKNOWN("gave up for a reason we do not recognise", publishable = false),
     ;
 
     companion object {

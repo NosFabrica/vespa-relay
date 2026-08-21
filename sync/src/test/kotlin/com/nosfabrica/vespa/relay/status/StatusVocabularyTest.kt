@@ -153,6 +153,10 @@ class StatusVocabularyTest {
                                                      "parent": "never answered a REQ", "urls": 22, "hosts": 7,
                                                      "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}},
                           {"name": "fast lane", "whole": false, "endedAt": 1180, "tookSec": 4,
+                          "standing": [{"reason": "the name does not resolve", "parent": "never answered a REQ",
+                                        "urls": 3, "hosts": 2, "top": [{"host": "gone.example", "urls": 2}]},
+                                       {"reason": "nothing recorded — never measured, or the record aged out",
+                                        "urls": 1, "hosts": 1}],
                           "candidates": 6, "foldedAway": 1, "consistent": 1,
                           "inconsistent": 0, "unmeasured": 4, "dialled": 4, "decided": 1,
                           "undecided": {"reasons": [{"reason": "too few events to judge on", "urls": 4, "hosts": 3}],
@@ -257,6 +261,9 @@ class StatusVocabularyTest {
                     // and how long that one run took.
                     "whole",
                     "tookSec",
+                    // …and the CORPUS's breakdown of what has no verdict, where
+                    // `undecided` beside it is the last run's.
+                    "standing",
                     // The candidate set's own partition, and the two nodes above
                     // it that say where the set came from.
                     "sourced",

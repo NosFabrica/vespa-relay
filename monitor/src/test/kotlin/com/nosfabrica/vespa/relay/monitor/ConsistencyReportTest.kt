@@ -401,6 +401,96 @@ class ConsistencyReportTest {
         }
 
     @Test
+    fun `a finding about the relay is signed and one about this router is not`() =
+        runBlocking {
+            // THE CUT, and it is the repository's own rule one layer down from
+            // `Unreachability.proves`: a 30166 is a signed public statement
+            // about somebody else's server, so only findings ABOUT THE FAR END
+            // reach one. A url our transport would not carry says nothing about
+            // the relay — nobody dialled it — and a record claiming otherwise
+            // would tell every crawler in the network that a relay we never
+            // reached had failed something.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+
+            val theirs = Processors()
+            pass(theirs.of("consistency"), store) { _, _, _, _ ->
+                AliasProbe.Page(null, reason = "cannot: javax.net.ssl.SSLHandshakeException: cert expired")
+            }.measure("t", listOf(steady), canDial = { true })
+            assertEquals(
+                mapOf(steady to "the TLS handshake failed"),
+                record.load(listOf(steady)).unmeasured,
+                "the relay answered our socket with a failed handshake, which is a fact about the relay",
+            )
+
+            // Ours: no Tor for a `.onion`, or nothing listening. No socket was
+            // opened, so there is nothing to report about anybody.
+            val ours = Processors()
+            pass(ours.of("consistency"), store) { _, _, _, _ -> AliasProbe.Page(corpus()) }
+                .measure("t", listOf(thin), canDial = { false })
+            assertEquals("declined by our own transport", reasonOf(ours))
+            assertTrue(record.load(listOf(thin)).unmeasured.isEmpty(), "a fact about this router is not signed")
+
+            // …and neither is a silence we could not read. An unrecognised
+            // terminal string may be a fault on this side, and a record built
+            // from text this build did not understand is a claim we cannot
+            // support.
+            val mute = Processors()
+            pass(mute.of("consistency"), store) { _, _, _, _ -> AliasProbe.Page(null) }
+                .measure("t", listOf(shuffler), canDial = { true })
+            assertEquals("gave up for a reason we do not recognise", reasonOf(mute))
+            assertTrue(record.load(listOf(shuffler)).unmeasured.isEmpty())
+        }
+
+    @Test
+    fun `the corpus keeps its own breakdown of what has no verdict, and it outlives the run`() =
+        runBlocking {
+            // WHAT THE STORE SAYS, beside what the run found — the two lists
+            // this pass publishes, and the reason they are two.
+            //
+            // `undecided` describes the urls THIS run dialled. `standing` is
+            // one row per url with no verdict, read back from records earlier
+            // passes signed: it survives between passes, it covers urls this run
+            // never reached, and it is what makes the card's corpus a claim
+            // about the network rather than about whatever the last pass
+            // happened to touch.
+            val store = newStore()
+            val processors = Processors()
+            val gate =
+                pass(processors.of("consistency"), store) { at, want, _, _ ->
+                    if (at == steady) AliasProbe.Page(corpus().take(want)) else AliasProbe.Page(null, reason = "cannot: java.net.UnknownHostException: gone")
+                }
+
+            // First pass: one url decides, one is written down as an attempt.
+            gate.measure("t", listOf(steady, thin), canDial = { true })
+
+            // Second pass over a WIDER set. `shuffler` has never been measured
+            // by anything, so the store has nothing on it — which is a row that
+            // says so rather than a reason invented for it.
+            gate.measure("t", listOf(steady, thin, shuffler), canDial = { url -> url != shuffler })
+
+            val work = row(processors)
+            assertEquals(2, work.unmeasured)
+            assertEquals(
+                work.unmeasured,
+                work.standing.sumOf { it.urls },
+                "the stored states must divide `unmeasured` exactly once, as the run's own findings do",
+            )
+            val standing = work.standing.associateBy { it.reason }
+            assertEquals(setOf("the name does not resolve", ConsistencyPass.NO_RECORD), standing.keys)
+            assertEquals(
+                "never answered a REQ",
+                standing.getValue("the name does not resolve").parent,
+                "the grouping is put back from this pass's own enumeration, not by splitting the stored sentence",
+            )
+            assertEquals(1, standing.getValue("the name does not resolve").hosts)
+            // `shuffler` was declined by our own transport, so nothing was
+            // signed about it — and "nothing recorded" is exactly what the store
+            // knows.
+            assertEquals(1, standing.getValue(ConsistencyPass.NO_RECORD).urls)
+        }
+
+    @Test
     fun `a sweep says its counts are the corpus and a lane tick says they are a slice`() =
         runBlocking {
             // THE MEMBER THAT TELLS THE TWO READINGS OF A ROW APART.

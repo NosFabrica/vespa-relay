@@ -339,6 +339,11 @@ const FUNNEL_TONE = {
   // Ours, in both senses: we could not carry it, or our probe broke.
   "declined by our own transport": "ours",
   "the probe failed mid-walk": "ours",
+  // Not a reason and not a fault: the store has nothing on these urls, which
+  // is the ordinary state of a url nothing has measured yet. The string is
+  // `ConsistencyPass.NO_RECORD` word for word, the same way the two above
+  // mirror `Unmeasured.TRANSPORT` and `Unmeasured.FAILED`.
+  "nothing recorded — never measured, or the record aged out": "mute",
   // The arithmetic not closing is neither of those and must LOOK wrong.
   unattributed: "warn",
 };
@@ -430,11 +435,23 @@ export function funnelOf(p) {
     children,
   });
 
+  // WHAT THE STORE SAYS ABOUT THE URLS WITH NO VERDICT — the corpus's own
+  // breakdown, not the last run's.
+  //
+  // `standing` is one row per url, read back by the pass from the kind-30166
+  // records earlier passes signed: deduplicated by each record's `d` tag,
+  // standing between passes for as long as the record does, and covering urls
+  // this run never reached. `undecided` — the same shape from the same pass —
+  // is what THAT RUN found, and it belongs to the run's own block; drawn here
+  // it made the corpus a description of whatever the last pass happened to
+  // touch, and on a router publishing both a sweep's row and a fast lane
+  // tick's it drew every reason twice.
+  const states = reasonNodes(row.standing || [], node);
   const kept = [
     node("foldedAway", "folded onto another url", member("foldedAway")),
     node("consistent", "consistent", member("consistent")),
     node("inconsistent", "inconsistent — refused", member("inconsistent")),
-    node("unmeasured", "no verdict", member("unmeasured")),
+    node("unmeasured", "no verdict", member("unmeasured"), states),
   ];
   // A branch only where the router counted it: a zero row under a mouth that
   // has always been "what the streams named" is a claim about a corpus a router

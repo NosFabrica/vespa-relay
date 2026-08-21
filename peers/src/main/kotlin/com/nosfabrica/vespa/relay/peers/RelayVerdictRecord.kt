@@ -103,6 +103,24 @@ class RelayVerdictRecord(
         /** Urls measured as NOT doing so — the ones the fan-out refuses. */
         val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
         /**
+         * …and urls a pass ASKED and could not decide, by the reason it could
+         * not — see [publishUnmeasured].
+         *
+         * Neither a verdict nor the absence of one: it is the record of an
+         * attempt. `consistent` and `inconsistent` say what the relay does;
+         * this says why nobody can tell yet, and a url in here is a url the
+         * next pass still dials.
+         *
+         * What it buys is a CORPUS that survives its passes. The stats card's
+         * breakdown of "no verdict" used to be the last run's own findings,
+         * which meant it described whatever the pass happened to touch and went
+         * blank between passes — and, on a card carrying both a sweep's row and
+         * a fast lane tick's, drew every reason twice. Read back from the store
+         * it is one row per url, deduplicated by the record's own `d` tag,
+         * true between passes and for as long as the record stands.
+         */
+        val unmeasured: Map<NormalizedRelayUrl, String> = emptyMap(),
+        /**
          * Whether a url ANSWERED a NEG-OPEN when the fitness pass asked, by
          * url. Absent means unmeasured — no verdict, an expired one, or a
          * deployment reading someone else's — and unmeasured is not "no": the
@@ -216,9 +234,10 @@ class RelayVerdictRecord(
         val distinct = HashSet<NormalizedRelayUrl>()
         val consistent = HashSet<NormalizedRelayUrl>()
         val inconsistent = HashSet<NormalizedRelayUrl>()
+        val unmeasured = HashMap<NormalizedRelayUrl, String>()
         val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, unmeasured, speaksNegentropy)
     }
 
     /** A page of records, folded into the sets above — see [Building]. */
@@ -248,12 +267,19 @@ class RelayVerdictRecord(
         event.tags
             .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
             ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
-            ?.get(1)
-            ?.let { answer ->
-                when (answer) {
+            ?.let { tag ->
+                when (tag[1]) {
                     CONSISTENT_YES -> consistent += from
 
                     CONSISTENT_NO -> inconsistent += from
+
+                    // NOT a verdict, and read into its own map for that
+                    // reason: the pass asked and could not decide, and the
+                    // WHY is the evidence element rather than a value of its
+                    // own — see [publishUnmeasured]. A row carrying no
+                    // evidence is dropped rather than counted namelessly,
+                    // since the reason is the entire content of this state.
+                    CONSISTENT_UNMEASURED -> tag.getOrNull(EVIDENCE_INDEX)?.takeIf { it.isNotBlank() }?.let { unmeasured[from] = it }
 
                     // An answer this writer does not recognise is not a
                     // verdict. Ignored rather than guessed at: guessing
@@ -329,6 +355,74 @@ class RelayVerdictRecord(
                         // to carry the moment it was MEASURED or it never ages.
                         nowSeconds().toString(),
                         // And which rules measured it — see [CONSISTENCY_EPOCH].
+                        CONSISTENCY_EPOCH,
+                    ),
+                ),
+        )
+
+    /**
+     * Write down that the gate ASKED and could not decide — and WHY, where the
+     * why is ours to say out loud.
+     *
+     * ```json
+     * ["self-consistent", "unmeasured", "never answered a REQ: the TLS handshake failed", "1776038400", "1"]
+     * ["self-consistent", "unmeasured", "too few events to judge on",                     "1776038400", "1"]
+     * ```
+     *
+     * ## Why this exists at all
+     *
+     * An unmeasurable url used to get NO tag, on the rule stated beside
+     * [publishConsistency] and still true: nothing writes a `false` from
+     * silence, because that verdict costs a relay its place in the fan-out and
+     * silence is not evidence of instability. That rule is about `false`. It
+     * left a second question unanswered — "why has this url no verdict" — and
+     * the only record of the answer was the pass's own memory, published on the
+     * stats card as whatever the LAST RUN happened to find.
+     *
+     * Which meant the corpus could not be described. Four thousand urls with no
+     * stability verdict is the normal state of a discovered network and it
+     * divides into completely different problems — dead hosts, auth walls,
+     * relays holding nine events — with completely different fixes, and the
+     * card's breakdown of them went blank between passes, described only the
+     * urls one run touched, and drew every reason twice on a router running
+     * both a sweep and a fast lane. Addressable records fix all three at once:
+     * one row per url keyed by `d`, replaced rather than appended, standing
+     * between passes for as long as the record does.
+     *
+     * ## What it will and will not say
+     *
+     * [reason] is the pass's own sentence for the finding, and only findings
+     * that are CLAIMS ABOUT THE RELAY reach here — see
+     * `ConsistencyPass.Unmeasured.publishable`. A url our transport would not
+     * carry, a probe that threw, a job that ran out our wall clock: those are
+     * facts about this router, they are signed by nobody, and they read back as
+     * "nothing recorded", which is exactly what the store knows about them.
+     *
+     * The value is [CONSISTENT_UNMEASURED] and not a fourth tag, because it is
+     * the same question's answer: `self-consistent` is what this monitor thinks
+     * of a relay's stability, and "we asked and could not tell" is one of the
+     * things it can think. It also means [edit]'s ownership takes the previous
+     * answer away, which is right — a verdict that has aged out and a url that
+     * has since stopped answering must not leave a stale `true` standing beside
+     * the reason it could not be re-measured.
+     */
+    suspend fun publishUnmeasured(
+        url: NormalizedRelayUrl,
+        reason: String,
+    ): Event? =
+        edit(
+            url,
+            owns = owning(SELF_CONSISTENT_TAG),
+            add =
+                listOf(
+                    arrayOf(
+                        SELF_CONSISTENT_TAG,
+                        CONSISTENT_UNMEASURED,
+                        reason,
+                        // See [current]: the record's own createdAt is bumped by
+                        // quartz's monitor on every connection, so this has to
+                        // carry the moment it was ATTEMPTED or it never ages.
+                        nowSeconds().toString(),
                         CONSISTENCY_EPOCH,
                     ),
                 ),
@@ -776,10 +870,34 @@ class RelayVerdictRecord(
          */
         const val SELF_CONSISTENT_TAG = "self-consistent"
 
-        /** The two values [SELF_CONSISTENT_TAG] is ever written with. */
+        /** The two VERDICTS [SELF_CONSISTENT_TAG] is written with. */
         const val CONSISTENT_YES = "true"
 
         const val CONSISTENT_NO = "false"
+
+        /**
+         * …and the third value, which is not a verdict — see
+         * [publishUnmeasured].
+         *
+         * Safe for a reader that only knows the other two: this file already
+         * ignores an unrecognised value rather than guessing at it, on the rule
+         * that a tag we cannot read is no verdict, and every other NIP-66
+         * consumer skips the whole tag as unknown. So a `false` never appears
+         * where a relay was merely unreachable, in our store or in anybody
+         * else's.
+         */
+        const val CONSISTENT_UNMEASURED = "unmeasured"
+
+        /**
+         * Where a verdict tag carries its evidence — the sentence a human reads
+         * to see what the value above rests on.
+         *
+         * Read back for exactly one value: [CONSISTENT_UNMEASURED], where the
+         * evidence IS the state. `500 + 500 events at a 7d anchor` explains a
+         * `true`; `never answered a REQ: the TLS handshake failed` is the whole
+         * content of an `unmeasured`, and a row without one is dropped.
+         */
+        private const val EVIDENCE_INDEX = 2
 
         /**
          * Where a verdict tag carries the unix second it was MEASURED.

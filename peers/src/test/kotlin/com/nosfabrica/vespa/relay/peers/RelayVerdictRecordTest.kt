@@ -165,6 +165,67 @@ class RelayVerdictRecordTest {
         }
 
     @Test
+    fun `an attempt that decided nothing is written down as an attempt, not as a verdict`() =
+        runBlocking {
+            // THE THIRD VALUE, and the reason it is a value of `self-consistent`
+            // rather than a tag of its own: it answers the same question. What
+            // this monitor thinks of a relay's stability is `true`, `false`, or
+            // "we asked and could not tell", and the third one is the state four
+            // thousand urls of a discovered corpus are actually in.
+            //
+            // It must NEVER read back as `false`. That verdict costs a relay its
+            // place in the fan-out, and nothing writes it from silence.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+
+            record.publishUnmeasured(alias, "the TLS handshake failed")
+
+            val held = record.load(listOf(alias))
+            assertEquals(mapOf(alias to "the TLS handshake failed"), held.unmeasured)
+            assertTrue(held.inconsistent.isEmpty(), "an attempt is not a refusal: ${held.inconsistent}")
+            assertTrue(held.consistent.isEmpty())
+        }
+
+    @Test
+    fun `an attempt that decided nothing takes an aged-out verdict away with it`() =
+        runBlocking {
+            // The url answered once and cannot be re-measured now. Leaving the
+            // old `true` standing beside a note about why it could not be
+            // re-measured would have the record asserting a verdict and
+            // explaining its own absence at the same time — so [edit]'s
+            // ownership takes it, which is the whole reason this rides the tag
+            // it does.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+
+            record.publishConsistency(alias, consistent = true, first = 500, second = 500, shared = 500, score = 1.0, anchorDays = 7)
+            record.publishUnmeasured(alias, "never answered a REQ")
+
+            val held = record.load(listOf(alias))
+            assertTrue(held.consistent.isEmpty(), "the stale verdict outlived the attempt that replaced it")
+            assertEquals(mapOf(alias to "never answered a REQ"), held.unmeasured)
+            assertEquals(
+                1,
+                recordFor(store, alias.url)?.tags?.count { it.firstOrNull() == RelayVerdictRecord.SELF_CONSISTENT_TAG },
+                "one answer per url, replaced rather than appended",
+            )
+        }
+
+    @Test
+    fun `an attempt with nothing to say is not read back as one`() =
+        runBlocking {
+            // The reason IS the state — a row that cannot say why it could not
+            // decide has nothing a card could draw and nothing a reader could
+            // act on, so it is dropped rather than counted namelessly.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+
+            record.publishUnmeasured(alias, "")
+
+            assertTrue(record.load(listOf(alias)).unmeasured.isEmpty())
+        }
+
+    @Test
     fun `a monitor observation survives the fold's verdict`() =
         runBlocking {
             val store = newStore()

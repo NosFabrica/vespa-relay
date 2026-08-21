@@ -431,6 +431,20 @@ object StatusVocabulary {
                     "`omitted` carries whatever either side dropped.",
             )
             put(
+                "standing",
+                "THE CORPUS's breakdown of `unmeasured`, where `undecided` is the last RUN's — two questions, and " +
+                    "conflating them is what made this card unreadable. `undecided` is what the pass that just ran " +
+                    "found: it covers the urls that run dialled, it is empty on a pass that ran over nothing, and a " +
+                    "router running both a sweep and a fast lane publishes two of them over overlapping populations. " +
+                    "This is one row per url with no verdict, read back from the kind-30166 records earlier passes " +
+                    "signed — deduplicated by each record's own `d` tag, standing between passes for as long as the " +
+                    "record does, and covering urls this run never reached. Sums to `unmeasured` like `undecided` " +
+                    "does, with the urls the store knows nothing about under a row that says exactly that: it is not " +
+                    "a reason, it is the absence of one, and it covers a url nothing has ever measured, one whose " +
+                    "record aged out, and one whose only finding was about US rather than about the relay and was " +
+                    "therefore never signed. Absent from a pass that reads no verdicts back — the alias fold.",
+            )
+            put(
                 "whole",
                 "Whether this row's standing counts — `foldedAway`, `consistent`, `inconsistent`, `unmeasured` — " +
                     "describe the WHOLE candidate set or a slice of it. The member that tells the two readings of a " +

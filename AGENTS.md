@@ -1462,7 +1462,8 @@ the hour:
 
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
 not.** The passes write tags onto the same addressable kind 30166 record per url
-— `same-as` from the fold, `self-consistent` from the stability gate, `s` /
+— `same-as` from the fold, `self-consistent` from the stability gate (`true`,
+`false`, or `unmeasured` carrying the reason it could not decide), `s` /
 `pageable` / `nip77` from the fitness pass — which is why
 `RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
@@ -2745,6 +2746,28 @@ once: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and
 `unmeasured` is the sum of those reasons. `ConsistencyReportTest` pins that
 identity and one test per reason.
 
+**That table is also the publishing cut.** A finding in the right-hand column is
+a claim about the far end, observed at our own socket, and it is written onto
+the url's kind-30166 record as a third value of `self-consistent`:
+`["self-consistent", "unmeasured", "the TLS handshake failed", <at>, <epoch>]`.
+A finding in the left-hand column is a fact about THIS router — our transport
+would not carry it, our probe threw, our own wall clock ran out — and is signed
+by nobody, because a record claiming otherwise would tell every crawler in the
+network that a relay we never managed to dial had failed something. `Silence`
+draws the same line one level down: its six recognised causes are publishable,
+and `UNKNOWN` (text this build could not read, which may be a fault on our side)
+and `RATE_LIMITED` (a statement about our own pacing) are not. `Unreachability.proves`
+is the same conservatism applied to the stronger claim.
+
+The value is `unmeasured` and NOT a fourth tag, because it answers the same
+question: what this monitor thinks of a relay's stability is `true`, `false`, or
+"we asked and could not tell", and the third is the state most of a discovered
+corpus is actually in. It also means `edit`'s ownership takes an aged-out
+verdict away with it, which is right — a stale `true` must not stand beside the
+reason the url could not be re-measured. Nothing writes `false` from silence,
+and that rule is untouched: the verdict that costs a relay its place in the
+fan-out still needs two real windows.
+
 **The stats card draws the whole thing as a TREE** — `funnelOf` in
 `/web/shared/sync.js`, one row per node, five levels deep:
 
@@ -2766,6 +2789,19 @@ every relay url this router knows of                                  17,584
       │  └─ the TLS handshake failed  on 121 host(s)                     156
       └─ refused our auth  on 4 host(s), largest 600                     826
 ```
+
+**The corpus's `no verdict` divides by what the STORE holds, not by what the
+last run found.** The stability gate publishes two lists: `undecided` — the
+findings of the run that just finished, which belongs to that run's block — and
+`standing`, one row per url with no verdict, read back from the kind-30166
+records earlier passes signed. The second is what the tree hangs under `no
+verdict`, and it is the point of the whole split: it is deduplicated by each
+record's own `d` tag, it survives between passes, and it covers urls the last
+run never reached. Urls the store knows nothing about sit under a row that says
+exactly that — not a reason, the absence of one — which covers a url nothing
+has measured, one whose record aged out (the two cannot be told apart without a
+second unbounded read, so the row does not claim to), and one whose only
+finding was about US and was therefore never signed.
 
 **The tree is the CORPUS; what a RUN did is a second chart.** They were one,
 and one row carried both readings — `Processors.Work` publishes `consistent`
@@ -3748,7 +3784,11 @@ to be true, make it true and say so.
 **Don't publish claims you can't support.** Negative NIP-66 records are signed
 and public. `Unreachability.proves()` is deliberately conservative: an unknown
 failure stays quiet, because silence costs a retry and being wrong costs a false
-statement about someone else's server.
+statement about someone else's server. The same rule decides which of the
+stability gate's outcomes reach a record at all —
+`ConsistencyPass.Unmeasured.publishable` and `Silence.publishable`: a finding
+about the far end is ours to report, a finding about this router is not, and a
+silence we could not read is not either.
 
 ## Traps that have cost real time
 

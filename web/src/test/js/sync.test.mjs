@@ -543,6 +543,59 @@ const leg = (n, quiet, over = {}) => ({
   ok("the tree is drawn from the row that walked the whole corpus, never from the sum of the rows");
 }
 
+{
+  // WHAT THE STORE SAYS ABOUT THE URLS WITH NO VERDICT — the corpus's own
+  // breakdown, and the reason the tree has children again after the split.
+  //
+  // `standing` is one row per url, read back from the kind-30166 records
+  // earlier passes signed: deduplicated by each record's `d` tag, true between
+  // passes, and covering urls the last run never reached. `undecided` is what
+  // one RUN found and belongs to that run's block — drawn here it made the
+  // corpus a description of whatever the last pass happened to touch, twice
+  // over on a router publishing a sweep's row beside a lane tick's.
+  const f = funnelOf({
+    name: "consistency", sourced: 1000, excluded: 0, heldOutDead: 0,
+    streams: [{
+      name: "all streams", whole: true, candidates: 1000, foldedAway: 0, consistent: 100, inconsistent: 0,
+      unmeasured: 900,
+      standing: [
+        { reason: "the TLS handshake failed", parent: "never answered a REQ", urls: 400, hosts: 380,
+          top: [{ host: "gone.example", urls: 20 }] },
+        { reason: "nothing recorded — never measured, or the record aged out", urls: 300, hosts: 210 },
+        { reason: "too few events to judge on", urls: 200, hosts: 150 },
+      ],
+      // The run's own findings, which must NOT reach this tree.
+      undecided: { reasons: [{ reason: "the probe failed mid-walk", urls: 900, hosts: 4 }], omitted: 0 },
+    }],
+  });
+  assert.deepEqual(f.rows.filter((r) => r.depth >= 3).map((r) => [r.depth, r.key, r.value]), [
+    [3, "never answered a REQ", 400],
+    [4, "the TLS handshake failed", 400],
+    [3, "nothing recorded — never measured, or the record aged out", 300],
+    [3, "too few events to judge on", 200],
+  ]);
+  assert.equal(f.rows.some((r) => r.key === "the probe failed mid-walk"), false,
+    "a run's own findings are that run's, and the corpus is not described by them");
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the stored states close the 900");
+
+  // Not a reason and not a fault: the store simply has nothing on those urls,
+  // which is the ordinary state of a url nothing has measured yet — and of one
+  // whose only finding was about US and was therefore never signed.
+  assert.equal(f.rows.find((r) => r.key === "nothing recorded — never measured, or the record aged out").tone, "mute");
+  // Every bar is still a share of the ROOT, not of the node it hangs under.
+  assert.equal(f.rows.find((r) => r.key === "never answered a REQ").share, 400 / 1000);
+
+  // Absent, and the node is a leaf again rather than a tree of zeroes: the
+  // alias fold reads no verdicts back, and a router older than the member never
+  // published any.
+  const bare = funnelOf({
+    name: "consistency", sourced: 1000,
+    streams: [{ whole: true, candidates: 1000, foldedAway: 0, consistent: 100, inconsistent: 0, unmeasured: 900 }],
+  });
+  assert.deepEqual(bare.rows.filter((r) => r.depth >= 3), []);
+  ok("the corpus's `no verdict` divides by what the STORE holds, never by what one run found");
+}
+
 // ── what one RUN of a pass did ──────────────────────────────────────────────
 {
   // THE OTHER HALF OF THE SPLIT. The corpus tree above answers "what is the

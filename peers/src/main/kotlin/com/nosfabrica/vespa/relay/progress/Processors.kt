@@ -197,6 +197,32 @@ class Processors {
          */
         val undecidedOmitted: Int = 0,
         /**
+         * …and the same breakdown of the CORPUS rather than of this run, read
+         * back from the store.
+         *
+         * Two lists because they are two questions, and conflating them is what
+         * made the stats card unreadable. [undecided] is what THIS pass found:
+         * it describes the urls this run dialled, it is empty on a pass that ran
+         * over nothing, and on a router running both a sweep and a fast lane
+         * there are two of them describing overlapping populations. This is one
+         * row per url with no verdict, taken from the signed records an earlier
+         * pass left — deduplicated by the record's own `d` tag, standing between
+         * passes for as long as the record does, and covering urls this run
+         * never reached.
+         *
+         * Sums to [unmeasured] like [undecided] does, and includes the urls the
+         * store knows nothing about under a row that says so — see
+         * `ConsistencyPass.NO_RECORD`. That row is not a reason; it is the
+         * absence of one, and it covers a url nothing has measured, one whose
+         * record aged out, and one whose only finding was about US and therefore
+         * never signed.
+         *
+         * Empty on a pass that does not read verdicts back — the alias fold —
+         * which reads as "this pass does not answer that" rather than as a
+         * corpus with nothing in it.
+         */
+        val standing: List<Undecided> = emptyList(),
+        /**
          * Whether the STANDING members above describe the whole candidate set
          * or a slice of it.
          *
@@ -934,6 +960,43 @@ class Processors {
 
     companion object {
         /**
+         * One `undecided`/`standing` row, as both lists publish it.
+         *
+         * One serializer for two lists because they ARE one shape — a reason, a
+         * url count that closes a partition, and what those urls resolve to as
+         * servers — read from two populations. A second copy is a second place
+         * for the run's breakdown and the corpus's to drift apart on what `top`
+         * means.
+         */
+        private fun undecidedRow(u: Undecided): JsonObject =
+            buildJsonObject {
+                put("reason", u.reason)
+                u.parent?.let { put("parent", it) }
+                // Urls first: it is the count that sums back to `unmeasured`,
+                // and `hosts` beside it is the count that names who to chase.
+                put("urls", u.urls)
+                put("hosts", u.hosts)
+                u.examples.takeIf { it.isNotEmpty() }?.let { names ->
+                    putJsonArray("examples") { for (h in names) add(h) }
+                }
+                // The widest few WITH counts, where the pass counts urls.
+                // Ranked, and deliberately not summing to the row — see
+                // [Processors.Undecided.top].
+                u.top.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("top") {
+                        for (h in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("host", h.host)
+                                    put("urls", h.urls)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+        /**
          * One processor row, as both status documents publish it.
          *
          * Here rather than in either plane's document builder because both
@@ -1086,44 +1149,20 @@ class Processors {
                                     put("unmeasured", w.unmeasured)
                                     put("dialled", w.dialled)
                                     put("decided", w.decided)
+                                    // THE CORPUS'S OWN BREAKDOWN, beside the run's
+                                    // — see [Processors.Work.standing]. A plain
+                                    // array rather than `undecided`'s object: it
+                                    // has no cap to disclose, because it is
+                                    // built from the candidate set itself rather
+                                    // than from a bounded list of findings.
+                                    w.standing.takeIf { it.isNotEmpty() }?.let { rows ->
+                                        putJsonArray("standing") { for (u in rows) add(undecidedRow(u)) }
+                                    }
                                     w.undecided.takeIf { it.isNotEmpty() }?.let { reasons ->
                                         put(
                                             "undecided",
                                             buildJsonObject {
-                                                putJsonArray("reasons") {
-                                                    for (u in reasons) {
-                                                        add(
-                                                            buildJsonObject {
-                                                                put("reason", u.reason)
-                                                                u.parent?.let { put("parent", it) }
-                                                                // Urls first: it is the count that
-                                                                // sums back to `unmeasured`, and
-                                                                // `hosts` beside it is the count
-                                                                // that names who to chase.
-                                                                put("urls", u.urls)
-                                                                put("hosts", u.hosts)
-                                                                u.examples.takeIf { it.isNotEmpty() }?.let { names ->
-                                                                    putJsonArray("examples") { for (h in names) add(h) }
-                                                                }
-                                                                // The widest few WITH counts, where the pass
-                                                                // counts urls. Ranked, and deliberately not
-                                                                // summing to the row — see [Processors.Undecided.top].
-                                                                u.top.takeIf { it.isNotEmpty() }?.let { rows ->
-                                                                    putJsonArray("top") {
-                                                                        for (h in rows) {
-                                                                            add(
-                                                                                buildJsonObject {
-                                                                                    put("host", h.host)
-                                                                                    put("urls", h.urls)
-                                                                                },
-                                                                            )
-                                                                        }
-                                                                    }
-                                                                }
-                                                            },
-                                                        )
-                                                    }
-                                                }
+                                                putJsonArray("reasons") { for (u in reasons) add(undecidedRow(u)) }
                                                 // Bounded like every other list
                                                 // here, and never silently.
                                                 put("omitted", w.undecidedOmitted)
