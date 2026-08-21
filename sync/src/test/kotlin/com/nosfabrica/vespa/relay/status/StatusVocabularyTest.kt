@@ -136,7 +136,8 @@ class StatusVocabularyTest {
                        {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                         "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
                         "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                        "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
+                        "streams": [{"name": "content", "whole": true, "endedAt": 880, "tookSec": 42,
+                          "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
                           "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                      "examples": ["a.example"]}], "omitted": 0}}]},
                        {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
@@ -145,11 +146,17 @@ class StatusVocabularyTest {
                         "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454,
                                                  "stage": "paired walk"}], "omitted": 2},
                         "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                        "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
+                        "streams": [{"name": "all streams", "whole": true, "endedAt": 880, "tookSec": 900,
+                          "candidates": 40, "foldedAway": 8, "consistent": 9,
                           "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
                           "undecided": {"reasons": [{"reason": "the connection was refused",
                                                      "parent": "never answered a REQ", "urls": 22, "hosts": 7,
-                                                     "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
+                                                     "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}},
+                          {"name": "fast lane", "whole": false, "endedAt": 1180, "tookSec": 4,
+                          "candidates": 6, "foldedAway": 1, "consistent": 1,
+                          "inconsistent": 0, "unmeasured": 4, "dialled": 4, "decided": 1,
+                          "undecided": {"reasons": [{"reason": "too few events to judge on", "urls": 4, "hosts": 3}],
+                                        "omitted": 0}}]},
                        {"name": "ingest", "phase": "running", "phaseForSec": 900,
                         "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                         "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
@@ -245,6 +252,11 @@ class StatusVocabularyTest {
                     // …the share of them that arrived undecided, which is what
                     // the card counts against rather than the whole set.
                     "newUrls",
+                    // Which of the two readings a `streams` row is — a sweep's
+                    // whole candidate set or a fast lane tick's slice of it —
+                    // and how long that one run took.
+                    "whole",
+                    "tookSec",
                     // The candidate set's own partition, and the two nodes above
                     // it that say where the set came from.
                     "sourced",

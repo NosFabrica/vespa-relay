@@ -10,8 +10,8 @@
 // `terms`, never out of a copy in this file, so a page can never describe a
 // member in words the service would not use — see `StatusVocabulary`.
 
-import { el, fmt, fmtDur, short, shownOf } from "./page.js";
-import { HELD_SHOWN, STUCK_PASS_SEC, funnelOf, heldOf, measuringOf, probeProgress } from "./sync.js";
+import { ago, el, fmt, fmtDur, isoOf, short, shownOf } from "./page.js";
+import { HELD_SHOWN, STUCK_PASS_SEC, funnelOf, heldOf, measuringOf, passesOf, probeProgress } from "./sync.js";
 
 /**
  * The glossary the document ships, for the current card's `title` attributes.
@@ -139,6 +139,68 @@ function backgroundPanel(rows, withFunnel = false) {
     // longest-held first, so the top of its list is the row worth the space.
     const held = heldPanel(p);
     if (held) box.appendChild(held);
+    // …AND WHAT ITS LAST RUN OVER EACH SET DID, under the same line. The corpus
+    // tree at the head of the card is a claim about the NETWORK and is true
+    // between passes, for weeks at a time; this is a claim about a RUN. They
+    // were one chart, and a card that carries both readings of one row without
+    // saying which is which cannot be read — see `passesOf`.
+    const runs = passPanel(p);
+    if (runs) box.appendChild(runs);
+  }
+  return box;
+}
+
+/**
+ * WHAT EACH RUN OF THIS PASS DID — one block per candidate set it was handed.
+ *
+ * Two blocks on a live router and never merged: the six-hourly SWEEP over the
+ * whole corpus, and the FAST LANE tick over the urls named since its last look.
+ * Their url sets overlap almost entirely, so as a corpus they cannot be added
+ * — which is exactly what the one chart this splits was doing — but as runs
+ * they are simply two runs, and drawn as two they answer the question a
+ * reader actually has: what happened, when, and to how many.
+ *
+ * Each block leads with its own clock. A lane tick sits in the document until
+ * the next tick replaces it, so two blocks on one card are routinely hours
+ * apart — and that is precisely how a second set of numbers sat beside the
+ * sweep's for as long as it did without anyone reading them as a second pass.
+ */
+function passPanel(p) {
+  const blocks = passesOf(p);
+  if (!blocks) return null;
+  const box = el("div", "sy-funnel");
+  for (const b of blocks) {
+    const cap = el("div", "sy-tr-cap");
+    cap.appendChild(el("b", null, b.name));
+    // WHAT IT WAS HANDED, THEN WHAT IT SPENT. `candidates` first because every
+    // number after it is a share of it, and `dialled`/`decided` beside rather
+    // than under it: they are spends rather than slices, and a bar would make
+    // them read as a subtotal of a set they do not divide.
+    const facts = [`${fmt(b.candidates)} handed in`];
+    // Presence, not truthiness: a pass that has caught up publishes zero, and
+    // that is the state both passes work towards rather than a missing member.
+    if (b.newUrls != null) facts.push(`${fmt(b.newUrls)} with no verdict yet`);
+    facts.push(`${fmt(b.dialled)} dialled`, `${fmt(b.decided)} decided`);
+    if (b.tookSec != null) facts.push(`took ${fmtDur(b.tookSec)}`);
+    if (b.endedAt != null) facts.push(ago(b.endedAt));
+    const line = el("em", null, ` · ${facts.join(" · ")}`);
+    // The exact instant on hover, for `ago`'s reason: the age is the signal and
+    // the date is the evidence.
+    if (b.endedAt != null) line.title = isoOf(b.endedAt);
+    cap.appendChild(line);
+    box.appendChild(cap);
+    for (const r of b.rows) box.appendChild(treeRow(r, b.unmeasured));
+    if (b.omitted) {
+      box.appendChild(el("div", "sy-tr-note", `${fmt(b.omitted)} more reason(s) not drawn — see the JSON`));
+    }
+    // The relay's own check on the two identities, drawn LOUD and only when it
+    // fails. The tree's `not accounted for` row covers a parent whose children
+    // fall short; this covers the other direction, where nothing looks wrong.
+    if (b.accountedFor === false) {
+      const bad = el("div", "sy-tr-note warn", "these numbers do not add up — see `accountedFor` in the JSON");
+      bad.title = term("accountedFor");
+      box.appendChild(bad);
+    }
   }
   return box;
 }
@@ -223,15 +285,23 @@ function phaseCell(p) {
 
 /**
  * THE CANDIDATE SET, DIVIDED — every url the streams named, once, into what
- * became of it and then into why.
+ * became of it.
  *
- * Drawn under the stability gate's line because that line is a ratio and a
+ * Drawn at the head of the card because the line under it is a ratio and a
  * ratio is exactly what cannot be acted on: `595 of 8,172 checked` is the same
  * number whether the other 7,577 are unreachable, auth-walled, thin or waiting
  * on a pass that never ran, and those want four different responses. Every
  * decision behind it — what the width is, where a slice sits, what to do when
  * the arithmetic does not close — is `funnelOf` in `/web/shared/sync.js`, for
  * the reason that module's head gives.
+ *
+ * WHAT IS NOT DRAWN HERE any more is why each url with no verdict has none.
+ * This chart is a claim about the CORPUS — true between passes, for weeks at a
+ * time, whether or not anything ran — and "why could this run not decide it"
+ * is a claim about a RUN. Carrying both meant one row holding a standing count
+ * over the whole candidate set beside a tally of what one pass spent, with
+ * nothing on the card saying which was which; see `passPanel`, which is where
+ * the reasons went.
  *
  * The KEYS carry the numbers, and that is not redundancy with the bars: the
  * slice that matters most here is `inconsistent`, which on a live corpus is
@@ -243,61 +313,7 @@ function funnelPanel(p) {
   const f = funnelOf(p);
   if (!f) return null;
   const box = el("div", "sy-funnel");
-  for (const r of f.rows) {
-    const row = el("div", "sy-tr");
-
-    // The guides and the label in one cell, so indentation is the label's own
-    // left edge rather than a column that the longest name at any depth would
-    // have to be measured against.
-    const name = el("div", "sy-tr-name");
-    if (r.prefix) name.appendChild(el("i", "sy-tr-guide", r.prefix));
-    name.appendChild(el("b", r.tone ? `sy-tr-dot ${r.tone}` : "sy-tr-dot"));
-    name.appendChild(el("span", null, r.label));
-    // The document's own words where the row is one of ours; a router's
-    // free-text reason and a hostname are their own explanation.
-    const why = term(r.key);
-    if (why) name.title = why;
-    // What a reason's urls resolve to as SERVERS, and how much of it the widest
-    // one is. Beside the label rather than as child rows: they are a different
-    // unit, a unit change inside a tree of url counts reads as a subtotal, and
-    // one row per host would be one row per server on a corpus of thousands.
-    // These two numbers are what that list was for — spread thin, or a handful
-    // of servers — and the names are on the row's title.
-    if (r.hosts) {
-      // ` — 501 host(s)`, not ` on 501 host(s)`: the label is the ROUTER's own
-      // sentence and two of the gate's seven end in a preposition, so the card
-      // was rendering `too few events to judge on on 501 host(s)`. A dash joins
-      // any of them, and the reasons are free text off the wire — a separator
-      // that only works for the words we happen to ship today is not one.
-      const spread = r.largest ? ` — ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` — ${fmt(r.hosts)} host(s)`;
-      name.appendChild(el("em", "sy-tr-hosts", spread));
-    }
-    row.appendChild(name);
-
-    row.appendChild(el("span", "sy-tr-n", fmt(r.value)));
-
-    // EVERY BAR AGAINST THE ROOT, never against the parent. Against its parent
-    // a host with four urls under a reason with five would draw at 80% of the
-    // width the whole corpus gets, which is the reading the tree's indentation
-    // already carries and the one proportion must not contradict.
-    const track = el("span", "sy-tr-track");
-    const fill = el("i", r.tone || null);
-    fill.style.width = `${Math.min(100, r.share * 100)}%`;
-    track.appendChild(fill);
-    row.appendChild(track);
-    // The names, to a readable handful, and then the count of what is left —
-    // see NAMES_IN_TOOLTIP. A title that silently stopped at twelve would be
-    // the same "reads as the whole answer" bug the JSON's own `omitted`
-    // members exist to prevent, one layer up.
-    row.title = `${fmt(r.value)} url(s) — ${(r.share * 100).toFixed(r.share < 0.01 ? 2 : 1)}% of ${fmt(f.total)}` +
-      (r.examples && r.examples.length
-        ? ` (e.g. ${r.examples.join(", ")}${r.unnamed ? `, and ${fmt(r.unnamed)} more — see the JSON` : ""})`
-        : "");
-    box.appendChild(row);
-  }
-  if (f.omitted) {
-    box.appendChild(el("div", "sy-tr-note", `${fmt(f.omitted)} more reason(s) not drawn — see the JSON`));
-  }
+  for (const r of f.rows) box.appendChild(treeRow(r, f.total));
   // The relay's own check on the two identities, drawn LOUD and only when it
   // fails. The tree's `not accounted for` row covers a parent whose children
   // fall short; this covers the other direction, where nothing looks wrong.
@@ -307,6 +323,69 @@ function funnelPanel(p) {
     box.appendChild(bad);
   }
   return box;
+}
+
+/**
+ * ONE ROW OF A TREE — a corpus slice or a run's reason, drawn the same way.
+ *
+ * One renderer for both because they are one visual language and a second copy
+ * of it is how the two charts come to disagree about what an indent means.
+ * What differs is only the DENOMINATOR the bar is a share of, which is why
+ * [total] is a parameter rather than read off the row: the corpus tree scales
+ * every bar to the whole network, a run's block to what that run could not
+ * decide, and each is the comparison its own chart exists to make.
+ */
+function treeRow(r, total) {
+  const row = el("div", "sy-tr");
+
+  // The guides and the label in one cell, so indentation is the label's own
+  // left edge rather than a column that the longest name at any depth would
+  // have to be measured against.
+  const name = el("div", "sy-tr-name");
+  if (r.prefix) name.appendChild(el("i", "sy-tr-guide", r.prefix));
+  name.appendChild(el("b", r.tone ? `sy-tr-dot ${r.tone}` : "sy-tr-dot"));
+  name.appendChild(el("span", null, r.label));
+  // The document's own words where the row is one of ours; a router's
+  // free-text reason and a hostname are their own explanation.
+  const why = term(r.key);
+  if (why) name.title = why;
+  // What a reason's urls resolve to as SERVERS, and how much of it the widest
+  // one is. Beside the label rather than as child rows: they are a different
+  // unit, a unit change inside a tree of url counts reads as a subtotal, and
+  // one row per host would be one row per server on a corpus of thousands.
+  // These two numbers are what that list was for — spread thin, or a handful
+  // of servers — and the names are on the row's title.
+  if (r.hosts) {
+    // ` — 501 host(s)`, not ` on 501 host(s)`: the label is the ROUTER's own
+    // sentence and two of the gate's seven end in a preposition, so the card
+    // was rendering `too few events to judge on on 501 host(s)`. A dash joins
+    // any of them, and the reasons are free text off the wire — a separator
+    // that only works for the words we happen to ship today is not one.
+    const spread = r.largest ? ` — ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` — ${fmt(r.hosts)} host(s)`;
+    name.appendChild(el("em", "sy-tr-hosts", spread));
+  }
+  row.appendChild(name);
+
+  row.appendChild(el("span", "sy-tr-n", fmt(r.value)));
+
+  // EVERY BAR AGAINST THE ROOT, never against the parent. Against its parent a
+  // host with four urls under a reason with five would draw at 80% of the
+  // width the whole corpus gets, which is the reading the tree's indentation
+  // already carries and the one proportion must not contradict.
+  const track = el("span", "sy-tr-track");
+  const fill = el("i", r.tone || null);
+  fill.style.width = `${Math.min(100, r.share * 100)}%`;
+  track.appendChild(fill);
+  row.appendChild(track);
+  // The names, to a readable handful, and then the count of what is left —
+  // see NAMES_IN_TOOLTIP. A title that silently stopped at twelve would be
+  // the same "reads as the whole answer" bug the JSON's own `omitted`
+  // members exist to prevent, one layer up.
+  row.title = `${fmt(r.value)} url(s) — ${(r.share * 100).toFixed(r.share < 0.01 ? 2 : 1)}% of ${fmt(total)}` +
+    (r.examples && r.examples.length
+      ? ` (e.g. ${r.examples.join(", ")}${r.unnamed ? `, and ${fmt(r.unnamed)} more — see the JSON` : ""})`
+      : "");
+  return row;
 }
 
 /**

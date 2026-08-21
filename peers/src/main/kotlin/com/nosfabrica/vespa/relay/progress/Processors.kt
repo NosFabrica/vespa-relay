@@ -196,6 +196,54 @@ class Processors {
          * can be short of an enumeration it does not bound.
          */
         val undecidedOmitted: Int = 0,
+        /**
+         * Whether the STANDING members above describe the whole candidate set
+         * or a slice of it.
+         *
+         * The one member that tells the two readings of this class apart, and
+         * it exists because a card could not. [consistent], [inconsistent],
+         * [foldedAway] and [unmeasured] are counts over everything this pass was
+         * handed; [dialled], [decided] and [newUrls] are what one run spent. A
+         * SWEEP is handed the derivation's whole candidate set, so its standing
+         * members are the corpus. The FAST LANE is handed the urls named since
+         * its last look — a slice, and one whose every url the sweep also holds
+         * — so its standing members are the same corpus counted again over a
+         * subset of it.
+         *
+         * The rows are kept per stream label and both labels are live at once,
+         * so a reader summing them counts the overlap twice. `funnelOf` did:
+         * the card drew 12,611 urls in reach under a round-up line reading
+         * 11,021 handed to the passes, and drew every undecided reason twice —
+         * `too few events to judge on` at 309 urls beside the same reason at
+         * 226. Nor can the rows be merged: `hosts` cannot be added at all,
+         * since one server appears in both tallies.
+         *
+         * So the corpus tree is drawn from the row that says `true`, and every
+         * row — this one included — is drawn as its own pass block.
+         */
+        val whole: Boolean = true,
+        /**
+         * How long this run took, in seconds, or null from a pass that does not
+         * time itself.
+         *
+         * Beside [Snapshot.lastPassSec] rather than folded into it, and the
+         * difference is the fast lane: `lastPassSec` is the PROCESSOR's last
+         * pass whichever label it ran under, so on a row that has just finished
+         * a lane tick it describes the tick and not the sweep whose numbers are
+         * still on the card.
+         */
+        val tookSec: Long? = null,
+        /**
+         * …and when it ended, in epoch seconds.
+         *
+         * The member that makes a stale row legible AS stale. A lane tick runs
+         * between sweeps and its row sits in the document until the next tick
+         * replaces it, so two rows on one card can be minutes and hours old
+         * respectively with nothing saying which is which. That is how a second
+         * set of numbers sat beside the sweep's for as long as it did without
+         * anyone reading them as a second pass.
+         */
+        val endedAt: Long? = null,
     )
 
     /**
@@ -1001,6 +1049,18 @@ class Processors {
                             add(
                                 buildJsonObject {
                                     put("name", w.stream)
+                                    // WHICH OF THE TWO READINGS THIS ROW IS, and
+                                    // written at both values rather than only
+                                    // when false: a reader that cannot tell a
+                                    // corpus row from a slice must not have to
+                                    // infer it from a label it does not know.
+                                    // See [Processors.Work.whole].
+                                    put("whole", w.whole)
+                                    // WHEN, and for how long. Both absent from a
+                                    // pass that does not time itself, which reads
+                                    // as "not known" and never as "just now".
+                                    w.endedAt?.let { put("endedAt", it) }
+                                    w.tookSec?.let { put("tookSec", it) }
                                     put("candidates", w.candidates)
                                     // …and the share of them that arrived with
                                     // nothing decided, which is what the card

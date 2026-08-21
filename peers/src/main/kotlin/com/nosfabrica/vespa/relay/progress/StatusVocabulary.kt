@@ -431,6 +431,27 @@ object StatusVocabulary {
                     "`omitted` carries whatever either side dropped.",
             )
             put(
+                "whole",
+                "Whether this row's standing counts — `foldedAway`, `consistent`, `inconsistent`, `unmeasured` — " +
+                    "describe the WHOLE candidate set or a slice of it. The member that tells the two readings of a " +
+                    "`streams` row apart: those four are counts over everything the pass was handed, while " +
+                    "`dialled`, `decided` and `newUrls` are what one run of it spent. A SWEEP is handed the " +
+                    "derivation's whole candidate set and says `true`; the FAST LANE is handed the urls named since " +
+                    "its last look — a slice, every url of which the sweep also holds — and says `false`. Both rows " +
+                    "are live at once, keyed by stream label, so a reader summing them counts the overlap twice: the " +
+                    "card did, drawing 12,611 urls in reach under a round-up line reading 11,021 handed to the " +
+                    "passes, and drawing every `undecided` reason twice. Merging them is no better — `hosts` cannot " +
+                    "be added at all, since one server appears in both tallies. The corpus tree is drawn from the " +
+                    "row that says `true`, and every row is drawn as its own pass block beside it.",
+            )
+            put(
+                "tookSec",
+                "How long THIS row's run took, where `lastPassSec` is how long the processor's last run took under " +
+                    "whichever label it happened to be. The difference is the fast lane: a tick that finishes " +
+                    "between two sweeps moves `lastPassSec` to describe the tick while the sweep's numbers are " +
+                    "still the ones on the card. Absent from a pass that does not time itself.",
+            )
+            put(
                 "accountedFor",
                 "Do a probe pass's numbers still add up in THIS document — `candidates = foldedAway + consistent + " +
                     "inconsistent + unmeasured`, and the `undecided` rows covering every url with no verdict. " +

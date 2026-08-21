@@ -853,9 +853,15 @@ class AliasFolding(
         // days later, about a card showing forty urls of one server still being
         // dialled. `unmeasured` is the answer and it is the only number here
         // that says whether the fold is making progress at all.
+        val endedMs = System.currentTimeMillis()
         progress?.record(
             Processors.Work(
                 stream = label,
+                // A SWEEP MEASURES THE CORPUS AND A LANE TICK MEASURES A SLICE
+                // OF IT — see [Processors.Work.whole].
+                whole = label != AliasMonitor.FAST_LANE,
+                tookSec = (endedMs - startedMs) / 1000,
+                endedAt = endedMs / 1000,
                 candidates = candidates.size,
                 newUrls = fresh,
                 unmeasured = cleaned?.unmeasured?.size ?: candidates.size,

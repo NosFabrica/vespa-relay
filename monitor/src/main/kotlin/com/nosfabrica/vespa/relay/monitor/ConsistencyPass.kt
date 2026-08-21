@@ -246,7 +246,7 @@ class ConsistencyPass(
             // see. Returning without a word left it indistinguishable from a
             // pass that never ran, which is what a monthly TTL looks like for
             // twenty-nine days out of thirty.
-            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptyMap())
+            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptyMap(), startedMs = startedMs)
             return 0
         }
 
@@ -328,7 +328,7 @@ class ConsistencyPass(
         if (unplaced.isNotEmpty()) {
             System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
-        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent)
+        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent, startedMs = startedMs)
         return decided.get()
     }
 
@@ -375,8 +375,14 @@ class ConsistencyPass(
         dialled: Int,
         decided: Int,
         unmeasurable: Map<NormalizedRelayUrl, Finding>,
+        /** When this run began, so the row can carry its own clock — see [Processors.Work.tookSec]. */
+        startedMs: Long,
     ) {
         val handle = progress ?: return
+        // ONE read of the clock for both members: taken twice, a row whose two
+        // numbers straddle a second says it ended at a moment that is not
+        // `startedMs + tookSec`.
+        val endedMs = System.currentTimeMillis()
         // ONE PASS over the candidates for the whole partition, and one over the
         // undecided urls for every row's urls AND hosts. It was four passes and
         // then a filter of the whole map per row — seven times over five
@@ -423,6 +429,13 @@ class ConsistencyPass(
         handle.record(
             Processors.Work(
                 stream = label,
+                // A SWEEP MEASURES THE CORPUS AND A LANE TICK MEASURES A SLICE
+                // OF IT — see [Processors.Work.whole]. Asked of the label
+                // because the label IS the distinction: everything that is not
+                // a lane tick is handed the derivation's whole candidate set.
+                whole = label != AliasMonitor.FAST_LANE,
+                tookSec = (endedMs - startedMs) / 1000,
+                endedAt = endedMs / 1000,
                 candidates = candidates.size,
                 foldedAway = foldedAway,
                 consistent = consistent,

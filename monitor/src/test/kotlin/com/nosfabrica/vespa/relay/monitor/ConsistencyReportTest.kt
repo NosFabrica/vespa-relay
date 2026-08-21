@@ -34,6 +34,7 @@ import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -397,5 +398,51 @@ class ConsistencyReportTest {
                 work.undecided.single().hosts == 1,
                 "one thin relay is one host, beside the url count rather than instead of it",
             )
+        }
+
+    @Test
+    fun `a sweep says its counts are the corpus and a lane tick says they are a slice`() =
+        runBlocking {
+            // THE MEMBER THAT TELLS THE TWO READINGS OF A ROW APART.
+            //
+            // `consistent`, `inconsistent`, `foldedAway` and `unmeasured` are
+            // counts over everything the pass was handed, where `dialled` and
+            // `decided` are what one run spent. A SWEEP is handed the
+            // derivation's whole candidate set, so its standing members are the
+            // corpus; the FAST LANE is handed the urls named since its last
+            // look, every one of which the sweep also holds, so its standing
+            // members are the same corpus counted again over a subset.
+            //
+            // Both rows are live at once, keyed by label. Added, they count the
+            // overlap twice — which is exactly what the stats card did, drawing
+            // 12,611 urls in reach under a round-up line reading 11,021 handed
+            // to the passes, and drawing every undecided reason twice.
+            val processors = Processors()
+            val gate = pass(processors.of("consistency")) { _, want, _, _ -> AliasProbe.Page(corpus(9).take(want)) }
+
+            gate.measure(AliasMonitor.ALL_STREAMS, listOf(steady, thin), canDial = { true })
+            gate.measure(AliasMonitor.FAST_LANE, listOf(thin), canDial = { true })
+
+            val rows =
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .associateBy { it.stream }
+            assertEquals(
+                setOf(AliasMonitor.ALL_STREAMS, AliasMonitor.FAST_LANE),
+                rows.keys,
+                "one row per label, each replacing its own previous run and neither the other's",
+            )
+            assertTrue(rows.getValue(AliasMonitor.ALL_STREAMS).whole, "a sweep walks the whole candidate set")
+            assertFalse(rows.getValue(AliasMonitor.FAST_LANE).whole, "a lane tick walks a slice of it")
+            // …and each row carries its own clock, which is what makes a stale
+            // one legible AS stale: a tick sits in the document until the next
+            // tick replaces it, so two rows on one card are routinely hours
+            // apart with nothing else saying which is which.
+            for (row in rows.values) {
+                assertNotNull(row.endedAt, "a row a pass recorded says when that run ended")
+                assertNotNull(row.tookSec, "…and how long it took")
+            }
         }
 }

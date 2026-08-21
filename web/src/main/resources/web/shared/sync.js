@@ -183,14 +183,17 @@ export const MEASURING = "measuring";
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
-  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
-  const folded = sum("foldedAway");
+  // ONE ROW, for `corpusRow`'s reason: these are standing counts over a whole
+  // candidate set, and summing the sweep's with the fast lane's counted every
+  // url the two share twice. What each RUN did is `passesOf`, one block each.
+  const row = corpusRow(streams);
+  const folded = row.foldedAway || 0;
   // Presence, not truthiness: a pass that saw no new urls publishes zero, and
   // that is an answer — `|| ` there would silently fall back to the whole
   // candidate set exactly when the fold has caught up with the corpus.
-  const fresh = streams.some((w) => w.newUrls != null) ? sum("newUrls") : null;
-  const candidates = fresh ?? Math.max(0, sum("candidates") - folded);
-  const unmeasured = sum("unmeasured");
+  const fresh = row.newUrls ?? null;
+  const candidates = fresh ?? Math.max(0, (row.candidates || 0) - folded);
+  const unmeasured = row.unmeasured || 0;
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
@@ -427,90 +430,11 @@ export function funnelOf(p) {
     children,
   });
 
-  // A REASON IS A LEAF. The hosts under it are published — `undecided[].top`,
-  // ranked, with their url counts — and they are deliberately NOT drawn: a row
-  // per host is a row per SERVER on a corpus of two thousand of them. The tree
-  // would grow by a page to say what two numbers on the reason's own row
-  // already say.
-  //
-  // That argument used to lean on the router's cap being short. It is not
-  // short any more — the ranked head runs to a hundred so the document can
-  // answer WHICH servers — and the argument survives the change intact,
-  // because it never rested on the cap: it rests on a unit change inside a
-  // tree of url counts reading as a subtotal. What did have to move is the
-  // tooltip; see [NAMES_IN_TOOLTIP].
-  //
-  // So the ranking survives as those two numbers rather than as a list.
-  // `hosts` is how many servers the reason's urls resolve to and `largest` is
-  // the widest one's share, which together answer the question the pair raises
-  // and a list would answer at forty times the height: 3,902 urls on 2,201
-  // hosts with the largest at 61 is a dead network spread thin, and the same
-  // urls with the largest at 3,000 is three servers. The names go on the row's
-  // title, where they cost no space at all.
-  const asReason = (row) => {
-    const value = Math.max(0, row.urls || 0);
-    const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
-    const named = row.examples?.length ? row.examples : top.map((h) => h.host);
-    return {
-      ...node(row.reason, row.reason, value),
-      hosts: row.hosts || 0,
-      largest: top[0]?.urls || 0,
-      // CUT FOR THE TOOLTIP, not for the document. The router publishes these
-      // to a ceiling of a hundred so `/stats.json` is an inventory of which
-      // servers a reason holds — but the only place the names are DRAWN is a
-      // native `title`, and a title is one unwrapped run of text that several
-      // browsers truncate on their own terms. Measured against production the
-      // day the router's cap moved: the widest reason's tooltip went from 159
-      // characters to 1,740, which is not more legible than six names, it is
-      // less. So the row keeps a readable handful and says how many it did not
-      // name; the inventory is one fetch away and `hosts` is the count.
-      examples: named.slice(0, NAMES_IN_TOOLTIP),
-      unnamed: Math.max(0, (row.hosts || named.length) - Math.min(named.length, NAMES_IN_TOOLTIP)),
-    };
-  };
-
-  // ROWS THAT REFINE ANOTHER ROW GO UNDER IT. The router publishes a FLAT list
-  // that sums to `unmeasured` — nesting on the wire would put the one property
-  // the whole tree rests on at the mercy of a shape — and each row names the
-  // reason it refines. `never answered a REQ` has four of those: a name that
-  // does not resolve, a refusal, a failed handshake, a window that lapsed.
-  //
-  // The parent is SYNTHESISED from its children rather than published, because
-  // it has no urls of its own: every url it covers is already in a child, and a
-  // row for the parent beside them would double-count the lot.
-  const all = firstReasons(row).filter((r) => (r.urls || 0) > 0);
-  const children = new Map();
-  for (const row of all) {
-    if (!row.parent) continue;
-    if (!children.has(row.parent)) children.set(row.parent, []);
-    children.get(row.parent).push(row);
-  }
-  const reasons = [];
-  const drawn = new Set();
-  for (const row of all) {
-    const group = row.parent || (children.has(row.reason) ? row.reason : null);
-    if (group) {
-      // A row whose NAME is also a parent is consumed as that parent rather
-      // than drawn beside it — otherwise a document carrying both the group and
-      // its children counts every url under it twice, and a sum that comes out
-      // OVER its own total is the one error the `unattributed` slice cannot
-      // report. The router never publishes both; the card is served to whoever
-      // asks, and this file's own rule is not to trust the writer.
-      if (drawn.has(group)) continue;
-      drawn.add(group);
-      const kids = children.get(group).map(asReason);
-      reasons.push(node(group, group, kids.reduce((a, k) => a + k.value, 0), kids));
-      continue;
-    }
-    reasons.push(asReason(row));
-  }
-  reasons.sort((a, b) => b.value - a.value);
-
   const kept = [
     node("foldedAway", "folded onto another url", member("foldedAway")),
     node("consistent", "consistent", member("consistent")),
     node("inconsistent", "inconsistent — refused", member("inconsistent")),
-    node("unmeasured", "no verdict", member("unmeasured"), reasons),
+    node("unmeasured", "no verdict", member("unmeasured")),
   ];
   // A branch only where the router counted it: a zero row under a mouth that
   // has always been "what the streams named" is a claim about a corpus a router
@@ -539,9 +463,173 @@ export function funnelOf(p) {
   // slice at all. The relay recomputes both identities on the way out, so a
   // false here is drawn as a note even when every bar looks whole.
   return {
-    total, candidates, root, rows: flatten(root), omitted: firstOmitted(row),
+    total, candidates, root, rows: flatten(root),
     accountedFor: row.accountedFor ?? null,
   };
+}
+
+/**
+ * WHAT ONE RUN OF A PASS ACTUALLY DID — the other half of the split the corpus
+ * tree used to be one confused side of.
+ *
+ * `funnelOf` answers "what is the state of every relay this router knows of",
+ * which is a question about the CORPUS and is true between passes, for weeks at
+ * a time, whether or not anything ran. This answers "what happened when the
+ * pass last ran", which is a question about one RUN over one set of urls. They
+ * were one chart, and the chart could not be read: the same row carried
+ * `consistent` (a standing count over the whole candidate set, mostly decided
+ * weeks ago) and `dialled` (what this run spent), and the undecided reasons
+ * under them belonged to the run while the partition above them belonged to the
+ * corpus.
+ *
+ * ONE BLOCK PER ROW, never merged and never summed. The rows are keyed by
+ * stream label and both the sweep's and the fast lane's are live at once — see
+ * `Work.whole`. As a corpus they overlap and cannot be added; as RUNS they are
+ * simply two different runs, which is what this draws them as, each with its own
+ * clock so a lane tick from four minutes ago cannot be read as part of the sweep
+ * from three hours ago.
+ *
+ * The tree under each block is rooted at `unmeasured` rather than at
+ * `candidates`, because that is the only node the reasons actually partition:
+ * `dialled` and `decided` are spends rather than slices and would be a subtotal
+ * of nothing. They ride the block's caption instead, where a reader gets them
+ * without a bar implying they divide anything.
+ */
+export function passesOf(p) {
+  const streams = p?.streams || [];
+  if (!streams.length) return null;
+  const blocks = streams
+    .filter((w) => w && (w.candidates || w.dialled || w.unmeasured))
+    // The corpus row first and the rest by name: a stable order, and the one a
+    // reader wants — the sweep is the run the numbers above are about.
+    .sort((a, b) => (a.whole === false) - (b.whole === false) || String(a.name || "").localeCompare(String(b.name || "")))
+    .map(passBlock);
+  return blocks.length ? blocks : null;
+}
+
+/** One row as a block: its facts, and the reasons it left urls undecided. */
+function passBlock(w) {
+  const unmeasured = Math.max(0, w.unmeasured || 0);
+  const mk = (key, label, value, children = []) => ({
+    key, label, value,
+    // Against the run's OWN undecided count, not against the corpus: a bar on
+    // this block answers "how much of what this run could not decide is this
+    // reason", and scaling it to a corpus the run never walked would draw every
+    // row on a fast-lane block at a width nobody can see.
+    share: unmeasured ? value / unmeasured : 0,
+    tone: FUNNEL_TONE[key] || null,
+    children,
+  });
+  const root = mk("unmeasured", "left with no verdict", unmeasured, reasonNodes(firstReasons(w), mk));
+  return {
+    name: w.name || "",
+    // `!== false`, because absent is a router older than the member and every
+    // row such a router publishes is a sweep's.
+    whole: w.whole !== false,
+    // `??` on all four clocks and counts that can honestly be zero: a pass that
+    // dialled nothing published a zero, and a router that does not time itself
+    // published nothing, and those must not read as each other.
+    endedAt: w.endedAt ?? null,
+    tookSec: w.tookSec ?? null,
+    candidates: Math.max(0, w.candidates || 0),
+    newUrls: w.newUrls ?? null,
+    dialled: Math.max(0, w.dialled || 0),
+    decided: Math.max(0, w.decided || 0),
+    unmeasured,
+    // No tree where there is nothing left undecided — which is the state both
+    // passes are working towards, and a root row reading `left with no verdict
+    // 0` is a line to read past on every poll forever.
+    rows: unmeasured ? flatten(root) : [],
+    omitted: firstOmitted(w),
+    accountedFor: w.accountedFor ?? null,
+  };
+}
+
+/**
+ * The `undecided` rows as nodes, with the refinements nested under what they
+ * refine.
+ *
+ * ROWS THAT REFINE ANOTHER ROW GO UNDER IT. The router publishes a FLAT list
+ * that sums to `unmeasured` — nesting on the wire would put the one property
+ * the whole tree rests on at the mercy of a shape — and each row names the
+ * reason it refines. `never answered a REQ` has four of those: a name that
+ * does not resolve, a refusal, a failed handshake, a window that lapsed.
+ *
+ * The parent is SYNTHESISED from its children rather than published, because
+ * it has no urls of its own: every url it covers is already in a child, and a
+ * row for the parent beside them would double-count the lot.
+ *
+ * A REASON IS A LEAF. The hosts under it are published — `undecided[].top`,
+ * ranked, with their url counts — and they are deliberately NOT drawn: a row
+ * per host is a row per SERVER on a corpus of two thousand of them. The tree
+ * would grow by a page to say what two numbers on the reason's own row
+ * already say.
+ *
+ * That argument used to lean on the router's cap being short. It is not
+ * short any more — the ranked head runs to a hundred so the document can
+ * answer WHICH servers — and the argument survives the change intact,
+ * because it never rested on the cap: it rests on a unit change inside a
+ * tree of url counts reading as a subtotal. What did have to move is the
+ * tooltip; see [NAMES_IN_TOOLTIP].
+ *
+ * So the ranking survives as two numbers rather than as a list. `hosts` is how
+ * many servers the reason's urls resolve to and `largest` is the widest one's
+ * share, which together answer the question the pair raises and a list would
+ * answer at forty times the height: 3,902 urls on 2,201 hosts with the largest
+ * at 61 is a dead network spread thin, and the same urls with the largest at
+ * 3,000 is three servers. The names go on the row's title, where they cost no
+ * space at all.
+ */
+function reasonNodes(rows, mk) {
+  const asReason = (row) => {
+    const value = Math.max(0, row.urls || 0);
+    const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
+    const named = row.examples?.length ? row.examples : top.map((h) => h.host);
+    return {
+      ...mk(row.reason, row.reason, value),
+      hosts: row.hosts || 0,
+      largest: top[0]?.urls || 0,
+      // CUT FOR THE TOOLTIP, not for the document. The router publishes these
+      // to a ceiling of a hundred so `/stats.json` is an inventory of which
+      // servers a reason holds — but the only place the names are DRAWN is a
+      // native `title`, and a title is one unwrapped run of text that several
+      // browsers truncate on their own terms. Measured against production the
+      // day the router's cap moved: the widest reason's tooltip went from 159
+      // characters to 1,740, which is not more legible than six names, it is
+      // less. So the row keeps a readable handful and says how many it did not
+      // name; the inventory is one fetch away and `hosts` is the count.
+      examples: named.slice(0, NAMES_IN_TOOLTIP),
+      unnamed: Math.max(0, (row.hosts || named.length) - Math.min(named.length, NAMES_IN_TOOLTIP)),
+    };
+  };
+
+  const all = rows.filter((r) => (r.urls || 0) > 0);
+  const children = new Map();
+  for (const row of all) {
+    if (!row.parent) continue;
+    if (!children.has(row.parent)) children.set(row.parent, []);
+    children.get(row.parent).push(row);
+  }
+  const out = [];
+  const drawn = new Set();
+  for (const row of all) {
+    const group = row.parent || (children.has(row.reason) ? row.reason : null);
+    if (group) {
+      // A row whose NAME is also a parent is consumed as that parent rather
+      // than drawn beside it — otherwise a document carrying both the group and
+      // its children counts every url under it twice, and a sum that comes out
+      // OVER its own total is the one error the `unattributed` slice cannot
+      // report. The router never publishes both; the card is served to whoever
+      // asks, and this file's own rule is not to trust the writer.
+      if (drawn.has(group)) continue;
+      drawn.add(group);
+      const kids = children.get(group).map(asReason);
+      out.push(mk(group, group, kids.reduce((a, k) => a + k.value, 0), kids));
+      continue;
+    }
+    out.push(asReason(row));
+  }
+  return out.sort((a, b) => b.value - a.value);
 }
 
 /**
@@ -609,7 +697,16 @@ function flatten(root) {
  * tree's to answer.
  */
 function corpusRow(streams) {
-  return streams.reduce((best, w) => ((w.candidates || 0) > (best.candidates || 0) ? w : best), streams[0]);
+  // THE ROUTER SAYS WHICH, and the widest set is the fallback rather than the
+  // rule: `whole` is published at both values from the run that recorded the
+  // row (see `Processors.Work.whole`), and only a router older than the member
+  // leaves the card to infer it. The inference is sound where it has to be used
+  // — a lane tick's set is always a slice of the corpus a sweep walked — but it
+  // is an inference, and a document that states the fact should not be second
+  // guessed by one.
+  const whole = streams.filter((w) => w.whole !== false);
+  const pool = whole.length ? whole : streams;
+  return pool.reduce((best, w) => ((w.candidates || 0) > (best.candidates || 0) ? w : best), pool[0]);
 }
 
 /**

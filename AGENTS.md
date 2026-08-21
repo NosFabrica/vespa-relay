@@ -912,7 +912,12 @@ relay/src/main/resources/
                         fitness, whose unit is a URL, whose clock is the
                         monitor's own and whose output is a signed 30166 record
                         — so it sits beside the panel that reads those records
-                        back. `splitProcessors` (shared/sync.js) is the rule and
+                        back. Under each pass's line are its RUN BLOCKS, one per
+                        candidate set it was handed (the sweep, the fast lane),
+                        each with its own clock and its own reasons: the tree is
+                        a claim about the network and a block is a claim about a
+                        walk, and carrying both in one chart is what drew every
+                        reason twice. `splitProcessors` (shared/sync.js) is the rule and
                         it is a PARTITION: a processor name the page has not been
                         taught draws on the sync side rather than nowhere, since
                         dropping a row to keep a card tidy is how a new job runs
@@ -2761,6 +2766,23 @@ every relay url this router knows of                                  17,584
       │  └─ the TLS handshake failed  on 121 host(s)                     156
       └─ refused our auth  on 4 host(s), largest 600                     826
 ```
+
+**The tree is the CORPUS; what a RUN did is a second chart.** They were one,
+and one row carried both readings — `Processors.Work` publishes `consistent`
+(a standing count over the whole candidate set, mostly decided weeks ago)
+beside `dialled` (what this run spent), and the undecided reasons under them
+belonged to the run while the partition above them belonged to the corpus. A
+reader had no way to tell which half of a row was which, and the two answer
+different questions on different clocks: "which relays may we dial at all" is
+true between passes for weeks at a time, and "what happened when the pass last
+ran" is about one walk over one set of urls. So the reasons moved off the tree
+and onto `passesOf` (`/web/shared/sync.js`), which draws ONE BLOCK PER ROW —
+the six-hourly sweep and the fast-lane tick, each with its own clock, its own
+`candidates`/`dialled`/`decided`, and its own reason tree rooted at that run's
+`unmeasured`. `Work.whole` is the member that says which reading a row is, and
+`Work.endedAt`/`tookSec` are what make a stale row legible as stale: a lane tick
+sits in the document until the next tick replaces it, so two blocks on one card
+are routinely hours apart.
 
 **The tree is ONE row's numbers, never the sum of the rows.** `Work`'s verdict
 members are STANDING counts over a whole candidate set — `Processors.Work`
