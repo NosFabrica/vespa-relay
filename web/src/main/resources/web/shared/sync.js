@@ -383,17 +383,24 @@ const FUNNEL_TONE = {
  *
  * **Nothing is invented from a missing member**, and a subtree nobody can fill
  * simply does not appear.
+ *
+ * **The tree is ONE row's, never a sum of them.** A pass's verdict members are
+ * standing counts over a whole candidate set, and two rows are two overlapping
+ * views of one corpus rather than two halves of it — see `corpusRow`, which is
+ * where the duplicated reason rows and the inflated root came from.
  */
 export function funnelOf(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
-  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
-  const candidates = sum("candidates");
+  // ONE ROW, NEVER THE SUM — see `corpusRow`.
+  const row = corpusRow(streams);
+  const member = (name) => row[name] || 0;
+  const candidates = member("candidates");
   if (!candidates) return null;
   // ABSENT IS NOT ZERO, and this is the one place in the module where the
-  // difference is load-bearing — see the header. `sum` cannot tell a missing
-  // member from a real zero, so the question is asked of the rows directly.
-  if (!streams.some((w) => w.foldedAway != null || w.consistent != null || w.inconsistent != null)) return null;
+  // difference is load-bearing — see the header. `|| 0` cannot tell a missing
+  // member from a real zero, so the question is asked of the row directly.
+  if (row.foldedAway == null && row.consistent == null && row.inconsistent == null) return null;
 
   const excluded = Math.max(0, p.excluded || 0);
   const heldOutDead = Math.max(0, p.heldOutDead || 0);
@@ -471,7 +478,7 @@ export function funnelOf(p) {
   // The parent is SYNTHESISED from its children rather than published, because
   // it has no urls of its own: every url it covers is already in a child, and a
   // row for the parent beside them would double-count the lot.
-  const all = firstReasons(streams).filter((r) => (r.urls || 0) > 0);
+  const all = firstReasons(row).filter((r) => (r.urls || 0) > 0);
   const children = new Map();
   for (const row of all) {
     if (!row.parent) continue;
@@ -500,10 +507,10 @@ export function funnelOf(p) {
   reasons.sort((a, b) => b.value - a.value);
 
   const kept = [
-    node("foldedAway", "folded onto another url", sum("foldedAway")),
-    node("consistent", "consistent", sum("consistent")),
-    node("inconsistent", "inconsistent — refused", sum("inconsistent")),
-    node("unmeasured", "no verdict", sum("unmeasured"), reasons),
+    node("foldedAway", "folded onto another url", member("foldedAway")),
+    node("consistent", "consistent", member("consistent")),
+    node("inconsistent", "inconsistent — refused", member("inconsistent")),
+    node("unmeasured", "no verdict", member("unmeasured"), reasons),
   ];
   // A branch only where the router counted it: a zero row under a mouth that
   // has always been "what the streams named" is a claim about a corpus a router
@@ -531,10 +538,9 @@ export function funnelOf(p) {
   // shape a document carrying both a group and its children produces — leave no
   // slice at all. The relay recomputes both identities on the way out, so a
   // false here is drawn as a note even when every bar looks whole.
-  const claimed = streams.map((w) => w.accountedFor).filter((v) => v != null);
   return {
-    total, candidates, root, rows: flatten(root), omitted: firstOmitted(streams),
-    accountedFor: claimed.length ? claimed.every(Boolean) : null,
+    total, candidates, root, rows: flatten(root), omitted: firstOmitted(row),
+    accountedFor: row.accountedFor ?? null,
   };
 }
 
@@ -571,22 +577,57 @@ function flatten(root) {
 }
 
 /**
- * The `undecided` rows across every stream row, widest first.
+ * WHICH ROW DESCRIBES THE WHOLE CANDIDATE SET — and why the others are not
+ * added to it.
  *
- * Concatenated rather than merged by reason: the rows are per stream row and
- * today there is exactly one (the passes measure the union of every stream, and
- * publish it as `all streams`). Merging would be the right call the moment that
- * changes, and inventing the merge now would be untested code standing between
- * a reader and the only shape that exists.
+ * This module used to SUM every member across every row, on the reasoning that
+ * the passes measure the union of every stream and publish it once, as `all
+ * streams`. That was true when it was written and stopped being true when the
+ * FAST LANE landed: the lane runs the same passes over the urls named since its
+ * last look and records a second row of its own (`AliasMonitor.FAST_LANE`),
+ * which the router keeps beside the sweep's — one entry per stream label, each
+ * overwritten by its own next run.
+ *
+ * The two rows are not two halves of a corpus. They are two overlapping views
+ * of ONE corpus, because every url the lane measured is a url the sweep also
+ * holds, and `Work`'s verdict members are STANDING counts over the whole
+ * candidate set rather than a tally of what one pass touched — see
+ * `Processors.Work.consistent`. Summed, a live card read `12,611` urls in reach
+ * where the round-up line under it said `11,021 handed to the passes`, and drew
+ * every reason twice: `too few events to judge on` at 309 urls beside `too few
+ * events to judge on` at 226. The duplicate rows were the visible half; the
+ * inflated root was the half nobody could see.
+ *
+ * Nor can the rows be MERGED. `urls` would sum to a number counting the
+ * overlap twice, and `hosts` cannot be added at all — the same host appears in
+ * both rows' tallies and the sum would exceed the servers that exist.
+ *
+ * So the tree is drawn from one row: the widest candidate set, which is the
+ * sweep's, because the lane's set is always a slice of the corpus the sweep
+ * walked. What the other rows have to show for themselves is a different
+ * question — what one PASS did, not what the corpus IS — and it is not this
+ * tree's to answer.
  */
-function firstReasons(streams) {
-  const rows = streams.flatMap((w) => (w.undecided?.reasons || []).filter((r) => r && r.reason));
-  return rows.sort((a, b) => (b.urls || 0) - (a.urls || 0));
+function corpusRow(streams) {
+  return streams.reduce((best, w) => ((w.candidates || 0) > (best.candidates || 0) ? w : best), streams[0]);
 }
 
-/** Reasons either side dropped, so a truncated breakdown never reads as the whole one. */
-function firstOmitted(streams) {
-  return streams.reduce((a, w) => a + (w.undecided?.omitted || 0), 0);
+/**
+ * The `undecided` rows of the row the tree is drawn from, widest first.
+ *
+ * One row's own reasons, for `corpusRow`'s reason: they sum to that row's
+ * `unmeasured` and to nothing else, so a reason list assembled from more than
+ * one row would not close against the parent it hangs under.
+ */
+function firstReasons(row) {
+  return (row.undecided?.reasons || [])
+    .filter((r) => r && r.reason)
+    .sort((a, b) => (b.urls || 0) - (a.urls || 0));
+}
+
+/** Reasons the router dropped, so a truncated breakdown never reads as the whole one. */
+function firstOmitted(row) {
+  return row.undecided?.omitted || 0;
 }
 
 /**

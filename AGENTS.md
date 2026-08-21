@@ -2762,6 +2762,23 @@ every relay url this router knows of                                  17,584
       └─ refused our auth  on 4 host(s), largest 600                     826
 ```
 
+**The tree is ONE row's numbers, never the sum of the rows.** `Work`'s verdict
+members are STANDING counts over a whole candidate set — `Processors.Work`
+spells that out beside `consistent` — so two rows are two overlapping views of
+one corpus rather than two halves of it. `funnelOf` summed them, on the
+reasoning that the passes measure the union of every stream and publish it once
+as `all streams`; the FAST LANE broke that the day it landed, because it runs
+the same passes over the urls named since its last look and records a second
+row beside the sweep's. The live card drew `12,611` urls in reach under a
+round-up line reading `11,021 handed to the passes`, and every reason twice —
+`too few events to judge on` at 309 urls beside `too few events to judge on` at
+226. The duplicate rows were the visible half; the inflated root was the half
+nobody could see. Merging the rows is not the fix either: `urls` would count the
+overlap twice and `hosts` cannot be added at all, since the same server sits in
+both rows' tallies. So `corpusRow` picks the widest candidate set — the sweep's,
+the lane's being always a slice of it — and what a single PASS did is a
+different question, answered elsewhere.
+
 **The mouth is `sourced + recordedOnly`, not one derivation's yield.** It was
 `sourced` alone — every url the streams' relay lists named THIS round — under a
 caption reading "every relay url this router knows of", and the two are not the

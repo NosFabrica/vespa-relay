@@ -496,18 +496,57 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(bare.total, 40);
   assert.equal(bare.rows.find((r) => r.key === "dropped").value, 0);
 
-  // Summed across rows, never `streams[0]` — the bug that shipped on the line
-  // this tree sits under.
-  const two = funnelOf({
-    name: "consistency", sourced: 60,
-    streams: [
-      { candidates: 40, foldedAway: 10, consistent: 10, inconsistent: 0, unmeasured: 20 },
-      { candidates: 20, foldedAway: 0, consistent: 5, inconsistent: 5, unmeasured: 10 },
-    ],
-  });
-  assert.equal(two.candidates, 60);
-  assert.equal(two.rows.find((r) => r.key === "inconsistent").value, 5);
-  ok("an absent partition is no tree, an absent member is a zero, and rows are summed");
+  ok("an absent partition is no tree and an absent member is a zero");
+}
+
+{
+  // TWO ROWS ARE TWO VIEWS OF ONE CORPUS, NOT TWO HALVES OF IT.
+  //
+  // The passes measure the union of every stream and publish it as `all
+  // streams` — and then the FAST LANE runs the same passes over the urls named
+  // since its last look and records a second row beside it. Summed, the live
+  // card drew `12,611` urls in reach under a round-up line reading `11,021
+  // handed to the passes`, and every reason twice: `too few events to judge on`
+  // at 309 beside `too few events to judge on` at 226.
+  const sweep = {
+    name: "all streams", candidates: 11021, foldedAway: 6257, consistent: 2320, inconsistent: 6,
+    unmeasured: 2438, dialled: 2438, decided: 74,
+    undecided: {
+      reasons: [
+        { reason: "never answered a REQ", urls: 2129, hosts: 1204 },
+        { reason: "too few events to judge on", urls: 309, hosts: 115 },
+      ],
+      omitted: 0,
+    },
+    accountedFor: true,
+  };
+  const lane = {
+    name: "fast lane", candidates: 1590, foldedAway: 800, consistent: 300, inconsistent: 0,
+    unmeasured: 490, dialled: 490, decided: 12,
+    undecided: {
+      reasons: [
+        { reason: "never answered a REQ", urls: 264, hosts: 151 },
+        { reason: "too few events to judge on", urls: 226, hosts: 109 },
+      ],
+      omitted: 0,
+    },
+    accountedFor: true,
+  };
+  const f = funnelOf({ name: "consistency", sourced: 17808, excluded: 403, heldOutDead: 8632, streams: [sweep, lane] });
+  const at = (key) => f.rows.find((r) => r.key === key);
+  assert.equal(f.candidates, 11021, "the candidate set is the corpus the sweep walked, not it plus a slice of itself");
+  assert.equal(at("foldedAway").value, 6257, "…and so is every member of the partition under it");
+  assert.equal(f.rows.filter((r) => r.key === "too few events to judge on").length, 1,
+    "one reason, one row — the duplicate was the visible half of the double count");
+  assert.equal(at("too few events to judge on").value, 309);
+  assert.equal(at("too few events to judge on").hosts, 115,
+    "hosts cannot be added at all: the same server is in both rows' tallies");
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
+
+  // The widest row, whichever order they arrive in — the lane's set is always a
+  // slice of the corpus the sweep walked, so the corpus row is the larger one.
+  assert.equal(funnelOf({ name: "consistency", sourced: 17808, streams: [lane, sweep] }).candidates, 11021);
+  ok("the tree is drawn from the row that walked the whole corpus, never from the sum of the rows");
 }
 
 {
