@@ -14,9 +14,12 @@ engine, because it is one — the store is
 
 - **Trust-ranked search.** Log in with NIP-42 and results are ranked by your own
   NIP-85 web of trust — relevance × how much *you* trust the author, with
-  below-floor authors dropped as spam. Anonymous reads are the whole corpus,
-  unranked: there is no house lens standing in for you. Any client can pick one
-  explicitly with `observer:<pubkey>`, since the scores are public.
+  below-floor authors dropped as spam. There is no house lens standing in for
+  you, so **before AUTH a read has to say whose eyes it is read through**:
+  `observer:<pubkey>` to rank through anybody's trust without holding their key
+  (the scores are public), or `include:spam` for the whole corpus, unranked.
+  A read that says neither is refused with `auth-required:` rather than
+  silently answered out of an index with the trust switched off.
 - **A relay that fills itself.** The **router** — a sibling process sharing the
   same store — mirrors events from upstream relays: strfry-style `streams` of
   live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
@@ -117,6 +120,37 @@ you lift it. The full grammar — how the tokens stack, where trust scores come
 from (NIP-85), what falls back when no observer resolves — is documented in
 [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore), which
 implements it.
+
+### Every read says whose eyes it is read through
+
+**Before AUTH, a REQ or COUNT is answered only if it declares a lens.** Each of
+its filters must name an `observer:<64-hex>` or waive one with `include:spam`;
+anything else is refused with
+
+```
+["CLOSED","<subid>","auth-required: this relay answers through a web of trust …"]
+```
+
+There are three ways to be answered, and only one of them involves a key:
+
+| | |
+|---|---|
+| sign a NIP-42 AUTH | the connection's own pubkey is the lens (NIP-42 clients already retry through `auth-required:`) |
+| `observer:<64-hex>` | rank through that pubkey's trust — **no signature needed**, scores are public |
+| `include:spam` | the whole corpus, unranked, which is what a lensless read always was |
+
+This relay has no house observer, so a read with no lens is not the same
+answers unranked — it is a different corpus, with the trust this relay exists
+to apply switched off. That answer is a legitimate thing to want; what it must
+not be is what a client gets by saying nothing. `include:spam` on a plain
+NIP-01 filter costs nothing else: the store maps a termless waiver to ordinary
+recall.
+
+Unaffected: publishing (`EVENT`), `AUTH` itself, NIP-11, and NIP-77 `NEG-OPEN`
+— negentropy reconciles ids, and the REQ that fetches what it named is gated
+like any other, so relay-to-relay mirroring still works. Set
+`REQUIRE_READ_LENS=false` for the older behaviour (see
+[`docs/configuration.md`](docs/configuration.md)).
 
 ## The router: mirror from upstream relays
 

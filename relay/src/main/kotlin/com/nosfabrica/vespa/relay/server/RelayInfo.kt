@@ -35,6 +35,29 @@ private const val SOFTWARE = "https://github.com/NosFabrica/vespa-relay"
  */
 val BASE_SUPPORTED_NIPS = listOf(1, 9, 11, 40, 42, 45, 50, 62, 77)
 
+/**
+ * The NIP-50 `nip50` list: the search extensions this relay honors, in the
+ * `"<class> <token>"` spelling relays already publish (`ext include:spam`,
+ * `query negate`).
+ *
+ * It matters more here than on a relay that merely searches. Since
+ * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy], `observer:` and
+ * `include:spam` are not garnish on a query — they are the two ways an
+ * unauthenticated client gets an answer at all, and NIP-11 is the one place a
+ * client can learn that BEFORE it is refused. Only tokens the store actually
+ * parses belong here; the doc is a promise, and a token listed but ignored is
+ * worse than one left out.
+ */
+val NIP50_FEATURES =
+    listOf(
+        "ext observer",
+        "ext include:spam",
+        "ext sort",
+        "ext filter:rank",
+        "query negate",
+        "query exact-phrase-match",
+    )
+
 private object RelayInfoMarker
 
 /**
@@ -60,6 +83,7 @@ fun buildRelayInfo(
     info: Nip11Info,
     limits: RelayLimits,
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
+    nip50Features: List<String> = NIP50_FEATURES,
 ): Nip11RelayInformation =
     relayInformation {
         this.name = info.name
@@ -75,6 +99,7 @@ fun buildRelayInfo(
         software = SOFTWARE
         version = info.version ?: BUILD_VERSION
         supports(*supportedNips.toIntArray())
+        nip50Features(*nip50Features.toTypedArray())
         limitation(limits)
     }
 

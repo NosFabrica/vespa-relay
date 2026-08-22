@@ -2,6 +2,12 @@
 // (whose NIP-42 state ranks every search) and the anonymous reference
 // connection (names, faces, scores, observer lists — facts about subjects,
 // not about the reader, which the trust-gated socket would silently narrow).
+//
+// The reference socket is `lensless`, which is now a thing the relay makes it
+// SAY: it never authenticates, so every filter it sends carries NIP-50
+// `include:spam` or the relay refuses the read with `auth-required:` — see
+// shared/lens.js. That is the same bargain this socket was always making,
+// finally written on the wire instead of assumed by both ends.
 
 import { Relay } from "./relay.js";
 
@@ -25,7 +31,7 @@ export async function refConn() {
   // Relay.connect() guards itself exactly this way.
   if (refOpening) return refOpening;
   refOpening = (async () => {
-    const r = new Relay(RELAY_URL);
+    const r = new Relay(RELAY_URL, { lensless: true });
     try {
       await r.connect();
       refRelay = r;

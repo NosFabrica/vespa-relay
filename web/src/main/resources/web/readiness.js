@@ -331,6 +331,11 @@ async function postCounts(anon, me, writeRelays, scope) {
 async function askRemote(url, ask) {
   let conn = null;
   try {
+    // NOT `lensless`, unlike every socket this page opens to its own relay:
+    // `include:spam` is a vespa-relay's NIP-50 extension, and a relay that
+    // implements NIP-50 without it would take the token for a word and search
+    // for it — turning "how many of your posts are there" into a text query
+    // that answers nothing. A stranger's relay is asked in plain NIP-01.
     conn = new Relay(url);
     await conn.connect();
     return await ask(conn);

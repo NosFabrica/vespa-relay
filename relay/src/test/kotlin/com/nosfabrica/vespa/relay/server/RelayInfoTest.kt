@@ -41,7 +41,16 @@ class RelayInfoTest {
         assertEquals("https://github.com/NosFabrica/vespa-relay", doc.getValue("software").jsonPrimitive.content)
         val nips = doc.getValue("supported_nips").jsonArray.map { it.jsonPrimitive.int }
         assertEquals(listOf(1, 9, 11, 40, 42, 45, 50, 62, 77), nips)
+        // The NIP-50 extensions, which on this relay are not garnish: since
+        // LensRequiredPolicy, `observer:` and `include:spam` are the two ways an
+        // unauthenticated client is answered at all, and this list is the only
+        // place it can learn that before being refused.
+        val nip50 = doc.getValue("nip50").jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("ext observer" in nip50 && "ext include:spam" in nip50, "the two ways past the read gate: $nip50")
         val limitation = doc.getValue("limitation").jsonObject
+        // FALSE even with that gate on, and deliberately: both ways past it are
+        // unsigned, so claiming auth_required would send every client that reads
+        // this document looking for a key it does not need.
         assertEquals("false", limitation.getValue("auth_required").jsonPrimitive.content)
         assertTrue("restricted_writes" in limitation)
     }

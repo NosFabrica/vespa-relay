@@ -10,6 +10,7 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
+import { SPAM_TOKEN } from "./shared/lens.js";
 import { ownGroups, metaGroup, postedTo, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
 import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
@@ -308,14 +309,19 @@ async function ensureLogin() {
       if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
         // Nobody is going to prove the assumed face below, so take it down.
         mePending = null;
-        $obsBox.classList.add("anon");
+        // The lens label, now that "signed out" is settled: with nobody picked
+        // it reads "nobody" rather than "me". The picker itself stays LIVE —
+        // it used to grey out here, back when `observer:` was only sent
+        // alongside a signature; it is now a signed-out reader's only way to
+        // get a ranked answer at all.
+        applyViewingAs(viewingAs, $obsCurrent.textContent);
         renderWhoami();
         return;
       }
       try { await login(); } catch (e) {
         me = null;
         mePending = null;   // the extension named somebody it could not prove
-        $obsBox.classList.add("anon");
+        applyViewingAs(viewingAs, $obsCurrent.textContent);
         $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
       }
     })().finally(() => { loginTried = true; });
@@ -348,21 +354,67 @@ relay.onAuthRequired = () => ensureLogin();
 // ---- search over NIP-50 ---------------------------------------------------
 let tab = KIND_TABS[0];
 
+/**
+ * Does this page have a web of trust to read through at all?
+ *
+ * Nothing signed in and nobody picked. It is the ONE question the relay now
+ * asks of every read (its LensRequiredPolicy), so the page answers it in one
+ * place: `include:spam` rides every search that has no lens, whatever the spam
+ * switch says — and the export names which of the two put it there, because a
+ * switch reading "off" over results that include everything is exactly the
+ * quiet disagreement this page is meant not to have.
+ *
+ * `me` and not `mePending`: an unproved pubkey is not a lens. Every read on
+ * this socket awaits ensureLogin() first, so this is a settled fact by the
+ * time anything asks — and if a future caller skips that step it sends no
+ * stamp, gets `auth-required:` and retries through the login, which is a round
+ * trip rather than a silent unranked answer.
+ */
+const lensless = () => !me && !viewingAs;
+
+/** Whether this read waives a lens — the reader's switch, or having none. */
+const spamOn = () => $spam.checked || lensless();
+
+/**
+ * The NIP-50 string a ONE-OFF ask needs to be answered at all: the words, plus
+ * this page's lens where the connection does not already carry one.
+ *
+ * Signed in, that is nothing — the socket's NIP-42 identity IS the lens, and
+ * adding anything here would change what a type-ahead ranks by. Signed out it
+ * is the picked observer if there is one and `include:spam` if there is not,
+ * which are the relay's only two other answers.
+ *
+ * Separate from [searchString] because these asks are not the search box: no
+ * sort menu, no spam switch, no export to keep byte-identical. What they share
+ * is the one rule, and sharing it is the point — the type-aheads and the feed
+ * are exactly the reads a later change forgets.
+ */
+function askString(words) {
+  if (me) return words || "";
+  const parts = words ? [words] : [];
+  parts.push(viewingAs ? "observer:" + viewingAs : SPAM_TOKEN);
+  return parts.join(" ");
+}
+
 function searchString(text) {
   const sort = $sort.value;
-  let s = text;
-  if (sort) s += " sort:" + sort;
-  if ($spam.checked) s += " include:spam";
+  const parts = text ? [text] : [];
+  if (sort) parts.push("sort:" + sort);
   // Whose web of trust ranks this. Absent, the store uses the connection's
   // authenticated pubkey — you. Present, it uses theirs, which is how you
   // read the index through somebody else's eyes without holding their key.
   //
-  // Only sent while signed in. search() awaits ensureLogin() first, so this
-  // holds in practice; asserting it here means a future caller that skips
-  // that step degrades to your own ranking rather than sending a lens the
-  // store has no authenticated reader to apply it for.
-  if (viewingAs && me) s += " observer:" + viewingAs;
-  return s;
+  // Sent signed OUT as well, and that is the point of the control now: scores
+  // here are public, the store resolves an `observer:` on an anonymous socket
+  // exactly as it does on a signed-in one, and since the relay stopped
+  // answering lensless reads this token is the only way a reader without an
+  // extension gets a ranked answer instead of the raw corpus.
+  if (viewingAs) parts.push("observer:" + viewingAs);
+  // Last, so a reader reading the exported string sees the lens and the waiver
+  // in the order they are decided. Never both: `lensless()` is false whenever
+  // `observer:` went out, so this can only be the switch then.
+  if (spamOn()) parts.push("include:spam");
+  return parts.join(" ");
 }
 
 /**
@@ -397,7 +449,27 @@ function buildFilters(text, limit) {
  * feed exactly as it narrows a search. feed.js's feedKinds() owns which list
  * that is.
  */
-const feedFilters = (limit) => filtersFor("", { kinds: feedKinds(tab.kinds), limit });
+const feedFilters = (limit) =>
+  filtersFor("", { kinds: feedKinds(tab.kinds), limit, searchString: feedSearchString });
+
+/**
+ * The feed's whole NIP-50 string, which is a lens declaration or nothing.
+ *
+ * A plain `{ kinds, limit }` read is what the store answers newest-first, and
+ * that is still the ask — but a lensless one now has to SAY it is lensless or
+ * the relay refuses it, and "latest" with nothing on the wire to explain it is
+ * precisely the silent empty page that gate exists to prevent. `include:spam`
+ * carries no order and no floor on a termless filter (the store maps it to
+ * plain recall), so the feed's shape is unchanged by the one token that makes
+ * it answerable. A signed-out reader who picked an observer gets THAT instead
+ * and the feed stays newest-first: a termless filter with a lens is the
+ * store's gated-recency profile, which is NIP-01 order with the untrusted
+ * dropped — what a signed-in reader's feed already is.
+ *
+ * The sort menu and the spam switch still do NOT ride along: those would make
+ * it a ranked query under a heading that says newest.
+ */
+const feedSearchString = () => askString("");
 
 /**
  * One event, one card, however many filters it answered.
@@ -602,7 +674,11 @@ function renderObserverOptions(filterText) {
 function applyViewingAs(pubkey, name) {
   viewingAs = pubkey;
   $obsBox.classList.toggle("active", !!pubkey);
-  $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : "me";
+  // "me" only when there is a me. Signed out with nobody picked the page ranks
+  // through nothing at all and says so, rather than naming a lens it does not
+  // have — that reading is the one the relay now refuses to answer, and the
+  // control is where a reader fixes it without an extension.
+  $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : me || mePending ? "me" : "nobody";
   $obsList.innerHTML = "";
   $obsFilter.value = "";
   renderAdvCount();
@@ -782,7 +858,15 @@ function exportText() {
   // Named from the string, and told apart from the menu when the two differ —
   // a reader auditing the order needs to know a token in the box produced it.
   L.push(`  sort          ${sort || "(relevance — NIP-50 default)"}${sort && sort !== $sort.value ? "  (from the search box, not the Filters menu)" : ""}`);
-  L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
+  L.push(
+    `  include spam  ${
+      $spam.checked
+        ? "yes — unranked authors included"
+        : lensless()
+          ? "yes — nothing signed in and nobody picked, so this read waives a lens (the relay answers no other kind)"
+          : "no — trust floor applied"
+    }`,
+  );
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
   L.push(`  search string ${full[0].search == null ? "(none — no words and no sort/spam/lens to carry, so this is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
@@ -1022,6 +1106,9 @@ function renderAdvCount() {
   const on = [];
   if ($sort.value) on.push("Sort: " + $sort.options[$sort.selectedIndex].text);
   if (viewingAs) on.push("Ranking as: " + $obsCurrent.textContent);
+  // The reader's own switch only: a waiver forced by having no lens is not a
+  // filter they set, and counting it would put a permanent 1 on the button of
+  // every signed-out visitor.
   if ($spam.checked) on.push("Spam included");
   $advCount.textContent = String(on.length);
   $advCount.hidden = !on.length;
@@ -1142,7 +1229,7 @@ async function lookupAuthors(partial) {
   const direct = pubkeyParam(partial);
   if (direct) { await enrichProfiles([direct]).catch(() => {}); return [direct]; }
   await ensureLogin();
-  const events = await relay.req({ kinds: [0], search: partial, limit: 12 });
+  const events = await relay.req({ kinds: [0], search: askString(partial), limit: 12 });
   seedProfiles(events);
   return [...new Set(events.map((e) => e.pubkey))];
 }
@@ -1382,7 +1469,7 @@ async function lookupGroups(partial) {
     // Empty partial asks nothing of the relay: `group:` alone is "show me my
     // groups", and a match-all over every 39000 in the corpus is neither that
     // question nor a useful answer to it.
-    if (partial) found = await relay.req({ kinds: [39000], search: partial, limit: 12 });
+    if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 });
   } catch (e) { found = []; }
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
@@ -1437,7 +1524,12 @@ let activeKey = null;
  */
 function renderWhoami() {
   renderMe();
-  $whoami.textContent = loginTried && !me && !wantsSignIn() ? "signed out — the whole corpus, unranked" : "";
+  $whoami.textContent =
+    loginTried && !me && !wantsSignIn()
+      ? viewingAs
+        ? "signed out — ranked through the observer you picked"
+        : "signed out — the whole corpus, unranked (include:spam)"
+      : "";
 }
 
 function renderChips() {

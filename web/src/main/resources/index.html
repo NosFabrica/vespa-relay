@@ -44,6 +44,18 @@
   anonymous and shows the whole corpus, unranked; there is no house lens
   standing in for you.
 
+  EVERY READ THIS PAGE SENDS NOW SAYS WHOSE EYES IT IS READ THROUGH, because
+  the relay stopped answering the ones that do not: an unauthenticated REQ is
+  refused with `auth-required:` unless it names a NIP-50 `observer:` or waives
+  a lens with `include:spam`. Signed in, the socket's own identity is the
+  answer and nothing is added. Signed out, the page says which of the two it
+  means — `observer:` when somebody is picked in "ranking as", `include:spam`
+  otherwise — and web/shared/lens.js is the one place that decides it, stamping
+  the anonymous reference socket on the way out. What changed on screen is
+  small and deliberate: "ranking as" works signed OUT now (scores are public,
+  so a lens needs no signature and is a signed-out reader's only ranked
+  answer), and it reads "nobody" rather than "me" when there is no me.
+
   Signing in does NOT enrol you in anything — this header claimed it did, and
   so did app.js, while the relay's enrolment hook was wired to nothing. The
   store treats your lens as a FILTER, so a reader whose trust chain has not
@@ -362,6 +374,7 @@
 <link rel="modulepreload" href="./web/shared/groups.js" />
 <link rel="modulepreload" href="./web/shared/keynav.js" />
 <link rel="modulepreload" href="./web/shared/kinds.js" />
+<link rel="modulepreload" href="./web/shared/lens.js" />
 <link rel="modulepreload" href="./web/shared/mirrors.js" />
 <link rel="modulepreload" href="./web/shared/nip05.js" />
 <link rel="modulepreload" href="./web/shared/nip19.js" />
@@ -637,7 +650,6 @@
   .obsbox { position: relative; display: flex; align-items: center; gap: 6px; }
   .obscurrent { font-size: 13px; font-weight: 600; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .obsbox.active .obscurrent { color: var(--accent); }
-  .obsbox.anon .obsfilter { opacity: .5; pointer-events: none; }
   .obsfilter { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
                border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
   .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
@@ -1848,7 +1860,7 @@
                 <option value="text">Text only</option>
               </select>
             </label>
-            <div class="adv-row adv-stack" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes. Only pubkeys with a kind 10040 can rank anything.">
+            <div class="adv-row adv-stack" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes — signed out, this is what gets you a ranked answer at all, since trust scores are public and a lens needs no signature. Only pubkeys with a kind 10040 can rank anything.">
               <span class="adv-label">Ranking as</span>
               <span id="obsbox" class="obsbox">
                 <span id="obscurrent" class="obscurrent">me</span>
@@ -1857,7 +1869,7 @@
                 <ul id="obslist" class="obslist"></ul>
               </span>
             </div>
-            <label class="adv-row" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
+            <label class="adv-row" title="NIP-50 include:spam — also show results your web of trust doesn't rank. Signed out with nobody picked, every search sends it anyway: this relay answers no read that names no lens, and the whole corpus is what that asks for.">
               <span class="adv-label">Include spam</span>
               <span class="switch">
                 <input id="spam" type="checkbox" />
@@ -2016,9 +2028,13 @@
         <dt><code class="tok">observer:<em>hex pubkey</em></code></dt>
         <dd>Rank through <b>that</b> pubkey's web of trust instead of your own — the 64-character hex key, since an
             <code class="tok">npub1…</code> here is ignored rather than refused. Signing in does this for you, and
-            "Ranking as" under Filters writes it.</dd>
+            "Ranking as" under Filters writes it. Scores are public, so it needs no signature: signed out, this is
+            the one way to a ranked answer.</dd>
         <dt><code class="tok">include:spam</code></dt>
-        <dd>Lift the trust floor: also show what your web of trust does not rank.</dd>
+        <dd>Lift the trust floor: also show what your web of trust does not rank. It is also how a search that has
+            no lens at all asks for the whole corpus — this relay answers a read that neither names an observer nor
+            says this with <code class="tok">auth-required:</code> rather than quietly handing over an unranked
+            index.</dd>
         <dt><code class="tok">filter:rank:gte:<em>50</em></code></dt>
         <dd>Raise it instead — drop authors ranking below that, 0 to 100.</dd>
       </dl>

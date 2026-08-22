@@ -39,7 +39,12 @@ fun defaultRelayLimits(): RelayLimits =
         maxEventTags = 2_000,
         maxContentLength = 131_072, // 128 KiB of `.content`
         minPowDifficulty = 0,
-        authRequired = false, // NIP-42 only switches the ranking observer
+        // FALSE, and still true after `REQUIRE_READ_LENS` made an undeclared
+        // anonymous read a refusal: the two ways past that gate — NIP-50
+        // `observer:` and `include:spam` — need no signature at all, because
+        // trust scores here are public. Claiming auth_required would send
+        // every client that reads NIP-11 looking for a key it does not need.
+        authRequired = false,
         paymentRequired = false,
         restrictedWrites = false,
         createdAtLowerLimit = null,
@@ -100,6 +105,32 @@ fun denyPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSe
 fun allowKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["ALLOW_KINDS"], "ALLOW_KINDS")
 
 fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY_KINDS"], "DENY_KINDS")
+
+/**
+ * Whether an unauthenticated read must declare its lens to be answered:
+ * `REQUIRE_READ_LENS`, on unless an operator writes `false`/`0`/`no`.
+ *
+ * On (the default) a REQ or COUNT from a connection that has not signed a
+ * NIP-42 AUTH is refused with `auth-required:` unless every filter names a
+ * NIP-50 `observer:` or waives one with `include:spam` — see
+ * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy] for why a
+ * trust-ranking relay makes that the default rather than answering out of the
+ * whole corpus without either side saying so.
+ *
+ * Off is the older behaviour, and it is a real deployment rather than a debug
+ * switch: a relay whose readers are all mirrors, or one serving a corpus with
+ * no trust data behind it at all, has nothing to gate on and would only be
+ * refusing every client for a lens it cannot apply.
+ *
+ * Anything unparseable is ON. The failure modes are not symmetric — a typo
+ * that silently opens the corpus is the one that cannot be noticed from
+ * outside, and `REQUIRE_READ_LENS=treu` looks exactly like a relay working.
+ */
+fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
+    when (env["REQUIRE_READ_LENS"]?.trim()?.lowercase()) {
+        "false", "0", "no", "off" -> false
+        else -> true
+    }
 
 /**
  * Reject events dated more than `REJECT_FUTURE_SECONDS` in the future.

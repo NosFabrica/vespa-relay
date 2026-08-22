@@ -62,6 +62,13 @@ import kotlin.coroutines.CoroutineContext
  * the engine and also drive the NIP-11 `limitation` block, so the doc and the
  * enforcement can never disagree.
  *
+ * READS DECLARE THEIR LENS. [LensRequiredPolicy] refuses a REQ or a COUNT from
+ * a connection that has not authenticated unless the query names an observer
+ * or waives one with `include:spam` — this store has no house observer, so a
+ * read with neither is the whole corpus with the trust switched off, and that
+ * is an answer a client should have to ask for rather than one it gets by
+ * saying nothing.
+ *
  * NIP-42 runs through [MultiAddressAuthPolicy] rather than quartz's
  * OptionalAuthPolicy, so a client that dialled the relay's hidden service — and
  * therefore signs that address — authenticates as itself instead of quietly
@@ -95,6 +102,11 @@ class NostrRelayServer(
     kindDeny: Set<Int> = emptySet(),
     // Reject events dated more than this many seconds in the future; 0 disables.
     rejectFutureSeconds: Int = 0,
+    // Whether a read from a connection that has not authenticated must declare
+    // its lens — `observer:` or `include:spam` — to be answered at all. See
+    // [LensRequiredPolicy]; false is the older relay that answered anonymous
+    // reads out of the whole corpus without either side saying so.
+    requireReadLens: Boolean = true,
     // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
     // Fires once per successful NIP-42 AUTH, with the connection's send —
@@ -114,6 +126,7 @@ class NostrRelayServer(
                     if (pubkeyAllow.isNotEmpty() || pubkeyDeny.isNotEmpty()) PubkeyAllowDenyPolicy(pubkeyAllow, pubkeyDeny) else null,
                     if (kindAllow.isNotEmpty() || kindDeny.isNotEmpty()) KindAllowDenyPolicy(kindAllow, kindDeny) else null,
                     if (rejectFutureSeconds > 0) RejectFutureEventsPolicy(rejectFutureSeconds) else null,
+                    if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
                 ).toTypedArray<IRelayPolicy>(),
@@ -151,6 +164,15 @@ class NostrRelayServer(
  * observer has scored (~0.1% measured here) and tell them nothing about it.
  * Anonymous means the whole corpus, unranked; a caller who wants a lens asks
  * with NIP-50's `observer:` extension.
+ *
+ * What CHANGED around that is who may ask for the unranked corpus without
+ * saying so: nobody. [LensRequiredPolicy] now refuses an anonymous read that
+ * declares neither `observer:` nor `include:spam` before it reaches here, so
+ * the no-observer branch below is the deliberate `include:spam` answer rather
+ * than the default one. This class is unchanged by that on purpose — the
+ * policy decides what is ANSWERED, this decides what a read is answered
+ * THROUGH, and an operator who turns the policy off still gets exactly the
+ * behaviour documented above.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,

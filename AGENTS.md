@@ -233,10 +233,16 @@ wrong (how big a lens is, what a real 10040 names, what a full corpus card
 looks like) are exactly what it can hand you.
 
 - **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
-  42, 45, 50, 62, 77, 86; `auth_required` is false, so REQ, COUNT and NIP-50
-  search all work without signing anything. It sends an AUTH challenge anyway
-  (that is the implicit-observer path), and ignoring it costs only the ranking
-  lens — which the `observer:` token below gives back.
+  42, 45, 50, 62, 77, 86; `auth_required` is false, and still false now that
+  reads DECLARE A LENS (`LensRequiredPolicy`): both ways past that gate are
+  unsigned. Ignoring the AUTH challenge it sends still costs only the ranking
+  lens — but an undeclared read is no longer answered at all, so an anonymous
+  probe carries `observer:<64-hex>` or `include:spam` on every filter, plain
+  NIP-01 ones included. **A `CLOSED … auth-required:` from staging is that
+  gate, not a broken relay**; a bare `["REQ","s",{"kinds":[1],"limit":5}]` is
+  the shape that gets it. (Staging runs deployed code, so check what it
+  actually does before concluding a local change is wrong: `auth-required`
+  means the gate has shipped there, an answer means it has not yet.)
 - **the diagnostics `:relay` serves** — `/stats.json`, `/stats.html`,
   `/observer_stats.html`, `/pressure`, `/` (NIP-11 with
   `Accept: application/nostr+json`). These are the same pages this repo builds,
@@ -269,9 +275,27 @@ ws.onopen = () => ws.send(JSON.stringify(
 ws.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
 
-Drop the `observer:` token from that same query and the answers change — that
-difference *is* the lens, and it is the one check worth running when a change
-claims to touch ranking.
+Swap the `observer:` token in that same query for `include:spam` and the
+answers change — that difference *is* the lens, and it is the one check worth
+running when a change claims to touch ranking. (Dropping the token entirely is
+no longer the control: that read declares nothing and comes back `CLOSED …
+auth-required:`, which is the gate answering rather than the ranking.)
+
+**MEASURED THERE, 2026-08-22**, three REQs down one anonymous socket, and both
+halves of the read-lens change rest on it:
+
+```
+{kinds:[1],limit:5}                          -> 2f99b9a8 c1657e03 bd730c7f
+{kinds:[1],limit:5,search:"include:spam"}    -> 2f99b9a8 c1657e03 bd730c7f   (identical)
+{kinds:[1],limit:5,search:"observer:460c25…"} -> 3617a0d0 0f618b5a f078a032   (different)
+```
+
+So the waiver is FREE — stamping every anonymous read with `include:spam`
+changes what the wire says and nothing about the answer, which is what lets
+`shared/lens.js` stamp a whole socket rather than reason per ask — and an
+`observer:` really does resolve on a connection that signed nothing, which is
+what makes "ranking as" a signed-out reader's ranked answer rather than a
+control that needs a key.
 
 To fill a local store rather than read one, point a router stream at it: it
 speaks NIP-77, so a narrow filter reconciles rather than downloads.
@@ -386,6 +410,34 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         demand because the address is minted after we boot
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+    LensRequiredPolicy.kt  THE RELAY'S DEFAULT BEFORE AUTH: a REQ or COUNT from
+                        a connection that has not authenticated is answered only
+                        if EVERY filter says whose eyes it is read through — a
+                        NIP-50 `observer:<64-hex>`, or `include:spam` waiving
+                        one. Otherwise `CLOSED … auth-required:`, which is the
+                        prefix NIP-42 clients already retry through. It exists
+                        because this store has NO house observer, so a lensless
+                        read is not "the same answers, unranked" but a different
+                        corpus with the trust switched off — the engine does not
+                        even send `min_rank` without an observer to anchor it
+                        (EventYql), so the floor a search carries is silently
+                        inert. That corpus is a legitimate ask and `include:spam`
+                        is how to make it; what it must not be is what a client
+                        gets by SAYING NOTHING. The parse is quartz's own
+                        SearchQuery — the very parser the store maps with, so
+                        the gate cannot read a token differently from the query
+                        planner (a quoted `"include:spam"` is a phrase, a
+                        `-observer:…` an exclusion, and neither is a way
+                        through). ALL filters or none: NIP-01 ORs them, so one
+                        undeclared filter beside a declared one would serve the
+                        undeclared question in full. NOT gated: EVENT, AUTH,
+                        NIP-11 and NIP-77 NEG-OPEN — negentropy exchanges IDS,
+                        and the REQ that fetches what it named is gated like any
+                        other. NIP-11 `auth_required` stays FALSE and that is
+                        not an oversight: both ways past the gate are unsigned,
+                        because scores here are public. `REQUIRE_READ_LENS=false`
+                        is the older relay, for a deployment with no trust data
+                        to gate on
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
                         OptionalAuthPolicy binds exactly one url. It also
@@ -617,6 +669,31 @@ relay/src/main/resources/
                         state passed IN so the whole thing is testable —
                         web/src/test/js/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them.
+                        shared/lens.js is what makes any of those filters
+                        ANSWERABLE without a signature: the relay refuses an
+                        unauthenticated read that names no web-of-trust lens
+                        (LensRequiredPolicy), so every ask this page makes falls
+                        into one of three cases and each has exactly one place
+                        that decides it — the authenticated socket adds nothing
+                        (the connection IS the lens), a search ranked through
+                        somebody else carries `observer:` (app.js's
+                        `searchString`/`askString`, and "ranking as" now works
+                        SIGNED OUT because scores are public), and a fact about
+                        a SUBJECT rather than the reader carries `include:spam`.
+                        That third case is the module: names, faces, scores,
+                        group names, reply parents and the observer list are
+                        asked down the anonymous reference socket precisely so
+                        the reader's own gate cannot narrow them, and there are
+                        a dozen call sites — so the STAMP is on the connection
+                        (`new Relay(url, { lensless: true })` in shared/conn.js,
+                        monitor/cards.js's verdict reader, observer_stats.html's
+                        local client) rather than at each ask, where the next
+                        caller would forget it and read a CLOSED as "no such
+                        event". Sockets to OTHER PEOPLE'S relays are never
+                        stamped (readiness.js's askRemote, observer_stats.html's
+                        remote clients): `include:spam` is this store's
+                        extension, and a NIP-50 relay without it would take the
+                        token for a word and search for it.
                         That whole language is also written down for the READER,
                         in the syntax sheet the `?` beside Filters opens: a
                         <dialog> of markup at the end of index.html, four lines
@@ -770,7 +847,13 @@ relay/src/main/resources/
                         reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
                         buildFilters() with no words and none of the bar's
                         NIP-50 extensions leaves `{kinds, limit}`, a plain
-                        NIP-01 read, which the store answers newest-first (a
+                        NIP-01 read, which the store answers newest-first
+                        (signed OUT it carries one token and only one — the
+                        lens declaration every read now owes the relay: the
+                        picked `observer:`, else `include:spam`, neither of
+                        which orders anything on a termless filter, so the feed
+                        is the same plain read wearing what makes it
+                        answerable) (a
                         stray `sort:` would rank it while the page said
                         "latest" — `sort:recent` being the one value that
                         would not, since store 5e44f1bde8 it asks for the
