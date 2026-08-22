@@ -34,6 +34,9 @@ class RelayConfigTest {
         assertEquals(20, d.maxFilters)
         assertEquals(50, d.maxSubscriptions)
         assertEquals(5_000, d.maxLimit)
+        // A REQ that names no `limit` gets the same window as one asking for the
+        // ceiling: the default is not a smaller, quieter cap.
+        assertEquals(5_000, d.defaultLimit)
         assertEquals(false, d.authRequired)
     }
 
