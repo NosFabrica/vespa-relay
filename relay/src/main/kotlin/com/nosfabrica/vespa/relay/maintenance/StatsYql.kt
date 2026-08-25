@@ -42,9 +42,10 @@ import java.time.ZoneOffset
  *
  * ## Why this is not built on the store's EventYql
  *
- * `EventYql` already carries the four aggregations the store itself needs —
- * `buildCount`, `buildDistinctCount`, `buildKindHistogram`, `buildDistinctAuthors`
- * — and this file reuses their proven shapes verbatim where they fit. What it
+ * `EventYql` already carries the aggregations the store itself needs —
+ * `buildCount` and `buildDistinctAuthors`, since store 95ded7b3de dropped the
+ * distinct-count and kind-histogram pair nothing consumed — and this file
+ * reuses their proven shapes verbatim where they fit. What it
  * cannot reuse is the builder: `EventYql.grouping()` is private, its pipelines
  * are a fixed set, and it lives in vespa-eventstore, so every new pipeline here
  * would be a store release plus a JitPack pin bump before the page could change.

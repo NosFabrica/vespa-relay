@@ -78,7 +78,10 @@ class RelayProtocolTest {
 
         override suspend fun count(query: EventQuery) = inner.count(query)
 
-        override suspend fun distinctAuthors(query: EventQuery) = inner.distinctAuthors(query)
+        // Delegate rather than ride the interface default, which the store's
+        // KDoc requires of a decorator: the default answers by search(), and
+        // this one records every search it sees.
+        override suspend fun countByAuthor(query: EventQuery) = inner.countByAuthor(query)
 
         override fun close() {}
     }

@@ -95,53 +95,96 @@ app = "0.1.0"
 quartz = "159afc0423"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 84664f9ab0 = store main through PR #81 (`Bound requested hits`). The whole
-# range over e3be81564d is that one PR: one commit plus its merge, ONE file
-# (`VespaEventIndex.kt`, +25/-6), no schema movement, no interface movement
-# (private members only) — read off `git log --oneline e3be81564d..` and
-# `git diff --stat`, not the title. Nothing here needs a migration, a
-# reindex, or a source change in this repo.
+# 95ded7b3de = store main through PR #83 (`Add a recency term to text
+# ranking`). The range over 84664f9ab0 is TWO PRs, ten commits, 41 files
+# (+2119/-471) — PR #82, a dead-API sweep plus an audit pass, and PR #83,
+# recency in text ranking. Read off `git log --oneline 84664f9ab0..` and
+# `git diff --stat`, not the titles. Both halves reach this repo: one costs a
+# source change here, the other changes the ORDER of every ranked page we
+# serve. No migration and no reindex.
 #
-# WHAT IT CHANGES is how many hits the store ASKS Vespa for. `existingIds()`
-# now asks for exactly `ids.size` (the answer cannot exceed the chunk asked
-# about), and the "no limit" spelling in `hitsFor()`/`idTimeHits()` reads
-# `VESPA_UNBOUNDED_HITS` instead of hardcoding Int.MAX_VALUE — default
-# unchanged, so a deployment that sets nothing behaves byte-for-byte as
-# before.
+# SOURCE-BREAKING, one site. PR #82 deleted `EventIndex.distinctAuthors` —
+# `countByAuthor` was always the same grouping with the counts kept, so it
+# absorbed it — along with `countDistinctAuthors`, `countByKind`, the store's
+# `distinctAuthors(Filter)`/`distinctDTags`, `EventQuery.notKinds` and
+# `EventYql.RANK_FILTERED`. Production code here calls NONE of them: the
+# stats page never went through the port (`StatsYql` builds and posts its own
+# groupings, deliberately). The one call site was `RelayProtocolTest`'s
+# RecordingIndex, which overrode `distinctAuthors` to delegate; it overrides
+# `countByAuthor` for the same reason now, and StatsYql's KDoc no longer
+# names the two builders that went with them.
 #
-# WHY: hits=Int.MAX_VALUE is safe on ONE content node (the hit collector
-# sizes from what MATCHES) and fatal on multi-node — dispatch's merge path
-# allocates by the REQUESTED hits, and the jdisc container dies with
-# "Requested array size exceeds VM limit" (staging 2-node cluster,
-# 2026-08-17, a crash loop re-triggered by whichever fetch-all caller
-# retried first; the heap dump named the profile publisher). Staging's
-# chart caps the deployed query profile at maxHits=100000 as the engine-side
-# guard and sets VESPA_UNBOUNDED_HITS=100000 on relay+sync to match
-# (nosfabrica-kube d229928); until this bump ships, every no-limit call —
-# the router's verdicts read, sweeps, profile publish — is rejected there
-# with `2147483647 hits requested, configured limit: 100000`, which is what
-# holds the outbox streams at 0 certified relays. The env var and the
-# deployed profile's maxHits must move TOGETHER; unset means Int.MAX_VALUE
-# and is only correct where the profile is uncapped.
+# THE SCHEMA MOVES, and it ships by itself: `deployBundledSchema` deploys the
+# store's own application package on EVERY boot, so the jar carries it. Four
+# new rank inputs (`now_secs`, `recency_halflife`, `w_recency`,
+# `w_recency_text`) and four new functions; `pubkey_gram` and its `grams`
+# fieldset gone (a trigram index over every 64-hex pubkey, referenced by
+# nothing), `rank_filtered` gone. Nothing to re-feed: the new functions read
+# `attribute(created_at)`, already resident, and the dropped field only frees
+# its index. A deploy that fails leaves the cluster on the schema it has and
+# the process up (the warning says so) — the recency term is query()-side, so
+# what that degrades to is the ordering we serve today.
 #
-# THE GATE IS GREEN AT THIS COMMIT: the store's integration suite ran on the
-# PR head 850dfb0 in its own CI (11m44s, pass — actions run 32078174698),
-# per this file's rule that a bump waits for the store's integration gate.
-# `InMemoryEventIndex` cannot see a Vespa-only regression, and this change
-# is precisely a Vespa-dispatch behavior.
+# WHAT WE SERVE CHANGES: ranked reads get a recency tiebreak. `w_recency` 0.1
+# with a 30-day half-life on the TRUST profiles (the pure-text knob ships
+# 0.0), as a `max(1.0, 1 + w*freshness())` multiplier — >= 1 by construction,
+# so `rank-score-drop-limit` deletes exactly what it deleted before and the
+# match set is bit-identical; only the order moves. The store measured it on
+# a real staging slice (4596 events captured read-only, re-fed with their real
+# NIP-85 trust): the top-50 for "bitcoin" under a trust lens went from median
+# age 993d to 7d at this weight, match counts identical on every row, and when
+# the sweep was re-run after the audit dropped the kind-0 exemption every
+# pinned position still held. Nothing in THIS repo pins ranked order — the
+# relay's tests rank through `InMemoryEventIndex`, which does not rank — so
+# the web feed and every `search:` REQ are where this is visible. Age is a
+# DISTANCE from the query's clock, which is why the corpus's 2100-dated notes
+# read as old rather than maximally fresh, and the store now stamps ONE
+# instant per request so sibling filters in a REQ cannot merge scores taken
+# from two clocks.
 #
-# DIRECTION: e3be81564d is a strict ancestor of this (`git merge-base
+# ALSO IN RANGE, all of it ours to use: a REQ carrying a big `limit` is
+# served WHOLE instead of erroring. `limit: 5000` came back an ERROR from
+# production — the tie-slack overfetch was added BEFORE the profile was
+# picked, so past `band - 64` the query moved onto `unranked`, where a
+# match-phase-degraded response is refused rather than reconciled; paging
+# now walks the band on a created_at cursor instead. That is not a corner
+# case for us: since #157 `defaultLimit` IS 5,000, so every REQ naming no
+# limit asks the store for exactly the number that errored. Also: multi-filter
+# searches no longer interleave scores from two different rank profiles (a REQ
+# where one filter resolved an observer and another did not read as one
+# scale); NIP-45 COUNT and NIP-09 a-tag deletion fan out bounded-concurrently
+# instead of running their filters one at a time under the writer lock. New
+# knob: `VESPA_MATCH_PHASE_MAX_HITS` mirrors the schema's max-hits and is PER
+# CONTENT NODE — same together-or-not rule as `VESPA_UNBOUNDED_HITS` above.
+#
+# THE GATE IS GREEN AT THIS COMMIT, per this file's rule that a bump waits
+# for the store's own integration gate: `:benchmark:test -Pintegration` run
+# HERE against 95ded7b3de on a real Vespa in Docker — 11 tests, 0 skipped,
+# 0 failures, 14m47s, RankRegressionIT (the recency claims) among them.
+# `InMemoryEventIndex` can see none of this; the schema deploy, the recency
+# functions and the paged limit are all Vespa-side.
+#
+# AND THE UPGRADE PATH, which that gate CANNOT see — it deploys onto an empty
+# cluster every time, while ours has a schema and a corpus already. Probed
+# here: old package deployed to a live Vespa, one event fed so the dropped
+# `pubkey_gram` had data behind it, then the new package on top.
+# `prepareandactivate` accepted it with `{"restart": [], "refeed": [],
+# "reindex": []}` — no operator action, nothing to re-feed — the container
+# kept serving, the doc was still there, and a query naming the new
+# `query(now_secs)` input answered.
+#
+# DIRECTION: 84664f9ab0 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates), and the store's own quartz is UNCHANGED at
-# 1866007e99 — the diff touches one Kotlin file and nothing in the store's
-# catalog. One pin moves.
+# 1866007e99 — its version catalog is untouched across the whole range. One
+# pin moves.
 #
-# LEXICOGRAPHIC: '8466…' < 'e3be…' ('8' < 'e'), so this sorts BELOW the pin
-# it replaces — the dangerous direction again. Same standing mitigation:
-# only `:common` declares the store and nothing else on the graph brings it
-# in, so there is no conflict for ordering to settle. The resolved graph is
-# the proof, per module:
+# LEXICOGRAPHIC: '95de…' > '8466…' ('9' > '8'), so this sorts ABOVE the pin
+# it replaces — the SAFE direction for once. Four modules declare the store
+# (:common, :relay, :sync, :peers) but all through this one alias, so there
+# is a single string on the graph and nothing for ordering to settle. The
+# resolved graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "84664f9ab0"
+vespaEventStore = "95ded7b3de"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
