@@ -171,6 +171,57 @@ reason.
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
 
+## Reads before AUTH
+
+| var | meaning | default |
+|---|---|---|
+| `REQUIRE_READ_LENS` | refuse a REQ or COUNT from a connection that has not authenticated unless every filter declares its web-of-trust lens. `false`/`0`/`no`/`off` turns it off; anything else — including a typo — leaves it ON | on |
+
+With it on, an undeclared read is answered with
+
+```
+["CLOSED","<subid>","auth-required: this relay answers through a web of trust …"]
+```
+
+and there are three ways to be answered: sign a NIP-42 AUTH (the connection's
+pubkey becomes the lens), name one with the NIP-50 `observer:<64-hex>` token,
+or waive one with `include:spam` and take the whole corpus unranked. Only the
+first involves a key — trust scores here are public, so an `observer:` ranks on
+a socket that signs nothing. NIP-11 `limitation.auth_required` therefore stays
+`false`: it would claim a door that is not locked.
+
+**Why it defaults on.** This relay keeps no house observer, so a read with no
+lens is not the same answers unranked — it is a different corpus with the trust
+switched off, and the engine does not even send the trust floor without an
+observer to anchor it. Every client that never heard of the feature was
+silently getting that corpus, with no way to tell it from the ranked one.
+
+**What is NOT gated:** publishing (`EVENT`), `AUTH`, and NIP-11.
+
+**NIP-77 IS gated.** Quartz runs a `NEG-OPEN`'s filters through the same policy
+hook as a REQ, so a reconcile declares a lens exactly as a read does and a
+refusal comes back as `NEG-ERR <subid> "auth-required: …"`. That is the right
+default — a reconcile hands over the ids and timestamps of everything matching
+the filter, the corpus's whole shape — but it means **an anonymous peer cannot
+mirror from this relay.** A peer has three ways in: put `include:spam` in the
+NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH, or ask the operator
+for `REQUIRE_READ_LENS=false`.
+
+**Turn it off** where there is nothing to gate on: a relay whose readers are
+all mirrors, or a store with no NIP-85 trust data behind it, would only be
+refusing every client for a lens it cannot apply. The boot log says so when you
+do.
+
+**Peering with another vespa-relay.** Its router declares nothing — neither on
+its paged REQ fetches nor in its NEG-OPEN filters — so a gated peer refuses
+both. The refusal is at least LOUD: the router reads `auth-required` as a
+refusal outright (`VisitPool.refusedOutright`) and records it, rather than
+mirroring nothing quietly. With `RELAY_NSEC` set the client answers the NIP-42
+challenge instead and is then read through *the relay key's* lens, which on a
+key nobody has scored is an empty answer rather than an error — the quieter
+failure of the two. Until the router learns to declare, peer a gated relay by
+turning the gate off there, or by giving the mirroring key a real lens.
+
 ## Admin (NIP-86)
 
 | var | meaning | default |

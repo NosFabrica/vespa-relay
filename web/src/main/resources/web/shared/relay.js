@@ -2,6 +2,8 @@
 // code — the browser's WebSocket and ~80 lines are the whole client, and every
 // line is inspectable right here.
 
+import { withoutLensAll } from "./lens.js";
+
 const REQ_TIMEOUT_MS = 10000;
 
 /**
@@ -30,8 +32,23 @@ export const REFUSED = { unanswered: "refused" };
 export const TIMED_OUT = { unanswered: "timeout" };
 
 export class Relay {
-  constructor(url) {
+  /**
+   * `lensless` marks a connection that will NEVER authenticate — the page's
+   * anonymous reference socket, and the stats pages' read-only ones. Every
+   * filter it sends is stamped `include:spam` (shared/lens.js), because the
+   * relay refuses an unauthenticated read that names no lens and such a
+   * connection has, by construction, no lens to name.
+   *
+   * A flag on the CONNECTION rather than an argument at each call: what
+   * decides this is which socket the ask goes down, and that is a property the
+   * socket already knows about itself. The authenticated socket leaves it off
+   * — there the absence of a stamp is what makes a read that arrived before
+   * (or after) its NIP-42 fail loudly with `auth-required:` and retry, instead
+   * of quietly answering a signed-in reader out of the unranked corpus.
+   */
+  constructor(url, { lensless = false } = {}) {
     this.url = url;
+    this.lensless = lensless;
     this.ws = null;
     this.subs = new Map();       // subId -> { onEvent, finish }
     this.counts = new Map();     // subId -> resolver for its COUNT
@@ -252,7 +269,8 @@ export class Relay {
       };
       const timer = setTimeout(() => finish(null, false), timeoutMs);
       this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
-      this.ws.send(JSON.stringify(["REQ", id, ...(Array.isArray(filter) ? filter : [filter])]));
+      const asked = this.lensless ? withoutLensAll(filter) : filter;
+      this.ws.send(JSON.stringify(["REQ", id, ...(Array.isArray(asked) ? asked : [asked])]));
     });
   }
 
@@ -279,7 +297,7 @@ export class Relay {
       };
       this.counts.set(id, finish);
       this.bumpCountIdle();
-      try { this.ws.send(JSON.stringify(["COUNT", id, filter])); }
+      try { this.ws.send(JSON.stringify(["COUNT", id, this.lensless ? withoutLensAll(filter) : filter])); }
       catch (e) { finish(REFUSED); }
     });
   }

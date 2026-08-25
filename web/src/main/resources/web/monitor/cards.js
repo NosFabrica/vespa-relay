@@ -286,7 +286,12 @@ function tally(pairs) {
  * end. The author is drawn per row instead.
  */
 async function readVerdicts(onProgress, relayUrl) {
-  const relay = new Relay(relayUrl);
+  // `lensless`: this socket never authenticates, and a vespa-relay refuses an
+  // unauthenticated read that names no lens, so every filter below goes out
+  // with `include:spam` (shared/lens.js). Right as well as necessary — a
+  // verdict panel counting what the STORE holds must not be narrowed by
+  // anybody's web of trust, least of all silently.
+  const relay = new Relay(relayUrl, { lensless: true });
   // What that relay says it will serve in one ask, and WHO IT IS — asked of the
   // relay itself rather than assumed, which is why the url has to be published
   // in the document: this page is served on the MONITOR's port, and dialling

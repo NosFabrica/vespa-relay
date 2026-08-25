@@ -26,6 +26,8 @@ import com.vitorpamplona.quartz.utils.Hex
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class RelayConfigTest {
     @Test
@@ -186,6 +188,21 @@ class RelayConfigTest {
         assertEquals(0, rejectFutureSecondsFromEnv(emptyMap()))
         assertEquals(900, rejectFutureSecondsFromEnv(mapOf("REJECT_FUTURE_SECONDS" to "900")))
         assertEquals(0, rejectFutureSecondsFromEnv(mapOf("REJECT_FUTURE_SECONDS" to "-5")))
+    }
+
+    @Test
+    fun `the read-lens gate is on unless it is turned off in as many words`() {
+        assertTrue(requireReadLensFromEnv(emptyMap()), "unset is ON — the relay's default before AUTH")
+        for (off in listOf("false", "0", "no", "off", "FALSE", " no ")) {
+            assertFalse(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to off)), "\"$off\" turns it off")
+        }
+        // Anything else is ON, including the spellings an operator MEANT as
+        // off. The two failure modes are not symmetric: a typo that quietly
+        // opens the whole corpus to every anonymous read is the one nothing
+        // outside the process can notice.
+        for (on in listOf("true", "1", "yes", "treu", "", "  ")) {
+            assertTrue(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to on)), "\"$on\" leaves it on")
+        }
     }
 
     @Test

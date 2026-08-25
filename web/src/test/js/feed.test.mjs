@@ -30,16 +30,27 @@ const id = (n) => String(n).padStart(64, "0");
 const ev = (n, over = {}) => ({ id: id(n), pubkey: "a".repeat(64), kind: 1, created_at: NOW - n, tags: [], ...over });
 
 // ---- an empty search IS the feed's ask ------------------------------------
-// The one claim worth pinning about the ask: with no words and no
-// searchString, the page's own builder produces a filter carrying NO `search`
+// The one claim worth pinning about the ask: with no words and nothing to
+// declare, the page's own builder produces a filter carrying NO `search`
 // field. That is what makes it a plain NIP-01 read, which is the only kind of
 // read the store answers newest-first — a filter that had picked up a `sort:`
 // or an `observer:` on the way here would come back in rank order under a
 // heading that says "latest".
+//
+// That is the SIGNED-IN shape, and it is the connection's NIP-42 identity that
+// earns it: app.js's feedSearchString returns "" only when there is a `me`.
 const filters = buildFilters("", { kinds: FEED_KINDS, limit: askFor(PAGE_CARDS) });
 assert.strictEqual(filters.length, 1, "no hashtags, no union — one filter");
 assert.deepStrictEqual(Object.keys(filters[0]).sort(), ["kinds", "limit"], "kinds and limit and nothing else");
 assert.deepStrictEqual(filters[0].kinds, FEED_KINDS);
+
+// Signed out, the same ask has to say it has no lens or the relay refuses it —
+// and what it must NOT pick up on the way is an order. `include:spam` carries
+// none (the store maps a termless waiver to plain recall), so this is the same
+// plain read wearing the one token that makes it answerable.
+const anon = buildFilters("", { kinds: FEED_KINDS, limit: askFor(PAGE_CARDS), searchString: () => "include:spam" });
+assert.deepStrictEqual(Object.keys(anon[0]).sort(), ["kinds", "limit", "search"], "the waiver and nothing else joins it");
+assert.strictEqual(anon[0].search, "include:spam", "no sort: and no observer: rode along with it");
 
 // ---- the kinds ------------------------------------------------------------
 for (const k of [1, 20, 21, 22]) assert.ok(FEED_KINDS.includes(k), `kind ${k} is content`);

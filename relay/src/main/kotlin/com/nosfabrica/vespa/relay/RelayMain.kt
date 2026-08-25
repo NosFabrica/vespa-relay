@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
+import com.nosfabrica.vespa.relay.config.requireReadLensFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
@@ -151,6 +152,14 @@ fun main() {
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
+    // Whether an anonymous read has to say whose trust it is read through. On
+    // by default; announced at boot only when an operator turned it OFF, since
+    // "this relay answers anonymous reads out of the whole corpus" is the line
+    // worth finding in a log when a client is getting more than it expected.
+    val requireReadLens = requireReadLensFromEnv(env)
+    if (!requireReadLens) {
+        System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
+    }
 
     // The icon this relay serves on its own tab, as an absolute url a stranger
     // can fetch — the value `RELAY_ICON` defaults to, and the one the server
@@ -330,6 +339,7 @@ fun main() {
             kindAllow = allowKindsFromEnv(env),
             kindDeny = denyKindsFromEnv(env),
             rejectFutureSeconds = rejectFutureSeconds,
+            requireReadLens = requireReadLens,
         )
 
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).

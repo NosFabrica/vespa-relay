@@ -30,7 +30,10 @@ import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyResult
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.CoroutineScope
@@ -98,7 +101,7 @@ class RelayProtocolTest {
             val session = server.connect { out.add(it) }
             try {
                 // A live subscription with a full NIP-01 filter — not just a search term.
-                session.receive("""["REQ","sub",{"kinds":[1],"#p":["$bob"]}]""")
+                session.receive("""["REQ","sub",{"kinds":[1],"#p":["$bob"],"search":"include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","sub"]""") }
 
                 // Publish a signed note (VerifyPolicy checks id + signature).
@@ -109,12 +112,12 @@ class RelayProtocolTest {
                 awaitMessage(out) { it.startsWith("""["EVENT","sub",""") && note.id in it }
 
                 // A fresh REQ answers the same event from storage, through author + tag + time filters.
-                session.receive("""["REQ","q2",{"kinds":[1],"authors":["${signer.pubKey}"],"#p":["$bob"],"since":1699999999}]""")
+                session.receive("""["REQ","q2",{"kinds":[1],"authors":["${signer.pubKey}"],"#p":["$bob"],"since":1699999999,"search":"include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EVENT","q2",""") && note.id in it }
                 awaitMessage(out) { it.startsWith("""["EOSE","q2"]""") }
 
                 // NIP-45 COUNT over the stored set.
-                session.receive("""["COUNT","c1",{"kinds":[1]}]""")
+                session.receive("""["COUNT","c1",{"kinds":[1],"search":"include:spam"}]""")
                 val count = awaitMessage(out) { it.startsWith("""["COUNT","c1"""") }
                 assertTrue("\"count\":1" in count, "exact count from the store: $count")
             } finally {
@@ -163,8 +166,12 @@ class RelayProtocolTest {
                 // right while the observer only reordered results and wrong once
                 // the store began treating it as a filter: an anonymous visitor
                 // would have been gated to the ~2.7% of profiles anyone has
-                // scored, silently. Anonymous now means the whole corpus.
-                session.receive("""["REQ","s1",{"kinds":[0],"search":"ali","limit":10}]""")
+                // scored, silently. Anonymous now means the whole corpus — and,
+                // since LensRequiredPolicy, only when the query SAYS so. The
+                // `include:spam` here is what the relay now requires of an
+                // anonymous read; what it does NOT do is conjure a house lens,
+                // which is what this test is about.
+                session.receive("""["REQ","s1",{"kinds":[0],"search":"ali include:spam","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
                 assertTrue(out.any { it.startsWith("""["EVENT","s1",""") && "alice" in it }, "the stored kind-0 streams back: $out")
                 assertTrue(
@@ -205,6 +212,15 @@ class RelayProtocolTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
+                // Signed in first: these assertions are about what the store
+                // makes of the TOKENS, and an anonymous read now has to carry
+                // `include:spam` to be answered at all — which is itself one of
+                // the tokens under test and would set the floor it asserts.
+                val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
+                val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
+                session.receive("""["AUTH",${auth.toJson()}]""")
+                awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
+
                 session.receive("""["REQ","x1",{"search":"ali","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x1"]""") }
                 assertEquals(DEFAULT_MIN_RANK, index.searchQueries.last().minRank, "a plain search is trust-gated by default")
@@ -259,8 +275,8 @@ class RelayProtocolTest {
                 try {
                     val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
 
-                    // Anonymous searches never enroll anyone.
-                    session.receive("""["REQ","s1",{"kinds":[0],"search":"ali","limit":10}]""")
+                    // Anonymous searches never enroll anyone — declared or not.
+                    session.receive("""["REQ","s1",{"kinds":[0],"search":"ali include:spam","limit":10}]""")
                     awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
                     assertEquals(emptyList(), enrolled.toList())
 
@@ -385,10 +401,10 @@ class RelayProtocolTest {
                 // Byte for byte the shape shared/query.js builds for "#nostr".
                 session.receive(
                     """["REQ","h",""" +
-                        """{"#t":["nostr","Nostr","NOSTR"],"limit":40},""" +
-                        """{"#l":["nostr","Nostr","NOSTR"],"limit":10},""" +
-                        """{"kinds":[1111],"#I":["#nostr","nostr"],"limit":10},""" +
-                        """{"kinds":[1111],"#i":["#nostr","nostr"],"limit":10}]""",
+                        """{"#t":["nostr","Nostr","NOSTR"],"search":"include:spam","limit":40},""" +
+                        """{"#l":["nostr","Nostr","NOSTR"],"search":"include:spam","limit":10},""" +
+                        """{"kinds":[1111],"#I":["#nostr","nostr"],"search":"include:spam","limit":10},""" +
+                        """{"kinds":[1111],"#i":["#nostr","nostr"],"search":"include:spam","limit":10}]""",
                 )
                 awaitMessage(out) { it.startsWith("""["EOSE","h"]""") }
                 val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","h",""") } }
@@ -413,7 +429,7 @@ class RelayProtocolTest {
                 // The control for the spellings: the lowercase ask ALONE cannot
                 // see `t: Nostr`. This is the assertion that makes the extra
                 // values in the filter above a fix rather than decoration.
-                session.receive("""["REQ","lc",{"#t":["nostr"],"limit":40}]""")
+                session.receive("""["REQ","lc",{"#t":["nostr"],"search":"include:spam","limit":40}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","lc"]""") }
                 val lower = synchronized(out) { out.filter { it.startsWith("""["EVENT","lc",""") } }
                 assertTrue(lower.any { tagged.id in it }, "the lowercase ask sees the lowercase tag")
@@ -492,8 +508,8 @@ class RelayProtocolTest {
                 // "site:https://example.com/article".
                 session.receive(
                     """["REQ","sc",""" +
-                        """{"kinds":[1111],"#I":["$url","$url/"],"limit":40},""" +
-                        """{"kinds":[1111],"#i":["$url","$url/"],"limit":10}]""",
+                        """{"kinds":[1111],"#I":["$url","$url/"],"search":"include:spam","limit":40},""" +
+                        """{"kinds":[1111],"#i":["$url","$url/"],"search":"include:spam","limit":10}]""",
                 )
                 awaitMessage(out) { it.startsWith("""["EOSE","sc"]""") }
                 val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","sc",""") } }
@@ -518,8 +534,8 @@ class RelayProtocolTest {
                 // adds is the value itself being colon-laden.
                 session.receive(
                     """["REQ","pg",""" +
-                        """{"kinds":[1111],"#I":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"limit":40},""" +
-                        """{"kinds":[1111],"#i":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"limit":10}]""",
+                        """{"kinds":[1111],"#I":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"search":"include:spam","limit":40},""" +
+                        """{"kinds":[1111],"#i":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"search":"include:spam","limit":10}]""",
                 )
                 awaitMessage(out) { it.startsWith("""["EOSE","pg"]""") }
                 val podcast = synchronized(out) { out.filter { it.startsWith("""["EVENT","pg",""") } }
@@ -583,8 +599,8 @@ class RelayProtocolTest {
                 // "group:chachi" with no tab kinds.
                 session.receive(
                     """["REQ","gp",""" +
-                        """{"#h":["chachi"],"limit":40},""" +
-                        """{"kinds":[39000],"#d":["chachi"],"limit":10}]""",
+                        """{"#h":["chachi"],"search":"include:spam","limit":40},""" +
+                        """{"kinds":[39000],"#d":["chachi"],"search":"include:spam","limit":10}]""",
                 )
                 awaitMessage(out) { it.startsWith("""["EOSE","gp"]""") }
                 val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","gp",""") } }
@@ -611,7 +627,7 @@ class RelayProtocolTest {
                 val recordA = publish(39000, arrayOf(arrayOf("d", "chachi"), arrayOf("name", "Chachi on A")), "", hostA)
                 val recordB = publish(39000, arrayOf(arrayOf("d", "chachi"), arrayOf("name", "Chachi on B")), "", hostB)
 
-                session.receive("""["REQ","gm",{"kinds":[39000],"#d":["chachi"],"limit":10}]""")
+                session.receive("""["REQ","gm",{"kinds":[39000],"#d":["chachi"],"search":"include:spam","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","gm"]""") }
                 val records = synchronized(out) { out.filter { it.startsWith("""["EVENT","gm",""") } }
                 assertTrue(records.any { recordA.id in it }, "one host's record")
@@ -664,8 +680,8 @@ class RelayProtocolTest {
 
                 session.receive(
                     """["REQ","r",""" +
-                        """{"#t":["nostr"],"search":"topic","limit":40},""" +
-                        """{"#l":["nostr"],"search":"topic","limit":10}]""",
+                        """{"#t":["nostr"],"search":"topic include:spam","limit":40},""" +
+                        """{"#l":["nostr"],"search":"topic include:spam","limit":10}]""",
                 )
                 awaitMessage(out) { it.startsWith("""["EOSE","r"]""") }
                 val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","r",""") } }
@@ -675,6 +691,183 @@ class RelayProtocolTest {
                 assertEquals(order.sorted(), order, "one order over the union: the label's hit lands BETWEEN the two tagged ones")
             } finally {
                 session.close()
+            }
+        }
+
+    /**
+     * The relay's default before AUTH: a read says whose eyes it is read
+     * through, or it is not answered.
+     *
+     * Every claim here is one a client acts on. The REFUSAL is `auth-required:`
+     * rather than a silent empty EOSE because that is the prefix NIP-42 clients
+     * already retry through (ours is `web/shared/relay.js`), and because an
+     * empty answer to a read this relay declined is indistinguishable from an
+     * empty corpus — the confusion the whole gate exists to end.
+     *
+     * The two ways past it need no signature at all: scores here are public, so
+     * `observer:` ranks through any lens on an anonymous socket, and
+     * `include:spam` asks for the corpus the relay used to hand over without
+     * either side saying so.
+     */
+    @Test
+    fun `an undeclared read is refused before AUTH, and the two declarations get through`() =
+        runBlocking {
+            store.insert(MetadataEvent("6".repeat(64), "a3".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                // A plain NIP-01 filter — no NIP-50 anything — is a read with
+                // no lens just as much as a search is, and is refused the same.
+                session.receive("""["REQ","n1",{"kinds":[0],"limit":10}]""")
+                val closed = awaitMessage(out) { it.startsWith("""["CLOSED","n1",""") }
+                assertTrue("auth-required:" in closed, "the machine-readable prefix a NIP-42 client retries through: $closed")
+                assertTrue("observer:" in closed && "include:spam" in closed, "…and the refusal names both ways past it: $closed")
+
+                session.receive("""["REQ","n2",{"kinds":[0],"search":"ali","limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["CLOSED","n2",""") }
+
+                // COUNT is a read too, and answers with a number rather than
+                // events — which is exactly why it cannot be left open: an
+                // ungated count reports the size of the corpus a gated REQ
+                // would refuse to serve.
+                session.receive("""["COUNT","n3",{"kinds":[0]}]""")
+                awaitMessage(out) { it.startsWith("""["CLOSED","n3",""") }
+
+                // ONE undeclared filter poisons the REQ: NIP-01 ORs them, so
+                // serving the rest would serve the undeclared question in full.
+                session.receive("""["REQ","n4",{"kinds":[0],"search":"include:spam"},{"kinds":[1]}]""")
+                awaitMessage(out) { it.startsWith("""["CLOSED","n4",""") }
+
+                // Way out one: waive the lens. The whole corpus, unranked.
+                session.receive("""["REQ","y1",{"kinds":[0],"search":"ali include:spam","limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","y1"]""") }
+                assertTrue(out.any { it.startsWith("""["EVENT","y1",""") && "alice" in it }, "the waiver is answered in full: $out")
+
+                // Way out two: name one. No signature involved — the store
+                // resolves it as the query's own observer.
+                session.receive("""["REQ","y2",{"kinds":[0],"search":"ali observer:${"7".repeat(64)}","limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","y2"]""") }
+                assertEquals("7".repeat(64), index.searchQueries.last().observer, "the named lens is the one the store ranks through")
+
+                // …and a lens the store cannot resolve is not one: an npub is
+                // ignored there, so accepting it here would answer an unranked
+                // read under a token that promised a ranked one.
+                session.receive("""["REQ","n5",{"kinds":[0],"search":"ali observer:npub1qqqqqqqq","limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["CLOSED","n5",""") }
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * NIP-77 GOES THROUGH THE SAME GATE, and this pins it in both directions
+     * because nothing in this repo decides it: quartz's `NegSessionRegistry`
+     * builds a [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd]
+     * out of the NEG-OPEN's filters and runs it through the very hook
+     * [LensRequiredPolicy] implements, turning a rejection into `NEG-ERR`.
+     *
+     * It is the RIGHT answer — a reconcile hands over the ids and times of
+     * everything matching a filter, which is the lensless read of the whole
+     * corpus this gate exists to stop — but it is quartz's arrangement rather
+     * than our decision, so the day it changes, a reconcile silently becomes
+     * the one unguarded read here.
+     *
+     * ONLY THE REFUSAL IS DRIVEN OVER THE WIRE, and that is a deliberate
+     * limit rather than half a test. The other half — that a DECLARING peer
+     * gets through — cannot be asserted this way, because a NEG-OPEN the gate
+     * admits is then handed to quartz's negentropy session, and a frame that
+     * is not a well-formed negentropy message never comes back: the message
+     * consumer's varint loop reads past the end of the buffer, where
+     * `ByteArrayReader.readByte` returns -1 forever and the continuation bit
+     * is never clear. It spins at 100% on the thread it is on — which in the
+     * server is a Netty I/O thread — and this test would hang the suite.
+     * (Reproduced deterministically against `negentropy-jvm` with the frames
+     * `6100`, `6101`, `61ff`, …: every truncated frame with a byte after the
+     * version byte loops forever. `61` alone terminates.) Building a real
+     * negentropy frame here would test quartz's reconciliation rather than
+     * this gate, so the refusal above is the whole claim: the ReqCmd hook is
+     * what a NEG-OPEN goes through, which is exactly what would break
+     * silently.
+     */
+    @Test
+    fun `a negentropy session declares a lens like any other read`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                session.receive("""["NEG-OPEN","g1",{"kinds":[1],"limit":10},"6100"]""")
+                val err = awaitMessage(out) { it.startsWith("""["NEG-ERR","g1",""") }
+                assertTrue("auth-required:" in err, "an undeclared reconcile is refused before it is parsed: $err")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * The other half, asserted where it can be: the policy itself, with no
+     * session behind it. A NEG-OPEN's filters reach [LensRequiredPolicy] as a
+     * [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd], so a
+     * peer that waives a lens is admitted and this relay stays mirrorable.
+     */
+    @Test
+    fun `a declared reconcile is admitted by the policy`() {
+        val policy = LensRequiredPolicy()
+        val declared = ReqCmd("g2", listOf(Filter(kinds = listOf(1), search = "include:spam")))
+        val bare = ReqCmd("g3", listOf(Filter(kinds = listOf(1))))
+        assertTrue(policy.accept(declared) is PolicyResult.Accepted, "a reconcile that waives a lens gets through")
+        assertTrue(policy.accept(bare) is PolicyResult.Rejected, "…and one that declares nothing does not")
+    }
+
+    /** After AUTH the connection IS the lens, and nothing has to be declared. */
+    @Test
+    fun `an authenticated read needs no declaration`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
+                session.receive("""["REQ","before",{"kinds":[0],"limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["CLOSED","before",""") }
+
+                val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
+                session.receive("""["AUTH",${auth.toJson()}]""")
+                awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
+
+                // The SAME undeclared read, on the same socket, now answered —
+                // this is the "authenticate and ask again" half of NIP-42, and
+                // the reason the refusal above carries that prefix.
+                session.receive("""["REQ","after",{"kinds":[0],"limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","after"]""") }
+                session.receive("""["COUNT","cafter",{"kinds":[0]}]""")
+                awaitMessage(out) { it.startsWith("""["COUNT","cafter"""") }
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * `REQUIRE_READ_LENS=false` is the older relay, whole: an undeclared
+     * anonymous read is answered out of the unranked corpus. Pinned because
+     * that is a deployment (a mirror-only relay, a store with no trust data
+     * behind it) and not a debug switch.
+     */
+    @Test
+    fun `the gate can be turned off, and then an undeclared read is answered`() =
+        runBlocking {
+            val open = NostrRelayServer(store, relayUrl, requireReadLens = false)
+            try {
+                store.insert(MetadataEvent("8".repeat(64), "a4".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
+                val out = Collections.synchronizedList(mutableListOf<String>())
+                val session = open.connect { out.add(it) }
+                try {
+                    session.receive("""["REQ","o1",{"kinds":[0],"limit":10}]""")
+                    awaitMessage(out) { it.startsWith("""["EOSE","o1"]""") }
+                    assertTrue(out.none { it.startsWith("""["CLOSED","o1",""") }, "nothing was refused: $out")
+                } finally {
+                    session.close()
+                }
+            } finally {
+                open.close()
             }
         }
 

@@ -282,8 +282,25 @@ const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 12) + "…" 
  * it deaf until the idle watchdog gives up on it 60s later. The comment beside
  * it said reqs and counts do not currently overlap "so that they can"; they
  * could not, and the batched profile reads below now do.
+ *
+ * `lensless` is for THIS relay only, and it is what makes a local ask
+ * answerable at all: a vespa-relay refuses an unauthenticated read that names
+ * no web-of-trust lens, and this page signs nothing. Every filter such a
+ * client sends carries the NIP-50 `include:spam` token — the whole corpus,
+ * which is the only honest denominator for a page that counts what this store
+ * holds. The REMOTE clients must not carry it: other people's relays are asked
+ * in plain NIP-01, and a relay implementing NIP-50 without this extension
+ * would take the token for a word and count the events matching it, which is
+ * none.
  */
-function client(url) {
+function client(url, { lensless = false } = {}) {
+  // The same filter, saying it has no lens. Appended rather than replaced, so
+  // a filter that already carries a search keeps it.
+  const asked = (f) => {
+    if (!lensless) return f;
+    const search = ((f && f.search) || "").trim();
+    return { ...f, search: search ? search + " include:spam" : "include:spam" };
+  };
   return new Promise((resolve, reject) => {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return reject(e); }
@@ -344,7 +361,7 @@ function client(url) {
           abort: (reason) => res(reason),
         });
         bumpIdle();
-        try { ws.send(JSON.stringify(["COUNT", id, { kinds: [30382], authors: [author] }])); }
+        try { ws.send(JSON.stringify(["COUNT", id, asked({ kinds: [30382], authors: [author] })])); }
         catch { pending.delete(id); res(REFUSED); }
       });
     ws.req = (filter) =>
@@ -377,7 +394,7 @@ function client(url) {
           abort: finish,
         });
         bumpIdle();
-        try { ws.send(JSON.stringify(["REQ", id, filter])); }
+        try { ws.send(JSON.stringify(["REQ", id, asked(filter)])); }
         catch { pending.delete(id); res(acc); }
       });
   });
@@ -503,7 +520,7 @@ async function run() {
   runEl.disabled = true;
   statusEl.textContent = "connecting…";
   let local;
-  try { local = await client(RELAY_URL); }
+  try { local = await client(RELAY_URL, { lensless: true }); }
   catch { statusEl.textContent = "could not connect to this relay"; runEl.disabled = false; return; }
 
   statusEl.textContent = "loading 10040s…";
