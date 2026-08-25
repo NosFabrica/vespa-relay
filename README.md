@@ -146,11 +146,15 @@ not be is what a client gets by saying nothing. `include:spam` on a plain
 NIP-01 filter costs nothing else: the store maps a termless waiver to ordinary
 recall.
 
-Unaffected: publishing (`EVENT`), `AUTH` itself, NIP-11, and NIP-77 `NEG-OPEN`
-— negentropy reconciles ids, and the REQ that fetches what it named is gated
-like any other, so relay-to-relay mirroring still works. Set
-`REQUIRE_READ_LENS=false` for the older behaviour (see
-[`docs/configuration.md`](docs/configuration.md)).
+Unaffected: publishing (`EVENT`), `AUTH` itself, and NIP-11.
+
+**NIP-77 is gated too**, and deliberately: a negentropy reconcile hands over
+the ids and timestamps of everything matching a filter, which is the lensless
+read of the whole corpus this rule exists to stop. An undeclared `NEG-OPEN`
+comes back `NEG-ERR … auth-required:`; the same filter carrying `include:spam`
+is admitted. So an anonymous **peer** cannot mirror from here without
+declaring — see [`docs/configuration.md`](docs/configuration.md), which also
+documents `REQUIRE_READ_LENS=false` for the older behaviour.
 
 ## The router: mirror from upstream relays
 

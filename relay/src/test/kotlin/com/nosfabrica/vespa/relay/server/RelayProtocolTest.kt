@@ -30,7 +30,10 @@ import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
 import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyResult
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.CoroutineScope
@@ -755,6 +758,65 @@ class RelayProtocolTest {
                 session.close()
             }
         }
+
+    /**
+     * NIP-77 GOES THROUGH THE SAME GATE, and this pins it in both directions
+     * because nothing in this repo decides it: quartz's `NegSessionRegistry`
+     * builds a [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd]
+     * out of the NEG-OPEN's filters and runs it through the very hook
+     * [LensRequiredPolicy] implements, turning a rejection into `NEG-ERR`.
+     *
+     * It is the RIGHT answer — a reconcile hands over the ids and times of
+     * everything matching a filter, which is the lensless read of the whole
+     * corpus this gate exists to stop — but it is quartz's arrangement rather
+     * than our decision, so the day it changes, a reconcile silently becomes
+     * the one unguarded read here.
+     *
+     * ONLY THE REFUSAL IS DRIVEN OVER THE WIRE, and that is a deliberate
+     * limit rather than half a test. The other half — that a DECLARING peer
+     * gets through — cannot be asserted this way, because a NEG-OPEN the gate
+     * admits is then handed to quartz's negentropy session, and a frame that
+     * is not a well-formed negentropy message never comes back: the message
+     * consumer's varint loop reads past the end of the buffer, where
+     * `ByteArrayReader.readByte` returns -1 forever and the continuation bit
+     * is never clear. It spins at 100% on the thread it is on — which in the
+     * server is a Netty I/O thread — and this test would hang the suite.
+     * (Reproduced deterministically against `negentropy-jvm` with the frames
+     * `6100`, `6101`, `61ff`, …: every truncated frame with a byte after the
+     * version byte loops forever. `61` alone terminates.) Building a real
+     * negentropy frame here would test quartz's reconciliation rather than
+     * this gate, so the refusal above is the whole claim: the ReqCmd hook is
+     * what a NEG-OPEN goes through, which is exactly what would break
+     * silently.
+     */
+    @Test
+    fun `a negentropy session declares a lens like any other read`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                session.receive("""["NEG-OPEN","g1",{"kinds":[1],"limit":10},"6100"]""")
+                val err = awaitMessage(out) { it.startsWith("""["NEG-ERR","g1",""") }
+                assertTrue("auth-required:" in err, "an undeclared reconcile is refused before it is parsed: $err")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * The other half, asserted where it can be: the policy itself, with no
+     * session behind it. A NEG-OPEN's filters reach [LensRequiredPolicy] as a
+     * [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd], so a
+     * peer that waives a lens is admitted and this relay stays mirrorable.
+     */
+    @Test
+    fun `a declared reconcile is admitted by the policy`() {
+        val policy = LensRequiredPolicy()
+        val declared = ReqCmd("g2", listOf(Filter(kinds = listOf(1), search = "include:spam")))
+        val bare = ReqCmd("g3", listOf(Filter(kinds = listOf(1))))
+        assertTrue(policy.accept(declared) is PolicyResult.Accepted, "a reconcile that waives a lens gets through")
+        assertTrue(policy.accept(bare) is PolicyResult.Rejected, "…and one that declares nothing does not")
+    }
 
     /** After AUTH the connection IS the lens, and nothing has to be declared. */
     @Test

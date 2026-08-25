@@ -430,10 +430,19 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         `-observer:…` an exclusion, and neither is a way
                         through). ALL filters or none: NIP-01 ORs them, so one
                         undeclared filter beside a declared one would serve the
-                        undeclared question in full. NOT gated: EVENT, AUTH,
-                        NIP-11 and NIP-77 NEG-OPEN — negentropy exchanges IDS,
-                        and the REQ that fetches what it named is gated like any
-                        other. NIP-11 `auth_required` stays FALSE and that is
+                        undeclared question in full. NOT gated: EVENT, AUTH and
+                        NIP-11. NIP-77 **IS** gated, and not by a second
+                        decision — quartz's `NegSessionRegistry.open` builds a
+                        ReqCmd from the NEG-OPEN's filters and runs it through
+                        this same hook, so a refusal arrives as `NEG-ERR …
+                        auth-required:` (measured on a real corpus; a NEG-OPEN
+                        carrying `include:spam` is admitted, and
+                        `NegentropyGatedTest` pins both halves). Right for a
+                        relay filled FROM public relays rather than serving
+                        mirrors — a reconcile hands over the corpus's whole id
+                        space — and the cost is that an anonymous PEER cannot
+                        mirror from here without declaring. NIP-11
+                        `auth_required` stays FALSE and that is
                         not an oversight: both ways past the gate are unsigned,
                         because scores here are public. `REQUIRE_READ_LENS=false`
                         is the older relay, for a deployment with no trust data
@@ -3795,6 +3804,35 @@ failure stays quiet, because silence costs a retry and being wrong costs a false
 statement about someone else's server.
 
 ## Traps that have cost real time
+
+- **A MALFORMED NIP-77 FRAME WEDGES THE WHOLE RELAY, and it is one frame from
+  any client.** `negentropy-jvm`'s `ByteArrayReader.readByte()` returns `-1` at
+  end of buffer instead of throwing, so `MessageConsumer.decodeVarInt`'s
+  continuation-bit loop — `while (b and 0x80 != 0)` over a byte that is now
+  always `0xFF` — never terminates. Reproduced deterministically against the
+  library: `61` (the version byte alone) terminates; `6100`, `6101`, `61ff`,
+  `610080`, `6100ff` and every other truncated frame spin forever.
+
+  In the server that loop runs on a NETTY I/O THREAD —
+  `NegSessionRegistry.open` → `NegentropyServerSession.processMessage`, off the
+  event loop's task queue — so one `["NEG-OPEN","x",{…},"6100"]` pegs an event
+  loop at 100% and every socket bound to it stops being answered. Measured
+  here on a real corpus: one frame, `cpu=1,388,930ms` on
+  `eventLoopGroupProxy-3-1` in the thread dump, and a FRESH connection asking a
+  perfectly valid REQ got no answer at all. Only a restart clears it. Read
+  gating does not help — `include:spam` is enough to reach the parser.
+
+  Two consequences worth knowing before you debug the symptom. **A relay that
+  answers `/stats.json` in 24ms while websocket reads hang is this**, not
+  Vespa, not load: check `jcmd <pid> Thread.print` for a RUNNABLE thread in
+  `MessageConsumer.decodeVarInt`. And **the operator switch is
+  `NEG_MAX_SESSIONS_PER_CONNECTION=0`** — measured: quartz refuses the
+  NEG-OPEN with `NOTICE too many concurrent NEG requests` BEFORE the payload is
+  parsed, and the relay keeps serving. The real fix is one line upstream
+  (`readByte` must throw, or `decodeVarInt` must check `available()`), and it
+  belongs there rather than in a guard here: any pre-validation short of
+  re-implementing the parser misses it — `6100` ends in a byte whose
+  continuation bit is CLEAR and still loops.
 
 - **A JitPack version is a commit hash. Hashes have no order.** This is the
   root of the trap below, and it is worth stating on its own because the

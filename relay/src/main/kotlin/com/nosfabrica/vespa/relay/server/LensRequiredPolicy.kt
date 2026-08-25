@@ -58,10 +58,29 @@ import com.vitorpamplona.quartz.utils.Hex
  * `observer:` both work on a socket that never signs anything, because trust
  * scores here are public and any client may rank through any lens. The
  * NIP-11 `limitation.auth_required` therefore stays FALSE — it would claim a
- * door that is not locked. And not a write gate: EVENT, AUTH and NIP-77
- * NEG-OPEN are untouched. Negentropy reconciles IDS, not content, and the
- * REQ that fetches what it named is gated like any other; gating it too would
- * break relay-to-relay mirroring for nothing.
+ * door that is not locked. And not a write gate: EVENT and AUTH are untouched.
+ *
+ * NIP-77 IS GATED, and not by a second decision here. Quartz's
+ * `NegSessionRegistry.open` builds a [ReqCmd] out of the NEG-OPEN's filters
+ * and runs it through this very hook, turning a rejection into `NEG-ERR
+ * <subid> <reason>` — so a NEG-OPEN declares a lens exactly as a REQ does, and
+ * `accept(ReqCmd)` cannot tell the two apart even if it wanted to. Measured
+ * against this relay with a real corpus: an undeclared NEG-OPEN comes back
+ * `NEG-ERR … auth-required:`, the same filter carrying `include:spam` is
+ * admitted. `NegentropyGatedTest` pins both, because the day quartz stops
+ * routing negentropy through this hook is the day a reconcile silently
+ * becomes the one unguarded read of the corpus's id space.
+ *
+ * That is the RIGHT default for a relay that is filled from public relays
+ * rather than serving mirrors — a reconcile hands over the shape of the whole
+ * corpus, ids and times, which is exactly the lensless read this gate exists
+ * to stop — but it has a cost worth naming: an anonymous PEER can no longer
+ * mirror from here. It must declare (`include:spam` in the NEG-OPEN filter
+ * works, and is what a vespa-relay peer would send), sign a NIP-42 AUTH, or
+ * be answered by an operator setting `REQUIRE_READ_LENS=false`. Our own
+ * router sends none of those, so it reads an auth-required upstream as a
+ * refusal (`VisitPool.refusedOutright`) — visible in the refusal sink rather
+ * than silently mirroring nothing.
  *
  * WHAT IT COSTS A CLIENT THAT COMPLIES: nothing but the token. Measured
  * against the staging deployment on 2026-08-22, one anonymous socket, three
