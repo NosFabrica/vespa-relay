@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.config.requireReadLensFromEnv
+import com.nosfabrica.vespa.relay.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
@@ -159,6 +160,18 @@ fun main() {
     val requireReadLens = requireReadLensFromEnv(env)
     if (!requireReadLens) {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
+    }
+
+    // Whether a search also answers with the records its hits point at. On by
+    // default, and announced only when it is OFF or capped at nothing, for the
+    // same reason as the line above: a client getting FEWER events than the
+    // feature promises has no way to tell that from a corpus that holds none
+    // of them, and this is the line that says which it was.
+    val searchExpansion = searchExpansionFromEnv(env)
+    if (!searchExpansion.enabled) {
+        System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
+    } else if (searchExpansion.maxPerEvent == 0 || searchExpansion.maxPerRequest == 0) {
+        System.err.println("relay: search reference expansion is on but capped at 0 — it will add nothing")
     }
 
     // The icon this relay serves on its own tab, as an absolute url a stranger
@@ -340,6 +353,7 @@ fun main() {
             kindDeny = denyKindsFromEnv(env),
             rejectFutureSeconds = rejectFutureSeconds,
             requireReadLens = requireReadLens,
+            searchExpansion = searchExpansion,
         )
 
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).

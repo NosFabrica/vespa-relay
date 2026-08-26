@@ -447,6 +447,50 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         because scores here are public. `REQUIRE_READ_LENS=false`
                         is the older relay, for a deployment with no trust data
                         to gate on
+    SearchReferenceExpansion.kt  THE SUBJECT TRAVELS WITH THE POINTER. A REQ
+                        that actually SEARCHES answers with the record each
+                        Trusted List / NIP-85 Trusted Assertion / NIP-32 label
+                        hit points at, spliced in right behind it at the hit's
+                        own rank. It has to be the relay that does this: those
+                        three families carry text ABOUT something else — a
+                        list's `title`, a card's `petname`, a label's value —
+                        and the record on the other end holds none of it, so no
+                        ranking will ever recall it from the same search
+                        ("podcaster" finds the Podcaster Trust List and cannot
+                        find one podcaster). ADMISSION IS `Filter.match` — every
+                        filter of the REQ except its `search`, which is exactly
+                        what that quartz method tests — so a `kinds:[1985]` REQ
+                        gets labels and nothing else, and that is the rule
+                        working rather than a bug: a kinds-constrained
+                        subscription is the client saying what it will accept.
+                        The LENS travels with it (`include:spam` / `observer:` /
+                        `filter:rank:` are carried onto the lookup, inside the
+                        read's own StoreQueryContext), or the expansion would be
+                        a hole in the trust gate one way and needlessly empty
+                        the other. THE GATE IS `isSearch`, free text and not
+                        merely "has a `search` field": under REQUIRE_READ_LENS
+                        every anonymous read carries `include:spam`, so the
+                        looser test would have put a mirror's paging and a
+                        NIP-77 catch-up behind all of this. It also costs
+                        nothing to skip them — a TERMLESS recall already matches
+                        the very predicate the admission rule uses, so there is
+                        nothing an expansion could add to one. Only the STORED
+                        page expands; a live event is delivered as-is, because
+                        the fanout runs on the ingest writer's coroutine.
+                        `SEARCH_EXPAND_REFERENCES=false` is the relay before it
+    SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
+                        the runtime class. A `p` member (30392, a label's target,
+                        a 30382's `d`) resolves to that author's KIND 0; an `e`
+                        or an `a` resolves to that event. The 5-suffixed pair
+                        (30385/30395) is NIP-73 EXTERNAL ids and expands to
+                        nothing, as do a label's `r` and `t`. A list's `p`/`a`
+                        tags on the OTHER kinds are metadata (`aboutPubKeys`,
+                        `aboutAddresses`) and are never followed. Kind dispatch
+                        is the point: the forced quartz pin means a jar without
+                        an `EventFactory` branch for 30392-30395 hands back a
+                        base Event, every `is` check goes false, and the whole
+                        feature stops with nothing throwing — the same silent
+                        no-op TrustedListSearchTest exists to catch
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
                         OptionalAuthPolicy binds exactly one url. It also

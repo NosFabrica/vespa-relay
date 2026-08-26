@@ -47,8 +47,12 @@ import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 
@@ -109,6 +113,10 @@ class NostrRelayServer(
     requireReadLens: Boolean = true,
     // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
+    // Whether a NIP-50 search also answers with the records its Trusted Lists,
+    // Trusted Assertions and NIP-32 labels point at, and how much of the feed
+    // that splice may be. See [SearchReferenceExpansion].
+    searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
     // Fires once per successful NIP-42 AUTH, with the connection's send —
     // TrustNotice::check is what the composition root puts here. Unset is a
     // relay that stays silent on login.
@@ -140,7 +148,7 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
+        ObserverBackend(LiveEventStore(store, ingest), store, onObserver, servingPressure, searchExpansion)
 
     override fun close() {
         closeConnections()
@@ -173,9 +181,27 @@ class NostrRelayServer(
  * policy decides what is ANSWERED, this decides what a read is answered
  * THROUGH, and an operator who turns the policy off still gets exactly the
  * behaviour documented above.
+ *
+ * A SEARCH ALSO CARRIES ITS SUBJECTS. When a REQ actually searches — free
+ * text, not just the lens tokens every anonymous read has to carry — the
+ * stored replay is passed through [SearchReferenceExpansion], which splices
+ * the record each Trusted List / Trusted Assertion / NIP-32 label points at
+ * into the feed right behind it. Everything else — a mirror's paging, a
+ * negentropy catch-up, a plain `#p` recall — takes the delegating path below
+ * untouched, which is why the gate is `isSearch` rather than "has a `search`
+ * field".
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
+    /**
+     * The store underneath [inner], for the expansion's subject lookup alone.
+     * It goes straight to the store rather than through `LiveEventStore.
+     * snapshotQuery` because that helper walks a multi-filter list ONE FILTER
+     * AT A TIME, while the store's own `query(List<Filter>)` recalls them
+     * concurrently under its fan-out bound and dedups across them — which is
+     * the whole reason the expansion batches its lookups.
+     */
+    private val store: IEventStore,
     private val onObserver: ((String) -> Unit)? = null,
     /**
      * Serving latency is sampled from the start of a read to its EOSE — the
@@ -187,13 +213,29 @@ internal class ObserverBackend(
      * sample there is.
      */
     private val pressure: ServingPressure? = null,
+    private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.query(ctx, filters, onEach, timedEose(onEose)) }
+    ) = ranked(ctx) {
+        val expansion = expansionFor(filters)
+        if (expansion == null) {
+            inner.query(ctx, filters, onEach, timedEose(onEose))
+        } else {
+            expanded(
+                expansion = expansion,
+                onEose = timedEose(onEose),
+                replay = { gate, eose -> inner.query(ctx, filters, gate::offer, eose) },
+                idOf = Event::id,
+                referencesOf = SearchReferences::of,
+                emit = onEach,
+                emitExtra = onEach,
+            )
+        }
+    }
 
     override suspend fun queryRaw(
         ctx: RequestContext,
@@ -201,7 +243,109 @@ internal class ObserverBackend(
         onEachStored: (RawEvent) -> Unit,
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose)) }
+    ) = ranked(ctx) {
+        val expansion = expansionFor(filters)
+        if (expansion == null) {
+            inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose))
+        } else {
+            expanded(
+                expansion = expansion,
+                onEose = timedEose(onEose),
+                replay = { gate, eose ->
+                    inner.queryRaw(
+                        ctx,
+                        filters,
+                        onEachStored = { gate.offer(RawRow.Stored(it)) },
+                        onEachLive = { event, body -> gate.offer(RawRow.Live(event, body)) },
+                        onEose = eose,
+                    )
+                },
+                idOf = RawRow::id,
+                referencesOf = RawRow::references,
+                emit = { row ->
+                    when (row) {
+                        is RawRow.Stored -> onEachStored(row.raw)
+                        is RawRow.Live -> onEachLive(row.event, row.body)
+                    }
+                },
+                // A spliced subject is a stored event by construction — the
+                // lookup that found it is a store recall — so it rides the
+                // same frame path as the rest of the replay.
+                emitExtra = { onEachStored(RawEvent.fromEvent(it)) },
+            )
+        }
+    }
+
+    /** The expansion this REQ gets, or null for the untouched delegating path. */
+    private fun expansionFor(filters: List<Filter>): SearchReferenceExpansion? {
+        if (!searchExpansion.enabled) return null
+        if (!SearchReferenceExpansion.isSearch(filters)) return null
+        return SearchReferenceExpansion(filters, searchExpansion) { store.query<Event>(it) }
+    }
+
+    /**
+     * The replay, held just long enough to look its subjects up.
+     *
+     * The shape is forced by the seam: a delivery callback is not suspending —
+     * it is called from inside the store's own loop, and after EOSE from the
+     * ingest queue's drain coroutine — so a store lookup cannot happen inside
+     * one. So the replay runs as a child coroutine into a [ReplayGate] while
+     * THIS coroutine, which can suspend, waits for its EOSE, resolves the
+     * batch's subjects in one round trip, and only then writes the page out.
+     * Buffering the replay to do it costs almost nothing here: the store
+     * materializes the whole result before it calls back at all
+     * (`NostrSemanticsStore.query(filters, onEach)` is `query(filters).
+     * forEach(onEach)`), so the gate holds references to rows that are already
+     * resident, not a second copy of the page.
+     *
+     * The loop drains until the gate is empty rather than once, because a live
+     * event accepted mid-replay lands in the same gate — it is part of the
+     * page the client sees before EOSE, exactly as it was before this — and
+     * gets its own subjects looked up with it. It cannot spin: [ReplayGate.
+     * take] returns null the first time it finds nothing, and only real ingest
+     * refills it.
+     *
+     * Rows are recorded as sent BEFORE their subjects are resolved so a row
+     * can never be spliced ahead of its own ranked position by a pointer that
+     * happens to sit earlier on the same page; [SearchReferenceExpansion]'s
+     * `sent` set then keeps the duplicate off the wire in the other direction.
+     */
+    private suspend fun <T> expanded(
+        expansion: SearchReferenceExpansion,
+        onEose: () -> Unit,
+        replay: suspend (ReplayGate<T>, () -> Unit) -> Unit,
+        idOf: (T) -> String,
+        referencesOf: (T) -> References,
+        emit: (T) -> Unit,
+        emitExtra: (Event) -> Unit,
+    ): Unit =
+        coroutineScope {
+            val gate = ReplayGate<T>()
+            val replayed = CompletableDeferred<Unit>()
+            // UNDISPATCHED for the same reason the session launches its REQ
+            // that way: the replay starts on this thread instead of paying a
+            // scheduler hop before the first row.
+            val job = launch(start = CoroutineStart.UNDISPATCHED) { replay(gate) { replayed.complete(Unit) } }
+            replayed.await()
+            while (true) {
+                val batch = gate.take() ?: break
+                val fresh = batch.map { !expansion.alreadySent(idOf(it)) }
+                batch.forEach { expansion.record(idOf(it)) }
+                val subjects = expansion.expand(batch, referencesOf)
+                batch.forEachIndexed { i, row ->
+                    if (fresh[i]) emit(row)
+                    subjects[i].forEach(emitExtra)
+                }
+            }
+            onEose()
+            // Past EOSE this is a live tail, and a lookup on the ingest
+            // queue's drain coroutine would stall the batch writer for every
+            // other subscriber — so live events pass straight through.
+            gate.open(emit)
+            // Parks here for the life of the subscription, exactly as the
+            // delegating path does: the child is inside `awaitCancellation`.
+            job.join()
+        }
 
     override suspend fun count(
         ctx: RequestContext,
@@ -256,5 +400,86 @@ internal class ObserverBackend(
         } finally {
             pressure.record((System.nanoTime() - startedNs) / 1_000_000)
         }
+    }
+}
+
+/**
+ * One subscription's deliveries, held while [SearchReferenceExpansion] looks
+ * the page's subjects up, then let through for good.
+ *
+ * Two coroutines write here — the replay and the [IngestQueue] drain that
+ * fans live events out — so every transition takes the lock, and the sink is
+ * called UNDER it. That is deliberate: it is the only thing keeping a live
+ * event that lands mid-[open] from overtaking the leftovers being drained
+ * beside it. The cost is a lock this subscription already effectively had, on
+ * a path that was already serialized per connection.
+ */
+internal class ReplayGate<T> {
+    private val lock = Any()
+
+    /** Non-null while the gate is holding; null once [open] has let it go. */
+    private var buffered: MutableList<T>? = ArrayList()
+
+    private var sink: ((T) -> Unit)? = null
+
+    /** Takes one delivery — buffering it, or passing it on once the gate is open. */
+    fun offer(row: T) {
+        synchronized(lock) {
+            val buf = buffered
+            if (buf != null) buf.add(row) else sink?.invoke(row)
+        }
+    }
+
+    /** What has arrived since the last call, or null when nothing has — the loop's exit. */
+    fun take(): List<T>? =
+        synchronized(lock) {
+            val buf = buffered ?: return null
+            if (buf.isEmpty()) return null
+            val batch = ArrayList(buf)
+            buf.clear()
+            batch
+        }
+
+    /** Stops holding: the leftovers go to [to], and so does everything after. */
+    fun open(to: (T) -> Unit) {
+        synchronized(lock) {
+            val buf = buffered ?: return
+            buffered = null
+            sink = to
+            buf.forEach(to)
+        }
+    }
+}
+
+/**
+ * A row of the zero-decode replay: a stored event still in storage form, or a
+ * live one that already carries its serialized wire body.
+ *
+ * [references] is where the raw path keeps its win. `kind` is a field on a
+ * [RawEvent], so the tags parse and the `EventFactory` dispatch that reading
+ * the pointers needs are paid ONLY by the handful of rows whose kind points at
+ * something; every other row reaches the wire spliced, exactly as before.
+ */
+internal sealed interface RawRow {
+    val id: String
+
+    val references: References
+
+    class Stored(
+        val raw: RawEvent,
+    ) : RawRow {
+        override val id: String get() = raw.id
+
+        override val references: References
+            get() = if (raw.kind in SearchReferences.KINDS) SearchReferences.of(raw.toEvent()) else References.NONE
+    }
+
+    class Live(
+        val event: Event,
+        val body: String,
+    ) : RawRow {
+        override val id: String get() = event.id
+
+        override val references: References get() = SearchReferences.of(event)
     }
 }

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.server.SearchExpansionLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -131,6 +132,36 @@ fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
         "false", "0", "no", "off" -> false
         else -> true
     }
+
+/**
+ * Whether a NIP-50 search also answers with the records its hits point at, and
+ * how much of the feed that splice may be:
+ * `SEARCH_EXPAND_REFERENCES` (off with `false`/`0`/`no`/`off`),
+ * `SEARCH_EXPAND_MAX_PER_EVENT` and `SEARCH_EXPAND_MAX_TOTAL`.
+ *
+ * On is the default, and the reason is the shape of the data rather than a
+ * preference: a Trusted List, a NIP-85 assertion and a NIP-32 label carry text
+ * that is ABOUT something else, so the record a reader actually wants holds
+ * none of the matched words and no ranking will ever recall it from the same
+ * search. See [com.nosfabrica.vespa.relay.server.SearchReferenceExpansion].
+ *
+ * A cap of 0 is honoured as 0 — an expansion that adds nothing — rather than
+ * quietly meaning "unbounded"; turning the feature off is what
+ * `SEARCH_EXPAND_REFERENCES=false` is for, and the two should not be spelled
+ * the same way. Negative and unparseable values keep the default.
+ */
+fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
+    val d = SearchExpansionLimits.Default
+    return SearchExpansionLimits(
+        enabled =
+            when (env["SEARCH_EXPAND_REFERENCES"]?.trim()?.lowercase()) {
+                "false", "0", "no", "off" -> false
+                else -> true
+            },
+        maxPerEvent = env.intOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent)?.coerceAtLeast(0) ?: d.maxPerEvent,
+        maxPerRequest = env.intOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest)?.coerceAtLeast(0) ?: d.maxPerRequest,
+    )
+}
 
 /**
  * Reject events dated more than `REJECT_FUTURE_SECONDS` in the future.

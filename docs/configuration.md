@@ -222,6 +222,83 @@ key nobody has scored is an empty answer rather than an error — the quieter
 failure of the two. Until the router learns to declare, peer a gated relay by
 turning the gate off there, or by giving the mirroring key a real lens.
 
+## Search: the subject travels with the pointer
+
+| var | meaning | default |
+|---|---|---|
+| `SEARCH_EXPAND_REFERENCES` | a NIP-50 search also answers with the records its hits point at. `false`/`0`/`no`/`off` turns it off | on |
+| `SEARCH_EXPAND_MAX_PER_EVENT` | how many subjects one hit may bring with it | `100` |
+| `SEARCH_EXPAND_MAX_TOTAL` | how many subjects a whole REQ may collect | `1000` |
+
+Three families of event carry text that is **about something else**: a Tapestry
+Trusted List (kinds 30392-30395) is found by its `title`, a NIP-85 Trusted
+Assertion (30382-30385) by its `petname` or `summary`, a NIP-32 label (1985) by
+its label value. The record on the other end of the pointer holds none of that
+text, so no amount of ranking will ever recall it from the same search —
+searching "podcaster" finds the *Podcaster Trust List* and cannot find a single
+podcaster.
+
+With this on, it finds both. Each hit of those kinds is followed immediately by
+the records it names, at the hit's own rank:
+
+* a **pubkey** — a list's `p` member, a label's `p` target, a 30382's `d` —
+  resolves to that author's **kind-0 profile**,
+* an **event id** (`e`, a 30393 member, a 30383's `d`) and an **a-coordinate**
+  (`a`, a 30394 member, a 30384's `d`) resolve to that event.
+
+A list's `p`/`a` tags on the *other* kinds are metadata (the observer it was
+computed under, the tag coordinate it covers), never membership, and are not
+followed. NIP-73 external identifiers (30385, 30395, `i` tags) name things that
+are not nostr events, and neither are a label's `r` (relay) and `t` (hashtag)
+targets; none of them expand.
+
+**A subject must still match the REQ.** It is added only when it matches at
+least one of the subscription's own filters with the `search` field taken out of
+the test — `ids`, `authors`, `kinds`, `#tags`, `since` and `until` all still
+apply, and the filters are ORed as NIP-01 says. The consequence is worth stating
+because it looks like a bug from the outside:
+
+```
+["REQ","s",{"kinds":[1985],"search":"medical"}]     -> labels, and nothing else
+["REQ","s",{"kinds":[0,1,1985],"search":"medical"}] -> labels, and what they label
+```
+
+A `kinds`-constrained subscription is the client saying what it is prepared to
+receive; a relay that answered it with other kinds would be lying about its own
+protocol. Clients that want the subjects ask for their kinds too.
+
+**The lens travels with it.** The subject lookup is answered through the same
+web-of-trust lens as the search that produced it: the REQ's `include:spam`,
+`observer:` and `filter:rank:` tokens are carried onto it (and a NIP-42
+connection's own pubkey applies as it always does). So the expansion is neither
+a hole in the trust gate on a ranked read nor needlessly empty on an
+`include:spam` one.
+
+**What it does not touch.** Only a REQ with real search *text* is expanded — a
+lens token is not text. A mirror's paging, a NIP-77 catch-up and a plain `#p`
+recall all carry `search:"include:spam"` under `REQUIRE_READ_LENS` and none of
+them pays for any of this. Nor does it change what a *termless* read returns: a
+termless recall already matches exactly the predicate the admission rule uses,
+so there is nothing an expansion could add to it. Only the stored page expands;
+an event that arrives live on an open subscription is delivered as-is, because
+the live fanout runs on the ingest writer's coroutine, where a lookup would
+stall the batch for every other subscriber.
+
+**`limit` bounds the hits, and `COUNT` counts them.** A `limit:10` search still
+gets ten hits; the subjects ride in over and above them, bounded by the two caps
+instead — a page of ten labels serving nine labels and one note would be the
+client's question answered less well, not more. For the same reason a NIP-45
+`COUNT` reports the hits alone and under-reports what the REQ will deliver:
+counting exactly would mean resolving the subjects of the whole match set rather
+than of one page, which is the work a COUNT exists to avoid.
+
+**The caps truncate the splice, never the page.** The hit itself is always
+served; a 2,000-member list past `SEARCH_EXPAND_MAX_PER_EVENT` simply brings
+fewer members, and the client still has every member tag and the `#p`/`#e`/`#a`
+recall that served them before this existed. A cap of `0` means zero — use
+`SEARCH_EXPAND_REFERENCES=false` to turn the feature off, and the boot log says
+so either way.
+
 ## Admin (NIP-86)
 
 | var | meaning | default |
