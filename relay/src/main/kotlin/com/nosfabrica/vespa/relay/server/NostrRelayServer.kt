@@ -292,13 +292,18 @@ internal class ObserverBackend(
         filters: List<Filter>,
     ): SearchReferenceExpansion? {
         if (!searchExpansion.enabled) return null
-        if (!SearchReferenceExpansion.isSearch(filters)) return null
+        // EVERYTHING is decided by the filters that actually search. A REQ with
+        // none of them — a mirror's paging, a NIP-77 catch-up, every plain
+        // reference read the web page makes — is left alone entirely, and so is
+        // the plain half of a REQ that mixes the two.
+        val searching = SearchReferenceExpansion.searching(filters)
+        if (searching.isEmpty()) return null
         // Cheapest gate of the three, and the one that keeps the ordinary
-        // note-or-profile search on the untouched path: a REQ whose `kinds`
-        // hold no pointer kind can never be answered with a pointer.
-        if (!SearchReferenceExpansion.couldPoint(filters)) return null
+        // note-or-profile search on the untouched path: a searching filter
+        // whose `kinds` hold no pointer kind can never produce a pointer.
+        if (!SearchReferenceExpansion.couldPoint(searching)) return null
         val observers = SearchReferenceExpansion.observersOf(filters, ctx.authenticatedUsers.firstOrNull())
-        return SearchReferenceExpansion(filters, observers, enrolment, searchExpansion) { store.query<Event>(it) }
+        return SearchReferenceExpansion(filters, searching, observers, enrolment, searchExpansion) { store.query<Event>(it) }
     }
 
     /**

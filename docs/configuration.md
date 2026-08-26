@@ -311,10 +311,22 @@ connection's own pubkey applies as it always does). So the expansion is neither
 a hole in the trust gate on a ranked read nor needlessly empty on an
 `include:spam` one.
 
+**Only a filter that actually searches drives any of this**, and "searches" means
+free text or a quoted phrase — **not** merely a non-empty `search` field. With
+`REQUIRE_READ_LENS` on, every anonymous read has to carry one: a mirror's paging,
+a NIP-77 catch-up and the dozen plain reference reads the web page makes all
+carry `include:spam`, so gating on non-empty would put exactly the traffic that
+must not pay for this behind it. A REQ carrying no searching filter takes the
+untouched path, and so does the plain half of a REQ that mixes the two — a hit
+that only a plain-recall filter could have produced is served exactly as it was
+before this feature existed. Leaving those alone costs nothing in *answers*
+either: a termless recall already matches the very predicate the admission rule
+uses, so there was never anything for an expansion to add to one.
+
 **What it does not touch.** A hit whose expansion is withheld — no observer, an
-unenrolled signer, a subject that fails the filter — is still served in full;
-nothing is ever dropped from the page by any of this. Only a REQ with real search
-*text* is expanded — a
+unenrolled signer, a subject that fails the filter, a filter that does not search
+— is still served in full; nothing is ever dropped from the page by any of this.
+Only a REQ with real search *text* is expanded — a
 lens token is not text. A mirror's paging, a NIP-77 catch-up and a plain `#p`
 recall all carry `search:"include:spam"` under `REQUIRE_READ_LENS` and none of
 them pays for any of this. Nor does it change what a *termless* read returns: a

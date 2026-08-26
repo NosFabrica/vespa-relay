@@ -572,17 +572,51 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
-    fun `a read with no search text costs no lookups at all`() =
+    fun `the plain half of a mixed REQ is answered as a plain recall`() =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
                 seed(session, out)
 
-                // A mirror's paging carries `include:spam` and no terms —
-                // every anonymous read here has to carry the lens token, so
-                // "has a search field" would have put this whole path behind
-                // the expansion. It is a recall, and it stays one.
+                // Two filters, ORed as NIP-01 says. The FIRST searches, and it
+                // admits pointer kinds — so the REQ as a whole is a search and
+                // reaches the expansion. But the list comes back from the
+                // SECOND, which is a plain recall of the curator's lists and
+                // asks no question the expansion has any business answering.
+                //
+                // The distinction is real rather than academic: Ada's profile
+                // WOULD be admitted here (it is a kind 0 by podcaster, which
+                // the first filter accepts), so without the per-row test it
+                // would be spliced in behind a list the search never found.
+                val page =
+                    page(
+                        session,
+                        out,
+                        "mixed",
+                        """{"kinds":[0,30392],"authors":["${podcaster.pubKey}"],"search":"podcaster $lens"},""" +
+                            """{"kinds":[30392],"authors":["${curator.pubKey}"],"search":"$lens"}""",
+                    )
+                assertEquals(listOf(list.id), page, "the plain half's rows must not expand")
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a lens token is not a search, and costs no lookups at all`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // `include:spam` makes `search` NON-EMPTY on every anonymous
+                // read — a mirror's paging, a NIP-77 catch-up, and the dozen
+                // plain reference reads `shared/lens.js` stamps. Gating on
+                // non-empty would put all of that behind the expansion; gating
+                // on TEXT leaves it exactly where it was. This filter is a
+                // recall carrying a lens token, and it stays a recall.
                 val before = index.searches.get()
                 val page =
                     page(

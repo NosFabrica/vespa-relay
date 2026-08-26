@@ -164,6 +164,13 @@ internal class SearchReferenceExpansion(
     /** The REQ's filters, verbatim: both the admission test and the lens come from these. */
     private val filters: List<Filter>,
     /**
+     * The subset of [filters] that actually searches ([searching]). A pointer
+     * expands only if it matches one of THESE — a subscription's other half is
+     * a plain recall, and a plain recall is answered exactly as it was before
+     * this feature existed.
+     */
+    private val searchingFilters: List<Filter>,
+    /**
      * Whose web of trust this read is answered through — the NIP-42 connection
      * or the filters' `observer:`, per filter, unioned. Empty is an anonymous
      * `include:spam` read, and it means no list or assertion expands.
@@ -233,6 +240,16 @@ internal class SearchReferenceExpansion(
             val refs =
                 when {
                     pointer == null -> References.NONE
+
+                    // THIS ROW IS THE SEARCH'S, or it is nobody's business to
+                    // expand. A subscription ORs its filters and the store
+                    // answers with one union, so a row cannot say which filter
+                    // fetched it — but it can say which filters would ACCEPT
+                    // it, and `Filter.match` is that question with the search
+                    // text left out. A list that only the plain-recall half of
+                    // a mixed REQ could have produced fails here and is served
+                    // exactly as it always was.
+                    searchingFilters.none { it.match(pointer) } -> References.NONE
 
                     // Resolved on the first list or assertion of the whole REQ
                     // and memoized after: a page of labels never asks for it.
@@ -512,8 +529,8 @@ internal class SearchReferenceExpansion(
         ): Set<HexKey> = filters.mapNotNullTo(LinkedHashSet()) { it.observerLens() ?: connection }
 
         /**
-         * Whether any hit of this REQ could be a pointer at all, decided from
-         * the filters alone and before a single row is read.
+         * Whether any hit of the SEARCHING filters could be a pointer at all,
+         * decided from the filters alone and before a single row is read.
          *
          * The buffered path is not free — `SearchExpansionCostBench` prices it
          * at a flat ~0.1ms per REQ on the in-memory index — and most searches
@@ -531,18 +548,28 @@ internal class SearchReferenceExpansion(
         fun couldPoint(filters: List<Filter>): Boolean = filters.any { filter -> filter.kinds?.any { it in SearchReferences.KINDS } != false }
 
         /**
-         * Whether this REQ is a SEARCH — free-text terms or a quoted phrase on
-         * any filter — and therefore something to expand.
+         * The filters of this REQ that actually SEARCH: free-text terms or a
+         * quoted phrase. Everything the expansion does is driven by these and
+         * by nothing else, so a REQ with none of them is left alone entirely.
          *
-         * Not "carries a `search` field": with `REQUIRE_READ_LENS` on, every
-         * anonymous read carries one, so that test would put the expansion in
-         * front of a mirror's whole-corpus paging and a NIP-77 catch-up, which
-         * nominate nothing and would pay the buffering for it. Exclusions
-         * alone (`-spam`) do not count either — the store reads those as plain
-         * recall minus the words, and so does this.
+         * NOT "carries a `search` field", and the difference is the whole gate.
+         * With `REQUIRE_READ_LENS` on, EVERY anonymous read has to carry one:
+         * the web page's own `shared/lens.js` stamps `include:spam` onto a
+         * dozen plain reference reads — names, faces, scores, reply parents —
+         * and a mirror's paging and a NIP-77 catch-up carry it too. Gating on
+         * non-empty would put every one of those behind the expansion, which is
+         * exactly the traffic that must not pay for it.
+         *
+         * Exclusions alone (`-spam`) do not count either: the store reads those
+         * as plain recall minus the words, and so does this.
+         *
+         * Leaving a termless read alone costs nothing in ANSWERS, only in work:
+         * a termless recall already matches the very predicate the admission
+         * rule uses, so there is nothing an expansion could add to one that the
+         * recall did not already return.
          */
-        fun isSearch(filters: List<Filter>): Boolean =
-            filters.any { filter ->
+        fun searching(filters: List<Filter>): List<Filter> =
+            filters.filter { filter ->
                 filter.search?.takeIf { it.isNotEmpty() }?.let { SearchQuery.parse(it).hasText } == true
             }
     }

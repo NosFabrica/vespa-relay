@@ -490,15 +490,23 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         deliberately UNGATED (`include:spam`): reading a
                         reader's own statement of whom they trust THROUGH the
                         trust it establishes is circular, and it fails in the
-                        direction that silently removes the feature. THE GATE IS
-                        `isSearch`, free text and not
-                        merely "has a `search` field": under REQUIRE_READ_LENS
-                        every anonymous read carries `include:spam`, so the
-                        looser test would have put a mirror's paging and a
-                        NIP-77 catch-up behind all of this. It also costs
-                        nothing to skip them — a TERMLESS recall already matches
-                        the very predicate the admission rule uses, so there is
-                        nothing an expansion could add to one. Only the STORED
+                        direction that silently removes the feature. EVERYTHING IS DRIVEN BY
+                        THE FILTERS THAT ACTUALLY SEARCH (`searching`), free
+                        text or a phrase and not merely "has a `search` field":
+                        under REQUIRE_READ_LENS every anonymous read carries
+                        `include:spam` — a mirror's paging, a NIP-77 catch-up
+                        and the dozen plain reference reads `shared/lens.js`
+                        stamps — so the looser test would put exactly the
+                        traffic that must not pay for this behind it. Per REQ
+                        and PER ROW both: a subscription ORs its filters and the
+                        store answers with one union, so a row cannot say which
+                        filter fetched it, but `Filter.match` says which would
+                        ACCEPT it — and a hit only the plain half of a mixed REQ
+                        could have produced is served exactly as it always was.
+                        Skipping them costs nothing in ANSWERS either — a
+                        TERMLESS recall already matches the very predicate the
+                        admission rule uses, so there is nothing an expansion
+                        could add to one. Only the STORED
                         page expands; a live event is delivered as-is, because
                         the fanout runs on the ingest writer's coroutine.
                         `SEARCH_EXPAND_REFERENCES=false` is the relay before it.
