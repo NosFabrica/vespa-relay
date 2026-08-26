@@ -26,8 +26,10 @@ engine, because it is one — the store is
   something else — a list's title, a card's petname, a label's value — so the
   record on the other end holds none of the words searched for and no ranking
   would ever surface it: "podcaster" finds the *Podcaster Trust List* and, now,
-  the podcasters in it. Subjects still have to match the rest of the
-  subscription's filter, so ask for their kinds too.
+  the podcasters in it. A list or an assertion unpacks only for a reader whose
+  own kind-10040 named its signer, so it is never a stranger's computation
+  arriving unasked; subjects still have to match the rest of the subscription's
+  filter, so ask for their kinds too.
 - **A relay that fills itself.** The **router** — a sibling process sharing the
   same store — mirrors events from upstream relays: strfry-style `streams` of
   live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
@@ -144,11 +146,22 @@ the hit's own position:
 ```
 
 A `p` member (and a label's `p` target, and a 30382's subject) resolves to that
-author's kind-0 profile; an `e` or an `a` resolves to that event. A subject is
-added only if it matches the subscription's own filter with the `search` field
-left out of the test — so `{"kinds":[1985],…}` gets labels and nothing else, and
-a client that wants the subjects names their kinds as well. Operators can tune
-or disable it: [`SEARCH_EXPAND_REFERENCES`](docs/configuration.md#search-the-subject-travels-with-the-pointer).
+author's kind-0 profile; an `e` or an `a` resolves to that event. Two rules bound
+it:
+
+- **A subject must match the subscription's own filter** with the `search` field
+  left out of the test — so `{"kinds":[1985],…}` gets labels and nothing else,
+  and a client that wants the subjects names their kinds as well.
+- **A list or an assertion unpacks only for the reader who enrolled its signer.**
+  Those two families are a trust service's computed output, and NIP-85 says how a
+  reader picks services: a kind-10040 naming them. So the hit has to be signed by
+  one of *this read's observer's* services, or by the observer themselves — an
+  anonymous `include:spam` read has no observer and gets no list expansion at
+  all. Labels are not gated this way; anyone may label anything, and the label
+  still had to survive the trust-ranked search to be a hit.
+
+Operators can tune or disable the whole thing:
+[`SEARCH_EXPAND_REFERENCES`](docs/configuration.md#search-the-subject-travels-with-the-pointer).
 
 ### Every read says whose eyes it is read through
 

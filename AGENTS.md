@@ -467,7 +467,31 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         `filter:rank:` are carried onto the lookup, inside the
                         read's own StoreQueryContext), or the expansion would be
                         a hole in the trust gate one way and needlessly empty
-                        the other. THE GATE IS `isSearch`, free text and not
+                        the other. A LIST OR AN ASSERTION UNPACKS ONLY FOR THE
+                        READER WHO ENROLLED ITS SIGNER: those two families are a
+                        trust service's computed output and NIP-85 says how a
+                        reader picks services — a kind-10040 naming them — so
+                        the hit must be signed by one of THIS read's observer's
+                        services or by the observer themselves. Otherwise a
+                        stranger's computation arrives in the feed as if it had
+                        been asked for. EVERY service the 10040 names, not just
+                        `30382:rank` (TrustNotice's question is ranking; this
+                        one is not — a 30393 list comes from a `30383:`
+                        service). The observer is the filter's `observer:` or
+                        the connection's NIP-42 pubkey, per filter, the store's
+                        own precedence — read through `Filter.observerLens`, the
+                        SAME acceptance test LensRequiredPolicy gates on, so a
+                        REQ cannot be understood one way by the gate and another
+                        here. An anonymous `include:spam` read therefore expands
+                        no list at all: nobody's services to check. Labels are
+                        deliberately NOT gated — anyone may label anything, and
+                        a label had to survive the trust-ranked search to be a
+                        hit. The 10040 recall is the one lookup here that is
+                        deliberately UNGATED (`include:spam`): reading a
+                        reader's own statement of whom they trust THROUGH the
+                        trust it establishes is circular, and it fails in the
+                        direction that silently removes the feature. THE GATE IS
+                        `isSearch`, free text and not
                         merely "has a `search` field": under REQUIRE_READ_LENS
                         every anonymous read carries `include:spam`, so the
                         looser test would have put a mirror's paging and a

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix.AUTH_REQUIRED
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.Command
@@ -162,15 +163,31 @@ class LensRequiredPolicy : PassThroughPolicy() {
 /**
  * Does this filter say whose eyes it is read through?
  *
- * `observer:` must be a USABLE lens — 64 hex, the store's own acceptance test
- * ([com.nosfabrica.vespa.eventstore.mapping] drops anything else) — or
- * `observer:npub1…` would pass the gate here and rank nothing there, which is
- * the silent no-lens read this policy exists to stop.
+ * `observer:` must be a USABLE lens — see [observerLens], which is where that
+ * acceptance test lives for this whole module.
  */
 internal fun Filter.declaresLens(): Boolean {
     val parsed = SearchQuery.parse(search ?: return false)
-    return parsed.includeSpam || parsed.extension(OBSERVER)?.lowercase()?.let(Hex::isHex64) == true
+    return parsed.includeSpam || observerLens() != null
 }
+
+/**
+ * The pubkey this filter names as its ranking lens, or null when it names
+ * none — the ONE reading of the `observer:` token in this module, shared with
+ * [SearchReferenceExpansion.observersOf] so a REQ cannot be understood one way
+ * by the gate and another by the expansion.
+ *
+ * It must be a USABLE lens — 64 hex, the store's own acceptance test
+ * ([com.nosfabrica.vespa.eventstore.mapping] drops anything else) — or
+ * `observer:npub1…` would pass the gate here and rank nothing there, which is
+ * the silent no-lens read [LensRequiredPolicy] exists to stop.
+ */
+internal fun Filter.observerLens(): HexKey? =
+    search
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { SearchQuery.parse(it).extension(OBSERVER) }
+        ?.lowercase()
+        ?.takeIf { it.length == 64 && Hex.isHex64(it) }
 
 /** The NIP-50 extension naming the pubkey whose web of trust ranks a read. */
 private const val OBSERVER = "observer"

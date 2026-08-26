@@ -252,6 +252,34 @@ followed. NIP-73 external identifiers (30385, 30395, `i` tags) name things that
 are not nostr events, and neither are a label's `r` (relay) and `t` (hashtag)
 targets; none of them expand.
 
+**A list or an assertion expands only for the reader who enrolled it.** The two
+provider-published families are a trust service's computed *output*, and NIP-85
+says how a reader chooses services: they publish a kind-10040 naming them. So a
+Trusted List or a Trusted Assertion is unpacked only when it is signed by one of
+**this read's observer's** services, or by the observer themselves. A list from a
+service nobody named is a stranger's computation, and splicing its members into a
+feed would put it in front of a reader as if they had asked for it.
+
+The observer is the connection's NIP-42 pubkey, or the filter's own
+`observer:<64-hex>` where it names one (the filter wins, exactly as it does for
+ranking). *Every* service its 10040 names counts, not only `30382:rank` — a list
+of events is published by a `30383:` service and a list of addresses by a
+`30384:` one. The private half of a 10040 is NIP-44 encrypted and names nothing a
+relay can read, the same limit the store's own provider map has.
+
+The consequence, and it is the intended one: **an anonymous `include:spam` read
+gets no list or assertion expansion at all** — there is nobody whose services to
+check. Its hits are served as always; only the splice is withheld. NIP-32 labels
+are *not* gated this way: a label is a first-class public annotation anyone may
+publish, distributed moderation is the NIP's stated purpose, and it had to
+survive this relay's trust-ranked search to be a hit in the first place.
+
+The 10040 lookup is the one recall here that is deliberately **ungated**
+(`include:spam`): reading a reader's own statement of whom they trust *through*
+the trust that statement establishes is circular, and it fails in the worst
+direction — a reader whose provider has not scored the reader personally would
+silently lose the whole feature.
+
 **A subject must still match the REQ.** It is added only when it matches at
 least one of the subscription's own filters with the `search` field taken out of
 the test — `ids`, `authors`, `kinds`, `#tags`, `since` and `until` all still
@@ -274,7 +302,10 @@ connection's own pubkey applies as it always does). So the expansion is neither
 a hole in the trust gate on a ranked read nor needlessly empty on an
 `include:spam` one.
 
-**What it does not touch.** Only a REQ with real search *text* is expanded — a
+**What it does not touch.** A hit whose expansion is withheld — no observer, an
+unenrolled signer, a subject that fails the filter — is still served in full;
+nothing is ever dropped from the page by any of this. Only a REQ with real search
+*text* is expanded — a
 lens token is not text. A mirror's paging, a NIP-77 catch-up and a plain `#p`
 recall all carry `search:"include:spam"` under `REQUIRE_READ_LENS` and none of
 them pays for any of this. Nor does it change what a *termless* read returns: a

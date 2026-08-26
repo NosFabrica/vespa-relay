@@ -186,7 +186,9 @@ class NostrRelayServer(
  * text, not just the lens tokens every anonymous read has to carry — the
  * stored replay is passed through [SearchReferenceExpansion], which splices
  * the record each Trusted List / Trusted Assertion / NIP-32 label points at
- * into the feed right behind it. Everything else — a mirror's paging, a
+ * into the feed right behind it — the two provider-published families only for
+ * a reader whose own kind-10040 named the signer, which is why this is also
+ * where the read's observer is resolved. Everything else — a mirror's paging, a
  * negentropy catch-up, a plain `#p` recall — takes the delegating path below
  * untouched, which is why the gate is `isSearch` rather than "has a `search`
  * field".
@@ -221,7 +223,7 @@ internal class ObserverBackend(
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
     ) = ranked(ctx) {
-        val expansion = expansionFor(filters)
+        val expansion = expansionFor(ctx, filters)
         if (expansion == null) {
             inner.query(ctx, filters, onEach, timedEose(onEose))
         } else {
@@ -230,7 +232,7 @@ internal class ObserverBackend(
                 onEose = timedEose(onEose),
                 replay = { gate, eose -> inner.query(ctx, filters, gate::offer, eose) },
                 idOf = Event::id,
-                referencesOf = SearchReferences::of,
+                pointerOf = { it },
                 emit = onEach,
                 emitExtra = onEach,
             )
@@ -244,7 +246,7 @@ internal class ObserverBackend(
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
     ) = ranked(ctx) {
-        val expansion = expansionFor(filters)
+        val expansion = expansionFor(ctx, filters)
         if (expansion == null) {
             inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose))
         } else {
@@ -261,7 +263,7 @@ internal class ObserverBackend(
                     )
                 },
                 idOf = RawRow::id,
-                referencesOf = RawRow::references,
+                pointerOf = RawRow::pointer,
                 emit = { row ->
                     when (row) {
                         is RawRow.Stored -> onEachStored(row.raw)
@@ -277,10 +279,14 @@ internal class ObserverBackend(
     }
 
     /** The expansion this REQ gets, or null for the untouched delegating path. */
-    private fun expansionFor(filters: List<Filter>): SearchReferenceExpansion? {
+    private fun expansionFor(
+        ctx: RequestContext,
+        filters: List<Filter>,
+    ): SearchReferenceExpansion? {
         if (!searchExpansion.enabled) return null
         if (!SearchReferenceExpansion.isSearch(filters)) return null
-        return SearchReferenceExpansion(filters, searchExpansion) { store.query<Event>(it) }
+        val observers = SearchReferenceExpansion.observersOf(filters, ctx.authenticatedUsers.firstOrNull())
+        return SearchReferenceExpansion(filters, observers, searchExpansion) { store.query<Event>(it) }
     }
 
     /**
@@ -315,7 +321,7 @@ internal class ObserverBackend(
         onEose: () -> Unit,
         replay: suspend (ReplayGate<T>, () -> Unit) -> Unit,
         idOf: (T) -> String,
-        referencesOf: (T) -> References,
+        pointerOf: (T) -> Event?,
         emit: (T) -> Unit,
         emitExtra: (Event) -> Unit,
     ): Unit =
@@ -331,7 +337,7 @@ internal class ObserverBackend(
                 val batch = gate.take() ?: break
                 val fresh = batch.map { !expansion.alreadySent(idOf(it)) }
                 batch.forEach { expansion.record(idOf(it)) }
-                val subjects = expansion.expand(batch, referencesOf)
+                val subjects = expansion.expand(batch, pointerOf)
                 batch.forEachIndexed { i, row ->
                     if (fresh[i]) emit(row)
                     subjects[i].forEach(emitExtra)
@@ -455,23 +461,23 @@ internal class ReplayGate<T> {
  * A row of the zero-decode replay: a stored event still in storage form, or a
  * live one that already carries its serialized wire body.
  *
- * [references] is where the raw path keeps its win. `kind` is a field on a
- * [RawEvent], so the tags parse and the `EventFactory` dispatch that reading
- * the pointers needs are paid ONLY by the handful of rows whose kind points at
- * something; every other row reaches the wire spliced, exactly as before.
+ * [pointer] is where the raw path keeps its win. `kind` is a field on a
+ * [RawEvent], so the tags parse and the `EventFactory` dispatch the expansion
+ * needs are paid ONLY by the handful of rows whose kind points at something;
+ * every other row reaches the wire spliced, exactly as before, and answers
+ * null here.
  */
 internal sealed interface RawRow {
     val id: String
 
-    val references: References
+    val pointer: Event?
 
     class Stored(
         val raw: RawEvent,
     ) : RawRow {
         override val id: String get() = raw.id
 
-        override val references: References
-            get() = if (raw.kind in SearchReferences.KINDS) SearchReferences.of(raw.toEvent()) else References.NONE
+        override val pointer: Event? get() = if (raw.kind in SearchReferences.KINDS) raw.toEvent() else null
     }
 
     class Live(
@@ -480,6 +486,6 @@ internal sealed interface RawRow {
     ) : RawRow {
         override val id: String get() = event.id
 
-        override val references: References get() = SearchReferences.of(event)
+        override val pointer: Event get() = event
     }
 }

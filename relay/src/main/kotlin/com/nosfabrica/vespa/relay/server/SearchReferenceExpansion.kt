@@ -27,6 +27,9 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.serviceProviders
+import kotlinx.coroutines.CancellationException
 
 /**
  * How much of a subscription's feed the expansion may be, and how much store
@@ -98,6 +101,28 @@ data class SearchExpansionLimits(
  * client that wants the subjects asks for their kinds too —
  * `{"kinds":[0,1,1985],"search":"nsfw"}`.
  *
+ * ## A list or an assertion expands only for the reader who ENROLLED it
+ *
+ * A Trusted List and a Trusted Assertion are a trust provider's computed
+ * output, and NIP-85 says how a reader chooses providers: they publish a
+ * kind-10040 naming them. So those two families expand only when the hit is
+ * signed by one of THIS read's observer's services, or by the observer
+ * themselves. A list from a service nobody named is a stranger's computation,
+ * and splicing its members into a feed would put it in front of a reader as
+ * if they had asked for it.
+ *
+ * The consequence, and it is the intended one: a read with NO observer — an
+ * anonymous `include:spam`, which is a legitimate ask here — gets no list or
+ * assertion expansion at all, because there is nobody whose services to check.
+ * Its hits are still served; only the splice is withheld. NIP-32 labels are
+ * not gated this way (see [SearchReferences.DECLARATIONS] for why).
+ *
+ * The 10040 lookup is the one recall here that is deliberately UNGATED
+ * (`include:spam`). Reading a reader's own statement of whom they trust
+ * through the trust that statement establishes is circular, and it fails in
+ * the worst direction: a reader whose provider has not scored the reader
+ * personally would silently lose the whole feature.
+ *
  * ## The lens travels with it
  *
  * The subject lookup is answered through the SAME lens as the search that
@@ -138,6 +163,12 @@ data class SearchExpansionLimits(
 internal class SearchReferenceExpansion(
     /** The REQ's filters, verbatim: both the admission test and the lens come from these. */
     private val filters: List<Filter>,
+    /**
+     * Whose web of trust this read is answered through — the NIP-42 connection
+     * or the filters' `observer:`, per filter, unioned. Empty is an anonymous
+     * `include:spam` read, and it means no list or assertion expands.
+     */
+    private val observers: Set<HexKey>,
     private val limits: SearchExpansionLimits,
     /**
      * The store recall the lookups run through — [ObserverBackend] hands in
@@ -160,11 +191,16 @@ internal class SearchReferenceExpansion(
 
     private var budget = limits.maxPerRequest
 
+    /** Memoized [enrolledSigners]; null until the first list or assertion on the page asks. */
+    private var enrolled: Set<HexKey>? = null
+
     /**
      * The subjects of each row in [rows], index-aligned with it and already
-     * admitted by [Filter.match]. [referencesOf] is the caller's reader —
-     * the raw path uses it to keep the zero-decode splice for every row whose
-     * kind nominates nothing.
+     * admitted by [Filter.match].
+     *
+     * [pointerOf] is the caller's reader: it hands back the row as an [Event]
+     * only when the row's KIND nominates something, which is how the
+     * zero-decode path keeps its splice for every other row.
      *
      * ONE ROUND TRIP PER BATCH, not one per row: every row's pointers are
      * gathered first and recalled together, so a page of 500 labels costs the
@@ -173,15 +209,29 @@ internal class SearchReferenceExpansion(
      */
     suspend fun <T> expand(
         rows: List<T>,
-        referencesOf: (T) -> References,
+        pointerOf: (T) -> Event?,
     ): List<List<Event>> {
         val nothing = rows.map { emptyList<Event>() }
         if (budget <= 0) return nothing
 
+        val pointers = rows.map { row -> pointerOf(row)?.takeIf { it.kind in SearchReferences.KINDS } }
+        if (pointers.all { it == null }) return nothing
+
+        // Resolved once per REQ, and only when a list or an assertion is
+        // actually on the page — a page of labels never asks for it.
+        val enrolled = if (pointers.any { it != null && SearchReferences.isDeclaration(it.kind) }) enrolledSigners() else emptySet()
+
         // Planned BEFORE anything is looked up: the caps bound the store work,
         // so a 2,000-member list must be cut here rather than after the
         // lookup that read all 2,000 of them.
-        val planned = rows.map { plan(referencesOf(it)) }
+        val planned =
+            pointers.map { pointer ->
+                when {
+                    pointer == null -> References.NONE
+                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolled -> References.NONE
+                    else -> plan(SearchReferences.of(pointer))
+                }
+            }
         if (planned.all(References::isEmpty)) return nothing
 
         val found = lookUp(planned)
@@ -305,7 +355,7 @@ internal class SearchReferenceExpansion(
         val byId = HashMap<HexKey, Event>()
         val profiles = HashMap<HexKey, Event>()
         val byAddress = HashMap<String, Event>()
-        for (candidate in recall(lookups.take(MAX_LOOKUPS))) {
+        for (candidate in recallOrEmpty(lookups.take(MAX_LOOKUPS))) {
             // The admission rule, and the only place it is applied: every
             // filter of the REQ except its search.
             if (filters.none { it.match(candidate) }) continue
@@ -337,6 +387,66 @@ internal class SearchReferenceExpansion(
      */
     private fun lenses(): List<String?> = filters.map { lensOf(it.search) }.distinct()
 
+    /**
+     * The pubkeys whose Trusted Lists and Trusted Assertions this read has
+     * asked for: each observer, plus every service their own kind-10040 names.
+     * Resolved at most once per REQ and memoized, because a page of 500 lists
+     * asks the same question 500 times.
+     *
+     * EVERY service, not just `30382:rank`. A Trusted List of events is
+     * published by a `30383:` service and a list of addresses by a `30384:`
+     * one, so filtering to the ranking service — which is the right question
+     * for [TrustNotice], where the subject IS ranking — would silently drop
+     * three quarters of the family here.
+     *
+     * The private half of a 10040 (NIP-44 in `content`) cannot be read by a
+     * relay and so names nothing: a reader whose providers are all private
+     * gets no list expansion, the same answer the store's own provider map
+     * gives for the same reason.
+     */
+    private suspend fun enrolledSigners(): Set<HexKey> {
+        enrolled?.let { return it }
+        if (observers.isEmpty()) return emptySet<HexKey>().also { enrolled = it }
+
+        // include:spam ON PURPOSE — see the class KDoc: reading a reader's own
+        // statement of whom they trust through the trust it establishes is
+        // circular, and it fails in the direction that silently removes the
+        // feature.
+        val lists =
+            recallOrEmpty(
+                listOf(
+                    Filter(
+                        kinds = listOf(TrustProviderListEvent.KIND),
+                        authors = observers.toList(),
+                        limit = observers.size,
+                        search = INCLUDE_SPAM,
+                    ),
+                ),
+            )
+        val signers = HashSet(observers)
+        lists.forEach { list -> list.tags.serviceProviders().forEach { signers.add(it.pubkey) } }
+        return signers.also { enrolled = it }
+    }
+
+    /**
+     * A recall whose failure costs the splice and nothing else. An expansion
+     * that throws would take down a REQ that had already answered — the hits
+     * are resolved and waiting — so a store that cannot answer the second
+     * question degrades to the relay without this feature rather than to a
+     * `CLOSED`.
+     */
+    private suspend fun recallOrEmpty(lookups: List<Filter>): List<Event> =
+        try {
+            recall(lookups)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // One line: a store that has stopped answering produces one of
+            // these per search, and the search itself still went out.
+            println("search-expansion: subject lookup failed, serving hits only: ${e.message}")
+            emptyList()
+        }
+
     private fun <T> Collection<T>.inChunks(block: (List<T>) -> Unit) {
         if (isEmpty()) return
         toList().chunked(LOOKUP_CHUNK).forEach(block)
@@ -344,6 +454,9 @@ internal class SearchReferenceExpansion(
 
     companion object {
         private val METADATA = listOf(MetadataEvent.KIND)
+
+        /** The NIP-50 waiver that takes the trust floor off a recall entirely. */
+        private const val INCLUDE_SPAM = "include:spam"
 
         private val EMPTY = Found(emptyMap(), emptyMap(), emptyMap())
 
@@ -385,6 +498,27 @@ internal class SearchReferenceExpansion(
         }
 
         private val LENS_KEYS = setOf("include", "observer", "filter")
+
+        /**
+         * Whose eyes this read is answered through, per filter and unioned.
+         *
+         * The store's rule, mirrored here so the gate cannot come to a
+         * different reading of a REQ than the query planner does: a filter's
+         * own `observer:` WINS over the connection's NIP-42 identity
+         * (`NostrSemanticsStore.toExpiryQuery` is `it.observer ?: observer`),
+         * and the connection's applies to every filter that names none. A
+         * signed-in reader who deliberately reads through somebody else's lens
+         * therefore gets that somebody's providers on that filter, not their
+         * own — which is the whole point of asking through another lens.
+         *
+         * The token is read by [observerLens], the same acceptance test
+         * [LensRequiredPolicy] gates on, so a REQ cannot be understood one way
+         * by the gate and another way here.
+         */
+        fun observersOf(
+            filters: List<Filter>,
+            connection: HexKey?,
+        ): Set<HexKey> = filters.mapNotNullTo(LinkedHashSet()) { it.observerLens() ?: connection }
 
         /**
          * Whether this REQ is a SEARCH — free-text terms or a quoted phrase on

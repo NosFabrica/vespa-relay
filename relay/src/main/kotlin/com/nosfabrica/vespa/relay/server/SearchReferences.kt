@@ -89,21 +89,46 @@ import com.vitorpamplona.quartz.utils.Hex
  */
 internal object SearchReferences {
     /**
+     * The Trusted List and Trusted Assertion families — the kinds that only
+     * expand for a reader who NAMED their signer.
+     *
+     * These are a trust provider's computed OUTPUT, and a NIP-85 reader
+     * chooses their providers by publishing a kind-10040 that names them. A
+     * list from a service nobody named is a stranger's computation, and
+     * splicing its members into a feed would put it in front of a reader as
+     * if they had asked for it — which is the one thing a web-of-trust relay
+     * must not do on their behalf. [SearchReferenceExpansion] resolves the
+     * reader's own 10040 and admits only those signers, plus the reader.
+     *
+     * A NIP-32 label (1985) is deliberately NOT in here. A label is a
+     * first-class public annotation that anyone may publish about anything —
+     * distributed moderation is the NIP's stated purpose — and it is not a
+     * provider's machinery that only means something to the reader who
+     * enrolled it. It also had to survive this relay's trust-ranked search to
+     * be a hit at all, which is the gate that already applies to it.
+     */
+    val DECLARATIONS: Set<Kind> =
+        setOf(
+            ContactCardEvent.KIND,
+            EventAssertionEvent.KIND,
+            AddressableAssertionEvent.KIND,
+            ExternalIdAssertionEvent.KIND,
+            UserTrustedListEvent.KIND,
+            EventTrustedListEvent.KIND,
+            AddressableTrustedListEvent.KIND,
+            ExternalIdTrustedListEvent.KIND,
+        )
+
+    /** Whether [kind] is a Trusted List or Trusted Assertion, and so gated on its signer. */
+    fun isDeclaration(kind: Kind) = kind in DECLARATIONS
+
+    /**
      * The kinds [of] can extract a subject from. This is the whole gate on the
      * zero-decode read path: a [com.vitorpamplona.quartz.nip01Core.store.RawEvent]
      * carries its kind as a field, so a replay row is only materialized —
      * tags parse, `EventFactory` dispatch — when its kind is in here.
      */
-    val KINDS: Set<Kind> =
-        setOf(
-            LabelEvent.KIND,
-            ContactCardEvent.KIND,
-            EventAssertionEvent.KIND,
-            AddressableAssertionEvent.KIND,
-            UserTrustedListEvent.KIND,
-            EventTrustedListEvent.KIND,
-            AddressableTrustedListEvent.KIND,
-        )
+    val KINDS: Set<Kind> = DECLARATIONS + LabelEvent.KIND
 
     /** The subjects of [event], or [References.NONE] for a kind that nominates nothing. */
     fun of(event: Event): References =
