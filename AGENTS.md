@@ -501,7 +501,25 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         nothing an expansion could add to one. Only the STORED
                         page expands; a live event is delivered as-is, because
                         the fanout runs on the ingest writer's coroutine.
-                        `SEARCH_EXPAND_REFERENCES=false` is the relay before it
+                        `SEARCH_EXPAND_REFERENCES=false` is the relay before it.
+                        WHAT IT COSTS, measured (`SearchExpansionCostBench`,
+                        2026-08-26, real Vespa in Docker, medians over 201
+                        rounds): a recall +0.8%, a search whose `kinds` hold no
+                        pointer kind -3.1% (it takes the untouched path —
+                        `couldPoint` decides that off the filters, before a row
+                        is read), a search that COULD point and does not +0.3%,
+                        and a page that really does expand +74% at 50 hits /
+                        +24% at 500 — its two extra round trips, ~12ms, and
+                        nothing else. The bench found two regressions the
+                        correctness tests could not see: awaiting the replay
+                        from a child coroutine put back the scheduler hop
+                        quartz's UNDISPATCHED REQ exists to avoid (~90us on
+                        EVERY search — the flush is launched undispatched from
+                        the EOSE callback now, and never suspends when there is
+                        nothing to look up), and reading every row's pointers
+                        before spending the budget paid 450 tags-parses on a
+                        500-list page for rows it had already decided to take
+                        nothing from
     SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
                         the runtime class. A `p` member (30392, a label's target,
                         a 30382's `d`) resolves to that author's KIND 0; an `e`

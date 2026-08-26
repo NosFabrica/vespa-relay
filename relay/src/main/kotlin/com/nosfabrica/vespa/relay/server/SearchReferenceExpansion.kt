@@ -214,25 +214,30 @@ internal class SearchReferenceExpansion(
         val nothing = rows.map { emptyList<Event>() }
         if (budget <= 0) return nothing
 
-        val pointers = rows.map { row -> pointerOf(row)?.takeIf { it.kind in SearchReferences.KINDS } }
-        if (pointers.all { it == null }) return nothing
-
-        // Resolved once per REQ, and only when a list or an assertion is
-        // actually on the page — a page of labels never asks for it.
-        val enrolled = if (pointers.any { it != null && SearchReferences.isDeclaration(it.kind) }) enrolledSigners() else emptySet()
-
-        // Planned BEFORE anything is looked up: the caps bound the store work,
-        // so a 2,000-member list must be cut here rather than after the
-        // lookup that read all 2,000 of them.
-        val planned =
-            pointers.map { pointer ->
+        // ONE PASS over the batch, and it stops materializing the moment the
+        // request budget is spent. Reading a row's pointers costs a tags parse
+        // and an `EventFactory` dispatch on the zero-decode path, and a page of
+        // 500 lists exhausts the default 1,000-subject budget on the first
+        // fifty of them — so a separate read-them-all-then-plan pass would pay
+        // 450 parses for rows it had already decided to take nothing from.
+        var any = false
+        val planned = ArrayList<References>(rows.size)
+        for (row in rows) {
+            val pointer = if (budget > 0) pointerOf(row)?.takeIf { it.kind in SearchReferences.KINDS } else null
+            val refs =
                 when {
                     pointer == null -> References.NONE
-                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolled -> References.NONE
+
+                    // Resolved on the first list or assertion of the whole REQ
+                    // and memoized after: a page of labels never asks for it.
+                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolledSigners() -> References.NONE
+
                     else -> plan(SearchReferences.of(pointer))
                 }
-            }
-        if (planned.all(References::isEmpty)) return nothing
+            any = any || !refs.isEmpty()
+            planned.add(refs)
+        }
+        if (!any) return nothing
 
         val found = lookUp(planned)
         if (found.isEmpty()) return nothing
@@ -240,13 +245,18 @@ internal class SearchReferenceExpansion(
         return planned.map { admit(it, found) }
     }
 
-    /** Marks [id] as already on the wire, so the splice never repeats a hit the replay is about to serve. */
-    fun record(id: String) {
-        sent.add(id)
-    }
-
-    /** True when [id] has already gone out on this subscription — a hit the splice got to first. */
-    fun alreadySent(id: String): Boolean = id in sent
+    /**
+     * Marks [id] as gone out on this subscription and answers whether that is
+     * the FIRST time — exactly the question the caller has about a replay row.
+     * A row already spliced as an earlier pointer's subject must not be sent
+     * again, and neither must two copies of one id inside one batch, which the
+     * replay and a concurrent live delivery can both carry.
+     *
+     * Recording rows BEFORE their subjects are resolved is what keeps a row at
+     * its own ranked position: a pointer earlier on the same page cannot
+     * splice it in ahead of where the search put it.
+     */
+    fun record(id: String): Boolean = sent.add(id)
 
     /**
      * What this row may bring, under both caps, in the order it named them.
@@ -519,6 +529,25 @@ internal class SearchReferenceExpansion(
             filters: List<Filter>,
             connection: HexKey?,
         ): Set<HexKey> = filters.mapNotNullTo(LinkedHashSet()) { it.observerLens() ?: connection }
+
+        /**
+         * Whether any hit of this REQ could be a pointer at all, decided from
+         * the filters alone and before a single row is read.
+         *
+         * The buffered path is not free — `SearchExpansionCostBench` prices it
+         * at a flat ~0.1ms per REQ on the in-memory index — and most searches
+         * cannot possibly need it: a client looking for notes or profiles names
+         * `kinds` that hold no pointer, so no row it can be answered with will
+         * ever nominate anything. Those REQs take the untouched delegating path
+         * and pay nothing.
+         *
+         * A filter naming NO kinds admits every kind, pointer kinds included,
+         * and so keeps the expansion. This is the same reading of `kinds` that
+         * [Filter.match] uses — absent is no constraint, present-and-empty
+         * matches nothing — and it has to be, or a REQ would be gated one way
+         * here and admitted another way there.
+         */
+        fun couldPoint(filters: List<Filter>): Boolean = filters.any { filter -> filter.kinds?.any { it in SearchReferences.KINDS } != false }
 
         /**
          * Whether this REQ is a SEARCH — free-text terms or a quoted phrase on

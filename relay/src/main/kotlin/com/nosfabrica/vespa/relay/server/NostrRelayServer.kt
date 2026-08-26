@@ -47,7 +47,6 @@ import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -285,6 +284,10 @@ internal class ObserverBackend(
     ): SearchReferenceExpansion? {
         if (!searchExpansion.enabled) return null
         if (!SearchReferenceExpansion.isSearch(filters)) return null
+        // Cheapest gate of the three, and the one that keeps the ordinary
+        // note-or-profile search on the untouched path: a REQ whose `kinds`
+        // hold no pointer kind can never be answered with a pointer.
+        if (!SearchReferenceExpansion.couldPoint(filters)) return null
         val observers = SearchReferenceExpansion.observersOf(filters, ctx.authenticatedUsers.firstOrNull())
         return SearchReferenceExpansion(filters, observers, searchExpansion) { store.query<Event>(it) }
     }
@@ -295,26 +298,34 @@ internal class ObserverBackend(
      * The shape is forced by the seam: a delivery callback is not suspending —
      * it is called from inside the store's own loop, and after EOSE from the
      * ingest queue's drain coroutine — so a store lookup cannot happen inside
-     * one. So the replay runs as a child coroutine into a [ReplayGate] while
-     * THIS coroutine, which can suspend, waits for its EOSE, resolves the
-     * batch's subjects in one round trip, and only then writes the page out.
-     * Buffering the replay to do it costs almost nothing here: the store
+     * one. So the rows land in a [ReplayGate] instead, and the flush that
+     * drains it is launched from the EOSE callback as a coroutine that CAN
+     * suspend.
+     *
+     * UNDISPATCHED, and that is the load-bearing word. Quartz's session runs a
+     * REQ undispatched precisely so a small read's frames and its EOSE go out
+     * with no scheduler hop (its own comment cites `SmallReqFloorBenchmark`:
+     * the hop was most of the dispatch slice on small REQs). An earlier draft
+     * here ran the replay as a child and had the outer coroutine `await` its
+     * EOSE, which put that hop back on EVERY search — `SearchExpansionCostBench`
+     * measured it at ~90us flat, some 20% of a 50-row search on the in-memory
+     * index. Launched undispatched from inside the callback, the flush runs
+     * INLINE on the replay's own thread and only suspends if it actually has a
+     * subject to look up: [SearchReferenceExpansion.expand] returns without
+     * ever suspending when no row's kind points anywhere, which is the common
+     * search. The hop is then paid only by the pages that earn it.
+     *
+     * Buffering the replay to do this costs almost nothing: the store
      * materializes the whole result before it calls back at all
      * (`NostrSemanticsStore.query(filters, onEach)` is `query(filters).
      * forEach(onEach)`), so the gate holds references to rows that are already
      * resident, not a second copy of the page.
      *
      * The loop drains until the gate is empty rather than once, because a live
-     * event accepted mid-replay lands in the same gate — it is part of the
-     * page the client sees before EOSE, exactly as it was before this — and
-     * gets its own subjects looked up with it. It cannot spin: [ReplayGate.
-     * take] returns null the first time it finds nothing, and only real ingest
-     * refills it.
-     *
-     * Rows are recorded as sent BEFORE their subjects are resolved so a row
-     * can never be spliced ahead of its own ranked position by a pointer that
-     * happens to sit earlier on the same page; [SearchReferenceExpansion]'s
-     * `sent` set then keeps the duplicate off the wire in the other direction.
+     * event accepted mid-replay lands in the same gate — it is part of the page
+     * the client sees before EOSE, exactly as it was before this — and gets its
+     * subjects looked up with it. It cannot spin: [ReplayGate.take] returns
+     * null the first time it finds nothing, and only real ingest refills it.
      */
     private suspend fun <T> expanded(
         expansion: SearchReferenceExpansion,
@@ -327,30 +338,28 @@ internal class ObserverBackend(
     ): Unit =
         coroutineScope {
             val gate = ReplayGate<T>()
-            val replayed = CompletableDeferred<Unit>()
-            // UNDISPATCHED for the same reason the session launches its REQ
-            // that way: the replay starts on this thread instead of paying a
-            // scheduler hop before the first row.
-            val job = launch(start = CoroutineStart.UNDISPATCHED) { replay(gate) { replayed.complete(Unit) } }
-            replayed.await()
-            while (true) {
-                val batch = gate.take() ?: break
-                val fresh = batch.map { !expansion.alreadySent(idOf(it)) }
-                batch.forEach { expansion.record(idOf(it)) }
-                val subjects = expansion.expand(batch, pointerOf)
-                batch.forEachIndexed { i, row ->
-                    if (fresh[i]) emit(row)
-                    subjects[i].forEach(emitExtra)
+            replay(gate) {
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    while (true) {
+                        val batch = gate.take() ?: break
+                        // `record` both marks and answers "first time?", so
+                        // one pass does the cross-batch dedupe AND the
+                        // within-batch one a concurrent live delivery needs.
+                        val fresh = batch.map { expansion.record(idOf(it)) }
+                        val subjects = expansion.expand(batch, pointerOf)
+                        batch.forEachIndexed { i, row ->
+                            if (fresh[i]) emit(row)
+                            subjects[i].forEach(emitExtra)
+                        }
+                    }
+                    onEose()
+                    // Past EOSE this is a live tail, and a lookup on the ingest
+                    // queue's drain coroutine would stall the batch writer for
+                    // every other subscriber — so live events pass straight
+                    // through from here.
+                    gate.open(emit)
                 }
             }
-            onEose()
-            // Past EOSE this is a live tail, and a lookup on the ingest
-            // queue's drain coroutine would stall the batch writer for every
-            // other subscriber — so live events pass straight through.
-            gate.open(emit)
-            // Parks here for the life of the subscription, exactly as the
-            // delegating path does: the child is inside `awaitCancellation`.
-            job.join()
         }
 
     override suspend fun count(
