@@ -522,9 +522,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         correctness tests could not see: awaiting the replay
                         from a child coroutine put back the scheduler hop
                         quartz's UNDISPATCHED REQ exists to avoid (~90us on
-                        EVERY search — the flush is launched undispatched from
-                        the EOSE callback now, and never suspends when there is
-                        nothing to look up); reading every row's pointers before
+                        EVERY search — chasing that number is what exposed the
+                        SEAM as wrong, and `ExpandingEventStore` is the answer);
+                        reading every row's pointers before
                         spending the budget paid 450 tags-parses on a 500-list
                         page for rows it had already decided to take nothing
                         from; and re-reading the reader's 10040 inside every REQ
@@ -533,6 +533,37 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         service — `EnrolledSigners` caches it per reader, exact
                         on this process's own writes and TTL-bounded for the
                         mirror's, and the arm went +74% -> +44%
+    ExpandingEventStore.kt  WHERE THE EXPANSION ACTUALLY RUNS: an IEventStore
+                        decorator overriding exactly the two callback shapes a
+                        REQ's stored replay rides — `query(filters, onEach)` and
+                        `rawQuery`. THE SEAM IS THE WHOLE POINT. Up in
+                        SessionBackend no delivery callback can suspend (rows
+                        arrive from inside the store's loop, and the call then
+                        parks at `awaitCancellation` for the life of the
+                        subscription), so the first version needed a ReplayGate
+                        under a lock, a flush coroutine launched undispatched
+                        from the EOSE callback, a sealed row type for the
+                        stored/live halves and a drain loop — ~280 lines of
+                        plumbing and a frame-ordering race. Down here the same
+                        two calls RETURN, so the whole feature is: collect the
+                        page, look the subjects up, write it out. `LiveEventStore`
+                        touches the store in six places and they split cleanly —
+                        the REQ replay takes these two, NIP-77 takes the
+                        list-returning `query` and `snapshotIdsForNegentropy`,
+                        COUNT takes `count`, deferred FTS takes
+                        `needsFtsCatchUp`/`ftsCatchUp` — so a reconcile, a
+                        COUNT, a sweep and every maintenance read are untouched
+                        BY CONSTRUCTION rather than by a gate that has to
+                        remember them. `by inner` forwards the rest, which is
+                        also the store's own decorator rule (delegate, never
+                        ride an interface default). It stays HONEST about the
+                        interface: the admission rule is `Filter.match`, so
+                        every spliced subject matches the REQ exactly as the
+                        hits do — what changes is completeness, not soundness,
+                        and a ranked `limit`-bounded search was never complete.
+                        Its own lookups go to the raw store, so a subject lookup
+                        cannot recurse. With the expansion off the wrapper is
+                        ABSENT, not inert
     SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
                         the runtime class. A `p` member (30392, a label's target,
                         a 30382's `d`) resolves to that author's KIND 0; an `e`

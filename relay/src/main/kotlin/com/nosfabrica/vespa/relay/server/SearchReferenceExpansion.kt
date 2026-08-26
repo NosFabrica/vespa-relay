@@ -157,8 +157,11 @@ data class SearchExpansionLimits(
  * Only the STORED replay expands. A label that arrives live on an open
  * subscription is delivered as-is: the live fanout runs on the ingest queue's
  * drain coroutine, where a store lookup would stall the batch writer for every
- * other subscriber (see [ObserverBackend]'s gate). Live delivery is a tail,
- * not a page — the ranked page a client reads is the replay.
+ * other subscriber. It also falls out of WHERE this runs rather than having to
+ * be arranged: [ExpandingEventStore] wraps the store, and a live event never
+ * touches the store on its way out — `LiveEventStore` fans it out through its
+ * own filter index. Live delivery is a tail, not a page, and the ranked page a
+ * client reads is the replay.
  */
 internal class SearchReferenceExpansion(
     /** The REQ's filters, verbatim: both the admission test and the lens come from these. */
@@ -209,23 +212,35 @@ internal class SearchReferenceExpansion(
 
     /**
      * The subjects of each row in [rows], index-aligned with it and already
-     * admitted by [Filter.match].
+     * admitted by [Filter.match]. The caller emits `rows[i]` and then
+     * `result[i]`, and that is the whole protocol.
      *
-     * [pointerOf] is the caller's reader: it hands back the row as an [Event]
-     * only when the row's KIND nominates something, which is how the
-     * zero-decode path keeps its splice for every other row.
+     * [pointerOf] hands a row back as an [Event] only when its KIND nominates
+     * something, which is how the zero-decode path keeps its splice for every
+     * other row; [idOf] is the row's id, which this needs to keep a hit that is
+     * also a subject at its own rank.
      *
-     * ONE ROUND TRIP PER BATCH, not one per row: every row's pointers are
+     * ONE ROUND TRIP PER PAGE, not one per row: every row's pointers are
      * gathered first and recalled together, so a page of 500 labels costs the
      * three lookup shapes below rather than 500 of them. That is also why this
-     * takes the whole batch instead of being a per-event call.
+     * takes the whole page rather than being a per-event call.
      */
     suspend fun <T> expand(
         rows: List<T>,
+        idOf: (T) -> String,
         pointerOf: (T) -> Event?,
     ): List<List<Event>> {
         val nothing = rows.map { emptyList<Event>() }
         if (budget <= 0) return nothing
+
+        // The rows are recorded as sent BEFORE anything is planned, and that is
+        // what keeps each at its own ranked position: a subject that is also a
+        // hit further down the page must be served where the SEARCH put it, not
+        // spliced in early behind whatever pointer happens to name it. NIP-01
+        // asks a relay not to send one event twice on a subscription, and on
+        // this corpus the duplicate is the common case rather than the corner
+        // one — a label and the note it labels both match "bitcoin".
+        rows.forEach { sent.add(idOf(it)) }
 
         // ONE PASS over the batch, and it stops materializing the moment the
         // request budget is spent. Reading a row's pointers costs a tags parse
@@ -267,19 +282,6 @@ internal class SearchReferenceExpansion(
 
         return planned.map { admit(it, found) }
     }
-
-    /**
-     * Marks [id] as gone out on this subscription and answers whether that is
-     * the FIRST time — exactly the question the caller has about a replay row.
-     * A row already spliced as an earlier pointer's subject must not be sent
-     * again, and neither must two copies of one id inside one batch, which the
-     * replay and a concurrent live delivery can both carry.
-     *
-     * Recording rows BEFORE their subjects are resolved is what keeps a row at
-     * its own ranked position: a pointer earlier on the same page cannot
-     * splice it in ahead of where the search put it.
-     */
-    fun record(id: String): Boolean = sent.add(id)
 
     /**
      * What this row may bring, under both caps, in the order it named them.
@@ -532,12 +534,14 @@ internal class SearchReferenceExpansion(
          * Whether any hit of the SEARCHING filters could be a pointer at all,
          * decided from the filters alone and before a single row is read.
          *
-         * The buffered path is not free — `SearchExpansionCostBench` prices it
-         * at a flat ~0.1ms per REQ on the in-memory index — and most searches
-         * cannot possibly need it: a client looking for notes or profiles names
+         * Collecting a page before writing it out is not free —
+         * `SearchExpansionCostBench` prices it at ~0.06ms per REQ on the
+         * in-memory index, and invisible against a real engine — and most
+         * searches cannot possibly need it: a client looking for notes or
+         * profiles names
          * `kinds` that hold no pointer, so no row it can be answered with will
-         * ever nominate anything. Those REQs take the untouched delegating path
-         * and pay nothing.
+         * ever nominate anything. Those REQs take the plain delegating path and
+         * pay nothing at all.
          *
          * A filter naming NO kinds admits every kind, pointer kinds included,
          * and so keeps the expansion. This is the same reading of `kinds` that

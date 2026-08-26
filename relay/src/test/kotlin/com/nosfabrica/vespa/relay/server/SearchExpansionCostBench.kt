@@ -61,10 +61,10 @@ import kotlin.test.fail
  *     searches look like, and `couldPoint` sends it down the untouched path,
  *     so it must come out at zero.
  *  3. **search, could point, none does** — the same search with `kinds`
- *     omitted, so any kind may come back and the relay has to look. Pays the
- *     whole buffering machinery — the flush coroutine, the gate, the per-row
- *     `sent` record — and NO extra store round trip, because no row's kind
- *     nominates anything. This is the arm that prices the machinery itself.
+ *     omitted, so any kind may come back and the relay has to look. Pays for
+ *     collecting the page before writing it out, and NO extra store round trip,
+ *     because no row's kind nominates anything. This is the arm that prices the
+ *     mechanism itself.
  *  4. **search, every hit a pointer** — a page of Trusted Lists. Pays the
  *     above plus the two extra recalls: the reader's 10040 once per REQ, and
  *     the subjects once per page.
@@ -103,12 +103,15 @@ import kotlin.test.fail
  * which is why its relative numbers look so different and why this table is the
  * real one.
  *
- * THREE THINGS THIS BENCH FOUND, none of them visible in the correctness tests:
+ * THINGS THIS BENCH FOUND, none of them visible in the correctness tests:
  *
- *  - the flush originally ran as a child coroutine the REQ awaited, which put
- *    back the scheduler hop quartz's UNDISPATCHED REQ exists to avoid — a flat
- *    ~90us on EVERY search. It is launched undispatched from the EOSE callback
- *    now, and a page with nothing to expand never suspends at all.
+ *  - the expansion originally lived in the session backend, where no delivery
+ *    callback can suspend, so it awaited a child coroutine — putting back the
+ *    scheduler hop quartz's UNDISPATCHED REQ exists to avoid, a flat ~90us on
+ *    EVERY search. Chasing that number is what exposed the seam as wrong:
+ *    [ExpandingEventStore] moved it one layer down, where the same calls are
+ *    ordinary suspend functions that return, and the coroutine went away
+ *    entirely along with ~280 lines of machinery.
  *  - the plan read every row's pointers before spending the budget, so a
  *    500-list page paid 450 tags-parses for rows it had already decided to take
  *    nothing from: 12.2ms -> 6.5ms on the in-memory pointer arm, and the Vespa
