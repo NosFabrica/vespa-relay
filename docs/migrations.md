@@ -111,6 +111,42 @@ byte-identical content. Far more expensive at corpus scale, but it is the
 fallback if reindexing will not dispatch. Note this is a genuine re-feed of
 every document — **not** `REINDEX_FTS_ON_START`, which skips them all.
 
+## Migration: Trusted List titles (store `eaee359357`)
+
+The first **re-feed-class** migration this file has carried, and the mirror
+image of the one above. Kinds 30392-30395 became searchable with no schema
+change at all: `SearchExtractors` mirrors Quartz's searchable set, and upstream
+implemented `SearchableEvent` on `TrustedListEvent`. So `configChangeActions`
+is empty, the deploy has nothing to do, and the corpus is nonetheless
+half-migrated — every Trusted List written BEFORE the bump carries no search
+text, and nothing about the cluster looks wrong.
+
+`search_text` is data we WRITE on put, so this is the case `REINDEX_FTS_ON_START`
+exists for and a Vespa reindex cannot touch. The store's drift check re-puts a
+document whose extracted columns differ from the stored ones, which is exactly
+what a pre-bump list is.
+
+Measured here (in-memory index, one kind-30392 list titled "Podcaster Trust
+List", stored with the search columns a pre-bump write would have left):
+
+```
+before reindexFullTextSearch():  0 hits for "podcaster"
+after  reindexFullTextSearch():  1 hit
+resulting columns: SearchFields(..., text=Podcaster Trust List, ...)
+```
+
+Note the column: `text`, the body tier, not `primary`. Upstream gave the family
+no `SearchFieldExtractor` branch, so the title rides the generic fallback into
+the TERTIARY tier — reached by trigram substring, not by the prefix/typo
+attributes other titled kinds get. That is Quartz's call to change, not ours;
+see the `vespaEventStore` comment in `gradle/libs.versions.toml`.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true`, then turn it back off — it walks the
+whole corpus, and the walk is resumable but not free. New writes need nothing;
+they are indexed as they arrive.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

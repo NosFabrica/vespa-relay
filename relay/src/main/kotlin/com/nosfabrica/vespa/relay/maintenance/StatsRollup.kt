@@ -560,8 +560,9 @@ internal class StatsRollup(
     /**
      * What a kind is CALLED, from Quartz's registry rather than this repo's.
      *
-     * [KindNames] is the protocol-wide table Quartz maintains — 287 kinds and
-     * their NIPs, updated whenever the pin moves. The web UI's `kinds.js`
+     * [KindNames] is the protocol-wide table Quartz maintains — 291 kinds and
+     * their NIPs, updated whenever the pin moves (287 before quartz
+     * `98f09f29c0` added the four Trusted List kinds). The web UI's `kinds.js`
      * carries about 117, which is the right size for what IT is: badge text
      * for the cards this relay can render, kept short and lowercase so a mixed
      * feed stays scannable. That set is a statement about our renderers; this
