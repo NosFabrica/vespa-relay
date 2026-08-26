@@ -312,6 +312,63 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
+    fun `a provider list published mid-session takes effect on the next search`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // A reader who has enrolled nobody. Their first search resolves
+                // that — and it is the answer a cache is most tempted to keep,
+                // since most readers have no provider list at all.
+                val newcomer = NostrSignerSync()
+                val newLens = "include:spam observer:${newcomer.pubKey}"
+                assertEquals(
+                    listOf(list.id),
+                    page(session, out, "before", """{"kinds":[0,30392],"search":"podcaster $newLens"}"""),
+                    "a reader who has enrolled nobody expands nothing",
+                )
+
+                // Publishing the list HERE is the one exact invalidation signal
+                // the relay has, and this is what makes it worth taking: enrol a
+                // service and the very next search unpacks it, rather than the
+                // next one after the TTL.
+                publish(
+                    session,
+                    out,
+                    newcomer.sign<Event>(
+                        1_699_999_500L,
+                        10040,
+                        arrayOf(arrayOf("30382:rank", curator.pubKey, "wss://provider.example")),
+                        "",
+                    ),
+                )
+
+                assertEquals(
+                    listOf(list.id, profile.id),
+                    page(session, out, "after", """{"kinds":[0,30392],"search":"podcaster $newLens"}"""),
+                    "the enrolment must apply on the next search, not after a cache expiry",
+                )
+
+                // And it is per reader: enrolling one must not enrol everybody.
+                val bystander = NostrSignerSync()
+                assertEquals(
+                    listOf(list.id),
+                    page(
+                        session,
+                        out,
+                        "bystander",
+                        """{"kinds":[0,30392],"search":"podcaster include:spam observer:${bystander.pubKey}"}""",
+                    ),
+                    "another reader's enrolment is not this reader's",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
     fun `a signed-in connection is the observer whose services count`() =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())

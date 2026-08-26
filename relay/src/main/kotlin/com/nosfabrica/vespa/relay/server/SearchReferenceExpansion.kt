@@ -27,8 +27,6 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.list.serviceProviders
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -121,7 +119,9 @@ data class SearchExpansionLimits(
  * (`include:spam`). Reading a reader's own statement of whom they trust
  * through the trust that statement establishes is circular, and it fails in
  * the worst direction: a reader whose provider has not scored the reader
- * personally would silently lose the whole feature.
+ * personally would silently lose the whole feature. Being lensless is also
+ * what lets [EnrolledSigners] cache it across connections, which is what keeps
+ * this from being a second store round trip on every expanded search.
  *
  * ## The lens travels with it
  *
@@ -169,6 +169,12 @@ internal class SearchReferenceExpansion(
      * `include:spam` read, and it means no list or assertion expands.
      */
     private val observers: Set<HexKey>,
+    /**
+     * Who may cause an expansion for those observers. Shared across the whole
+     * relay and cached there, because it is a property of the READER rather
+     * than of this page — see [EnrolledSigners].
+     */
+    private val enrolment: EnrolledSigners,
     private val limits: SearchExpansionLimits,
     /**
      * The store recall the lookups run through — [ObserverBackend] hands in
@@ -399,44 +405,22 @@ internal class SearchReferenceExpansion(
 
     /**
      * The pubkeys whose Trusted Lists and Trusted Assertions this read has
-     * asked for: each observer, plus every service their own kind-10040 names.
-     * Resolved at most once per REQ and memoized, because a page of 500 lists
-     * asks the same question 500 times.
+     * asked for. Memoized per REQ over a cache that is memoized per reader, so
+     * a page of 500 lists asks once and a session of many searches usually asks
+     * not at all — [EnrolledSigners] carries the staleness argument.
      *
-     * EVERY service, not just `30382:rank`. A Trusted List of events is
-     * published by a `30383:` service and a list of addresses by a `30384:`
-     * one, so filtering to the ranking service — which is the right question
-     * for [TrustNotice], where the subject IS ranking — would silently drop
-     * three quarters of the family here.
+     * EVERY service a 10040 names counts, not just `30382:rank`. A Trusted List
+     * of events is published by a `30383:` service and a list of addresses by a
+     * `30384:` one, so filtering to the ranking service — which is the right
+     * question for [TrustNotice], where the subject IS ranking — would silently
+     * drop three quarters of the family here.
      *
      * The private half of a 10040 (NIP-44 in `content`) cannot be read by a
-     * relay and so names nothing: a reader whose providers are all private
-     * gets no list expansion, the same answer the store's own provider map
-     * gives for the same reason.
+     * relay and so names nothing: a reader whose providers are all private gets
+     * no list expansion, the same answer the store's own provider map gives for
+     * the same reason.
      */
-    private suspend fun enrolledSigners(): Set<HexKey> {
-        enrolled?.let { return it }
-        if (observers.isEmpty()) return emptySet<HexKey>().also { enrolled = it }
-
-        // include:spam ON PURPOSE — see the class KDoc: reading a reader's own
-        // statement of whom they trust through the trust it establishes is
-        // circular, and it fails in the direction that silently removes the
-        // feature.
-        val lists =
-            recallOrEmpty(
-                listOf(
-                    Filter(
-                        kinds = listOf(TrustProviderListEvent.KIND),
-                        authors = observers.toList(),
-                        limit = observers.size,
-                        search = INCLUDE_SPAM,
-                    ),
-                ),
-            )
-        val signers = HashSet(observers)
-        lists.forEach { list -> list.tags.serviceProviders().forEach { signers.add(it.pubkey) } }
-        return signers.also { enrolled = it }
-    }
+    private suspend fun enrolledSigners(): Set<HexKey> = enrolled ?: enrolment.of(observers).also { enrolled = it }
 
     /**
      * A recall whose failure costs the splice and nothing else. An expansion
@@ -464,9 +448,6 @@ internal class SearchReferenceExpansion(
 
     companion object {
         private val METADATA = listOf(MetadataEvent.KIND)
-
-        /** The NIP-50 waiver that takes the trust floor off a recall entirely. */
-        private const val INCLUDE_SPAM = "include:spam"
 
         private val EMPTY = Found(emptyMap(), emptyMap(), emptyMap())
 

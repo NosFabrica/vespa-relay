@@ -504,22 +504,27 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         `SEARCH_EXPAND_REFERENCES=false` is the relay before it.
                         WHAT IT COSTS, measured (`SearchExpansionCostBench`,
                         2026-08-26, real Vespa in Docker, medians over 201
-                        rounds): a recall +0.8%, a search whose `kinds` hold no
-                        pointer kind -3.1% (it takes the untouched path —
+                        rounds): a recall -0.5%, a search whose `kinds` hold no
+                        pointer kind +0.5% (it takes the untouched path —
                         `couldPoint` decides that off the filters, before a row
-                        is read), a search that COULD point and does not +0.3%,
-                        and a page that really does expand +74% at 50 hits /
-                        +24% at 500 — its two extra round trips, ~12ms, and
-                        nothing else. The bench found two regressions the
+                        is read), a search that COULD point and does not +0.4%,
+                        and a page that really does expand +44% at 50 hits /
+                        +14% at 500 — ONE extra round trip for the subjects, and
+                        nothing else. The bench found three things the
                         correctness tests could not see: awaiting the replay
                         from a child coroutine put back the scheduler hop
                         quartz's UNDISPATCHED REQ exists to avoid (~90us on
                         EVERY search — the flush is launched undispatched from
                         the EOSE callback now, and never suspends when there is
-                        nothing to look up), and reading every row's pointers
-                        before spending the budget paid 450 tags-parses on a
-                        500-list page for rows it had already decided to take
-                        nothing from
+                        nothing to look up); reading every row's pointers before
+                        spending the budget paid 450 tags-parses on a 500-list
+                        page for rows it had already decided to take nothing
+                        from; and re-reading the reader's 10040 inside every REQ
+                        was a SECOND round trip (+2.0 queries, 27.9ms at 50
+                        hits) for a document that changes when someone enrols a
+                        service — `EnrolledSigners` caches it per reader, exact
+                        on this process's own writes and TTL-bounded for the
+                        mirror's, and the arm went +74% -> +44%
     SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
                         the runtime class. A `p` member (30392, a label's target,
                         a 30382's `d`) resolves to that author's KIND 0; an `e`

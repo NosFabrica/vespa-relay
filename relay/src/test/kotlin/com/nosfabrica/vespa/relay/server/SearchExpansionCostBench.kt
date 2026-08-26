@@ -92,26 +92,32 @@ import kotlin.test.fail
  *
  * | arm | page | off | on | |
  * |---|---|---|---|---|
- * | recall | 50 / 500 | 10.6 / 26.4ms | 10.7 / 26.6ms | +0.8% / +0.9% |
- * | search, no kind can point | 50 / 500 | 18.2 / 42.0ms | 17.6 / 41.8ms | -3.1% / -0.4% |
- * | search, could point, none does | 50 / 500 | 17.4 / 42.5ms | 17.5 / 42.7ms | +0.3% / +0.6% |
- * | search, every hit a pointer | 50 / 500 | 16.0 / 60.8ms | 27.9 / 75.2ms | +74% / +24% |
+ * | recall | 50 / 500 | 10.9 / 27.2ms | 10.9 / 27.3ms | -0.5% / +0.6% |
+ * | search, no kind can point | 50 / 500 | 20.7 / 41.3ms | 20.8 / 40.1ms | +0.5% / -3.0% |
+ * | search, could point, none does | 50 / 500 | 16.2 / 40.1ms | 16.3 / 39.1ms | +0.4% / -2.4% |
+ * | search, every hit a pointer | 50 / 500 | 15.0 / 58.6ms | 21.5 / 66.8ms | +44% / +14% |
  *
  * Read it as: everything that does not expand is free, and a page that does
- * expand pays its two extra round trips — ~12ms here — and nothing else. The
- * in-memory index prices those same round trips at ~1ms, which is why the
- * relative numbers there look so different and why this table is the real one.
+ * expand pays ONE extra round trip — the subjects — and nothing else. The
+ * in-memory index prices that same round trip at well under a millisecond,
+ * which is why its relative numbers look so different and why this table is the
+ * real one.
  *
- * TWO REGRESSIONS WERE FOUND AND FIXED BY THIS BENCH, both invisible in the
- * correctness tests:
+ * THREE THINGS THIS BENCH FOUND, none of them visible in the correctness tests:
  *
  *  - the flush originally ran as a child coroutine the REQ awaited, which put
  *    back the scheduler hop quartz's UNDISPATCHED REQ exists to avoid — a flat
  *    ~90us on EVERY search. It is launched undispatched from the EOSE callback
  *    now, and a page with nothing to expand never suspends at all.
  *  - the plan read every row's pointers before spending the budget, so a
- *    500-list page paid 450 tags-parses for rows it had already decided to
- *    take nothing from: 12.2ms -> 6.5ms on the in-memory pointer arm.
+ *    500-list page paid 450 tags-parses for rows it had already decided to take
+ *    nothing from: 12.2ms -> 6.5ms on the in-memory pointer arm, and the Vespa
+ *    pointer arm's absolute delta is flat across a 10x page because of it.
+ *  - the reader's 10040 was re-read inside every REQ, a second round trip
+ *    (+2.0 queries, 27.9ms at 50 hits) to re-fetch a document that changes when
+ *    someone enrols a service. [EnrolledSigners] caches it per reader: +1.0
+ *    queries, 21.5ms, and the arm went from +74% to +44%.
+ *
  */
 class SearchExpansionCostBench {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")

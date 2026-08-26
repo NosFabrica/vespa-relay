@@ -45,6 +45,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.CoroutineStart
@@ -216,6 +217,14 @@ internal class ObserverBackend(
     private val pressure: ServingPressure? = null,
     private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
 ) : SessionBackend {
+    /**
+     * Who may cause a Trusted List or Assertion to expand, per reader — held
+     * HERE rather than per REQ because it is a property of the reader, and
+     * re-reading it on every search was the second store round trip
+     * `SearchExpansionCostBench` priced at ~6ms.
+     */
+    private val enrolment = EnrolledSigners(recall = { store.query<Event>(it) })
+
     override suspend fun query(
         ctx: RequestContext,
         filters: List<Filter>,
@@ -289,7 +298,7 @@ internal class ObserverBackend(
         // hold no pointer kind can never be answered with a pointer.
         if (!SearchReferenceExpansion.couldPoint(filters)) return null
         val observers = SearchReferenceExpansion.observersOf(filters, ctx.authenticatedUsers.firstOrNull())
-        return SearchReferenceExpansion(filters, observers, searchExpansion) { store.query<Event>(it) }
+        return SearchReferenceExpansion(filters, observers, enrolment, searchExpansion) { store.query<Event>(it) }
     }
 
     /**
@@ -372,10 +381,22 @@ internal class ObserverBackend(
         filters: List<Filter>,
     ): CountResult = ranked(ctx) { timed { inner.countResult(ctx, filters) } }
 
+    /**
+     * The write path, and the one exact invalidation signal there is: a reader
+     * publishing a provider list HERE has it applied on their very next search
+     * instead of within [EnrolledSigners]'s TTL. Only on `Accepted` — a
+     * rejected 10040 (a duplicate, a bad signature, a banned author) changed
+     * nothing to invalidate.
+     */
     override suspend fun submit(
         event: Event,
         onComplete: (IEventStore.InsertOutcome) -> Unit,
-    ) = inner.submit(event, onComplete)
+    ) = inner.submit(event) { outcome ->
+        if (outcome is IEventStore.InsertOutcome.Accepted && event.kind == TrustProviderListEvent.KIND) {
+            enrolment.invalidate(event.pubKey)
+        }
+        onComplete(outcome)
+    }
 
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,

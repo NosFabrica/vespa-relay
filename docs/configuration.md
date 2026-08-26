@@ -278,7 +278,16 @@ The 10040 lookup is the one recall here that is deliberately **ungated**
 (`include:spam`): reading a reader's own statement of whom they trust *through*
 the trust that statement establishes is circular, and it fails in the worst
 direction — a reader whose provider has not scored the reader personally would
-silently lose the whole feature.
+silently lose the whole feature. Being lensless is also what makes its answer
+the same for everybody and so safe to cache, which is why an expanded search
+costs one extra store round trip rather than two.
+
+**The enrolment is cached for 60 seconds, and exactly for a write this relay
+took.** A reader publishing a provider list *here* has it applied on their very
+next search; one mirrored in by the router — a different process, whose writes
+this one cannot see — applies within the minute. That is the window in both
+directions: a newly-enrolled service's lists take up to a minute to start
+unpacking, a dropped one's up to a minute to stop.
 
 **A subject must still match the REQ.** It is added only when it matches at
 least one of the subscription's own filters with the `search` field taken out of
