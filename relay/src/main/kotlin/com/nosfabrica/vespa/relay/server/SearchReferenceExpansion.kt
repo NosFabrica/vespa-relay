@@ -174,11 +174,10 @@ internal class SearchReferenceExpansion(
      */
     private val searchingFilters: List<Filter>,
     /**
-     * Whose web of trust this read is answered through — the NIP-42 connection
-     * or the filters' `observer:`, per filter, unioned. Empty is an anonymous
-     * `include:spam` read, and it means no list or assertion expands.
+     * The NIP-42 pubkey of the connection, if any. A searching filter's own
+     * `observer:` wins over it, per filter — the store's precedence, mirrored.
      */
-    private val observers: Set<HexKey>,
+    private val connectionObserver: HexKey?,
     /**
      * Who may cause an expansion for those observers. Shared across the whole
      * relay and cached there, because it is a property of the READER rather
@@ -207,8 +206,63 @@ internal class SearchReferenceExpansion(
 
     private var budget = limits.maxPerRequest
 
-    /** Memoized [enrolledSigners]; null until the first list or assertion on the page asks. */
-    private var enrolled: Set<HexKey>? = null
+    /**
+     * ONE WAY THIS SUBSCRIPTION IS READ: the NIP-50 tokens a subject lookup
+     * must carry, and whose enrolment gates a Trusted List or Assertion found
+     * through it.
+     *
+     * A subscription can carry several, because NIP-01 ORs its filters and
+     * each may declare its own lens. That is not a corner case to wave away —
+     * it is a HOLE if it is: a filter saying `include:spam` beside one saying
+     * `observer:X` would otherwise let the whole page's subjects be recalled
+     * with the trust floor off, and a search that asked to be ranked through X
+     * would come back carrying records X's web of trust excludes. Every lookup
+     * is therefore made under the lens of the searching filter that matched
+     * the pointer, and never under a sibling's.
+     */
+    private class Lens(
+        /** What rides on the lookup filters' `search`; null is a plain recall. */
+        val tokens: String?,
+        /** Whose 10040 admits a declaration found through this lens. */
+        val observers: Set<HexKey>,
+    )
+
+    /** The distinct lenses this REQ declares, over its SEARCHING filters only. */
+    private val lenses: List<Lens>
+
+    /** `searchingFilters[i]` is read through `lenses[lensOfFilter[i]]`. */
+    private val lensOfFilter: IntArray
+
+    /** Memoized [enrolledSigners] per lens; a page of labels never fills one in. */
+    private val enrolled: Array<Set<HexKey>?>
+
+    init {
+        val perFilter =
+            searchingFilters.map { filter ->
+                Lens(lensOf(filter.search), setOfNotNull(filter.observerLens() ?: connectionObserver))
+            }
+        val distinct = ArrayList<Lens>()
+        lensOfFilter =
+            IntArray(perFilter.size) { i ->
+                val already = distinct.indexOfFirst { it.tokens == perFilter[i].tokens && it.observers == perFilter[i].observers }
+                if (already >= 0) {
+                    already
+                } else {
+                    distinct.add(perFilter[i])
+                    distinct.size - 1
+                }
+            }
+        lenses = distinct
+        enrolled = arrayOfNulls(lenses.size)
+    }
+
+    /**
+     * Whether any of the REQ's filters would accept a kind-0 profile at all.
+     * Read ONCE and applied in [plan] rather than after the lookup: a pubkey
+     * subject a REQ can never be answered with must not spend the request
+     * budget that an `e` or an `a` subject further down the page needs.
+     */
+    private val admitsProfiles = filters.any { it.kinds?.contains(MetadataEvent.KIND) != false }
 
     /**
      * The subjects of each row in [rows], index-aligned with it and already
@@ -231,7 +285,7 @@ internal class SearchReferenceExpansion(
         pointerOf: (T) -> Event?,
     ): List<List<Event>> {
         val nothing = rows.map { emptyList<Event>() }
-        if (budget <= 0) return nothing
+        if (budget <= 0 || lenses.isEmpty()) return nothing
 
         // The rows are recorded as sent BEFORE anything is planned, and that is
         // what keeps each at its own ranked position: a subject that is also a
@@ -250,37 +304,42 @@ internal class SearchReferenceExpansion(
         // 450 parses for rows it had already decided to take nothing from.
         var any = false
         val planned = ArrayList<References>(rows.size)
-        for (row in rows) {
+        val lensOfRow = IntArray(rows.size) { NO_LENS }
+        for ((i, row) in rows.withIndex()) {
             val pointer = if (budget > 0) pointerOf(row)?.takeIf { it.kind in SearchReferences.KINDS } else null
+
+            // WHICH SEARCH FOUND IT, and so which lens its subjects are read
+            // through. A subscription ORs its filters and the store answers
+            // with one union, so a row cannot say which filter fetched it — but
+            // it can say which would ACCEPT it, and `Filter.match` is that
+            // question with the search text left out. A row no searching filter
+            // accepts came from the plain half of a mixed REQ and is served
+            // exactly as it always was.
+            val matched = if (pointer == null) -1 else searchingFilters.indexOfFirst { it.match(pointer) }
+            val lens = if (matched < 0) NO_LENS else lensOfFilter[matched]
+
             val refs =
                 when {
-                    pointer == null -> References.NONE
+                    pointer == null || matched < 0 -> References.NONE
 
-                    // THIS ROW IS THE SEARCH'S, or it is nobody's business to
-                    // expand. A subscription ORs its filters and the store
-                    // answers with one union, so a row cannot say which filter
-                    // fetched it — but it can say which filters would ACCEPT
-                    // it, and `Filter.match` is that question with the search
-                    // text left out. A list that only the plain-recall half of
-                    // a mixed REQ could have produced fails here and is served
-                    // exactly as it always was.
-                    searchingFilters.none { it.match(pointer) } -> References.NONE
-
-                    // Resolved on the first list or assertion of the whole REQ
+                    // Resolved on the first list or assertion this lens sees
                     // and memoized after: a page of labels never asks for it.
-                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolledSigners() -> References.NONE
+                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolledSigners(lens) -> References.NONE
 
                     else -> plan(SearchReferences.of(pointer))
                 }
-            any = any || !refs.isEmpty()
+            if (!refs.isEmpty()) {
+                any = true
+                lensOfRow[i] = lens
+            }
             planned.add(refs)
         }
         if (!any) return nothing
 
-        val found = lookUp(planned)
-        if (found.isEmpty()) return nothing
+        val found = lookUp(planned, lensOfRow)
+        if (found.all(Found::isEmpty)) return nothing
 
-        return planned.map { admit(it, found) }
+        return planned.mapIndexed { i, refs -> if (lensOfRow[i] == NO_LENS) emptyList() else admit(refs, found[lensOfRow[i]]) }
     }
 
     /**
@@ -288,7 +347,12 @@ internal class SearchReferenceExpansion(
      * Spends the request budget on what it PLANS rather than on what is later
      * found — see [SearchExpansionLimits] for why the caps are on the lookup.
      */
-    private fun plan(refs: References): References {
+    private fun plan(raw: References): References {
+        // Dropped BEFORE the budget is charged, not after the lookup: a
+        // 2,000-member list of pubkeys under a REQ that admits no kind 0 would
+        // otherwise spend the whole request budget on subjects that can never
+        // be served, and starve an `e` or `a` subject further down the page.
+        val refs = if (admitsProfiles || raw.pubKeys.isEmpty()) raw else References(raw.eventIds, emptyList(), raw.addresses)
         val room = minOf(limits.maxPerEvent, budget)
         if (room <= 0 || refs.isEmpty()) return References.NONE
         if (refs.size <= room) {
@@ -332,59 +396,71 @@ internal class SearchReferenceExpansion(
     }
 
     /**
-     * ONE store call for the whole batch, and one on purpose: the store takes
-     * a LIST of filters and recalls them concurrently under its own fan-out
-     * bound, deduping across them (`NostrSemanticsStore.recallOrdered`).
-     * Handing them over one at a time would serialize what the engine is built
-     * to parallelize, which is the difference between a page of labels costing
-     * one round trip and costing one per label.
+     * The subjects, looked up ONCE PER LENS and never across one.
+     *
+     * A single lens — the overwhelmingly common shape — is a single store call
+     * for the whole page: the store takes a LIST of filters and recalls them
+     * concurrently under its own fan-out bound, deduping across them
+     * (`NostrSemanticsStore.recallOrdered`). Handing them over one at a time
+     * would serialize what the engine is built to parallelize.
+     *
+     * A REQ that declares TWO lenses costs two, and that is the honest price
+     * rather than an oversight: the results cannot be pooled, because a subject
+     * recalled with the trust floor off must not be handed to a pointer whose
+     * search asked to be ranked through somebody's web of trust. One call per
+     * lens is what keeps that separation, and a client only pays it by asking
+     * two different questions in one subscription.
      */
-    private suspend fun lookUp(planned: List<References>): Found {
-        val ids = LinkedHashSet<HexKey>()
-        val keys = LinkedHashSet<HexKey>()
-        val addresses = LinkedHashSet<String>()
-        for (refs in planned) {
-            ids.addAll(refs.eventIds)
-            keys.addAll(refs.pubKeys)
-            addresses.addAll(refs.addresses)
+    private suspend fun lookUp(
+        planned: List<References>,
+        lensOfRow: IntArray,
+    ): List<Found> {
+        val ids = List(lenses.size) { LinkedHashSet<HexKey>() }
+        val keys = List(lenses.size) { LinkedHashSet<HexKey>() }
+        val addresses = List(lenses.size) { LinkedHashSet<String>() }
+        for ((i, refs) in planned.withIndex()) {
+            val lens = lensOfRow[i]
+            if (lens == NO_LENS) continue
+            ids[lens].addAll(refs.eventIds)
+            keys[lens].addAll(refs.pubKeys)
+            addresses[lens].addAll(refs.addresses)
         }
 
-        // A REQ that admits no kind-0 cannot be answered with a profile, so
-        // the profile lookup is skipped rather than run and then discarded by
-        // `match` — the pubkey side is the bulk of a Trusted List's membership
-        // and this is the one shape whose kind is known before the recall.
-        if (!admitsProfiles()) keys.clear()
+        return lenses.indices.map { lens -> lookUpUnder(lenses[lens].tokens, ids[lens], keys[lens], addresses[lens]) }
+    }
 
+    private suspend fun lookUpUnder(
+        tokens: String?,
+        ids: Set<HexKey>,
+        keys: Set<HexKey>,
+        addresses: Set<String>,
+    ): Found {
         val lookups = ArrayList<Filter>()
-        for (lens in lenses()) {
-            ids.inChunks { lookups.add(Filter(ids = it, limit = it.size, search = lens)) }
-            keys.inChunks { lookups.add(Filter(kinds = METADATA, authors = it, limit = it.size, search = lens)) }
-            // An a-coordinate is (kind, author, `d`), so coordinates sharing a
-            // kind and an author recall as one exact filter. Exact rather than
-            // one filter per kind with every author and every `d` in it: that
-            // shape recalls the CROSS PRODUCT, and two authors who both
-            // publish a `d` of "index" would drag in each other's. The price
-            // is a filter per owner, which is why the fan-out is capped —
-            // a page whose pointers name more than [MAX_LOOKUPS] owners
-            // expands the first of them.
-            addresses
-                .mapNotNull(Address::parse)
-                .groupBy { Owner(it.kind, it.pubKeyHex) }
-                .forEach { (owner, coords) ->
-                    coords.map(Address::dTag).distinct().inChunks { ds ->
-                        lookups.add(
-                            Filter(
-                                kinds = listOf(owner.kind),
-                                authors = listOf(owner.pubKey),
-                                tags = mapOf("d" to ds),
-                                limit = ds.size,
-                                search = lens,
-                            ),
-                        )
-                    }
+        ids.inChunks { lookups.add(Filter(ids = it, limit = it.size, search = tokens)) }
+        keys.inChunks { lookups.add(Filter(kinds = METADATA, authors = it, limit = it.size, search = tokens)) }
+        // An a-coordinate is (kind, author, `d`), so coordinates sharing a kind
+        // and an author recall as one exact filter. Exact rather than one
+        // filter per kind with every author and every `d` in it: that shape
+        // recalls the CROSS PRODUCT, and two authors who both publish a `d` of
+        // "index" would drag in each other's. The price is a filter per owner,
+        // which is why the fan-out is capped — a page whose pointers name more
+        // than [MAX_LOOKUPS] owners expands the first of them.
+        addresses
+            .mapNotNull(Address::parse)
+            .groupBy { Owner(it.kind, it.pubKeyHex) }
+            .forEach { (owner, coords) ->
+                coords.map(Address::dTag).distinct().inChunks { ds ->
+                    lookups.add(
+                        Filter(
+                            kinds = listOf(owner.kind),
+                            authors = listOf(owner.pubKey),
+                            tags = mapOf("d" to ds),
+                            limit = ds.size,
+                            search = tokens,
+                        ),
+                    )
                 }
-            if (lookups.size >= MAX_LOOKUPS) break
-        }
+            }
         if (lookups.isEmpty()) return EMPTY
 
         val byId = HashMap<HexKey, Event>()
@@ -397,6 +473,10 @@ internal class SearchReferenceExpansion(
             if (candidate.id in ids) byId[candidate.id] = candidate
             if (candidate.kind == MetadataEvent.KIND && candidate.pubKey in keys) profiles[candidate.pubKey] = candidate
             if (addresses.isNotEmpty()) {
+                // Both sides are the CANONICAL `kind:lowercase-hex:d`, which is
+                // what [SearchReferences] normalizes a pointer's `a` value to.
+                // Comparing against the raw tag string instead would fetch an
+                // `naddr1…` or upper-case member and then silently drop it.
                 val coord = Address.assemble(candidate.kind, candidate.pubKey, candidate.tags.dTag())
                 if (coord in addresses) byAddress[coord] = candidate
             }
@@ -409,18 +489,6 @@ internal class SearchReferenceExpansion(
         val kind: Int,
         val pubKey: HexKey,
     )
-
-    /** Whether any of the REQ's filters would accept a kind-0 profile at all. */
-    private fun admitsProfiles() = filters.any { it.kinds?.contains(MetadataEvent.KIND) != false }
-
-    /**
-     * The distinct lens declarations among the REQ's filters — normally one.
-     * Each is run as its own set of lookups because two filters may be read
-     * through two different observers, and answering both through whichever
-     * one happened to come first would serve one client's question through
-     * another's eyes.
-     */
-    private fun lenses(): List<String?> = filters.map { lensOf(it.search) }.distinct()
 
     /**
      * The pubkeys whose Trusted Lists and Trusted Assertions this read has
@@ -439,7 +507,7 @@ internal class SearchReferenceExpansion(
      * no list expansion, the same answer the store's own provider map gives for
      * the same reason.
      */
-    private suspend fun enrolledSigners(): Set<HexKey> = enrolled ?: enrolment.of(observers).also { enrolled = it }
+    private suspend fun enrolledSigners(lens: Int): Set<HexKey> = enrolled[lens] ?: enrolment.of(lenses[lens].observers).also { enrolled[lens] = it }
 
     /**
      * A recall whose failure costs the splice and nothing else. An expansion
@@ -467,6 +535,9 @@ internal class SearchReferenceExpansion(
 
     companion object {
         private val METADATA = listOf(MetadataEvent.KIND)
+
+        /** [lensOfRow] for a row no searching filter accepts — it expands nothing. */
+        private const val NO_LENS = -1
 
         private val EMPTY = Found(emptyMap(), emptyMap(), emptyMap())
 
@@ -508,27 +579,6 @@ internal class SearchReferenceExpansion(
         }
 
         private val LENS_KEYS = setOf("include", "observer", "filter")
-
-        /**
-         * Whose eyes this read is answered through, per filter and unioned.
-         *
-         * The store's rule, mirrored here so the gate cannot come to a
-         * different reading of a REQ than the query planner does: a filter's
-         * own `observer:` WINS over the connection's NIP-42 identity
-         * (`NostrSemanticsStore.toExpiryQuery` is `it.observer ?: observer`),
-         * and the connection's applies to every filter that names none. A
-         * signed-in reader who deliberately reads through somebody else's lens
-         * therefore gets that somebody's providers on that filter, not their
-         * own — which is the whole point of asking through another lens.
-         *
-         * The token is read by [observerLens], the same acceptance test
-         * [LensRequiredPolicy] gates on, so a REQ cannot be understood one way
-         * by the gate and another way here.
-         */
-        fun observersOf(
-            filters: List<Filter>,
-            connection: HexKey?,
-        ): Set<HexKey> = filters.mapNotNullTo(LinkedHashSet()) { it.observerLens() ?: connection }
 
         /**
          * Whether any hit of the SEARCHING filters could be a pointer at all,

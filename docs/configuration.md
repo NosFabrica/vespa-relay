@@ -262,7 +262,13 @@ feed would put it in front of a reader as if they had asked for it.
 
 The observer is the connection's NIP-42 pubkey, or the filter's own
 `observer:<64-hex>` where it names one (the filter wins, exactly as it does for
-ranking). *Every* service its 10040 names counts, not only `30382:rank` — a list
+ranking) — **per searching filter, never pooled across the subscription**. A
+filter saying `include:spam` beside one saying `observer:X` does not lend its
+waiver to the other's subjects: each hit's subjects are recalled under the lens
+of the searching filter that found it, so a search asking to be ranked through X
+can never come back carrying records X's web of trust excludes. A subscription
+that genuinely declares two lenses pays one subject lookup per lens, which is the
+honest price of asking two questions at once. *Every* service its 10040 names counts, not only `30382:rank` — a list
 of events is published by a `30383:` service and a list of addresses by a
 `30384:` one. The private half of a 10040 is NIP-44 encrypted and names nothing a
 relay can read, the same limit the store's own provider map has.

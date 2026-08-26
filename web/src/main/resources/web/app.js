@@ -436,13 +436,16 @@ function buildFilters(text, limit) {
 /**
  * The feed's ask: the SAME builder with nothing to say but its kinds.
  *
- * No words, and — pointedly — no `searchString`, so the sort menu, the spam
- * toggle and the "ranking as" lens do not ride along. What is left is
- * `{ kinds, limit }`: a plain NIP-01 read, which is what the store answers
- * newest-first. Any of those three would make it a NIP-50 query for an ORDER
- * instead, and the page would be saying "latest" over a ranked list. That is
- * why the feed view hides the Filters disclosure rather than leaving three
- * controls on screen that this ask cannot carry.
+ * No words, and none of the SEARCH string the search view sends: the sort menu
+ * and the spam toggle do not ride along, because either would make this a
+ * NIP-50 query for an ORDER and the page would be saying "latest" over a
+ * ranked list. That is why the feed view hides the Filters disclosure rather
+ * than leaving controls on screen that this ask cannot carry.
+ *
+ * What it DOES send is `feedSearchString` — the lens declaration and nothing
+ * else, which the relay now requires of any read and which carries neither an
+ * order nor a floor on a termless filter. See its own doc below: the shape is
+ * still `{ kinds, limit }` plus the one token that makes it answerable.
  *
  * `kinds` is the exception, and the reason the chip row stays: it is a field
  * of this filter, not an extension on a search string, so the tab narrows the

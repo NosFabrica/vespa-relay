@@ -73,10 +73,18 @@ import kotlin.test.fail
 class SearchReferenceExpansionTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
-    /** Counts the store recalls a REQ costs, so "not expanded" can be told from "expanded to nothing". */
+    /**
+     * Counts the store recalls a REQ costs, so "not expanded" can be told from
+     * "expanded to nothing" — and records the queries, because
+     * [InMemoryEventIndex] documents that it IGNORES the observer gate
+     * (`minRank`/`observer`). The lens a lookup is made under therefore cannot
+     * be seen in what comes back on the wire; it can only be seen in what was
+     * asked. Same seam [RelayProtocolTest] asserts its NIP-50 extensions on.
+     */
     private class CountingIndex : EventIndex {
         val inner = InMemoryEventIndex()
         val searches = AtomicInteger(0)
+        val queries: MutableList<EventQuery> = Collections.synchronizedList(mutableListOf())
 
         override suspend fun get(id: String) = inner.get(id)
 
@@ -86,6 +94,7 @@ class SearchReferenceExpansionTest {
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
             searches.incrementAndGet()
+            queries.add(query)
             return inner.search(query)
         }
 
@@ -598,6 +607,194 @@ class SearchReferenceExpansionTest {
                             """{"kinds":[30392],"authors":["${curator.pubKey}"],"search":"$lens"}""",
                     )
                 assertEquals(listOf(list.id), page, "the plain half's rows must not expand")
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a sibling filter's waiver does not unlens the subject lookup`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+                index.queries.clear()
+
+                // The searching filter asks to be ranked through the reader.
+                // The sibling is a plain recall that waives a lens, which is
+                // what every reference read the page makes looks like. Pooling
+                // a subscription's lenses would recall the FIRST filter's
+                // subjects with the trust floor off — a search that asked for
+                // the reader's web of trust answered with records that web of
+                // trust excludes.
+                page(
+                    session,
+                    out,
+                    "sibling",
+                    """{"kinds":[0,30392],"search":"podcaster observer:${reader.pubKey}"},""" +
+                        """{"kinds":[1],"search":"include:spam"}""",
+                )
+
+                // The subject lookups, by their shape: recalls keyed on an id
+                // or on (kind 0, author), which no filter of this REQ asks for.
+                // The REQ's OWN second filter legitimately carries the waiver —
+                // it is the client's plain recall — and the 10040 lookup
+                // deliberately does; neither is what this is about.
+                val subjectLookups =
+                    synchronized(index.queries) {
+                        index.queries.filter { it.ids.isNotEmpty() || (it.kinds == listOf(0) && it.authors.isNotEmpty()) }
+                    }
+                assertTrue(subjectLookups.isNotEmpty(), "the search should have looked a subject up at all")
+                subjectLookups.forEach {
+                    assertEquals(reader.pubKey, it.observer, "a subject is read through the search's own observer: $it")
+                    assertTrue(!it.includeSpam, "and never with a floor a sibling filter waived: $it")
+                }
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `an observer on a non-searching filter does not unlock the expansion`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // The SEARCH declares no lens, so it has no enrolment to check
+                // and must expand no list. That the sibling recall names an
+                // observer is neither here nor there: it is not the filter that
+                // found the list. The sibling is aimed at an author with
+                // nothing published so its own hits cannot muddy the page.
+                assertEquals(
+                    listOf(list.id),
+                    page(
+                        session,
+                        out,
+                        "borrowed",
+                        """{"kinds":[0,30392],"search":"podcaster include:spam"},""" +
+                            """{"kinds":[1],"authors":["${"f0".repeat(32)}"],"search":"include:spam observer:${reader.pubKey}"}""",
+                    ),
+                    "a lensless search must not borrow a sibling's observer",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `an a-coordinate is matched however the publisher spelled it`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // Nostr hex is lower-case by convention and the store holds it
+                // that way, but nothing stops a publisher writing the member
+                // with an upper-case pubkey — `Address.parse` accepts it, and
+                // an unnormalized reader recalls the article and then drops it
+                // for failing to equal its own raw tag string. Same shape as an
+                // `naddr1…` member, which `Address.parse` also decodes.
+                val article =
+                    podcaster.sign<Event>(
+                        1_700_001_000L,
+                        30023,
+                        arrayOf(arrayOf("d", "loud-notes"), arrayOf("title", "Loud notes")),
+                        "brambles, loudly",
+                    )
+                val shelf =
+                    curator.sign<Event>(
+                        1_700_001_100L,
+                        30394,
+                        arrayOf(
+                            arrayOf("d", "loud"),
+                            arrayOf("title", "Shouty Shelf"),
+                            arrayOf("a", "30023:${podcaster.pubKey.uppercase()}:loud-notes"),
+                        ),
+                        "",
+                    )
+                publish(session, out, article, shelf)
+
+                assertEquals(
+                    listOf(shelf.id, article.id),
+                    page(session, out, "loud", """{"kinds":[30023,30394],"search":"shouty $lens"}"""),
+                    "an upper-case coordinate names the same event",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a pubkey subject the REQ cannot admit does not spend the budget`() =
+        runBlocking {
+            val capped = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits(maxPerRequest = 1))
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = capped.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // Dated BEFORE the kind-30392 list and read back with
+                // `sort:recent`, so the ORDER is pinned rather than left to
+                // whatever the engine ranks first: the pubkey-naming list is
+                // seen before the event-naming one, which is the only order in
+                // which the bug can show at all.
+                val episodes =
+                    curator.sign<Event>(
+                        1_700_000_150L,
+                        30393,
+                        arrayOf(arrayOf("d", "eps"), arrayOf("title", "Podcaster Episodes"), arrayOf("e", note.id)),
+                        "",
+                    )
+                publish(session, out, episodes)
+
+                // One subject of budget for the whole REQ. The list comes first
+                // and names a PUBKEY — which this REQ, admitting no kind 0, can
+                // never be answered with. Charging the budget for it anyway
+                // leaves nothing for the note the 30393 list names, which the
+                // REQ very much does admit.
+                val page = page(session, out, "budget", """{"kinds":[1,30392,30393],"search":"podcaster sort:recent $lens"}""")
+                assertEquals(list.id, page.first(), "the order this test rests on: the pubkey list is seen first")
+                assertTrue(note.id in page, "the event subject must still be reachable: $page")
+            } finally {
+                session.close()
+                capped.close()
+            }
+        }
+
+    @Test
+    fun `a search for the external-id family costs no enrolment lookup`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // 30385 and 30395 are the NIP-73 external-id pair: their
+                // subjects are urls and ISBNs, not nostr events, so they can
+                // never expand. A REQ naming nothing else must therefore stay
+                // off the page-collecting path entirely — and above all must
+                // not pay the 10040 recall that gates a family it cannot
+                // expand.
+                val external =
+                    curator.sign<Event>(
+                        1_700_002_000L,
+                        30395,
+                        arrayOf(arrayOf("d", "isbns"), arrayOf("title", "Bookshelf Roster"), arrayOf("i", "isbn:9780134685991")),
+                        "",
+                    )
+                publish(session, out, external)
+
+                val before = index.searches.get()
+                assertEquals(
+                    listOf(external.id),
+                    page(session, out, "external", """{"kinds":[30395],"search":"bookshelf $lens"}"""),
+                    "the list is served; it just has nothing to unpack",
+                )
+                assertEquals(1, index.searches.get() - before, "and it costs exactly its own query")
             } finally {
                 session.close()
             }

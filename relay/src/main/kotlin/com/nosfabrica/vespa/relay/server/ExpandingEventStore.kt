@@ -171,7 +171,11 @@ internal class ExpandingEventStore(
         val searching = SearchReferenceExpansion.searching(filters)
         if (searching.isEmpty()) return null
         if (!SearchReferenceExpansion.couldPoint(searching)) return null
-        val observers = SearchReferenceExpansion.observersOf(filters, coroutineContext[StoreQueryContext]?.observer)
-        return SearchReferenceExpansion(filters, searching, observers, enrolment, limits) { inner.query<Event>(it) }
+        // The connection's NIP-42 identity, which a filter's own `observer:`
+        // overrides per filter — the expansion resolves that itself, because
+        // WHICH lens applies is a per-filter question and answering it here
+        // would flatten a subscription's several lenses into one.
+        val connection = coroutineContext[StoreQueryContext]?.observer
+        return SearchReferenceExpansion(filters, searching, connection, enrolment, limits) { inner.query<Event>(it) }
     }
 }

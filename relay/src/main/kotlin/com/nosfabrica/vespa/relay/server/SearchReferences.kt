@@ -24,7 +24,6 @@ import com.vitorpamplona.quartz.experimental.trustedLists.addressables.Addressab
 import com.vitorpamplona.quartz.experimental.trustedLists.addressables.tags.AddressMemberTag
 import com.vitorpamplona.quartz.experimental.trustedLists.events.EventTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.events.tags.EventMemberTag
-import com.vitorpamplona.quartz.experimental.trustedLists.externalIds.ExternalIdTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.UserTrustedListEvent
 import com.vitorpamplona.quartz.experimental.trustedLists.users.tags.PubKeyMemberTag
 import com.vitorpamplona.quartz.nip01Core.core.Address
@@ -39,7 +38,6 @@ import com.vitorpamplona.quartz.nip01Core.tags.people.PTag
 import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.addressables.AddressableAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.events.EventAssertionEvent
-import com.vitorpamplona.quartz.nip85TrustedAssertions.externalIds.ExternalIdAssertionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import com.vitorpamplona.quartz.utils.Hex
 
@@ -77,8 +75,11 @@ import com.vitorpamplona.quartz.utils.Hex
  *
  * The 5-suffixed pair (30385, 30395) carries NIP-73 EXTERNAL identifiers —
  * urls, ISBNs, podcast guids. There is no nostr event to add for those, so
- * they are absent from [KINDS] and expand to nothing rather than to a lookup
- * that could never hit.
+ * they are absent from [KINDS] AND from [DECLARATIONS], which is load-bearing
+ * twice over: a row of those kinds is never materialized to read tags that
+ * cannot name an event, and a REQ that asks for nothing else never reaches the
+ * page-collecting path or pays the enrolment lookup that gates a family it
+ * cannot expand.
  *
  * A Trusted List's OTHER reference tags are metadata, not membership, and are
  * deliberately not read: `aboutAddresses()` / `aboutPubKeys()` say what the
@@ -112,11 +113,9 @@ internal object SearchReferences {
             ContactCardEvent.KIND,
             EventAssertionEvent.KIND,
             AddressableAssertionEvent.KIND,
-            ExternalIdAssertionEvent.KIND,
             UserTrustedListEvent.KIND,
             EventTrustedListEvent.KIND,
             AddressableTrustedListEvent.KIND,
-            ExternalIdTrustedListEvent.KIND,
         )
 
     /** Whether [kind] is a Trusted List or Trusted Assertion, and so gated on its signer. */
@@ -137,7 +136,7 @@ internal object SearchReferences {
                 References(
                     eventIds = event.tags.mapNotNull(ETag::parseId),
                     pubKeys = event.tags.mapNotNull(PTag::parseKey),
-                    addresses = event.tags.mapNotNull(ATag::parseAddressId),
+                    addresses = event.tags.mapNotNull { canonical(ATag.parseAddressId(it)) },
                 )
             }
 
@@ -162,13 +161,7 @@ internal object SearchReferences {
             }
 
             AddressableTrustedListEvent.KIND -> {
-                References(addresses = event.tags.mapNotNull(AddressMemberTag::parseAddressId))
-            }
-
-            // 30385 / 30395 are the NIP-73 external-id pair, and a hashtag or a
-            // relay url on a label is not a record either.
-            ExternalIdAssertionEvent.KIND, ExternalIdTrustedListEvent.KIND -> {
-                References.NONE
+                References(addresses = event.tags.mapNotNull { canonical(AddressMemberTag.parseAddressId(it)) })
             }
 
             else -> {
@@ -185,7 +178,22 @@ internal object SearchReferences {
     private fun TagArray.subjectKey(): HexKey? = dTag().takeIf { it.length == 64 && Hex.isHex64(it) }
 
     /** An assertion's `d` tag read as an a-coordinate, `kind:pubkey:d`. */
-    private fun TagArray.subjectAddress(): String? = dTag().takeIf { Address.parse(it) != null }
+    private fun TagArray.subjectAddress(): String? = canonical(dTag())
+
+    /**
+     * An `a` value as `kind:lowercase-hex:d`, or null when it names no
+     * addressable event.
+     *
+     * NORMALIZED HERE so both sides of the match are the same string. The
+     * lookup recalls by (kind, author, `d`) and the result is recognized again
+     * by reassembling the coordinate from the event's OWN fields, which are
+     * canonical — so a member published as `naddr1…` (which `Address.parse`
+     * decodes) or with an upper-case pubkey would be fetched and then silently
+     * dropped for failing to equal its own raw tag string. Nostr hex is
+     * lower-case by convention and the store holds it that way, so the
+     * publisher's spelling is the side that gives.
+     */
+    private fun canonical(raw: String?): String? = raw?.let { Address.parse(it) }?.let { Address.assemble(it.kind, it.pubKeyHex.lowercase(), it.dTag) }
 }
 
 /**

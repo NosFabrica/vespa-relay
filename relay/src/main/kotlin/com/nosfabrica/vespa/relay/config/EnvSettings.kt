@@ -158,8 +158,14 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
                 "false", "0", "no", "off" -> false
                 else -> true
             },
-        maxPerEvent = env.intOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent)?.coerceAtLeast(0) ?: d.maxPerEvent,
-        maxPerRequest = env.intOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest)?.coerceAtLeast(0) ?: d.maxPerRequest,
+        // `coerceAtLeast(0)` here turned `-1` into a cap of ZERO — the feature
+        // on and adding nothing, which is the silent inertness this codebase
+        // forbids and the opposite of what the KDoc above promises. A negative
+        // is unparseable in spirit and keeps the default, like every other
+        // limit in this file; zero is honoured as zero, and the boot log says
+        // so.
+        maxPerEvent = env.capOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent),
+        maxPerRequest = env.capOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest),
     )
 }
 
@@ -194,6 +200,17 @@ private fun parseIntSet(
                 ?: throw IllegalArgumentException("$varName must be a list of kind numbers, got \"$it\"")
         }?.toSet()
         .orEmpty()
+
+/** Parse an env var as a non-negative cap, keeping [fallback] when absent, blank, negative or unparseable. */
+private fun Map<String, String>.capOr(
+    key: String,
+    fallback: Int,
+): Int =
+    this[key]
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.toIntOrNull()
+        ?.takeIf { it >= 0 } ?: fallback
 
 /** Parse an env var as Int, keeping [fallback] when absent, blank, or unparseable. */
 private fun Map<String, String>.intOr(

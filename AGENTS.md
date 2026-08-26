@@ -482,7 +482,15 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         own precedence — read through `Filter.observerLens`, the
                         SAME acceptance test LensRequiredPolicy gates on, so a
                         REQ cannot be understood one way by the gate and another
-                        here. An anonymous `include:spam` read therefore expands
+                        here. PER SEARCHING FILTER AND NEVER POOLED, which is a
+                        HOLE if it is not: a filter saying `include:spam` beside
+                        one saying `observer:X` would lend its waiver to the
+                        other's subjects, and a search asking to be ranked
+                        through X would come back carrying records X's web of
+                        trust excludes. Each hit's subjects are recalled under
+                        the lens of the searching filter that FOUND it, so a
+                        two-lens subscription costs one lookup per lens rather
+                        than pooling them. An anonymous `include:spam` read therefore expands
                         no list at all: nobody's services to check. Labels are
                         deliberately NOT gated — anyone may label anything, and
                         a label had to survive the trust-ranked search to be a
@@ -569,7 +577,11 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         a 30382's `d`) resolves to that author's KIND 0; an `e`
                         or an `a` resolves to that event. The 5-suffixed pair
                         (30385/30395) is NIP-73 EXTERNAL ids and expands to
-                        nothing, as do a label's `r` and `t`. A list's `p`/`a`
+                        nothing, as do a label's `r` and `t` — and they are
+                        absent from DECLARATIONS as well as KINDS, so a REQ
+                        naming only them never reaches the page-collecting path
+                        or pays the enrolment recall that gates a family it
+                        cannot expand. A list's `p`/`a`
                         tags on the OTHER kinds are metadata (`aboutPubKeys`,
                         `aboutAddresses`) and are never followed. Kind dispatch
                         is the point: the forced quartz pin means a jar without
