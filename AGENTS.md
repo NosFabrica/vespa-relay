@@ -232,6 +232,18 @@ reach for it before inventing a fixture, because the things a fixture gets
 wrong (how big a lens is, what a real 10040 names, what a full corpus card
 looks like) are exactly what it can hand you.
 
+- **what it holds, counted over the wire 2026-08-26** (NIP-45 COUNT, one per
+  kind): kind 0 **54.9M**, kind 1 **149.5M**, NIP-32 labels (1985) **1.34M**,
+  NIP-85 contact cards (30382) **32.6M**, provider lists (10040) **337** — and
+  **ZERO** of 30383, 30384, 30385 and the whole Trusted List family
+  30392-30395. Reach for this before assuming a kind is populated: two
+  assumptions behind the search reference expansion were wrong in exactly this
+  way, and `ProductionCorpusIT` now pins both. The 337 provider lists are also
+  the only honest sample of which NIP-85 DIMENSIONS are used in the wild —
+  `30382:rank` (328) but also `followers`, `hops`,
+  `personalizedGrapeRank_influence`, `personalizedPageRank`, which is why
+  anything reading a 10040 for enrolment must take every dimension rather than
+  filtering to `rank` the way TrustNotice does for its own narrower question.
 - **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
   42, 45, 50, 62, 77, 86; `auth_required` is false, and still false now that
   reads DECLARE A LENS (`LensRequiredPolicy`): both ways past that gate are
@@ -541,7 +553,32 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         service — `EnrolledSigners` caches it per reader, exact
                         on this process's own writes and TTL-bounded for the
                         mirror's, and the arm went +74% -> +44%
-    ExpandingEventStore.kt  WHERE THE EXPANSION ACTUALLY RUNS: an IEventStore
+    ProductionCorpusIT.kt  THE FEATURE AGAINST A REAL VESPA AND SOMEBODY
+                        ELSE'S DATA — a corpus pulled off staging by
+                        `resources/production-corpus-tool/fetch-corpus.mjs`
+                        (node 21+, no deps, not committed: other people's
+                        public events, megabytes, and AGENTS.md's own rule is
+                        to reach for staging rather than invent a fixture).
+                        Off unless `-DitVespa` and `-DitCorpus` are given, and
+                        BOTH have to be forwarded in build.gradle.kts or a
+                        forked test JVM never sees them. It asks the question
+                        the unit tests cannot — whether the thing the code was
+                        written for EXISTS in the corpus — and on 2026-08-26,
+                        1,788 events into a real engine, two of the answers
+                        were a surprise. Both are now asserted rather than
+                        assumed, so the day either changes the test says so:
+                        production holds ZERO kinds 30392-30395 (the Trusted
+                        List family is real in quartz and unpublished in the
+                        wild, which is why that half is exercised with one
+                        synthetic list over REAL member profiles — a list must
+                        be signed BY the service key and that key is not ours),
+                        and every sampled kind-30382 carries only metrics — `d`,
+                        `rank`, `followers`, `hops`, `reporters`, `muters` — so
+                        `indexableContent()` is EMPTY and no contact card can be
+                        a search hit at all. The assertion half of the expansion
+                        is therefore inert against today's corpus; the label
+                        half is fully live and fully real, label and target both
+        ExpandingEventStore.kt  WHERE THE EXPANSION ACTUALLY RUNS: an IEventStore
                         decorator overriding exactly the two callback shapes a
                         REQ's stored replay rides — `query(filters, onEach)` and
                         `rawQuery`. THE SEAM IS THE WHOLE POINT. Up in
