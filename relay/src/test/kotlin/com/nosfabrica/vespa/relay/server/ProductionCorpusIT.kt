@@ -122,15 +122,117 @@ class ProductionCorpusIT {
     // ------------------------------------------------------------------
 
     @Test
-    fun `the Trusted List family is absent from production, so its half is exercised synthetically`() {
+    fun `the Trusted List kinds are populated by squatters, none of them searchable`() {
         skip()?.let { return println(it) }
-        val lists = corpus.filter { it.kind in 30392..30395 }
+        val inRange = corpus.filter { it.kind in 30392..30395 }
+        assertTrue(inRange.size > 10, "expected the kind range to be populated in production, got ${inRange.size}")
+
+        // NOT Tapestry lists. Those kind numbers are already in use by
+        // unrelated apps — an omikuji fortune generator on 30394, WireGuard
+        // room records and `trusted-attestor:` entries on 30392, an Alexandria
+        // corpus manifest on 30393 — and the same is true on nos.lol,
+        // relay.damus.io, relay.primal.net, nostr.wine and purplepag.es, none
+        // of which held a single titled one when this was written. The family
+        // is real in quartz and unpublished in the wild.
+        //
+        // What makes them harmless is a coincidence rather than a design:
+        // `TrustedListEvent.indexableContent()` is `title() ?: ""`, none of
+        // them carries a `title`, so all of them index the EMPTY STRING and
+        // none can be a search hit. That is the whole reason the expansion
+        // never fires on them — and at least one 30392 squatter carries a `p`
+        // tag that a titled version would have offered up as a member.
+        val titled = inRange.filter { it.tags.any { t -> t.size > 1 && t[0] == "title" } }
         assertEquals(
             emptyList(),
-            lists.map { it.id },
-            "production has started publishing Trusted Lists — the synthetic case below can become a real one",
+            titled.map { it.id },
+            "a titled event appeared on 30392-30395: either Tapestry has a publisher now, or a squatter just became reachable",
         )
+        println("PRODUCTION-IT kinds 30392-30395: ${inRange.size} events, ${inRange.count { it.tags.any { t -> t.size > 1 && t[0] == "p" } }} carrying a `p` tag, 0 titled")
     }
+
+    @Test
+    fun `a real Trusted List kind event is searchable by hashtag, and expands only for a reader who enrolled its signer`() =
+        withRelay { relay, store ->
+            // THE COLLISION, DRIVEN RATHER THAN REASONED ABOUT — and the one
+            // assumption in this file that turned out to be wrong.
+            //
+            // These are REAL production kind-30392 events that are not Tapestry
+            // lists at all: `d=trusted-attestor:<hex>`, a `t` hashtag, and a
+            // `p` that our reader will take for a curated member, because
+            // `EventFactory` maps the kind and hands the relay a
+            // `UserTrustedListEvent` regardless of what the publisher meant.
+            //
+            // "No title, so it indexes the empty string, so it can never be a
+            // hit" was the argument for why that is harmless. It is WRONG: the
+            // store indexes hashtags too, so `["t","trusted-attestor"]` makes
+            // this untitled event perfectly reachable by text. What actually
+            // keeps it from splicing a stranger's profile into a stranger's
+            // feed is the ENROLMENT GATE, and this is that gate earning its
+            // keep on data nobody wrote for it.
+            val profiles = corpus.filter { it.kind == 0 }.map { it.pubKey }.toSet()
+            val squatters =
+                corpus.filter { e ->
+                    e.kind == 30392 && e.tags.any { it.size > 1 && it[0] == "p" && it[1] in profiles }
+                }
+            if (squatters.isEmpty()) return@withRelay println("PRODUCTION-IT no 30392 naming a pubkey whose profile is in this corpus")
+            val hashtag =
+                squatters
+                    .first()
+                    .tags
+                    .firstOrNull { it.size > 1 && it[0] == "t" }
+                    ?.get(1)
+                    ?: return@withRelay println("PRODUCTION-IT the 30392 squatters carry no hashtag in this corpus")
+            val named = squatters.flatMap { e -> e.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] } }.filter { it in profiles }.toSet()
+            println("PRODUCTION-IT squatters: ${squatters.size} on 30392, hashtag=$hashtag, naming ${named.size} pubkeys we hold profiles for")
+
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = relay.connect { out.add(it) }
+            try {
+                // Anonymous: reachable, and expanding nothing. Nobody's
+                // services to check, so a list from a signer nobody named
+                // stays a list.
+                val anon = page(session, out, "anon", """{"kinds":[0,30392],"search":"$hashtag include:spam"}""")
+                assertTrue(
+                    squatters.any { it.id in anon },
+                    "an untitled 30392 is still reachable by its hashtag — that is the point of this case: $anon",
+                )
+                assertTrue(
+                    named.none { pk -> corpus.any { it.kind == 0 && it.pubKey == pk && it.id in anon } },
+                    "a lensless read must expand no list, whoever published it: $anon",
+                )
+
+                // Now a reader who really has named those signers as services.
+                // Only the 10040 is ours; the list, the member and the profile
+                // are all production events.
+                val reader = NostrSignerSync()
+                val enrolment =
+                    reader.sign<Event>(
+                        1_700_000_000L,
+                        10040,
+                        squatters.map { arrayOf("30382:rank", it.pubKey, "wss://provider.example") }.toTypedArray(),
+                        "",
+                    )
+                store.batchInsert(listOf(enrolment))
+
+                val lensed =
+                    page(session, out, "enrolled", """{"kinds":[0,30392],"search":"$hashtag include:spam observer:${reader.pubKey}"}""")
+                val splicedProfiles = corpus.filter { it.kind == 0 && it.pubKey in named && it.id in lensed }
+                assertEquals(
+                    named,
+                    splicedProfiles.map { it.pubKey }.toSet(),
+                    "every named pubkey whose profile this relay holds must ride in: $lensed",
+                )
+                val first = lensed.indexOf(squatters.first { it.id in lensed }.id)
+                val itsMember = squatters.first { it.id in lensed }.tags.first { it.size > 1 && it[0] == "p" && it[1] in profiles }[1]
+                assertEquals(
+                    corpus.first { it.kind == 0 && it.pubKey == itsMember }.id,
+                    lensed[first + 1],
+                    "and directly behind the list that named it: $lensed",
+                )
+            } finally {
+                session.close()
+            }
+        } ?: Unit
 
     @Test
     fun `production contact cards carry no indexable text, so no card can be a search hit`() {

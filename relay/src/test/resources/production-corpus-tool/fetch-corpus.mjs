@@ -55,19 +55,40 @@ const run = (asks) =>
 await run(PAGES);
 console.error(`pages: ${out.length} events`);
 
-// Second pass: whatever the labels point at, by id. This is the half that
-// makes the expansion assertions mean anything — a real label pointing at a
-// real note this relay actually holds.
+// Second pass: whatever the pointers point AT. This is the half that makes the
+// expansion assertions mean anything — a real label pointing at a real note,
+// and a real 30392's `p` resolving to a real profile — so the corpus has to be
+// closed under "what this event names" rather than just a sample of kinds.
 const targets = new Set();
+const people = new Set();
 for (const e of out) {
-  if (e.kind !== 1985) continue;
-  for (const t of e.tags) if (t[0] === "e" && typeof t[1] === "string" && t[1].length === 64) targets.add(t[1]);
+  const pointer = e.kind === 1985 || (e.kind >= 30392 && e.kind <= 30395) || e.kind === 30382;
+  if (!pointer) continue;
+  for (const t of e.tags) {
+    if (typeof t[1] !== "string" || t[1].length !== 64) continue;
+    if (t[0] === "e") targets.add(t[1]);
+    if (t[0] === "p") people.add(t[1]);
+  }
+  // A 30382's subject is its `d`, not a `p`.
+  if (e.kind === 30382) {
+    const d = e.tags.find((t) => t[0] === "d");
+    if (d && typeof d[1] === "string" && d[1].length === 64) people.add(d[1]);
+  }
 }
 const chunks = [];
 const all = [...targets];
 for (let i = 0; i < all.length; i += 200) chunks.push(all.slice(i, i + 200));
-await run(chunks.map((ids, n) => ({ id: "t" + n, filter: { ids, search: SPAM } })));
-console.error(`+ targets: ${out.length} events total`);
+const asks = chunks.map((ids, n) => ({ id: "t" + n, filter: { ids, search: SPAM } }));
+
+// The profiles of everyone a pointer names, so a subject lookup has something
+// real to find. Capped: a 30382 page names hundreds of subjects and the point
+// is a corpus that closes, not a mirror of the relay.
+const who = [...people].slice(0, 600);
+for (let i = 0; i < who.length; i += 200) {
+  asks.push({ id: "w" + i, filter: { kinds: [0], authors: who.slice(i, i + 200), search: SPAM } });
+}
+await run(asks);
+console.error(`+ targets and profiles: ${out.length} events total`);
 
 mkdirSync(DIR, { recursive: true });
 writeFileSync(`${DIR}/corpus.jsonl`, out.map((e) => JSON.stringify(e)).join("\n") + "\n");
