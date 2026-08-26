@@ -31,160 +31,110 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 159afc0423 = amethyst main through #3958. The range over 1866007e99 is wide
-# (NIP-19 scanning, PoW mining, Cashu, the content parsers) and almost none of it
-# is ours; the two commits that reach this repo are the fix for the pool-registry
-# leak we reported as #154:
+# 98f09f29c0 = amethyst main @ 2026-08-25 (PR #3983). The range over 159afc0423
+# is 66 commits, and exactly THREE of them touch `quartz/` — the Tapestry
+# Trusted List family (kinds 30392-30395) landing in three steps:
 #
-#   ca89b30f  release pool request/count state rows when a sub is removed
-#   18bd078a  release the sub row on unsubscribe even while the client is inactive
+#   c0f812e4  implement the Tapestry Trusted List family (30392-30395)
+#   509075ab  guard trusted-list member hints, drop member-scan allocations
+#   f5f8f605  index Trusted List titles for NIP-50 search
 #
-# WHAT WAS WRONG, because the shape matters more than the commit titles.
-# `PoolRequests.remove()` dropped a sub from `desiredSubs` and dropped its
-# listener, but left its `RequestSubscriptionState` in `relayState` — and
-# `onConnecting` / `onDisconnected` / `onCannotConnect` scan that map IN FULL on
-# every relay lifecycle event. Every `fetchAll*` mints a fresh `newSubId()`, so
-# the map was not "requests we hold", it was "every request either plane has ever
-# made", and a connect cost O(all subs ever created). Measured here, driving
-# `PoolRequests` through NostrClient's exact subscribe/unsubscribe sequence with
-# ZERO live subs the whole time — every entry timed is garbage:
+# ADDITIVE, in the strict sense: `git diff --shortstat 159afc0423..98f09f29c0 --
+# quartz/` reads 35 files changed, 2646 insertions, ZERO deletions. Thirty-two
+# of those files are the new `experimental/trustedLists/` package; the rest is
+# four `KIND ->` branches in `EventFactory`, four rows in `KindNames`, and a
+# SQLite `SearchTest` case. Nothing this repo compiles against moved, which is
+# why this bump costs no source change here — and the whole suite confirms it
+# rather than the diff alone.
 #
-#   subs churned        1,000    5,000   20,000   50,000  100,000
-#   1866007e99 ms/conn   0.067    0.570    2.063    6.204   21.038
-#   159afc0423 ms/conn   0.000    0.002    0.000    0.001    0.001
+# WHY WE MOVE IT AT ALL, since none of the new kinds are ours: the store pin
+# below asks for this exact commit, and `resolutionStrategy { force(libs.quartz)
+# }` means OUR pin is what every module resolves. Left at 159afc0423 the store's
+# newly searchable kinds would be silently inert — that quartz has no
+# `EventFactory` branch for 30392-30395, so `doc.toEvent()` hands back a base
+# `Event`, the store's `is SearchableEvent ->` mirror never fires, and the four
+# kinds are stored with empty search text. Nothing throws; the titles simply
+# never become findable. That silent no-op is exactly the failure mode the force
+# can produce, and the reason a store bump that moves the store's own quartz ask
+# ABOVE our pin has to move this line too. `TrustedListSearchTest` pins the
+# working direction so the pair cannot drift apart unnoticed again, and it was
+# confirmed to FAIL on 159afc0423 before this line moved — a pin test that
+# cannot fail on the old pin is pinning nothing.
 #
-# That is the staging collapse in one line: at ~100 connects/s a registry of that
-# size IS the 6.42 of 12 cores the thread dumps found inside the scan, and it is
-# why the fitness pass ran 3h09m for zero passes while the probe executor sat at
-# 0.0s of CPU. On this pin the registry holds LIVE subs only, so the scan is
-# bounded by what we actually hold: 200 open tails cost 0.077 ms per connect.
+# DIRECTION: 159afc0423 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates), and so is 1866007e99, the store's PREVIOUS
+# ask. The store now asks for this commit exactly — the equality case, where
+# forcing changes nothing about which jar is used.
 #
-# THE FIX IS NOT THE OBVIOUS ONE-LINER, which is worth knowing before anyone
-# "simplifies" it. The row cannot be dropped inside `remove()`: the CLOSE frame is
-# decided from the filters that row still holds, so dropping it there stops the
-# CLOSE being sent and leaks the subscription ON THE RELAY instead. Quartz
-# releases the row after the CLOSE has been handed to the socket, and its
-# `PoolRequestsRegistryLeakTest` guards both directions. Our own probe confirmed
-# the same on this pin: 100,000 removals, 100,000 CLOSEs still sent.
-#
-# NOT SOURCE-BREAKING. `PoolRequests.subState` became private — no call site here,
-# and none in the store's jars either (checked; the store never touches the pool).
-# `INostrClient` gains `registrySizes()` WITH a default, so `FitnessPass.client`
-# and `Healer.client` still compile untouched. That accessor exists so a host can
-# alarm on registry growth, which is #154's third ask and is still unwired here.
-#
-# WATCH AT RUNTIME, since the rest of the range was written for an app and we are
-# a server: `NostrClient` now ages out `CachingEventDecoder` every 30s while
-# active and clears it outright on `disconnect()`. It is a parse-dedup cache, so
-# the cost of dropping it is re-parses and never correctness, and nothing here
-# reads or configures the decoder.
-#
-# DIRECTION: 1866007e99 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates). The store pin below is UNCHANGED and asks for
-# 1866007e99 — an ancestor this time, not the equality case the last bump had, and
-# the only quartz change in the range is one the store never calls.
-#
-# LEXICOGRAPHIC: '159…' < '186…' ('5' < '8'), so this sorts BELOW the pin it
-# replaces — the dangerous direction, as the last two quartz bumps also were, and
-# here the store is actively asking for the higher string. `resolutionStrategy {
-# force(libs.quartz) }` in every module is what makes that survivable rather than
-# lucky. Ordering settles nothing about whether the pin took; only the resolved
-# graph does, and on this bump it reads `1866007e99 -> 159afc0423` under the store
-# with no unforced line left:
+# LEXICOGRAPHIC: '98f0…' > '159a…' ('9' > '1'), so this sorts ABOVE the pin it
+# replaces — the safe direction, which the last three bumps on this line did
+# not have.
+# Ordering settles nothing about whether the pin took; only the resolved graph
+# does, and on this bump every quartz line reads 98f09f29c0 with no `->` left
+# anywhere, the store's included:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "159afc0423"
+quartz = "98f09f29c0"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 95ded7b3de = store main through PR #83 (`Add a recency term to text
-# ranking`). The range over 84664f9ab0 is TWO PRs, ten commits, 41 files
-# (+2119/-471) — PR #82, a dead-API sweep plus an audit pass, and PR #83,
-# recency in text ranking. Read off `git log --oneline 84664f9ab0..` and
-# `git diff --stat`, not the titles. Both halves reach this repo: one costs a
-# source change here, the other changes the ORDER of every ranked page we
-# serve. No migration and no reindex.
+# eaee359357 = store main through PR #84 (`Index Quartz's Trusted Lists`). The
+# range over 95ded7b3de is one PR, four commits, and NO store source at all —
+# `git diff --stat` reads seven files: this store's own quartz pin, a new
+# `TrustedListIndexingTest`, a README row and three imported skill docs. The
+# store's Kotlin is byte-identical to the last pin. What the bump carries is
+# the QUARTZ ask, and that is why the line above moved with it.
 #
-# SOURCE-BREAKING, one site. PR #82 deleted `EventIndex.distinctAuthors` —
-# `countByAuthor` was always the same grouping with the counts kept, so it
-# absorbed it — along with `countDistinctAuthors`, `countByKind`, the store's
-# `distinctAuthors(Filter)`/`distinctDTags`, `EventQuery.notKinds` and
-# `EventYql.RANK_FILTERED`. Production code here calls NONE of them: the
-# stats page never went through the port (`StatsYql` builds and posts its own
-# groupings, deliberately). The one call site was `RelayProtocolTest`'s
-# RecordingIndex, which overrode `distinctAuthors` to delegate; it overrides
-# `countByAuthor` for the same reason now, and StatsYql's KDoc no longer
-# names the two builders that went with them.
+# WHAT IT BUYS: kinds 30392-30395 — the Tapestry Trusted List family, a curated
+# membership published under one point of view, the bulk form of a NIP-85
+# assertion — become SEARCHABLE. `SearchExtractors` mirrors quartz's searchable
+# set rather than deciding it, so upstream implementing `SearchableEvent` on
+# `TrustedListEvent` (`indexableContent() = title() ?: ""`) is the whole
+# mechanism: no store code changed, and the store's test flipped from pinning
+# the absence to pinning the title. The searchable set goes 126 classes / 129
+# kind values -> 130 / 133. The recall side never needed this — `#p`/`#e`/`#a`/
+# `#i` over `tag_index` already served a 2,000-member list entry for entry, and
+# the store's own test pins that too.
 #
-# THE SCHEMA MOVES, and it ships by itself: `deployBundledSchema` deploys the
-# store's own application package on EVERY boot, so the jar carries it. Four
-# new rank inputs (`now_secs`, `recency_halflife`, `w_recency`,
-# `w_recency_text`) and four new functions; `pubkey_gram` and its `grams`
-# fieldset gone (a trigram index over every 64-hex pubkey, referenced by
-# nothing), `rank_filtered` gone. Nothing to re-feed: the new functions read
-# `attribute(created_at)`, already resident, and the dropped field only frees
-# its index. A deploy that fails leaves the cluster on the schema it has and
-# the process up (the warning says so) — the recency term is query()-side, so
-# what that degrades to is the ordering we serve today.
+# THE TITLE ALONE is indexed: `metric` names a computation and `d` identifies
+# the list, so a search for a common word must not return every list that ran
+# the same job; the member tags are hex ids and `content` is a JSON echo of the
+# same membership. A titleless list indexes "" rather than throwing —
+# `indexableContent()` runs inside the insert transaction.
 #
-# WHAT WE SERVE CHANGES: ranked reads get a recency tiebreak. `w_recency` 0.1
-# with a 30-day half-life on the TRUST profiles (the pure-text knob ships
-# 0.0), as a `max(1.0, 1 + w*freshness())` multiplier — >= 1 by construction,
-# so `rank-score-drop-limit` deletes exactly what it deleted before and the
-# match set is bit-identical; only the order moves. The store measured it on
-# a real staging slice (4596 events captured read-only, re-fed with their real
-# NIP-85 trust): the top-50 for "bitcoin" under a trust lens went from median
-# age 993d to 7d at this weight, match counts identical on every row, and when
-# the sweep was re-run after the audit dropped the kind-0 exemption every
-# pinned position still held. Nothing in THIS repo pins ranked order — the
-# relay's tests rank through `InMemoryEventIndex`, which does not rank — so
-# the web feed and every `search:` REQ are where this is visible. Age is a
-# DISTANCE from the query's clock, which is why the corpus's 2100-dated notes
-# read as old rather than maximally fresh, and the store now stamps ONE
-# instant per request so sibling filters in a REQ cannot merge scores taken
-# from two clocks.
+# THE TIER IS NOT THE ONE A TITLED KIND USUALLY GETS, and the store's comment is
+# explicit that it is observed rather than endorsed: upstream gave the family no
+# `SearchFieldExtractor` branch, so it takes the generic `is SearchableEvent ->`
+# fallback, which puts the whole string in the TERTIARY tier — `search_text`,
+# the BODY column, not `search_primary`. A list title is therefore weighted like
+# note content and reached by trigram substring rather than the prefix/typo
+# attributes every other titled kind enjoys: "podcast" finds "Podcaster", a typo
+# does not. The fix, if we want one, is one branch UPSTREAM, never a local
+# divergence — which tier an accessor lands in is Quartz's call.
 #
-# ALSO IN RANGE, all of it ours to use: a REQ carrying a big `limit` is
-# served WHOLE instead of erroring. `limit: 5000` came back an ERROR from
-# production — the tie-slack overfetch was added BEFORE the profile was
-# picked, so past `band - 64` the query moved onto `unranked`, where a
-# match-phase-degraded response is refused rather than reconciled; paging
-# now walks the band on a created_at cursor instead. That is not a corner
-# case for us: since #157 `defaultLimit` IS 5,000, so every REQ naming no
-# limit asks the store for exactly the number that errored. Also: multi-filter
-# searches no longer interleave scores from two different rank profiles (a REQ
-# where one filter resolved an observer and another did not read as one
-# scale); NIP-45 COUNT and NIP-09 a-tag deletion fan out bounded-concurrently
-# instead of running their filters one at a time under the writer lock. New
-# knob: `VESPA_MATCH_PHASE_MAX_HITS` mirrors the schema's max-hits and is PER
-# CONTENT NODE — same together-or-not rule as `VESPA_UNBOUNDED_HITS` above.
+# A MIGRATION APPLIES, and it is the fed-field one: search text is data we WRITE
+# on put, so the four kinds already in the corpus carry none until
+# `REINDEX_FTS_ON_START` walks it (new writes are indexed immediately). The
+# store's drift check re-puts a document whose extracted columns differ from the
+# stored ones, which is precisely this case — unlike `search_text_gram`, the
+# derived column that walk cannot repair. Procedure and the distinction:
+# docs/migrations.md.
 #
-# THE GATE IS GREEN AT THIS COMMIT, per this file's rule that a bump waits
-# for the store's own integration gate: `:benchmark:test -Pintegration` run
-# HERE against 95ded7b3de on a real Vespa in Docker — 11 tests, 0 skipped,
-# 0 failures, 14m47s, RankRegressionIT (the recency claims) among them.
-# `InMemoryEventIndex` can see none of this; the schema deploy, the recency
-# functions and the paged limit are all Vespa-side.
+# THE GATE IS GREEN AT THIS COMMIT, per this file's rule: `:benchmark:test
+# -Pintegration` run HERE against eaee359357 on a real Vespa in Docker — 11
+# tests, 0 skipped, 0 failures, 11m05s. No schema movement in this range, so there is
+# nothing for a deploy to do and no upgrade path to probe this time.
 #
-# AND THE UPGRADE PATH, which that gate CANNOT see — it deploys onto an empty
-# cluster every time, while ours has a schema and a corpus already. Probed
-# here: old package deployed to a live Vespa, one event fed so the dropped
-# `pubkey_gram` had data behind it, then the new package on top.
-# `prepareandactivate` accepted it with `{"restart": [], "refeed": [],
-# "reindex": []}` — no operator action, nothing to re-feed — the container
-# kept serving, the doc was still there, and a query naming the new
-# `query(now_secs)` input answered.
+# DIRECTION: 95ded7b3de is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates). The store's own quartz ask moves 1866007e99 ->
+# 98f09f29c0 across the range (via 509075abde), which is the line above, now
+# equal to it.
 #
-# DIRECTION: 84664f9ab0 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates), and the store's own quartz is UNCHANGED at
-# 1866007e99 — its version catalog is untouched across the whole range. One
-# pin moves.
-#
-# LEXICOGRAPHIC: '95de…' > '8466…' ('9' > '8'), so this sorts ABOVE the pin
-# it replaces — the SAFE direction for once. Four modules declare the store
-# (:common, :relay, :sync, :peers) but all through this one alias, so there
-# is a single string on the graph and nothing for ordering to settle. The
-# resolved graph is still the proof:
+# LEXICOGRAPHIC: 'eaee…' > '95de…' ('e' > '9'), so this sorts ABOVE the pin it
+# replaces — the safe direction, and both pins move that way on this bump. Four
+# modules declare the store (:common, :relay, :sync, :peers), all through this
+# one alias, so there is a single string on the graph and nothing for ordering
+# to settle. The resolved graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "95ded7b3de"
+vespaEventStore = "eaee359357"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
