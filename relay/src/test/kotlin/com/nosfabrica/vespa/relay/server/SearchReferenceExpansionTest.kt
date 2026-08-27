@@ -26,11 +26,16 @@ import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -801,6 +806,122 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
+    fun `many pointers naming one subject send it once, at the first that named it`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // Five labels, one note. This is not a corner case: in a
+                // production sample 76 targets are named by more than one
+                // label and ten of them by ten labels each, so a page of
+                // labels on a busy topic converges on the same handful of
+                // notes. Without the `sent` set that is five copies of one
+                // note on one subscription.
+                val many =
+                    (0 until 5).map { i ->
+                        curator.sign<Event>(
+                            1_700_003_000L + i,
+                            1985,
+                            arrayOf(arrayOf("L", "dup"), arrayOf("l", "duplikat", "dup"), arrayOf("e", note.id)),
+                            "",
+                        )
+                    }
+                publish(session, out, *many.toTypedArray())
+
+                // page() asserts distinctness for every case in this file, so
+                // the duplicate would fail here even without the count below —
+                // this states the property the file is being asked about.
+                val page = page(session, out, "dup", """{"kinds":[1,1985],"search":"duplikat $lens"}""")
+                assertEquals(1, page.count { it == note.id }, "the note must be sent exactly once: $page")
+                // The first label in PAGE order, which is the search's order —
+                // not the order they were written here.
+                val firstLabel = page.indexOfFirst { id -> many.any { it.id == id } }
+                assertEquals(
+                    firstLabel + 1,
+                    page.indexOf(note.id),
+                    "and directly behind the first label the search ranked: $page",
+                )
+                assertEquals(6, page.size, "five labels and one note, nothing else: $page")
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a subject that is also a hit keeps its own rank and is not spliced early`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // The note carries the searched word itself, so it is a HIT of
+                // this search as well as the subject of the label above it.
+                // The row wins: it goes where the search ranked it, and the
+                // splice gives way. The reverse — splicing it early and
+                // dropping the row — would move an event the client ordered by
+                // relevance to a position relevance did not choose.
+                val labelled = podcaster.sign<Event>(1_700_004_000L, 1, emptyArray(), "duplikato in the note itself")
+                val label =
+                    curator.sign<Event>(
+                        1_700_004_100L,
+                        1985,
+                        arrayOf(arrayOf("L", "dup"), arrayOf("l", "duplikato", "dup"), arrayOf("e", labelled.id)),
+                        "",
+                    )
+                publish(session, out, labelled, label)
+
+                val page = page(session, out, "both", """{"kinds":[1,1985],"search":"duplikato $lens"}""")
+                assertEquals(1, page.count { it == labelled.id }, "exactly once: $page")
+                assertEquals(setOf(label.id, labelled.id), page.toSet(), "both, and only both: $page")
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a row the store hands back twice still goes out once`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+            } finally {
+                session.close()
+            }
+
+            // The store this relay runs on does not do this — `recallOrdered`
+            // dedups by id across a REQ's filters — so nothing above would
+            // notice if the guard went. But [ExpandingEventStore] is the thing
+            // ADDING events to a page, and a page it builds should be free of
+            // duplicates because of what IT does rather than because of what
+            // its store promises. This is that contract, stated against a store
+            // that breaks the promise.
+            val doubling =
+                object : IEventStore by store {
+                    override suspend fun rawQuery(
+                        filters: List<Filter>,
+                        onEach: (RawEvent) -> Unit,
+                    ) = store.rawQuery(filters) { raw ->
+                        onEach(raw)
+                        onEach(raw)
+                    }
+                }
+            val expanding =
+                ExpandingEventStore(doubling, SearchExpansionLimits.Default, EnrolledSigners(recall = { store.query<Event>(it) }))
+
+            val ids = ArrayList<String>()
+            withContext(StoreQueryContext(setOf(reader.pubKey))) {
+                expanding.rawQuery(listOf(Filter(kinds = listOf(0, 30392), search = "podcaster $lens"))) { ids.add(it.id) }
+            }
+            val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
+            assertEquals(emptySet(), twice, "a doubled row must not double on the wire: $ids")
+            assertTrue(list.id in ids, "and the page is still served: $ids")
+        }
+
+    @Test
     fun `a lens token is not a search, and costs no lookups at all`() =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())
@@ -884,9 +1005,18 @@ class SearchReferenceExpansionTest {
         session.receive("""["REQ","$subId",$filter]""")
         awaitMessage(out) { it.startsWith("""["EOSE","$subId"]""") }
         val prefix = """["EVENT","$subId","""
-        return synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
-            ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
-        }
+        val ids =
+            synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
+                ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
+            }
+        // EVERY page this suite reads, checked for duplicates. NIP-01 asks a
+        // relay not to send one event twice on a subscription, and a feature
+        // whose whole job is to ADD events to a page is the one most likely to
+        // break that — so the check lives here rather than in a test of its
+        // own, and every case in the file pays for it.
+        val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
+        assertEquals(emptySet(), twice, "sent twice on \"$subId\": $twice")
+        return ids
     }
 
     private fun awaitMessage(

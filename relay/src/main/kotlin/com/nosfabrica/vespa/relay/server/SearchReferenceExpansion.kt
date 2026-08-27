@@ -283,18 +283,24 @@ internal class SearchReferenceExpansion(
         rows: List<T>,
         idOf: (T) -> String,
         pointerOf: (T) -> Event?,
-    ): List<List<Event>> {
-        val nothing = rows.map { emptyList<Event>() }
+    ): Expanded {
+        // Recorded BEFORE anything is planned, and that is what keeps each row
+        // at its own ranked position: a subject that is also a hit further down
+        // the page must be served where the SEARCH put it, not spliced in early
+        // behind whatever pointer happens to name it.
+        //
+        // `add` answering false is the OTHER half of the same set: the row's id
+        // has already gone out, so the row must not. That cannot happen from
+        // the store — `recallOrdered` dedups by id across a REQ's filters — but
+        // this class is the one ADDING events to a page, and a page it makes
+        // must be free of duplicates because of what it does rather than
+        // because of what its store promises. NIP-01 asks a relay not to send
+        // one event twice on a subscription, and on this corpus the near-miss
+        // is routine: 76 targets in a production sample are named by more than
+        // one label, ten of them by ten labels each.
+        val fresh = BooleanArray(rows.size) { i -> sent.add(idOf(rows[i])) }
+        val nothing = Expanded(fresh, rows.map { emptyList() })
         if (budget <= 0 || lenses.isEmpty()) return nothing
-
-        // The rows are recorded as sent BEFORE anything is planned, and that is
-        // what keeps each at its own ranked position: a subject that is also a
-        // hit further down the page must be served where the SEARCH put it, not
-        // spliced in early behind whatever pointer happens to name it. NIP-01
-        // asks a relay not to send one event twice on a subscription, and on
-        // this corpus the duplicate is the common case rather than the corner
-        // one — a label and the note it labels both match "bitcoin".
-        rows.forEach { sent.add(idOf(it)) }
 
         // ONE PASS over the batch, and it stops materializing the moment the
         // request budget is spent. Reading a row's pointers costs a tags parse
@@ -339,8 +345,21 @@ internal class SearchReferenceExpansion(
         val found = lookUp(planned, lensOfRow)
         if (found.all(Found::isEmpty)) return nothing
 
-        return planned.mapIndexed { i, refs -> if (lensOfRow[i] == NO_LENS) emptyList() else admit(refs, found[lensOfRow[i]]) }
+        return Expanded(
+            fresh,
+            planned.mapIndexed { i, refs -> if (lensOfRow[i] == NO_LENS) emptyList() else admit(refs, found[lensOfRow[i]]) },
+        )
     }
+
+    /**
+     * What a page becomes: which of its rows may still go out, and what rides
+     * in behind each. Index-aligned with the rows the caller handed in.
+     */
+    class Expanded(
+        /** False for a row whose id this subscription has already sent. */
+        val fresh: BooleanArray,
+        val subjects: List<List<Event>>,
+    )
 
     /**
      * What this row may bring, under both caps, in the order it named them.

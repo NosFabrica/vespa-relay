@@ -101,10 +101,10 @@ internal class ExpandingEventStore(
         val expansion = expansionFor(filters) ?: return inner.query(filters, onEach)
         val rows = ArrayList<Event>()
         inner.query<Event>(filters) { rows.add(it) }
-        val subjects = expansion.expand(rows, Event::id) { it }
+        val expanded = expansion.expand(rows, Event::id) { it }
         rows.forEachIndexed { i, row ->
-            onEach(row as T)
-            subjects[i].forEach { onEach(it as T) }
+            if (expanded.fresh[i]) onEach(row as T)
+            expanded.subjects[i].forEach { onEach(it as T) }
         }
     }
 
@@ -121,15 +121,17 @@ internal class ExpandingEventStore(
         val expansion = expansionFor(filters) ?: return inner.rawQuery(filters, onEach)
         val rows = ArrayList<RawEvent>()
         inner.rawQuery(filters) { rows.add(it) }
-        val subjects =
+        val expanded =
             expansion.expand(rows, RawEvent::id) { raw ->
                 if (raw.kind in SearchReferences.KINDS) raw.toEvent() else null
             }
         rows.forEachIndexed { i, row ->
-            onEach(row)
+            // `fresh` is what makes the no-duplicates property this decorator's
+            // own rather than one it inherits from the store — see `expand`.
+            if (expanded.fresh[i]) onEach(row)
             // A subject IS a stored event — the lookup that found it is a store
             // recall — so it rides the same frame path as the rest of the page.
-            subjects[i].forEach { onEach(RawEvent.fromEvent(it)) }
+            expanded.subjects[i].forEach { onEach(RawEvent.fromEvent(it)) }
         }
     }
 

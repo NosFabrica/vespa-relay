@@ -462,6 +462,41 @@ class ProductionCorpusIT {
         } ?: Unit
 
     @Test
+    fun `no page of the production corpus sends an event twice`() =
+        withRelay { relay, _ ->
+            // The shape that makes this a real question rather than a
+            // hypothetical: in this corpus 76 labelled events are named by more
+            // than one label and ten of them by ten labels each, so a search on
+            // a busy label value converges several hits on one subject. Every
+            // page() in this file already asserts distinctness; this walks the
+            // label values that actually collide, so the assertion is aimed at
+            // the pages most likely to break it.
+            val byTarget = HashMap<String, MutableSet<String>>()
+            for (label in corpus.filterIsInstance<LabelEvent>()) {
+                val value = label.labels().map { it.label }.firstOrNull { it.length > 2 } ?: continue
+                for (target in label.labeledEvents()) byTarget.getOrPut(target) { HashSet() }.add(value)
+            }
+            val contested =
+                byTarget.values
+                    .flatten()
+                    .groupBy { it }
+                    .entries
+                    .sortedByDescending { it.value.size }
+                    .map { it.key }
+                    .distinct()
+            assertTrue(contested.isNotEmpty(), "expected label values with targets in this corpus")
+            println("PRODUCTION-IT checking ${minOf(contested.size, 8)} contested label values for duplicates")
+
+            for (value in contested.take(8)) {
+                // page() throws on a duplicate, so reaching the end is the
+                // assertion. The kinds are wide open so the subjects are
+                // admitted and the splice actually happens.
+                val page = page(relay, "dup-${value.hashCode()}", """{"limit":200,"search":"$value include:spam"}""")
+                assertTrue(page.isNotEmpty(), "\"$value\" should still match its own labels")
+            }
+        } ?: Unit
+
+    @Test
     fun `a plain recall over the production corpus is answered exactly as before`() =
         withRelay { relay, store ->
             val plain = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
@@ -504,9 +539,18 @@ class ProductionCorpusIT {
         session.receive("""["REQ","$subId",$filter]""")
         awaitMessage(out) { it.startsWith("""["EOSE","$subId"]""") }
         val prefix = """["EVENT","$subId","""
-        return synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
-            ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
-        }
+        val ids =
+            synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
+                ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
+            }
+        // EVERY page this suite reads, checked for duplicates. NIP-01 asks a
+        // relay not to send one event twice on a subscription, and a feature
+        // whose whole job is to ADD events to a page is the one most likely to
+        // break that — so the check lives here rather than in a test of its
+        // own, and every case in the file pays for it.
+        val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
+        assertEquals(emptySet(), twice, "sent twice on \"$subId\": $twice")
+        return ids
     }
 
     private fun awaitMessage(
