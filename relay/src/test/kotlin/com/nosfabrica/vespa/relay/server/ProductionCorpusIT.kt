@@ -122,32 +122,27 @@ class ProductionCorpusIT {
     // ------------------------------------------------------------------
 
     @Test
-    fun `the Trusted List kinds are populated by squatters, none of them searchable`() {
+    fun `the Trusted List kinds carry both real lists and squatters, and the corpus needs two relays to see it`() {
         skip()?.let { return println(it) }
         val inRange = corpus.filter { it.kind in 30392..30395 }
-        assertTrue(inRange.size > 10, "expected the kind range to be populated in production, got ${inRange.size}")
+        val titled = inRange.filter { e -> e.tags.any { it.size > 1 && it[0] == "title" && it[1].isNotBlank() } }
+        val untitled = inRange - titled.toSet()
+        println("PRODUCTION-IT kinds 30392-30395: ${inRange.size} events — ${titled.size} titled, ${untitled.size} untitled")
 
-        // NOT Tapestry lists. Those kind numbers are already in use by
-        // unrelated apps — an omikuji fortune generator on 30394, WireGuard
-        // room records and `trusted-attestor:` entries on 30392, an Alexandria
-        // corpus manifest on 30393 — and the same is true on nos.lol,
-        // relay.damus.io, relay.primal.net, nostr.wine and purplepag.es, none
-        // of which held a single titled one when this was written. The family
-        // is real in quartz and unpublished in the wild.
-        //
-        // What makes them harmless is a coincidence rather than a design:
-        // `TrustedListEvent.indexableContent()` is `title() ?: ""`, none of
-        // them carries a `title`, so all of them index the EMPTY STRING and
-        // none can be a search hit. That is the whole reason the expansion
-        // never fires on them — and at least one 30392 squatter carries a `p`
-        // tag that a titled version would have offered up as a member.
-        val titled = inRange.filter { it.tags.any { t -> t.size > 1 && t[0] == "title" } }
-        assertEquals(
-            emptyList(),
-            titled.map { it.id },
-            "a titled event appeared on 30392-30395: either Tapestry has a publisher now, or a squatter just became reachable",
+        // THE REAL FAMILY, and it took a second relay to find: the search relay
+        // holds none of it, and its 54 events on these kinds are squatters —
+        // an omikuji fortune generator on 30394, WireGuard room records and
+        // `trusted-attestor:` entries on 30392, an Alexandria manifest on
+        // 30393. nos.lol, relay.damus.io, relay.primal.net, nostr.wine and
+        // purplepag.es hold the same kind of thing. The Tapestry lists live on
+        // tapestry.brainstorm.world, with `title`, `metric`, `observer`,
+        // `min-rank` and `cutoff` exactly as quartz models them.
+        assertTrue(titled.size > 100, "expected the tapestry relay's Trusted Lists in the corpus, got ${titled.size}")
+        assertTrue(untitled.size > 10, "expected the search relay's squatters too, got ${untitled.size}")
+        assertTrue(
+            titled.all { e -> e.tags.any { it.size > 1 && it[0] == "metric" } },
+            "a Tapestry list carries a `metric`; these do not look like the family",
         )
-        println("PRODUCTION-IT kinds 30392-30395: ${inRange.size} events, ${inRange.count { it.tags.any { t -> t.size > 1 && t[0] == "p" } }} carrying a `p` tag, 0 titled")
     }
 
     @Test
@@ -170,9 +165,13 @@ class ProductionCorpusIT {
             // feed is the ENROLMENT GATE, and this is that gate earning its
             // keep on data nobody wrote for it.
             val profiles = corpus.filter { it.kind == 0 }.map { it.pubKey }.toSet()
+            // UNTITLED on purpose: a titled 30392 is a real Tapestry list and
+            // has its own case below. These are the collisions.
             val squatters =
                 corpus.filter { e ->
-                    e.kind == 30392 && e.tags.any { it.size > 1 && it[0] == "p" && it[1] in profiles }
+                    e.kind == 30392 &&
+                        e.tags.none { it.size > 1 && it[0] == "title" && it[1].isNotBlank() } &&
+                        e.tags.any { it.size > 1 && it[0] == "p" && it[1] in profiles }
                 }
             if (squatters.isEmpty()) return@withRelay println("PRODUCTION-IT no 30392 naming a pubkey whose profile is in this corpus")
             val hashtag =
@@ -350,56 +349,115 @@ class ProductionCorpusIT {
             }
         } ?: Unit
 
-    @Test
-    fun `a trusted list of real pubkeys splices their real profiles in`() =
-        withRelay { _, store ->
-            // The one synthetic pointer, for the reason the class KDoc gives.
-            // Everything it names is real: the members are pubkeys whose kind-0
-            // profiles came off staging, and the profiles are what has to come
-            // back.
-            val members = corpus.filter { it.kind == 0 }.take(3)
-            assertTrue(members.size == 3, "need real profiles in the corpus to be pointed at")
+    /**
+     * A real titled Trusted List whose members this relay also holds profiles
+     * for, and whose title shares no word with any of them — the condition the
+     * whole feature rests on, since a member the search could find by itself
+     * proves nothing.
+     */
+    private fun realList(): Chain? {
+        val profiles = corpus.filter { it.kind == 0 }.associateBy { it.pubKey }
+        for (list in corpus.filter { it.kind == 30392 }) {
+            val title = list.tags.firstOrNull { it.size > 1 && it[0] == "title" && it[1].isNotBlank() }?.get(1) ?: continue
+            val words = title.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 }
+            if (words.isEmpty()) continue
+            val members =
+                list.tags
+                    .filter { it.size > 1 && it[0] == "p" }
+                    .mapNotNull { profiles[it[1]] }
+                    .filter { profile -> words.none { it in profile.content.lowercase() } }
+            if (members.isNotEmpty()) return Chain(list, title, members)
+        }
+        return null
+    }
 
-            val service = NostrSignerSync()
+    private class Chain(
+        val list: Event,
+        val title: String,
+        val members: List<Event>,
+    )
+
+    @Test
+    fun `no reader currently enrols the Trusted List publisher, so the enrolment is the one thing synthesized`() {
+        skip()?.let { return println(it) }
+        val signers = corpus.filter { it.kind == 30392 && it.tags.any { t -> t.size > 1 && t[0] == "metric" } }.map { it.pubKey }.toSet()
+        // Kind 10040 is REPLACEABLE, so what counts is the newest version per
+        // author — exactly what the store keeps, and the reason this is not
+        // just `corpus.any`. Merging two relays hands you both versions, and an
+        // earlier draft of this file built a "real trust chain" out of the
+        // superseded one and then could not explain why the relay refused it.
+        val current = corpus.filterIsInstance<TrustProviderListEvent>().groupBy { it.pubKey }.mapValues { (_, v) -> v.maxBy { it.createdAt } }
+        val enrolling = current.values.filter { it.tags.serviceProviders().any { p -> p.pubkey in signers } }
+        println("PRODUCTION-IT ${current.size} current provider lists; ${enrolling.size} of them enrol a Trusted List publisher")
+        assertEquals(
+            emptyList(),
+            enrolling.map { it.id },
+            "somebody's current 10040 now enrols the list publisher — the case below can drop its synthetic enrolment",
+        )
+    }
+
+    @Test
+    fun `a real Trusted List splices the real profiles of the members it names`() =
+        withRelay { _, store ->
+            val chain = realList() ?: return@withRelay println("PRODUCTION-IT no titled list with usable member profiles")
+            println("PRODUCTION-IT list ${chain.list.id.take(12)} \"${chain.title}\" by ${chain.list.pubKey.take(12)}, ${chain.members.size} member profiles held")
+
+            // The list, its title, its members and their profiles are all
+            // production events off the tapestry relay. The ONE synthetic thing
+            // is the enrolment, and the test above says why it has to be: the
+            // only observer who ever named this publisher as a service replaced
+            // that 10040 in August with one naming somebody else, so today
+            // these lists expand for nobody. A reader who DID name them would
+            // see this.
             val reader = NostrSignerSync()
-            val marker = "vespaitroster${System.nanoTime()}"
             val enrolment =
                 reader.sign<Event>(
                     1_700_000_000L,
                     10040,
-                    arrayOf(arrayOf("30382:rank", service.pubKey, "wss://provider.example")),
+                    arrayOf(arrayOf("30382:rank", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
                     "",
                 )
-            val list =
-                service.sign<Event>(
-                    1_700_000_100L,
-                    30392,
-                    arrayOf(arrayOf("d", marker), arrayOf("title", marker)) + members.map { arrayOf("p", it.pubKey) },
-                    "",
-                )
-            store.batchInsert(listOf(enrolment, list))
+            store.batchInsert(listOf(enrolment))
 
             val relay = NostrRelayServer(store, relayUrl)
-            val out = Collections.synchronizedList(mutableListOf<String>())
-            val session = relay.connect { out.add(it) }
+            val plain = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
             try {
-                val lens = "include:spam observer:${reader.pubKey}"
-                val page = page(session, out, "roster", """{"kinds":[0,30392],"search":"$marker $lens"}""")
-                assertEquals(list.id, page.firstOrNull(), "the list is the hit: $page")
+                val filter = """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:${reader.pubKey}"}"""
+
+                // The control first, so the assertion below cannot be luck: on
+                // the same engine and the same query, without the expansion,
+                // none of these profiles is reachable at all.
+                val without = page(plain, "plain", filter)
+                assertTrue(chain.list.id in without, "the list is a hit of its own title either way: $without")
                 assertEquals(
-                    members.map { it.id }.toSet(),
-                    page.drop(1).toSet(),
-                    "every real member profile must ride in behind it",
+                    emptyList(),
+                    chain.members.map { it.id }.filter { it in without },
+                    "a member profile must not be recallable by the list's title on its own",
                 )
 
-                // And not for a reader who never enrolled that service.
+                val withIt = page(relay, "chain", filter)
+                assertEquals(
+                    emptyList(),
+                    chain.members.map { it.id }.filterNot { it in withIt },
+                    "every held member profile must ride in behind the list that names it: $withIt",
+                )
+                assertTrue(
+                    withIt.indexOf(chain.members.first().id) > withIt.indexOf(chain.list.id),
+                    "a member follows its list, never precedes it: $withIt",
+                )
+
+                // And a reader who enrolled nobody gets the list alone.
                 val stranger = NostrSignerSync()
-                val ungated =
-                    page(session, out, "stranger", """{"kinds":[0,30392],"search":"$marker include:spam observer:${stranger.pubKey}"}""")
-                assertEquals(listOf(list.id), ungated, "an unenrolled reader gets the list and nothing else")
+                val ungated = page(relay, "stranger", """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:${stranger.pubKey}"}""")
+                assertTrue(chain.list.id in ungated, "the list is still served, whoever is reading")
+                assertEquals(
+                    emptyList(),
+                    chain.members.map { it.id }.filter { it in ungated },
+                    "but no member rides in for a reader who enrolled nobody",
+                )
             } finally {
-                session.close()
                 relay.close()
+                plain.close()
             }
         } ?: Unit
 

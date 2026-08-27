@@ -236,23 +236,22 @@ looks like) are exactly what it can hand you.
   NIP-32 labels (1985) **1.34M**, NIP-85 contact cards (30382) **32.6M**,
   provider lists (10040) **337**, and on the Trusted List kinds **30392: 9,
   30393: 1, 30394: 44, 30395: 0**. Count off **`/stats.json`**, whose `kinds`
-  section is a grouping over the whole store — a per-kind COUNT is fine too but
-  a corpus this live drifts between asks, and an earlier read of these numbers
+  section groups over the whole store — a per-kind COUNT is fine too but a
+  corpus this live drifts between asks, and an earlier read of these numbers
   reported the 30392-30395 range as empty when it was not.
-  **NONE of those 54 are Tapestry lists.** Those kind numbers are already taken
-  by unrelated apps — an omikuji fortune generator on 30394, WireGuard room
-  records and `trusted-attestor:` entries on 30392, an Alexandria corpus
-  manifest on 30393 — and the same is true of nos.lol, relay.damus.io,
-  relay.primal.net, nostr.wine and purplepag.es, none of which held a titled
-  one when this was checked. The family is real in quartz and unpublished in
-  the wild, so anything testing it is testing a shape production does not have
-  yet, and anything READING it will meet squatters first.
-  The 337 provider lists are also the only honest sample of which NIP-85
-  DIMENSIONS are used in the wild — `30382:rank` (328) but also `followers`,
-  `hops`, `personalizedGrapeRank_influence`, `personalizedPageRank`, which is
-  why anything reading a 10040 for enrolment must take every dimension rather
-  than filtering to `rank` the way TrustNotice does for its own narrower
-  question.
+  **NONE of those 54 are Tapestry lists**: those kind numbers are squatted by
+  an omikuji fortune generator on 30394, WireGuard room records and
+  `trusted-attestor:` entries on 30392, an Alexandria manifest on 30393 — and
+  nos.lol, relay.damus.io, relay.primal.net, nostr.wine and purplepag.es hold
+  the same sort of thing. **The real family is on
+  `wss://tapestry.brainstorm.world/relay`** (below), so anything testing it
+  needs that relay and anything READING these kinds will meet squatters first.
+  The 337 provider lists are the only honest sample of which NIP-85 DIMENSIONS
+  are used in the wild — `30382:rank` (328) but also `followers`, `hops`,
+  `personalizedGrapeRank_influence`, `personalizedPageRank`, which is why
+  anything reading a 10040 for enrolment must take every dimension rather than
+  filtering to `rank` the way TrustNotice does for its own narrower question.
+
 - **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
   42, 45, 50, 62, 77, 86; `auth_required` is false, and still false now that
   reads DECLARE A LENS (`LensRequiredPolicy`): both ways past that gate are
@@ -264,6 +263,24 @@ looks like) are exactly what it can hand you.
   the shape that gets it. (Staging runs deployed code, so check what it
   actually does before concluding a local change is wrong: `auth-required`
   means the gate has shipped there, an answer means it has not yet.)
+- **`wss://tapestry.brainstorm.world/relay` — where the Trusted Lists actually
+  are.** 500+ titled kinds 30392/30393 and a couple of 30394, every one of them
+  carrying `title`, `metric`, `observer`, `min-rank` and `cutoff` exactly as
+  quartz models the family, plus 14 kind-10040s. All 500 are signed by ONE
+  publisher, `919ba08af7786892…`. Two things about it cost real time:
+  it **answers a filter carrying `search` with silence** rather than a refusal
+  — NIP-50 says ignore an unsupported extension, and ignoring the TOKEN is not
+  the same as ignoring the FIELD — so a corpus fetched with the search relay's
+  mandatory `include:spam` on every filter comes back complete-looking and
+  without a single list in it. `fetch-corpus.mjs` therefore asks each relay
+  once, with a lensless probe, which kind of reader it wants.
+  And **kind 10040 is REPLACEABLE**: merging two relays hands you several
+  versions of one author's provider list, only the newest of which the store
+  keeps. Exactly one 10040 version anywhere names the Tapestry publisher as a
+  service, and its author replaced it in August with one naming somebody else —
+  so as of now those lists expand for NOBODY, and a "real trust chain" built out
+  of the superseded version is a test that asserts the relay is broken. Group by
+  author and take the newest, the way the store does.
 - **the diagnostics `:relay` serves** — `/stats.json`, `/stats.html`,
   `/observer_stats.html`, `/pressure`, `/` (NIP-11 with
   `Accept: application/nostr+json`). These are the same pages this repo builds,
@@ -563,44 +580,44 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         on this process's own writes and TTL-bounded for the
                         mirror's, and the arm went +74% -> +44%
     ProductionCorpusIT.kt  THE FEATURE AGAINST A REAL VESPA AND SOMEBODY
-                        ELSE'S DATA — a corpus pulled off staging by
+                        ELSE'S DATA — a corpus pulled off TWO real relays by
                         `resources/production-corpus-tool/fetch-corpus.mjs`
-                        (node 21+, no deps, not committed: other people's
-                        public events, megabytes, and AGENTS.md's own rule is
-                        to reach for staging rather than invent a fixture). The
-                        tool closes the corpus over what the pointers NAME —
-                        the events labels point at, the profiles of everyone a
-                        label or a list or a card names — because a subject
-                        lookup with nothing to find asserts nothing. Off unless
-                        `-DitVespa` and `-DitCorpus` are given, and BOTH have to
-                        be forwarded in build.gradle.kts or a forked test JVM
-                        never sees them. It asks the question the unit tests
-                        cannot — whether the thing the code was written for
-                        EXISTS in the corpus — and it has now corrected two of
-                        this file's own claims, which is the whole argument for
-                        having it:
+                        (node 21+, no deps, not committed: other people's public
+                        events, megabytes, and AGENTS.md's own rule is to reach
+                        for staging rather than invent a fixture). Two relays
+                        because neither has the whole picture — the search relay
+                        has the labels, the cards and the profiles, the tapestry
+                        relay has the Trusted List family — and the tool closes
+                        the corpus over what the pointers NAME, because a
+                        subject lookup with nothing to find asserts nothing. Off
+                        unless `-DitVespa` and `-DitCorpus` are given, and BOTH
+                        have to be forwarded in build.gradle.kts or a forked
+                        test JVM never sees them. It asks the question the unit
+                        tests cannot — whether the thing the code was written
+                        for EXISTS — and it has corrected this file three times
+                        now, which is the whole argument for having it:
                         THE LABEL HALF IS FULLY REAL and is the bulk of what
                         production publishes: a real 1985 carrying `l=zapped`
-                        brings back the real kind-1 note it points at, at the
-                        label's own position, and the control asserts the note
-                        is unreachable by that search with the expansion off.
+                        brings back the real note it points at, at the label's
+                        own position, with a control asserting that note is
+                        unreachable by that search with the expansion off.
+                        THE LIST HALF IS REAL TOO, off the tapestry relay — a
+                        real titled list, its real members, their real profiles,
+                        and the same control. It synthesizes exactly ONE event,
+                        the enrolment, because no reader's current 10040 names
+                        that publisher any more; that is asserted, so the day
+                        somebody enrols them the test says the synthesis can go.
                         NO CONTACT CARD IS SEARCHABLE: every sampled 30382
-                        carries only metrics (`d`, `rank`, `followers`, `hops`,
-                        `reporters`, `muters`), so `indexableContent()` is EMPTY
+                        carries only metrics, so `indexableContent()` is EMPTY
                         and the assertion half is inert against today's corpus.
-                        THE LIST KINDS ARE SQUATTED, not empty as an earlier
-                        read of this file claimed — and the argument that made
-                        that harmless ("untitled, so it indexes the empty string
-                        and can never be a hit") is WRONG: the store indexes
-                        HASHTAGS too, so a real `["t","trusted-attestor"]` on an
-                        untitled 30392 makes it perfectly reachable by text, and
-                        its `p` tag is one our reader takes for a curated
-                        member. What actually stops a stranger's profile landing
-                        in a stranger's feed is the ENROLMENT GATE, and the test
-                        drives exactly that on the real events: anonymous, the
-                        squatters are hits and expand nothing; with a 10040 that
-                        names their signers — the one synthetic event in the
-                        case — the real profiles ride in behind them
+                        AND THE SQUATTERS ARE REACHABLE: "untitled, so it
+                        indexes the empty string and can never be a hit" is
+                        WRONG — the store indexes HASHTAGS, so a real
+                        `["t","trusted-attestor"]` on an untitled 30392 makes it
+                        findable, and its `p` is one our reader takes for a
+                        member. What stops a stranger's profile landing in a
+                        stranger's feed is the ENROLMENT GATE, driven here on
+                        the real events rather than argued about
     ExpandingEventStore.kt  WHERE THE EXPANSION ACTUALLY RUNS: an IEventStore
                         decorator overriding exactly the two callback shapes a
                         REQ's stored replay rides — `query(filters, onEach)` and
