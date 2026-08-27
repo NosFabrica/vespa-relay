@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, limitsOf, poolsByStreamOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, limitsOf, poolsByStreamOf, poolsFrom, rotationOf, scheduleOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -206,11 +206,15 @@ function statusRow(progress) {
  * only mark that moves.
  */
 function poolsPanel(progress) {
-  const pools = poolsOf(progress);
-  if (!pools) return null;
+  // COLLECTED ONCE and grouped twice: the two cuts are the same rows, and
+  // walking the document per cut allocated a second object per held relay for
+  // a set that cannot have changed in between.
+  const held = heldRows(progress);
+  if (!held.rows.length) return null;
+  const pools = poolsFrom(progress, held);
   const box = el("div");
   box.appendChild(poolLine(pools.totals));
-  const perStream = poolsByStreamOf(progress);
+  const perStream = poolsByStreamOf(progress, held);
   if (perStream.length > 1) {
     box.appendChild(poolTally(pools.groups, pools.totals));
     for (const section of perStream) box.appendChild(streamPools(section));
@@ -229,23 +233,26 @@ function poolsPanel(progress) {
 }
 
 /**
- * HOW BIG THE POOL IS — one line, above the four tables that divide it.
+ * HOW BIG THE POOL IS — one line, above the tables that divide it.
  *
  * The tables answer "how many are doing this" and cannot answer "out of how
  * many", which is the first thing asked of any of them: nine relays working is
  * a healthy rotation against a roster of four hundred and a stalled one
  * against a roster of twelve.
  *
- * ONE POOL, not one per stream, and the line says so — every visit-mode stream
- * shares the queue, the workers and the tail budget, and a relay two streams
- * both want is one relay here. That is also why the size cannot be added up
- * from the stream rows above: those are shares, and they overlap.
+ * ONE FUNCTION FOR BOTH CUTS, because they are one line. The mirror's names
+ * two denominators — relays and stream-visits — since a relay two streams both
+ * want is one relay and two units; a single stream's are the same number, so
+ * that mark is dropped rather than drawn twice under a heading that would
+ * invite reading them as different. Everything else, including the tail
+ * caveat, is the same sentence and now lives in one place: written twice, the
+ * "between visits" prose had already drifted between the two copies.
  *
- * The first three marks PARTITION the roster; the tail count crosses them,
- * because a tailed relay keeps its tail while it is revisited. Drawn last and
- * said in its title, so the line is never read as four parts of one whole.
+ * The first marks PARTITION the roster; the tail count crosses them, because a
+ * tailed relay keeps its tail while it is revisited. Drawn last and said in
+ * its title, so the line is never read as parts of one whole.
  */
-function poolLine(totals) {
+function poolLine(totals, whole = true) {
   const line = el("div", "sy-sub");
   const mark = (text, why) => {
     const span = el("span", null, line.children.length ? ` · ${text}` : text);
@@ -254,24 +261,50 @@ function poolLine(totals) {
   };
   // A router that publishes no pool row is not a router with an empty pool, so
   // the totals simply go away rather than rendering as zero.
-  //
-  // RELAYS FIRST AND UNITS SECOND, because they are different denominators and
-  // the three marks after them belong to the second. The pool's unit of work
-  // is a (relay, stream) pair, so a relay three streams want is one relay and
-  // three units — and every count of work is in units.
-  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s) in the pool`, term("roster"));
-  if (totals.units != null) mark(`${fmt(totals.units)} stream-visit(s)`, term("rosterVisits"));
+  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s)${whole ? " in the pool" : ""}`, term("roster"));
+  // RELAYS FIRST AND UNITS SECOND where they differ, because they are
+  // different denominators and every count of work below is in the second.
+  if (whole && totals.units != null) mark(`${fmt(totals.units)} stream-visit(s)`, term("rosterVisits"));
   mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
   if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
   if (totals.waiting != null) {
     mark(`${fmt(totals.waiting)} between visits`,
-      "The rest of the roster: neither running nor queued, waiting out the revisit delay its last visit earned. " +
-      "Most of a healthy pool is here — a relay is revisited on what it has been yielding lately, not on a shared clock.");
+      `The rest of ${whole ? "the roster" : "this stream's roster"}: neither running nor queued, waiting out the ` +
+      "revisit delay its last visit earned. Most of a healthy rotation is here — a relay is revisited on what it " +
+      "has been yielding lately, not on a shared clock.");
   }
   mark(`${fmt(totals.tailed)} holding a live tail`,
     "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
     "relay is counted here and in `with a worker now` at once. " + term("liveHeld"));
   return line;
+}
+
+/**
+ * A SCROLLING TABLE WITH A HEADER ROW — the chrome every list on this card
+ * shares, built once.
+ *
+ * Three panels drew it: the same box, the same table class, and the same loop
+ * over `[label, glossaryKey, rightAlign]` triples. Three copies of the chrome
+ * is three edits for any change to it, and the alignment was being re-typed
+ * inline when the stylesheet already carries the rule for the cells beneath.
+ *
+ * Returns both halves because the caller owns the rows: `table` to append them
+ * to, `scroll` to hand back to the card.
+ */
+function headedTable(columns) {
+  const scroll = el("div", "sy-legs-box");
+  const table = el("table", "sy-legs");
+  const head = el("tr");
+  for (const [label, key, right] of columns) {
+    const th = el("th", right ? "n" : null, label);
+    // The glossary is the document's own — a column with no member behind it
+    // (the stream's name) gets no tooltip rather than an invented one.
+    if (key) th.title = term(key);
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  scroll.appendChild(table);
+  return { scroll, table };
 }
 
 /**
@@ -290,18 +323,9 @@ function poolLine(totals) {
 function limitsPanel(progress) {
   const rows = limitsOf(progress);
   if (!rows.length) return null;
-  const scroll = el("div", "sy-legs-box");
-  const table = el("table", "sy-legs");
-  const head = el("tr");
-  for (const [label, key, right] of [["stream", null, false], ["job", "job", false],
-                                     ["may run", "streamCap", true], ["in use", "inUse", true],
-                                     ["turned away", "deferred", true]]) {
-    const th = el("th", null, label);
-    if (key) th.title = term(key);
-    if (right) th.style.textAlign = "right";
-    head.appendChild(th);
-  }
-  table.appendChild(head);
+  const { scroll, table } = headedTable([["stream", null, false], ["job", "job", false],
+                                        ["may run", "streamCap", true], ["in use", "inUse", true],
+                                        ["turned away", "deferred", true]]);
   for (const r of rows) {
     const tr = el("tr", r.biting ? "hot" : null);
     tr.appendChild(el("td", null, r.stream || "—"));
@@ -313,7 +337,6 @@ function limitsPanel(progress) {
     tr.appendChild(el("td", "n", fmt(r.deferred)));
     table.appendChild(tr);
   }
-  scroll.appendChild(table);
   return scroll;
 }
 
@@ -334,19 +357,10 @@ function limitsPanel(progress) {
 function schedulePanel(progress) {
   const rows = scheduleOf(progress);
   if (!rows.length) return null;
-  const scroll = el("div", "sy-legs-box");
-  const table = el("table", "sy-legs");
-  const head = el("tr");
-  for (const [label, key, right] of [["stream", null, false], ["job", "job", false],
-                                     ["every", "everySec", true], ["due", "due", true],
-                                     ["never run", "neverRun", true], ["waiting", "waiting", true],
-                                     ["next in", "nextInSec", true]]) {
-    const th = el("th", null, label);
-    if (key) th.title = term(key);
-    if (right) th.style.textAlign = "right";
-    head.appendChild(th);
-  }
-  table.appendChild(head);
+  const { scroll, table } = headedTable([["stream", null, false], ["job", "job", false],
+                                        ["every", "everySec", true], ["due", "due", true],
+                                        ["never run", "neverRun", true], ["waiting", "waiting", true],
+                                        ["next in", "nextInSec", true]]);
   for (const r of rows) {
     const tr = el("tr", r.backedUp ? "hot" : null);
     tr.appendChild(el("td", null, r.stream || "—"));
@@ -360,7 +374,6 @@ function schedulePanel(progress) {
     tr.appendChild(el("td", "n", r.nextInSec != null ? fmtPeriod(r.nextInSec) : "—"));
     table.appendChild(tr);
   }
-  scroll.appendChild(table);
   return scroll;
 }
 
@@ -419,39 +432,10 @@ function streamPools(section) {
   // Said in words rather than left blank: an unlabelled section reads as a
   // rendering fault, and this one is a finding.
   head.appendChild(el("span", "sy-name", section.stream || "not attributed to a stream"));
-  head.appendChild(streamPoolLine(section.totals));
+  head.appendChild(poolLine(section.totals, false));
   box.appendChild(head);
   for (const group of section.groups) box.appendChild(poolBlock(group, section.totals));
   return box;
-}
-
-/**
- * …and that stream's own share of the roster, on one line.
- *
- * The same marks as [poolLine] minus the units one, because for a SINGLE
- * stream a relay is exactly one unit of work — the two denominators the pool
- * has to keep apart are one number here, and drawing it twice would invite the
- * reading that they are not.
- */
-function streamPoolLine(totals) {
-  const line = el("div", "sy-sub");
-  const mark = (text, why) => {
-    const span = el("span", null, line.children.length ? ` · ${text}` : text);
-    if (why) span.title = why;
-    line.appendChild(span);
-  };
-  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s)`, term("roster"));
-  mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
-  if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
-  if (totals.waiting != null) {
-    mark(`${fmt(totals.waiting)} between visits`,
-      "The rest of this stream's roster: neither running nor queued, waiting out the revisit delay its last " +
-      "visit earned. Most of a healthy stream is here.");
-  }
-  mark(`${fmt(totals.tailed)} holding a live tail`,
-    "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
-    "relay is counted here and in `with a worker now` at once. " + term("liveHeld"));
-  return line;
 }
 
 /** One pool: its heading, how much of the pool is in it, and the relays. */
@@ -499,9 +483,6 @@ function poolBlock(group, totals) {
  */
 function poolTable(group) {
   const cursors = group.rows.some((r) => r.pagingUntil != null);
-  const scroll = el("div", "sy-legs-box");
-  const table = el("table", "sy-legs");
-  const head = el("tr");
   const columns = [["relay", null, false]];
   if (group.streams) columns.push(["stream", null, false]);
   // Only where the group's own rows disagree — otherwise the word is in the
@@ -509,13 +490,7 @@ function poolTable(group) {
   if (!group.doing) columns.push(["doing", "doing", false]);
   if (cursors) columns.push(["back to", "pagingUntil", false]);
   columns.push(["held", "heldForSec", true], ["events", "events", true], ["quiet", "quietForSec", true]);
-  for (const [label, key, right] of columns) {
-    const th = el("th", null, label);
-    if (key) th.title = term(key);
-    if (right) th.style.textAlign = "right";
-    head.appendChild(th);
-  }
-  table.appendChild(head);
+  const { scroll, table } = headedTable(columns);
   for (const r of group.rows) {
     // Quiet past the threshold is the one row shape worth colouring — see
     // STUCK_LEG_SEC for why the floor is ten minutes and not less.
@@ -544,7 +519,6 @@ function poolTable(group) {
     tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));
     table.appendChild(tr);
   }
-  scroll.appendChild(table);
   return scroll;
 }
 

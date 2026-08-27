@@ -1206,7 +1206,7 @@ state (`VisitPool.VisitKey`) — running per-ask catch-up, the
 `negentropySyncThePastSeconds` audit and the heal
 drain, and holds live tails, revisit-paced by each relay's recent yield. Every
 width is the STREAM's — `visitConcurrency`, `maxLiveConcurrency`,
-`catchUpConcurrency`, `refetchConcurrency`, `negentropyConcurrency` — taken as
+`maxLiveConcurrency`, `refetchConcurrency`, `negentropyConcurrency` — taken as
 permits by `PoolLimits`, and the pool's worker count is their sum
 (`VisitPool.workersFor`). The router-wide `visitConcurrency` / `tailBudget` are
 refused at parse time. A scan whose select binds

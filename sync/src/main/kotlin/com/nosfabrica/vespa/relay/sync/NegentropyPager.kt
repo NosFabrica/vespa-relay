@@ -286,7 +286,7 @@ internal class NegentropyPager(
          * the sweep actually RECONCILES, after any bisection has cut it to a
          * size both sides will take. Windows are taken newest-first, so `since`
          * — the older edge — is the depth reached, and it only descends; that
-         * is the number a reader wants beside `auditing history (negentropy)`,
+         * is the number a reader wants beside `negentropy sync of the past`,
          * and it is the same reading as a paging leg's cursor rather than the
          * opposite end of the range. The progress callback above counts events,
          * and a sweep that finds nothing missing delivers none — this is the

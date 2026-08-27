@@ -687,6 +687,9 @@ export const JOB_VISITING = "visiting";
 /** The order the panel draws them in: the steady state first, then the work. */
 export const POOL_ORDER = [POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_NEGENTROPY];
 
+/** …and those four plus the leftovers, which is the order the panel walks. */
+const GROUP_ORDER = [...POOL_ORDER, POOL_BETWEEN];
+
 /**
  * What each one is called on the page, and what it MEANS — the sentence a
  * heading cannot carry.
@@ -757,10 +760,23 @@ export const POOL_LABELS = {
  * [poolTotals].
  */
 export function poolsOf(progress) {
-  const { rows, omitted } = heldRows(progress);
-  if (!rows.length) return null;
-  const groups = groupByPool(rows);
-  return { groups, omitted, totals: poolTotals(progress, groups) };
+  const held = heldRows(progress);
+  if (!held.rows.length) return null;
+  return poolsFrom(progress, held);
+}
+
+/**
+ * …and the same, off rows the caller has ALREADY collected.
+ *
+ * The card draws both cuts of one document, so `poolsOf` and [poolsByStreamOf]
+ * used to walk it twice — `legsOf` mapping a fresh object per held row, then
+ * `heldRows` again. At the summed default live budget that is thousands of
+ * throwaway objects per poll for a set that cannot have changed between the
+ * two calls. The page collects once and passes the rows to both.
+ */
+export function poolsFrom(progress, held) {
+  const groups = groupByPool(held.rows);
+  return { groups, omitted: held.omitted, totals: poolTotals(progress, groups) };
 }
 
 /**
@@ -771,7 +787,7 @@ export function poolsOf(progress) {
  * rows — once for the mirror and once per stream — and a second collector
  * would be a second place for a row to be dropped from.
  */
-function heldRows(progress) {
+export function heldRows(progress) {
   const rows = [];
   let omitted = 0;
   for (const s of progress?.streams || []) {
@@ -783,11 +799,12 @@ function heldRows(progress) {
   }
   const live = legsOf(progress?.live);
   omitted += live.more;
-  // A live row NAMES its own: one subscription is held per (relay, stream)
-  // pair and carries that stream's filter alone. It used to be null here,
-  // when a tail carried every wanting stream's filter at once and belonged to
-  // none of them — and a per-stream live row was not a thing that existed.
-  for (const r of live.rows) rows.push({ ...r, stream: r.stream || null });
+  // A live row NAMES its own, and `legsOf` has already normalised it: one
+  // subscription is held per (relay, stream) pair and carries that stream's
+  // filter alone. It used to be null here, when a tail carried every wanting
+  // stream's filter at once and belonged to none of them — and a per-stream
+  // live row was not a thing that existed.
+  rows.push(...live.rows);
   return { rows, omitted };
 }
 
@@ -801,16 +818,16 @@ function heldRows(progress) {
  * the only attribution a row has is the point.
  */
 function groupByPool(rows, named = false) {
-  const byPool = new Map([...POOL_ORDER, POOL_BETWEEN].map((key) => [key, []]));
+  const byPool = new Map(GROUP_ORDER.map((key) => [key, []]));
   for (const r of rows) {
     // An unknown word lands with the unpooled rather than making a group of its
     // own: a page inventing a heading from a string off the wire is how a typo
     // becomes a pool.
-    byPool.get(byPool.has(r.pool) && r.pool !== POOL_BETWEEN ? r.pool : POOL_BETWEEN).push(r);
+    byPool.get(POOL_ORDER.includes(r.pool) ? r.pool : POOL_BETWEEN).push(r);
   }
 
   const groups = [];
-  for (const key of [...POOL_ORDER, POOL_BETWEEN]) {
+  for (const key of GROUP_ORDER) {
     const found = byPool.get(key);
     // The leftover group appears only when something is in it; the four named
     // pools appear always. An empty `between` is the healthy case and a heading
@@ -873,8 +890,8 @@ function groupByPool(rows, named = false) {
  * has not started rotating is left out entirely — it has no roster to be a
  * share of yet.
  */
-export function poolsByStreamOf(progress) {
-  const { rows } = heldRows(progress);
+export function poolsByStreamOf(progress, held = heldRows(progress)) {
+  const rows = held.rows;
   const out = [];
   const claimed = new Set();
   for (const s of progress?.streams || []) {
@@ -933,23 +950,44 @@ const VISITS_PROCESSOR = "visits";
  * panel disbelieved.
  */
 export function poolTotals(progress, groups) {
-  const working = groups.filter((g) => g.key !== POOL_LIVE).reduce((a, g) => a + g.rows.length, 0);
-  const tailed = groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0;
   const row = (progress?.processors || []).find((p) => p && p.name === VISITS_PROCESSOR);
-  const relays = Number.isFinite(row?.roster) ? row.roster : null;
-  const units = Number.isFinite(row?.rosterVisits) ? row.rosterVisits : null;
-  const queued = Number.isFinite(row?.awaitingVisit) ? row.awaitingVisit : null;
+  return totalsOf(groups, {
+    relays: num(row?.roster),
+    units: num(row?.rosterVisits),
+    queued: num(row?.awaitingVisit),
+  });
+}
+
+/** A published member, or null where the document does not carry it. */
+const num = (v) => (Number.isFinite(v) ? v : null);
+
+/**
+ * THE ARITHMETIC BOTH CUTS SHARE: what the groups are holding, and what is
+ * left of the denominator once they are taken out.
+ *
+ * One function because the two summaries sit on one card and are read against
+ * each other — the per-stream lines must add up to the pool's. Written twice
+ * they had already drifted on the rule that matters most here: with `queued`
+ * absent, one rendered a remainder anyway (silently counting the queue as
+ * sitting between visits) and the other said nothing. Saying nothing is right,
+ * and now it is right in both.
+ */
+function totalsOf(groups, { relays, units, queued }) {
+  const working = groups.reduce((a, g) => a + (g.key === POOL_LIVE ? 0 : g.rows.length), 0);
   return {
     relays,
     units,
     working,
     queued,
-    tailed,
-    // Off UNITS, never off relays. Never negative either: the counts are read
-    // at one tick but not one instant, so a roster that shrank between them
-    // can leave the subtraction short — and "-2 between visits" reads as a bug
-    // in the router rather than as the rounding it is.
-    waiting: units == null ? null : Math.max(0, units - working - (queued || 0)),
+    // A tailed unit keeps its tail while it is revisited, so this CROSSES the
+    // three above rather than joining them.
+    tailed: groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0,
+    // Off UNITS, never off relays — pool-wide those are different
+    // denominators. Never negative either: the counts are read at one tick but
+    // not one instant, so a roster that shrank between them can leave the
+    // subtraction short, and "-2 between visits" reads as a bug in the router
+    // rather than as the rounding it is.
+    waiting: units == null || queued == null ? null : Math.max(0, units - working - queued),
   };
 }
 
@@ -973,19 +1011,11 @@ export function poolTotals(progress, groups) {
  * that would read as "nothing waiting".
  */
 function streamTotals(s, groups) {
-  const working = groups.filter((g) => g.key !== POOL_LIVE).reduce((a, g) => a + g.rows.length, 0);
-  const tailed = groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0;
-  const relays = Number.isFinite(s?.roster) ? s.roster : null;
-  const queued = Number.isFinite(s?.awaitingVisit) ? s.awaitingVisit : null;
-  return {
-    relays,
-    units: relays,
-    working,
-    queued,
-    tailed,
-    // Clamped for the reason the pool's is: one tick, not one instant.
-    waiting: relays == null || queued == null ? null : Math.max(0, relays - working - queued),
-  };
+  const relays = num(s?.roster);
+  // `units: relays` — inside ONE stream a relay is exactly one unit of work,
+  // which is what makes the remainder sound here where the pool-wide one needs
+  // a second denominator.
+  return totalsOf(groups, { relays, units: relays, queued: num(s?.awaitingVisit) });
 }
 
 /**
@@ -1019,8 +1049,16 @@ export function limitsOf(progress) {
         inUse: Number.isFinite(l.inUse) ? l.inUse : null,
         deferred,
         // AT THE CAP is not a fault; at the cap WITH work being turned away is
-        // the cap biting. Only the second is worth a colour.
-        biting: deferred > 0,
+        // the cap biting, and only that is worth a colour. BOTH halves, which
+        // the comment has always said and the predicate did not: `deferred` is
+        // cumulative since boot, so on its own a single refusal at boot paints
+        // the row hot for the life of the process. Paired with "full right
+        // now" it says what an operator can act on — this cap is the reason
+        // work is not happening, at this moment.
+        //
+        // Uncapped rows only reach here by having deferred something, which
+        // cannot happen without a cap; they are marked on that alone.
+        biting: deferred > 0 && (streamCap == null || l.inUse >= streamCap),
       });
     }
   }

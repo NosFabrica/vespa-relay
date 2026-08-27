@@ -288,6 +288,10 @@ data class SyncStream(
      * Past the budget a tail is EARNED rather than refused: the pool's own
      * eviction takes the socket from the tail that has delivered least. This
      * is what says how many there are to fight over.
+     *
+     * Read it through [liveBudget], never here: the default belongs to one
+     * expression, and this branch having been written twice is what let the
+     * gate and the boot warning disagree about it.
      */
     val maxLiveConcurrency: Int? = null,
     /**
@@ -340,7 +344,21 @@ data class SyncStream(
      * the kinds the upstream owns.
      */
     val ownedKinds: Set<Int> = emptySet(),
-)
+) {
+    /**
+     * HOW MANY LIVE SUBSCRIPTIONS THIS STREAM MAY HOLD, resolved — the
+     * configured number or [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY].
+     *
+     * Here rather than at each reader because there are two of them and they
+     * have to agree: the gate that enforces the budget and the boot warning
+     * that adds the budgets up. They did not — the warning went on quoting the
+     * default after the gate stopped applying it, so a deployment was told it
+     * would hold 600 tails per uncapped stream while the pool held one per
+     * relay on the roster. One expression is the fix; [visitConcurrency] has
+     * had it all along, behind `VisitPool.workersFor`.
+     */
+    val liveBudget: Int get() = maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY
+}
 
 /**
  * What to do with records WE hold that the upstream no longer serves.

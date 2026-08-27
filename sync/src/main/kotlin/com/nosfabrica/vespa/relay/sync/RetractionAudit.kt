@@ -96,33 +96,23 @@ internal class RetractionAudit(
     }
 
     /**
-     * Is this ask COMPARED AT ALL — does it carry a kind this stream owns?
+     * WHEN THIS ASK'S COMPARISON NEXT COMES DUE — read-only, stamping nothing.
      *
-     * Asked apart from the dueness because the two answers are read by
-     * different callers for different reasons. The engine only needs "run it
-     * or not", which [isAuditDue] folds together; the SCHEDULE has to tell an
-     * ask that is waiting out its period from one that is never compared,
-     * because an ask with no owned kind counted as due would sit in the
-     * status row's backlog forever, on work nothing will ever do.
-     */
-    fun comparesAnything(
-        stream: SyncStream,
-        ask: Filter,
-    ): Boolean = ownedAskOf(stream, ask) != null
-
-    /**
-     * …and WHEN this ask's comparison next comes due — read-only, stamping
-     * nothing. Null where it has never run, which is due by definition.
+     * [claimAudit] answers the same question and TAKES the attempt clock as it
+     * does, so it cannot be used to look before spending a workload permit.
+     * This can: same [ownedAskOf] derivation, same band, no side effect.
      *
-     * On the OWNED projection, which is the point of it being here: the clock
-     * the reconcile advances is keyed by the filter it ran, so reading the
-     * full ask's filter finds a key nothing ever stamps and falls back to a
-     * band `fullAt` that a reconcile never moves. That reads as a schedule
-     * permanently in arrears while the audits run perfectly well.
+     * On the OWNED projection, which is the point of it living here: the clock
+     * a reconcile advances is keyed by the filter it ran, so reading the full
+     * ask's filter finds a key nothing ever stamps and falls back to a band
+     * `fullAt` no reconcile moves — a schedule permanently in arrears while
+     * the audits run perfectly well.
      *
-     * Only meaningful where [comparesAnything] is true; it returns null (=
-     * "never run") for an ask with no owned kind, which is why the two are
-     * asked together.
+     * The three answers are `VisitPool.auditDueAt`'s three, and the outer two
+     * are why this returns them rather than a boolean: `null` is never
+     * compared yet, so due by definition; [SyncBands.NEVER] is an ask this
+     * stream owns no kind of, which nothing compares and nothing schedules —
+     * counted as due it would be a backlog that can never drain.
      */
     fun auditDueAt(
         stream: SyncStream,
@@ -130,27 +120,8 @@ internal class RetractionAudit(
         ask: Filter,
         negentropySyncThePastSeconds: Long,
     ): Long? {
-        val ownedAsk = ownedAskOf(stream, ask) ?: return null
+        val ownedAsk = ownedAskOf(stream, ask) ?: return SyncBands.NEVER
         return bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds)
-    }
-
-    /**
-     * Is this ask's comparison due — read-only, stamping nothing.
-     *
-     * [claimAudit] answers the same question and TAKES the attempt clock as it
-     * does, so it cannot be used to look before spending a workload permit.
-     * This can: same derivation, same band, no side effect.
-     */
-    fun isAuditDue(
-        stream: SyncStream,
-        url: NormalizedRelayUrl,
-        ask: Filter,
-        negentropySyncThePastSeconds: Long,
-        now: Long,
-    ): Boolean {
-        if (!comparesAnything(stream, ask)) return false
-        val dueAt = auditDueAt(stream, url, ask, negentropySyncThePastSeconds)
-        return dueAt == null || dueAt <= now
     }
 
     /**

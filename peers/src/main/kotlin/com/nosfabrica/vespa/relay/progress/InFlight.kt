@@ -145,7 +145,7 @@ class InFlight(
          * stage worth the word.
          *
          * A working leg's word names the JOB and then the TRANSPORT — `catching
-         * up (paging)`, `auditing history (negentropy)` — because neither
+         * up (paging)`, `negentropy sync of the past` — because neither
          * implies the other: the audit is the full-past pass, whatever it uses
          * to download with, and an audit does page the windows a peer will not
          * reconcile. See `VisitPool.STAGE_PAGING` and its neighbours for the
@@ -165,7 +165,7 @@ class InFlight(
         /**
          * WHICH OF THE POOL'S WORKLOADS this row is in — the machine word
          * beside [stage]'s sentence, and the only one of the two a reader may
-         * GROUP by. `live`, `catching-up`, `re-fetching`, `auditing`; absent
+         * GROUP by. `live`, `catching-up`, `re-fetching`, `negentropy`; absent
          * for a row that is in none of them, which is a visit between jobs —
          * claiming its socket, working out what an ask still owes, or draining
          * the healer's queue on its way out.

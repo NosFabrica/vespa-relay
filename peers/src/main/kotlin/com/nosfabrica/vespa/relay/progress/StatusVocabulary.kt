@@ -223,7 +223,7 @@ object StatusVocabulary {
                     "where the same silence is a walk that has stopped delivering. `transferringForSec` separates " +
                     "the first two from the rest and nothing separated the last two. Absent until a leg reaches a " +
                     "stage worth the word. A working leg's word names TWO things, because they do not imply each " +
-                    "other: what for — `catching up` is everything new since this relay's last pass, `auditing` is " +
+                    "other: what for — `catching up` is everything new since this relay's last pass, `negentropy` is " +
                     "the whole past re-checked on the stream's `negentropySyncThePastSeconds` clock to find what no " +
                     "catch-up ever saw, `re-fetching the past` is that same history walked again from scratch on " +
                     "the stream's `refetchThePastSeconds` — and, in the bracket, how: `paging` walks a REQ " +
@@ -253,10 +253,10 @@ object StatusVocabulary {
             put(
                 "live",
                 "THE LIVE POOL: every relay holding an open tail subscription right now, named, with the same " +
-                    "clocks a visiting leg carries. This is the pool's steady state — `tails` counts it and this " +
-                    "is what those sockets are — and it sits at the document's ROOT rather than under a stream " +
-                    "because a tail is not a stream's: one subscription per relay carries every wanting stream's " +
-                    "filter, and its arrivals are counted at the url. `held` is the age of the subscription, not " +
+                    "clocks a visiting leg carries. This is the pool's steady state — `liveHeld` counts it and " +
+                    "this is what those sockets are — and it sits at the document's ROOT because it reads as one " +
+                    "table, not because its rows have no owner: a tail is held per (relay, stream) pair, so every " +
+                    "row here names its `stream` exactly as a visiting row does. `held` is the age of the subscription, not " +
                     "of the visit that opened it; `events` is what has come down it since; and `quiet` beside " +
                     "them is the one that decides, because the two ways a tail is wasted look identical from the " +
                     "count alone — a relay that has published nothing in a week, and a subscription that died " +

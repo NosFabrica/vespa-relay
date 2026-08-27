@@ -585,8 +585,8 @@ object RouterConfigLoader {
                 "visit do less work. Lower `visitConcurrency` instead"
         }
         require(!s.hasPath("concurrency")) {
-            "router: stream '$stream' sets a per-stream concurrency — gone with the cycle engine. The pool's " +
-                "dial width is the top-level `visitConcurrency`, shared by every stream"
+            "router: stream '$stream' sets a per-stream concurrency — gone with the cycle engine. The dial " +
+                "width is this stream's own `visitConcurrency`, and the pool runs the SUM of them"
         }
         require(!s.hasPath("recycleSeconds")) {
             "router: stream '$stream' sets recycleSeconds — gone with the cycle engine. The pool has no laps: " +

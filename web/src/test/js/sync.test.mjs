@@ -10,11 +10,12 @@
 //
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
-  funnelOf, heldOf, legsOf, limitsOf, measuringOf, poolsByStreamOf, poolsOf,
-  probeProgress, rotationOf, scheduleOf,
+  JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
+  poolsByStreamOf, poolsOf, probeProgress, rotationOf, scheduleOf,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -24,6 +25,37 @@ const leg = (n, quiet, over = {}) => ({
   relay: `wss://r${n}.example/`, heldForSec: 3600, transferringForSec: 3595,
   events: 1000 * n, quietForSec: quiet, ...over,
 });
+
+// ── the words this page and the router have to agree on ─────────────────────
+{
+  // THE ONE PLACE THE PAIRING WAS NOT UNDER TEST. The router pairs a stable
+  // `pool` word with the prose sentence beside it precisely so rewording the
+  // sentence cannot silently empty a table — and `VisitPoolTest` binds those
+  // words to the document's glossary. Nothing bound them to THIS file, which
+  // is the file that draws the tables: a rename in Kotlin passed the whole
+  // suite and emptied a panel on the page, with no failure in either language.
+  //
+  // Read out of the source rather than a build artefact, the way this suite
+  // already reads `stats.html` and `index.html`: the constants are `const val`
+  // literals, so the declaration IS the contract.
+  const pool = readFileSync(new URL("../../../../sync/src/main/kotlin/com/nosfabrica/vespa/relay/sync/VisitPool.kt", import.meta.url), "utf8");
+  const declared = Object.fromEntries(
+    [...pool.matchAll(/const val (POOL_[A-Z_]+|JOB_[A-Z_]+) = "([^"]+)"/g)].map((m) => [m[1], m[2]]),
+  );
+  assert.deepEqual(
+    { POOL_LIVE: declared.POOL_LIVE, POOL_CATCHING_UP: declared.POOL_CATCHING_UP,
+      POOL_REFETCHING: declared.POOL_REFETCHING, POOL_NEGENTROPY: declared.POOL_NEGENTROPY,
+      JOB_VISITING: declared.JOB_VISITING },
+    { POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_NEGENTROPY, JOB_VISITING },
+    "the router's pool words and this page's have drifted — one of the four tables is about to draw empty",
+  );
+  // …and every word the router declares is one this page knows how to label.
+  // A fifth pool added in Kotlin would otherwise land silently in `between`.
+  for (const word of Object.values(declared)) {
+    assert.ok(POOL_LABELS[word], `the router publishes pool word "${word}" and this page has no label for it`);
+  }
+  ok("the four pool words are the router's own, read out of its source");
+}
 
 // ── the constraint ──────────────────────────────────────────────────────────
 {
@@ -964,6 +996,16 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(rows.find((r) => r.stream === "content" && r.job === POOL_NEGENTROPY).biting, true);
   assert.equal(rows.find((r) => r.stream === "content" && r.job === POOL_CATCHING_UP).biting, false,
     "in use below the cap with nothing deferred is a stream inside its budget");
+
+  // …and NEITHER HALF ALONE. `deferred` is cumulative since boot, so a stream
+  // that filled its cap once hours ago and has room now is not biting — marked
+  // on the counter alone it would stay hot for the life of the process, which
+  // is a colour that stops meaning anything.
+  const past = limitsOf({ streams: [{ name: "content", limits: [
+    { job: POOL_NEGENTROPY, streamCap: 4, inUse: 1, deferred: 91 },
+  ] }] });
+  assert.equal(past[0].biting, false, "room at the cap now — whatever it turned away earlier");
+  assert.equal(past[0].deferred, 91, "…and the count is still published, because it is still the reading");
 
   // Zero permits out is a reading — capped and using none — not a gap.
   assert.equal(rows.find((r) => r.stream === "indexers" && r.job === POOL_NEGENTROPY).inUse, 0);

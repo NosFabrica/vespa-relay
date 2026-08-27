@@ -37,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap
  *    before it has done anything, so silence can never be read as "not
  *    configured".
  *  - **Counts do not name anybody**, so the per-relay truth lives beside the
- *    phase rather than inside it — see [namesInFlight] and [InFlight]. A stream
+ *    phase rather than inside it — see [names] and [InFlight]. A stream
  *    held on two relays for eleven hours published the number 2 and no url.
  *
  * **There is one phase now, and that is the point.** This class used to carry a
@@ -150,7 +150,7 @@ class StreamPhases {
      * ignored. It is also the number a workload cap is for.
      */
     class Scheduled(
-        /** The pool word this clocks — `auditing` or `re-fetching`. */
+        /** The pool word this clocks — `negentropy` or `re-fetching`. */
         val job: String,
         /** The stream's configured period for it, in seconds. */
         val everySec: Long,
@@ -176,7 +176,7 @@ class StreamPhases {
      * a number this process already had.
      */
     class Limit(
-        /** The pool word this bounds — `live`, `catching-up`, `re-fetching`, `auditing`. */
+        /** The pool word this bounds — `visiting`, `live`, `re-fetching`, `negentropy`. */
         val job: String,
         /** This stream's share, or null where it has none and is bounded by the dial width. */
         val cap: Int?,
@@ -207,49 +207,38 @@ class StreamPhases {
     }
 
     /**
-     * Where to ask [name] which relays it has workers on.
+     * WHERE TO ASK [name] ABOUT ITSELF — the three projections this class
+     * flattens but does not own, registered in one call.
      *
-     * Registered once, by whoever owns the rotation, and INVOKED at snapshot
-     * time — the whole class is a view flattened for a reader outside this
-     * process, and a list read a tick earlier would date a stuck leg's clock
-     * from the wrong instant.
+     * Registered once, by whoever owns the rotation, and every one INVOKED at
+     * snapshot time. That is the whole design: this class is a view flattened
+     * for a reader outside the process, so a list read a tick earlier would
+     * date a stuck leg's clock from the wrong instant, and a copy of the
+     * permits kept in step by hand would be a report disagreeing with the
+     * thing it reports on. `schedule`'s engine is expected to cache behind it
+     * — that one walks every ask.
+     *
+     * ONE CALL, not three. They were three methods with one call site each,
+     * identical but for the field assigned, and every one of them re-did the
+     * `register` and the map lookup. A fourth projection was five coordinated
+     * edits; it is now one parameter with a default.
+     *
+     * Omitting an argument leaves that source ALONE rather than clearing it —
+     * these are registered at start-up by one caller, and "I am only setting
+     * the limits" must not silently drop the in-flight list.
      */
     @Synchronized
-    fun namesInFlight(
+    fun names(
         name: String,
-        source: () -> InFlight,
+        inFlight: (() -> InFlight)? = null,
+        limits: (() -> List<Limit>)? = null,
+        schedule: (() -> List<Scheduled>)? = null,
     ) {
         register(name)
-        phases[name]?.inFlight = source
-    }
-
-    /**
-     * Where to ask when [name]'s scheduled re-reads come due — see
-     * [Scheduled]. Read at snapshot time like the others, though the engine
-     * behind it is expected to cache: this one walks every ask.
-     */
-    @Synchronized
-    fun namesSchedule(
-        name: String,
-        source: () -> List<Scheduled>,
-    ) {
-        register(name)
-        phases[name]?.schedule = source
-    }
-
-    /**
-     * Where to ask what [name] may SPEND — registered once by the engine that
-     * owns the caps, and read at snapshot time like the in-flight list, for
-     * the same reason: the permits move on every leg, and a copy kept in step
-     * by hand is a report that disagrees with the thing it reports on.
-     */
-    @Synchronized
-    fun namesLimits(
-        name: String,
-        source: () -> List<Limit>,
-    ) {
-        register(name)
-        phases[name]?.limits = source
+        val entry = phases[name] ?: return
+        inFlight?.let { entry.inFlight = it }
+        limits?.let { entry.limits = it }
+        schedule?.let { entry.schedule = it }
     }
 
     /**

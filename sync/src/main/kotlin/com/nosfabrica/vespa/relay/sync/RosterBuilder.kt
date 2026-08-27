@@ -86,8 +86,20 @@ internal class RosterBuilder(
 
     /** One rebuild's whole answer. */
     internal class Roster(
-        /** url → the asks that want it. */
-        val asks: Map<NormalizedRelayUrl, List<Ask>>,
+        /**
+         * url → STREAM → the asks that want it — nested by the UNIT OF WORK,
+         * which is the (relay, stream) pair.
+         *
+         * It was url → asks, and every reader then filtered a list to find its
+         * own stream's: the tail listener did it per EVENT, so a relay three
+         * streams want walked all three streams' asks three times for every
+         * message it delivered. Nested, the same question is two map lookups
+         * and no allocation — which is what `wantedBy` and `asksFor` are.
+         *
+         * `asks.keys` is still the relays, so a count of them is unchanged; a
+         * count of UNITS is the sum of the inner sizes.
+         */
+        val asks: Map<NormalizedRelayUrl, Map<String, List<Ask>>>,
         /**
          * url → STREAM → [wants] of that stream's asks there, computed once
          * here. The pool compares these across rebuilds and keys tails on
@@ -134,7 +146,7 @@ internal class RosterBuilder(
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
     suspend fun rebuild(): Roster {
-        val asksByUrl = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
+        val asksByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableList<Ask>>>()
         // One identity set per url, reused three ways: it dedups want() by
         // VALUE (Ask equality degrades to Filter reference equality, so the
         // old `ask !in wanting` linear-scanned and matched nothing for
@@ -156,7 +168,7 @@ internal class RosterBuilder(
         ) {
             val mine = wantsByUrl.getOrPut(url) { HashMap() }.getOrPut(ask.stream.name) { LinkedHashSet() }
             if (mine.add(ask.filter.toJson())) {
-                asksByUrl.getOrPut(url) { mutableListOf() } += ask
+                asksByUrl.getOrPut(url) { HashMap() }.getOrPut(ask.stream.name) { mutableListOf() } += ask
             }
         }
         for (stream in streams) {
@@ -182,8 +194,8 @@ internal class RosterBuilder(
         // audits with an empty shared set, and one relay's answer could
         // retract what its siblings still serve.
         val byAuthor = HashMap<String, HashMap<String, MutableSet<NormalizedRelayUrl>>>()
-        for ((url, asks) in asksByUrl) {
-            for (ask in asks) {
+        for ((url, byStream) in asksByUrl) {
+            for (ask in byStream.values.flatten()) {
                 ask.filter.authors?.forEach { author ->
                     byAuthor.getOrPut(ask.stream.name) { HashMap() }.getOrPut(author) { mutableSetOf() } += url
                 }

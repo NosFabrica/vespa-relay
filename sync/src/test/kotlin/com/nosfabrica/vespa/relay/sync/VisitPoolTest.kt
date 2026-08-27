@@ -173,9 +173,11 @@ class VisitPoolTest {
                 listOf(0, 10002),
                 roster.asks.values
                     .first()
+                    .values
+                    .single()
                     .single()
                     .filter.kinds,
-                "and it carries the stream's own filter, unnarrowed",
+                "and it carries the stream's own filter, unnarrowed — one stream, one ask, under its own name",
             )
         }
 

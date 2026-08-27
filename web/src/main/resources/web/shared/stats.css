@@ -860,6 +860,10 @@ table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white
 table.sy-legs tr:last-child td { border-bottom: 0; }
 table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+/* …and the heading over a numeric column, which was three inline styles in the
+   card until the three tables were built by one function. Same class as the
+   cells under it, so a column is right-aligned in one place. */
+table.sy-legs th.n { text-align: right; }
 /* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
    row, so the warning colour owns the whole row. */
 table.sy-legs td.sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }

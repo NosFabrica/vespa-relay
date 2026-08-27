@@ -115,8 +115,20 @@ internal class PoolLimits(
         }
     }
 
-    private val gates = caps.filterValues { it != null }.mapValues { (_, n) -> Semaphore(n!!) }
-    private val sizes = caps.filterValues { it != null }.mapValues { (_, n) -> n!! }
+    /**
+     * ONE ENTRY PER CAPPED (stream, job), carrying the size and the permits
+     * TOGETHER.
+     *
+     * They were two maps built from one filter, and every reader of both then
+     * needed a fallback for a disagreement construction made impossible.
+     */
+    private class Gate(
+        val cap: Int,
+    ) {
+        val permits = Semaphore(cap)
+    }
+
+    private val gates = caps.filterValues { it != null }.mapValues { (_, n) -> Gate(n!!) }
 
     private val deferrals = ConcurrentHashMap<Pair<String, String>, AtomicLong>()
 
@@ -148,7 +160,7 @@ internal class PoolLimits(
         counted: Boolean = true,
     ): Hold? {
         val gate = gates[stream to job] ?: return Hold(null)
-        if (gate.tryAcquire()) return Hold(gate)
+        if (gate.permits.tryAcquire()) return Hold(gate.permits)
         if (counted) deferrals.computeIfAbsent(stream to job) { AtomicLong() }.incrementAndGet()
         return null
     }
@@ -163,13 +175,13 @@ internal class PoolLimits(
     fun capFor(
         stream: String,
         job: String,
-    ): Int? = sizes[stream to job]
+    ): Int? = gates[stream to job]?.cap
 
     /** Permits handed out and not yet released — this stream's share of [job] in use. */
     fun heldBy(
         stream: String,
         job: String,
-    ): Int? = sizes[stream to job]?.let { cap -> cap - (gates[stream to job]?.availablePermits() ?: cap) }
+    ): Int? = gates[stream to job]?.let { it.cap - it.permits.availablePermits() }
 
     companion object {
         /**
@@ -201,15 +213,31 @@ internal class PoolLimits(
         fun of(streams: List<SyncStream>): PoolLimits =
             PoolLimits(
                 streams
-                    .flatMap { stream ->
-                        listOf(
-                            (stream.name to VisitPool.JOB_VISITING) to stream.visitConcurrency,
-                            (stream.name to VisitPool.POOL_REFETCHING) to stream.refetchConcurrency,
-                            (stream.name to VisitPool.POOL_NEGENTROPY) to stream.negentropyConcurrency,
-                            (stream.name to VisitPool.POOL_LIVE) to
-                                (stream.maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY),
-                        )
-                    }.toMap(),
+                    .flatMap { stream -> JOBS.map { (job, share) -> (stream.name to job) to share(stream) } }
+                    .toMap(),
+            )
+
+        /**
+         * EVERY JOB A STREAM HAS A BUDGET FOR, and where its number comes
+         * from — the one list, read by [of] to build the gates and by
+         * `VisitPool.limitsFor` to publish a row per job.
+         *
+         * One list because the two used to be two: [of] drops the nulls, so
+         * the set of jobs that EXIST is destroyed at construction and the
+         * publisher had to restate it. A fifth budget added to one side only
+         * gives either a cap enforced and never shown, or a row that always
+         * reads uncapped — and both are indistinguishable from a cap that is
+         * simply not biting, which is the one reading the panel exists for.
+         *
+         * Ordered as the page draws them: the dial width, then the three jobs
+         * a visit can be doing inside it.
+         */
+        val JOBS: List<Pair<String, (SyncStream) -> Int?>> =
+            listOf(
+                VisitPool.JOB_VISITING to { s: SyncStream -> s.visitConcurrency },
+                VisitPool.POOL_LIVE to { s: SyncStream -> s.liveBudget },
+                VisitPool.POOL_REFETCHING to { s: SyncStream -> s.refetchConcurrency },
+                VisitPool.POOL_NEGENTROPY to { s: SyncStream -> s.negentropyConcurrency },
             )
     }
 }
