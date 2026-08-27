@@ -183,8 +183,8 @@ class PoolLimitsTest {
         // colour the page uses for a cap that is biting.
         val limits = PoolLimits(mapOf(("content" to VisitPool.POOL_LIVE) to 1))
         val held = assertNotNull(limits.tryHold("content", VisitPool.POOL_LIVE))
-        repeat(10) { assertNull(limits.tryHold("content", VisitPool.POOL_LIVE, counted = false)) }
-        assertEquals(0L, limits.deferred("content", VisitPool.POOL_LIVE), "the look before an eviction is not a refusal")
+        repeat(10) { assertNull(limits.trySpare("content", VisitPool.POOL_LIVE)) }
+        assertEquals(0L, limits.deferred("content", VisitPool.POOL_LIVE), "a look for a spare permit is not a refusal")
 
         // …and the ask that follows the eviction IS counted: reaching it means
         // the candidate could not outrank anything, which is work turned away.

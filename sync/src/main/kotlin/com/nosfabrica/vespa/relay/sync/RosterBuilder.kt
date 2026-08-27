@@ -84,11 +84,50 @@ internal class RosterBuilder(
         val filter: Filter,
     )
 
+    /**
+     * ONE UNIT'S WHOLE ANSWER: what this stream asks of this relay, and the
+     * IDENTITY of that ask set.
+     *
+     * One class because they are one fact about one unit, and they were two
+     * maps — `asks` and `wants`, both `url → stream → …`, built side by side
+     * in `want()` and required to keep identical key structure by convention
+     * alone. That is the shape this codebase has already been bitten by twice
+     * (a semaphore beside its own size; a default beside its own warning), and
+     * it had drifted here in the mildest possible way: two adjacent numbers on
+     * the status card were counted off different maps, because nothing said
+     * which one was authoritative.
+     */
+    internal class UnitAsks(
+        val asks: List<Ask>,
+        /**
+         * THE IDENTITY OF THIS ASK SET, for change detection across rebuilds:
+         * each ask's filter as JSON — the `toJson` keying [SyncBands] already
+         * trusts.
+         *
+         * A memo, not a second source. quartz's [Filter] compares by
+         * REFERENCE, so two rebuilds deriving the very same roster produce
+         * unequal [Ask]s: comparing those would requeue the whole roster every
+         * tick, and comparing nothing leaves a new ask waiting out the tailed
+         * revisit base for its first catch-up. Serializing on demand instead
+         * would pay a `toJson` per ask per comparison, which is the cost this
+         * exists to avoid.
+         *
+         * The STREAM is not in the strings — it is the map key one level up,
+         * which is what makes one stream's set comparable with its own
+         * predecessor and with nothing else. One set per URL made every
+         * stream's business every other stream's: a scan pairing relay R with
+         * a new provider for `indexers` moved the url's set, so `content`'s
+         * tail on R saw its want list change, dropped its subscription and
+         * re-opened it, losing its live edge for a change it had no part in.
+         */
+        val identity: Set<String>,
+    )
+
     /** One rebuild's whole answer. */
     internal class Roster(
         /**
-         * url → STREAM → the asks that want it — nested by the UNIT OF WORK,
-         * which is the (relay, stream) pair.
+         * url → STREAM → that unit's asks and their identity — nested by the
+         * UNIT OF WORK, which is the (relay, stream) pair.
          *
          * It was url → asks, and every reader then filtered a list to find its
          * own stream's: the tail listener did it per EVENT, so a relay three
@@ -99,23 +138,7 @@ internal class RosterBuilder(
          * `asks.keys` is still the relays, so a count of them is unchanged; a
          * count of UNITS is the sum of the inner sizes.
          */
-        val asks: Map<NormalizedRelayUrl, Map<String, List<Ask>>>,
-        /**
-         * url → STREAM → [wants] of that stream's asks there, computed once
-         * here. The pool compares these across rebuilds and keys tails on
-         * them; recomputing both sides per url per tick serialized every
-         * filter to JSON twice for an answer that is almost always
-         * "unchanged".
-         *
-         * NESTED BY STREAM because the unit of work is a (relay, stream) pair
-         * (`VisitPool.VisitKey`), and one set per url made every stream's
-         * business every other stream's: a scan pairing relay R with a new
-         * provider for `indexers` changed the url's set, so `content`'s tail
-         * on R saw its want list move, dropped its subscription and re-opened
-         * it — losing its live edge for a change it had no part in — and its
-         * unit was requeued for the same reason.
-         */
-        val wants: Map<NormalizedRelayUrl, Map<String, Set<String>>> = emptyMap(),
+        val asks: Map<NormalizedRelayUrl, Map<String, UnitAsks>>,
         /**
          * Per stream: authors found at MORE THAN ONE relay. One relay's empty
          * answer does not retract what a sibling relay may still be serving,
@@ -146,6 +169,9 @@ internal class RosterBuilder(
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
     suspend fun rebuild(): Roster {
+        // Built as the two halves it is assembled from and sealed into
+        // [UnitAsks] at the end — the identity has to be a growing set while
+        // `want()` dedups against it, and a `List<Ask>` is what appends.
         val asksByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableList<Ask>>>()
         // One identity set per url, reused three ways: it dedups want() by
         // VALUE (Ask equality degrades to Filter reference equality, so the
@@ -215,7 +241,14 @@ internal class RosterBuilder(
                 System.err.println("router: could not read the NIP-77 verdicts (${it.message?.take(120)}) — audits will try every relay this rebuild")
                 emptyMap()
             }
-        return Roster(asks = asksByUrl, wants = wantsByUrl, sharedAuthors = shared, speaksNegentropy = negentropy)
+        // SEALED HERE, and this is the only place the two halves are ever
+        // apart: past this line a unit's asks and their identity are one
+        // value, so nothing downstream can read one and forget the other.
+        val units =
+            asksByUrl.mapValues { (url, byStream) ->
+                byStream.mapValues { (stream, asks) -> UnitAsks(asks, wantsByUrl[url]?.get(stream).orEmpty()) }
+            }
+        return Roster(asks = units, sharedAuthors = shared, speaksNegentropy = negentropy)
     }
 
     /**

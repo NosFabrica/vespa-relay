@@ -108,20 +108,20 @@ internal class RetractionAudit(
      * `fullAt` no reconcile moves — a schedule permanently in arrears while
      * the audits run perfectly well.
      *
-     * The three answers are `VisitPool.auditDueAt`'s three, and the outer two
-     * are why this returns them rather than a boolean: `null` is never
-     * compared yet, so due by definition; [SyncBands.NEVER] is an ask this
-     * stream owns no kind of, which nothing compares and nothing schedules —
-     * counted as due it would be a backlog that can never drain.
+     * Returns an [AuditClock] rather than a boolean because the two extreme
+     * answers mean opposite things and both have to reach the status row:
+     * never compared yet is due by definition, and an ask this stream owns no
+     * kind of is compared by nothing and scheduled by nothing — counted as due
+     * it would be a backlog that can never drain.
      */
-    fun auditDueAt(
+    fun auditClock(
         stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
         negentropySyncThePastSeconds: Long,
-    ): Long? {
-        val ownedAsk = ownedAskOf(stream, ask) ?: return SyncBands.NEVER
-        return bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds)
+    ): AuditClock {
+        val ownedAsk = ownedAskOf(stream, ask) ?: return AuditClock.NOT_SCHEDULED
+        return AuditClock.of(bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds))
     }
 
     /**

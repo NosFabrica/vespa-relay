@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, limitsOf, poolsByStreamOf, poolsFrom, rotationOf, scheduleOf } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, limitsOf, poolsByStreamOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -211,7 +211,7 @@ function poolsPanel(progress) {
   // a set that cannot have changed in between.
   const held = heldRows(progress);
   if (!held.rows.length) return null;
-  const pools = poolsFrom(progress, held);
+  const pools = poolsOf(progress, held);
   const box = el("div");
   box.appendChild(poolLine(pools.totals));
   const perStream = poolsByStreamOf(progress, held);
@@ -240,19 +240,21 @@ function poolsPanel(progress) {
  * a healthy rotation against a roster of four hundred and a stalled one
  * against a roster of twelve.
  *
- * ONE FUNCTION FOR BOTH CUTS, because they are one line. The mirror's names
- * two denominators — relays and stream-visits — since a relay two streams both
- * want is one relay and two units; a single stream's are the same number, so
- * that mark is dropped rather than drawn twice under a heading that would
- * invite reading them as different. Everything else, including the tail
- * caveat, is the same sentence and now lives in one place: written twice, the
- * "between visits" prose had already drifted between the two copies.
+ * ONE FUNCTION FOR BOTH CUTS, because they are one line, and [whose] is the
+ * only difference that is not derivable — the mirror's roster or one stream's.
+ * The units mark comes off the numbers themselves: pool-wide a relay two
+ * streams both want is one relay and two units, so the two denominators
+ * differ and both are named; inside one stream they are the same number, and
+ * so is a mirror with one stream, and drawing it twice would invite reading
+ * one number as two. Everything else, including the tail caveat, is the same
+ * sentence in one place — written twice, the "between visits" prose had
+ * already drifted between the copies.
  *
  * The first marks PARTITION the roster; the tail count crosses them, because a
  * tailed relay keeps its tail while it is revisited. Drawn last and said in
  * its title, so the line is never read as parts of one whole.
  */
-function poolLine(totals, whole = true) {
+function poolLine(totals, whose = "the roster") {
   const line = el("div", "sy-sub");
   const mark = (text, why) => {
     const span = el("span", null, line.children.length ? ` · ${text}` : text);
@@ -261,15 +263,18 @@ function poolLine(totals, whole = true) {
   };
   // A router that publishes no pool row is not a router with an empty pool, so
   // the totals simply go away rather than rendering as zero.
-  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s)${whole ? " in the pool" : ""}`, term("roster"));
+  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s)`, term("roster"));
   // RELAYS FIRST AND UNITS SECOND where they differ, because they are
   // different denominators and every count of work below is in the second.
-  if (whole && totals.units != null) mark(`${fmt(totals.units)} stream-visit(s)`, term("rosterVisits"));
+  // Where they are equal there is one denominator and it has been named.
+  if (totals.units != null && totals.units !== totals.relays) {
+    mark(`${fmt(totals.units)} stream-visit(s)`, term("rosterVisits"));
+  }
   mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
   if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
   if (totals.waiting != null) {
     mark(`${fmt(totals.waiting)} between visits`,
-      `The rest of ${whole ? "the roster" : "this stream's roster"}: neither running nor queued, waiting out the ` +
+      `The rest of ${whose}: neither running nor queued, waiting out the ` +
       "revisit delay its last visit earned. Most of a healthy rotation is here — a relay is revisited on what it " +
       "has been yielding lately, not on a shared clock.");
   }
@@ -432,7 +437,7 @@ function streamPools(section) {
   // Said in words rather than left blank: an unlabelled section reads as a
   // rendering fault, and this one is a finding.
   head.appendChild(el("span", "sy-name", section.stream || "not attributed to a stream"));
-  head.appendChild(poolLine(section.totals, false));
+  head.appendChild(poolLine(section.totals, "this stream's roster"));
   box.appendChild(head);
   for (const group of section.groups) box.appendChild(poolBlock(group, section.totals));
   return box;

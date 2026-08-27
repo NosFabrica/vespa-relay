@@ -175,6 +175,7 @@ class VisitPoolTest {
                     .first()
                     .values
                     .single()
+                    .asks
                     .single()
                     .filter.kinds,
                 "and it carries the stream's own filter, unnarrowed — one stream, one ask, under its own name",

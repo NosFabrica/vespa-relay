@@ -165,6 +165,14 @@ internal class VisitPool(
     private val limits: PoolLimits = PoolLimits(emptyMap()),
 ) {
     /**
+     * WHEN EACH STREAM'S RE-READS OF THE PAST COME DUE — the engine's own
+     * gate and the status row's countdown, from one place. See
+     * [AuditSchedule], which is where `deleteMissing` picks the clock and
+     * which is where the walk behind the status row lives.
+     */
+    private val schedule = AuditSchedule(streams, bands, retraction)
+
+    /**
      * The whole rebuild, swapped as ONE reference — the asks and the shared
      * authors they were computed against. Two separate volatiles let a
      * delete decision judge an old roster's ask against a newer rebuild's
@@ -174,7 +182,7 @@ internal class VisitPool(
     private var currentRoster: RosterBuilder.Roster = RosterBuilder.Roster(asks = emptyMap(), sharedAuthors = emptyMap())
 
     /** The relays this pool is riding — `currentRoster.asks` is url → stream → asks. */
-    private val roster: Map<NormalizedRelayUrl, Map<String, List<RosterBuilder.Ask>>> get() = currentRoster.asks
+    private val roster: Map<NormalizedRelayUrl, Map<String, RosterBuilder.UnitAsks>> get() = currentRoster.asks
 
     /**
      * ONE UNIT OF WORK: a relay AND the stream working it.
@@ -513,24 +521,7 @@ internal class VisitPool(
             )
         }
 
-    /**
-     * WHEN THIS STREAM'S TWO SCHEDULED RE-READS COME DUE, over every ask on
-     * the roster — see [StreamPhases.Scheduled].
-     *
-     * ## Why this is a walk and why it is cached
-     *
-     * Dueness is per (stream, relay, filter): every ask ages on its own clock,
-     * which is what makes the audits a trickle rather than a herd, and the
-     * price of that is that no single number knows the answer. So this walks
-     * the roster's asks and asks the bands for each — including a
-     * `filter.toJson()` per ask, which is what keys the verified clock.
-     *
-     * On a provider-bound stream that is thousands of asks, and this is read
-     * from the status tick every fifteen seconds. Cached on [SCHEDULE_CACHE_MS]
-     * because a schedule measured in days does not move inside a minute, and
-     * because a panel that exists to show what the router is spending must not
-     * be a thing the router spends much on.
-     */
+    /** The last walk and when it was taken — see [scheduleFor]. */
     private class ScheduleCache(
         val atMs: Long,
         val rows: Map<String, List<StreamPhases.Scheduled>>,
@@ -539,105 +530,24 @@ internal class VisitPool(
     @Volatile
     private var scheduleCache: ScheduleCache? = null
 
+    /**
+     * WHEN THIS STREAM'S TWO SCHEDULED RE-READS COME DUE — see
+     * [AuditSchedule], which owns the walk and the arithmetic.
+     *
+     * CACHED for a minute, and the cache is here rather than there because it
+     * is a property of who ASKS: these periods are days, the walk is thousands
+     * of asks, and the status tick asks every fifteen seconds. A minute old is
+     * indistinguishable on a row measured in days.
+     */
     private fun scheduleFor(stream: String): List<StreamPhases.Scheduled> {
         val nowMs = System.currentTimeMillis()
         val cached = scheduleCache
         if (cached != null && nowMs - cached.atMs < SCHEDULE_CACHE_MS) return cached.rows[stream].orEmpty()
-        val fresh = buildSchedule(nowSeconds())
+        val fresh = schedule.rows(currentRoster.asks, nowSeconds())
         scheduleCache = ScheduleCache(nowMs, fresh)
         return fresh[stream].orEmpty()
     }
 
-    /**
-     * One pass over the roster for every stream at once — the walk is the same
-     * walk for all of them, and doing it per stream would multiply the cost by
-     * the stream count for identical work.
-     */
-    private fun buildSchedule(nowSec: Long): Map<String, List<StreamPhases.Scheduled>> {
-        class Tally {
-            var due = 0
-            var neverRun = 0
-            var waiting = 0
-            var soonest: Long? = null
-
-            fun add(dueAt: Long?) {
-                when {
-                    // Never audited: due by definition, and counted apart so a
-                    // fresh deployment's storm reads as a schedule that has not
-                    // started rather than one being ignored.
-                    dueAt == null -> {
-                        neverRun++
-                    }
-
-                    dueAt <= nowSec -> {
-                        due++
-                    }
-
-                    else -> {
-                        waiting++
-                        soonest = minOf(soonest ?: dueAt, dueAt)
-                    }
-                }
-            }
-
-            fun row(
-                job: String,
-                everySec: Long,
-            ) = StreamPhases.Scheduled(
-                job = job,
-                everySec = everySec,
-                due = due,
-                neverRun = neverRun,
-                waiting = waiting,
-                nextInSec = soonest?.let { (it - nowSec).coerceAtLeast(0) },
-            )
-        }
-
-        val audits = HashMap<String, Tally>()
-        val refetches = HashMap<String, Tally>()
-        val refetchPeriods = HashMap<String, Long>()
-        for ((url, byStream) in currentRoster.asks) {
-            for ((name, asks) in byStream) {
-                // Per stream, not per ask: the two knobs and the two tallies
-                // are the stream's, and the roster's nesting hands them over
-                // already grouped.
-                val refetching = refetchPeriods.getOrPut(name) { bands.refetchThePastSecondsFor(name) } != SyncBands.NEVER
-                for (ask in asks) {
-                    ask.stream.negentropySyncThePastSeconds?.let { period ->
-                        // THE SAME CLOCK THE ENGINE GATES ON — see
-                        // [auditDueAt], where `deleteMissing` picks it. An ask
-                        // nothing schedules is left out of the tally rather
-                        // than counted as due: a backlog that can never drain
-                        // is the one reading this row must not invent.
-                        val dueAt = auditDueAt(ask, url, period)
-                        if (dueAt != SyncBands.NEVER) audits.getOrPut(name) { Tally() }.add(dueAt)
-                    }
-                    if (refetching) refetches.getOrPut(name) { Tally() }.add(bands.refetchDueAt(name, url, ask.filter))
-                }
-            }
-        }
-        val rows = HashMap<String, MutableList<StreamPhases.Scheduled>>()
-        for (stream in streams) {
-            val out = rows.getOrPut(stream.name) { mutableListOf() }
-            stream.negentropySyncThePastSeconds?.let { period ->
-                out += (audits[stream.name] ?: Tally()).row(POOL_NEGENTROPY, period)
-            }
-            val refetchPeriod = bands.refetchThePastSecondsFor(stream.name)
-            if (refetchPeriod != SyncBands.NEVER) {
-                out += (refetches[stream.name] ?: Tally()).row(POOL_REFETCHING, refetchPeriod)
-            }
-        }
-        return rows
-    }
-
-    /**
-     * The stream rows' one phase, marked stale wherever its numbers change
-     * hands — the roster rebuild, a tail opening, a tail dropping — and
-     * PUBLISHED by [flushPhases] on the ticker. The publish walks
-     * streams × roster, and it used to run INLINE on every tail open and
-     * drop: a 600-tail boot storm paid ~45M entry visits on the visit
-     * workers for numbers nobody reads faster than the report tick.
-     */
     private fun phasesChanged() {
         phasesDirty.set(true)
     }
@@ -665,11 +575,12 @@ internal class VisitPool(
         // [VisitQueue.waitingBy] for the queue's own split.
         val queuedByStream = queue.waitingBy { it.stream }
         val tailedByStream = tails.keys.groupingBy { it.stream }.eachCount()
-        // …and the roster's own per-url stream nesting, whose KEYS are the
-        // distinct streams wanting that relay — built once per rebuild by
-        // `want()`, so this walk allocates nothing at all.
+        // …and the roster's own nesting, whose inner KEYS are the streams
+        // wanting that relay. One walk for every stream, no allocation, and
+        // off the SAME map `rosterVisits` counts units from — they were two
+        // maps and these two adjacent numbers were read from different ones.
         val relaysByStream = HashMap<String, Int>()
-        for (byStream in currentRoster.wants.values) {
+        for (byStream in currentRoster.asks.values) {
             for (name in byStream.keys) relaysByStream.merge(name, 1, Int::plus)
         }
         for (stream in streams) {
@@ -834,7 +745,6 @@ internal class VisitPool(
         val built = rosterBuilder.rebuild()
         val next = built.asks
         val previous = currentRoster.asks
-        val previousWants = currentRoster.wants
         currentRoster = built
         // A UNIT the roster no longer wants loses its tail and its socket
         // claim: the verdict is the admission, and holding a connection for a
@@ -872,13 +782,12 @@ internal class VisitPool(
             // requeue depend on two answers agreeing: where they did not, a
             // stream would be silently never queued, or queued against a want
             // set that was not its own.
-            val mine = built.wants[url].orEmpty()
-            for ((stream, wantsNow) in mine) {
+            for ((stream, unit) in built.asks[url].orEmpty()) {
                 // PER UNIT, so one stream's news is not another's: comparing
                 // the url's whole want set requeued every stream on a relay
                 // whenever a scan paired it with a new provider for ONE of
                 // them.
-                if (previousWants[url]?.get(stream) == wantsNow) continue
+                if (previous[url]?.get(stream)?.identity == unit.identity) continue
                 if (queue.offer(VisitKey(url, stream))) enqueued++
             }
         }
@@ -907,7 +816,11 @@ internal class VisitPool(
     private fun asksFor(
         snapshot: RosterBuilder.Roster,
         key: VisitKey,
-    ): List<RosterBuilder.Ask> = snapshot.asks[key.url]?.get(key.stream).orEmpty()
+    ): List<RosterBuilder.Ask> =
+        snapshot.asks[key.url]
+            ?.get(key.stream)
+            ?.asks
+            .orEmpty()
 
     /**
      * …and the same question asked as a PREDICATE — does this unit still exist
@@ -1159,7 +1072,7 @@ internal class VisitPool(
         // work refuse a permit to an ask that had some — a cap of 4 spent on
         // four map lookups while the one relay whose week was up went away
         // with a `deferred` that read as a cap set too low.
-        if (!auditIsDue(ask, url, negentropySyncThePastSeconds)) return
+        if (!schedule.isDue(ask, url, negentropySyncThePastSeconds, nowSeconds())) return
         // THEN the cap, and THEN the claim, because claiming STAMPS the
         // attempt clock — `attemptSpacingSeconds`, up to six hours — so taking
         // the claim first and finding the cap full would spend the ask's next
@@ -1175,62 +1088,6 @@ internal class VisitPool(
         } finally {
             hold.release()
         }
-    }
-
-    /**
-     * WHEN THIS ASK'S AUDIT NEXT COMES DUE — the ONE place `deleteMissing`
-     * chooses which clock schedules it.
-     *
-     * A `deleteMissing` stream's comparison runs on the ask's owned-kind
-     * projection and stamps its clock there, so reading the full ask's filter
-     * finds a key nothing ever writes. That branch was written twice — the
-     * engine's gate and the status walk — and the copies disagreed: the panel
-     * built to certify that audits run only when due read permanently in
-     * arrears while the audits ran perfectly well. One expression, two
-     * readers.
-     *
-     * THREE ANSWERS, and telling the outer two apart is the whole point:
-     *  - `null` — never audited, which is due by definition. A relay's first
-     *    audit happens on its first visit, and counting those apart is what
-     *    makes a fresh deployment's storm read as scheduled work.
-     *  - [SyncBands.NEVER] — NOTHING schedules this ask: a `deleteMissing`
-     *    stream whose `ownedKinds` does not reach it, or a router with no
-     *    retraction plane. Never due, and never a backlog either.
-     *  - a time — due then.
-     */
-    private fun auditDueAt(
-        ask: RosterBuilder.Ask,
-        url: NormalizedRelayUrl,
-        negentropySyncThePastSeconds: Long,
-    ): Long? {
-        if (ask.stream.deleteMissing == DeleteMissing.OFF) {
-            return bands.auditDueAt(ask.stream.name, url, ask.filter, negentropySyncThePastSeconds)
-        }
-        val r = retraction ?: return SyncBands.NEVER
-        return r.auditDueAt(ask.stream, url, ask.filter, negentropySyncThePastSeconds)
-    }
-
-    /**
-     * Would an audit run for this ask right now, without stamping anything to
-     * find out?
-     *
-     * Deliberately WEAKER than the claim it guards: it reads the band clock
-     * and not `attemptSpacingSeconds`, so an ask that recently attempted and
-     * failed still passes here and is turned away by `claimAudit` a moment
-     * later, having briefly held a permit. That is the cheap direction to be
-     * wrong in — the alternative is a second copy of the spacing rule, kept in
-     * step by hand with the one that matters.
-     *
-     * [SyncBands.NEVER] falls out without a case of its own: no clock reaches
-     * it, so an ask nothing schedules is never due.
-     */
-    private fun auditIsDue(
-        ask: RosterBuilder.Ask,
-        url: NormalizedRelayUrl,
-        negentropySyncThePastSeconds: Long,
-    ): Boolean {
-        val dueAt = auditDueAt(ask, url, negentropySyncThePastSeconds)
-        return dueAt == null || dueAt <= nowSeconds()
     }
 
     /**
@@ -1354,7 +1211,7 @@ internal class VisitPool(
         // every unit it puts in `asks`, so a missing entry cannot happen while
         // `urlAsks` is non-empty; said as a return rather than carrying a
         // live-looking recompute path.
-        val wantsNow = snapshot.wants[url]?.get(key.stream) ?: return
+        val wantsNow = snapshot.asks[url]?.get(key.stream)?.identity ?: return
         val sitting = tails[key]
         if (sitting != null) {
             if (sitting.wantsAtOpen == wantsNow) return
@@ -1379,12 +1236,13 @@ internal class VisitPool(
         // weakest tail on a score (events per url) that says nothing about
         // which stream is paying. A low-volume stream lost every tail it held
         // to a firehose content relay with its own budget free.
-        // NOT COUNTED as work turned away — see [PoolLimits.tryHold]. A full
-        // live gate is where a tail is EARNED, not where it is dropped, so a
-        // deferral here would mark every stream sitting at its live budget as
-        // having work refused. `earnTail`'s own second ask is the one that
-        // counts: reaching it means the candidate could not outrank anything.
-        val hold = limits.tryHold(key.stream, POOL_LIVE, counted = false) ?: earnTail(key) ?: return
+        // A SPARE PERMIT, not a hold that fails — see [PoolLimits.trySpare].
+        // A full live gate is where a tail is EARNED, not where it is dropped,
+        // so a deferral here would mark every stream sitting at its live
+        // budget as having work refused. `earnTail`'s own second ask is a
+        // `tryHold` and does count: reaching it means the candidate could not
+        // outrank anything this stream already holds.
+        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: earnTail(key) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // BUILT BEFORE THE LISTENER CLOSES OVER IT, so the row's counters are
         // the ones the subscription feeds. Built and published as ONE object
@@ -1431,7 +1289,10 @@ internal class VisitPool(
                 var allTrusted = true
                 var healContent = false
                 var healRetractions = false
-                for (ask in currentRoster.asks[url]?.get(key.stream).orEmpty()) {
+                for (ask in currentRoster.asks[url]
+                    ?.get(key.stream)
+                    ?.asks
+                    .orEmpty()) {
                     if (!ask.filter.match(event)) continue
                     any = true
                     allTrusted = allTrusted && ask.stream.trusted

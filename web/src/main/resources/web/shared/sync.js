@@ -759,22 +759,8 @@ export const POOL_LABELS = {
  * disagreed with the tables under it would be worse than no summary. See
  * [poolTotals].
  */
-export function poolsOf(progress) {
-  const held = heldRows(progress);
+export function poolsOf(progress, held = heldRows(progress)) {
   if (!held.rows.length) return null;
-  return poolsFrom(progress, held);
-}
-
-/**
- * …and the same, off rows the caller has ALREADY collected.
- *
- * The card draws both cuts of one document, so `poolsOf` and [poolsByStreamOf]
- * used to walk it twice — `legsOf` mapping a fresh object per held row, then
- * `heldRows` again. At the summed default live budget that is thousands of
- * throwaway objects per poll for a set that cannot have changed between the
- * two calls. The page collects once and passes the rows to both.
- */
-export function poolsFrom(progress, held) {
   const groups = groupByPool(held.rows);
   return { groups, omitted: held.omitted, totals: poolTotals(progress, groups) };
 }
@@ -812,12 +798,13 @@ export function heldRows(progress) {
  * …and the four pools those rows fall into, in the panel's order.
  *
  * Takes rows rather than the document so the caller decides WHICH rows: the
- * whole mirror's, or one stream's. [named] is the one thing the rows cannot
- * say — whether the caller has already put the stream's name above them —
- * because a column repeating a heading is not a column and a column carrying
- * the only attribution a row has is the point.
+ * whole mirror's, or one stream's. [owner] is the one thing the rows cannot
+ * say — the stream whose heading they are already under, if any — because a
+ * column repeating a heading is not a column, and a column carrying the only
+ * attribution a row has is the point. A NAME rather than a flag: the caller
+ * has one, and passing it says which heading is doing the naming.
  */
-function groupByPool(rows, named = false) {
+function groupByPool(rows, owner = null) {
   const byPool = new Map(GROUP_ORDER.map((key) => [key, []]));
   for (const r of rows) {
     // An unknown word lands with the unpooled rather than making a group of its
@@ -854,7 +841,7 @@ function groupByPool(rows, named = false) {
       // disagree": a pool holding one row is the case where the attribution is
       // hardest to get any other way, and dropping the column there would lose
       // it exactly when it is scarcest.
-      streams: !named && found.some((r) => r.stream),
+      streams: !owner && found.some((r) => r.stream),
     });
   }
   return groups;
@@ -899,7 +886,7 @@ export function poolsByStreamOf(progress, held = heldRows(progress)) {
     const mine = rows.filter((r) => r.stream === s?.name);
     if (!rotating && !mine.length) continue;
     claimed.add(s?.name);
-    const groups = groupByPool(mine, true);
+    const groups = groupByPool(mine, s?.name);
     out.push({ stream: s?.name || null, groups, totals: streamTotals(s, groups) });
   }
   // …and whatever no stream claimed, in a block of its own rather than left

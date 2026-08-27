@@ -143,26 +143,36 @@ internal class PoolLimits(
     fun tryHold(
         stream: String,
         job: String,
-        /**
-         * Whether a refusal is WORK TURNED AWAY, which is the only kind
-         * [deferred] means to count.
-         *
-         * False for the live pool's first ask, and that is not bookkeeping
-         * taste. A tail past its stream's budget is not dropped — it goes to
-         * `earnTail`, which evicts the weakest sitting tail and asks again —
-         * so a full live gate is the pool's ordinary steady state and every
-         * eviction was recording a deferral against it. `limitsOf` marks a row
-         * biting when it is at its cap WITH deferrals climbing, so any stream
-         * sitting at its live budget was drawn permanently hot, which is the
-         * one row shape the page colours and the one an operator is meant to
-         * act on.
-         */
-        counted: Boolean = true,
+    ): Hold? {
+        trySpare(stream, job)?.let { return it }
+        deferrals.computeIfAbsent(stream to job) { AtomicLong() }.incrementAndGet()
+        return null
+    }
+
+    /**
+     * …and the same, for a caller whose refusal is NOT the end of the work.
+     *
+     * Two names rather than one with a flag, because they are two questions.
+     * [tryHold] means "take a permit; if there is none, this work does not
+     * happen" — and its refusal is what [deferred] counts, the number that
+     * makes a cap actionable. This one means only "is there a permit going
+     * spare", and the caller has somewhere else to go.
+     *
+     * The live pool is that caller. A tail past its stream's budget is not
+     * dropped: it goes to `earnTail`, which evicts the weakest sitting tail
+     * and asks again. So a full live gate is the pool's ORDINARY STEADY STATE,
+     * and counting it turned every stream sitting at its budget into a stream
+     * with work being refused — permanently, and in the one colour the page
+     * uses for a cap an operator should act on. `earnTail`'s own second ask
+     * goes through [tryHold], because reaching it means the candidate could
+     * not outrank anything, and that IS work turned away.
+     */
+    fun trySpare(
+        stream: String,
+        job: String,
     ): Hold? {
         val gate = gates[stream to job] ?: return Hold(null)
-        if (gate.permits.tryAcquire()) return Hold(gate.permits)
-        if (counted) deferrals.computeIfAbsent(stream to job) { AtomicLong() }.incrementAndGet()
-        return null
+        return if (gate.permits.tryAcquire()) Hold(gate.permits) else null
     }
 
     /** How many times [stream] was refused a permit for [job] since boot. */

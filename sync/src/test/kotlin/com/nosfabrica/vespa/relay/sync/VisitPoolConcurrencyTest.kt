@@ -88,7 +88,14 @@ class VisitPoolConcurrencyTest {
             idleTimeoutMs: Long,
             onEvent: suspend (Event) -> Unit,
         ): PagedFetchResult {
-            peak.updateAndGet { was -> maxOf(was, inFlight.incrementAndGet()) }
+            // COUNT FIRST, THEN RECORD THE PEAK. `updateAndGet` re-runs its
+            // lambda whenever the CAS loses, so an increment INSIDE it is
+            // applied once per attempt — two workers entering together left
+            // `inFlight` permanently one too high, and this fake exists to
+            // count exactly that. The same slip was fixed in `VisitQueueTest`
+            // and missed here, which is why the note is on both.
+            val now = inFlight.incrementAndGet()
+            peak.updateAndGet { was -> maxOf(was, now) }
             paging.send(filter)
             release.receive()
             inFlight.decrementAndGet()
