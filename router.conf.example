@@ -212,6 +212,12 @@ streams {
     profileViaOutbox {
         dir  = "down"
         filter = { "kinds": [0, 10002, 10040] }
+        # The widest roster here — every certified relay — and the smallest
+        # events, so it dials broadly and keeps a fraction of the tails. The
+        # four budgets on every stream have to sum under the dispatcher's
+        # ceiling: see `VisitPool.warnOnSocketBudget`, which says so at boot.
+        visitConcurrency = 32
+        maxLiveConcurrency = 100
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `l` tag says prime and whose
         # record is newer than maxAgeSeconds. A monitor republishes the record
@@ -277,6 +283,9 @@ streams {
 
     assertions {
         dir = "down"
+        # Narrow: one provider's own scores, on the relays that serve them.
+        visitConcurrency = 16
+        maxLiveConcurrency = 40
         # ENFORCED: the provider's relay is the source of truth, and a score
         # it stopped serving is deleted here after — and only after — a clean
         # full reconcile. Start a new deployment at "dryRun" and read the

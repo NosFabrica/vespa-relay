@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
@@ -130,10 +131,25 @@ internal class PoolLimits(
     fun tryHold(
         stream: String,
         job: String,
+        /**
+         * Whether a refusal is WORK TURNED AWAY, which is the only kind
+         * [deferred] means to count.
+         *
+         * False for the live pool's first ask, and that is not bookkeeping
+         * taste. A tail past its stream's budget is not dropped — it goes to
+         * `earnTail`, which evicts the weakest sitting tail and asks again —
+         * so a full live gate is the pool's ordinary steady state and every
+         * eviction was recording a deferral against it. `limitsOf` marks a row
+         * biting when it is at its cap WITH deferrals climbing, so any stream
+         * sitting at its live budget was drawn permanently hot, which is the
+         * one row shape the page colours and the one an operator is meant to
+         * act on.
+         */
+        counted: Boolean = true,
     ): Hold? {
         val gate = gates[stream to job] ?: return Hold(null)
         if (gate.tryAcquire()) return Hold(gate)
-        deferrals.computeIfAbsent(stream to job) { AtomicLong() }.incrementAndGet()
+        if (counted) deferrals.computeIfAbsent(stream to job) { AtomicLong() }.incrementAndGet()
         return null
     }
 
@@ -159,11 +175,28 @@ internal class PoolLimits(
         /**
          * The shares a config asks for, over the jobs the pool runs.
          *
-         * The live pool's ROUTER-WIDE number is deliberately not a gate here:
-         * that one is enforced by the pool's own eviction, which does something
-         * no semaphore can — it takes the socket from the tail that has
-         * delivered least rather than refusing the newcomer. What is here is
-         * the per-stream share of those sockets.
+         * ## The live pool is the one job that MUST have a number
+         *
+         * Three of these are uncapped when a config says nothing, and that is
+         * safe because something else bounds them: a visit-job permit is taken
+         * inside a visit, so `visitConcurrency` — itself the pool's worker
+         * count — is a ceiling over the lot of them even where none is set.
+         *
+         * A tail is not. It is taken BETWEEN visits and released only when the
+         * roster drops the relay, so an uncapped live gate is one held socket
+         * per relay on the stream's roster, with nothing above it: a
+         * thousand-relay stream would sit on a thousand subscriptions and
+         * strangle every new connect behind OkHttp's dispatcher. So a stream
+         * that names no `maxLiveConcurrency` gets
+         * [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY], which is the number the
+         * router-wide `tailBudget` defaulted to before the budgets moved
+         * inside the streams, and the number `warnOnSocketBudget` has been
+         * assuming for it all along.
+         *
+         * Eviction is what happens AT that gate rather than instead of it —
+         * see `VisitPool.earnTail`, which takes the socket from the tail that
+         * has delivered least rather than refusing the newcomer. The gate is
+         * what says how many there are to fight over.
          */
         fun of(streams: List<SyncStream>): PoolLimits =
             PoolLimits(
@@ -173,7 +206,8 @@ internal class PoolLimits(
                             (stream.name to VisitPool.JOB_VISITING) to stream.visitConcurrency,
                             (stream.name to VisitPool.POOL_REFETCHING) to stream.refetchConcurrency,
                             (stream.name to VisitPool.POOL_NEGENTROPY) to stream.negentropyConcurrency,
-                            (stream.name to VisitPool.POOL_LIVE) to stream.maxLiveConcurrency,
+                            (stream.name to VisitPool.POOL_LIVE) to
+                                (stream.maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY),
                         )
                     }.toMap(),
             )

@@ -452,6 +452,23 @@ behaves exactly as it did, bounded by `visitConcurrency` alone. A configured `0`
 is floored to 1, for the same reason the pool's socket numbers are: zero is an
 off switch wearing a tuning knob's name.
 
+**`maxLiveConcurrency` is the exception, and has to be.** The other three
+permits are taken *inside* a visit, so `visitConcurrency` is a ceiling over
+them however they are left. A tail is taken *between* visits and handed back
+only when the roster drops the relay, so nothing else bounds it: unset would be
+one held socket per relay on the stream's roster, and every new connect in the
+process queueing behind sockets already open. A stream that names no number
+gets 600 — what the router-wide `tailBudget` defaulted to before the budgets
+moved inside the streams. Whatever the number, past it a tail is *earned*
+rather than refused: the pool evicts the tail that has delivered least. The
+budget says how many sockets there are to fight over.
+
+Which means the four budgets across every stream have to sum to something the
+process can actually hold. `VisitPool.warnOnSocketBudget` adds them at boot and
+says so if the total leaves too little for the static upstreams, the monitor's
+probes and the healer — an upper bound, since one relay two streams both want
+is one socket charged to both.
+
 **A cap is admission, not a queue.** A visit that cannot get a permit skips
 that job and carries on; the work stays due and the next visit takes it. Every
 job here is due-gated and idempotent, so a full cap costs a revisit delay and

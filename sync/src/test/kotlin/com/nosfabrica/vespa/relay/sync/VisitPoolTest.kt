@@ -311,38 +311,34 @@ class VisitPoolTest {
 
     @Test
     fun `a rebuilt roster with the same asks is not news, one more ask is`() {
-        // The pool compares a url's want list across rebuilds with `wants`,
-        // and both directions of that comparison carry a failure mode.
-        // quartz's Filter has no equals, so the fresh-but-identical filters
-        // every rebuild derives MUST compare equal here — or each roster tick
-        // requeues every relay and the revisit pacing collapses. And one more
-        // bound author MUST compare different — or the new ask waits out the
-        // tailed revisit base for its first catch-up, its tail filter, and
-        // its retraction audit, which is how a staged phantom sat undeleted
-        // for half an hour on a relay another stream already tailed.
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    a { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
-                    b { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
-                }
-                """.trimIndent(),
-            )
-        val (a, b) = cfg.streams
-
-        fun ask(
-            stream: com.nosfabrica.vespa.relay.config.SyncStream,
-            vararg authors: String,
-        ) = RosterBuilder.Ask(stream, Filter(kinds = listOf(30382), authors = authors.toList().ifEmpty { null }))
+        // The pool compares one stream's want set on a url across rebuilds —
+        // `wantsAtOpen == wantsNow` in `openTail` — and both directions of
+        // that comparison carry a failure mode. quartz's Filter has no equals,
+        // so the fresh-but-identical filters every rebuild derives MUST
+        // compare equal, or each roster tick re-opens every tail and the
+        // revisit pacing collapses. And one more bound author MUST compare
+        // different, or the new ask waits out the tailed revisit base for its
+        // first catch-up, its tail filter and its retraction audit — which is
+        // how a staged phantom sat undeleted for half an hour on a relay
+        // another stream already tailed.
+        //
+        // Asserted on the EXPRESSION the roster builds and the pool compares,
+        // which is the filter's own JSON. It used to run against a companion
+        // helper that prefixed the stream name — a shape nothing built once
+        // the want map became url → stream → filters, so the test went on
+        // passing about code no caller had.
+        fun wants(vararg authors: List<String>?) = authors.mapTo(mutableSetOf()) { Filter(kinds = listOf(30382), authors = it).toJson() }
 
         val p1 = "a".repeat(64)
         val p2 = "b".repeat(64)
-        assertEquals(RosterBuilder.wants(listOf(ask(a, p1))), RosterBuilder.wants(listOf(ask(a, p1))), "same shape, fresh instances — not news")
-        assertTrue(RosterBuilder.wants(listOf(ask(a, p1))) != RosterBuilder.wants(listOf(ask(a, p1), ask(a, p2))), "a new bound author is news")
-        assertTrue(RosterBuilder.wants(listOf(ask(a))) != RosterBuilder.wants(listOf(ask(b))), "the stream asking is part of the identity")
+        assertEquals(wants(listOf(p1)), wants(listOf(p1)), "same shape, fresh instances — not news")
+        assertTrue(wants(listOf(p1)) != wants(listOf(p1), listOf(p2)), "a new bound author is news")
+        // …and the stream is not in the string because it does not have to be:
+        // a want set is stored under its stream's own key, so one stream's set
+        // is only ever compared with its own predecessor. Two streams asking
+        // the identical filter is the case that proves it — the sets are equal
+        // and they are still two tails, one per (relay, stream) pair.
+        assertEquals(wants(null), wants(null), "two streams' identical asks are one string, kept apart by the map key")
     }
 
     @Test
@@ -408,6 +404,58 @@ class VisitPoolTest {
         assertTrue(
             VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_699_999_999), covered),
             "one second inside the band is inside it",
+        )
+    }
+
+    @Test
+    fun `each leg is judged against its OWN kinds, not the whole band's edges`() {
+        // THE BUG THIS PINS. A band's `minCreatedAt`/`maxCreatedAt` are
+        // aggregates over every kind in it, but quartz emits one leg per kind
+        // GROUP, each windowed on that group's own span. On a stream over many
+        // kinds — contentViaOutbox rides ~130 — the kinds do not cover the same
+        // time, so a leg walking forward from its own kind's edge lands inside
+        // the aggregate and reads as a re-walk of everything.
+        //
+        // That is not a labelling nit: a leg classified as a re-fetch takes a
+        // `refetchConcurrency` permit and is SKIPPED when the cap is full, and
+        // that cap is small on purpose (4 against 96 visits in the shipped
+        // example). So ordinary catch-up on a multi-kind stream was throttled
+        // to the re-fetch budget and silently dropped past it.
+        val mixed =
+            SyncCoverage.Band(
+                mapOf(
+                    // kind 1 walked back to 2020 and forward to 2023…
+                    1 to SyncCoverage.Span(1_600_000_000, 1_700_000_000, true),
+                    // …kind 30023 only ever seen in a window inside that.
+                    30023 to SyncCoverage.Span(1_650_000_000, 1_660_000_000, true),
+                ),
+                1_700_000_000,
+            )
+
+        // The ordinary forward leg for 30023: from ITS OWN edge, which is a
+        // hundred million seconds below the band's aggregate max.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), since = 1_660_000_000), mixed),
+            "forward from this kind's own edge is a catch-up, whatever the other kinds cover",
+        )
+        // …and the older leg for it, likewise inside the aggregate.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), until = 1_650_000_000), mixed),
+            "deeper than this kind reaches is a catch-up too",
+        )
+        // A kind with nothing recorded at all has never been walked, so its
+        // whole range is new — even though the band it shares is full.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(9735)), mixed),
+            "a kind with no span of its own has not been walked, band or no band",
+        )
+
+        // …and the re-walk still reads as one: the expired band's leg carries
+        // the whole ask again, over kinds whose spans it genuinely re-covers.
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1, 30023)), mixed))
+        assertTrue(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), since = 1_655_000_000), mixed),
+            "inside this kind's own span is a re-walk",
         )
     }
 

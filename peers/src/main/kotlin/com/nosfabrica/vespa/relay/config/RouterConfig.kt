@@ -267,13 +267,28 @@ data class SyncStream(
      *
      * Streams are not peers: a content mirror over ~130 kinds and a
      * thirty-relay index stream share one pool, and without a share the first
-     * one's audits can occupy every worker the second one needed. `maxLiveConcurrency`
-     * is the same idea for the sockets a stream may keep open between visits —
-     * a share of the router-wide budget, which the pool's own eviction
-     * enforces.
+     * one's audits can occupy every worker the second one needed.
      */
     val refetchConcurrency: Int? = null,
     val negentropyConcurrency: Int? = null,
+    /**
+     * …and how many live subscriptions this stream may hold open between
+     * visits — the same idea for SOCKETS rather than for workers, with one
+     * difference that matters: null here is not uncapped.
+     *
+     * The three jobs above are taken inside a visit, so [visitConcurrency] is
+     * a ceiling over them even where none is set. A tail is taken between
+     * visits and released only when the roster drops the relay, so nothing
+     * bounds it but this — an unbounded live gate is one socket per relay on
+     * the roster, and every new connect on the process queues behind the ones
+     * already held. A stream that names no number therefore gets
+     * [DEFAULT_MAX_LIVE_CONCURRENCY], which is what the router-wide
+     * `tailBudget` defaulted to before the budgets moved in here.
+     *
+     * Past the budget a tail is EARNED rather than refused: the pool's own
+     * eviction takes the socket from the tail that has delivered least. This
+     * is what says how many there are to fight over.
+     */
     val maxLiveConcurrency: Int? = null,
     /**
      * …and how many relays may be VISITED for this stream at once — the dial

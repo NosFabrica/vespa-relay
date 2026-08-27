@@ -20,6 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.config.RouterConfig
+import com.nosfabrica.vespa.relay.config.SyncDirection
+import com.nosfabrica.vespa.relay.config.SyncStream
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -36,6 +40,19 @@ import kotlin.test.assertNull
 class PoolLimitsTest {
     private val audit = VisitPool.POOL_NEGENTROPY
     private val catchUp = VisitPool.POOL_CATCHING_UP
+
+    /** A visit-mode stream carrying nothing but the budgets under test. */
+    private fun stream(
+        name: String,
+        maxLiveConcurrency: Int? = null,
+    ) = SyncStream(
+        name = name,
+        dir = SyncDirection.DOWN,
+        filter = Filter(kinds = listOf(1)),
+        urls = emptyList(),
+        trusted = false,
+        maxLiveConcurrency = maxLiveConcurrency,
+    )
 
     @Test
     fun `no cap is no gate, and every ask is granted`() {
@@ -120,6 +137,60 @@ class PoolLimitsTest {
         hold.release()
         assertNull(limits.capFor("content", audit))
         repeat(100) { assertNotNull(limits.tryHold("content", audit)) }
+    }
+
+    @Test
+    fun `the live pool is capped even when the config says nothing`() {
+        // THE ONE JOB THAT CANNOT BE UNCAPPED, and the regression this pins.
+        // A visit-job permit is taken INSIDE a visit, so `visitConcurrency` —
+        // the pool's own worker count — bounds those even where no share is
+        // set. A tail is taken between visits and released only when the
+        // roster drops the relay, so an uncapped live gate is one held socket
+        // per relay on the roster and nothing above it: the mirror strangles
+        // every new connect behind sockets it already holds.
+        //
+        // It was router-wide (`tailBudget = 600`) and hard until the budgets
+        // moved inside the streams, at which point an absent value parsed to
+        // null and the default survived only in the boot warning — which went
+        // on quoting a number the gate no longer enforced.
+        val limits =
+            PoolLimits.of(
+                listOf(
+                    stream("content", maxLiveConcurrency = 3),
+                    stream("indexers", maxLiveConcurrency = null),
+                ),
+            )
+        assertEquals(3, limits.capFor("content", VisitPool.POOL_LIVE), "a stream that says a number gets its number")
+        assertEquals(
+            RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY,
+            limits.capFor("indexers", VisitPool.POOL_LIVE),
+            "and one that says nothing gets the default the socket warning has been assuming all along",
+        )
+        // …while the three that something else bounds stay uncapped, so a
+        // config that configures nothing runs the pool it always did.
+        assertNull(limits.capFor("indexers", VisitPool.JOB_VISITING))
+        assertNull(limits.capFor("indexers", VisitPool.POOL_NEGENTROPY))
+        assertNull(limits.capFor("indexers", VisitPool.POOL_REFETCHING))
+    }
+
+    @Test
+    fun `a refusal the caller is going to answer for itself is not work turned away`() {
+        // `deferred` is the number that makes a cap actionable: at the cap is
+        // not a fault, at the cap WITH work being refused is. The live pool
+        // reaches its gate on every tail it opens past the budget and then
+        // EARNS one by eviction, so counting that refusal marked every stream
+        // sitting at its live budget as starved — permanently, and in the one
+        // colour the page uses for a cap that is biting.
+        val limits = PoolLimits(mapOf(("content" to VisitPool.POOL_LIVE) to 1))
+        val held = assertNotNull(limits.tryHold("content", VisitPool.POOL_LIVE))
+        repeat(10) { assertNull(limits.tryHold("content", VisitPool.POOL_LIVE, counted = false)) }
+        assertEquals(0L, limits.deferred("content", VisitPool.POOL_LIVE), "the look before an eviction is not a refusal")
+
+        // …and the ask that follows the eviction IS counted: reaching it means
+        // the candidate could not outrank anything, which is work turned away.
+        assertNull(limits.tryHold("content", VisitPool.POOL_LIVE))
+        assertEquals(1L, limits.deferred("content", VisitPool.POOL_LIVE))
+        held.release()
     }
 
     @Test

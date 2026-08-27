@@ -142,6 +142,14 @@ internal class RosterBuilder(
         // Roster carries out.
         val wantsByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableSet<String>>>()
 
+        // THE IDENTITY OF AN ASK, and the only one: the filter's own JSON —
+        // the `toJson` keying [SyncBands] already trusts. quartz's [Filter]
+        // compares by reference, so two rebuilds deriving the very same roster
+        // produce unequal [Ask]s; comparing those would requeue the whole
+        // roster every tick, and comparing nothing leaves a new ask waiting
+        // out the tailed revisit. The STREAM is not part of the string — it is
+        // the map key one level up, which is what makes one stream's want set
+        // comparable with its own predecessor and with nothing else.
         fun want(
             url: NormalizedRelayUrl,
             ask: Ask,
@@ -320,15 +328,5 @@ internal class RosterBuilder(
                 DiscoveredRelay(discovered.url, discovered.bindings + ("authors" to setOf(author))).narrowed(base)
             }
         }
-
-        /**
-         * The IDENTITY of an ask set, for change detection: stream name plus
-         * the filter's own JSON — the `toJson` keying [SyncBands] already
-         * trusts. quartz's [Filter] compares by reference, so two rebuilds
-         * that derive the very same roster produce unequal [Ask]s; comparing
-         * those directly would requeue the whole roster on every tick, and
-         * comparing nothing left a new ask waiting out the tailed revisit.
-         */
-        internal fun wants(asks: List<Ask>): Set<String> = asks.mapTo(mutableSetOf()) { "${it.stream.name} ${it.filter.toJson()}" }
     }
 }

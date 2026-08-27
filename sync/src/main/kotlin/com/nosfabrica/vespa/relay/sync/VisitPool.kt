@@ -599,7 +599,27 @@ internal class VisitPool(
             for (ask in asks) {
                 val name = ask.stream.name
                 ask.stream.negentropySyncThePastSeconds?.let { period ->
-                    audits.getOrPut(name) { Tally() }.add(bands.auditDueAt(name, url, ask.filter, period))
+                    // THE SAME BRANCH `auditIsDue` TAKES, and it has to be:
+                    // a `deleteMissing` stream stamps its audit clock on the
+                    // ask's OWNED-KIND projection, so reading the full ask's
+                    // filter here found a key nothing stamps and fell back to
+                    // a band `fullAt` no reconcile advances. The row then read
+                    // permanently backed up while the audits ran fine — on the
+                    // one panel written to certify that they run only when due.
+                    val dueAt =
+                        if (ask.stream.deleteMissing != DeleteMissing.OFF) {
+                            // …and an ask carrying no owned kind is compared
+                            // by nothing, so it is scheduled by nothing.
+                            // Counted as due it would be a backlog that can
+                            // never drain, on every ask of a stream whose
+                            // `ownedKinds` is narrower than its filter.
+                            val r = retraction ?: return@let
+                            if (!r.comparesAnything(ask.stream, ask.filter)) return@let
+                            r.auditDueAt(ask.stream, url, ask.filter, period)
+                        } else {
+                            bands.auditDueAt(name, url, ask.filter, period)
+                        }
+                    audits.getOrPut(name) { Tally() }.add(dueAt)
                 }
                 if (bands.refetchThePastSecondsFor(name) != SyncBands.NEVER) {
                     refetches.getOrPut(name) { Tally() }.add(bands.refetchDueAt(name, url, ask.filter))
@@ -1281,7 +1301,12 @@ internal class VisitPool(
         // weakest tail on a score (events per url) that says nothing about
         // which stream is paying. A low-volume stream lost every tail it held
         // to a firehose content relay with its own budget free.
-        val hold = limits.tryHold(key.stream, POOL_LIVE) ?: earnTail(key) ?: return
+        // NOT COUNTED as work turned away — see [PoolLimits.tryHold]. A full
+        // live gate is where a tail is EARNED, not where it is dropped, so a
+        // deferral here would mark every stream sitting at its live budget as
+        // having work refused. `earnTail`'s own second ask is the one that
+        // counts: reaching it means the candidate could not outrank anything.
+        val hold = limits.tryHold(key.stream, POOL_LIVE, counted = false) ?: earnTail(key) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // BUILT BEFORE THE LISTENER CLOSES OVER IT, so the row's counters are
         // the ones the subscription feeds. Built and published as ONE object
@@ -1385,6 +1410,19 @@ internal class VisitPool(
         evictedTails.incrementAndGet()
         dropTail(weakest)
         if (asksFor(currentRoster, weakest).isNotEmpty()) queue.offer(weakest)
+        // THE PERMIT IS RE-TAKEN, NOT HANDED OVER, and another opener of this
+        // stream can win it in between — the candidate that paid for the
+        // eviction then gets nothing and returns without a tail.
+        //
+        // Left as it is, deliberately. The socket cannot escape: gates are per
+        // (stream, job) and the weakest is chosen from this stream's own tails,
+        // so whoever wins is this stream spending its own budget, and the
+        // budget is never under-used. Both units come back — the evicted one
+        // was just requeued, the candidate arms its revisit as its visit ends
+        // — so the cost of losing the race is one revisit delay for one unit.
+        // Closing it means `dropTail` returning the freed hold instead of
+        // releasing it, on a path four other callers share, to buy back a
+        // delay the pool already tolerates everywhere else.
         return limits.tryHold(candidate.stream, POOL_LIVE)
     }
 
@@ -1571,19 +1609,37 @@ internal class VisitPool(
          * band's max and the older one down to its min, so a `<=` here would
          * file every routine catch-up as a re-walk of everything.
          *
-         * A band with no spans covers nothing — nothing has been recorded for
-         * this ask yet — so its first walk is a catch-up, not a re-fetch. It
-         * also has no min or max to compare against, which is the other reason
-         * this returns before reading them.
+         * AGAINST THE LEG'S OWN KINDS, never the band's aggregate edges. A
+         * band holds one span PER KIND and quartz emits one leg per kind
+         * group, each windowed on that group's own span —
+         * `Band.minCreatedAt`/`maxCreatedAt` are a fold over all of them. On a
+         * stream over many kinds (contentViaOutbox rides ~130) the kinds do not
+         * cover the same time, so comparing a 30023 leg against a band whose
+         * edges come from kind 1 put ordinary catch-up inside the aggregate and
+         * called it a re-walk. That is not a labelling nit — a re-walk takes a
+         * `refetchConcurrency` permit and is SKIPPED when the cap is full, and
+         * that cap is small by design.
+         *
+         * NOTHING RECORDED FOR THESE KINDS is a first walk, so: an absent
+         * band, a band with no spans, and a leg whose own kinds have no span
+         * are one answer. The last is the case the aggregate could not see at
+         * all — a kind added to a live stream's filter walks from scratch
+         * while the band beside it is full.
+         *
+         * A leg naming NO kinds asks for everything, so it is judged against
+         * everything the band holds — which is also the shape quartz records
+         * under `ALL_KINDS` for a filter that names none.
          */
         internal fun rewalksCovered(
             leg: Filter,
             covered: SyncCoverage.Band?,
         ): Boolean {
             if (covered == null || covered.spans.isEmpty()) return false
+            val mine = leg.kinds?.mapNotNull { covered.spans[it] } ?: covered.spans.values.toList()
+            if (mine.isEmpty()) return false
             val from = leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR
             val to = leg.until ?: Long.MAX_VALUE
-            return from < covered.maxCreatedAt && to > covered.minCreatedAt
+            return from < mine.maxOf { it.max } && to > mine.minOf { it.min }
         }
 
         /**
