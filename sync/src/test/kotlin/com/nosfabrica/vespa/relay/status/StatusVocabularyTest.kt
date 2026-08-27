@@ -54,6 +54,9 @@ class StatusVocabularyTest {
             // `kinds` is the FILTER's own member, echoed back verbatim — a
             // Nostr kind list needs no gloss from this relay.
             "name",
+            // The owning stream on a row that is not already one stream's —
+            // an identifier, like `name` and `relay` beside it.
+            "stream",
             "phase",
             "phaseForSec",
             "filter",
@@ -123,11 +126,20 @@ class StatusVocabularyTest {
                      "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
                                 "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
                      "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
-                     "roster": 412, "tails": 300,
+                     "roster": 412, "liveHeld": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
                                               "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                               "doing": "catching up (paging)", "pagingUntil": 1689857148}],
-                                  "omitted": 118}}],
+                                               "doing": "catching up (paging)", "pool": "catching-up",
+                                               "pagingUntil": 1689857148}],
+                                  "omitted": 118},
+                     "limits": [{"job": "visiting", "streamCap": 96, "inUse": 7, "deferred": 0},
+                                {"job": "negentropy", "streamCap": 4, "inUse": 2, "deferred": 91}],
+                     "schedule": [{"job": "negentropy", "everySec": 604800, "due": 3, "neverRun": 12,
+                                   "waiting": 397, "nextInSec": 41200}]}],
+                     "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400,
+                                          "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
+                                          "doing": "holding a live tail", "pool": "live", "stream": "content"}],
+                              "omitted": 0},
                      "processors": [
                        {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
                         "lastPassAt": 880, "lastPassSec": 300,
@@ -158,8 +170,8 @@ class StatusVocabularyTest {
                         "prime": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
                         "unpageable": 1, "auth-refused": 1, "restricted": 1},
                        {"name": "visits", "phase": "rotating", "phaseForSec": 900,
-                        "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
-                        "visitsRun": 90, "auditing": 1, "auditsRun": 4, "auditsSkipped": 3, "retracted": 2, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
+                        "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
+                        "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "retracted": 2, "abortedVisits": 2, "liveEvicted": 1, "poolReceived": 4000},
                        {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                     """.trimIndent(),
                 ).jsonObject
@@ -228,6 +240,30 @@ class StatusVocabularyTest {
                     "events",
                     "quietForSec",
                     "doing",
+                    // …and `doing`'s OTHER counterpart: the stable word four
+                    // tables are grouped by, where `doing` is the sentence
+                    // inside them.
+                    "pool",
+                    // The fourth of those tables, which is the only one that is
+                    // a document member of its own — the tails are pool-wide,
+                    // so they sit at the root rather than under a stream.
+                    "live",
+                    // What a stream may SPEND on each of those four, and what
+                    // it has spent — the caps, both levels, and the work each
+                    // has turned away.
+                    "limits",
+                    "job",
+                    // …and when the two scheduled re-reads of the past come
+                    // due, which is what says an audit ran because its clock
+                    // ran out rather than because something asked.
+                    "schedule",
+                    "everySec",
+                    "due",
+                    "neverRun",
+                    "waiting",
+                    "streamCap",
+                    "inUse",
+                    "deferred",
                     // …and `doing`'s counterpart on the other kind of held row:
                     // a probe leg is a ladder, not a transfer, so what it
                     // publishes is which STEP it is on.
@@ -288,16 +324,21 @@ class StatusVocabularyTest {
                     "auth-refused",
                     "restricted",
                     "roster",
+                    // …and the same roster in the pool's UNITS OF WORK, which
+                    // is what `visiting` and `awaitingVisit` are parts of: a
+                    // relay three streams want is one roster entry and three
+                    // units.
+                    "rosterVisits",
                     "awaitingVisit",
                     "visiting",
-                    "tails",
+                    "liveHeld",
                     "visitsRun",
-                    "auditing",
-                    "auditsRun",
-                    "auditsSkipped",
+                    "negentropyRunning",
+                    "negentropyRuns",
+                    "negentropySkipped",
                     "retracted",
                     "abortedVisits",
-                    "evictedTails",
+                    "liveEvicted",
                     "poolReceived",
                 ) +
                 // What the phase itself knows, which used to reach a log line

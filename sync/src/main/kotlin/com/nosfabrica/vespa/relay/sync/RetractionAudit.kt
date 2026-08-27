@@ -96,6 +96,25 @@ internal class RetractionAudit(
     }
 
     /**
+     * Is this ask's comparison due — read-only, stamping nothing.
+     *
+     * [claimAudit] answers the same question and TAKES the attempt clock as it
+     * does, so it cannot be used to look before spending a workload permit.
+     * This can: same derivation, same band, no side effect.
+     */
+    fun isAuditDue(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+        negentropySyncThePastSeconds: Long,
+        now: Long,
+    ): Boolean {
+        val ownedAsk = ownedAskOf(stream, ask) ?: return false
+        val dueAt = bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds)
+        return dueAt == null || dueAt <= now
+    }
+
+    /**
      * Claim this ask's comparison if it is due — [SyncBands.claimAudit] on
      * the OWNED ask, the same filter [reconcileAndDelete]'s band record
      * advances, derived by the same [ownedAskOf]. True commits the caller

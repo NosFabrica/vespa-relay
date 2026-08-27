@@ -91,12 +91,86 @@ class StreamPhases {
          * Null for a stream nothing has registered a source for.
          */
         val inFlight: InFlight? = null,
+        /**
+         * WHAT THIS STREAM MAY SPEND on each of the pool's jobs, and what it
+         * has spent — see [Limit]. Empty for a stream whose engine caps
+         * nothing, which is every deployment that has not configured a share.
+         */
+        val limits: List<Limit> = emptyList(),
+        /**
+         * WHEN this stream's two scheduled re-reads of the past come due —
+         * see [Scheduled]. Empty for a stream that schedules neither.
+         */
+        val schedule: List<Scheduled> = emptyList(),
+    )
+
+    /**
+     * ONE SCHEDULED JOB'S CLOCK, over every ask this stream has: its period,
+     * how many asks are due right now, how many have never run, how many are
+     * waiting out the period, and how long until the next one comes due.
+     *
+     * ## What it is for
+     *
+     * "Do the audits only run when they are scheduled to" is a question the
+     * counters cannot answer. `auditsRun` climbing says work happened; nothing
+     * said whether it was DUE. The two are told apart here: work only ever
+     * moves out of [waiting] by the clock running out, so a `waiting` that
+     * holds steady while `auditsRun` climbs is a rule being broken, and one
+     * that drains at the period is the schedule working.
+     *
+     * ## `neverRun` is the honest exception, and it is not a bug
+     *
+     * An ask with no completed pass behind it is ALWAYS due — see
+     * `SyncBands.auditDue`, where a zero clock short-circuits — so a relay's
+     * first audit happens on its first visit rather than a period later. That
+     * is deliberate and it is also why a fresh deployment audits everything at
+     * once. Counted apart from [due] so that storm reads as what it is:
+     * scheduled work whose schedule has not started yet, not the period being
+     * ignored. It is also the number a workload cap is for.
+     */
+    class Scheduled(
+        /** The pool word this clocks — `auditing` or `re-fetching`. */
+        val job: String,
+        /** The stream's configured period for it, in seconds. */
+        val everySec: Long,
+        /** Asks whose clock has run out and are waiting for a visit to pick them up. */
+        val due: Int,
+        /** Asks with no completed pass behind them, which are due by definition. */
+        val neverRun: Int,
+        /** Asks inside their period — the healthy majority, and what the period is FOR. */
+        val waiting: Int,
+        /** Seconds until the nearest [waiting] ask comes due, or null when none is waiting. */
+        val nextInSec: Long?,
+    )
+
+    /**
+     * ONE STREAM'S SHARE OF ONE JOB: what it may take, what is out right now,
+     * and how much work the cap has turned away.
+     *
+     * The last is the one that had to be published. A cap that silently drops
+     * work is indistinguishable from work that was never due — a stream whose
+     * history has not been re-checked for a week reads identically whether its
+     * audits are capped to nothing or its bands simply have not aged. That is
+     * the state an operator would be debugging at the relay, and the answer is
+     * a number this process already had.
+     */
+    class Limit(
+        /** The pool word this bounds — `live`, `catching-up`, `re-fetching`, `auditing`. */
+        val job: String,
+        /** This stream's share, or null where it has none and is bounded by the dial width. */
+        val cap: Int?,
+        /** Permits out right now against [cap]. Null when this stream has no cap of its own. */
+        val inUse: Int?,
+        /** Times this stream was refused a permit for this job since boot. */
+        val deferred: Long,
     )
 
     private class Entry(
         @Volatile var phase: Phase,
         @Volatile var sinceMs: Long,
         @Volatile var inFlight: (() -> InFlight)? = null,
+        @Volatile var limits: (() -> List<Limit>)? = null,
+        @Volatile var schedule: (() -> List<Scheduled>)? = null,
     )
 
     private val phases = ConcurrentHashMap<String, Entry>()
@@ -126,6 +200,35 @@ class StreamPhases {
     ) {
         register(name)
         phases[name]?.inFlight = source
+    }
+
+    /**
+     * Where to ask when [name]'s scheduled re-reads come due — see
+     * [Scheduled]. Read at snapshot time like the others, though the engine
+     * behind it is expected to cache: this one walks every ask.
+     */
+    @Synchronized
+    fun namesSchedule(
+        name: String,
+        source: () -> List<Scheduled>,
+    ) {
+        register(name)
+        phases[name]?.schedule = source
+    }
+
+    /**
+     * Where to ask what [name] may SPEND — registered once by the engine that
+     * owns the caps, and read at snapshot time like the in-flight list, for
+     * the same reason: the permits move on every leg, and a copy kept in step
+     * by hand is a report that disagrees with the thing it reports on.
+     */
+    @Synchronized
+    fun namesLimits(
+        name: String,
+        source: () -> List<Limit>,
+    ) {
+        register(name)
+        phases[name]?.limits = source
     }
 
     /**
@@ -160,6 +263,8 @@ class StreamPhases {
                 roster = rotating?.relays,
                 tails = rotating?.tailed,
                 inFlight = e.inFlight?.invoke(),
+                limits = e.limits?.invoke().orEmpty(),
+                schedule = e.schedule?.invoke().orEmpty(),
             )
         }
 

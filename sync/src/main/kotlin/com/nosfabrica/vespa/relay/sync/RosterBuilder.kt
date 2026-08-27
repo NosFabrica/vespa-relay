@@ -89,12 +89,21 @@ internal class RosterBuilder(
         /** url → the asks that want it. */
         val asks: Map<NormalizedRelayUrl, List<Ask>>,
         /**
-         * url → [wants] of its asks, computed once here. The pool compares
-         * these across rebuilds and keys tails on them; recomputing both
-         * sides per url per tick serialized every filter to JSON twice for
-         * an answer that is almost always "unchanged".
+         * url → STREAM → [wants] of that stream's asks there, computed once
+         * here. The pool compares these across rebuilds and keys tails on
+         * them; recomputing both sides per url per tick serialized every
+         * filter to JSON twice for an answer that is almost always
+         * "unchanged".
+         *
+         * NESTED BY STREAM because the unit of work is a (relay, stream) pair
+         * (`VisitPool.VisitKey`), and one set per url made every stream's
+         * business every other stream's: a scan pairing relay R with a new
+         * provider for `indexers` changed the url's set, so `content`'s tail
+         * on R saw its want list move, dropped its subscription and re-opened
+         * it — losing its live edge for a change it had no part in — and its
+         * unit was requeued for the same reason.
          */
-        val wants: Map<NormalizedRelayUrl, Set<String>> = emptyMap(),
+        val wants: Map<NormalizedRelayUrl, Map<String, Set<String>>> = emptyMap(),
         /**
          * Per stream: authors found at MORE THAN ONE relay. One relay's empty
          * answer does not retract what a sibling relay may still be serving,
@@ -129,15 +138,16 @@ internal class RosterBuilder(
         // One identity set per url, reused three ways: it dedups want() by
         // VALUE (Ask equality degrades to Filter reference equality, so the
         // old `ask !in wanting` linear-scanned and matched nothing for
-        // freshly built asks), and it IS the per-url wants set the Roster
-        // carries out.
-        val wantsByUrl = HashMap<NormalizedRelayUrl, MutableSet<String>>()
+        // freshly built asks), and it IS the per-(url, stream) wants set the
+        // Roster carries out.
+        val wantsByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableSet<String>>>()
 
         fun want(
             url: NormalizedRelayUrl,
             ask: Ask,
         ) {
-            if (wantsByUrl.getOrPut(url) { LinkedHashSet() }.add("${ask.stream.name} ${ask.filter.toJson()}")) {
+            val mine = wantsByUrl.getOrPut(url) { HashMap() }.getOrPut(ask.stream.name) { LinkedHashSet() }
+            if (mine.add(ask.filter.toJson())) {
                 asksByUrl.getOrPut(url) { mutableListOf() } += ask
             }
         }

@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -47,20 +46,27 @@ import java.util.concurrent.ConcurrentHashMap
  * The queue knows nothing about relays, rosters or tails: [visitLoop]'s three
  * callbacks are the whole contract, which is what makes the invariants a
  * hermetically testable surface rather than probe-only choreography.
+ *
+ * GENERIC IN ITS KEY, and that is what let the pool's unit of work change
+ * under it without touching a line of this file. The unit was a relay; it is a
+ * (relay, stream) PAIR now, so that many streams can work one relay at once
+ * while each stream sees a relay in one state at a time. Every invariant here
+ * is about identity and none about relays, so [K] is whatever the caller
+ * decides a unit of work is.
  */
-internal class VisitQueue(
+internal class VisitQueue<K : Any>(
     private val scope: CoroutineScope,
 ) {
-    private val channel = Channel<NormalizedRelayUrl>(Channel.UNLIMITED)
-    private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val inFlight = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val parked = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+    private val channel = Channel<K>(Channel.UNLIMITED)
+    private val queued = ConcurrentHashMap.newKeySet<K>()
+    private val inFlight = ConcurrentHashMap.newKeySet<K>()
+    private val parked = ConcurrentHashMap.newKeySet<K>()
 
     /**
-     * The pending revisit per url, as a CANCELLABLE job rather than a bare
+     * The pending revisit per unit, as a CANCELLABLE job rather than a bare
      * membership mark — see [disarm] for what a mark could not express.
      */
-    private val armed = ConcurrentHashMap<NormalizedRelayUrl, Job>()
+    private val armed = ConcurrentHashMap<K, Job>()
 
     /** Guards the two compound reads that decide a park — see [visitLoop]. */
     private val handoff = Any()
@@ -69,10 +75,10 @@ internal class VisitQueue(
 
     val visiting: Int get() = inFlight.size
 
-    /** Queue [url] now. False when it is already waiting (running is fine). */
-    fun offer(url: NormalizedRelayUrl): Boolean {
-        if (!queued.add(url)) return false
-        channel.trySend(url)
+    /** Queue [key] now. False when it is already waiting (running is fine). */
+    fun offer(key: K): Boolean {
+        if (!queued.add(key)) return false
+        channel.trySend(key)
         return true
     }
 
@@ -85,9 +91,9 @@ internal class VisitQueue(
      * throw that escapes it (cancellation) ends the worker.
      */
     suspend fun visitLoop(
-        stillWanted: (NormalizedRelayUrl) -> Boolean,
-        revisitDelayMs: (NormalizedRelayUrl) -> Long,
-        visit: suspend (NormalizedRelayUrl) -> Unit,
+        stillWanted: (K) -> Boolean,
+        revisitDelayMs: (K) -> Long,
+        visit: suspend (K) -> Unit,
     ) {
         for (url in channel) {
             queued.remove(url)
@@ -142,14 +148,14 @@ internal class VisitQueue(
      * — this removes one rather than adding a second — and a url with nothing
      * armed is a no-op.
      */
-    fun disarm(url: NormalizedRelayUrl) {
-        armed.remove(url)?.cancel()
+    fun disarm(key: K) {
+        armed.remove(key)?.cancel()
     }
 
     private fun armRevisit(
-        url: NormalizedRelayUrl,
-        revisitDelayMs: (NormalizedRelayUrl) -> Long,
-        stillWanted: (NormalizedRelayUrl) -> Boolean,
+        url: K,
+        revisitDelayMs: (K) -> Long,
+        stillWanted: (K) -> Boolean,
     ) {
         val delayMs = revisitDelayMs(url)
         // LAZY, and registered before it can run: the body clears its own

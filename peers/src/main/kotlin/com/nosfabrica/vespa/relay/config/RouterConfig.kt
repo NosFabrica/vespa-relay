@@ -81,20 +81,6 @@ data class RouterConfig(
      * parsed sources, on the default six-hour clock.
      */
     val monitor: MonitorConfig? = null,
-    /**
-     * The visit pool's dial width: how many relays are visited — and
-     * therefore dialled — at once, across every visit-mode stream. Router-wide
-     * rather than per stream because the pool is one shared engine; the
-     * per-stream `concurrency` knob paces only the legacy fan-out.
-     */
-    val visitConcurrency: Int = DEFAULT_VISIT_CONCURRENCY,
-    /**
-     * The visit pool's steady state: how many live-tail sockets it may hold
-     * open at once. Visit width plus this is the most sockets the pool ever
-     * owns — size the pair against the dispatcher ceiling, leaving room for
-     * the static upstreams, the monitor's dials and the healer.
-     */
-    val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
     companion object {
         /**
@@ -106,11 +92,29 @@ data class RouterConfig(
         const val DEFAULT_VISIT_CONCURRENCY = 128
 
         /**
-         * Sized to the measured prime population (~600 responsive hosts
-         * after folding): the whole point is that every certified relay is
-         * effectively always connected.
+         * …and what a stream with no `visitConcurrency` of its own contributes
+         * to the pool's worker count. The pool has no router-wide width any
+         * more — the workers it runs are the SUM of what its streams ask for —
+         * so an unbounded stream has to stand for a number somewhere, and this
+         * is it. It is the same 128 the router-wide setting defaulted to, so a
+         * single-stream deployment that configures nothing runs exactly the
+         * pool it always did.
          */
-        const val DEFAULT_TAIL_BUDGET = 600
+        const val UNCAPPED_STREAM_VISITS = DEFAULT_VISIT_CONCURRENCY
+
+        /**
+         * …and what a stream with no `maxLiveConcurrency` of its own
+         * contributes to the sockets the pool may hold open.
+         *
+         * Sized to the measured prime population (~600 responsive hosts after
+         * folding): the whole point is that every certified relay is
+         * effectively always connected. It was the router-wide budget until
+         * the budgets moved inside the streams, and it is unchanged as a
+         * NUMBER — what changed is that a two-stream deployment now has to say
+         * what each of them may keep, because the sum is what the process
+         * pays. See `VisitPool.warnOnSocketBudget`.
+         */
+        const val DEFAULT_MAX_LIVE_CONCURRENCY = 600
     }
 
     /** Every (stream, url) pair whose direction pulls events down into our store. */
@@ -247,6 +251,47 @@ data class SyncStream(
      * paged walks left it.
      */
     val negentropySyncThePastSeconds: Long? = null,
+    /**
+     * THIS STREAM'S SHARE of each of the pool's four jobs — how many of the
+     * pool's visits may be doing that job FOR THIS STREAM at once. Null is
+     * uncapped, which leaves that job bounded by [visitConcurrency] alone —
+     * the dial width, which is what every deployment had before these existed.
+     *
+     * This is the ONLY place a workload is bounded, and deliberately so: what
+     * every stream may take between them is the sum of what each may take,
+     * written where the stream that pays it is configured. A router-wide
+     * ceiling over the top would be a second number to keep in step by hand,
+     * and the failure it causes — a stream inside its own share, refused
+     * anyway, by a limit named nowhere near it — is the one these exist to
+     * make legible.
+     *
+     * Streams are not peers: a content mirror over ~130 kinds and a
+     * thirty-relay index stream share one pool, and without a share the first
+     * one's audits can occupy every worker the second one needed. `maxLiveConcurrency`
+     * is the same idea for the sockets a stream may keep open between visits —
+     * a share of the router-wide budget, which the pool's own eviction
+     * enforces.
+     */
+    val refetchConcurrency: Int? = null,
+    val negentropyConcurrency: Int? = null,
+    val maxLiveConcurrency: Int? = null,
+    /**
+     * …and how many relays may be VISITED for this stream at once — the dial
+     * width, per stream.
+     *
+     * The pool still runs one queue and one set of workers over one socket per
+     * relay: this is admission, like the four above it, and not a pool of its
+     * own. A visit that cannot get a permit for a stream simply does not serve
+     * that stream's asks; if it can get none of them it never dials at all,
+     * which is what makes this bound simultaneous TLS handshakes and not just
+     * work.
+     *
+     * The pool sizes its worker count from the SUM of these, because that is
+     * the most dialling any configuration of them can produce — see
+     * [RouterConfig.UNCAPPED_STREAM_VISITS] for what a stream that sets none
+     * contributes to it.
+     */
+    val visitConcurrency: Int? = null,
     /**
      * How often this stream's bands EXPIRE, putting its whole filter back on
      * the walk — `SYNC_REFETCH_THE_PAST_SECONDS` for the streams that do not

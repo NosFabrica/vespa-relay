@@ -64,7 +64,8 @@ import kotlinx.serialization.json.putJsonArray
  *       "phaseForSec": 412,
  *       "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
  *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
- *                                "doing": "catching up (paging)", "pagingUntil": 1689857148}],
+ *                                "doing": "catching up (paging)", "pool": "catching-up",
+ *                                "pagingUntil": 1689857148}],
  *                    "omitted": 118},
  *       "cycle": {
  *         "number": 12, "owner": "dynamic", "startedAt": 1769999000, "outcome": "running",
@@ -84,6 +85,10 @@ import kotlinx.serialization.json.putJsonArray
  *     },
  *     {"name": "visits", "phase": "rotating", "phaseForSec": 3480, "roster": 412, "tails": 300}
  *   ],
+ *   "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400, "transferringForSec": 41400,
+ *                        "events": 91002, "quietForSec": 3, "doing": "holding a live tail",
+ *                        "pool": "live"}],
+ *            "omitted": 0},
  *   "processors": [
  *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
  *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
@@ -135,6 +140,19 @@ import kotlinx.serialization.json.putJsonArray
  * WHICH urls it is holding rather than how many — with its own shape and its own
  * order, longest-held first, because a probe leg is bounded by construction and
  * a long one is the anomaly. See [Processors.Holding].
+ *
+ * `pool` on a held row and `live` at the root are the two halves of one
+ * answer: WHICH OF THE MIRROR'S FOUR WORKLOADS each relay is in. One rotating
+ * pool runs all of them, so `visiting` counted a catch-up, a history audit and
+ * a whole-corpus re-walk as one number while `tails` counted the fourth and
+ * named nobody. `pool` is the machine word rows are grouped by — `live`,
+ * `catching-up`, `re-fetching`, `auditing`, and absent for a visit between
+ * them, which is drawn under its own `doing` rather than dropped. `live` is
+ * the fourth list itself: the tails are pool-wide by construction (one
+ * subscription per relay carries every wanting stream's filter), so they sit at
+ * the root rather than being divided per stream, and the stream rows keep the
+ * `tails` COUNT that is their own share. See `VisitPool.POOL_LIVE` and its
+ * neighbours.
  *
  * There is NO heartbeat member, and there used to be. This document was a file
  * on a volume the serving relay read, so it had to carry a `writtenAt` the
@@ -210,6 +228,15 @@ class SyncProgress {
         /** Where the constraint is, and the numbers behind it — see [Health]. */
         health: Health? = null,
         /**
+         * THE LIVE POOL — every relay holding a tail right now, pool-wide.
+         *
+         * Beside the streams rather than inside them because a tail is not a
+         * stream's: one subscription per relay carries every wanting stream's
+         * filter and its arrivals are counted at the url. See
+         * `VisitPool.livePool`.
+         */
+        live: InFlight? = null,
+        /**
          * VirtualMachineErrors this process has survived — an OutOfMemoryError
          * kills whichever thread allocates next and is caught by nobody, so the
          * router carries on looking merely quiet. Four of them once passed
@@ -218,7 +245,7 @@ class SyncProgress {
         fatals: Long = 0,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
-        latest = document(streams, processors, fatals, health, nowSeconds)
+        latest = document(streams, processors, fatals, health, live, nowSeconds)
     }
 
     companion object {
@@ -233,6 +260,7 @@ class SyncProgress {
             processors: List<Processors.Snapshot> = emptyList(),
             fatals: Long = 0,
             health: Health? = null,
+            live: InFlight? = null,
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
@@ -275,7 +303,7 @@ class SyncProgress {
                                 // beside a stream riding four hundred relays,
                                 // and beside one riding none.
                                 s.roster?.let { put("roster", it) }
-                                s.tails?.let { put("tails", it) }
+                                s.tails?.let { put("liveHeld", it) }
                                 // WHICH relays are running, beside the cycle
                                 // rather than inside it: a worker outlives the
                                 // pass that handed it out, so this set spans
@@ -285,50 +313,70 @@ class SyncProgress {
                                 // hours published the number 2 and no url. See
                                 // [InFlight], and note it is not "the pending
                                 // urls": the walk has not reached some of them.
-                                s.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { f ->
-                                    put(
-                                        "inFlight",
-                                        buildJsonObject {
-                                            putJsonArray("relays") {
-                                                for (r in f.relays) {
-                                                    add(
-                                                        buildJsonObject {
-                                                            put("relay", r.relay)
-                                                            put("heldForSec", r.heldForSec)
-                                                            // Absent when the worker has no transfer
-                                                            // slot — in the guards, or queued behind
-                                                            // other legs, which is where most of a
-                                                            // fan-out's workers are.
-                                                            r.transferringForSec?.let { put("transferringForSec", it) }
-                                                            // The pair that separates a real backlog
-                                                            // from a walk that will not end.
-                                                            put("events", r.events)
-                                                            put("quietForSec", r.quietForSec)
-                                                            // WHAT IT IS DOING.
-                                                            // Absent until the
-                                                            // leg reaches a
-                                                            // stage worth a
-                                                            // word, which is a
-                                                            // state and not a
-                                                            // gap.
-                                                            r.stage?.let { put("doing", it) }
-                                                            // Absent when no
-                                                            // walk is running.
-                                                            r.pagingUntil?.let { put("pagingUntil", it) }
-                                                        },
-                                                    )
-                                                }
-                                            }
-                                            // Never silent, for the same reason
-                                            // as the fold's.
-                                            put("omitted", f.omitted)
-                                        },
-                                    )
+                                s.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { put("inFlight", held(it)) }
+                                // WHAT THIS STREAM MAY SPEND on each of the
+                                // pool's jobs, and what it has spent. Omitted
+                                // on a router with no caps machinery at all,
+                                // rather than published as an empty array —
+                                // an empty list is a claim that this stream
+                                // has no jobs.
+                                // WHEN THE SCHEDULED RE-READS COME DUE — the
+                                // half `auditsRun` could never say. Omitted
+                                // for a stream that schedules neither, which
+                                // is a stream that never re-reads its past.
+                                s.schedule.takeIf { it.isNotEmpty() }?.let { rows ->
+                                    putJsonArray("schedule") {
+                                        for (r in rows) {
+                                            add(
+                                                buildJsonObject {
+                                                    put("job", r.job)
+                                                    put("everySec", r.everySec)
+                                                    put("due", r.due)
+                                                    put("neverRun", r.neverRun)
+                                                    put("waiting", r.waiting)
+                                                    // Absent when nothing is waiting — there is
+                                                    // no next one to count down to, and a 0
+                                                    // would read as "due now".
+                                                    r.nextInSec?.let { put("nextInSec", it) }
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                                s.limits.takeIf { it.isNotEmpty() }?.let { rows ->
+                                    putJsonArray("limits") {
+                                        for (l in rows) {
+                                            add(
+                                                buildJsonObject {
+                                                    put("job", l.job)
+                                                    // Absent where nothing caps it: null is
+                                                    // "bounded by the dial width alone", and a
+                                                    // 0 would read as "may do none of this".
+                                                    l.cap?.let { put("streamCap", it) }
+                                                    l.inUse?.let { put("inUse", it) }
+                                                    // ALWAYS, including zero: a cap that has
+                                                    // turned nothing away is the claim worth
+                                                    // publishing, and a member appearing only
+                                                    // on damage cannot be told from a router
+                                                    // too old to say.
+                                                    put("deferred", l.deferred)
+                                                },
+                                            )
+                                        }
+                                    }
                                 }
                             },
                         )
                     }
                 }
+                // THE LIVE POOL, at the ROOT and not under a stream: a tail
+                // carries every wanting stream's filter and counts its
+                // arrivals at the url, so dividing it per stream would publish
+                // one undivided number once per stream. Omitted entirely when
+                // nothing is tailed — a router holding no tails and one too old
+                // to say are told apart the same way every other absent member
+                // here is, by the rest of the document.
+                live?.takeIf { it.relays.isNotEmpty() }?.let { put("live", held(it)) }
                 // THE WORK THAT IS NOT A STREAM — see [Processors]. Omitted
                 // entirely when nothing registered, rather than published as an
                 // empty array: an empty list is a claim that this router runs
@@ -337,6 +385,60 @@ class SyncProgress {
                 processors.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
                 }
+            }
+
+        /**
+         * A LIST OF HELD RELAYS, wherever it is published from — a stream's
+         * `inFlight` and the root's `live` alike.
+         *
+         * One builder because they are one shape, deliberately: the live pool's
+         * rows carry the same clocks, the same `doing` sentence and the same
+         * `pool` word as a visiting leg's, so the page reads both with one
+         * renderer and the glossary defines each member once. Two builders
+         * would be two places for a member to be forgotten in, and the one that
+         * would be forgotten is `omitted` — the promise that a list says what
+         * it left out.
+         */
+        private fun held(f: InFlight): JsonObject =
+            buildJsonObject {
+                putJsonArray("relays") {
+                    for (r in f.relays) {
+                        add(
+                            buildJsonObject {
+                                put("relay", r.relay)
+                                // WHOSE row it is, on a list that is not
+                                // already one stream's — the root `live` list.
+                                // Absent inside a stream's own `inFlight`,
+                                // where it would repeat the row above it.
+                                r.stream?.let { put("stream", it) }
+                                put("heldForSec", r.heldForSec)
+                                // Absent when the worker has no transfer slot —
+                                // in the guards, or queued behind other legs,
+                                // which is where most of a fan-out's workers
+                                // are.
+                                r.transferringForSec?.let { put("transferringForSec", it) }
+                                // The pair that separates a real backlog from a
+                                // walk that will not end — and, on a live row, a
+                                // relay with nothing to say from a tail that has
+                                // silently died.
+                                put("events", r.events)
+                                put("quietForSec", r.quietForSec)
+                                // WHAT IT IS DOING. Absent until the leg reaches
+                                // a stage worth a word, which is a state and not
+                                // a gap.
+                                r.stage?.let { put("doing", it) }
+                                // …and WHICH POOL that puts it in, which is the
+                                // half a reader may group by. Absent for a visit
+                                // in none of the four; see [InFlight.Relay.pool].
+                                r.pool?.let { put("pool", it) }
+                                // Absent when no walk is running.
+                                r.pagingUntil?.let { put("pagingUntil", it) }
+                            },
+                        )
+                    }
+                }
+                // Never silent, for the same reason as the fold's.
+                put("omitted", f.omitted)
             }
 
         /**

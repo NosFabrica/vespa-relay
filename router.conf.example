@@ -82,15 +82,24 @@
 
 connectionTimeout = 20
 
-# THE POOL'S SOCKETS. Two numbers govern every socket the visit-mode streams
-# own. visitConcurrency is the dial width: how many relays are visited — and
-# therefore TLS-handshaking — at once; a visit is seconds long, so this bounds
-# the burst, not the throughput. tailBudget is the steady state: how many live
-# tails stay open, which is what "constantly connected" means; past it, tails
-# are earned by recent yield. Their sum plus monitor.dialConcurrency and the
-# static upstreams must stay under the dispatcher's 1,024.
-visitConcurrency = 128
-tailBudget = 600
+# THE POOL'S SOCKETS AND CPU ARE BUDGETED PER STREAM — see each stream below.
+# Every visit-mode stream shares one queue, one worker set and one socket per
+# relay, so what is configured is not a pool of its own but a SHARE of that
+# one: how many relays may be visited for this stream at once
+# (visitConcurrency), how many live subscriptions it may keep open
+# (maxLiveConcurrency), and how many of the pool's visits may be doing each job
+# for it (refetchConcurrency, negentropyConcurrency). There is no
+# catchUpConcurrency: a catch-up runs inside a visit and its legs run one at a
+# time, so `visitConcurrency` already bounds it.
+#
+# There is no router-wide version of any of them, and the old top-level
+# `visitConcurrency` / `tailBudget` are REFUSED at parse time rather than
+# ignored. What this process can hold open is bounded by the sums: the summed
+# dial widths plus the summed tail budgets, plus monitor.dialConcurrency and
+# the static upstreams, must stay under the dispatcher's 1,024. That is an
+# UPPER bound — a relay two streams both want is one socket charged to both of
+# their live budgets — and the router prints the first two at boot when they
+# crowd the ceiling.
 
 # THE MONITOR PLANE. Owns every question about a relay's health and shape, on
 # its own clock, so no stream ever waits on a probe.
@@ -168,6 +177,13 @@ streams {
     # records it like any other relay without gating it.
     indexers {
         dir = "down"
+
+        # THIS STREAM'S SHARE of the one pool. Small: it walks a handful of
+        # pinned relays for a seed, and every socket it holds is one the
+        # content streams below cannot.
+        visitConcurrency = 8
+        maxLiveConcurrency = 8
+
         # Bootstrap. On an empty store there is nothing to reconcile against,
         # and these are what create the overlap every later stream depends on —
         # including the 10002s the monitor's own sources read.
@@ -340,6 +356,16 @@ streams {
     # resurrecting a deleted note. 10009 rides along both as the group picker's
     # source and as the monitor's group-host source.
     contentViaOutbox {
+        # The widest stream here, and the one whose audits cost the most: a
+        # negentropy pass over ~130 kinds of covered history builds and
+        # compares id sets per window, so it is capped well under its dial
+        # width. `deferred` on the status page says when a cap is turning work
+        # away rather than merely bounding it.
+        visitConcurrency = 96
+        maxLiveConcurrency = 500
+        refetchConcurrency = 4
+        negentropyConcurrency = 4
+
         dir  = "down"
         filter = { "kinds": [
             0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063,

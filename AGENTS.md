@@ -1200,9 +1200,16 @@ out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
 why the router does its own author-bound read instead of using it. **Admitting
 widens, holding out forecloses — do not give them the same default.** The pool
-then rotates VISITS (per-ask catch-up, the `negentropySyncThePastSeconds` audit, the heal
-drain) across `visitConcurrency` workers and holds up to `tailBudget` live
-tails, revisit-paced by each relay's recent yield. A scan whose select binds
+then rotates VISITS — whose unit is a (relay, STREAM) pair, so many streams work
+one relay at once over one refcounted socket while each stream sees it in one
+state (`VisitPool.VisitKey`) — running per-ask catch-up, the
+`negentropySyncThePastSeconds` audit and the heal
+drain, and holds live tails, revisit-paced by each relay's recent yield. Every
+width is the STREAM's — `visitConcurrency`, `maxLiveConcurrency`,
+`catchUpConcurrency`, `refetchConcurrency`, `negentropyConcurrency` — taken as
+permits by `PoolLimits`, and the pool's worker count is their sum
+(`VisitPool.workersFor`). The router-wide `visitConcurrency` / `tailBudget` are
+refused at parse time. A scan whose select binds
 `authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
 `(relay, provider)` granularity NIP-85's tags already chose, and the band key
 that stays valid however many providers join. A retracting stream
@@ -3199,7 +3206,8 @@ by rendering the real card against a live `/stats.json`, not by a unit test.
 > name — `concurrency`, `recycleSeconds`, `authorsPerLeg`, `sync`,
 > `SYNC_NEG_MIN_EVENTS`, an ungated scan — each with a migration note.
 > The war stories are KEPT because their lessons transferred: the two gates
-> became `visitConcurrency` against `tailBudget`; the leg give-up
+> became `visitConcurrency` against `tailBudget` (both per stream now, the
+> second as `maxLiveConcurrency`); the leg give-up
 > (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
 > `dropFolded` runs in `certifiedScan`; `refusedOutright` ends a visit as it
 > ended a leg; the bands survive unchanged. `SharedIdSet` and `CycleTally` do

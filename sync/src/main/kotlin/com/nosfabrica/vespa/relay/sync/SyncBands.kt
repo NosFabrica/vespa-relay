@@ -199,6 +199,49 @@ class SyncBands(
         return true
     }
 
+    /**
+     * WHEN this ask's negentropy audit comes due — the same arithmetic
+     * [claimAudit] gates on, exposed as a TIME rather than a yes/no.
+     *
+     * Null means never audited, which [auditDue] treats as always due: a
+     * relay's first audit happens on its first visit rather than a period
+     * later. That answer is the one worth publishing separately, because it is
+     * the only way a fresh deployment's audit storm reads as scheduled work
+     * instead of a rule being broken — every ask is due at once, exactly as
+     * designed, and it never happens again for the same ask.
+     *
+     * Read-only and stamps nothing. [claimAudit] takes the attempt clock as a
+     * side effect of returning true, so asking IT what is due would push every
+     * ask it was asked about hours into the future.
+     */
+    fun auditDueAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        negentropySyncThePastSeconds: Long,
+    ): Long? {
+        val clock = verified[VerifiedKey(stream, filter.toJson(), url.url)] ?: band(stream, url, filter)?.fullAt ?: 0L
+        return if (clock <= 0L) null else clock + negentropySyncThePastSeconds
+    }
+
+    /**
+     * …and when its bands expire onto the re-fetch, on the stream's
+     * `refetchThePastSeconds`. Null where the band has never completed a full
+     * pass — there is nothing recorded to re-fetch, so the walk it gets is a
+     * first catch-up and not a re-walk — or where the stream sets no period,
+     * which is a stream whose history is never re-fetched at all.
+     */
+    fun refetchDueAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): Long? {
+        val period = refetchThePastSecondsFor(stream)
+        if (period == NEVER) return null
+        val fullAt = band(stream, url, filter)?.fullAt ?: 0L
+        return if (fullAt <= 0L) null else fullAt + period
+    }
+
     /** When this ask's history was last VERIFIED by a completed reconcile, or null before its first. */
     fun verifiedAt(
         stream: String,

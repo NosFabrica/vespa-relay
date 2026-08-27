@@ -174,7 +174,7 @@ class VisitPoolLiveProbe {
                 val bands = SyncBands(null)
                 val pool =
                     VisitPool(
-                        client = client,
+                        reads = ClientRelayReads(client),
                         bands = bands,
                         ingest = ingest,
                         pager =
@@ -196,8 +196,7 @@ class VisitPoolLiveProbe {
                             ),
                         streams = probeStreams,
                         progress = processors.of("visits"),
-                        visitConcurrency = 4,
-                        tailBudget = 3,
+                        workers = 4,
                     )
                 pool.start()
                 // Long enough for the roster loop's first rebuild, a full

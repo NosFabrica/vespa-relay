@@ -317,6 +317,13 @@ object RouterConfigLoader {
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     negentropySyncThePastSeconds = negentropySyncThePastSeconds,
+                    // This stream's share of each job — the only place a
+                    // workload is bounded. Absent is uncapped, which leaves
+                    // the job bounded by `visitConcurrency` alone.
+                    refetchConcurrency = cap(s, "refetchConcurrency"),
+                    negentropyConcurrency = cap(s, "negentropyConcurrency"),
+                    maxLiveConcurrency = cap(s, "maxLiveConcurrency"),
+                    visitConcurrency = cap(s, "visitConcurrency"),
                 )
             }
         // Advisory, never a refusal — the overlap can be deliberate. A kind a
@@ -340,6 +347,7 @@ object RouterConfigLoader {
                 }
             }
         }
+        refuseRouterWidePoolWidths(cfg)
         return RouterConfig(
             connTimeout,
             streams,
@@ -347,23 +355,42 @@ object RouterConfigLoader {
             ingestConcurrency,
             ingestBatch,
             monitor = parseMonitor(cfg),
-            // The pool's two socket numbers, floored at 1 for the same reason
-            // the monitor's dial gate is: zero of either is an off switch
-            // wearing a tuning knob's name.
-            visitConcurrency =
-                if (cfg.hasPath("visitConcurrency")) {
-                    cfg.getInt("visitConcurrency").coerceAtLeast(1)
-                } else {
-                    RouterConfig.DEFAULT_VISIT_CONCURRENCY
-                },
-            tailBudget =
-                if (cfg.hasPath("tailBudget")) {
-                    cfg.getInt("tailBudget").coerceAtLeast(1)
-                } else {
-                    RouterConfig.DEFAULT_TAIL_BUDGET
-                },
         )
     }
+
+    /**
+     * The pool's two socket numbers moved INSIDE the streams that pay for
+     * them. Refused at the old spelling rather than ignored: a router-wide
+     * `visitConcurrency` accepted and dropped would leave a deployment
+     * believing it had bounded its dials, and the whole point of moving them
+     * is that the sum is now visible where it is spent.
+     */
+    private fun refuseRouterWidePoolWidths(cfg: Config) {
+        require(!cfg.hasPath("visitConcurrency")) {
+            "router: top-level `visitConcurrency` — moved inside each stream, because the four jobs a visit does " +
+                "are budgeted per stream and its dial width belongs beside them. The pool's worker count is now " +
+                "the sum of the streams' own `visitConcurrency`"
+        }
+        require(!cfg.hasPath("tailBudget")) {
+            "router: top-level `tailBudget` — moved inside each stream and renamed `maxLiveConcurrency`. Every " +
+                "stream says how many live subscriptions it may keep open, and their sum bounds what this process " +
+                "holds"
+        }
+    }
+
+    /**
+     * One of a stream's workload caps — absent, or at least one.
+     *
+     * Floored rather than refused, for the reason the pool's two socket
+     * numbers are: zero is an OFF SWITCH wearing a tuning knob's name, and a
+     * stream silently doing no catch-up because someone typed 0 is the worst
+     * reading of this whole feature. An operator who wants a job off says so
+     * by not configuring the work, not by sizing its pool to nothing.
+     */
+    private fun cap(
+        cfg: Config,
+        path: String,
+    ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
 
     /**
      * The `monitor { }` block — the plane that owns relay-list parsing and the
@@ -550,6 +577,12 @@ object RouterConfigLoader {
         require(!s.hasPath("authorsPerLeg")) {
             "router: stream '$stream' sets authorsPerLeg — gone with the cycle engine. The pool makes one ask " +
                 "per bound author, which is what authorsPerLeg = 1 configured; other values invalidated bands"
+        }
+        require(!s.hasPath("catchUpConcurrency")) {
+            "router: stream '$stream' sets catchUpConcurrency — removed, because `visitConcurrency` already " +
+                "bounds it. A catch-up runs INSIDE a visit and one visit walks its legs one at a time, so a " +
+                "separate cap could only bite below the dial width, and then only by making an already-dialled " +
+                "visit do less work. Lower `visitConcurrency` instead"
         }
         require(!s.hasPath("concurrency")) {
             "router: stream '$stream' sets a per-stream concurrency — gone with the cycle engine. The pool's " +

@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, legsOf, rotationOf } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, limitsOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -114,6 +114,22 @@ const cursorOf = (t, nowSec) =>
     : dayOf(t);
 
 /**
+ * A SCHEDULE'S period, which is the one duration on this card measured in days.
+ *
+ * `fmtDur` is the phase clock's — seconds, minutes, hours — and it is right for
+ * every other duration here: a leg held for 26 hours reads better as `26h 0m`
+ * than as `1d 2h`, because what is being judged is how long a worker has been
+ * stuck. These two are the opposite: a week's audit period rendered `168h 0m`
+ * and a thirty-day re-fetch `720h 0m` are numbers a reader has to divide before
+ * they mean anything, and what is being judged is the calendar.
+ *
+ * Local rather than a second tier inside `fmtDur`, so the phase clock is not
+ * changed under every other mark on the page to fix two cells.
+ */
+const DAY_SEC = 24 * 60 * 60;
+const fmtPeriod = (sec) => (sec >= 2 * DAY_SEC ? `${Math.round(sec / DAY_SEC)}d` : fmtDur(sec));
+
+/**
  * IS IT WORKING — one line, and the first thing on the card.
  *
  * The throughput and the constraint verdict when there is one. The verdict is
@@ -147,40 +163,127 @@ function statusRow(progress) {
 }
 
 /**
- * EVERY RELAY THIS STREAM IS HOLDING RIGHT NOW, and WHAT EACH ONE IS DOING.
+ * EVERY RELAY THIS MIRROR IS HOLDING RIGHT NOW, SPLIT BY WHAT IT IS BEING
+ * ASKED FOR — one table per pool.
  *
- * The list was five rows behind a `+507 more`, which is the shape that cannot
- * answer the question it exists for: the leg worth finding is by construction
- * not in the healthy head of the list. It is the whole set now — the router
- * caps its own rows at the widest admission gate and still discloses anything
- * past it.
+ * ## Why four tables and not one column
  *
- * `doing` is the column the clocks could never supply. `held 2h 15m, 3 events`
- * is four different faults depending on the stage, and two of them — quiet
- * because negentropy is computing a difference, quiet because a paged walk has
- * stopped delivering — were indistinguishable from every number this row
- * carries. See the `doing` entry in the document's own glossary.
+ * It WAS one table, per stream, with a `doing` column. That answered "what is
+ * this leg doing" for a leg you had already found, and could not answer the
+ * question an operator arrives with: how much of this mirror is keeping up,
+ * how much is re-downloading history, how much is reconciling, and how much is
+ * just sitting on a socket. Those are four different bills, and reading them
+ * off a column meant counting rows by eye — on a list that is 128 rows wide by
+ * construction and re-sorted every poll.
+ *
+ * The split is the router's, not the page's: it publishes `pool` beside
+ * `doing` precisely so a reader can group without grepping prose. See
+ * `poolsOf`, which is where the grouping and every judgement in it lives.
+ *
+ * ## Card-level, and no longer inside the stream block
+ *
+ * A visit serves every stream's asks in turn over ONE dial, so a relay appears
+ * under whichever stream it is on at that instant — the per-stream split was
+ * an accident of where the rows are published, and it cut each pool into as
+ * many lists as there are streams. The stream a row belongs to is a column
+ * here instead, and the live pool has no such column at all: a tail carries
+ * every wanting stream's filter and belongs to none of them.
+ *
+ * ## What the table drops when it can
+ *
+ * A column whose every cell reads the same is not a column. The pool's shared
+ * `doing` word is lifted into the heading when its rows agree — which is all
+ * four pools on most ticks — leaving the audit pool's, whose two stages are a
+ * history sweep and a provider's retraction comparison and want telling apart.
+ * The cursor is its OWN column rather than a suffix on that one, so lifting
+ * the word never takes `back to <date>` with it: on a catch-up that is the
+ * only mark that moves.
  */
-function legsPanel(s) {
-  const { rows, more } = legsOf(s.inFlight);
-  if (!rows.length) return null;
+function poolsPanel(progress) {
+  const pools = poolsOf(progress);
+  if (!pools) return null;
   const box = el("div");
-  // WHERE THE LEGS ARE, before the list itself. On a wide fan-out the shape is
-  // the finding — "412 in the guards, 100 paging" is a healthy rotation, and
-  // the same 512 all waiting for a slot is a saturated pool.
-  const stages = new Map();
-  for (const r of rows) stages.set(r.doing || "stage not published", (stages.get(r.doing || "stage not published") || 0) + 1);
-  const summary =
-    [...stages.entries()].sort((a, b) => b[1] - a[1]).map(([what, n]) => `${fmt(n)} ${what}`).join(" · ");
-  box.appendChild(el("div", "sy-sub",
-    `${fmt(rows.length)} leg(s) in flight — ${summary}${more ? ` · ${fmt(more)} more the router did not name` : ""}`));
+  box.appendChild(poolLine(pools.totals));
+  for (const group of pools.groups) box.appendChild(poolBlock(group, pools.totals));
+  // What no pool can account for. Zero from this router — a row IS a worker or
+  // a tail, and both sets are published whole — and drawn when it is not,
+  // because a panel that adds up to less than the counts beside it must say so
+  // rather than let a reader do the subtraction.
+  if (pools.omitted) {
+    box.appendChild(el("div", "sy-sub",
+      `${fmt(pools.omitted)} held relay(s) the router did not name — nothing says which pool they are in`));
+  }
+  return box;
+}
 
+/**
+ * HOW BIG THE POOL IS — one line, above the four tables that divide it.
+ *
+ * The tables answer "how many are doing this" and cannot answer "out of how
+ * many", which is the first thing asked of any of them: nine relays working is
+ * a healthy rotation against a roster of four hundred and a stalled one
+ * against a roster of twelve.
+ *
+ * ONE POOL, not one per stream, and the line says so — every visit-mode stream
+ * shares the queue, the workers and the tail budget, and a relay two streams
+ * both want is one relay here. That is also why the size cannot be added up
+ * from the stream rows above: those are shares, and they overlap.
+ *
+ * The first three marks PARTITION the roster; the tail count crosses them,
+ * because a tailed relay keeps its tail while it is revisited. Drawn last and
+ * said in its title, so the line is never read as four parts of one whole.
+ */
+function poolLine(totals) {
+  const line = el("div", "sy-sub");
+  const mark = (text, why) => {
+    const span = el("span", null, line.children.length ? ` · ${text}` : text);
+    if (why) span.title = why;
+    line.appendChild(span);
+  };
+  // A router that publishes no pool row is not a router with an empty pool, so
+  // the totals simply go away rather than rendering as zero.
+  //
+  // RELAYS FIRST AND UNITS SECOND, because they are different denominators and
+  // the three marks after them belong to the second. The pool's unit of work
+  // is a (relay, stream) pair, so a relay three streams want is one relay and
+  // three units — and every count of work is in units.
+  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s) in the pool`, term("roster"));
+  if (totals.units != null) mark(`${fmt(totals.units)} stream-visit(s)`, term("rosterVisits"));
+  mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
+  if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
+  if (totals.waiting != null) {
+    mark(`${fmt(totals.waiting)} between visits`,
+      "The rest of the roster: neither running nor queued, waiting out the revisit delay its last visit earned. " +
+      "Most of a healthy pool is here — a relay is revisited on what it has been yielding lately, not on a shared clock.");
+  }
+  mark(`${fmt(totals.tailed)} holding a live tail`,
+    "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
+    "relay is counted here and in `with a worker now` at once. " + term("tails"));
+  return line;
+}
+
+/**
+ * WHAT EACH STREAM MAY SPEND, and what it has spent.
+ *
+ * The pool is one engine shared by every stream, so "how much CPU may this
+ * stream take" is not answerable by looking at any relay — it is a property of
+ * the admission gates, and it lived only in the config file until it was
+ * published. A table because it is a comparison: the interesting reading is
+ * one stream's share against another's.
+ *
+ * `deferred` is the column that makes the rest actionable. In use == cap is
+ * not a fault on its own; in use == cap with work being turned away is the cap
+ * biting, and that is the only row shape here worth a colour.
+ */
+function limitsPanel(progress) {
+  const rows = limitsOf(progress);
+  if (!rows.length) return null;
   const scroll = el("div", "sy-legs-box");
   const table = el("table", "sy-legs");
   const head = el("tr");
-  for (const [label, key, right] of [["relay", null, false], ["doing", "doing", false],
-                                     ["held", "heldForSec", true], ["events", "events", true],
-                                     ["quiet", "quietForSec", true]]) {
+  for (const [label, key, right] of [["stream", null, false], ["job", "job", false],
+                                     ["may run", "streamCap", true], ["in use", "inUse", true],
+                                     ["turned away", "deferred", true]]) {
     const th = el("th", null, label);
     if (key) th.title = term(key);
     if (right) th.style.textAlign = "right";
@@ -188,6 +291,130 @@ function legsPanel(s) {
   }
   table.appendChild(head);
   for (const r of rows) {
+    const tr = el("tr", r.biting ? "hot" : null);
+    tr.appendChild(el("td", null, r.stream || "—"));
+    tr.appendChild(el("td", null, r.label));
+    // UNCAPPED IS NOT ZERO, and the word is drawn rather than an empty cell:
+    // a blank here would read as a cap of nothing, which is the opposite.
+    tr.appendChild(el("td", "n", r.streamCap != null ? fmt(r.streamCap) : "uncapped"));
+    tr.appendChild(el("td", "n", r.inUse != null ? fmt(r.inUse) : "—"));
+    tr.appendChild(el("td", "n", fmt(r.deferred)));
+    table.appendChild(tr);
+  }
+  scroll.appendChild(table);
+  return scroll;
+}
+
+/**
+ * WHEN THE SCHEDULED RE-READS COME DUE — the audit's clock and the re-fetch's.
+ *
+ * The counters next door say the work HAPPENED. Only this says it happened
+ * because it was due: an ask leaves `waiting` by its clock running out and by
+ * nothing else, so a `waiting` column that drains at the period is the
+ * schedule working, and one that holds steady while the audit counters climb
+ * is a rule being broken.
+ *
+ * `never run` is drawn as its own column for the reason the router counts it
+ * apart: an ask with no completed pass is due by definition, which is the
+ * whole of a fresh deployment. Folded into `due` it would make a mirror that
+ * has never audited anything look identical to one whose period has elapsed.
+ */
+function schedulePanel(progress) {
+  const rows = scheduleOf(progress);
+  if (!rows.length) return null;
+  const scroll = el("div", "sy-legs-box");
+  const table = el("table", "sy-legs");
+  const head = el("tr");
+  for (const [label, key, right] of [["stream", null, false], ["job", "job", false],
+                                     ["every", "everySec", true], ["due", "due", true],
+                                     ["never run", "neverRun", true], ["waiting", "waiting", true],
+                                     ["next in", "nextInSec", true]]) {
+    const th = el("th", null, label);
+    if (key) th.title = term(key);
+    if (right) th.style.textAlign = "right";
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of rows) {
+    const tr = el("tr", r.backedUp ? "hot" : null);
+    tr.appendChild(el("td", null, r.stream || "—"));
+    tr.appendChild(el("td", null, r.label));
+    tr.appendChild(el("td", "n", r.everySec != null ? fmtPeriod(r.everySec) : "—"));
+    tr.appendChild(el("td", "n", fmt(r.due)));
+    tr.appendChild(el("td", "n", fmt(r.neverRun)));
+    tr.appendChild(el("td", "n", fmt(r.waiting)));
+    // Nothing waiting is no countdown — every ask is already due, which the
+    // three columns to the left have just said.
+    tr.appendChild(el("td", "n", r.nextInSec != null ? fmtPeriod(r.nextInSec) : "—"));
+    table.appendChild(tr);
+  }
+  scroll.appendChild(table);
+  return scroll;
+}
+
+/** One pool: its heading, how much of the pool is in it, and the relays. */
+function poolBlock(group, totals) {
+  const box = el("div", "sy-pool");
+  const head = el("div", "sy-pool-head");
+  const name = el("span", "sy-pool-name", group.label);
+  // WHAT THIS POOL IS, on the heading rather than under it. Four descriptions
+  // as visible text is the paragraph-per-stream shape this card was rebuilt to
+  // get rid of; the meaning belongs on the mark, like every other one here.
+  name.title = group.what;
+  head.appendChild(name);
+  // OUT OF HOW MANY, on every heading — and out of UNITS, because a row here
+  // is one stream's work on one relay and not the relay itself.
+  head.appendChild(el("span", "sy-pool-n",
+    totals.units ? `${fmt(group.rows.length)} of ${fmt(totals.units)}` : `${fmt(group.rows.length)}`));
+  // The shared stage word, lifted out of a column that would have repeated it
+  // on every row.
+  if (group.doing) {
+    const doing = el("span", "sy-pool-doing", group.doing);
+    doing.title = term("doing");
+    head.appendChild(doing);
+  }
+  box.appendChild(head);
+  // EMPTY IS AN ANSWER, and it is drawn rather than skipped: "no relay is
+  // auditing right now" is a finding, and a pool that vanished when it emptied
+  // would look exactly like a build with no such pool.
+  if (!group.rows.length) {
+    box.appendChild(el("div", "sy-sub", "none right now"));
+    return box;
+  }
+  box.appendChild(poolTable(group));
+  return box;
+}
+
+/**
+ * The rows themselves.
+ *
+ * `held`, `events` and `quiet` are on every table because they read the same
+ * way in every pool: how long we have had this socket, what has come down it,
+ * and how long since anything did. The last is the one that decides — on a
+ * visit it separates a real backlog from a walk that has stopped, and on a
+ * tail a relay with nothing to say from a subscription that died upstream —
+ * which is why the row is coloured off it and off nothing else.
+ */
+function poolTable(group) {
+  const cursors = group.rows.some((r) => r.pagingUntil != null);
+  const scroll = el("div", "sy-legs-box");
+  const table = el("table", "sy-legs");
+  const head = el("tr");
+  const columns = [["relay", null, false]];
+  if (group.streams) columns.push(["stream", null, false]);
+  // Only where the group's own rows disagree — otherwise the word is in the
+  // heading above and this column would be one value repeated.
+  if (!group.doing) columns.push(["doing", "doing", false]);
+  if (cursors) columns.push(["back to", "pagingUntil", false]);
+  columns.push(["held", "heldForSec", true], ["events", "events", true], ["quiet", "quietForSec", true]);
+  for (const [label, key, right] of columns) {
+    const th = el("th", null, label);
+    if (key) th.title = term(key);
+    if (right) th.style.textAlign = "right";
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of group.rows) {
     // Quiet past the threshold is the one row shape worth colouring — see
     // STUCK_LEG_SEC for why the floor is ten minutes and not less.
     const tr = el("tr", r.quietForSec >= STUCK_LEG_SEC ? "hot" : null);
@@ -200,27 +427,23 @@ function legsPanel(s) {
     url.appendChild(inner);
     url.title = r.relay;
     tr.appendChild(url);
+    if (group.streams) tr.appendChild(el("td", null, r.stream || "—"));
     // A leg with no slot says so here rather than leaving the column blank: the
-    // stage IS the answer for most of a fan-out's workers. A walking leg adds
-    // its cursor in the same cell — a sixth column would be empty on every row
-    // that is not paging.
-    const stage = el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—"));
-    if (r.pagingUntil != null) {
+    // stage IS the answer for most of a fan-out's workers.
+    if (!group.doing) tr.appendChild(el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—")));
+    if (cursors) {
       // The reader's own clock, and it only decides the LABEL's precision — a
       // skewed one draws a coarser or finer cursor, never a wrong one.
-      const at = el("span", "sy-at", ` back to ${cursorOf(r.pagingUntil, Date.now() / 1000)}`);
-      at.title = term("pagingUntil");
-      stage.appendChild(at);
+      const at = el("td", "sy-at", r.pagingUntil != null ? cursorOf(r.pagingUntil, Date.now() / 1000) : "—");
+      tr.appendChild(at);
     }
-    tr.appendChild(stage);
     tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));
     tr.appendChild(el("td", "n", fmt(r.events)));
     tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));
     table.appendChild(tr);
   }
   scroll.appendChild(table);
-  box.appendChild(scroll);
-  return box;
+  return scroll;
 }
 
 /**
@@ -231,8 +454,14 @@ function legsPanel(s) {
  * walk had reached, and the pass's own disposition), drawn from the fan-out
  * that walked a stream's relay list in cycles. Every stream rides the visit
  * pool now: there is no pass to be a fraction OF, and where each relay has got
- * to is per relay — the legs panel below, which is the question those marks
+ * to is per relay — the pool tables below, which is the question those marks
  * were standing in for.
+ *
+ * The per-relay rows used to hang here, one list per stream. They are one
+ * panel for the whole card now, split by POOL rather than by stream: a visit
+ * serves every stream's asks over one dial, so the stream a row appeared under
+ * was the ask it happened to be on, and cutting each pool into one list per
+ * stream hid the only comparison worth making. See [poolsPanel].
  */
 function streamBlock(s) {
   const box = el("div", "sy-stream");
@@ -272,10 +501,6 @@ function streamBlock(s) {
     }
     box.appendChild(line);
   }
-  // UNDER the rotation's two numbers, because "what is it doing right now" is
-  // read after "is it getting anywhere" and before anything else on this card.
-  const legs = legsPanel(s);
-  if (legs) box.appendChild(legs);
   return box;
 }
 
@@ -364,7 +589,8 @@ function coveragePanel(d) {
  *
  * ## What is left
  *
- * One status line (working?), one block per stream (progress), one line per
+ * One status line (working?), one block per stream (progress), one table per
+ * POOL (which relays, and what each is being asked for), one line per
  * pipeline job (where a slow mirror is actually diagnosed — a full ingest queue
  * means every download is backpressured behind it), and one depth strip (how
  * far back the coverage actually goes).
@@ -404,6 +630,32 @@ function syncCard(section) {
   if (lanes.length) {
     card.appendChild(el("p", "sy-h", "streams"));
     for (const s of lanes) card.appendChild(streamBlock(s));
+  }
+
+  // WHAT EACH STREAM MAY SPEND on those pools, and WHEN the scheduled jobs
+  // come due. Under the pools because both are read after "what is running
+  // right now": the caps explain a pool that is smaller than its work, and the
+  // schedule explains a pool that is empty.
+  const budgets = limitsPanel(progress);
+  const schedule = schedulePanel(progress);
+
+  // WHICH RELAYS, AND WHAT EACH IS BEING ASKED FOR — the four pools, under the
+  // streams because "is it getting anywhere" is read first and "what is it
+  // doing right now" immediately after. Drawn off the whole progress document
+  // rather than per stream: the live pool is at its root, and the visiting
+  // rows are pooled across streams. See [poolsPanel].
+  const pools = poolsPanel(progress);
+  if (pools) {
+    card.appendChild(el("p", "sy-h", "the pools"));
+    card.appendChild(pools);
+  }
+  if (budgets) {
+    card.appendChild(el("p", "sy-h", "what each stream may spend"));
+    card.appendChild(budgets);
+  }
+  if (schedule) {
+    card.appendChild(el("p", "sy-h", "when the past is re-read"));
+    card.appendChild(schedule);
   }
 
   // The half of the background work that moves EVENTS. The half that decides

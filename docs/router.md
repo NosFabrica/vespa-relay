@@ -194,8 +194,9 @@ where it is due, then a live tail on the socket the visit already holds. The
 process and then live-tailed, which is why it could not re-check its own past on
 any clock; its `sync` knob (and `SYNC_NEG_MIN_EVENTS`, which sized its `auto`
 mode) are refused at parse time now rather than accepted and ignored. What the
-pool is doing is in `/stats.json` — the streams' phases and their in-flight
-rows — rather than in a boot-time ETA line.
+pool is doing is in `/stats.json` — the streams' phases, their in-flight rows
+split by `pool`, and the `live` list of held tails — rather than in a boot-time
+ETA line.
 
 ## Paging a negentropy sync
 
@@ -333,13 +334,31 @@ There is no pass over a relay list. Every relay a stream names — declared in
 continuously: `visitConcurrency` bounds how many are being dialled at once, each
 visit is a catch-up over that relay's outstanding legs followed by the reconcile
 of its past where one is due, and the socket it already holds becomes a live
-tail if the stream has budget for one (`tailBudget`). A relay's next visit is
+tail if the stream has budget for one (`maxLiveConcurrency`). A relay's next visit is
 paced by what it has been yielding lately, not by a shared clock, so a relay
 with a real backlog is not holding anything else up.
 
+**The unit of work is a (relay, stream) PAIR.** Many streams may work one relay
+at the same time — they share its socket, since `RelaySockets` refcounts claims
+— while each stream sees that relay in exactly one state: catching up,
+re-fetching, or negentropy-auditing. A live tail is held *across* those states
+rather than being a fourth alternative to them, so a stream keeps the live edge
+through a multi-minute audit.
+
+That split is the correctness boundary as much as a scheduling one. Bands key
+on `(stream, url, filter)`, so two streams on one relay touch disjoint state and
+need no lock, while two jobs of the *same* stream on one relay would write the
+same band. It also means each stream gets its own revisit clock per relay
+instead of a fast stream and a slow one sharing one, and that `tails` /
+`maxLiveConcurrency` are exact: one subscription serves one stream, where it
+used to carry every wanting stream's filter and be charged to all of them.
+
+Counted in units: `rosterVisits` is the roster in pairs, and it — not `roster` —
+is what `visiting` and `awaitingVisit` are parts of.
+
 Two consequences worth knowing:
 
-- **A relay's whole outstanding history is one worker's job.** `bands.legs()`
+- **A relay's whole outstanding history is one worker's job, per stream.** `bands.legs()`
   hands that worker every region outside the relay's band — the newer leg above
   it and the older leg below — and it walks all of them before releasing the
   slot. A relay with ten hours of history to pull is one worker running for ten
@@ -349,6 +368,119 @@ Two consequences worth knowing:
   the in-flight list under it (`doing`, `heldForSec`, `events`, `quietForSec`,
   and the cursor). A stream-wide percentage would be an average over workers
   doing unrelated things.
+- **…and which of four jobs it is doing is `pool`.** One rotating pool runs all
+  of them, so every count over it added them together: `visiting` covered a
+  catch-up, a history audit and a whole-corpus re-walk alike, while `tails`
+  counted the fourth and named nobody. Each held row now carries a stable word
+  beside its `doing` sentence — `catching-up` (paging forward from the band's
+  edge), `re-fetching` (paging over history the band already covers, because
+  `refetchThePastSeconds` expired it), `auditing` (reconciling that history over
+  negentropy), `live` (a held tail) — and the status page draws one table per
+  word. The live pool is the document's own `live` member at the root rather
+  than a per-stream list, because a tail carries every wanting stream's filter
+  and counts its arrivals at the url. A row in none of the four (claiming a
+  socket, draining the healer) carries no `pool` and is drawn under its own
+  `doing`.
+
+### Bounding what each stream costs
+
+`visitConcurrency` is a **dial width** — how many relays are visited at once —
+and it says nothing about what those visits are doing. The four jobs behind it
+do not cost the same: a catch-up page is parse and ingest, a negentropy audit
+builds and compares id sets per window and is the one genuinely CPU-bound job
+here, and a re-fetch is a catch-up over history already held. One number for
+all four can only be set for the worst of them.
+
+So every budget is **per stream**, including the two that used to be
+router-wide:
+
+```hocon
+streams {
+  content {
+    visitConcurrency     = 96   # relays visited for this stream at once
+    maxLiveConcurrency   = 500  # live subscriptions it may keep open
+    refetchConcurrency   = 4    # …and what its visits may be doing
+    negentropyConcurrency = 4
+  }
+  indexers {
+    visitConcurrency   = 8
+    maxLiveConcurrency = 8
+  }
+}
+```
+
+There is deliberately no router-wide version of any of them, and the old
+top-level `visitConcurrency` / `tailBudget` are **refused at parse time**
+rather than ignored — accepted and dropped, they would leave a deployment
+believing it had bounded its dials. What every stream may take between them is
+the sum of what each may take, written where the stream that pays it is
+configured; a second ceiling over the top would be a number to keep in step
+with the shares by hand, and the failure it causes — a stream inside its own
+share, refused anyway, by a limit named nowhere near it — is the one these
+exist to make legible.
+
+Two consequences of the sums:
+
+- **The pool's worker count is derived**, as the sum of the streams' dial
+  widths (a stream naming none contributes the 128 the router-wide setting
+  defaulted to). Fewer workers would leave a configured share unreachable; more
+  could never get a permit.
+- **The socket ceiling is a sum now, so the router says it.** Dial widths plus
+  live budgets plus `monitor.dialConcurrency` and the static upstreams share
+  OkHttp's ~1,024 dispatcher limit. At boot the pool adds up the first two and
+  prints a line if they crowd it — printed rather than refused, since a tuned
+  dispatcher is a legitimate deployment. The sum is an **upper bound**: a tail
+  is one subscription carrying every wanting stream's filter, so a relay two
+  streams both want is one socket charged to both budgets.
+
+`visitConcurrency` is admission like the rest: a visit that gets no permit for
+any stream wanting the relay **never dials**, which is what makes it a bound on
+simultaneous TLS handshakes and not merely on work. Unlike the tail's budget it
+admits partially — the asks are served in turn over one connection, so a visit
+that can serve one stream and not another is still a useful visit.
+
+Unset means **uncapped**, not zero — a deployment that has never heard of these
+behaves exactly as it did, bounded by `visitConcurrency` alone. A configured `0`
+is floored to 1, for the same reason the pool's socket numbers are: zero is an
+off switch wearing a tuning knob's name.
+
+**A cap is admission, not a queue.** A visit that cannot get a permit skips
+that job and carries on; the work stays due and the next visit takes it. Every
+job here is due-gated and idempotent, so a full cap costs a revisit delay and
+nothing else. Waiting would be worse: a visit holds a socket and one of
+`visitConcurrency`'s slots for its whole life, so blocking on a permit would
+idle both. Each skip is counted — `deferred`, per stream and job, in
+`/stats.json` and on the status page — because a cap that silently drops work
+is indistinguishable from work that was never due.
+
+### Certifying the past is only re-read on schedule
+
+Two jobs re-read history on a clock: the negentropy audit
+(`negentropySyncThePastSeconds`) and the re-fetch (`refetchThePastSeconds`).
+`auditsRun` says work happened; it cannot say the work was **due**. That is
+what each stream's `schedule` rows carry, over every ask it has:
+
+| member | means |
+|---|---|
+| `everySec` | the stream's configured period for that job |
+| `due` | clock run out, waiting for a visit to pick it up |
+| `neverRun` | no completed pass behind it — due *by definition* |
+| `waiting` | inside the period, nothing to do |
+| `nextInSec` | until the nearest waiting ask comes due |
+
+An ask leaves `waiting` by its clock running out and by nothing else, so a
+`waiting` that drains at the period is the schedule working, and one that holds
+steady while the audit counters climb is a rule being broken.
+
+**`neverRun` is the honest exception.** An ask with no completed pass is always
+due — `SyncBands.auditDue` short-circuits on a zero clock, so a relay's first
+audit happens on its first visit rather than a period later. That is deliberate,
+and it is also why a fresh deployment audits everything at once. It is counted
+apart from `due` so that storm reads as what it is: scheduled work whose
+schedule has not started yet. It is also the case `negentropyConcurrency` exists to
+bound — the storm is capped rather than avoided, and it never recurs for the
+same ask. Each audit's own log line names the clock it ran on
+(`last verified 812043s ago`, or `never`).
 
 ### Re-deriving the relay list
 
