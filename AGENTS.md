@@ -1760,17 +1760,19 @@ rather than a missing one. `events` was checked against `fetchAllPages`'
 own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
 
 **`doing` names the JOB and then the TRANSPORT, and neither implies the other.**
-`catching up (paging)` is what is new since this relay's last pass; `auditing
-history (negentropy)` is the whole past re-checked on the stream's
+`catching up (paging)` is what is new since this relay's last pass; `negentropy
+sync of the past` is the whole past re-checked on the stream's
 `negentropySyncThePastSeconds` clock, whose purpose is to find what no catch-up ever saw; and
-`auditing the provider's own records (negentropy)` is the retraction comparison,
+`negentropy sync of the provider's own records` is the retraction comparison,
 the same clock and the same full-past sweep. Negentropy is NOT a synonym for the
 audit: the sweep pages any window a peer will not reconcile, and a static
 stream's whole backfill goes either way on `sync` — so "reconciling" alone never
 told a reader which of the two jobs was running, which is the half they were
-asking about. The `auditing` gauge counts rows by the two audit stages, so the
+asking about. The `negentropyRunning` gauge counts rows by the two stages, so the
 strings live in `VisitPool`'s companion and a reword goes through it or silently
-zeroes the gauge.
+zeroes the gauge. The page never groups on them either — the stable `pool` word
+beside the sentence is what the four tables are cut by, exactly so a reword
+cannot move a row.
 
 **Verified end to end against a real Vespa and real relays**, not only by
 probe: `docker compose` with the schema deployed, a `profileViaOutbox` stream

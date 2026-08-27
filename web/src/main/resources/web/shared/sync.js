@@ -720,12 +720,12 @@ export const POOL_LABELS = {
  *
  * ## Where the rows come from
  *
- * The visiting three are per stream in the document (`streams[].inFlight`),
- * because a visit serves whichever stream's ask it is on at that instant; the
- * live pool is at the ROOT, because a tail carries every wanting stream's
- * filter and belongs to none of them. So a visiting row keeps the stream it
- * came from as a column and a live row has none — which is a fact about tails
- * and not a missing value.
+ * The visiting three are per stream in the document (`streams[].inFlight`), so
+ * a row takes its owner from its position; the live pool is one list at the
+ * ROOT and each of its rows NAMES its stream, because a tail is held per
+ * (relay, stream) pair. Either way every row here knows whose it is, which is
+ * what lets the same rows be grouped by pool or by stream — see
+ * [poolsByStreamOf].
  *
  * ## What it will not do
  *
@@ -757,24 +757,50 @@ export const POOL_LABELS = {
  * [poolTotals].
  */
 export function poolsOf(progress) {
+  const { rows, omitted } = heldRows(progress);
+  if (!rows.length) return null;
+  const groups = groupByPool(rows);
+  return { groups, omitted, totals: poolTotals(progress, groups) };
+}
+
+/**
+ * EVERY HELD RELAY THE DOCUMENT NAMES, flattened into one list where each row
+ * knows its stream and its pool.
+ *
+ * Separated from the grouping because the grouping is done twice over the same
+ * rows — once for the mirror and once per stream — and a second collector
+ * would be a second place for a row to be dropped from.
+ */
+function heldRows(progress) {
   const rows = [];
   let omitted = 0;
   for (const s of progress?.streams || []) {
     const legs = legsOf(s.inFlight);
     omitted += legs.more;
-    // The stream is the row's, not the group's: one visit serves every stream's
-    // asks in turn, so two rows in one pool can belong to different streams.
+    // A visiting row takes its owner from its POSITION: it is published under
+    // the stream whose ask the visit is serving, and says nothing itself.
     for (const r of legs.rows) rows.push({ ...r, stream: s.name || null });
   }
   const live = legsOf(progress?.live);
   omitted += live.more;
-  // The live rows carry their OWN stream: one subscription serves one stream,
-  // so a tail has exactly one owner and the live table names it like the
-  // others. It used to be null here because a tail carried every wanting
-  // stream's filter at once and belonged to none of them.
+  // A live row NAMES its own: one subscription is held per (relay, stream)
+  // pair and carries that stream's filter alone. It used to be null here,
+  // when a tail carried every wanting stream's filter at once and belonged to
+  // none of them — and a per-stream live row was not a thing that existed.
   for (const r of live.rows) rows.push({ ...r, stream: r.stream || null });
-  if (!rows.length) return null;
+  return { rows, omitted };
+}
 
+/**
+ * …and the four pools those rows fall into, in the panel's order.
+ *
+ * Takes rows rather than the document so the caller decides WHICH rows: the
+ * whole mirror's, or one stream's. [named] is the one thing the rows cannot
+ * say — whether the caller has already put the stream's name above them —
+ * because a column repeating a heading is not a column and a column carrying
+ * the only attribution a row has is the point.
+ */
+function groupByPool(rows, named = false) {
   const byPool = new Map([...POOL_ORDER, POOL_BETWEEN].map((key) => [key, []]));
   for (const r of rows) {
     // An unknown word lands with the unpooled rather than making a group of its
@@ -801,16 +827,78 @@ export function poolsOf(progress) {
       rows: found,
       // ONE WORD FOR THE WHOLE GROUP, or null where its rows disagree. A column
       // whose every cell reads `holding a live tail` is not a column, so the
-      // page lifts it into the heading instead — and the audit pool, whose two
-      // stages are a history sweep and a provider's retraction comparison,
+      // page lifts it into the heading instead — and the negentropy pool, whose
+      // two stages are a history sweep and a provider's retraction comparison,
       // keeps the column that tells them apart.
       doing: found.length && found.every((r) => r.doing === found[0].doing) ? found[0].doing : null,
-      // …and the same test for the stream column, which the live pool has no
-      // answer for at all.
-      streams: found.some((r) => r.stream),
+      // …and the stream column, which is drawn wherever a row can name its
+      // owner — EXCEPT under a heading that has already named it, where the
+      // column would be that heading copied down the table. Not "do the rows
+      // disagree": a pool holding one row is the case where the attribution is
+      // hardest to get any other way, and dropping the column there would lose
+      // it exactly when it is scarcest.
+      streams: !named && found.some((r) => r.stream),
     });
   }
-  return { groups, omitted, totals: poolTotals(progress, groups) };
+  return groups;
+}
+
+/**
+ * THE SAME ROWS, CUT BY STREAM instead of by the mirror — one entry per stream
+ * riding the pool, each carrying its own four pools and its own totals.
+ *
+ * ## Why both cuts exist
+ *
+ * [poolsOf] answers "what is this mirror doing": one negentropy table, every
+ * stream's reconciles in it, which is the comparison that matters when the
+ * question is where the sockets went. It cannot answer the next question —
+ * WHICH STREAM is spending them — because the answer is a column an operator
+ * has to read down and add up.
+ *
+ * That question is the one the per-stream budgets are configured against
+ * (`visitConcurrency`, `maxLiveConcurrency`, `refetchConcurrency`,
+ * `negentropyConcurrency`), so it needs the cut that matches the knob: this
+ * stream's four pools, against this stream's caps, over this stream's roster.
+ *
+ * ## The rows are the same rows
+ *
+ * Not a second read of the document and not a second judgement about it —
+ * [heldRows] once, [groupByPool] per stream. A row therefore appears in
+ * exactly one stream's block and the blocks sum to the mirror's, so the two
+ * cuts can be drawn on one card without disagreeing.
+ *
+ * A stream appears when it is riding the pool, INCLUDING when it is holding
+ * nothing: four empty tables under a stream's name is the answer "this stream
+ * is doing none of it", and it is the answer a starved stream gives. One that
+ * has not started rotating is left out entirely — it has no roster to be a
+ * share of yet.
+ */
+export function poolsByStreamOf(progress) {
+  const { rows } = heldRows(progress);
+  const out = [];
+  const claimed = new Set();
+  for (const s of progress?.streams || []) {
+    const rotating = s?.phase === ROTATING && s.roster != null;
+    const mine = rows.filter((r) => r.stream === s?.name);
+    if (!rotating && !mine.length) continue;
+    claimed.add(s?.name);
+    const groups = groupByPool(mine, true);
+    out.push({ stream: s?.name || null, groups, totals: streamTotals(s, groups) });
+  }
+  // …and whatever no stream claimed, in a block of its own rather than left
+  // out. A live row from a router too old to name its stream, or one naming a
+  // stream that has since left the config, is exactly the row worth seeing —
+  // and this cut promises what the other one does, that every held relay the
+  // document names appears in it exactly once. Only when there IS one: an
+  // empty "unattributed" heading every tick is a mark that never moves.
+  const loose = rows.filter((r) => !claimed.has(r.stream));
+  if (loose.length) {
+    // …and NOT `named` for this one: its heading says only that nothing
+    // claimed these rows, so whatever name a row does carry is worth a column.
+    const groups = groupByPool(loose);
+    out.push({ stream: null, groups, totals: streamTotals(null, groups) });
+  }
+  return out;
 }
 
 /** The rotating pool's own processor row — the only place its SIZE is published. */
@@ -862,6 +950,41 @@ export function poolTotals(progress, groups) {
     // can leave the subtraction short — and "-2 between visits" reads as a bug
     // in the router rather than as the rounding it is.
     waiting: units == null ? null : Math.max(0, units - working - (queued || 0)),
+  };
+}
+
+/**
+ * …and the same five numbers for ONE stream, off that stream's own row.
+ *
+ * The pool-wide totals cannot be divided into these — `rosterVisits` is a sum
+ * over streams and `awaitingVisit` on the pool's row is the queue entire — so
+ * the stream row publishes its own `roster`, `liveHeld` and `awaitingVisit`
+ * and this reads them there.
+ *
+ * `units` IS `relays` here, and that is not a shortcut. The pool's unit of
+ * work is a (relay, stream) pair, so pool-wide the two differ by however much
+ * the streams overlap; inside ONE stream a relay is exactly one unit, which is
+ * what makes this subtraction sound where the pool-wide one needs a second
+ * denominator. It is filled in rather than left null because the pool blocks
+ * draw their `n of m` from it.
+ *
+ * Nulls where the row does not say — a stream published by a router too old
+ * for `awaitingVisit` gets no queued mark and no remainder, rather than a zero
+ * that would read as "nothing waiting".
+ */
+function streamTotals(s, groups) {
+  const working = groups.filter((g) => g.key !== POOL_LIVE).reduce((a, g) => a + g.rows.length, 0);
+  const tailed = groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0;
+  const relays = Number.isFinite(s?.roster) ? s.roster : null;
+  const queued = Number.isFinite(s?.awaitingVisit) ? s.awaitingVisit : null;
+  return {
+    relays,
+    units: relays,
+    working,
+    queued,
+    tailed,
+    // Clamped for the reason the pool's is: one tick, not one instant.
+    waiting: relays == null || queued == null ? null : Math.max(0, relays - working - queued),
   };
 }
 

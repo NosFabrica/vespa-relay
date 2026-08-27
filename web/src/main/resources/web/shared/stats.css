@@ -825,6 +825,18 @@ a { color: var(--accent); }
 .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
 .sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
 .sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+/* ONE STREAM'S FOUR POOLS, once the card has more than one stream to cut by.
+   A rule down the left rather than a box: the four blocks inside already carry
+   their own separation, and a second border around them would read as a table
+   of tables. The indent is what says the pools below belong to the name above,
+   which is the whole job. */
+.sy-stream-pools { margin: 0 0 18px; padding: 0 0 0 11px; border-left: 2px solid var(--line); }
+/* The stream's name has to outrank the four pool names under it or the section
+   reads as a fifth pool. Size does that where weight cannot: the pool headings
+   are already bold, so a bolder one at the same size is a distinction nobody
+   sees while scrolling. */
+.sy-stream-pools > .sy-top { margin: 0 0 9px; flex-wrap: wrap; font-size: 14px; }
+.sy-stream-pools > .sy-top .sy-name { font-weight: 700; }
 /* ONE POOL: its heading, then its rows. The four sit under one sub-head, so
    each block carries just enough separation to be scanned as a unit — the
    gap does the grouping and no rule or box is needed for it. */

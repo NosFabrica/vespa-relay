@@ -374,13 +374,21 @@ Two consequences worth knowing:
   counted the fourth and named nobody. Each held row now carries a stable word
   beside its `doing` sentence — `catching-up` (paging forward from the band's
   edge), `re-fetching` (paging over history the band already covers, because
-  `refetchThePastSeconds` expired it), `auditing` (reconciling that history over
-  negentropy), `live` (a held tail) — and the status page draws one table per
-  word. The live pool is the document's own `live` member at the root rather
-  than a per-stream list, because a tail carries every wanting stream's filter
-  and counts its arrivals at the url. A row in none of the four (claiming a
-  socket, draining the healer) carries no `pool` and is drawn under its own
-  `doing`.
+  `refetchThePastSeconds` expired it), `negentropy` (reconciling that history
+  over NIP-77), `live` (a held tail) — and the status page draws one table per
+  word. The live pool is the document's own `live` member at the root because
+  it reads as one table, not because its rows have no owner: a tail is held per
+  (relay, stream) pair, so each live row names its `stream` exactly as a
+  visiting row does. A row in none of the four (claiming a socket, draining the
+  healer) carries no `pool` and is drawn under its own `doing`.
+- **…so the page can cut the same rows either way.** `pool` and `stream` on
+  every held row are what make that a grouping rather than a second read: the
+  mirror-wide cut answers "how much of this is re-fetching", and above one
+  stream the page also draws the four tables per stream, because that is the
+  cut the budgets below are configured against. The stream's own share of the
+  roster comes off its row — `roster`, `liveHeld`, `awaitingVisit` — since the
+  pool's `rosterVisits` and `awaitingVisit` are sums over streams and cannot be
+  divided back.
 
 ### Bounding what each stream costs
 
@@ -794,10 +802,10 @@ Some notes on the other knobs:
   is new; what re-checks the covered past after that is
   `negentropySyncThePastSeconds` and `refetchThePastSeconds`, on their own
   clocks.
-- **`visitConcurrency`** (top level, not per stream) is the one dial on dialling
-  cost. The union of every scan on a full store is a large set — plenty of it
-  long-dead hosts that will each burn a connect timeout — and this decides how
-  much of the network is dialled at once.
+- **`visitConcurrency`** is the one dial on dialling cost, and it is per
+  stream like every other budget. The union of every scan on a full store is a
+  large set — plenty of it long-dead hosts that will each burn a connect
+  timeout — and this decides how much of the network one stream dials at once.
 - **`dir` must be `down`.** A stream may carry both `urls` and `relaySource`:
   where a relay came from is the only difference between them.
 

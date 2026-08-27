@@ -852,7 +852,11 @@ object StatusVocabulary {
                 "Units of work — (relay, stream) pairs — queued for a worker right now. NOT ingest's `queued`, " +
                     "which is a depth of events, and not a count of RELAYS: a relay two streams want is queued " +
                     "twice, on two independent clocks. Most of the roster sits between visits rather than here, " +
-                    "waiting out the revisit delay its last visit earned.",
+                    "waiting out the revisit delay its last visit earned. On a STREAM's row it is that stream's " +
+                    "share, where one relay is one unit, so it and the stream's in-flight rows come out of that " +
+                    "stream's `roster` and what is left is between visits; on the pool's row, every stream's " +
+                    "share added up. A row parked here while the stream's in-flight list is short is a stream " +
+                    "queueing faster than its `visiting` cap lets it work.",
             )
             put(
                 "visiting",

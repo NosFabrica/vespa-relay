@@ -392,10 +392,11 @@ internal class VisitPool(
      * relay was reading a truncation, not the mirror. The whole set is the
      * question, so the whole set is published.
      *
-     * Note this is per CURRENT ASK, not per stream membership: one visit
-     * serves every stream's asks in turn ([visit]), so a relay appears under
-     * whichever stream it is on at this instant and the rows across streams
-     * still sum to the worker count rather than multiplying by it.
+     * A row is a UNIT OF WORK, and the unit is a (relay, stream) pair: a
+     * visit serves one stream's asks on one relay ([visit]), so a relay two
+     * streams both want appears under both at once and each row is its own
+     * worker. The rows across streams therefore sum to the workers running,
+     * which is what makes them comparable with the pool's own `visiting`.
      */
     private fun inFlightFor(stream: String): InFlight {
         val nowMs = System.currentTimeMillis()
@@ -437,14 +438,20 @@ internal class VisitPool(
      * it were all unanswerable from outside this process — the same complaint
      * [InFlight] was written for, one pool over.
      *
-     * POOL-WIDE, not per stream, because that is what a tail is. One
-     * subscription per relay carries every wanting stream's filter, and its
-     * arrivals are counted at the url — so attributing a row to a stream would
-     * mean publishing one stream's share of a number that was never divided,
-     * once per stream, and each copy would carry the whole url's event count.
-     * The per-stream share that IS defined stays where it was: the `tails`
-     * count on the stream's own row, which is the tailed part of that stream's
-     * roster.
+     * ONE LIST AT THE ROOT, and every row NAMES ITS STREAM. It sits beside the
+     * streams rather than inside them because it is the pool's steady state
+     * and reads as one table, not because a tail has no owner: the unit of
+     * work is a (relay, stream) pair, [tails] is keyed by it, and one
+     * subscription therefore carries exactly one stream's filter and counts
+     * exactly that stream's arrivals.
+     *
+     * It did not always. A tail used to be keyed by URL and carry every
+     * wanting stream's filter at once, so a row belonged to all of them and to
+     * none — splitting it per stream would have published one undivided event
+     * count once per stream. That is the reason this list is at the root and
+     * it is no longer a reason it cannot be grouped: a page that wants the
+     * four pools per stream reads `stream` off the row like it does everywhere
+     * else.
      *
      * WHOLE, on [InFlight]'s rule: the set is bounded by the streams' own tail
      * budgets — configuration, not the network — so publishing all of it is
@@ -628,6 +635,10 @@ internal class VisitPool(
     private fun flushPhases() {
         val phases = phases ?: return
         val currentRoster = roster
+        // ONE walk of the queue for every stream, not one per stream: the
+        // split is the same map however many rows read it. See
+        // [VisitQueue.waitingBy].
+        val queuedByStream = queue.waitingBy { it.stream }
         for (stream in streams) {
             val mine = currentRoster.entries.filter { entry -> entry.value.any { it.stream === stream } }
             phases.set(
@@ -635,6 +646,7 @@ internal class VisitPool(
                 StreamPhases.Phase.Rotating(
                     relays = mine.size,
                     tailed = mine.count { tails.containsKey(VisitKey(it.key, stream.name)) },
+                    queued = queuedByStream[stream.name] ?: 0,
                 ),
             )
         }

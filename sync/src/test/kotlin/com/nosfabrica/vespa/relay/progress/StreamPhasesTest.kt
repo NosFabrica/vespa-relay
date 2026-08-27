@@ -35,7 +35,8 @@ class StreamPhasesTest {
     private fun rotating(
         relays: Int,
         tailed: Int,
-    ) = StreamPhases.Phase.Rotating(relays, tailed)
+        queued: Int = 0,
+    ) = StreamPhases.Phase.Rotating(relays, tailed, queued)
 
     @Test
     fun `a registered stream appears before it has done anything`() {

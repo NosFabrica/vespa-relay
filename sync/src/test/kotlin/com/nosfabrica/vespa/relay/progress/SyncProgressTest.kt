@@ -71,14 +71,35 @@ class SyncProgressTest {
         // document to describe. Zero is the reading worth having: a stream with
         // an empty roster is one waiting on the fitness pass to certify its
         // first relay, and it looked exactly like a stream riding four hundred.
-        val riding = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300)
-        val waiting = StreamPhases.Stream("cold", "rotating", 3_480, roster = 0, tails = 0)
+        val riding = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300, queued = 18)
+        val waiting = StreamPhases.Stream("cold", "rotating", 3_480, roster = 0, tails = 0, queued = 0)
 
         val rows = SyncProgress.document(listOf(riding, waiting), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray
 
         assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long)
         assertEquals(300L, rows[0].jsonObject["liveHeld"]!!.jsonPrimitive.long)
+        // …and how much of that roster is queued for a worker rather than
+        // counting down a revisit. The pool's own row publishes the whole
+        // queue, which is a sum over streams and cannot be divided back into
+        // shares — so a per-stream card could say what a stream is RIDING and
+        // never whether it was starved.
+        assertEquals(18L, rows[0].jsonObject["awaitingVisit"]!!.jsonPrimitive.long)
         assertEquals(0L, rows[1].jsonObject["roster"]!!.jsonPrimitive.long, "an empty roster is a report, not an absence")
+        assertEquals(0L, rows[1].jsonObject["awaitingVisit"]!!.jsonPrimitive.long, "and so is an empty queue")
+    }
+
+    @Test
+    fun `a stream row too old to split the queue says nothing rather than zero`() {
+        // The member has to be ABSENT and not 0 on a router that does not
+        // publish it: the page draws the remainder — the share of the roster
+        // that is neither running nor queued — by subtracting this, and a zero
+        // it invented would quietly report the whole queue as sitting between
+        // visits.
+        val row = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300)
+        val rows = SyncProgress.document(listOf(row), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray
+
+        assertNull(rows[0].jsonObject["awaitingVisit"])
+        assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long, "everything it does know is still said")
     }
 
     @Test

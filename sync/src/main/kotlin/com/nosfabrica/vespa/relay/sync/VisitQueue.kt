@@ -75,6 +75,28 @@ internal class VisitQueue<K : Any>(
 
     val visiting: Int get() = inFlight.size
 
+    /**
+     * [waiting], SPLIT by whatever the caller calls a group — the stream, for
+     * the pool, which is how a per-stream card says how much of its own roster
+     * is still queued.
+     *
+     * A projection rather than a `waitingFor(stream)`, and one walk rather than
+     * one per group: the caller wants every group at once, on a set bounded by
+     * the roster's units, and asking N times would walk it N times for one
+     * tick's numbers. The queue still knows nothing about relays or streams —
+     * [of] is the whole of what it is told.
+     *
+     * A SNAPSHOT of a set two workers are mutating, so the counts are read at
+     * one tick and not one instant. That is the same looseness every other
+     * number on this document has and the reason the page's remainder is
+     * clamped at zero.
+     */
+    fun <G : Any> waitingBy(of: (K) -> G): Map<G, Int> {
+        val out = HashMap<G, Int>()
+        for (key in queued) out.merge(of(key), 1, Int::plus)
+        return out
+    }
+
     /** Queue [key] now. False when it is already waiting (running is fine). */
     fun offer(key: K): Boolean {
         if (!queued.add(key)) return false

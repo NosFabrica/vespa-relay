@@ -67,6 +67,17 @@ class StreamPhases {
         data class Rotating(
             val relays: Int,
             val tailed: Int,
+            /**
+             * …and how many of those relays are QUEUED for a visit this
+             * instant — waiting for a worker rather than on a revisit timer.
+             *
+             * The third number because the other two cannot separate the two
+             * ways a stream sits still. A roster of 400 with nothing running
+             * is healthy when the 400 are counting down their cadence and is a
+             * starved stream when they are stacked against a `visitConcurrency`
+             * of 2, and until this existed both drew the same card.
+             */
+            val queued: Int,
         ) : Phase
     }
 
@@ -83,9 +94,19 @@ class StreamPhases {
         val phase: String,
         /** How long it has been in that phase, in seconds. */
         val phaseForSec: Long,
-        /** Relays this stream is riding, and of those how many are tailed. */
+        /**
+         * Relays this stream is riding, of those how many are tailed, and how
+         * many are queued for a worker.
+         *
+         * A relay is ONE unit of work for one stream, so [roster] is this
+         * stream's units as well as its relays and the shares below partition
+         * it. That is only true per stream: pool-wide, a relay three streams
+         * want is one relay and three units, which is why the pool publishes
+         * both counts and this row needs one.
+         */
         val roster: Int? = null,
         val tails: Int? = null,
+        val queued: Int? = null,
         /**
          * The relays this stream has workers on right now, quietest first.
          * Null for a stream nothing has registered a source for.
@@ -262,6 +283,7 @@ class StreamPhases {
                 phaseForSec = (System.currentTimeMillis() - e.sinceMs) / 1000,
                 roster = rotating?.relays,
                 tails = rotating?.tailed,
+                queued = rotating?.queued,
                 inFlight = e.inFlight?.invoke(),
                 limits = e.limits?.invoke().orEmpty(),
                 schedule = e.schedule?.invoke().orEmpty(),

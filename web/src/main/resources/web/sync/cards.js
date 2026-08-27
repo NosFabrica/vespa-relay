@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, limitsOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, limitsOf, poolsByStreamOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -180,14 +180,20 @@ function statusRow(progress) {
  * `doing` precisely so a reader can group without grepping prose. See
  * `poolsOf`, which is where the grouping and every judgement in it lives.
  *
- * ## Card-level, and no longer inside the stream block
+ * ## Card-level, and cut by stream once there is more than one
  *
- * A visit serves every stream's asks in turn over ONE dial, so a relay appears
- * under whichever stream it is on at that instant — the per-stream split was
- * an accident of where the rows are published, and it cut each pool into as
- * many lists as there are streams. The stream a row belongs to is a column
- * here instead, and the live pool has no such column at all: a tail carries
- * every wanting stream's filter and belongs to none of them.
+ * The panel is drawn off the whole document rather than out of the stream
+ * blocks, because the first question is about the mirror. But the budgets are
+ * configured PER STREAM — `visitConcurrency`, `maxLiveConcurrency`,
+ * `refetchConcurrency`, `negentropyConcurrency` — so the second question is
+ * always which stream is spending them, and a `stream` column answers that by
+ * making an operator count rows by eye.
+ *
+ * So above one stream the four tables are drawn once per stream, under a tally
+ * line that keeps the mirror-wide comparison the sections give up. Both cuts
+ * are the same rows out of one [poolsOf] read (see [poolsByStreamOf]), so the
+ * sections sum to the tally by construction. With ONE stream the two cuts are
+ * the same four tables, and only the mirror's are drawn.
  *
  * ## What the table drops when it can
  *
@@ -204,7 +210,13 @@ function poolsPanel(progress) {
   if (!pools) return null;
   const box = el("div");
   box.appendChild(poolLine(pools.totals));
-  for (const group of pools.groups) box.appendChild(poolBlock(group, pools.totals));
+  const perStream = poolsByStreamOf(progress);
+  if (perStream.length > 1) {
+    box.appendChild(poolTally(pools.groups, pools.totals));
+    for (const section of perStream) box.appendChild(streamPools(section));
+  } else {
+    for (const group of pools.groups) box.appendChild(poolBlock(group, pools.totals));
+  }
   // What no pool can account for. Zero from this router — a row IS a worker or
   // a tail, and both sets are published whole — and drawn when it is not,
   // because a panel that adds up to less than the counts beside it must say so
@@ -258,7 +270,7 @@ function poolLine(totals) {
   }
   mark(`${fmt(totals.tailed)} holding a live tail`,
     "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
-    "relay is counted here and in `with a worker now` at once. " + term("tails"));
+    "relay is counted here and in `with a worker now` at once. " + term("liveHeld"));
   return line;
 }
 
@@ -350,6 +362,96 @@ function schedulePanel(progress) {
   }
   scroll.appendChild(table);
   return scroll;
+}
+
+/**
+ * THE MIRROR-WIDE SPLIT IN ONE LINE — how many units are in each pool, across
+ * every stream.
+ *
+ * Drawn only when the tables below have been cut by stream, and drawn for
+ * exactly that reason: the per-stream sections answer "which stream is
+ * re-fetching" and give up the answer to "how much of this mirror is", which
+ * was the whole point of four tables. One line restores it, above the sections
+ * whose counts add up to it.
+ *
+ * Off the same `groups` the tables are drawn from, never off `visiting` or
+ * `liveHeld` — a summary that disagreed with the rows under it would be worse
+ * than no summary.
+ */
+function poolTally(groups, totals) {
+  const line = el("div", "sy-sub");
+  for (const g of groups) {
+    const span = el("span", null, `${line.children.length ? " · " : ""}${g.label} ${fmt(g.rows.length)}`);
+    span.title = g.what;
+    line.appendChild(span);
+  }
+  // OUT OF WHAT, on the end: the counts above are shares of the pool's units
+  // and the line is read as a partition without it. Omitted where the router
+  // does not publish the size, rather than drawn as zero.
+  if (totals.units != null) {
+    const of = el("span", null, ` · of ${fmt(totals.units)} stream-visit(s)`);
+    of.title = term("rosterVisits");
+    line.appendChild(of);
+  }
+  return line;
+}
+
+/**
+ * ONE STREAM'S FOUR POOLS — its name, its own share of the roster, and the
+ * same four tables the mirror draws.
+ *
+ * The section exists because the caps do: a stream is given its own
+ * `visitConcurrency`, `maxLiveConcurrency`, `refetchConcurrency` and
+ * `negentropyConcurrency`, and "is this stream spending what it was given" is
+ * unanswerable from a shared table with a stream column. Here the count in
+ * each heading is the number the matching cap is set against, and the line
+ * above them is what it is a share of.
+ *
+ * A stream holding NOTHING still gets its section, four empty tables and all.
+ * That is the shape of a starved stream and of a stream whose schedule has not
+ * come due, and both are answers — a section that vanished when it emptied
+ * would leave an operator scrolling for a stream that is on the card.
+ */
+function streamPools(section) {
+  const box = el("div", "sy-stream-pools");
+  const head = el("div", "sy-top");
+  // Null names the rows no configured stream claimed — see [poolsByStreamOf].
+  // Said in words rather than left blank: an unlabelled section reads as a
+  // rendering fault, and this one is a finding.
+  head.appendChild(el("span", "sy-name", section.stream || "not attributed to a stream"));
+  head.appendChild(streamPoolLine(section.totals));
+  box.appendChild(head);
+  for (const group of section.groups) box.appendChild(poolBlock(group, section.totals));
+  return box;
+}
+
+/**
+ * …and that stream's own share of the roster, on one line.
+ *
+ * The same marks as [poolLine] minus the units one, because for a SINGLE
+ * stream a relay is exactly one unit of work — the two denominators the pool
+ * has to keep apart are one number here, and drawing it twice would invite the
+ * reading that they are not.
+ */
+function streamPoolLine(totals) {
+  const line = el("div", "sy-sub");
+  const mark = (text, why) => {
+    const span = el("span", null, line.children.length ? ` · ${text}` : text);
+    if (why) span.title = why;
+    line.appendChild(span);
+  };
+  if (totals.relays != null) mark(`${fmt(totals.relays)} relay(s)`, term("roster"));
+  mark(`${fmt(totals.working)} with a worker now`, term("visiting"));
+  if (totals.queued != null) mark(`${fmt(totals.queued)} queued for one`, term("awaitingVisit"));
+  if (totals.waiting != null) {
+    mark(`${fmt(totals.waiting)} between visits`,
+      "The rest of this stream's roster: neither running nor queued, waiting out the revisit delay its last " +
+      "visit earned. Most of a healthy stream is here.");
+  }
+  mark(`${fmt(totals.tailed)} holding a live tail`,
+    "Not a fourth share of the three before it: a tailed relay keeps its tail while it is revisited, so the same " +
+    "relay is counted here and in `with a worker now` at once. " + term("liveHeld"));
+  return line;
 }
 
 /** One pool: its heading, how much of the pool is in it, and the relays. */
@@ -457,11 +559,11 @@ function poolTable(group) {
  * to is per relay — the pool tables below, which is the question those marks
  * were standing in for.
  *
- * The per-relay rows used to hang here, one list per stream. They are one
- * panel for the whole card now, split by POOL rather than by stream: a visit
- * serves every stream's asks over one dial, so the stream a row appeared under
- * was the ask it happened to be on, and cutting each pool into one list per
- * stream hid the only comparison worth making. See [poolsPanel].
+ * The per-relay rows used to hang here, one list per stream with a `doing`
+ * column. They are one panel for the whole card now, cut by POOL first — which
+ * is the split that answers what this mirror is spending itself on, and the
+ * one a column of prose could not — and then by stream inside it wherever
+ * there is more than one. See [poolsPanel].
  */
 function streamBlock(s) {
   const box = el("div", "sy-stream");
@@ -495,7 +597,7 @@ function streamBlock(s) {
       line.appendChild(riding);
       if (rot.tails != null) {
         const tails = el("span", null, ` · ${fmt(rot.tails)} holding a live tail`);
-        tails.title = term("tails");
+        tails.title = term("liveHeld");
         line.appendChild(tails);
       }
     }
@@ -642,8 +744,8 @@ function syncCard(section) {
   // WHICH RELAYS, AND WHAT EACH IS BEING ASKED FOR — the four pools, under the
   // streams because "is it getting anywhere" is read first and "what is it
   // doing right now" immediately after. Drawn off the whole progress document
-  // rather than per stream: the live pool is at its root, and the visiting
-  // rows are pooled across streams. See [poolsPanel].
+  // and then cut by stream, because the caps under it are per stream and this
+  // is what they are spent on. See [poolsPanel].
   const pools = poolsPanel(progress);
   if (pools) {
     card.appendChild(el("p", "sy-h", "the pools"));

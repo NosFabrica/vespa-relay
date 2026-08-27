@@ -83,11 +83,15 @@ import kotlinx.serialization.json.putJsonArray
  *       "passes": [{"number": 11, "outcome": "completed", "…": "the walk before it, still finishing"},
  *                  {"number": 12, "outcome": "running",   "…": "the one `cycle` carries"}]
  *     },
- *     {"name": "visits", "phase": "rotating", "phaseForSec": 3480, "roster": 412, "tails": 300}
+ *     {"name": "visits", "phase": "rotating", "phaseForSec": 3480, "roster": 412,
+ *      "liveHeld": 300, "awaitingVisit": 18,
+ *      "limits": [{"job": "negentropy", "streamCap": 4, "inUse": 4, "deferred": 91}],
+ *      "schedule": [{"job": "negentropy", "everySec": 86400, "due": 12, "neverRun": 0,
+ *                    "waiting": 400, "nextInSec": 3600}]}
  *   ],
- *   "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400, "transferringForSec": 41400,
- *                        "events": 91002, "quietForSec": 3, "doing": "holding a live tail",
- *                        "pool": "live"}],
+ *   "live": {"relays": [{"relay": "wss://nos.lol/", "stream": "content", "heldForSec": 41400,
+ *                        "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
+ *                        "doing": "holding a live tail", "pool": "live"}],
  *            "omitted": 0},
  *   "processors": [
  *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
@@ -145,14 +149,15 @@ import kotlinx.serialization.json.putJsonArray
  * answer: WHICH OF THE MIRROR'S FOUR WORKLOADS each relay is in. One rotating
  * pool runs all of them, so `visiting` counted a catch-up, a history audit and
  * a whole-corpus re-walk as one number while `tails` counted the fourth and
- * named nobody. `pool` is the machine word rows are grouped by — `live`,
- * `catching-up`, `re-fetching`, `auditing`, and absent for a visit between
- * them, which is drawn under its own `doing` rather than dropped. `live` is
- * the fourth list itself: the tails are pool-wide by construction (one
- * subscription per relay carries every wanting stream's filter), so they sit at
- * the root rather than being divided per stream, and the stream rows keep the
- * `tails` COUNT that is their own share. See `VisitPool.POOL_LIVE` and its
- * neighbours.
+ * named nobody. `pool` is the machine word rows are
+ * grouped by — `live`, `catching-up`, `re-fetching`, `negentropy`, and absent
+ * for a visit between them, which is drawn under its own `doing` rather than
+ * dropped. `live` is the fourth list itself, at the root because it is one
+ * table and NOT because its rows have no owner: a tail is held per (relay,
+ * stream) pair, so every live row names its `stream` exactly as a visiting row
+ * does, and the four pools can be grouped per stream from `pool` and `stream`
+ * alone. The stream rows keep the `liveHeld` COUNT that is their own share.
+ * See `VisitPool.POOL_LIVE` and its neighbours.
  *
  * There is NO heartbeat member, and there used to be. This document was a file
  * on a volume the serving relay read, so it had to carry a `writtenAt` the
@@ -228,12 +233,12 @@ class SyncProgress {
         /** Where the constraint is, and the numbers behind it — see [Health]. */
         health: Health? = null,
         /**
-         * THE LIVE POOL — every relay holding a tail right now, pool-wide.
+         * THE LIVE POOL — every relay holding a tail right now.
          *
-         * Beside the streams rather than inside them because a tail is not a
-         * stream's: one subscription per relay carries every wanting stream's
-         * filter and its arrivals are counted at the url. See
-         * `VisitPool.livePool`.
+         * Beside the streams rather than inside them because it is the pool's
+         * steady state and reads as one table; each row names the stream whose
+         * filter its subscription carries, so a page that wants the live rows
+         * per stream groups by that member. See `VisitPool.livePool`.
          */
         live: InFlight? = null,
         /**
@@ -304,6 +309,13 @@ class SyncProgress {
                                 // and beside one riding none.
                                 s.roster?.let { put("roster", it) }
                                 s.tails?.let { put("liveHeld", it) }
+                                // …and how much of that roster is queued for a
+                                // worker rather than counting down a revisit.
+                                // Same word the pool's own row uses for the
+                                // same quantity — this is one stream's share of
+                                // it — because two names for one number is how
+                                // a card starts disagreeing with itself.
+                                s.queued?.let { put("awaitingVisit", it) }
                                 // WHICH relays are running, beside the cycle
                                 // rather than inside it: a worker outlives the
                                 // pass that handed it out, so this set spans
@@ -369,10 +381,10 @@ class SyncProgress {
                         )
                     }
                 }
-                // THE LIVE POOL, at the ROOT and not under a stream: a tail
-                // carries every wanting stream's filter and counts its
-                // arrivals at the url, so dividing it per stream would publish
-                // one undivided number once per stream. Omitted entirely when
+                // THE LIVE POOL, at the ROOT and not under a stream: it is
+                // one table of the pool's steady state and every row names its
+                // own stream, so a reader that wants it per stream groups by
+                // that member rather than by its position. Omitted entirely when
                 // nothing is tailed — a router holding no tails and one too old
                 // to say are told apart the same way every other absent member
                 // here is, by the rest of the document.

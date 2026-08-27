@@ -302,7 +302,14 @@ class VisitQueueTest {
             repeat(3) {
                 scope.launch {
                     q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
-                        peak.updateAndGet { was -> maxOf(was, running.incrementAndGet()) }
+                        // COUNT FIRST, THEN RECORD THE PEAK. `updateAndGet`
+                        // re-runs its lambda whenever the CAS loses, so an
+                        // increment INSIDE it is applied once per attempt —
+                        // two workers entering together counted three visits
+                        // and failed this test about one run in three. The
+                        // counter is the fact; the peak is a reading of it.
+                        val now = running.incrementAndGet()
+                        peak.updateAndGet { was -> maxOf(was, now) }
                         entered.send(key)
                         release.receive()
                         running.decrementAndGet()
@@ -337,6 +344,63 @@ class VisitQueueTest {
                 withTimeout(5_000) { assertEquals(content, entered.receive(), "the parked unit runs as soon as its own visit ends") }
                 release.send(Unit)
             } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `the queue splits by group, counting what waits and never what runs`() =
+        runBlocking {
+            // WHOSE QUEUE IS IT. The pool's own row says how many units are
+            // waiting; a per-stream card has to say how many of THOSE are
+            // this stream's, and the number was unpublishable until the queue
+            // could be asked for the split.
+            //
+            // The distinction that matters is the one a card would get wrong
+            // silently: a unit a worker is ON is not waiting for a worker. A
+            // split that counted it would put the same unit in `queued` and in
+            // the in-flight rows beside it, and the remainder drawn from both
+            // would come out short.
+            data class Unit2(
+                val url: String,
+                val stream: String,
+            )
+
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue<Unit2>(scope)
+            val entered = Channel<Unit2>(Channel.UNLIMITED)
+            val release = Channel<Unit>(Channel.UNLIMITED)
+            // ONE worker, so exactly one unit is running and the rest are
+            // provably still queued.
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
+                    entered.send(key)
+                    release.receive()
+                }
+            }
+            try {
+                assertEquals(emptyMap(), q.waitingBy { it.stream }, "an empty queue is an empty split, not a zero per stream")
+
+                q.offer(Unit2("wss://a.example/", "content"))
+                withTimeout(5_000) { entered.receive() }
+                q.offer(Unit2("wss://b.example/", "content"))
+                q.offer(Unit2("wss://c.example/", "content"))
+                q.offer(Unit2("wss://a.example/", "indexers"))
+
+                assertEquals(
+                    mapOf("content" to 2, "indexers" to 1),
+                    q.waitingBy { it.stream },
+                    "the two still queued and the one on a worker counted apart",
+                )
+                assertEquals(3, q.waiting, "and the split adds up to the number the pool publishes")
+
+                // A stream nothing has queued is ABSENT rather than zero: the
+                // caller knows its own streams and reads a missing key as
+                // none, and inventing keys here would mean this class knowing
+                // what the whole set is.
+                assertEquals(null, q.waitingBy { it.stream }["idle"])
+            } finally {
+                release.trySend(Unit)
                 scope.cancel()
             }
         }

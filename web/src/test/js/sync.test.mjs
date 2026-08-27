@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
-  funnelOf, heldOf, legsOf, limitsOf, measuringOf, poolsOf, probeProgress,
-  rotationOf, scheduleOf,
+  funnelOf, heldOf, legsOf, limitsOf, measuringOf, poolsByStreamOf, poolsOf,
+  probeProgress, rotationOf, scheduleOf,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -796,6 +796,134 @@ const leg = (n, quiet, over = {}) => ({
   }).totals;
   assert.equal(raced.waiting, 0, "the remainder floors at zero rather than going negative");
   ok("a pool the document does not size says nothing, and a raced subtraction never goes negative");
+}
+
+// ── the same rows, cut by stream ────────────────────────────────────────────
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // WHICH STREAM IS SPENDING THE POOL. The mirror-wide cut answers "how much
+  // of this is re-fetching" and makes an operator read a stream column down
+  // and add it up; the budgets are configured per stream, so this is the cut
+  // the knobs are set against.
+  const doc = {
+    processors: [{ name: "visits", roster: 3, rosterVisits: 4, awaitingVisit: 9 }],
+    streams: [
+      { name: "content", phase: ROTATING, roster: 100, liveHeld: 1, awaitingVisit: 6, inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+        held("wss://b.example/", { pool: POOL_NEGENTROPY }),
+      ], omitted: 0 } },
+      { name: "indexers", phase: ROTATING, roster: 40, liveHeld: 0, awaitingVisit: 3, inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_REFETCHING }),
+      ], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "content" })], omitted: 0 },
+  };
+  const cut = poolsByStreamOf(doc);
+  assert.deepEqual(cut.map((c) => c.stream), ["content", "indexers"], "one section per stream, in the document's order");
+  const rowsIn = (c, key) => c.groups.find((g) => g.key === key).rows.map((r) => r.relay);
+
+  // ONE RELAY, TWO STREAMS, TWO SECTIONS. The pool's unit of work is a
+  // (relay, stream) pair, so the same url is legitimately catching up for one
+  // stream and re-fetching for another at the same instant — and that is the
+  // reading the mirror-wide table cannot give without being read down a column.
+  assert.deepEqual(rowsIn(cut[0], POOL_CATCHING_UP), ["wss://a.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_REFETCHING), ["wss://a.example/"]);
+  assert.deepEqual(rowsIn(cut[0], POOL_NEGENTROPY), ["wss://b.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_NEGENTROPY), [], "and an empty pool under a stream still says so");
+
+  // THE LIVE ROW LANDS UNDER ITS OWN STREAM, which is the whole reason this
+  // cut is possible: a tail is held per (relay, stream) pair and names its
+  // owner. When one subscription carried every wanting stream's filter there
+  // was no such thing as one stream's live row.
+  assert.deepEqual(rowsIn(cut[0], POOL_LIVE), ["wss://f.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_LIVE), []);
+
+  // NOTHING IS DROPPED AND NOTHING IS DOUBLED: the sections partition the
+  // mirror's own rows, so both cuts can be drawn on one card without
+  // disagreeing about what is held.
+  const total = (list) => list.reduce((a, c) => a + c.groups.reduce((b, g) => b + g.rows.length, 0), 0);
+  assert.equal(total(cut), poolsOf(doc).groups.reduce((a, g) => a + g.rows.length, 0));
+
+  // A SECTION'S HEADING ALREADY NAMES THE STREAM, so the column under it would
+  // be that heading copied down the table.
+  assert.equal(cut[0].groups.every((g) => g.streams === false), true);
+  assert.equal(poolsOf(doc).groups.find((g) => g.key === POOL_LIVE).streams, true, "…where the mirror's does draw it");
+  ok("the four pools cut by stream put every held row under exactly one owner");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A STREAM'S OWN SHARE, off its own row. The pool-wide totals cannot be
+  // divided into these — `rosterVisits` is a sum over streams and the pool's
+  // `awaitingVisit` is the whole queue — so the stream row publishes its own.
+  //
+  // And `units` IS `relays` here: inside one stream a relay is exactly one
+  // unit of work, which is what makes this subtraction sound where the
+  // pool-wide one needs a second denominator.
+  const [content] = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 100, awaitingVisit: 6, inFlight: { relays: [
+      held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+      held("wss://b.example/", { pool: POOL_NEGENTROPY }),
+    ], omitted: 0 } }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "content" })], omitted: 0 },
+  });
+  assert.equal(content.totals.relays, 100);
+  assert.equal(content.totals.units, 100, "one relay is one unit for one stream");
+  assert.equal(content.totals.working, 2, "counted off the rows, like the mirror's");
+  assert.equal(content.totals.queued, 6);
+  assert.equal(content.totals.waiting, 92);
+  assert.equal(content.totals.relays, content.totals.working + content.totals.queued + content.totals.waiting);
+  assert.equal(content.totals.tailed, 1, "and the tail count crosses them rather than joining them");
+
+  // A ROUTER TOO OLD TO SPLIT THE QUEUE says nothing rather than zero: a
+  // remainder computed without the queued share would quietly count the queue
+  // as sitting between visits.
+  const [old] = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 100, inFlight: { relays: [
+      held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+    ], omitted: 0 } }],
+  });
+  assert.equal(old.totals.queued, null);
+  assert.equal(old.totals.waiting, null);
+  assert.equal(old.totals.working, 1, "what the rows say is still said");
+  ok("a stream's share of the roster comes off its own row, and says nothing where that row does not");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A STREAM RIDING THE POOL AND HOLDING NOTHING STILL GETS ITS SECTION. Four
+  // empty tables under a name is the answer a starved stream gives, and a
+  // section that vanished when it emptied would leave an operator scrolling
+  // for a stream that is on the card.
+  const cut = poolsByStreamOf({
+    streams: [
+      { name: "content", phase: ROTATING, roster: 100, awaitingVisit: 100 },
+      { name: "notStarted", phase: "starting" },
+    ],
+  });
+  assert.deepEqual(cut.map((c) => c.stream), ["content"], "…but one that has not started rotating has no share yet");
+  assert.deepEqual(cut[0].groups.map((g) => g.key), POOL_ORDER);
+  assert.equal(cut[0].totals.working, 0);
+
+  // A ROW NO CONFIGURED STREAM CLAIMS gets a section of its own rather than
+  // being dropped — a tail naming a stream that has left the config is exactly
+  // the row worth seeing, and this cut promises what the other one does.
+  const orphan = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 1, awaitingVisit: 0 }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "retired" })], omitted: 0 },
+  });
+  assert.deepEqual(orphan.map((c) => c.stream), ["content", null]);
+  assert.deepEqual(orphan[1].groups.find((g) => g.key === POOL_LIVE).rows.map((r) => r.relay), ["wss://f.example/"]);
+  assert.equal(orphan[1].groups.find((g) => g.key === POOL_LIVE).streams, true,
+    "and it keeps its stream column: the heading says only that nothing claimed it");
+  assert.equal(poolsByStreamOf(null).length, 0);
+  ok("a stream holding nothing keeps its section, and a row no stream claims gets one");
 }
 
 // ── what each stream may spend ──────────────────────────────────────────────
