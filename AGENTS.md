@@ -557,98 +557,41 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         the fanout runs on the ingest writer's coroutine.
                         `SEARCH_EXPAND_REFERENCES=false` is the relay before it.
                         WHAT IT COSTS, measured (`SearchExpansionCostBench`,
-                        2026-08-26, real Vespa in Docker, medians over 201
-                        rounds): a recall -0.5%, a search whose `kinds` hold no
-                        pointer kind +0.5% (it takes the untouched path —
-                        `couldPoint` decides that off the filters, before a row
-                        is read), a search that COULD point and does not +0.4%,
-                        and a page that really does expand +44% at 50 hits /
-                        +14% at 500 — ONE extra round trip for the subjects, and
-                        nothing else. The bench found three things the
-                        correctness tests could not see: awaiting the replay
-                        from a child coroutine put back the scheduler hop
-                        quartz's UNDISPATCHED REQ exists to avoid (~90us on
-                        EVERY search — chasing that number is what exposed the
-                        SEAM as wrong, and `ExpandingEventStore` is the answer);
-                        reading every row's pointers before
+                        2026-08-27, real Vespa in Docker, medians over 201
+                        rounds, page 50/500): a recall +0.3%/+0.7%, a search
+                        whose `kinds` hold no pointer kind -0.7%/+0.4% (it takes
+                        the untouched path — `couldPoint` decides that off the
+                        filters, before a row is read), a search that COULD
+                        point and does not -0.0%/-0.5%. A page that really does
+                        expand pays ONE extra round trip whatever its size, and
+                        then the subjects — and the two expanding shapes
+                        DIVERGE, for reasons that are about the data rather than
+                        the code. Trusted Lists OVERLAP (500 rosters name the
+                        same 20 pubkeys), so the splice converges and the cost
+                        FALLS with page size: +44% at 50 hits, +15% at 500.
+                        NIP-32 LABELS DO NOT — each names its own event, the
+                        splice is as big as the page, FRAMES DOUBLE, and the
+                        cost RISES: +38% at 50, +61% at 500. That is the worst
+                        case the feature has in production and the one to look
+                        at first; marginal cost is ~48us per spliced event.
+                        Real labels carry a MEDIAN OF ONE nostr target (405 of
+                        433 sampled, thin tail to 40), so the default
+                        `SEARCH_EXPAND_MAX_TOTAL` of 1,000 is spent by a page of
+                        roughly 400-500 labels — which is what bounds a REQ that
+                        names no `limit` and takes the relay's 5,000 default.
+                        The bench found three things the correctness tests could
+                        not see: awaiting the replay from a child coroutine put
+                        back the scheduler hop quartz's UNDISPATCHED REQ exists
+                        to avoid (~90us on EVERY search — chasing that number is
+                        what exposed the SEAM as wrong, and `ExpandingEventStore`
+                        is the answer); reading every row's pointers before
                         spending the budget paid 450 tags-parses on a 500-list
                         page for rows it had already decided to take nothing
                         from; and re-reading the reader's 10040 inside every REQ
-                        was a SECOND round trip (+2.0 queries, 27.9ms at 50
-                        hits) for a document that changes when someone enrols a
-                        service — `EnrolledSigners` caches it per reader, exact
-                        on this process's own writes and TTL-bounded for the
-                        mirror's, and the arm went +74% -> +44%
-    ProductionCorpusIT.kt  THE FEATURE AGAINST A REAL VESPA AND SOMEBODY
-                        ELSE'S DATA — a corpus pulled off TWO real relays by
-                        `resources/production-corpus-tool/fetch-corpus.mjs`
-                        (node 21+, no deps, not committed: other people's public
-                        events, megabytes, and AGENTS.md's own rule is to reach
-                        for staging rather than invent a fixture). Two relays
-                        because neither has the whole picture — the search relay
-                        has the labels, the cards and the profiles, the tapestry
-                        relay has the Trusted List family — and the tool closes
-                        the corpus over what the pointers NAME, because a
-                        subject lookup with nothing to find asserts nothing. Off
-                        unless `-DitVespa` and `-DitCorpus` are given, and BOTH
-                        have to be forwarded in build.gradle.kts or a forked
-                        test JVM never sees them. It asks the question the unit
-                        tests cannot — whether the thing the code was written
-                        for EXISTS — and it has corrected this file three times
-                        now, which is the whole argument for having it:
-                        THE LABEL HALF IS FULLY REAL and is the bulk of what
-                        production publishes: a real 1985 carrying `l=zapped`
-                        brings back the real note it points at, at the label's
-                        own position, with a control asserting that note is
-                        unreachable by that search with the expansion off.
-                        THE LIST HALF IS REAL TOO, off the tapestry relay — a
-                        real titled list, its real members, their real profiles,
-                        and the same control. It synthesizes exactly ONE event,
-                        the enrolment, because no reader's current 10040 names
-                        that publisher any more; that is asserted, so the day
-                        somebody enrols them the test says the synthesis can go.
-                        NO CONTACT CARD IS SEARCHABLE: every sampled 30382
-                        carries only metrics, so `indexableContent()` is EMPTY
-                        and the assertion half is inert against today's corpus.
-                        AND THE SQUATTERS ARE REACHABLE: "untitled, so it
-                        indexes the empty string and can never be a hit" is
-                        WRONG — the store indexes HASHTAGS, so a real
-                        `["t","trusted-attestor"]` on an untitled 30392 makes it
-                        findable, and its `p` is one our reader takes for a
-                        member. What stops a stranger's profile landing in a
-                        stranger's feed is the ENROLMENT GATE, driven here on
-                        the real events rather than argued about
-    ExpandingEventStore.kt  WHERE THE EXPANSION ACTUALLY RUNS: an IEventStore
-                        decorator overriding exactly the two callback shapes a
-                        REQ's stored replay rides — `query(filters, onEach)` and
-                        `rawQuery`. THE SEAM IS THE WHOLE POINT. Up in
-                        SessionBackend no delivery callback can suspend (rows
-                        arrive from inside the store's loop, and the call then
-                        parks at `awaitCancellation` for the life of the
-                        subscription), so the first version needed a ReplayGate
-                        under a lock, a flush coroutine launched undispatched
-                        from the EOSE callback, a sealed row type for the
-                        stored/live halves and a drain loop — ~280 lines of
-                        plumbing and a frame-ordering race. Down here the same
-                        two calls RETURN, so the whole feature is: collect the
-                        page, look the subjects up, write it out. `LiveEventStore`
-                        touches the store in six places and they split cleanly —
-                        the REQ replay takes these two, NIP-77 takes the
-                        list-returning `query` and `snapshotIdsForNegentropy`,
-                        COUNT takes `count`, deferred FTS takes
-                        `needsFtsCatchUp`/`ftsCatchUp` — so a reconcile, a
-                        COUNT, a sweep and every maintenance read are untouched
-                        BY CONSTRUCTION rather than by a gate that has to
-                        remember them. `by inner` forwards the rest, which is
-                        also the store's own decorator rule (delegate, never
-                        ride an interface default). It stays HONEST about the
-                        interface: the admission rule is `Filter.match`, so
-                        every spliced subject matches the REQ exactly as the
-                        hits do — what changes is completeness, not soundness,
-                        and a ranked `limit`-bounded search was never complete.
-                        Its own lookups go to the raw store, so a subject lookup
-                        cannot recurse. With the expansion off the wrapper is
-                        ABSENT, not inert
+                        was a SECOND round trip for a document that changes when
+                        someone enrols a service — `EnrolledSigners` caches it
+                        per reader, exact on this process's own writes and
+                        TTL-bounded for the mirror's
     SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
                         the runtime class. A `p` member (30392, a label's target,
                         a 30382's `d`) resolves to that author's KIND 0; an `e`

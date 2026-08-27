@@ -66,8 +66,13 @@ import kotlin.test.fail
  *     because no row's kind nominates anything. This is the arm that prices the
  *     mechanism itself.
  *  4. **search, every hit a pointer** — a page of Trusted Lists. Pays the
- *     above plus the two extra recalls: the reader's 10040 once per REQ, and
- *     the subjects once per page.
+ *     above plus the extra recall for the subjects. Their memberships OVERLAP,
+ *     which is what a real roster does, so the splice converges on a handful of
+ *     distinct pubkeys however long the page is.
+ *  5. **search, every hit a label** — a page of NIP-32 labels, each naming ONE
+ *     distinct event. This is the worst case the feature actually has in
+ *     production, and the one the arm above understates: nothing dedupes, so
+ *     the splice is as big as the page and the frame count doubles.
  *
  * The store round trips are counted as well as timed. A count is a structural
  * fact that holds on any engine; a duration is a measurement of this one, and
@@ -87,19 +92,37 @@ import kotlin.test.fail
  *
  * ## What it read when the expansion landed
  *
- * 2026-08-26, 4-core sandbox, single-node Vespa in Docker, 1,521-event corpus,
+ * 2026-08-27, 4-core sandbox, single-node Vespa in Docker, 2,521-event corpus,
  * 201 rounds per arm, medians:
  *
- * | arm | page | off | on | |
- * |---|---|---|---|---|
- * | recall | 50 / 500 | 10.9 / 27.2ms | 10.9 / 27.3ms | -0.5% / +0.6% |
- * | search, no kind can point | 50 / 500 | 20.7 / 41.3ms | 20.8 / 40.1ms | +0.5% / -3.0% |
- * | search, could point, none does | 50 / 500 | 16.2 / 40.1ms | 16.3 / 39.1ms | +0.4% / -2.4% |
- * | search, every hit a pointer | 50 / 500 | 15.0 / 58.6ms | 21.5 / 66.8ms | +44% / +14% |
+ * | arm | page | off | on | | frames |
+ * |---|---|---|---|---|---|
+ * | recall | 50 / 500 | 9.5 / 26.0ms | 9.5 / 26.2ms | +0.3% / +0.7% | unchanged |
+ * | search, no kind can point | 50 / 500 | 18.3 / 43.8ms | 18.2 / 44.0ms | -0.7% / +0.4% | unchanged |
+ * | search, could point, none does | 50 / 500 | 17.1 / 42.1ms | 17.1 / 41.9ms | -0.0% / -0.5% | unchanged |
+ * | search, every hit a pointer | 50 / 500 | 16.1 / 67.5ms | 23.2 / 77.2ms | +44% / +15% | +20 |
+ * | search, every hit a label | 50 / 500 | 19.7 / 48.0ms | 27.2 / 77.2ms | +38% / +61% | x2 |
  *
- * Read it as: everything that does not expand is free, and a page that does
- * expand pays ONE extra round trip — the subjects — and nothing else. The
- * in-memory index prices that same round trip at well under a millisecond,
+ * Everything that does not expand is free. A page that does expand pays ONE
+ * extra round trip whatever its size, and then the subjects themselves.
+ *
+ * THE TWO EXPANDING ARMS DIVERGE, and the reason is the shape of the data
+ * rather than anything in the code. Trusted Lists OVERLAP — a page of 500
+ * rosters names the same 20 pubkeys — so the splice converges and the relative
+ * cost FALLS as the page grows (+44% -> +15%). NIP-32 labels do not: each names
+ * its own event, so the splice is as big as the page, the frame count DOUBLES,
+ * and the cost RISES with it (+38% -> +61%). The marginal cost of a spliced
+ * event on this box is ~48us — its share of the batched recall plus its frame.
+ *
+ * The label arm is the worst case the feature actually has in production, and
+ * it is the one to look at first. Real labels carry a median of ONE nostr
+ * target (405 of 433 sampled), with a thin tail up to 40, so a page of labels
+ * really does splice about one event per hit. At that rate the default
+ * `SEARCH_EXPAND_MAX_TOTAL` of 1,000 is spent by a page of roughly 400-500
+ * labels — which is what bounds a REQ that names no `limit` at all and takes
+ * the relay's 5,000 default.
+ *
+ * The in-memory index prices the extra round trip at well under a millisecond,
  * which is why its relative numbers look so different and why this table is the
  * real one.
  *
@@ -211,6 +234,7 @@ class SearchExpansionCostBench {
                     "search, no kind can point" to { page -> """{"kinds":[1],"limit":$page,"search":"bramblecast $lens"}""" },
                     "search, could point, none does" to { page -> """{"limit":$page,"search":"bramblecast $lens"}""" },
                     "search, every hit a pointer" to { page -> """{"kinds":[0,30392],"limit":$page,"search":"roster $lens"}""" },
+                    "search, every hit a label" to { page -> """{"kinds":[1,1985],"limit":$page,"search":"$LABEL_VALUE $lens"}""" },
                 )
 
             // Warm-up: the first REQ through a fresh JVM pays class loading,
@@ -332,11 +356,32 @@ class SearchExpansionCostBench {
                         "",
                     )
             }
+            // NIP-32 labels, in the shape production actually publishes them:
+            // an `L` namespace, one `l` value shared by all of them (a language
+            // tag is 243 of every 400 labels on the search relay), and ONE `e`
+            // target each. The one-target-each part is what makes this the
+            // worst case and the reason it is its own arm — a page of N labels
+            // names N DISTINCT events, so nothing dedupes and the splice is the
+            // same size as the page, where a page of Trusted Lists converges on
+            // the handful of pubkeys they all name.
+            val notes = events.filter { it.kind == 1 }
+            repeat(minOf(LABELS, notes.size)) { i ->
+                events +=
+                    curator.sign<Event>(
+                        1_700_300_000L + i,
+                        1985,
+                        arrayOf(arrayOf("L", "bench"), arrayOf("l", LABEL_VALUE, "bench"), arrayOf("e", notes[i].id)),
+                        "",
+                    )
+            }
             for (event in events) {
                 session.receive("""["EVENT",${event.toJson()}]""")
                 await(out) { it.startsWith("""["OK","${event.id}",true""") }
             }
-            println("EXPANSION-BENCH corpus: ${events.size} events — $NOTES notes, $LISTS lists of $MEMBERS members, $MEMBERS profiles")
+            println(
+                "EXPANSION-BENCH corpus: ${events.size} events — $NOTES notes, $LISTS lists of $MEMBERS members, " +
+                    "$MEMBERS profiles, ${minOf(LABELS, NOTES)} labels",
+            )
         } finally {
             session.close()
         }
@@ -374,5 +419,9 @@ class SearchExpansionCostBench {
         const val NOTES = 1_000
         const val LISTS = 500
         const val MEMBERS = 20
+        const val LABELS = 1_000
+
+        /** The `l` value every bench label shares — a common label, which is the question. */
+        const val LABEL_VALUE = "benchlabelvalue"
     }
 }
