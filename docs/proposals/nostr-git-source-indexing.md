@@ -329,16 +329,44 @@ design with a genuine constraint rather than a preference. Three options; take
 the first two, refuse the third.
 
 **8.1 — Rank real 30617s by their code (the Nostr-native answer).** A REQ with
-`kinds:[30617]`, `search: "mutex"` runs the code query, groups hits by
-`repo_key`, resolves to the winning 30617 event ids, and serves **those** —
-genuine, signed, client-verifiable events, ordered by how well their source
-matched and gated by the observer's web of trust exactly as any other filter is.
-This is protocol-legal, it needs no new client support, and "which Nostr repos
-contain X" is the highest-value question anyway.
+`kinds:[30617]`, `search: "code:mutex"` matches the code cluster, groups hits by
+`repo_key`, aggregates a per-repo score, resolves each `repo_key` to the live
+30617s announcing it, and serves **those** — genuine, signed,
+client-verifiable events, ordered by how well their source matched and gated by
+the observer's web of trust exactly as any other filter is. Protocol-legal, no
+new client support needed, and "which Nostr repos contain X" is the
+highest-value question anyway.
+
+Four details that are easy to leave implicit and should not be:
+
+- **A match returns the REPOSITORY, not the file.** There is no event for a
+  source file, and §8.3 is where the temptation to mint one is refused. Path,
+  line and snippet cannot travel through a REQ at all — that loss is the whole
+  reason §8.2 exists.
+- **`code:` is an extension token, not a redefinition.** `search: "mutex"` on
+  kind 30617 already means "match the announcement's name and description", and
+  must keep meaning that. Code search gets its own token beside `observer:`,
+  `sort:`, `filter:` and `include:`, and composes with them the same way:
+  `code:mutex observer:<hex>` is "repos whose source contains mutex, trusted by
+  me". Unknown extensions are already ignored, so an old client asking a new
+  relay degrades to plain metadata search rather than erroring.
+- **One `repo_key` can have several live 30617s** — different maintainers
+  announcing the same euc (§4). Serve every one that clears the gate; the trust
+  ordering puts the most-trusted maintainer's announcement first, and a client
+  that wants one takes the first. Collapsing to a single "winning" announcement
+  would be us picking a maintainer on the client's behalf.
+- **`limit` and COUNT are denominated in repos, not matches.** `limit: 20` means
+  twenty repositories, so the code query must over-fetch and group *before* the
+  limit applies — the two-stage query needs its own fan-out budget, distinct
+  from the filter's `limit`. A NIP-45 COUNT answers "how many repos contain
+  this", which is almost certainly what is wanted, but it is a different
+  question from "how many code hits" and should be documented as such rather
+  than discovered.
 
 **8.2 — A JSON endpoint for the lines themselves.** `GET /code/search` on the
-relay's Ktor server, returning path + line + snippet + a link into the repo's
-`web` URL, rendered as a tab in the existing search UI. This is the repo's own
+relay's Ktor server, returning path + line + snippet + a deep link built from
+the repo's own `web` tag — everything §8.1 structurally cannot carry — rendered
+as a tab in the existing search UI. This is the repo's own
 rule applied unchanged: *engines produce documents, `:web` renders them, and the
 seam is JSON.* Only reachable from our own front end, which is the honest trade.
 
