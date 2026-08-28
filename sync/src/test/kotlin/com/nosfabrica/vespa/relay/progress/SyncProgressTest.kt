@@ -55,6 +55,36 @@ class SyncProgressTest {
     }
 
     @Test
+    fun `the socket budget publishes what it is doing, not only how big it is`() {
+        // THE NUMBER THAT ENDS THE ARGUMENT. "Should we raise the socket
+        // budget" was answerable only by measuring an ETA — the router
+        // published its ceiling and how many relays were connected, and every
+        // other symptom of a full dispatcher (a long cycle, an idle-looking
+        // pool, relays never reached) is shared with a slow store and a
+        // roster of dead hosts. A queue is not: those calls are admissible and
+        // OkHttp is holding them.
+        //
+        // ZERO IS PUBLISHED, on this document's rule: a member that appears
+        // only on damage cannot be told from a router too old to say.
+        val healthy =
+            SyncProgress.Health(
+                bottleneck = "downloads",
+                eventsPerSec = 900,
+                heapUsedMb = 1,
+                heapMaxMb = 2,
+                sockets = 1010,
+                socketCeiling = 1024,
+                socketsRunning = 1010,
+                socketsQueued = 0,
+                servingMs = null,
+            )
+        val h = SyncProgress.document(emptyList(), health = healthy, nowSeconds = 1_000)["health"]!!.jsonObject
+        assertEquals(1010L, h["socketsRunning"]!!.jsonPrimitive.long)
+        assertEquals(0L, h["socketsQueued"]!!.jsonPrimitive.long, "nothing waiting is the reading, not the absence of one")
+        assertEquals(1024L, h["socketCeiling"]!!.jsonPrimitive.long)
+    }
+
+    @Test
     fun `a stream that has not started publishes its phase and nothing it cannot answer`() {
         val s = StreamPhases.Stream("content", "starting", 12)
         val stream = (SyncProgress.document(listOf(s), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject

@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, limitsOf, poolsByStreamOf, poolsOf, rotationOf, scheduleOf } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, limitsOf, poolsByStreamOf, poolsOf, rotationOf, scheduleOf, socketsOf } from "../shared/sync.js";
 
 /**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
@@ -156,6 +156,23 @@ function statusRow(progress) {
   // ingest one is a fault at all — see BOTTLENECK.
   const constraint = constraintOf(health);
   if (constraint) row.appendChild(chip(constraint.text, constraint.tone, constraint.why));
+  // THE SOCKET BUDGET, and it was published to `/stats.json` for a long time
+  // without being drawn anywhere: the one number that says whether the router
+  // can reach more relays was readable only by fetching the JSON by hand.
+  // Coloured on the QUEUE alone — see [socketsOf] for why "near the ceiling"
+  // is the healthy state and not a warning.
+  const sockets = socketsOf(health);
+  if (sockets) {
+    row.appendChild(
+      chip(
+        `${fmt(sockets.open)}/${fmt(sockets.ceiling)} sockets${sockets.queued ? ` · ${fmt(sockets.queued)} queued` : ""}`,
+        sockets.starved ? "warn" : null,
+        sockets.starved
+          ? `${fmt(sockets.queued)} call(s) waiting for a slot. ${term("socketsQueued")}`
+          : `${term("sockets")} ${term("socketCeiling")}`,
+      ),
+    );
+  }
   // A count, not a list: the document publishes how many, and one is already
   // the whole message.
   if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));

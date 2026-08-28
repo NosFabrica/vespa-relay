@@ -124,7 +124,8 @@ class StatusVocabularyTest {
                     """
                     {"fatals": 0,
                      "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
-                                "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
+                                "sockets": 412, "socketCeiling": 1024, "socketsRunning": 418, "socketsQueued": 0,
+                                "servingMs": 18},
                      "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
                      "roster": 412, "liveHeld": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
@@ -364,6 +365,8 @@ class StatusVocabularyTest {
                     "heapMaxMb",
                     "sockets",
                     "socketCeiling",
+                    "socketsRunning",
+                    "socketsQueued",
                     "servingMs",
                     "series",
                     "at",

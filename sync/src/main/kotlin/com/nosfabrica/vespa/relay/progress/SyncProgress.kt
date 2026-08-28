@@ -198,6 +198,23 @@ class SyncProgress {
         val sockets: Int,
         val socketCeiling: Int,
         /**
+         * …and what that budget is DOING: calls out against it, and calls
+         * QUEUED behind it.
+         *
+         * `socketsQueued` is the only direct evidence this process can give
+         * that the socket budget is the constraint. Every other symptom of a
+         * full dispatcher — a long ETA, an idle-looking pool, relays that
+         * never seem to be reached — is shared with a slow store, a saturated
+         * thread pool and a roster of dead hosts. A queue above zero is none
+         * of those: the calls are admissible and OkHttp is holding them.
+         *
+         * Zero is the healthy reading and is published anyway, on the rule the
+         * rest of this document follows: a member that appears only on damage
+         * cannot be told from a router too old to say.
+         */
+        val socketsRunning: Int,
+        val socketsQueued: Int,
+        /**
          * The relay's mean client read latency, which this router YIELDS to.
          *
          * A mirror that is deliberately slowing down and one that is stuck look
@@ -285,6 +302,8 @@ class SyncProgress {
                             put("heapMaxMb", h.heapMaxMb)
                             put("sockets", h.sockets)
                             put("socketCeiling", h.socketCeiling)
+                            put("socketsRunning", h.socketsRunning)
+                            put("socketsQueued", h.socketsQueued)
                             h.servingMs?.let { put("servingMs", it) }
                         },
                     )

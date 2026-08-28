@@ -15,7 +15,7 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  poolsByStreamOf, poolsOf, probeProgress, rotationOf, scheduleOf,
+  poolsByStreamOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -55,6 +55,42 @@ const leg = (n, quiet, over = {}) => ({
     assert.ok(POOL_LABELS[word], `the router publishes pool word "${word}" and this page has no label for it`);
   }
   ok("the four pool words are the router's own, read out of its source");
+}
+
+// ── the socket budget ───────────────────────────────────────────────────────
+{
+  // NEAR THE CEILING IS NOT A FAULT, and this is the whole judgement. A mirror
+  // whose job is to stay connected to every certified relay is supposed to sit
+  // near its budget; colouring that would put a warning on every healthy
+  // deployment and teach an operator to ignore the mark.
+  const busy = socketsOf({ sockets: 1010, socketCeiling: 1024, socketsRunning: 1010, socketsQueued: 0 });
+  assert.equal(busy.starved, false, "99% of the budget with nothing waiting is a mirror doing its job");
+  assert.equal(busy.open, 1010);
+  assert.equal(busy.ceiling, 1024);
+
+  // A QUEUE IS. Those calls are admissible and OkHttp is holding them because
+  // the budget is full — the one symptom a slow store and a saturated thread
+  // pool cannot produce, which is why it is worth its own number.
+  const starved = socketsOf({ sockets: 1024, socketCeiling: 1024, socketsRunning: 1024, socketsQueued: 37 });
+  assert.equal(starved.starved, true);
+  assert.equal(starved.queued, 37);
+
+  // …and it is the QUEUE and not the fullness: a router well under its ceiling
+  // that is somehow queueing is still the same diagnosis.
+  assert.equal(socketsOf({ sockets: 40, socketCeiling: 1024, socketsQueued: 2 }).starved, true);
+
+  // A ROUTER TOO OLD TO PUBLISH THE QUEUE says nothing rather than "nothing is
+  // queued" — the difference between "not measured" and "measured as fine".
+  const old = socketsOf({ sockets: 412, socketCeiling: 1024 });
+  assert.equal(old.queued, null);
+  assert.equal(old.running, null);
+  assert.equal(old.starved, false, "unmeasured cannot raise an alarm, and must not");
+
+  // No ceiling is no mark: `0 of 0` is worse than nothing.
+  assert.equal(socketsOf({ sockets: 5 }), null);
+  assert.equal(socketsOf({ socketCeiling: 1024 }), null);
+  assert.equal(socketsOf(null), null);
+  ok("the socket budget is read on its queue, not on how full it is");
 }
 
 // ── the constraint ──────────────────────────────────────────────────────────

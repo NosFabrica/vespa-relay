@@ -585,6 +585,7 @@ class SyncEngine(
             // is that they cannot drift.
             val constraint = bottleneckOf(depth, rate)
             val open = client.connectedRelaysFlow().value.size
+            val load = peers.socketLoad()
             // Published before it is printed, so the document carries the same
             // verdict the log does even if the line below is ever reworded.
             health =
@@ -595,6 +596,11 @@ class SyncEngine(
                     heapMaxMb = maxMb,
                     sockets = open,
                     socketCeiling = PeerClient.MAX_CONCURRENT_SOCKETS,
+                    // …and what the budget is doing, which is what says
+                    // whether the ceiling above is the constraint or merely
+                    // the ceiling. See [PeerClient.socketLoad].
+                    socketsRunning = load.running,
+                    socketsQueued = load.queued,
                     servingMs = pressure?.meanMs(),
                 )
             System.err.println(

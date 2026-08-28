@@ -755,6 +755,21 @@ object StatusVocabulary {
                     "router's real ceiling.",
             )
             put(
+                "socketsRunning",
+                "Calls out against `socketCeiling` this instant — the dispatcher's own count, where `sockets` is " +
+                    "quartz's count of connected relays. The two measure the same pressure from opposite ends and " +
+                    "will not agree exactly: a dial in progress is a running call before it is a connected relay.",
+            )
+            put(
+                "socketsQueued",
+                "Calls WAITING for a socket budget slot. Zero is the healthy reading and the only one worth acting " +
+                    "on is any other: it means the work is admissible and OkHttp is holding it because the budget " +
+                    "is full — which is a one-constant fix, and the one diagnosis every other symptom of slowness " +
+                    "hides. A slow store, a saturated thread pool and a roster of dead hosts all look like a slow " +
+                    "mirror; only a full dispatcher queues calls. Raise `socketCeiling` (and check the process's " +
+                    "file-descriptor limit) rather than the stream budgets, which are already admitted work.",
+            )
+            put(
                 "servingMs",
                 "The relay's mean client read latency, which this router YIELDS to: past its threshold ingest " +
                     "deliberately slows so that mirroring does not cost the people reading. A mirror that is " +

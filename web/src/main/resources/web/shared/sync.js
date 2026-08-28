@@ -133,6 +133,44 @@ export const BOTTLENECK = {
  * router whose heartbeat had gone stale; a document served by the process it
  * describes cannot be in that state.
  */
+/**
+ * HOW MUCH OF THE SOCKET BUDGET IS SPENT, and whether it is the constraint.
+ *
+ * The pair, because neither number decides alone. `sockets` near the ceiling
+ * is not a fault — a mirror whose whole job is to stay connected to every
+ * certified relay is SUPPOSED to sit near its budget, and a panel that
+ * coloured that would cry wolf on every healthy deployment. `queued` above
+ * zero is the fault: those calls are admissible and OkHttp is holding them
+ * because the budget is full.
+ *
+ * That distinction is the reason this exists. Every other symptom of a full
+ * dispatcher — a long ETA, a pool that looks idle, relays never reached — is
+ * shared with a slow store, a saturated thread pool and a roster of dead
+ * hosts, and telling them apart used to take a measurement. It took one once:
+ * the budget is 1024 because at OkHttp's stock 64 a 20,340-relay cycle
+ * projected 330 hours.
+ *
+ * Null where the router does not publish the ceiling — a mark reading "0 of 0"
+ * is worse than no mark.
+ */
+export function socketsOf(health) {
+  const ceiling = Number.isFinite(health?.socketCeiling) ? health.socketCeiling : null;
+  if (ceiling == null || !Number.isFinite(health?.sockets)) return null;
+  // `??`, not `||`: a router too old to publish the queue says nothing, and
+  // that must not read as "nothing is queued".
+  const queued = Number.isFinite(health?.socketsQueued) ? health.socketsQueued : null;
+  return {
+    open: health.sockets,
+    ceiling,
+    running: Number.isFinite(health?.socketsRunning) ? health.socketsRunning : null,
+    queued,
+    share: Math.min(1, health.sockets / Math.max(1, ceiling)),
+    // THE ONLY READING WORTH A COLOUR. Not "near the ceiling": that is the
+    // healthy steady state of a mirror that stays connected.
+    starved: (queued || 0) > 0,
+  };
+}
+
 export function constraintOf(health) {
   const word = health?.bottleneck;
   if (!word) return null;
