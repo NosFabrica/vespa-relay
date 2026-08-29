@@ -268,10 +268,38 @@ class ProductionCorpusIT {
                 )
                 val at = lensed.indexOf(delegated.id)
                 assertTrue(at >= 0, "the delegated list is still a hit of its own hashtag: $lensed")
+
+                // WHAT PLACEMENT ACTUALLY PROMISES, now that a member is placed
+                // by the confidence its list expressed rather than glued behind
+                // it. This used to assert `lensed[at + 1]` — the first member
+                // directly behind its list — and that PASSED, which is the
+                // trap: it holds only when nothing else scores between the
+                // list and its top member. Across this corpus only 6 of 33
+                // member-bearing lists score their first member at 100, the one
+                // case where the tie-break guarantees adjacency, so the old
+                // assertion was luck 27 times out of 33 and would have gone red
+                // on a corpus refresh rather than on a regression.
+                //
+                // The two invariants that do hold, whatever the scores:
+                //   - a subject never passes its own pointer (its score is the
+                //     pointer's times a factor in 0..1, and a tie keeps the
+                //     reason above the result);
+                //   - members keep their confidence order among themselves,
+                //     which for a descending-sorted list is the list's order.
+                val memberIds =
+                    delegated.tags
+                        .filter { it.size > 1 && it[0] == "p" && it[1] in profiles }
+                        .mapNotNull { tag -> corpus.firstOrNull { it.kind == 0 && it.pubKey == tag[1] }?.id }
+                val placed = memberIds.filter { it in lensed }
+                assertTrue(placed.isNotEmpty(), "the delegated list must place at least one member: $lensed")
+                assertTrue(
+                    placed.all { lensed.indexOf(it) > at },
+                    "no member may pass the list that named it: list at $at, members at ${placed.map(lensed::indexOf)}",
+                )
                 assertEquals(
-                    corpus.first { it.kind == 0 && it.pubKey == delegated.tags.first { t -> t.size > 1 && t[0] == "p" && t[1] in profiles }[1] }.id,
-                    lensed[at + 1],
-                    "and its first named member rides directly behind it: $lensed",
+                    placed,
+                    placed.sortedBy(lensed::indexOf),
+                    "members ride in the order their list scored them: ${placed.map(lensed::indexOf)}",
                 )
             } finally {
                 session.close()
@@ -366,6 +394,12 @@ class ProductionCorpusIT {
                 val page = page(session, out, "label", """{"kinds":[${target.kind},1985],"search":"$value include:spam"}""")
                 val at = page.indexOf(label.id)
                 assertTrue(at >= 0, "the label itself must be a hit of its own label value: $value")
+                // DIRECTLY behind, and here that is principled rather than
+                // lucky: NIP-32 has no confidence field, an unscored reference
+                // is read as FULL confidence, so the subject inherits its
+                // label's score exactly and a stable sort keeps the pair
+                // together. The Trusted List half of this file cannot assert
+                // adjacency for the opposite reason — see the comment there.
                 assertTrue(
                     page.getOrNull(at + 1) == target.id,
                     "the labelled event must follow its label; page around it: ${page.drop(maxOf(0, at - 1)).take(3)}",

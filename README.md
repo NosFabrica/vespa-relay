@@ -22,7 +22,11 @@ engine, because it is one — the store is
   silently answered out of an index with the trust switched off.
 - **The subject travels with the pointer.** A search that matches a Trusted List,
   a NIP-85 Trusted Assertion or a NIP-32 label also answers with the record that
-  pointer is *about*, at the pointer's own rank. Those kinds carry text about
+  pointer is *about*, placed by the pointer's own rank discounted by how sure
+  the pointer was — a Trusted List scores each member 0..100, so a member its
+  publisher doubts sinks past the organic hits it would otherwise sit above. A
+  label and an assertion express no confidence, so their subjects land directly
+  behind them. Those kinds carry text about
   something else — a list's title, a card's petname, a label's value — so the
   record on the other end holds none of the words searched for and no ranking
   would ever surface it: "podcaster" finds the *Podcaster Trust List* and, now,
@@ -136,8 +140,8 @@ implements it.
 Three kinds of event are found by text that describes *something else*: a
 Tapestry Trusted List (30392-30395) by its `title`, a NIP-85 Trusted Assertion
 (30382-30385) by its `petname` or `summary`, a NIP-32 label (1985) by its label
-value. This relay follows the pointer and serves the record beside the hit, in
-the hit's own position:
+value. This relay follows the pointer and serves the record beside the hit, at
+the hit's own rank discounted by the confidence the hit expressed about it:
 
 ```
 ["REQ","s",{"kinds":[0,30392],"search":"podcaster"}]

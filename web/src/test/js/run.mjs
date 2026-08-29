@@ -47,7 +47,10 @@
 //                  title collapse to one pill with a count rather than two
 //                  identical chips, that a language label is not provenance,
 //                  that a delegated source and an open one never share a tone,
-//                  and that a pill whose target is not on screen is not drawn
+//                  that a pill whose target is not on screen is not drawn, and
+//                  that the whole row is independent of the page's ORDER — a
+//                  member is placed by the confidence its list expressed, so it
+//                  no longer arrives behind the pointer that named it
 // preload.test.mjs the modulepreload hints match the real import graph, so the
 //                  module waterfall stays one round trip instead of three
 // filters.test.mjs every control in the filters panel is counted on the button

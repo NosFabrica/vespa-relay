@@ -238,8 +238,11 @@ text, so no amount of ranking will ever recall it from the same search —
 searching "podcaster" finds the *Podcaster Trust List* and cannot find a single
 podcaster.
 
-With this on, it finds both. Each hit of those kinds is followed immediately by
-the records it names, at the hit's own rank:
+With this on, it finds both. Each hit of those kinds also brings the records it
+names, placed at the hit's own rank discounted by the confidence the hit
+expressed about that record — so a Trusted List's members spread out below it by
+how sure the publisher was, rather than all riding directly behind it (see the
+placement note below):
 
 * a **pubkey** — a list's `p` member, a label's `p` target, a 30382's `d` —
   resolves to that author's **kind-0 profile**,
@@ -356,6 +359,15 @@ fewer members, and the client still has every member tag and the `#p`/`#e`/`#a`
 recall that served them before this existed. A cap of `0` means zero — use
 `SEARCH_EXPAND_REFERENCES=false` to turn the feature off, and the boot log says
 so either way.
+
+Which members survive that truncation is the list's OWN ORDER — the first N it
+names, not the N with the highest scores. Those coincide for a publisher who
+sorts, and the store's default of 100 is above every list in production today,
+so this is latent rather than live. It is worth knowing anyway: of the 33
+member-bearing Trusted Lists in the corpus sampled from the Tapestry relay, 14
+are **not** sorted by score (`[73, 72, 89]` and `[95, 100, 84, 98, 96]` are real
+ones) and 6 score their first member not at all. On a list long enough to
+truncate, one of those would drop a member scored 89 and keep one scored 72.
 
 A spliced member lands where the confidence its publisher expressed puts it: a
 Trusted List scores each member 0..100 for how sure it is that the list's NAME

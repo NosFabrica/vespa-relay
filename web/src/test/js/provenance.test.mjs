@@ -156,6 +156,29 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(pillsOn(page, "2"), [], "the list itself does not");
 }
 
+// ---- position is not attribution ------------------------------------------
+//
+// A subject used to arrive directly behind the pointer that named it, so
+// reading the pair off neighbouring positions would have worked. It no longer
+// does: the store places a spliced member by the confidence its list expressed
+// about it, so a doubted member sinks past the organic hits between them. The
+// pills must be identical however the page is ordered — this is the test that
+// fails if anyone ever "optimizes" the two passes into a neighbour scan.
+{
+  const list = ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER], ["p", BOT]]);
+  const label = ev("3", SCORER, 1985, [["L", "ugc"], ["l", "medical", "ugc"], ["e", hex("6")]]);
+  const page = [list, profile("1", READER), profile("5", BOT), ev("6", BOT2, 1), label];
+  const forward = provenanceOf(page);
+  const reversed = provenanceOf([...page].reverse());
+  const shuffled = provenanceOf([page[3], page[1], page[4], page[0], page[2]]);
+  for (const [id, label_] of [["1", "a member ahead of its list"], ["5", "a member far from its list"], ["6", "a labelled note"]]) {
+    const want = texts(forward.get(hex(id)) || []);
+    assert.ok(want.length, `${label_} must pill at all`);
+    assert.deepStrictEqual(texts(reversed.get(hex(id)) || []), want, `${label_}: reversing the page changes nothing`);
+    assert.deepStrictEqual(texts(shuffled.get(hex(id)) || []), want, `${label_}: shuffling the page changes nothing`);
+  }
+}
+
 // ---- 30395 names no event, and 30385's subject is not one either ----------
 {
   const page = [
@@ -235,4 +258,4 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
 }
 
-console.log("provenance: collapse, demotion, tones, order, destinations, targets and attribution — all assertions passed");
+console.log("provenance: collapse, demotion, tones, order, order-independence, destinations, targets and attribution — all assertions passed");

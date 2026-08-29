@@ -6,11 +6,18 @@
 // results that do not contain what was searched for, which reads as the relay
 // being wrong. The pills are that word.
 //
-// FROM THE STREAM AND NOTHING ELSE. The relay sends the pointer immediately
-// before its target on the same subscription, so one `relay.req(filters)`
-// already holds both, in order. Everything here is computed over the array the
-// page was going to render anyway: no second REQ, no per-card fetch, no new
-// relay field.
+// FROM THE STREAM AND NOTHING ELSE. The relay sends a pointer and everything it
+// names on the same subscription, so one `relay.req(filters)` already holds
+// both. Everything here is computed over the array the page was going to render
+// anyway: no second REQ, no per-card fetch, no new relay field.
+//
+// NOT BY ADJACENCY, and that distinction is now load-bearing. A subject used to
+// arrive directly behind its pointer, and reading the pair off neighbouring
+// positions would have worked. It no longer does: the store places a spliced
+// member by the confidence its list expressed about it, so a doubted member
+// sinks past the organic hits between them and can land anywhere in the page.
+// Both passes below are order-independent — index the whole page, then walk the
+// pointers — which is why that change cost this file nothing. Keep it that way.
 //
 // That makes the row deliberately PARTIAL, in three ways worth knowing before
 // reading a pill as a complete account:

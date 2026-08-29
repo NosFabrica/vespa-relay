@@ -537,9 +537,12 @@ async function fetchFeed(want) {
 function hydrate(events, deep) {
   seedProfiles(events);
   // WHY each of these is here, computed from the page itself — the relay sends
-  // a pointer immediately before the event it points at, so the answer is
-  // already in this array and costs no round trip. Before the render, because
-  // the row is part of the card rather than something painted onto it after.
+  // a pointer and everything it names on one subscription, so the answer is
+  // already in this array and costs no round trip. NOT by position: a spliced
+  // member is placed by the confidence its list expressed about it and can sit
+  // far from the pointer that named it, so provenance.js indexes the page
+  // rather than reading neighbours. Before the render, because the row is part
+  // of the card rather than something painted onto it after.
   seedProvenance(events);
   // The same for the search box's `group:` pill, and it is nearly free: a
   // `group:` query already asks for the group's own kind 39000 beside its
