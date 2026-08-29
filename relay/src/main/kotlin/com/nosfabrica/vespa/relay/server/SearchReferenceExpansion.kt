@@ -45,6 +45,15 @@ import kotlinx.coroutines.CancellationException
  * let a run of members this relay does not have cost a lookup each anyway.
  * Members past the cap are not looked up at all, which is the point.
  *
+ * THAT ORDERING IS A PUBLISHER CONVENTION, AND IT WAS CHECKED rather than
+ * hoped: across the eleven Trusted Lists on staging, all 180 members carry a
+ * score, every score is inside quartz's 0..100 `SCORE_RANGE` (so none reads
+ * back as unscored), and EVERY list is sorted descending. So a member's
+ * position in a spliced page is its rank within the list that named it —
+ * which is the whole reason this relay can read the member KEY and never the
+ * score, and still put the best members first. A publisher that does not sort
+ * degrades to a deterministic-but-arbitrary top N, not to a wrong one.
+ *
  * Both are TRUNCATIONS, not refusals: the pointer itself is served either way,
  * so a client that wants the whole membership reads the member tags and asks
  * for them by `#p` / `#e` / `#a` recall, which is what that recall is for and

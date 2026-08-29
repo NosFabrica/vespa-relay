@@ -159,6 +159,27 @@ class ObserverTrustListIT {
         // Nothing here is ours. If a re-fetch ever lands on a corpus we signed,
         // every assertion below stops meaning anything.
         assertTrue(lists.all { it.pubKey != observer }, "a list signed by the reader would pass the gate without any delegation")
+
+        // THE ORDERING THE SPLICE RELIES ON, checked against the real thing.
+        // The relay reads a member's KEY and never its score, so a spliced
+        // member's position means its rank only because the publisher sorted
+        // the tags. Every real list here does, every member carries a score,
+        // and every score is inside quartz's 0..100 range — a value outside it
+        // reads back as unscored, which would quietly cost the ordering its
+        // meaning. If this ever fails, SearchExpansionLimits' claim that a
+        // truncated splice is "the top of its own ranking" has stopped being
+        // true of production.
+        for (list in lists) {
+            val scores =
+                list.tags
+                    .filter { it.size > 3 && it[0] == "p" }
+                    .mapNotNull { it[3].toIntOrNull() }
+            val members = list.tags.count { it.size > 1 && it[0] == "p" }
+            if (members == 0) continue
+            assertEquals(members, scores.size, "every member of ${list.id.take(12)}… must carry a score")
+            assertTrue(scores.all { it in 0..100 }, "a score outside 0..100 reads back as unscored: $scores")
+            assertEquals(scores.sortedDescending(), scores, "members must be ordered by score, best first: $scores")
+        }
     }
 
     @Test

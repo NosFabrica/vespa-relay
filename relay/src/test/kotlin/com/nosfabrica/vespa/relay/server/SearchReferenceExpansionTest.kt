@@ -1092,6 +1092,60 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
+    fun `members ride in the order the list names them, not the order the store holds them`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // A publisher orders a Trusted List's members by the score it
+                // computed for them — every one of the eleven real lists on
+                // staging does, all 180 members scored and every list sorted
+                // descending. The relay reads the KEY and never the score, so
+                // this ordering is the ONLY thing that makes a spliced member's
+                // position mean its rank. If the splice followed store order
+                // instead, the position would mean whatever the mirror had
+                // caught up on.
+                //
+                // Published back to front on purpose: recall order and tag
+                // order disagree here, so only one of them can produce the
+                // assertion below.
+                val one = NostrSignerSync()
+                val two = NostrSignerSync()
+                val three = NostrSignerSync()
+                val profiles =
+                    listOf(one, two, three).mapIndexed { i, signer ->
+                        signer.sign<Event>(1_700_000_700L + i, 0, emptyArray(), """{"name":"Member $i"}""")
+                    }
+                publish(session, out, *profiles.reversed().toTypedArray())
+
+                val ranked =
+                    curator.sign<Event>(
+                        1_700_000_800L,
+                        30392,
+                        arrayOf(
+                            arrayOf("d", "ranked"),
+                            arrayOf("title", "Rankedcast Roster"),
+                            arrayOf("p", one.pubKey, "", "90"),
+                            arrayOf("p", two.pubKey, "", "50"),
+                            arrayOf("p", three.pubKey, "", "10"),
+                        ),
+                        "",
+                    )
+                publish(session, out, ranked)
+
+                assertEquals(
+                    listOf(ranked.id) + profiles.map { it.id },
+                    page(session, out, "ranked", """{"kinds":[0,30392],"search":"rankedcast $lens"}"""),
+                    "the list, then its members in the order IT names them",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
     fun `the per-event cap truncates the splice rather than the page`() =
         runBlocking {
             val capped = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits(maxPerEvent = 1))
