@@ -226,33 +226,52 @@ class ProductionCorpusIT {
                     "a lensless read must expand no list, whoever published it: $anon",
                 )
 
-                // Now a reader who really has named those signers as services.
-                // Only the 10040 is ours; the list, the member and the profile
-                // are all production events.
+                // Now a reader who really has named ONE of those signers as a
+                // service. Only the 10040 is ours; the list, the member and the
+                // profile are all production events.
+                //
+                // ONE ENTRY, because the ADR allows one generic entry per kind
+                // and a reader cannot delegate three publishers for 30392 —
+                // which is the rule this half now exercises against real data.
+                // A `30382:rank` entry would delegate nothing here: it appoints
+                // a service to rank USERS, and the gate is per kind.
+                val delegated = squatters.first()
                 val reader = NostrSignerSync()
                 val enrolment =
                     reader.sign<Event>(
                         1_700_000_000L,
                         10040,
-                        squatters.map { arrayOf("30382:rank", it.pubKey, "wss://provider.example") }.toTypedArray(),
+                        arrayOf(arrayOf("30392", delegated.pubKey, "wss://provider.example")),
                         "",
                     )
                 store.batchInsert(listOf(enrolment))
 
+                val mine =
+                    delegated.tags
+                        .filter { it.size > 1 && it[0] == "p" && it[1] in profiles }
+                        .map { it[1] }
+                        .toSet()
+                val theirs = named - mine
+
                 val lensed =
                     page(session, out, "enrolled", """{"kinds":[0,30392],"search":"$hashtag include:spam observer:${reader.pubKey}"}""")
-                val splicedProfiles = corpus.filter { it.kind == 0 && it.pubKey in named && it.id in lensed }
+                val spliced = corpus.filter { it.kind == 0 && it.id in lensed }.map { it.pubKey }.toSet()
                 assertEquals(
-                    named,
-                    splicedProfiles.map { it.pubKey }.toSet(),
-                    "every named pubkey whose profile this relay holds must ride in: $lensed",
+                    mine,
+                    spliced intersect named,
+                    "every pubkey the DELEGATED publisher names must ride in, and only those: $lensed",
                 )
-                val first = lensed.indexOf(squatters.first { it.id in lensed }.id)
-                val itsMember = squatters.first { it.id in lensed }.tags.first { it.size > 1 && it[0] == "p" && it[1] in profiles }[1]
                 assertEquals(
-                    corpus.first { it.kind == 0 && it.pubKey == itsMember }.id,
-                    lensed[first + 1],
-                    "and directly behind the list that named it: $lensed",
+                    emptySet(),
+                    spliced intersect theirs,
+                    "a publisher this reader did not delegate splices nothing, however alike its events look: $lensed",
+                )
+                val at = lensed.indexOf(delegated.id)
+                assertTrue(at >= 0, "the delegated list is still a hit of its own hashtag: $lensed")
+                assertEquals(
+                    corpus.first { it.kind == 0 && it.pubKey == delegated.tags.first { t -> t.size > 1 && t[0] == "p" && t[1] in profiles }[1] }.id,
+                    lensed[at + 1],
+                    "and its first named member rides directly behind it: $lensed",
                 )
             } finally {
                 session.close()
@@ -440,7 +459,13 @@ class ProductionCorpusIT {
                 reader.sign<Event>(
                     1_700_000_000L,
                     10040,
-                    arrayOf(arrayOf("30382:rank", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
+                    // The BARE-KIND entry, which is what delegates a Trusted
+                    // List: `30382:rank` appoints a service to rank users and
+                    // opens 30382 alone. This test used to synthesize the rank
+                    // form and passed, because the gate was one flat set of
+                    // admitted signers — it is per kind now, and this is what
+                    // the reader would actually have had to publish.
+                    arrayOf(arrayOf("30392", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
                     "",
                 )
             store.batchInsert(listOf(enrolment))
