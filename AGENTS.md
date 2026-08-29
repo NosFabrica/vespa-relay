@@ -275,6 +275,15 @@ looks like) are exactly what it can hand you.
   mandatory `include:spam` on every filter comes back complete-looking and
   without a single list in it. `fetch-corpus.mjs` therefore asks each relay
   once, with a lensless probe, which kind of reader it wants.
+  **The bare-kind delegation is now live on staging.** Observer
+  `f8ff11c7a7d3…` publishes a 10040 (2026-08-28) reading `["30382:rank", …],
+  ["30382:followers", …], ["30392", "8e901369d450…", …]` — the ADR's generic
+  entry, and the ONLY thing naming that publisher. Its 11 titled lists carry
+  `title`, `metric`, `observer`, `source-tag`, `cutoff`, `min-rank`, `rigor`
+  and `p` members. `ObserverTrustListIT` walks exactly this chain; probed by
+  deleting the bare-kind read, the reader's list comes back with all 88 member
+  profiles missing and nothing anywhere throwing.
+
   And **kind 10040 is REPLACEABLE**: merging two relays hands you several
   versions of one author's provider list, only the newest of which the store
   keeps. Exactly one 10040 version anywhere names the Tapestry publisher as a
