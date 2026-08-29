@@ -4,7 +4,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { card, rowOf, popupRow, namedPubkeys } = await import(new URL("../../main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam, nip19Parse, npub, noteId, shortNpub } = await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId, naddr, shortNpub } = await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../main/resources/web/shared/query.js", import.meta.url));
 const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../main/resources/web/cards/base.js", import.meta.url));
 const { parsePatch } = await import(new URL("../../main/resources/web/cards/code.js", import.meta.url));
@@ -154,6 +154,14 @@ const FIXTURES = [
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
+  // The Trusted Lists, one per member type — the `p`/`e`/`a`/`i` dispatch is
+  // the whole reason there are four kinds, so each fixture asserts the noun
+  // its own kind counts in rather than all four asserting "member".
+  [30392, ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["metric", "influence"],
+                     ["p", pk, "", "88"]]), "1 member"],
+  [30393, ev(30393, [["d", "tl-notes"], ["title", "Worth Reading"], ["e", eid]]), "1 event"],
+  [30394, ev(30394, [["d", "tl-articles"], ["title", "Long Reads"], ["a", `30023:${pk}:essay`]]), "1 article"],
+  [30395, ev(30395, [["d", "tl-ids"], ["title", "Known Books"], ["i", "isbn:9780316769488"]]), "1 identifier"],
 ];
 
 // THE COVERAGE CLAIM, enforced: every registered kind must have a fixture,
@@ -777,7 +785,27 @@ assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
 // A profile's page is the PERSON, not the kind 0's id — that id names one
 // revision of a bio and stops resolving the moment it is edited.
 assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
-assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "everything else opens the event");
+assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "a regular event opens the event");
+
+// A PARAMETERIZED REPLACEABLE event's page is its ADDRESS, for the same reason
+// a profile's is the person: an id names one revision. It bites hardest on the
+// Trusted Lists, whose entire purpose is to be recomputed and republished — a
+// note1… to one has a shelf life measured in hours. It is also what makes the
+// provenance pill on a spliced result and the list card it came from open the
+// same page; two links to one list that agree only sometimes is a bug the
+// spelling should not permit.
+assert.strictEqual(hrefAttr(card(ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["p", pk]]))),
+  `/${naddr(`30392:${pk}:tl-verified`)}`, "a Trusted List opens its address, not one revision of it");
+assert.strictEqual(hrefAttr(card(ev(30023, [["d", "essay"], ["title", "An Essay"]], "words"))),
+  `/${naddr(`30023:${pk}:essay`)}`, "every addressable kind takes the same rule, not just the new ones");
+// An absent `d` is a legal address (NIP-01 reads it as the empty string), so
+// the card still opens its coordinate rather than falling back to the id.
+assert.strictEqual(hrefAttr(card(ev(30392, [["title", "Untitled"], ["p", pk]]))),
+  `/${naddr(`30392:${pk}:`)}`, "an addressable event with no d is addressed by the empty d");
+// Not addressable: 10040 is a plain replaceable kind, outside 30000-39999, and
+// has no `d` to be addressed by.
+assert.strictEqual(hrefAttr(card(ev(10040, [["30382:rank", pk, "wss://x"]]))),
+  `/${noteId(eid)}`, "a non-addressable replaceable kind still opens by id");
 // An event with no usable id has nowhere to go, and must not offer "/".
 assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [], content: "x" })), null,
   "no id, no click target — navigating to the home page is not the same as opening the note");

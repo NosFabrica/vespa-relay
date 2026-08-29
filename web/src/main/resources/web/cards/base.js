@@ -115,19 +115,47 @@ export const eventHref = (id, hints = {}) => {
 /**
  * The card's OWN page — what the whole card, and its date, link to.
  *
- * By event id for everything, which is what every kind's title already did:
+ * By event id for MOST kinds, which is what every kind's title already did:
  * the entity page dispatches on the FETCHED event's kind, never on the
  * identifier that led there, so a note1… naming an article renders as an
- * article. A profile is the one exception, because a person's page is their
- * npub — a kind 0's id names one revision of it and stops resolving the
- * moment they edit their bio.
+ * article.
+ *
+ * TWO EXCEPTIONS, and they are the same exception twice: an id names one
+ * REVISION, and a revision stops resolving the moment the author publishes
+ * another. A profile's page is therefore their npub — a kind 0's id dies when
+ * they edit their bio. A REPLACEABLE ADDRESSABLE event's page is its naddr for
+ * the identical reason, and it bites harder there: a Trusted List is a
+ * computed output whose whole purpose is to be recomputed and republished, so
+ * a note1… to one is a link with a shelf life measured in hours.
+ *
+ * The addressable branch is also what makes ONE claim true — that the
+ * provenance pill on a spliced result and the list card it came from open the
+ * SAME page. Two links to one list that agree only sometimes is the bug this
+ * closes before it can be written.
  *
  * Null when the event carries no usable identifier: a card with nowhere to go
  * must not become a card that navigates to "/".
  */
 export const selfHref = (ev) => {
   if (ev && ev.kind === 0 && HEX64.test(ev.pubkey || "")) return keyHref(ev.pubkey);
+  const addr = addrOf(ev);
+  if (addr) return addrHref(addr);
   return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
+};
+
+/**
+ * The `kind:pubkey:d` coordinate of a PARAMETERIZED REPLACEABLE event, or null.
+ *
+ * 30000-39999 is NIP-01's range, and a `d` is what makes a coordinate: the tag
+ * may be missing (the spec reads an absent `d` as the empty string, which is a
+ * legal address) but the author must be a key we can encode. Anything else is
+ * not addressable and falls through to the id, which is the safe direction —
+ * an naddr minted from a pubkey that is not one links nowhere.
+ */
+export const addrOf = (ev) => {
+  if (!ev || !Number.isInteger(ev.kind) || ev.kind < 30000 || ev.kind > 39999) return null;
+  if (!HEX64.test(ev.pubkey || "")) return null;
+  return `${ev.kind}:${ev.pubkey}:${tagOf(ev, "d") || ""}`;
 };
 // Module scope, because a literal inside the function allocates a RegExp on
 // every evaluation and this one runs twice per card, per render.
