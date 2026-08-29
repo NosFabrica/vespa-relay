@@ -499,7 +499,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         actually SEARCHES answers with the record each Trusted
                         List / NIP-85 assertion / NIP-32 label hit points at,
                         spliced in behind it. It LIVED HERE, as an IEventStore
-                        decorator, until store `4e38d9926d`; it is now
+                        decorator, until store `68f07ce958`; it is now
                         `store/search/` in vespa-eventstore. Two things could
                         not be fixed from this side and are why it moved: the
                         reader's enrolment needed a TTL because a relay cannot

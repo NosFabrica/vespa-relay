@@ -68,10 +68,10 @@ import kotlin.test.fail
  * land, not how Vespa ranks them.
  *
  * The pointers are built as PLAIN SIGNED EVENTS, tags and all, rather than
- * through Quartz's builders — the same reason [SearchReferences] dispatches on
- * the kind: a quartz without an `EventFactory` branch for these kinds must
- * still be caught by this test rather than have it compile against types the
- * relay would never see.
+ * through Quartz's builders — the same reason the store's `SearchReferences`
+ * dispatches on the kind: a quartz without an `EventFactory` branch for these
+ * kinds must still be caught by this test rather than have it compile against
+ * types the relay would never see.
  */
 class SearchReferenceExpansionTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")

@@ -117,41 +117,42 @@ quartz = "029c40ebb4"
 # re-derived here rather than taken on trust, because the relay reads
 # `serviceProviders()` directly and `ProviderMap` does not cover us.
 #
+# ON MAIN NOW, not a branch: this is the merge of NosFabrica/vespa-eventstore#86,
+# which moved the search expansion into the store. The two pins before it were
+# branch commits carrying unreviewed work, and this is the first that is not.
+#
 # THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
 # on `InMemoryEventIndex` and cannot see a Vespa-only regression:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 44515ff3e2
+#   git checkout 68f07ce958
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against 44515ff3e2 on a real Vespa in Docker: 11 tests across 10
-# suites, 0 skipped, 0 failures, 10m11s — AccessLogIT, ContainerJvmIT,
-# NearMergeSizingTest, ObserverGateIT, OrphanSweepIT, RankRegressionIT,
-# SearchBodyGramIT (2), SearchExactTextIT, SearchPrefixLadderIT, VespaParityIT.
-# It took three attempts to get that reading, and neither earlier failure was the
-# store's: a `NoClassDefFoundError` from recompiling :store under the live test
-# JVM, then a `NoSuchFileException` on Gradle's own binary results when a push
-# hook ran :benchmark:test into the same directory. Run this gate ALONE.
-# No schema movement in this range, so there is nothing for a deploy to do and no
-# upgrade path to probe.
+# Run HERE against 68f07ce958 on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures — AccessLogIT, ContainerJvmIT, NearMergeSizingTest,
+# ObserverGateIT, OrphanSweepIT, RankRegressionIT, SearchBodyGramIT (2),
+# SearchExactTextIT, SearchPrefixLadderIT, VespaParityIT. Run that gate ALONE:
+# two readings were lost to a second Gradle invocation in the same project — a
+# `NoClassDefFoundError` from recompiling :store under the live test JVM, then a
+# `NoSuchFileException` on Gradle's own binary results when a push hook ran
+# :benchmark:test into the same directory. Neither was the store's.
 #
-# WHAT MOVED: the audit of the expansion this relay hands its caps to — a
-# truncated Trusted List keeping the confidence its members were scored with, a
-# lens that is the whole stripped query rather than its visibility half, a page
-# shifted onto a non-negative scale before a multiplicative discount is applied
-# to it, and keyed lookups that no longer drop the finding query's `ids` or its
-# `#d`. Plus a `Page` in place of `List<Ranked<R>>`, so a plain NIP-01 recall
-# stops allocating a wrapper per hit to carry a null.
+# No schema movement in this range, so there is nothing for a deploy to do and
+# no upgrade path to probe.
 #
-# DIRECTION: 2a2a82bae7 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates). The store's own quartz ask does not move across
-# the range — it is 029c40ebb4 at both ends, equal to the line above.
+# WHAT MOVED, versus 44515ff3e2: nothing. `git diff 44515ff3e2 68f07ce958` is
+# EMPTY — main had not moved since the branch point, so the merge commit carries
+# a byte-identical tree. The gate was run again at the merge anyway rather than
+# inherited, because the rule above is about the commit that is pinned.
 #
-# LEXICOGRAPHIC: '4451…' > '2a2a…' ('4' > '2'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction, unlike the last bump. Four modules declare the
+# DIRECTION: 44515ff3e2 is a strict ancestor of this (its second parent —
+# `git merge-base --is-ancestor`, not the dates).
+#
+# LEXICOGRAPHIC: '68f0…' > '4451…' ('6' > '4'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, as the last bump was. Four modules declare the
 # store (:common, :relay, :sync, :peers), all through this one alias, so there is
 # a single string on the graph and nothing for ordering to settle. The resolved
 # graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "44515ff3e2"
+vespaEventStore = "68f07ce958"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

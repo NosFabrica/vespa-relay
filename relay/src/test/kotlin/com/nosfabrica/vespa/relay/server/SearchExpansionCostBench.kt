@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -55,12 +56,15 @@ import kotlin.test.fail
  *
  *  1. **recall** — a termless `include:spam` read: a mirror's paging, a
  *     NIP-77 catch-up, the web page's plain filters. The expansion must not
- *     touch this at all, and the only thing it adds is the `isSearch` test.
- *     This is the arm that would have caught gating on "has a `search` field".
+ *     touch this at all, and the only thing it adds is the store's "does any
+ *     query carry TERMS" test. This is the arm that would have caught gating on
+ *     "has a `search` field" — every anonymous read on a lens-requiring relay
+ *     stamps `include:spam`, and a mirror's paging carries it too.
  *  2. **search, no kind can point** — a real text search that names `kinds`
  *     holding no Trusted List, Assertion or label. This is what most client
- *     searches look like, and `couldPoint` sends it down the untouched path,
- *     so it must come out at zero.
+ *     searches look like, and the store's kind test — no `kinds` entry in
+ *     `SearchReferences.KINDS` — sends it down the untouched path, so it must
+ *     come out at zero.
  *  3. **search, could point, none does** — the same search with `kinds`
  *     omitted, so any kind may come back and the relay has to look. Pays for
  *     collecting the page before writing it out, and NO extra store round trip,
@@ -92,6 +96,15 @@ import kotlin.test.fail
  * person to read.
  *
  * ## What it read when the expansion landed
+ *
+ * TAKEN BEFORE THE FEATURE MOVED INTO THE STORE, and the pointer arm's numbers
+ * are the ones to re-take first: the gate was the relay's then and flat across
+ * kinds, so a Treasure Map naming a `30382:rank` service unpacked Trusted Lists
+ * too. The gate is per-kind now, and this bench's own corpus had to grow a bare
+ * `30392` entry to keep that arm expanding at all — without it the arm ran at
+ * +0.0 queries and +0.0 frames while still reporting a ~+50-100% median, which
+ * is noise attributed to a splice that never happened. The label arm was never
+ * gated (NIP-32 is ungated by design) and its numbers stand.
  *
  * 2026-08-27, 4-core sandbox, single-node Vespa in Docker, 2,521-event corpus,
  * 201 rounds per arm, medians:
@@ -133,17 +146,23 @@ import kotlin.test.fail
  *    callback can suspend, so it awaited a child coroutine — putting back the
  *    scheduler hop quartz's UNDISPATCHED REQ exists to avoid, a flat ~90us on
  *    EVERY search. Chasing that number is what exposed the seam as wrong:
- *    [ExpandingEventStore] moved it one layer down, where the same calls are
- *    ordinary suspend functions that return, and the coroutine went away
- *    entirely along with ~280 lines of machinery.
+ *    moving it one layer down, into an `IEventStore` decorator, made the same
+ *    calls ordinary suspend functions that return, and the coroutine went away
+ *    entirely along with ~280 lines of machinery. (That decorator has since
+ *    moved again, into the store itself — see AGENTS.md — so neither class this
+ *    paragraph once linked to exists here any more.)
  *  - the plan read every row's pointers before spending the budget, so a
  *    500-list page paid 450 tags-parses for rows it had already decided to take
  *    nothing from: 12.2ms -> 6.5ms on the in-memory pointer arm, and the Vespa
  *    pointer arm's absolute delta is flat across a 10x page because of it.
  *  - the reader's 10040 was re-read inside every REQ, a second round trip
  *    (+2.0 queries, 27.9ms at 50 hits) to re-fetch a document that changes when
- *    someone enrols a service. [EnrolledSigners] caches it per reader: +1.0
- *    queries, 21.5ms, and the arm went from +74% to +44%.
+ *    someone enrols a service. Caching it per reader took that to +1.0 queries
+ *    and 21.5ms, and the arm went from +74% to +44%. The cache is now the
+ *    store's `ProviderMap` pass, which a 10040 write invalidates directly —
+ *    the relay-side version needed a TTL because it could not see the sync
+ *    process writing 10040s into the same index from another JVM, and that is
+ *    one of the two reasons the feature moved.
  *
  */
 class SearchExpansionCostBench {
@@ -203,32 +222,47 @@ class SearchExpansionCostBench {
             return println("EXPANSION-BENCH skipped — run with -DsearchExpansionBench")
         }
         val vespa = System.getenv("BENCH_VESPA_URL")
-        val index = CountingIndex(if (vespa == null) InMemoryEventIndex() else vespaEngine(vespa))
         println(if (vespa == null) "EXPANSION-BENCH: in-memory index (set BENCH_VESPA_URL for a real engine)" else "EXPANSION-BENCH: real engine at $vespa")
-        NostrSemanticsStore(index, relay = relayUrl).use { runBench(it, index) }
+        // COUNTER INNERMOST, PROJECTION OUTSIDE IT, on both arms. Two reasons,
+        // and the move made both of them load-bearing:
+        //
+        //  - the gate reads the reader's Treasure Map off [TrustProjection], so
+        //    a store assembled without one admits NO declaration and the
+        //    Trusted List arm below silently prices a splice that never
+        //    happens. It used to work over any store, because the enrolment
+        //    cache was the relay's; it is the store's now.
+        //  - the projection's own provider-list reads go to the index it
+        //    wraps, so a counter placed OUTSIDE it never sees them — which is
+        //    the opposite of what this bench is for. The counter is the
+        //    innermost layer so that every engine search is counted, trust
+        //    resolution's included.
+        val counted = CountingIndex(if (vespa == null) InMemoryEventIndex() else vespaEvents(vespa))
+        val index = TrustProjection(counted, if (vespa == null) InMemoryReputationIndex() else VespaReputationIndex(vespa))
+        NostrSemanticsStore(index, relay = relayUrl).use { runBench(it, index, counted) }
     }
 
     /**
-     * The real engine, assembled the way `VespaEventStore.open` assembles it —
-     * the ranked read goes through [TrustProjection], and a bench that skipped
-     * it would be measuring a different query planner from the one that serves.
-     * The counter wraps the whole thing, so what it counts is engine searches
-     * including the ones trust resolution makes.
+     * The real engine, deployed if absent. The [TrustProjection] that
+     * `VespaEventStore.open` puts over it is assembled by the caller, around
+     * the counter — a bench that skipped the projection would be measuring a
+     * different query planner from the one that serves.
      */
-    private fun vespaEngine(url: String): EventIndex {
+    private fun vespaEvents(url: String): EventIndex {
         SchemaDeployer(System.getenv("BENCH_VESPA_CONFIG_URL") ?: url.replace(":8080", ":19071")).deployIfAbsent(url)
-        val events = VespaEventIndex(url)
-        return TrustProjection(events, VespaReputationIndex(url))
+        return VespaEventIndex(url)
     }
 
     private fun runBench(
         store: IEventStore,
-        index: CountingIndex,
+        index: EventIndex,
+        counter: CountingIndex,
     ) = runBlocking {
         val on = NostrRelayServer(store, relayUrl)
         // The OFF arm is a second store over the same index, because the splice
         // moved into the store: "the same corpus without the expansion" is a
-        // store opened without it, not a relay told to skip it.
+        // store opened without it, not a relay told to skip it. The SAME
+        // projection instance, so both arms share one provider-map cache and
+        // the difference between them is the splice alone.
         val off = NostrRelayServer(NostrSemanticsStore(index, relay = relayUrl, searchExpansion = SearchExpansionLimits.Off), relayUrl)
         try {
             seed(on)
@@ -268,17 +302,17 @@ class SearchExpansionCostBench {
                     var offQueries = 0
                     var onQueries = 0
                     for (i in 0 until ROUNDS) {
-                        var mark = index.searches.get()
+                        var mark = counter.searches.get()
                         var startedNs = System.nanoTime()
                         offFrames += measure(off, filter(page))
                         offSamples[i] = (System.nanoTime() - startedNs) / 1_000
-                        offQueries += index.searches.get() - mark
+                        offQueries += counter.searches.get() - mark
 
-                        mark = index.searches.get()
+                        mark = counter.searches.get()
                         startedNs = System.nanoTime()
                         onFrames += measure(on, filter(page))
                         onSamples[i] = (System.nanoTime() - startedNs) / 1_000
-                        onQueries += index.searches.get() - mark
+                        onQueries += counter.searches.get() - mark
                     }
                     val offArm = Timing("off", offSamples, offQueries.toDouble() / ROUNDS, offFrames.toDouble() / ROUNDS)
                     val onArm = Timing("on", onSamples, onQueries.toDouble() / ROUNDS, onFrames.toDouble() / ROUNDS)
@@ -344,7 +378,23 @@ class SearchExpansionCostBench {
         try {
             val members = (0 until MEMBERS).map { NostrSignerSync() }
             val events = ArrayList<Event>()
-            events += reader.sign<Event>(1_699_999_000L, 10040, arrayOf(arrayOf("30382:rank", curator.pubKey, "wss://provider.example")), "")
+            // BOTH DELEGATION SHAPES, because the gate is per KIND and the
+            // pointer arm below searches 30392: NIP-85's `<kind>:<metric>`
+            // appoints a service to rank users, and the Tapestry ADR's generic
+            // bare `<kind>` appoints a publisher to curate lists of them. A map
+            // carrying only the first leaves every Trusted List here unexpanded
+            // and the arm prices a splice that never happens — which is what it
+            // did while the enrolment cache was the relay's and flat.
+            events +=
+                reader.sign<Event>(
+                    1_699_999_000L,
+                    10040,
+                    arrayOf(
+                        arrayOf("30382:rank", curator.pubKey, "wss://provider.example"),
+                        arrayOf("30392", curator.pubKey, "wss://lists.example"),
+                    ),
+                    "",
+                )
             members.forEachIndexed { i, m ->
                 events += m.sign<Event>(1_700_000_000L + i, 0, emptyArray(), """{"name":"member $i","about":"nothing findable here"}""")
             }
