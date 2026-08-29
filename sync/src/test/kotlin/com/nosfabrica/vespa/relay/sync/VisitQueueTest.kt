@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +58,7 @@ class VisitQueueTest {
             // just lost its live feed waited out the cadence it earned while it
             // still had one.
             val scope = CoroutineScope(SupervisorJob())
-            val q = VisitQueue(scope)
+            val q = VisitQueue<NormalizedRelayUrl>(scope)
             val entered = Channel<Unit>(Channel.UNLIMITED)
             // Long while "tailed", short once not — the pool's own shape.
             val tailed = AtomicInteger(1)
@@ -118,7 +119,7 @@ class VisitQueueTest {
     fun `a revisit timer that loses the slot is cancelled, not left parented forever`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            val q = VisitQueue(scope)
+            val q = VisitQueue<NormalizedRelayUrl>(scope)
             val entered = Channel<Unit>(Channel.UNLIMITED)
             val inArmRevisit = Channel<Unit>(Channel.UNLIMITED)
             val release = java.util.concurrent.CountDownLatch(1)
@@ -184,7 +185,7 @@ class VisitQueueTest {
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
             try {
-                VisitQueue(scope).disarm(url)
+                VisitQueue<NormalizedRelayUrl>(scope).disarm(url)
             } finally {
                 scope.cancel()
             }
@@ -194,7 +195,7 @@ class VisitQueueTest {
     fun `a requeue during a visit is parked and re-sent the moment it finishes`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
-            val q = VisitQueue(scope)
+            val q = VisitQueue<NormalizedRelayUrl>(scope)
             val entered = Channel<Unit>(Channel.UNLIMITED)
             val release = Channel<Unit>(Channel.UNLIMITED)
             val visits = AtomicInteger()
@@ -232,7 +233,7 @@ class VisitQueueTest {
     fun `offering a waiting url twice is one visit`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
-            val q = VisitQueue(scope)
+            val q = VisitQueue<NormalizedRelayUrl>(scope)
             val visits = AtomicInteger()
             assertTrue(q.offer(url))
             assertFalse(q.offer(url), "already waiting — the offer dedups")
@@ -256,7 +257,7 @@ class VisitQueueTest {
     fun `a url nobody wants any more dies quietly, on the visit and on the requeue`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
-            val q = VisitQueue(scope)
+            val q = VisitQueue<NormalizedRelayUrl>(scope)
             val visits = AtomicInteger()
             scope.launch {
                 q.visitLoop(stillWanted = { false }, revisitDelayMs = { 1L }) {
@@ -268,6 +269,138 @@ class VisitQueueTest {
                 delay(300)
                 assertEquals(0, visits.get(), "a dropped url is drawn, skipped, and never revisited")
             } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `two units on one relay run at the same time, the same unit never twice`() =
+        runBlocking {
+            // THE INVARIANT THE POOL'S UNIT CHANGE IS FOR. Admission is per
+            // KEY, and the key is a (relay, stream) pair — so two streams may
+            // be on one relay at once, while one stream's second visit to that
+            // relay waits for its first.
+            //
+            // Pinned here rather than in the pool because this class IS the
+            // exclusion: `inFlight` and `parked` are keyed by identity alone,
+            // and nothing in them knows what a relay is.
+            data class Unit2(
+                val url: String,
+                val stream: String,
+            )
+
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue<Unit2>(scope)
+            val entered = Channel<Unit2>(Channel.UNLIMITED)
+            val release = Channel<Unit>(Channel.UNLIMITED)
+            val running = AtomicInteger()
+            val peak = AtomicInteger()
+            // THREE workers against two units, so a worker is always free to
+            // draw the re-offer below. With only as many workers as units,
+            // "no third visit" would be proved by the worker count rather than
+            // by the exclusion under test.
+            repeat(3) {
+                scope.launch {
+                    q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
+                        // COUNT FIRST, THEN RECORD THE PEAK. `updateAndGet`
+                        // re-runs its lambda whenever the CAS loses, so an
+                        // increment INSIDE it is applied once per attempt —
+                        // two workers entering together counted three visits
+                        // and failed this test about one run in three. The
+                        // counter is the fact; the peak is a reading of it.
+                        val now = running.incrementAndGet()
+                        peak.updateAndGet { was -> maxOf(was, now) }
+                        entered.send(key)
+                        release.receive()
+                        running.decrementAndGet()
+                    }
+                }
+            }
+            try {
+                val content = Unit2("wss://a.example/", "content")
+                q.offer(content)
+                q.offer(Unit2("wss://a.example/", "indexers"))
+                withTimeout(5_000) {
+                    assertEquals(
+                        setOf(content, Unit2("wss://a.example/", "indexers")),
+                        setOf(entered.receive(), entered.receive()),
+                        "one relay, two streams, both visiting at once",
+                    )
+                }
+                assertEquals(2, running.get())
+
+                // …and the SAME unit again does not start a second visit. The
+                // offer is accepted — a unit may be WANTED again while it runs
+                // — and the worker that draws it parks it instead, which is
+                // what keeps two jobs of one stream off one band.
+                assertTrue(q.offer(content), "wanting it again is allowed while it runs")
+                repeat(20) { delay(10) }
+                assertEquals(2, running.get(), "still two — the third draw parked")
+                assertEquals(2, peak.get(), "and never ran a third visit at all")
+
+                // The park is a promise, not a drop: finishing re-offers it.
+                release.send(Unit)
+                release.send(Unit)
+                withTimeout(5_000) { assertEquals(content, entered.receive(), "the parked unit runs as soon as its own visit ends") }
+                release.send(Unit)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `the queue splits by group, counting what waits and never what runs`() =
+        runBlocking {
+            // WHOSE QUEUE IS IT. The pool's own row says how many units are
+            // waiting; a per-stream card has to say how many of THOSE are
+            // this stream's, and the number was unpublishable until the queue
+            // could be asked for the split.
+            //
+            // The distinction that matters is the one a card would get wrong
+            // silently: a unit a worker is ON is not waiting for a worker. A
+            // split that counted it would put the same unit in `queued` and in
+            // the in-flight rows beside it, and the remainder drawn from both
+            // would come out short.
+            data class Unit2(
+                val url: String,
+                val stream: String,
+            )
+
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue<Unit2>(scope)
+            val entered = Channel<Unit2>(Channel.UNLIMITED)
+            val release = Channel<Unit>(Channel.UNLIMITED)
+            // ONE worker, so exactly one unit is running and the rest are
+            // provably still queued.
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
+                    entered.send(key)
+                    release.receive()
+                }
+            }
+            try {
+                assertEquals(emptyMap(), q.waitingBy { it.stream }, "an empty queue is an empty split, not a zero per stream")
+
+                q.offer(Unit2("wss://a.example/", "content"))
+                withTimeout(5_000) { entered.receive() }
+                q.offer(Unit2("wss://b.example/", "content"))
+                q.offer(Unit2("wss://c.example/", "content"))
+                q.offer(Unit2("wss://a.example/", "indexers"))
+
+                assertEquals(
+                    mapOf("content" to 2, "indexers" to 1),
+                    q.waitingBy { it.stream },
+                    "the two still queued and the one on a worker counted apart",
+                )
+                assertEquals(3, q.waiting, "and the split adds up to the number the pool publishes")
+
+                // A stream nothing has queued is ABSENT rather than zero: the
+                // caller knows its own streams and reads a missing key as
+                // none, and inventing keys here would mean this class knowing
+                // what the whole set is.
+                assertEquals(null, q.waitingBy { it.stream }["idle"])
+            } finally {
+                release.trySend(Unit)
                 scope.cancel()
             }
         }

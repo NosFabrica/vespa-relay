@@ -106,7 +106,7 @@ class SyncStatusTest {
     @Test
     fun `the series accumulates across passes, which is the only state this holds`() {
         val (status, progress, snapshot) = status()
-        val health = SyncProgress.Health("ingest", eventsPerSec = 900, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, servingMs = null)
+        val health = SyncProgress.Health("ingest", eventsPerSec = 900, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
 
         progress.publish(emptyList(), health = health, nowSeconds = 1_000)
         status.publish(nowSeconds = 1_000)
@@ -127,7 +127,7 @@ class SyncStatusTest {
     @Test
     fun `a pass whose clock has not moved appends nothing, so a republish is not a sample`() {
         val (status, progress, snapshot) = status()
-        val health = SyncProgress.Health("mixed", eventsPerSec = 4, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, servingMs = null)
+        val health = SyncProgress.Health("mixed", eventsPerSec = 4, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
         progress.publish(emptyList(), health = health, nowSeconds = 1_000)
 
         status.publish(nowSeconds = 1_000)

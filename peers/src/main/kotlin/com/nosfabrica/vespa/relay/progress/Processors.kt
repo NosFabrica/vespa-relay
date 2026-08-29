@@ -73,7 +73,7 @@ import java.util.concurrent.atomic.AtomicLong
  * The counters are read through a supplier at snapshot time rather than pushed:
  * they are live atomics owned by the component itself, and a copy kept in step
  * by hand is the shape that produces a report disagreeing with the thing it
- * reports on. [StreamPhases.namesInFlight] takes a supplier for the same
+ * reports on. [StreamPhases.names] takes a supplier for the same
  * reason.
  */
 class Processors {

@@ -1396,27 +1396,42 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `the pool's two socket knobs parse, default, and refuse zero`() {
-        val block = """
+    fun `the pool's two socket knobs are the stream's, and the old spellings are refused`() {
+        fun block(inner: String) =
+            """
             streams {
                 s {
                     dir    = "down"
                     filter = { "kinds": [1] }
                     urls   = ["wss://a.example"]
+                    $inner
                 }
             }
         """
-        val tuned = RouterConfigLoader.parse("visitConcurrency = 64\ntailBudget = 900\n$block")
-        assertEquals(64, tuned.visitConcurrency)
-        assertEquals(900, tuned.tailBudget)
-        val defaulted = RouterConfigLoader.parse(block)
-        assertEquals(RouterConfig.DEFAULT_VISIT_CONCURRENCY, defaulted.visitConcurrency)
-        assertEquals(RouterConfig.DEFAULT_TAIL_BUDGET, defaulted.tailBudget)
+        val tuned = RouterConfigLoader.parse(block("visitConcurrency = 64\nmaxLiveConcurrency = 900"))
+        assertEquals(64, tuned.streams.single().visitConcurrency)
+        assertEquals(900, tuned.streams.single().maxLiveConcurrency)
+
+        // ABSENT IS UNCAPPED, not defaulted onto the stream: the pool stands
+        // in its own number for a stream that names none, and a config that
+        // says nothing must be readable as having said nothing.
+        val silent = RouterConfigLoader.parse(block(""))
+        assertNull(silent.streams.single().visitConcurrency)
+        assertNull(silent.streams.single().maxLiveConcurrency)
+
         // Zero of either is an off switch wearing a tuning knob's name —
         // floored, not honored, same as the monitor's dial gate.
-        val floored = RouterConfigLoader.parse("visitConcurrency = 0\ntailBudget = 0\n$block")
-        assertEquals(1, floored.visitConcurrency)
-        assertEquals(1, floored.tailBudget)
+        val floored = RouterConfigLoader.parse(block("visitConcurrency = 0\nmaxLiveConcurrency = 0"))
+        assertEquals(1, floored.streams.single().visitConcurrency)
+        assertEquals(1, floored.streams.single().maxLiveConcurrency)
+
+        // …and at the ROUTER level they are refused rather than ignored. A
+        // top-level `visitConcurrency` accepted and dropped would leave a
+        // deployment believing it had bounded its dials.
+        for (moved in listOf("visitConcurrency = 64", "tailBudget = 900")) {
+            val boom = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse("$moved\n${block("")}") }
+            assertTrue(boom.message!!.contains("moved inside"), boom.message!!)
+        }
     }
 
     @Test

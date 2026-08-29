@@ -145,13 +145,44 @@ class InFlight(
          * stage worth the word.
          *
          * A working leg's word names the JOB and then the TRANSPORT — `catching
-         * up (paging)`, `auditing history (negentropy)` — because neither
+         * up (paging)`, `negentropy sync of the past` — because neither
          * implies the other: the audit is the full-past pass, whatever it uses
          * to download with, and an audit does page the windows a peer will not
          * reconcile. See `VisitPool.STAGE_PAGING` and its neighbours for the
          * pool's own set.
          */
         val stage: String? = null,
+        /**
+         * WHICH STREAM this row belongs to, on a list that is not already one
+         * stream's. A stream's own `inFlight` needs no such member — every row
+         * in it is that stream's — but the pool-wide live list does: one
+         * subscription serves one stream now, so a live row has exactly one
+         * owner and saying so is what lets the four tables be read with one
+         * vocabulary. Null on a per-stream list, where it would repeat the row
+         * above it.
+         */
+        val stream: String? = null,
+        /**
+         * WHICH OF THE POOL'S WORKLOADS this row is in — the machine word
+         * beside [stage]'s sentence, and the only one of the two a reader may
+         * GROUP by. `live`, `catching-up`, `re-fetching`, `negentropy`; absent
+         * for a row that is in none of them, which is a visit between jobs —
+         * claiming its socket, working out what an ask still owes, or draining
+         * the healer's queue on its way out.
+         *
+         * The two are published together and set together — see `VisitPool`'s
+         * `Stage`, which carries both so neither can be moved without the
+         * other. Two members rather than one because they answer different
+         * readers: [stage] is a sentence written to be read once, and a page
+         * that grouped rows by it would be grepping prose — the arrangement
+         * that already zeroed a gauge here when a word was reworded.
+         *
+         * The pool word is deliberately NOT a partition of the row set: rows
+         * outside the four are ordinary and must still be drawn, so a reader
+         * finding this absent shows the row under its [stage] rather than
+         * dropping it.
+         */
+        val pool: String? = null,
         /**
          * HOW FAR BACK the leg has got — a second, always read the same
          * direction whichever stage set it: the `created_at` the paged cursor

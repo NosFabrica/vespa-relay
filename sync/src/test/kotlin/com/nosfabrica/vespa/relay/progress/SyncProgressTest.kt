@@ -55,6 +55,36 @@ class SyncProgressTest {
     }
 
     @Test
+    fun `the socket budget publishes what it is doing, not only how big it is`() {
+        // THE NUMBER THAT ENDS THE ARGUMENT. "Should we raise the socket
+        // budget" was answerable only by measuring an ETA — the router
+        // published its ceiling and how many relays were connected, and every
+        // other symptom of a full dispatcher (a long cycle, an idle-looking
+        // pool, relays never reached) is shared with a slow store and a
+        // roster of dead hosts. A queue is not: those calls are admissible and
+        // OkHttp is holding them.
+        //
+        // ZERO IS PUBLISHED, on this document's rule: a member that appears
+        // only on damage cannot be told from a router too old to say.
+        val healthy =
+            SyncProgress.Health(
+                bottleneck = "downloads",
+                eventsPerSec = 900,
+                heapUsedMb = 1,
+                heapMaxMb = 2,
+                sockets = 1010,
+                socketCeiling = 1024,
+                socketsRunning = 1010,
+                socketsQueued = 0,
+                servingMs = null,
+            )
+        val h = SyncProgress.document(emptyList(), health = healthy, nowSeconds = 1_000)["health"]!!.jsonObject
+        assertEquals(1010L, h["socketsRunning"]!!.jsonPrimitive.long)
+        assertEquals(0L, h["socketsQueued"]!!.jsonPrimitive.long, "nothing waiting is the reading, not the absence of one")
+        assertEquals(1024L, h["socketCeiling"]!!.jsonPrimitive.long)
+    }
+
+    @Test
     fun `a stream that has not started publishes its phase and nothing it cannot answer`() {
         val s = StreamPhases.Stream("content", "starting", 12)
         val stream = (SyncProgress.document(listOf(s), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
@@ -71,14 +101,35 @@ class SyncProgressTest {
         // document to describe. Zero is the reading worth having: a stream with
         // an empty roster is one waiting on the fitness pass to certify its
         // first relay, and it looked exactly like a stream riding four hundred.
-        val riding = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300)
-        val waiting = StreamPhases.Stream("cold", "rotating", 3_480, roster = 0, tails = 0)
+        val riding = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300, queued = 18)
+        val waiting = StreamPhases.Stream("cold", "rotating", 3_480, roster = 0, tails = 0, queued = 0)
 
         val rows = SyncProgress.document(listOf(riding, waiting), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray
 
         assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long)
-        assertEquals(300L, rows[0].jsonObject["tails"]!!.jsonPrimitive.long)
+        assertEquals(300L, rows[0].jsonObject["liveHeld"]!!.jsonPrimitive.long)
+        // …and how much of that roster is queued for a worker rather than
+        // counting down a revisit. The pool's own row publishes the whole
+        // queue, which is a sum over streams and cannot be divided back into
+        // shares — so a per-stream card could say what a stream is RIDING and
+        // never whether it was starved.
+        assertEquals(18L, rows[0].jsonObject["awaitingVisit"]!!.jsonPrimitive.long)
         assertEquals(0L, rows[1].jsonObject["roster"]!!.jsonPrimitive.long, "an empty roster is a report, not an absence")
+        assertEquals(0L, rows[1].jsonObject["awaitingVisit"]!!.jsonPrimitive.long, "and so is an empty queue")
+    }
+
+    @Test
+    fun `a stream row too old to split the queue says nothing rather than zero`() {
+        // The member has to be ABSENT and not 0 on a router that does not
+        // publish it: the page draws the remainder — the share of the roster
+        // that is neither running nor queued — by subtracting this, and a zero
+        // it invented would quietly report the whole queue as sitting between
+        // visits.
+        val row = StreamPhases.Stream("visits", "rotating", 3_480, roster = 412, tails = 300)
+        val rows = SyncProgress.document(listOf(row), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray
+
+        assertNull(rows[0].jsonObject["awaitingVisit"])
+        assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long, "everything it does know is still said")
     }
 
     @Test
@@ -172,6 +223,7 @@ class SyncProgressTest {
                                             events = 2,
                                             quietForSec = 41_000,
                                             stage = "paging",
+                                            pool = "catching-up",
                                             pagingUntil = 1_689_857_148L,
                                         ),
                                         InFlight.Relay("wss://probing.example/", heldForSec = 4, transferringForSec = null, events = 0, quietForSec = 4),
@@ -202,6 +254,60 @@ class SyncProgressTest {
             "absent means NOT paging — a leg still in the guards has no cursor to report",
         )
         assertEquals(118, stream["inFlight"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "the cap discloses itself")
+        assertEquals(
+            "catching-up",
+            rows[0].jsonObject["pool"]!!.jsonPrimitive.content,
+            "the word a reader groups by, beside the sentence a reader reads",
+        )
+        assertNull(
+            rows[1].jsonObject["pool"],
+            "a row in none of the four says nothing rather than claiming one — it is drawn under its own `doing`",
+        )
+    }
+
+    @Test
+    fun `the live pool is named too, at the root, and only when something is tailed`() {
+        // The other half of the same complaint. `tails: 412` is a number every
+        // healthy deployment renders and nobody can act on: which relay holds
+        // a socket, for how long, and whether anything has ever come down it
+        // were all unanswerable from outside the process.
+        val live =
+            InFlight(
+                relays =
+                    listOf(
+                        InFlight.Relay(
+                            "wss://nos.lol/",
+                            heldForSec = 41_400,
+                            transferringForSec = 41_400,
+                            events = 91_002,
+                            quietForSec = 3,
+                            stage = "holding a live tail",
+                            pool = "live",
+                        ),
+                    ),
+                omitted = 0,
+            )
+        val doc = SyncProgress.document(listOf(streamWith(name = "content")), live = live, nowSeconds = 1_000)
+
+        // AT THE ROOT, not under a stream: one subscription per relay carries
+        // every wanting stream's filter and counts its arrivals at the url, so
+        // dividing it per stream would publish one undivided number once per
+        // stream — each copy carrying the whole url's event count.
+        val rows = doc["live"]!!.jsonObject["relays"] as JsonArray
+        assertEquals("wss://nos.lol/", rows[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(91_002L, rows[0].jsonObject["events"]!!.jsonPrimitive.long)
+        assertEquals(3L, rows[0].jsonObject["quietForSec"]!!.jsonPrimitive.long)
+        assertEquals("live", rows[0].jsonObject["pool"]!!.jsonPrimitive.content)
+        assertNull((doc["streams"] as JsonArray)[0].jsonObject["live"], "the stream row keeps its COUNT and nothing more")
+        assertEquals(0, doc["live"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "bounded by the tail budget, and it says so")
+
+        // Absent rather than empty, on the same terms `inFlight` is: an empty
+        // list is a claim that this router holds no tails, and a router with no
+        // visit pool at all makes no such claim.
+        assertNull(SyncProgress.document(listOf(streamWith(name = "content")), nowSeconds = 1_000)["live"])
+        assertNull(
+            SyncProgress.document(listOf(streamWith(name = "content")), live = InFlight.NONE, nowSeconds = 1_000)["live"],
+        )
     }
 
     @Test

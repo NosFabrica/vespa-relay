@@ -63,6 +63,30 @@ class RouterConfExamplesTest {
     }
 
     @Test
+    fun `the example's budgets fit under the socket ceiling it warns about`() {
+        // THE EXAMPLE IS WHAT AN OPERATOR COPIES, so it must not be a config
+        // that trips the router's own boot warning. It did: the dial width and
+        // the tail budget were router-wide numbers that summed to 728 against
+        // a headroom of 900, and moving them inside the streams turned two
+        // uncapped streams into two FULL default budgets — the same file then
+        // asked for 2,068 sockets, and every new connect on that deployment
+        // would queue behind ones already held.
+        //
+        // The numbers are duplicated here rather than imported from
+        // `VisitPool`: `:peers` does not see `:sync`, and a ceiling asserted
+        // against itself asserts nothing anyway.
+        val dispatcherHeadroom = 900
+        val dials = example.streams.sumOf { it.visitConcurrency ?: RouterConfig.DEFAULT_VISIT_CONCURRENCY }
+        val tails = example.streams.sumOf { it.maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY }
+        assertTrue(
+            dials + tails <= dispatcherHeadroom,
+            "the example asks for up to $dials dial(s) and $tails tail(s) = ${dials + tails} sockets, over the " +
+                "$dispatcherHeadroom this router leaves for the static upstreams, the monitor and the healer. " +
+                "Lower a stream's visitConcurrency or maxLiveConcurrency",
+        )
+    }
+
+    @Test
     fun `every discovery scan reads a kind some stream actually mirrors`() {
         // The chain in the example is static(10002) -> outbox(10040) -> assertions.
         // A scan for a kind nothing mirrors is a stream that can never fan out,

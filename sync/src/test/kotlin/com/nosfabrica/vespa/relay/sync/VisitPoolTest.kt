@@ -22,12 +22,16 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
+import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -169,9 +173,12 @@ class VisitPoolTest {
                 listOf(0, 10002),
                 roster.asks.values
                     .first()
+                    .values
+                    .single()
+                    .asks
                     .single()
                     .filter.kinds,
-                "and it carries the stream's own filter, unnarrowed",
+                "and it carries the stream's own filter, unnarrowed — one stream, one ask, under its own name",
             )
         }
 
@@ -307,38 +314,34 @@ class VisitPoolTest {
 
     @Test
     fun `a rebuilt roster with the same asks is not news, one more ask is`() {
-        // The pool compares a url's want list across rebuilds with `wants`,
-        // and both directions of that comparison carry a failure mode.
-        // quartz's Filter has no equals, so the fresh-but-identical filters
-        // every rebuild derives MUST compare equal here — or each roster tick
-        // requeues every relay and the revisit pacing collapses. And one more
-        // bound author MUST compare different — or the new ask waits out the
-        // tailed revisit base for its first catch-up, its tail filter, and
-        // its retraction audit, which is how a staged phantom sat undeleted
-        // for half an hour on a relay another stream already tailed.
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    a { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
-                    b { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
-                }
-                """.trimIndent(),
-            )
-        val (a, b) = cfg.streams
-
-        fun ask(
-            stream: com.nosfabrica.vespa.relay.config.SyncStream,
-            vararg authors: String,
-        ) = RosterBuilder.Ask(stream, Filter(kinds = listOf(30382), authors = authors.toList().ifEmpty { null }))
+        // The pool compares one stream's want set on a url across rebuilds —
+        // `wantsAtOpen == wantsNow` in `openTail` — and both directions of
+        // that comparison carry a failure mode. quartz's Filter has no equals,
+        // so the fresh-but-identical filters every rebuild derives MUST
+        // compare equal, or each roster tick re-opens every tail and the
+        // revisit pacing collapses. And one more bound author MUST compare
+        // different, or the new ask waits out the tailed revisit base for its
+        // first catch-up, its tail filter and its retraction audit — which is
+        // how a staged phantom sat undeleted for half an hour on a relay
+        // another stream already tailed.
+        //
+        // Asserted on the EXPRESSION the roster builds and the pool compares,
+        // which is the filter's own JSON. It used to run against a companion
+        // helper that prefixed the stream name — a shape nothing built once
+        // the want map became url → stream → filters, so the test went on
+        // passing about code no caller had.
+        fun wants(vararg authors: List<String>?) = authors.mapTo(mutableSetOf()) { Filter(kinds = listOf(30382), authors = it).toJson() }
 
         val p1 = "a".repeat(64)
         val p2 = "b".repeat(64)
-        assertEquals(RosterBuilder.wants(listOf(ask(a, p1))), RosterBuilder.wants(listOf(ask(a, p1))), "same shape, fresh instances — not news")
-        assertTrue(RosterBuilder.wants(listOf(ask(a, p1))) != RosterBuilder.wants(listOf(ask(a, p1), ask(a, p2))), "a new bound author is news")
-        assertTrue(RosterBuilder.wants(listOf(ask(a))) != RosterBuilder.wants(listOf(ask(b))), "the stream asking is part of the identity")
+        assertEquals(wants(listOf(p1)), wants(listOf(p1)), "same shape, fresh instances — not news")
+        assertTrue(wants(listOf(p1)) != wants(listOf(p1), listOf(p2)), "a new bound author is news")
+        // …and the stream is not in the string because it does not have to be:
+        // a want set is stored under its stream's own key, so one stream's set
+        // is only ever compared with its own predecessor. Two streams asking
+        // the identical filter is the case that proves it — the sets are equal
+        // and they are still two tails, one per (relay, stream) pair.
+        assertEquals(wants(null), wants(null), "two streams' identical asks are one string, kept apart by the map key")
     }
 
     @Test
@@ -361,5 +364,195 @@ class VisitPoolTest {
                 """.trimIndent(),
             )
         assertEquals(3600L, cfg.streams.single().negentropySyncThePastSeconds)
+    }
+
+    /** A band recorded over [min, max], as `refetchThePastSeconds` finds one before expiring it. */
+    private fun band(
+        min: Long,
+        max: Long,
+    ) = SyncCoverage.Band(mapOf(1 to SyncCoverage.Span(min, max, true)), max)
+
+    @Test
+    fun `a leg walking time the band already covers is the re-fetch, not the catch-up`() {
+        // THE READING THIS SEPARATES. Both walks are `fetchAllPages` over a
+        // REQ, both fill the same rows, and one is a mirror keeping up while
+        // the other is the same mirror re-downloading years of history because
+        // `refetchThePastSeconds` expired the band. `visiting: 100` counted
+        // them as one number, and so did the in-flight row's stage word.
+        // Real seconds, because one of the edges IS a real second: an unfloored
+        // leg is walked as `flooredForPaging`, from `PLAUSIBLE_FLOOR`, and a
+        // recorded band can never start below that — quartz refuses to observe
+        // an implausible `created_at` in the first place. A band written with
+        // toy numbers would sit UNDER the floor and every case below would
+        // answer backwards.
+        val covered = band(min = 1_600_000_000, max = 1_700_000_000)
+
+        // The expired band's leg: the whole filter again, unfloored at both
+        // ends, straight through everything already recorded.
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), covered))
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_650_000_000, until = 1_660_000_000), covered))
+
+        // …and the two ordinary legs, which TOUCH the band exactly at its
+        // edges: quartz asks for the newer one from the band's max and the
+        // older one down to its min. A `<=` on either side here would file
+        // every routine catch-up on this deployment as a re-walk of everything.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_700_000_000), covered),
+            "forward from the band's edge",
+        )
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), until = 1_600_000_000), covered),
+            "deeper than the band reaches",
+        )
+        assertTrue(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_699_999_999), covered),
+            "one second inside the band is inside it",
+        )
+    }
+
+    @Test
+    fun `each leg is judged against its OWN kinds, not the whole band's edges`() {
+        // THE BUG THIS PINS. A band's `minCreatedAt`/`maxCreatedAt` are
+        // aggregates over every kind in it, but quartz emits one leg per kind
+        // GROUP, each windowed on that group's own span. On a stream over many
+        // kinds — contentViaOutbox rides ~130 — the kinds do not cover the same
+        // time, so a leg walking forward from its own kind's edge lands inside
+        // the aggregate and reads as a re-walk of everything.
+        //
+        // That is not a labelling nit: a leg classified as a re-fetch takes a
+        // `refetchConcurrency` permit and is SKIPPED when the cap is full, and
+        // that cap is small on purpose (4 against 96 visits in the shipped
+        // example). So ordinary catch-up on a multi-kind stream was throttled
+        // to the re-fetch budget and silently dropped past it.
+        val mixed =
+            SyncCoverage.Band(
+                mapOf(
+                    // kind 1 walked back to 2020 and forward to 2023…
+                    1 to SyncCoverage.Span(1_600_000_000, 1_700_000_000, true),
+                    // …kind 30023 only ever seen in a window inside that.
+                    30023 to SyncCoverage.Span(1_650_000_000, 1_660_000_000, true),
+                ),
+                1_700_000_000,
+            )
+
+        // The ordinary forward leg for 30023: from ITS OWN edge, which is a
+        // hundred million seconds below the band's aggregate max.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), since = 1_660_000_000), mixed),
+            "forward from this kind's own edge is a catch-up, whatever the other kinds cover",
+        )
+        // …and the older leg for it, likewise inside the aggregate.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), until = 1_650_000_000), mixed),
+            "deeper than this kind reaches is a catch-up too",
+        )
+        // A kind with nothing recorded at all has never been walked, so its
+        // whole range is new — even though the band it shares is full.
+        assertFalse(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(9735)), mixed),
+            "a kind with no span of its own has not been walked, band or no band",
+        )
+
+        // …and the re-walk still reads as one: the expired band's leg carries
+        // the whole ask again, over kinds whose spans it genuinely re-covers.
+        assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1, 30023)), mixed))
+        assertTrue(
+            VisitPool.rewalksCovered(Filter(kinds = listOf(30023), since = 1_655_000_000), mixed),
+            "inside this kind's own span is a re-walk",
+        )
+    }
+
+    @Test
+    fun `nothing recorded yet is a first walk, and a first walk is a catch-up`() {
+        // An ask with no band has never been walked, so its whole range is new
+        // — reading that as a re-fetch would put every fresh relay on the
+        // deployment into the pool that means "re-downloading history we have".
+        assertFalse(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), null))
+        // …and the same for a band carrying no spans, which is the shape a
+        // restored file with an unreadable entry leaves behind. It has no min
+        // or max to compare against either, which is the other reason this
+        // answers before reading them.
+        assertFalse(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), SyncCoverage.Band(emptyMap(), 0)))
+    }
+
+    @Test
+    fun `the unit of work is a relay AND a stream, so one relay is many units`() {
+        // THE INVARIANT. Many streams may work one relay at once — they share
+        // its socket and touch disjoint bands — while each stream sees that
+        // relay in one state at a time. So the pair is what is queued,
+        // visited and revisited, and a relay two streams want is TWO units on
+        // two independent clocks.
+        val a = VisitPool.VisitKey(RelayUrlNormalizer.normalize("wss://a.example"), "content")
+        val b = VisitPool.VisitKey(RelayUrlNormalizer.normalize("wss://a.example"), "indexers")
+        assertTrue(a != b, "same relay, different stream, different unit")
+        assertEquals(a, VisitPool.VisitKey(RelayUrlNormalizer.normalize("wss://a.example"), "content"))
+        // Value semantics, because every collection in the queue and the pool
+        // is keyed by it — a unit rebuilt from a roster read must find the
+        // tail and the timer the last one left.
+        assertEquals(a.hashCode(), VisitPool.VisitKey(RelayUrlNormalizer.normalize("wss://a.example/"), "content").hashCode())
+        assertTrue(setOf(a, b).size == 2)
+    }
+
+    @Test
+    fun `the pool's width is the sum of what its streams allow themselves`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    a {
+                        dir    = "down"
+                        filter = { "kinds": [1] }
+                        urls   = ["wss://a.example"]
+                        visitConcurrency = 8
+                    }
+                    b {
+                        dir    = "down"
+                        filter = { "kinds": [1] }
+                        urls   = ["wss://b.example"]
+                        visitConcurrency = 32
+                    }
+                }
+                """.trimIndent(),
+            )
+        // Fewer workers than the shares add up to would leave a configured
+        // share unreachable: a stream allowed 32 visits cannot have them if
+        // only 8 workers exist to draw its relays.
+        assertEquals(40, VisitPool.workersFor(cfg.streams))
+
+        // A stream that names no width stands for the number the router-wide
+        // setting used to default to, so a deployment that configures nothing
+        // runs exactly the pool it always did.
+        val silent =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    a {
+                        dir    = "down"
+                        filter = { "kinds": [1] }
+                        urls   = ["wss://a.example"]
+                    }
+                }
+                """.trimIndent(),
+            )
+        assertEquals(RouterConfig.DEFAULT_VISIT_CONCURRENCY, VisitPool.workersFor(silent.streams))
+        // …and a router with no visit streams still has a pool it can start.
+        assertEquals(1, VisitPool.workersFor(emptyList()))
+    }
+
+    @Test
+    fun `the four pool words are the wire's, and the glossary defines every one of them`() {
+        // These four strings ARE the contract: the page groups its four tables
+        // by them (`poolsOf` in `web/shared/sync.js`) and a reader looks them
+        // up in the document's own glossary. Renaming one here without the
+        // other two would empty a table on the page and leave the word it drew
+        // undefined — the same silent break the pool/stage split exists to
+        // stop, one level up.
+        val words = listOf(VisitPool.POOL_LIVE, VisitPool.POOL_CATCHING_UP, VisitPool.POOL_REFETCHING, VisitPool.POOL_NEGENTROPY)
+        assertEquals(listOf("live", "catching-up", "re-fetching", "negentropy"), words)
+
+        val defined = StatusVocabulary.TERMS["pool"]!!.jsonPrimitive.content
+        for (word in words) {
+            assertTrue("`$word`" in defined, "the glossary's `pool` entry does not name $word, so a reader meets it undefined")
+        }
     }
 }

@@ -223,14 +223,130 @@ object StatusVocabulary {
                     "where the same silence is a walk that has stopped delivering. `transferringForSec` separates " +
                     "the first two from the rest and nothing separated the last two. Absent until a leg reaches a " +
                     "stage worth the word. A working leg's word names TWO things, because they do not imply each " +
-                    "other: what for — `catching up` is everything new since this relay's last pass, `auditing` is " +
+                    "other: what for — `catching up` is everything new since this relay's last pass, `negentropy` is " +
                     "the whole past re-checked on the stream's `negentropySyncThePastSeconds` clock to find what no " +
-                    "catch-up ever " +
-                    "saw — and, in the bracket, how: `paging` walks a REQ newest-first, `negentropy` compares " +
+                    "catch-up ever saw, `re-fetching the past` is that same history walked again from scratch on " +
+                    "the stream's `refetchThePastSeconds` — and, in the bracket, how: `paging` walks a REQ " +
+                    "newest-first, `negentropy` compares " +
                     "reconciliation windows and downloads only the difference. Negentropy is NOT a synonym for the " +
                     "audit and paging is not a synonym for the catch-up: an audit pages the windows a peer will not " +
                     "reconcile, and a static stream backfills either way. This pool pages its catch-up and " +
                     "reconciles its audits, which is a fact about the pool and not about the words.",
+            )
+            put(
+                "pool",
+                "WHICH OF THE MIRROR'S FOUR WORKLOADS this relay is in right now, as one word a reader can group " +
+                    "by: `live` is a held tail subscription — no worker, events as they exist; `catching-up` is " +
+                    "paging forward over what this relay's band does not cover yet; `re-fetching` is paging over " +
+                    "what it DOES, the whole-history re-walk a stream's `refetchThePastSeconds` schedules; " +
+                    "`negentropy` is reconciling the covered past over NIP-77, both kinds. One rotating pool runs all four, " +
+                    "which is why the split had to be published rather than inferred: `visiting` counts a " +
+                    "catch-up, an audit and a whole-corpus re-walk as one number, and the first is a mirror " +
+                    "keeping up while the third is one re-downloading years of history — the same transport, the " +
+                    "same rows, opposite readings. It is `doing`'s counterpart and not a second copy of it: that " +
+                    "one is a sentence written to be read once, this one is a stable word, and grouping rows by " +
+                    "prose is how a reworded string empties a table. ABSENT is ordinary and is not one of the " +
+                    "four — a visit between jobs, claiming its socket or working out what an ask still owes or " +
+                    "draining the healer's queue on its way out — and such a row is shown under its own `doing` " +
+                    "rather than dropped.",
+            )
+            put(
+                "live",
+                "THE LIVE POOL: every relay holding an open tail subscription right now, named, with the same " +
+                    "clocks a visiting leg carries. This is the pool's steady state — `liveHeld` counts it and " +
+                    "this is what those sockets are — and it sits at the document's ROOT because it reads as one " +
+                    "table, not because its rows have no owner: a tail is held per (relay, stream) pair, so every " +
+                    "row here names its `stream` exactly as a visiting row does. `held` is the age of the subscription, not " +
+                    "of the visit that opened it; `events` is what has come down it since; and `quiet` beside " +
+                    "them is the one that decides, because the two ways a tail is wasted look identical from the " +
+                    "count alone — a relay that has published nothing in a week, and a subscription that died " +
+                    "upstream while we went on holding its socket.",
+            )
+            put(
+                "schedule",
+                "WHEN THIS STREAM'S TWO RE-READS OF THE PAST COME DUE, over every ask it has. The counters say " +
+                    "work HAPPENED; this says whether it was DUE, which is the question they cannot answer. Every " +
+                    "ask ages on its own clock — that is what makes the audits a trickle rather than a herd — so " +
+                    "the answer is a distribution and not a date: `due` now, `neverRun` (due by definition), " +
+                    "`waiting` inside the period, and `nextInSec` to the nearest one. Work only ever leaves " +
+                    "`waiting` by its clock running out, so a `waiting` that holds steady while `auditsRun` climbs " +
+                    "is the schedule being bypassed, and one that drains at the period is the schedule working.",
+            )
+            put(
+                "everySec",
+                "The period this job is scheduled on for this stream — `negentropySyncThePastSeconds` for the " +
+                    "audit, `refetchThePastSeconds` for the re-fetch. Per STREAM and never router-wide: re-reading " +
+                    "a relay's whole history is the most expensive thing scheduled here, and a content mirror over " +
+                    "~130 kinds and a five-relay bootstrap cannot want the same number.",
+            )
+            put(
+                "due",
+                "Asks whose clock has run out and that are waiting for a visit to pick them up. Small and moving " +
+                    "is the healthy reading. Large and STUCK is the one to act on: either the pool is not reaching " +
+                    "those relays, or this stream's cap for the job is turning the work away — `deferred` beside " +
+                    "it says which.",
+            )
+            put(
+                "neverRun",
+                "Asks with no completed pass behind them, which are due BY DEFINITION rather than by their clock: " +
+                    "a zero clock short-circuits the dueness test, so a relay's first audit happens on its first " +
+                    "visit and not a period later. Counted apart from `due` because it is the whole of a fresh " +
+                    "deployment — every ask due at once, correctly — and reading that as the period being ignored " +
+                    "is the wrong conclusion from the right number. It is also what a workload cap is for: the " +
+                    "storm is bounded rather than avoided, and it never happens twice for the same ask.",
+            )
+            put(
+                "waiting",
+                "Asks INSIDE their period — nothing to do, which is what the period is for. On a healthy stream " +
+                    "this is almost all of them, and it is the number that certifies the schedule: an ask can only " +
+                    "leave here by its clock running out.",
+            )
+            put(
+                "limits",
+                "WHAT THIS STREAM MAY SPEND on each of the pool's four jobs, and what it has spent. One rotating " +
+                    "pool runs every visit-mode stream, and `visitConcurrency` bounds only how many relays are " +
+                    "DIALLED at once — it says nothing about what those visits are doing, and the four jobs do not " +
+                    "cost the same: a catch-up page is parse and ingest, a negentropy audit builds and compares id " +
+                    "sets per window and is the one genuinely CPU-bound job here, and a re-fetch is a catch-up over " +
+                    "history already held. A row per job carries `streamCap` (this stream's share), `inUse` and " +
+                    "`deferred`. The share is the ONLY ceiling: what every stream may take between them is the sum " +
+                    "of what each may take, written where the stream that pays it is configured, rather than a " +
+                    "second router-wide number to keep in step with them by hand.",
+            )
+            put(
+                "job",
+                "Which of the pool's workloads a limit row bounds — the same word `pool` carries on a held " +
+                    "relay's row, so a cap and the relays it is capping are read with one vocabulary. Plus one a " +
+                    "held row can never carry: `visiting` is the stream's DIAL WIDTH, how many relays may be " +
+                    "visited for it at once. A visit refused there never dials, so that one bounds simultaneous " +
+                    "TLS handshakes rather than work — which is why it is budgeted beside the four and drawn " +
+                    "with them, and why no relay is ever \"in\" it.",
+            )
+            put(
+                "streamCap",
+                "How many of the pool's visits may be doing this job FOR THIS STREAM at once, and the only cap " +
+                    "on it. Absent means this stream is bounded by the dial width alone — not that it may do " +
+                    "none, which is what a zero here would say. On the `live` job it is a share of the tail sockets rather than " +
+                    "of the workers: a tail is what the pool does BETWEEN visits, and its cost is the socket it " +
+                    "keeps. Spelled apart from the `cap` inside a `sweep`, which is a PEER's declared id-set " +
+                    "ceiling and is not this router's budget at all — one word for two quantities in one document " +
+                    "is the confusion this glossary exists to prevent.",
+            )
+            put(
+                "inUse",
+                "Permits out against `streamCap` right now — this stream's share of the job in use. Sitting at it " +
+                    "is not a fault on its own; it is a fault when `deferred` is climbing beside it, which is the " +
+                    "cap turning work away rather than merely bounding it.",
+            )
+            put(
+                "deferred",
+                "How much work this cap has TURNED AWAY since boot: times a visit reached this job for this stream " +
+                    "and could not get a permit. Published because a cap that silently " +
+                    "drops work is indistinguishable from work that was never due — a stream whose history has not " +
+                    "been re-checked in a week reads identically whether its audits are capped to nothing or its " +
+                    "bands simply have not aged. Nothing is lost when this climbs: the job stays due and the next " +
+                    "visit takes it, so the cost of a full cap is one revisit delay. It is a rate, not a backlog — " +
+                    "a relay refused twice counts twice.",
             )
             put(
                 "pagingUntil",
@@ -484,7 +600,10 @@ object StatusVocabulary {
                 "Seconds until the processor's next pass. The alias monitor's clock is six hours by default, so " +
                     "\"the fold has decided nothing about this host\" reads as broken until you know the next turn is " +
                     "four of them away. Measured from when the last pass finished, not from a constant — a pass with " +
-                    "nothing submitted retries in a minute, and a long pass pushes the next one back by its own length.",
+                    "nothing submitted retries in a minute, and a long pass pushes the next one back by its own length. " +
+                    "On a `schedule` row it is the same reading over a different clock: seconds until the NEAREST " +
+                    "ask of that stream comes due for its audit or its re-fetch. Absent there means nothing is " +
+                    "waiting — every ask is already due — which is a state and not a zero countdown.",
             )
             put(
                 "measuring",
@@ -636,6 +755,21 @@ object StatusVocabulary {
                     "router's real ceiling.",
             )
             put(
+                "socketsRunning",
+                "Calls out against `socketCeiling` this instant — the dispatcher's own count, where `sockets` is " +
+                    "quartz's count of connected relays. The two measure the same pressure from opposite ends and " +
+                    "will not agree exactly: a dial in progress is a running call before it is a connected relay.",
+            )
+            put(
+                "socketsQueued",
+                "Calls WAITING for a socket budget slot. Zero is the healthy reading and the only one worth acting " +
+                    "on is any other: it means the work is admissible and OkHttp is holding it because the budget " +
+                    "is full — which is a one-constant fix, and the one diagnosis every other symptom of slowness " +
+                    "hides. A slow store, a saturated thread pool and a roster of dead hosts all look like a slow " +
+                    "mirror; only a full dispatcher queues calls. Raise `socketCeiling` (and check the process's " +
+                    "file-descriptor limit) rather than the stream budgets, which are already admitted work.",
+            )
+            put(
                 "servingMs",
                 "The relay's mean client read latency, which this router YIELDS to: past its threshold ingest " +
                     "deliberately slows so that mirroring does not cost the people reading. A mirror that is " +
@@ -720,53 +854,72 @@ object StatusVocabulary {
                     "stream with nothing certified for it yet, not a stream that has stopped.",
             )
             put(
+                "rosterVisits",
+                "The roster counted in UNITS OF WORK rather than in relays. The pool's unit is a (relay, stream) " +
+                    "PAIR — many streams may work one relay at once, sharing its socket, while each stream sees " +
+                    "that relay in one state at a time — so a relay three streams want is one `roster` entry and " +
+                    "three units here. It is this number that `visiting` and `awaitingVisit` are parts of, never " +
+                    "`roster`, and the difference is the whole reason both are published: a mirror whose streams " +
+                    "overlap heavily has far more work in flight than it has relays.",
+            )
+            put(
                 "awaitingVisit",
-                "Roster relays queued for a worker right now. NOT ingest's `queued`, which is a depth of events — " +
-                    "this is a count of relays between visits, and most of the roster sits here between top-ups.",
+                "Units of work — (relay, stream) pairs — queued for a worker right now. NOT ingest's `queued`, " +
+                    "which is a depth of events, and not a count of RELAYS: a relay two streams want is queued " +
+                    "twice, on two independent clocks. Most of the roster sits between visits rather than here, " +
+                    "waiting out the revisit delay its last visit earned. On a STREAM's row it is that stream's " +
+                    "share, where one relay is one unit, so it and the stream's in-flight rows come out of that " +
+                    "stream's `roster` and what is left is between visits; on the pool's row, every stream's " +
+                    "share added up. A row parked here while the stream's in-flight list is short is a stream " +
+                    "queueing faster than its `visiting` cap lets it work.",
             )
             put(
                 "visiting",
-                "Visits in flight this instant — and therefore sockets held by workers, because a visit-pool slot is " +
-                    "a socket by construction. The number the old engine's `transferring` could never truthfully be.",
+                "Visits in flight this instant, counted in (relay, stream) pairs. NOT the socket count it once " +
+                    "was: many streams may be visiting one relay at the same time and they share its connection, " +
+                    "so this is at least the sockets the workers hold and usually more. The number the old " +
+                    "engine's `transferring` could never truthfully be.",
             )
             put(
-                "tails",
-                "Live subscriptions left open after a visit's catch-up, one per relay, carrying every wanting " +
-                    "stream's filter. This is what \"constantly connected\" means: new events arrive the moment they " +
+                "liveHeld",
+                "Live subscriptions left open after a visit's catch-up, ONE PER (relay, stream) pair, carrying " +
+                    "that stream's filters. This is what \"constantly connected\" means: new events arrive the moment they " +
                     "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
                     "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
-                    "has delivered least. On a STREAM's row it counts the tails held on that stream's `roster` " +
-                    "share; on the pool's row, every tail this router holds.",
+                    "has delivered least. On a STREAM's row it counts what that stream holds on its `roster` share; on " +
+                    "the pool's row, every one this router holds. WHICH relays those are is `live` at the " +
+                    "document's root — the count and the names, like `roster` and the in-flight rows.",
             )
             put(
-                "evictedTails",
-                "Tails closed to give their socket to a relay with more content lately — the tail budget's rotation, " +
-                    "counted since boot. An evicted relay is requeued promptly and falls back to the untailed revisit " +
-                    "cadence; nothing about its certificate changes.",
+                "liveEvicted",
+                "Live subscriptions closed to give their socket to a relay with more content lately — " +
+                    "`maxLiveConcurrency`'s rotation, counted since boot. An evicted unit is requeued promptly and " +
+                    "falls back to the untailed revisit cadence; nothing about its certificate changes.",
             )
             put(
                 "visitsRun",
-                "Visits completed since boot — catch-up, audit where due, heal drain, tail. The pool's odometer, " +
-                    "beside `roster` for the rotation rate.",
+                "Visits completed since boot — catch-up, audit where due, heal drain, tail. Counted in the pool's " +
+                    "units, so one relay three streams want contributes three: read it beside `rosterVisits` for " +
+                    "the rotation rate, not beside `roster`.",
             )
             put(
-                "auditing",
-                "Audits RUNNING right now — the gauge beside `auditsRun`'s odometer. A deep history's audit " +
+                "negentropyRunning",
+                "Negentropy syncs of the past RUNNING right now — the gauge beside `negentropyRuns`'s odometer. A deep history's audit " +
                     "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
                     "not be told from a catch-up. The relay under audit is named in its stream's in-flight " +
-                    "rows, stage `auditing history (negentropy)` — or `auditing the provider's own records " +
-                    "(negentropy)` for the retraction comparison, which is the same clock and the same full-past " +
+                    "rows, stage `negentropy sync of the past` — or `negentropy sync of the provider's own records` " +
+                    "for the retraction comparison, which is the same clock and the same full-past " +
                     "sweep — with how far BACK it has reached.",
             )
             put(
-                "auditsRun",
-                "History reconciles run since boot: the windowed negentropy pass a stream's " +
+                "negentropyRuns",
+                "Negentropy syncs of the past run since boot: the windowed pass a stream's " +
                     "`negentropySyncThePastSeconds` schedules when a relay's last verified full pass ages out. Each " +
                     "relay's clock is its own, so this climbs as a trickle — roster over the period — never a herd.",
             )
             put(
-                "auditsSkipped",
-                "Reconciles NOT attempted because the monitor measured that relay as refusing a NEG-OPEN — the " +
+                "negentropySkipped",
+                "Negentropy syncs NOT attempted because the monitor measured that relay as refusing a NEG-OPEN — the " +
                     "`nip77` verdict on the same signed 30166 record the roster admits it by. Both audits are " +
                     "negentropy end to end, so against such a relay the attempt cannot succeed, and it was made " +
                     "every six hours per ask forever because a failed audit advances no clock. What re-checks their " +
