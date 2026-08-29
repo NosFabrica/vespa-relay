@@ -139,7 +139,7 @@ quartz = "029c40ebb4"
 # one alias, so there is a single string on the graph and nothing for ordering to
 # settle. The resolved graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "4e38d9926d"
+vespaEventStore = "2a2a82bae7"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

@@ -229,7 +229,6 @@ turning the gate off there, or by giving the mirroring key a real lens.
 | `SEARCH_EXPAND_REFERENCES` | a NIP-50 search also answers with the records its hits point at. `false`/`0`/`no`/`off` turns it off | on |
 | `SEARCH_EXPAND_MAX_PER_EVENT` | how many subjects one hit may bring with it | `100` |
 | `SEARCH_EXPAND_MAX_TOTAL` | how many subjects a whole REQ may collect | `1000` |
-| `SEARCH_EXPAND_WEIGHT` | place a Trusted List member by the confidence its publisher expressed, instead of directly behind the list. The value is the exponent — `1.0` linear, higher punishes doubt harder. Unset, unparseable or non-positive keeps the anchored placement | off |
 
 Three families of event carry text that is **about something else**: a Tapestry
 Trusted List (kinds 30392-30395) is found by its `title`, a NIP-85 Trusted
@@ -355,12 +354,12 @@ than of one page, which is the work a COUNT exists to avoid.
 served; a 2,000-member list past `SEARCH_EXPAND_MAX_PER_EVENT` simply brings
 fewer members, and the client still has every member tag and the `#p`/`#e`/`#a`
 recall that served them before this existed. A cap of `0` means zero — use
-`SEARCH_EXPAND_WEIGHT` is off for a measured reason rather than a cautious
-one: on the staging corpus 131 of 180 Trusted List member scores are exactly
-50, and 92 of the largest list's 98 members are. Turning it on today would sort
-almost every member into one bucket — machinery expressing no signal, and a
-visible reshuffle of the feed to express it. Turn it on when a publisher starts
-computing real confidence, not before.
+A spliced member lands where the confidence its publisher expressed puts it: a
+Trusted List scores each member 0..100 for how sure it is that the list's NAME
+applies, and a member the publisher doubts sinks past the organic hits it would
+otherwise have sat above. There is no switch for that — it is what the scores
+mean. A label and a NIP-85 assertion express no confidence (neither claim is
+probabilistic), so their subjects stay directly behind them.
 
 The splice itself runs in the event store now (vespa-eventstore
 `store/search/`), and these settings are handed to it at startup. Nothing about

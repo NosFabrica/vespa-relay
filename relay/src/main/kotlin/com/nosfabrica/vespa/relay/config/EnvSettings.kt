@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
-import com.nosfabrica.vespa.eventstore.search.SplicePlacement
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -147,12 +146,10 @@ fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
  * search. The splice itself lives in the store now; what this relay owns is the
  * budget for it, which is a property of a deployment rather than of a store.
  *
- * `SEARCH_EXPAND_WEIGHT` turns on confidence-weighted PLACEMENT — a Trusted
- * List member sinks toward where its publisher's 0..100 score says it belongs,
- * instead of riding directly behind its list. Off by default, and the reason is
- * measured rather than cautious: on the staging corpus 131 of 180 member scores
- * are exactly 50, so today it would sort almost every member into one bucket.
- * The value is the exponent — 1.0 linear, higher punishes doubt harder.
+ * PLACEMENT IS NOT A KNOB. A spliced member lands where the confidence its
+ * publisher expressed puts it, always — that is what a 0..100 score on a
+ * Trusted List member MEANS, and an operator should not have to know a variable
+ * name to get the behaviour the data already describes.
  *
  * A cap of 0 is honoured as 0 — an expansion that adds nothing — rather than
  * quietly meaning "unbounded"; turning the feature off is what
@@ -175,16 +172,6 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
         // so.
         maxPerEvent = env.capOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent),
         maxPerRequest = env.capOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest),
-        // Absent, unparseable or non-positive keeps the anchored placement: a
-        // gamma of zero is every confidence weighted the same, which is the
-        // anchored answer reached by an expensive route, and a negative one
-        // would rank a doubted member ABOVE a trusted one.
-        placement =
-            env["SEARCH_EXPAND_WEIGHT"]
-                ?.trim()
-                ?.toDoubleOrNull()
-                ?.takeIf { it > 0.0 }
-                ?.let { SplicePlacement.Weighted(it) } ?: SplicePlacement.Anchored,
     )
 }
 
