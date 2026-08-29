@@ -4,6 +4,13 @@
 // enough, and a test fixture that needs an npm install is a test fixture nobody
 // runs. Writes one JSONL file of events to the directory given as argv[2].
 //
+// It lives in `relay/tools/` rather than under `src/` because nothing loads it
+// — no classpath read, no Gradle task, only a human typing `node`. That also
+// keeps it clear of `NoBrowserFilesInEngineModulesTest`, which bans `.mjs`
+// inside an engine's `src` tree by extension rather than by path. The ban is
+// about BROWSER code, and this file never touches a DOM, so the honest fix is
+// to put a shell tool where shell tools go, not to poke a hole in the rule.
+//
 // The corpus is NOT committed. These are other people's public events, they
 // are megabytes, and AGENTS.md's rule is to reach for staging rather than
 // invent a fixture — so the repo carries the fetch and staging carries the

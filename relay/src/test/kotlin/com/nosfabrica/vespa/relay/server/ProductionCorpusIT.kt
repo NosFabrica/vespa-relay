@@ -53,7 +53,7 @@ import kotlin.test.fail
  *
  *     docker run -d --name vespa -m 9g -p 127.0.0.1:8080:8080 \
  *         -p 127.0.0.1:19071:19071 vespaengine/vespa
- *     node relay/src/test/resources/production-corpus-tool/fetch-corpus.mjs \
+ *     node relay/tools/fetch-corpus.mjs \
  *         wss://search-staging.brainstorm.world/ /tmp/corpus
  *     ./gradlew :relay:test --tests '*ProductionCorpusIT*' \
  *         -DitVespa=http://localhost:8080 -DitCorpus=/tmp/corpus -i
