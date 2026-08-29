@@ -14,7 +14,7 @@
 import { esc, clip, fullDate, when } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
-import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
+import { npub, noteId, naddr, addrOf, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 import { groupTokenizes } from "../shared/query.js";
@@ -144,20 +144,6 @@ export const selfHref = (ev) => {
   return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
 };
 
-/**
- * The `kind:pubkey:d` coordinate of a PARAMETERIZED REPLACEABLE event, or null.
- *
- * 30000-39999 is NIP-01's range, and a `d` is what makes a coordinate: the tag
- * may be missing (the spec reads an absent `d` as the empty string, which is a
- * legal address) but the author must be a key we can encode. Anything else is
- * not addressable and falls through to the id, which is the safe direction —
- * an naddr minted from a pubkey that is not one links nowhere.
- */
-export const addrOf = (ev) => {
-  if (!ev || !Number.isInteger(ev.kind) || ev.kind < 30000 || ev.kind > 39999) return null;
-  if (!HEX64.test(ev.pubkey || "")) return null;
-  return `${ev.kind}:${ev.pubkey}:${tagOf(ev, "d") || ""}`;
-};
 // Module scope, because a literal inside the function allocates a RegExp on
 // every evaluation and this one runs twice per card, per render.
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -263,17 +249,19 @@ export function provHtml(ev, opts) {
 }
 
 /**
- * One pill. `hidden` is the overflow behind the count, in the DOM from the
- * start so expanding it costs no re-render and no second lookup of the page.
+ * One pill. `overflow` is the part behind the count — in the DOM from the
+ * start, so expanding costs no re-render and no second look at the page, and
+ * marked with a class rather than left for the toggle to work out from its
+ * position in the row.
  */
-function pillHtml(p, hidden = false) {
+function pillHtml(p, overflow = false) {
   const href = pillHref(p);
   const tone = p.gated ? "vouched" : "open";
   const body =
     facesFor(p) +
     esc(p.text) +
     (p.count > 1 ? ` <span class="n">${p.count.toLocaleString()}</span>` : "");
-  const attrs = `class="prov-pill ${tone}" title="${esc(pillTitle(p))}"${hidden ? " hidden" : ""}`;
+  const attrs = `class="prov-pill ${tone}${overflow ? " extra" : ""}" title="${esc(pillTitle(p))}"${overflow ? " hidden" : ""}`;
   // A pill with nowhere to go is text, not a dead link — the same rule
   // selfHref keeps for a card that cannot name its own page.
   return href ? `<a ${attrs} href="${href}">${body}</a>` : `<span ${attrs}>${body}</span>`;

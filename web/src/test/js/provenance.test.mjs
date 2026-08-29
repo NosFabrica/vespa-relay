@@ -43,6 +43,30 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(pills[0].authors.sort(), [BOT, BOT2].sort(), "and it carries both authors");
 }
 
+// ONE POINTER NAMING ONE TARGET TWICE IS STILL ONE. Lists in the wild repeat
+// entries — clients append without checking, which is why peopleOf dedupes its
+// grid — and a naive count reads "Verified Human 2" off a single list, the
+// count claiming two where there is one. That is the exact fact the count
+// exists to state honestly, so it is the one place a duplicate must not pass.
+{
+  const one = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER], ["p", READER]])];
+  assert.strictEqual(pillsOn(one, "1")[0].count, 1, "a list that repeats a member is still one list");
+
+  const note = ev("1", READER, 1);
+  const twiceNamed = [note, ev("2", BOT, 1985, [["L", "ugc"], ["l", "zapped", "ugc"], ["e", hex("1")], ["e", hex("1")]])];
+  assert.strictEqual(pillsOn(twiceNamed, "1")[0].count, 1, "a label that names one target twice is still one label");
+
+  const twiceValued = [note, ev("2", BOT, 1985, [["L", "ugc"], ["l", "zapped", "ugc"], ["l", "zapped", "ugc"], ["e", hex("1")]])];
+  assert.strictEqual(pillsOn(twiceValued, "1")[0].count, 1, "and one that repeats a value is still one");
+
+  // Deduped PER POINTER, never globally — two different sources saying the
+  // same thing is the count doing its job.
+  const twoLists = [profile("1", READER),
+    ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]]),
+    ev("3", LISTER, 30392, [["d", "y"], ["title", "VH"], ["p", READER]])];
+  assert.strictEqual(pillsOn(twoLists, "1")[0].count, 2, "two lists sharing a title still count 2");
+}
+
 // ---- metadata is not provenance -------------------------------------------
 //
 // ISO-639-1 is 87% of the labels on staging. A pill reading "en" on every card
@@ -189,5 +213,26 @@ assert.strictEqual(provenanceOf([]).size, 0, "an empty page");
 assert.strictEqual(provenanceOf(null).size, 0, "no page at all");
 assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, tags: [] }]).size, 0,
   "a malformed event is skipped rather than thrown over");
+
+// ---- the page's own state -------------------------------------------------
+//
+// seedProvenance REPLACES rather than merges: a second search must not leave
+// the first one's pills on a card that survived into both.
+{
+  const { seedProvenance, forgetProvenance, provenance, attribution } = P;
+  const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];
+  assert.strictEqual(seedProvenance(page), 1, "one card gained a row");
+  assert.strictEqual(provenance.size, 1);
+  assert.strictEqual(seedProvenance([profile("1", READER)]), 0, "a page with no pointers clears the last page's");
+  assert.strictEqual(provenance.size, 0, "and leaves nothing behind");
+
+  // A permalink is not a page of results — forgetProvenance is what keeps the
+  // row from arriving there as a leftover of the search behind it.
+  seedProvenance([...page, ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]])]);
+  assert.strictEqual(attribution.faces, true, "two publishers, so gated pills are attributed");
+  forgetProvenance();
+  assert.strictEqual(provenance.size, 0, "cleared");
+  assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
+}
 
 console.log("provenance: collapse, demotion, tones, order, destinations, targets and attribution — all assertions passed");

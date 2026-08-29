@@ -753,6 +753,27 @@ const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
 
+// ---- a Trusted List's members are people, deduped and hex-only ------------
+//
+// Two halves, both paid for elsewhere in this file's history. Lists in the
+// wild REPEAT entries — clients append without checking — and a raw `p` scan
+// counts a member twice and draws two faces for one person. And a value that
+// is not a key must never reach npub(), which would label somebody who does
+// not exist. `peopleOf` is the one answer, which is also what gridPeople
+// declares to the profile loader: the faces on the page and the profiles
+// fetched for them cannot be two different sets.
+{
+  const lister = "b".repeat(64);
+  const dup = ev(30392, [["d", "x"], ["title", "VH"], ["p", pk], ["p", pk], ["p", "not-a-key"]]);
+  const html = card({ ...dup, pubkey: lister }, { full: true });
+  assert(/>1 member</.test(html), `a repeated member is counted once: ${/result-body">([^<]*)</.exec(html)[1]}`);
+  // person-cell, not av-wrap: the byline draws a face of its own, and counting
+  // those together would pass whatever the grid did.
+  assert.strictEqual((html.match(/person-cell/g) || []).length, 1, "and drawn once");
+  assert.deepStrictEqual(namedPubkeys({ ...dup, pubkey: lister }, { full: true }), [pk],
+    "the profiles the page fetches are exactly the faces it draws");
+}
+
 // ---- the provenance row ---------------------------------------------------
 //
 // The pills are the whole row: no standing label, because a word repeated down

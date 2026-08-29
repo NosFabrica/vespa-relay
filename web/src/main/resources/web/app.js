@@ -2194,9 +2194,7 @@ const cardClicks = (hitsOf) => (e) => {
   const more = e.target.closest(".prov-more");
   if (more) {
     const open = more.getAttribute("aria-expanded") === "true";
-    for (const pill of more.parentElement.querySelectorAll(".prov-pill")) {
-      if (pill.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_PRECEDING) pill.hidden = open;
-    }
+    for (const pill of more.parentElement.querySelectorAll(".prov-pill.extra")) pill.hidden = open;
     more.setAttribute("aria-expanded", String(!open));
     more.textContent = open ? more.dataset.label : "show fewer";
     return;

@@ -26,7 +26,10 @@
 // said about this". The second question belongs on the entity page, where
 // related.js already makes bounded follow-up asks; it is not this row.
 //
-// No DOM and no imports: the rules are pure so web/src/test/js can hold them,
+// No DOM and one import — nip19's addrOf, because the address a pill links to
+// must be the same string the card's own permalink uses, and a second spelling
+// is how those two come to disagree. The rules are otherwise pure so
+// web/src/test/js can hold them,
 // and a pill names its DESTINATION rather than spelling a url — cards/base.js
 // owns every href on this page, and two spellings of one route is the bug that
 // rule exists to prevent.
@@ -37,6 +40,8 @@
 // card is furniture, and it would crowd out the one pill that says something.
 // A named constant rather than a scatter of conditions, because this is a
 // judgement about the corpus and the next reader is entitled to argue with it.
+import { addrOf } from "./shared/nip19.js";
+
 export const QUIET_NAMESPACES = new Set(["ISO-639-1", "ISO-639-2", "ISO-3166-1", "ISO-3166-2"]);
 
 /** NIP-32. Anyone may publish one about anything, so a label pill is never gated. */
@@ -61,10 +66,6 @@ export const PILL_BUDGET = { preview: 4, full: 40 };
 const HEX64 = /^[0-9a-f]{64}$/;
 const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === name && t[1]);
 const tagOf = (ev, name) => (tagsOf(ev, name)[0] || [])[1] || "";
-const addrOf = (ev) =>
-  ev && Number.isInteger(ev.kind) && ev.kind >= 30000 && ev.kind <= 39999 && HEX64.test(ev.pubkey || "")
-    ? `${ev.kind}:${ev.pubkey}:${tagOf(ev, "d")}`
-    : null;
 
 /**
  * The pills for every event in [events], keyed by the id of the event they go on.
@@ -87,8 +88,18 @@ export function provenanceOf(events) {
 
   // (target id) -> (pill key) -> pill
   const found = new Map();
+  // ONE POINTER MAY NAME ONE TARGET TWICE, and lists in the wild do: clients
+  // append without checking, which is the same reason peopleOf dedupes its
+  // grid. Counted naively, a single list repeating a member reads "Verified
+  // Human 2" — the count claiming two lists where there is one, which is
+  // exactly the fact the count exists to state honestly. Deduped PER POINTER,
+  // never globally: two different lists sharing a title must still count 2.
+  const seenHere = new Set();
   const add = (target, pill) => {
-    if (!target || !pill || target.id === pill.from) return;
+    if (!target || target.id === pill.from) return;
+    const once = `${target.id} ${pill.key}`;
+    if (seenHere.has(once)) return;
+    seenHere.add(once);
     let pills = found.get(target.id);
     if (!pills) found.set(target.id, (pills = new Map()));
     const seen = pills.get(pill.key);
@@ -105,7 +116,8 @@ export function provenanceOf(events) {
 
   for (const ev of events || []) {
     if (!ev) continue;
-    for (const { target, pill } of contributionsOf(ev, { byId, byAddr, profileOf })) add(target, pill);
+    seenHere.clear();
+    contributionsOf(ev, { byId, byAddr, profileOf }, add);
   }
 
   const out = new Map();
@@ -113,12 +125,21 @@ export function provenanceOf(events) {
   return out;
 }
 
-/** Every (target, pill) one pointer contributes — empty for an event that points at nothing. */
-function contributionsOf(ev, page) {
-  if (ev.kind === LABEL_KIND) return labelContributions(ev, page);
-  if (!DECLARATION_KINDS.has(ev.kind)) return [];
-  if (MEMBER_TAG[ev.kind]) return listContributions(ev, page);
-  return assertionContributions(ev, page);
+/**
+ * Hands every (target, pill) one pointer contributes to [emit].
+ *
+ * A CALLBACK RATHER THAN A RETURNED ARRAY, and it is the difference between
+ * this being free and being felt. A Trusted List carries every member it has —
+ * thousands — while a page holds at most a hundred results, so building an
+ * array per list meant allocating five thousand entries to find five matches,
+ * three times over (filter, map, filter). Emitting as we go walks the tags once
+ * and allocates only for the members actually on screen.
+ */
+function contributionsOf(ev, page, emit) {
+  if (ev.kind === LABEL_KIND) return labelContributions(ev, page, emit);
+  if (!DECLARATION_KINDS.has(ev.kind)) return;
+  if (MEMBER_TAG[ev.kind]) return listContributions(ev, page, emit);
+  return assertionContributions(ev, page, emit);
 }
 
 /**
@@ -128,25 +149,28 @@ function contributionsOf(ev, page) {
  * neither of which is an event this page could be drawing. The same rule the
  * relay's own SearchReferences follows, and for the same reason.
  */
-function labelContributions(ev, page) {
+function labelContributions(ev, page, emit) {
   const ns = tagOf(ev, "L");
-  const out = [];
-  const targets = [
-    ...tagsOf(ev, "e").map((t) => page.byId.get(t[1])),
-    ...tagsOf(ev, "p").map((t) => page.profileOf.get(t[1])),
-    ...tagsOf(ev, "a").map((t) => page.byAddr.get(t[1])),
-  ].filter(Boolean);
-  if (!targets.length) return out;
-  for (const tag of tagsOf(ev, "l")) {
+  const targets = [];
+  for (const t of (ev.tags || [])) {
+    if (!Array.isArray(t) || !t[1]) continue;
+    const target =
+      t[0] === "e" ? page.byId.get(t[1])
+      : t[0] === "p" ? page.profileOf.get(t[1])
+      : t[0] === "a" ? page.byAddr.get(t[1])
+      : null;
+    if (target) targets.push(target);
+  }
+  if (!targets.length) return;
+  for (const tag of (ev.tags || [])) {
+    if (!Array.isArray(tag) || tag[0] !== "l" || !tag[1]) continue;
     // The mark's namespace is its own third element where it has one, and the
     // event's `L` otherwise — a label may carry several, and the one that
     // decides whether this VALUE is metadata is the one written beside it.
     if (QUIET_NAMESPACES.has(tag[2] || ns)) continue;
-    for (const target of targets) {
-      out.push({ target, pill: { key: `label:${tag[1]}`, text: tag[1], to: "search", value: tag[1], gated: false, author: ev.pubkey, from: ev.id } });
-    }
+    const pill = { key: `label:${tag[1]}`, text: tag[1], to: "search", value: tag[1], gated: false, author: ev.pubkey, from: ev.id };
+    for (const target of targets) emit(target, pill);
   }
-  return out;
 }
 
 /**
@@ -156,17 +180,18 @@ function labelContributions(ev, page) {
  * indexes and so the only part a reader can have arrived by. An untitled list
  * falls back to its `d` rather than drawing a blank chip.
  */
-function listContributions(ev, page) {
+function listContributions(ev, page, emit) {
   const addr = addrOf(ev);
-  if (!addr) return [];
+  if (!addr) return;
   const text = tagOf(ev, "title") || tagOf(ev, "d");
-  if (!text) return [];
-  const tag = MEMBER_TAG[ev.kind];
+  if (!text) return;
+  const name = MEMBER_TAG[ev.kind];
   const pill = { key: `list:${text}`, text, to: "addr", value: addr, gated: true, author: ev.pubkey, from: ev.id };
-  return tagsOf(ev, tag)
-    .map((t) => (tag === "p" ? page.profileOf.get(t[1]) : tag === "e" ? page.byId.get(t[1]) : page.byAddr.get(t[1])))
-    .filter(Boolean)
-    .map((target) => ({ target, pill }));
+  for (const t of (ev.tags || [])) {
+    if (!Array.isArray(t) || t[0] !== name || !t[1]) continue;
+    const target = name === "p" ? page.profileOf.get(t[1]) : name === "e" ? page.byId.get(t[1]) : page.byAddr.get(t[1]);
+    if (target) emit(target, pill);
+  }
 }
 
 /**
@@ -179,27 +204,29 @@ function listContributions(ev, page) {
  * With no topic, the card is here because a service the reader delegated
  * scored this person, and the metric is the fact.
  */
-function assertionContributions(ev, page) {
+function assertionContributions(ev, page, emit) {
   const addr = addrOf(ev);
   const subject = tagOf(ev, "d");
-  if (!addr || !subject) return [];
+  if (!addr || !subject) return;
   const target =
     ev.kind === 30382 ? page.profileOf.get(subject)
     : ev.kind === 30383 ? page.byId.get(subject)
     : ev.kind === 30384 ? page.byAddr.get(subject)
     : null; // 30385's subject is a NIP-73 identifier — not an event this page draws.
-  if (!target) return [];
+  if (!target) return;
 
-  const topics = ev.kind === 30382 ? tagsOf(ev, "t").map((t) => t[1]) : [];
-  if (topics.length) {
-    return topics.map((topic) => ({
-      target,
-      pill: { key: `topic:${topic}`, text: topic, to: "topic", value: topic, gated: true, author: ev.pubkey, from: ev.id },
-    }));
+  let topics = 0;
+  if (ev.kind === 30382) {
+    for (const t of (ev.tags || [])) {
+      if (!Array.isArray(t) || t[0] !== "t" || !t[1]) continue;
+      topics++;
+      emit(target, { key: `topic:${t[1]}`, text: t[1], to: "topic", value: t[1], gated: true, author: ev.pubkey, from: ev.id });
+    }
   }
+  if (topics) return;
   const rank = tagOf(ev, "rank");
   const text = rank ? `rank ${rank}` : "scored";
-  return [{ target, pill: { key: `score:${text}`, text, to: "addr", value: addr, gated: true, author: ev.pubkey, from: ev.id } }];
+  emit(target, { key: `score:${text}`, text, to: "addr", value: addr, gated: true, author: ev.pubkey, from: ev.id });
 }
 
 /**
@@ -238,6 +265,23 @@ export function facesNeeded(pillsByTarget) {
 export const provenance = new Map();
 /** True when a gated pill should be attributed — see [facesNeeded]. */
 export const attribution = { faces: false };
+
+/**
+ * Drop what the page knows, for a view that is not a page of results.
+ *
+ * The entity page is the one that needs it: it renders a card without going
+ * through hydrate(), so it would otherwise inherit whatever the last SEARCH
+ * left behind — a row appearing on a permalink reached by clicking a result
+ * and not on the same permalink typed into the bar. Worse than either
+ * behaviour is the two of them together, since it makes the row's presence
+ * mean "how you got here". "Why is this in this page" is not a question a
+ * permalink has, and what IS said about an event belongs in a section of its
+ * own there, on a bounded ask, the way related.js already does it.
+ */
+export function forgetProvenance() {
+  provenance.clear();
+  attribution.faces = false;
+}
 
 /** Replace what the page knows with this page's answer. Returns how many cards gained a row. */
 export function seedProvenance(events) {

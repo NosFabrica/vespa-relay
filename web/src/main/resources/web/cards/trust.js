@@ -34,7 +34,19 @@ const MEMBER_TAG = { 30392: "p", 30393: "e", 30394: "a", 30395: "i" };
 /** What one member is CALLED, in the vocabulary of the kind that holds it. */
 const MEMBER_NOUN = { 30392: "member", 30393: "event", 30394: "article", 30395: "identifier" };
 
-const membersOf = (ev) => tagsOf(ev, MEMBER_TAG[ev.kind] || "p").map((t) => t[1]).filter(Boolean);
+/**
+ * The membership, in the shape this kind's member tag holds.
+ *
+ * 30392 goes through `peopleOf` rather than a raw `p` scan, and both halves of
+ * that are load-bearing — the same two `peopleOf` exists for. It DEDUPES,
+ * because lists in the wild repeat entries, and it drops anything that is not
+ * hex, because npub() over a value that is not a key labels somebody who does
+ * not exist. It also has to be the same call `gridPeople` makes to declare
+ * which profiles the page owes itself: the faces drawn and the profiles
+ * fetched for them must not be two different sets.
+ */
+const membersOf = (ev) =>
+  ev.kind === 30392 ? peopleOf(ev) : tagsOf(ev, MEMBER_TAG[ev.kind] || "p").map((t) => t[1]).filter(Boolean);
 
 /**
  * THE FACTS A LIST IS, drawn as the props table rather than as prose.

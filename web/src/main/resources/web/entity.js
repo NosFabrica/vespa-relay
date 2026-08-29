@@ -33,6 +33,7 @@ import { kindLabel } from "./shared/kinds.js";
 import { nip19Parse, shortNpub } from "./shared/nip19.js";
 import { njumpFor, tagsWhere } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
+import { forgetProvenance } from "./provenance.js";
 import { loadRelated, relatedHtml } from "./related.js";
 
 // A token, not a flag: navigating away (or to the next entity) invalidates
@@ -222,6 +223,11 @@ async function paintRelated(ev, my, { paintScores, setHits }) {
  */
 export async function showEntity(seg, { paintScores, ensureLogin, setHits }) {
   const my = ++token;
+  // A permalink is not a page of results, and the provenance row answers a
+  // question only a results page has. Cleared on the way in so the row cannot
+  // arrive here as a leftover of the search that was on screen a moment ago —
+  // which would make its presence mean "how you got to this page".
+  forgetProvenance();
   const $results = document.getElementById("results");
   const parsed = nip19Parse(seg);
 
