@@ -753,6 +753,73 @@ const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
 
+// ---- the provenance row ---------------------------------------------------
+//
+// The pills are the whole row: no standing label, because a word repeated down
+// forty cards teaches the reader nothing after the first. Every card gets the
+// row from ONE seam (shell), so this is asserted through the renderer rather
+// than by calling provHtml directly.
+{
+  const { seedProvenance } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
+  const lister = "b".repeat(64), bot = "d".repeat(64);
+  const target = { id: eid, pubkey: pk, kind: 0, created_at: now, tags: [], content: "{}" };
+  const page = [
+    target,
+    { id: "2".repeat(64), pubkey: lister, kind: 30392, created_at: now, tags: [["d", "x"], ["title", "Verified Human"], ["p", pk]], content: "" },
+    { id: "3".repeat(64), pubkey: lister, kind: 30392, created_at: now, tags: [["d", "y"], ["title", "Verified Human"], ["p", pk]], content: "" },
+    { id: "4".repeat(64), pubkey: bot, kind: 1985, created_at: now, tags: [["L", "ugc"], ["l", "zapped", "ugc"], ["p", pk]], content: "" },
+  ];
+  seedProvenance(page);
+  const html = card(target);
+  assert(html.includes('class="prov pills"'), "a spliced card draws its provenance row");
+  assert(!/prov-why|>why</.test(html), "the row carries no standing label — the pills are the row");
+
+  // The three destinations, spelled by base.js and nowhere else.
+  assert(html.includes(`href="/${naddr(`30392:${lister}:x`)}"`),
+    "a list pill opens the list's own page — the same address its card opens");
+  assert(html.includes(`href="/?q=zapped"`), "a label pill runs a search for itself");
+
+  // Two tones, and the count that makes the duplicate honest.
+  assert(html.includes('class="prov-pill vouched"'), "a delegated source takes the yours tone");
+  assert(html.includes('class="prov-pill open"'), "an ungated label never takes it");
+  assert(/Verified Human <span class="n">2<\/span>/.test(html),
+    "two lists with one title are one pill and a count, not two identical chips");
+
+  // Attribution: one delegated publisher on this page, so a face on the gated
+  // pill would be the same face every time. The ungated one always carries it.
+  const gated = /<a class="prov-pill vouched"[^>]*>(.*?)<\/a>/.exec(html)[1];
+  const open = /<a class="prov-pill open"[^>]*>(.*?)<\/a>/.exec(html)[1];
+  assert(!gated.includes("av-wrap"), "one publisher: the tone already says it is yours");
+  assert(open.includes("av-wrap"), "nothing gated a label, so who said it is the whole question");
+
+  // EVERY RENDERER, not just the ones that go through shell(). The profile
+  // card is hand-rolled and was missing the row until this asserted it — which
+  // is the worst possible one to miss, since a profile is what a Trusted List
+  // of pubkeys and a contact card both splice. A family that rolls its own
+  // frame must not be able to drop the row silently.
+  for (const [kind, fixture] of FIXTURES) {
+    // ONE POINTER for every target shape: a NIP-32 label may name an event, a
+    // pubkey and an address at once, which is exactly the three ways a card
+    // can be the thing something points at.
+    seedProvenance([
+      fixture,
+      { id: "2".repeat(64), pubkey: bot, kind: 1985, created_at: now,
+        tags: [["L", "ugc"], ["l", "spliced", "ugc"], ["e", fixture.id], ["p", fixture.pubkey],
+               ["a", `${fixture.kind}:${fixture.pubkey}:${(fixture.tags.find((t) => t[0] === "d") || [])[1] || ""}`]],
+        content: "" },
+    ]);
+    assert(card(fixture).includes('class="prov pills"'),
+      `kind ${kind}: a spliced card draws no provenance row — a hand-rolled frame that forgot it`);
+  }
+
+  // A card nothing points at draws no row at all — its presence is the signal.
+  seedProvenance(page);
+  assert(!card({ id: "9".repeat(64), pubkey: pk, kind: 1, created_at: now, tags: [], content: "hi" }).includes("prov pills"),
+    "an ordinary hit gets no row");
+  seedProvenance([]);
+  assert(!card(target).includes("prov pills"), "and the row clears with the page");
+}
+
 // ---- every card is a link to its own page --------------------------------
 //
 // Two routes to one destination, and the pair is the point: `data-href` is

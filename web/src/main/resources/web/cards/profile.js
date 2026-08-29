@@ -6,7 +6,7 @@ import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, parseProfile } from "../shared/profiles.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, registerRow, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
+import { register, registerRow, badgeHtml, extLink, jsonHtml, propsHtml, provHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
 
 function profileCard(ev, opts) {
   const p = parseProfile(ev);
@@ -25,9 +25,14 @@ function profileCard(ev, opts) {
   // string nobody reads.
   if (!displayName(p)) props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
   const about = clipIf(opts, p.about, 400);
-  // This frame is hand-rolled rather than shell()'s, so the card's own click
-  // target has to be set here too — a profile's is the person's page, not the
-  // kind 0's id, which names one revision of it.
+  // This frame is hand-rolled rather than shell()'s, so everything shell does
+  // for a card has to be done here too. Two of those, and both were paid for:
+  // the card's own click target (a profile's is the PERSON's page, not the
+  // kind 0's id, which names one revision of it), and the PROVENANCE row —
+  // which matters most precisely here, since a profile is what a Trusted List
+  // of pubkeys and a contact card both splice. A profile arriving with no word
+  // about why is the exact case the row exists for, and this frame is the one
+  // that could silently miss it.
   const href = opts && opts.full ? null : selfHref(ev);
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
@@ -39,6 +44,7 @@ function profileCard(ev, opts) {
         </div>
         ${badgeHtml(ev)}
       </div>
+      ${provHtml(ev, opts)}
       ${about ? `<div class="result-body${clampCls(opts)}">${esc(about)}</div>` : ""}
       ${propsHtml(props)}
       ${jsonHtml(ev)}

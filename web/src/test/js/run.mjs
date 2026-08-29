@@ -43,6 +43,11 @@
 //                  the rule two separate caches have now got wrong
 // parents.test.mjs which `e` tag a reply answers and who wrote it — NIP-10's
 //                  rule, plus that same complete-read rule on its cache
+// provenance.test.mjs WHY an event is in a page — that two lists sharing a
+//                  title collapse to one pill with a count rather than two
+//                  identical chips, that a language label is not provenance,
+//                  that a delegated source and an open one never share a tone,
+//                  and that a pill whose target is not on screen is not drawn
 // preload.test.mjs the modulepreload hints match the real import graph, so the
 //                  module waterfall stays one round trip instead of three
 // filters.test.mjs every control in the filters panel is counted on the button
@@ -94,7 +99,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "provenance.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

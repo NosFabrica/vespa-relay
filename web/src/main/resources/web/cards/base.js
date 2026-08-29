@@ -20,6 +20,7 @@ import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 import { groupTokenizes } from "../shared/query.js";
 import { postedTo } from "../shared/groups.js";
 import { groupName } from "../shared/groupnames.js";
+import { provenance, attribution, PILL_BUDGET } from "../provenance.js";
 
 // ---- the registry ---------------------------------------------------------
 export const renderers = new Map(); // kind -> (ev, opts) -> html
@@ -231,6 +232,98 @@ export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone
  * returned, tags and sig included, without a console or a second client. On
  * the permalink this doubles as the "complete event" in the strictest sense.
  */
+/**
+ * WHY THIS EVENT IS IN THIS PAGE — the provenance pills, or "" for a card that
+ * is here because the search matched it.
+ *
+ * The empty case is most of them, and it is deliberate: a row drawn on every
+ * card would spend the reader's attention on the ordinary result, and this row
+ * exists for the one that arrived without containing what was searched for.
+ * Its presence is therefore itself a signal.
+ *
+ * NO STANDING LABEL in front of the pills. The pills are the whole row: a word
+ * repeated down forty cards teaches the reader nothing after the first, and
+ * what it was defending — that this is why an event is HERE, not everything
+ * ever said about it — belongs in the copy around the feature. provenance.js
+ * carries the three ways the row is partial.
+ */
+export function provHtml(ev, opts) {
+  const pills = provenance.get((ev && ev.id) || "");
+  if (!pills || !pills.length) return "";
+  const cap = opts && opts.full ? PILL_BUDGET.full : PILL_BUDGET.preview;
+  const shown = pills.slice(0, cap);
+  const rest = pills.slice(cap);
+  return `<div class="prov pills">` +
+    shown.map((p) => pillHtml(p)).join("") +
+    (rest.length
+      ? `<button type="button" class="prov-more" aria-expanded="false" data-label="+${rest.length.toLocaleString()} more">+${rest.length.toLocaleString()} more</button>` +
+        rest.map((p) => pillHtml(p, true)).join("")
+      : "") +
+    `</div>`;
+}
+
+/**
+ * One pill. `hidden` is the overflow behind the count, in the DOM from the
+ * start so expanding it costs no re-render and no second lookup of the page.
+ */
+function pillHtml(p, hidden = false) {
+  const href = pillHref(p);
+  const tone = p.gated ? "vouched" : "open";
+  const body =
+    facesFor(p) +
+    esc(p.text) +
+    (p.count > 1 ? ` <span class="n">${p.count.toLocaleString()}</span>` : "");
+  const attrs = `class="prov-pill ${tone}" title="${esc(pillTitle(p))}"${hidden ? " hidden" : ""}`;
+  // A pill with nowhere to go is text, not a dead link — the same rule
+  // selfHref keeps for a card that cannot name its own page.
+  return href ? `<a ${attrs} href="${href}">${body}</a>` : `<span ${attrs}>${body}</span>`;
+}
+
+/**
+ * A pill's destination, per source — the one place the three routes are spelled.
+ *
+ * A LIST or an assertion opens its own entity page, which is the same page its
+ * card opens as a result in its own right (selfHref addresses replaceable
+ * addressables by naddr for exactly that reason). A LABEL runs a search for
+ * itself: the label describes many events and the useful answer is the rest of
+ * them, not the one 1985 that named this card. A TOPIC opens that topic's
+ * screen, because the reader searched a subject and the answer is the other
+ * people under it.
+ */
+function pillHref(p) {
+  if (p.to === "addr") return addrHref(p.value);
+  if (p.to === "topic") return hashtagHref(p.value);
+  return searchHref(p.value);
+}
+
+/** What the hover says: the count, and who is behind it. */
+function pillTitle(p) {
+  const who = p.authors.map((pk) => displayName(profiles.get(pk)) || shortNpub(pk)).join(", ");
+  const n = p.count === 1 ? "1 record" : `${p.count.toLocaleString()} records`;
+  return p.gated
+    ? `${n} from ${who} — a publisher your provider list names`
+    : `${n} from ${who} — a NIP-32 label, which anyone may publish`;
+}
+
+/**
+ * The author's face, drawn WHERE IT DISAMBIGUATES.
+ *
+ * An ungated pill always carries one: nothing gated it, so who is speaking is
+ * the whole trust question and no other part of the card answers it. A gated
+ * pill carries one only when the page holds more than one delegated publisher
+ * — a reader's provider list typically names one per kind, and the same face
+ * forty times down a results list restates what the tone already says.
+ *
+ * Capped at three. Measured on staging no pill has more than two authors, so
+ * the cap is the degradation path rather than a thing readers will meet.
+ */
+function facesFor(p) {
+  if (p.gated && !attribution.faces) return "";
+  const shown = p.authors.slice(0, 3);
+  const faces = shown.map((pk) => avatarHtml(authorOf({ pubkey: pk }).picture, pk, "xs")).join("");
+  return shown.length > 1 ? `<span class="prov-pile">${faces}</span>` : faces;
+}
+
 export const jsonHtml = (ev) =>
   `<div class="raw"><button type="button" class="raw-toggle" data-id="${esc(ev.id)}">json</button>` +
   `<pre class="raw-body" hidden></pre></div>`;
@@ -347,6 +440,7 @@ export function shell(ev, opts, inner, props = []) {
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
       ${bylineHtml(ev, opts)}
+      ${provHtml(ev, opts)}
       ${inner}
       ${propsHtml(props)}
       ${jsonHtml(ev)}

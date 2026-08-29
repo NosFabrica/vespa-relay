@@ -16,6 +16,7 @@ import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNa
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
+import { seedProvenance } from "./provenance.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
@@ -535,6 +536,11 @@ async function fetchFeed(want) {
  */
 function hydrate(events, deep) {
   seedProfiles(events);
+  // WHY each of these is here, computed from the page itself — the relay sends
+  // a pointer immediately before the event it points at, so the answer is
+  // already in this array and costs no round trip. Before the render, because
+  // the row is part of the card rather than something painted onto it after.
+  seedProvenance(events);
   // The same for the search box's `group:` pill, and it is nearly free: a
   // `group:` query already asks for the group's own kind 39000 beside its
   // posts (query.js's buildFilters sends the `#d` with the `#h`), so the name
@@ -2180,6 +2186,19 @@ const cardClicks = (hitsOf) => (e) => {
     a.download = `sot-${slug}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.txt`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    return;
+  }
+  // The provenance row's overflow. The pills are already in the DOM behind
+  // `hidden`, so this reveals rather than re-renders — no second pass over the
+  // page's pointers, and the card keeps its height until asked.
+  const more = e.target.closest(".prov-more");
+  if (more) {
+    const open = more.getAttribute("aria-expanded") === "true";
+    for (const pill of more.parentElement.querySelectorAll(".prov-pill")) {
+      if (pill.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_PRECEDING) pill.hidden = open;
+    }
+    more.setAttribute("aria-expanded", String(!open));
+    more.textContent = open ? more.dataset.label : "show fewer";
     return;
   }
   const btn = e.target.closest(".raw-toggle");
