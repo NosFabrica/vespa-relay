@@ -271,17 +271,31 @@ class ProductionCorpusIT {
 
             val enrolment = EnrolledSigners(recall = { filters -> corpus.filter { e -> filters.any { it.match(e) } } })
             for (list in lists.take(25)) {
-                val named =
-                    list.tags
-                        .serviceProviders()
-                        .map { it.pubkey }
-                        .toSet()
+                val named = list.tags.serviceProviders()
                 val enrolled = enrolment.of(setOf(list.pubKey))
-                assertTrue(list.pubKey in enrolled, "a reader is always their own signer")
-                assertTrue(
-                    enrolled.containsAll(named),
-                    "10040 ${list.id} names $named; the enrolment resolved $enrolled",
-                )
+                for (kind in SearchReferences.DECLARATIONS) {
+                    assertTrue(enrolled.admits(kind, list.pubKey), "a reader is always their own signer, on every kind")
+                }
+
+                // Each entry opens the kind it names and no other. Real Maps
+                // are overwhelmingly 30382-only, so the second half of this is
+                // what the production shape actually exercises: a service
+                // appointed to rank users must not thereby be trusted to
+                // publish event or address declarations.
+                for (entry in named) {
+                    assertTrue(
+                        enrolled.admits(entry.service.kind, entry.pubkey),
+                        "10040 ${list.id} names ${entry.service.toValue()} -> ${entry.pubkey}, which the enrolment did not admit",
+                    )
+                    val elsewhere = SearchReferences.DECLARATIONS.filter { it != entry.service.kind }
+                    val named1 = named.map { it.service.kind }.toSet()
+                    for (kind in elsewhere.filter { it !in named1 }) {
+                        assertTrue(
+                            !enrolled.admits(kind, entry.pubkey),
+                            "10040 ${list.id} delegates ${entry.pubkey} for ${entry.service.kind} only, yet $kind was admitted too",
+                        )
+                    }
+                }
             }
         }
 

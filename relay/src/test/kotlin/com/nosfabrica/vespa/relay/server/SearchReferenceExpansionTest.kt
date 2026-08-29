@@ -131,12 +131,27 @@ class SearchReferenceExpansionTest {
         plainServer.close()
     }
 
-    /** The reader's NIP-85 provider list: `curator` ranks for them, and nobody else does. */
+    /**
+     * The reader's Treasure Map: `curator` computes for them, and nobody else
+     * does.
+     *
+     * FOUR ENTRIES FOR ONE PUBLISHER, because the gate is keyed by the kind of
+     * the declaration it is about to unpack, and each entry appoints exactly
+     * one kind. The NIP-85 shape names a kind AND metric; the three Trusted
+     * List kinds take the ADR's generic bare-kind shape. A Map carrying only
+     * the first would open the contact card below and leave all three lists
+     * shut — which is a case of its own further down.
+     */
     private val providerList =
         reader.sign<Event>(
             1_699_999_000L,
             10040,
-            arrayOf(arrayOf("30382:rank", curator.pubKey, "wss://provider.example")),
+            arrayOf(
+                arrayOf("30382:rank", curator.pubKey, "wss://provider.example"),
+                arrayOf("30392", curator.pubKey, "wss://provider.example"),
+                arrayOf("30393", curator.pubKey, "wss://provider.example"),
+                arrayOf("30394", curator.pubKey, "wss://provider.example"),
+            ),
             "",
         )
 
@@ -354,7 +369,7 @@ class SearchReferenceExpansionTest {
                     newcomer.sign<Event>(
                         1_699_999_500L,
                         10040,
-                        arrayOf(arrayOf("30382:rank", curator.pubKey, "wss://provider.example")),
+                        arrayOf(arrayOf("30392", curator.pubKey, "wss://provider.example")),
                         "",
                     ),
                 )
@@ -376,6 +391,47 @@ class SearchReferenceExpansionTest {
                         """{"kinds":[0,30392],"search":"podcaster include:spam observer:${bystander.pubKey}"}""",
                     ),
                     "another reader's enrolment is not this reader's",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a delegation opens the kind it names and no other`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // ONE ENTRY, ONE KIND. This reader appointed `curator` to rank
+                // users and nothing else — so `curator`'s contact card is a
+                // computation they asked for, and `curator`'s Trusted List of
+                // those same users is not. Same publisher, same subject, two
+                // different things to have delegated.
+                val ranksOnly = NostrSignerSync()
+                val ranksOnlyLens = "include:spam observer:${ranksOnly.pubKey}"
+                publish(
+                    session,
+                    out,
+                    ranksOnly.sign<Event>(
+                        1_699_999_800L,
+                        10040,
+                        arrayOf(arrayOf("30382:rank", curator.pubKey, "wss://provider.example")),
+                        "",
+                    ),
+                )
+
+                assertEquals(
+                    listOf(assertion.id, profile.id),
+                    page(session, out, "card", """{"kinds":[0,30382],"search":"bramblecast $ranksOnlyLens"}"""),
+                    "the kind the entry names must expand",
+                )
+                assertEquals(
+                    listOf(list.id),
+                    page(session, out, "list", """{"kinds":[0,30392],"search":"podcaster $ranksOnlyLens"}"""),
+                    "a rank delegation must not also open the publisher's Trusted Lists",
                 )
             } finally {
                 session.close()

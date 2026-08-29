@@ -233,8 +233,8 @@ internal class SearchReferenceExpansion(
     /** `searchingFilters[i]` is read through `lenses[lensOfFilter[i]]`. */
     private val lensOfFilter: IntArray
 
-    /** Memoized [enrolledSigners] per lens; a page of labels never fills one in. */
-    private val enrolled: Array<Set<HexKey>?>
+    /** Memoized [enrolment] per lens; a page of labels never fills one in. */
+    private val enrolled: Array<EnrolledSigners.Enrolment?>
 
     init {
         val perFilter =
@@ -330,7 +330,7 @@ internal class SearchReferenceExpansion(
 
                     // Resolved on the first list or assertion this lens sees
                     // and memoized after: a page of labels never asks for it.
-                    SearchReferences.isDeclaration(pointer.kind) && pointer.pubKey !in enrolledSigners(lens) -> References.NONE
+                    SearchReferences.isDeclaration(pointer.kind) && !enrolment(lens).admits(pointer.kind, pointer.pubKey) -> References.NONE
 
                     else -> plan(SearchReferences.of(pointer))
                 }
@@ -510,23 +510,25 @@ internal class SearchReferenceExpansion(
     )
 
     /**
-     * The pubkeys whose Trusted Lists and Trusted Assertions this read has
-     * asked for. Memoized per REQ over a cache that is memoized per reader, so
-     * a page of 500 lists asks once and a session of many searches usually asks
-     * not at all — [EnrolledSigners] carries the staleness argument.
+     * WHICH SIGNERS THIS READ ASKED FOR, PER KIND. Memoized per REQ over a
+     * cache that is memoized per reader, so a page of 500 lists asks once and a
+     * session of many searches usually asks not at all — [EnrolledSigners]
+     * carries the staleness argument and the per-kind reasoning.
      *
-     * EVERY service a 10040 names counts, not just `30382:rank`. A Trusted List
-     * of events is published by a `30383:` service and a list of addresses by a
-     * `30384:` one, so filtering to the ranking service — which is the right
-     * question for [TrustNotice], where the subject IS ranking — would silently
-     * drop three quarters of the family here.
+     * EVERY service a 10040 names counts, not just `30382:rank` — a Trusted
+     * List of events is published by a `30383:` service and a list of addresses
+     * by a `30384:` one, so filtering to the ranking service (the right
+     * question for [TrustNotice], where the subject IS ranking) would drop
+     * three quarters of the family. What the entries do NOT do is vouch for
+     * each other: the row below asks with the kind it is about to unpack, so a
+     * `30382:rank` delegation opens 30382 and leaves the other seven shut.
      *
      * The private half of a 10040 (NIP-44 in `content`) cannot be read by a
      * relay and so names nothing: a reader whose providers are all private gets
      * no list expansion, the same answer the store's own provider map gives for
      * the same reason.
      */
-    private suspend fun enrolledSigners(lens: Int): Set<HexKey> = enrolled[lens] ?: enrolment.of(lenses[lens].observers).also { enrolled[lens] = it }
+    private suspend fun enrolment(lens: Int): EnrolledSigners.Enrolment = enrolled[lens] ?: enrolment.of(lenses[lens].observers).also { enrolled[lens] = it }
 
     /**
      * A recall whose failure costs the splice and nothing else. An expansion

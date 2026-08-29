@@ -515,7 +515,15 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         been asked for. EVERY service the 10040 names, not just
                         `30382:rank` (TrustNotice's question is ranking; this
                         one is not — a 30393 list comes from a `30383:`
-                        service). The observer is the filter's `observer:` or
+                        service), AND PER KIND: an entry names a kind in both
+                        shapes, and that kind is what the reader delegated, so
+                        `30382:rank` opens 30382 and leaves the other seven
+                        shut. The two shapes are NIP-85's `<kind>:<metric>` and
+                        the Tapestry ADR's generic bare-kind `["30392", pk,
+                        relay]` — quartz reads them with two different parsers
+                        that each refuse the other's, and `EnrolledSigners`
+                        reads both because "did this reader ask for this" is one
+                        question. The observer is the filter's `observer:` or
                         the connection's NIP-42 pubkey, per filter, the store's
                         own precedence — read through `Filter.observerLens`, the
                         SAME acceptance test LensRequiredPolicy gates on, so a

@@ -31,9 +31,28 @@ import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * WHOSE LISTS A READER HAS ASKED FOR: each observer, plus every service key
- * their own kind-10040 names. [SearchReferenceExpansion] gates the Trusted
- * List and Trusted Assertion families on this set.
+ * WHOSE LISTS A READER HAS ASKED FOR, KIND BY KIND: each observer, plus the
+ * service keys their own kind-10040 names FOR THAT KIND.
+ * [SearchReferenceExpansion] gates the Trusted List and Trusted Assertion
+ * families on this, asking [Enrolment.admits] with the kind of the very
+ * declaration it is about to unpack.
+ *
+ * ## Why the answer is per kind and not one flat set
+ *
+ * Every entry in a Treasure Map names a kind, in both shapes below, and it is
+ * the kind that says WHAT the reader delegated: `["30382:rank", …]` appoints a
+ * service to rank users, `["30393", …]` appoints a publisher to curate lists
+ * of events. Collapsing the entries into one set of admitted signers loses
+ * that — a reader who appointed one service to rank users would have that
+ * service's event lists, address lists and external-id assertions unpacked
+ * too, none of which they asked for, and a compromised or merely careless
+ * publisher gets a free hand across three families off the back of one
+ * delegation. Keyed by kind, an entry admits exactly what it appoints.
+ *
+ * THE READER THEMSELVES IS THE ONE EXCEPTION, admitted for every kind: their
+ * own declarations need no delegation, since a 10040 entry appointing yourself
+ * is not something anyone publishes and the absence of one must not shut a
+ * reader out of their own computations.
  *
  * ## The Map delegates in TWO shapes, and this gate needs both
  *
@@ -58,10 +77,11 @@ import java.util.concurrent.ConcurrentHashMap
  * NAMED `3039x:<name>` entries are deliberately NOT admitted. The ADR reserves
  * them and says they must drive no behavior until it defines them, and
  * [TrustedListProviderTag.parseGeneric] is where that line is drawn upstream.
- * A gate is the last place to act on a reservation. Asking per kind rather
- * than folding every generic entry in also means a Map that violates the
- * one-entry-per-kind invariant admits the publisher a conformant reader would
- * resolve — the first — rather than everyone who ever appeared under that kind.
+ * A gate is the last place to act on a reservation. Taking ONE generic entry
+ * per kind, rather than folding in every generic entry that appears under it,
+ * also means a Map violating the one-entry-per-kind invariant admits the
+ * publisher a conformant reader would resolve — the first — rather than
+ * everyone who ever appeared under that kind.
  *
  * THE PUBLIC HALF ONLY, for both shapes: half a Map's delegations may be
  * NIP-44 encrypted to its owner, and a relay holds no signer. A reader who
@@ -124,55 +144,71 @@ internal class EnrolledSigners(
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
     private class Entry(
-        val signers: Set<HexKey>,
+        val byKind: Map<Int, Set<HexKey>>,
         val expiresAtMillis: Long,
     )
 
     private val cache = ConcurrentHashMap<HexKey, Entry>()
 
     /**
-     * The admitted signers for [observers] — themselves and their services.
-     * Empty for an empty [observers], which is the anonymous read that expands
-     * no list at all.
+     * What [observers] have asked for: themselves, plus each kind's delegated
+     * signers. An empty [observers] yields an [Enrolment] admitting nothing,
+     * which is the anonymous read that expands no declaration at all.
      *
      * One recall for every observer still unresolved, not one each: a REQ
-     * naming two observers on two filters is one `authors` list.
+     * naming two observers on two filters is one `authors` list. Two observers
+     * UNION per kind — a REQ naming both is one reader asking through two
+     * points of view, and a declaration either of them delegated is one they
+     * asked for.
      */
-    suspend fun of(observers: Set<HexKey>): Set<HexKey> {
-        if (observers.isEmpty()) return emptySet()
+    suspend fun of(observers: Set<HexKey>): Enrolment {
+        if (observers.isEmpty()) return Enrolment.NONE
 
         val now = nowMillis()
-        val signers = HashSet<HexKey>(observers)
+        val byKind = HashMap<Int, MutableSet<HexKey>>()
         val misses = ArrayList<HexKey>()
         for (observer in observers) {
             val hit = cache[observer]?.takeIf { it.expiresAtMillis > now }
-            if (hit == null) misses.add(observer) else signers.addAll(hit.signers)
+            if (hit == null) misses.add(observer) else hit.byKind.forEach { (kind, keys) -> byKind.getOrPut(kind) { HashSet() }.addAll(keys) }
         }
-        if (misses.isEmpty()) return signers
+        if (misses.isEmpty()) return Enrolment(observers, byKind)
 
-        val lists = read(misses) ?: return signers.also { it.addAll(uncachedFallback(misses)) }
+        // A FAILED LOOKUP NEEDS NO CODE OF ITS OWN: Enrolment admits the
+        // observers on every kind without consulting the per-kind map, so a
+        // read that could not answer simply contributes no delegations. A
+        // reader's own declarations still unpack — that half needs no store —
+        // and their services' stay shut until a read succeeds, which is the
+        // conservative direction for a gate. Nothing is cached either, so the
+        // next search asks again rather than inheriting the outage.
+        val lists = read(misses) ?: return Enrolment(observers, byKind)
 
         // Every miss gets an entry, including the readers who turned out to
         // have no list: "this reader has enrolled nobody" is an answer, and
         // the common one.
-        val found = HashMap<HexKey, MutableSet<HexKey>>()
-        for (observer in misses) found[observer] = HashSet()
+        val found = HashMap<HexKey, MutableMap<Int, MutableSet<HexKey>>>()
+        for (observer in misses) found[observer] = HashMap()
         for (list in lists) {
             val services = found[list.pubKey] ?: continue
-            list.tags.serviceProviders().forEach { services.add(it.pubkey) }
-            TrustedListProviderTag.KINDS.forEach { kind -> list.tags.trustedListProvider(kind)?.let { services.add(it.pubkey) } }
+            // The kind an entry names IS the delegation, in both shapes: a
+            // `30382:rank` service is appointed to rank users and nothing more,
+            // a bare `30393` publisher to curate lists of events and nothing
+            // more.
+            list.tags.serviceProviders().forEach { services.getOrPut(it.service.kind) { HashSet() }.add(it.pubkey) }
+            TrustedListProviderTag.KINDS.forEach { kind ->
+                list.tags.trustedListProvider(kind)?.let { services.getOrPut(kind) { HashSet() }.add(it.pubkey) }
+            }
         }
         val expiresAt = now + ttlMillis
-        // A crude bound, and it wants to stay crude: the entries are two
-        // pubkeys' worth of strings each, the map is only reachable by readers
-        // who actually searched, and a relay that has served a million
+        // A crude bound, and it wants to stay crude: the entries are a handful
+        // of pubkeys' worth of strings each, the map is only reachable by
+        // readers who actually searched, and a relay that has served a million
         // distinct observers inside one TTL has bigger numbers to look at.
         if (cache.size > MAX_ENTRIES) cache.clear()
         for ((observer, services) in found) {
             cache[observer] = Entry(services, expiresAt)
-            signers.addAll(services)
+            services.forEach { (kind, keys) -> byKind.getOrPut(kind) { HashSet() }.addAll(keys) }
         }
-        return signers
+        return Enrolment(observers, byKind)
     }
 
     /**
@@ -185,14 +221,6 @@ internal class EnrolledSigners(
     fun invalidate(pubkey: HexKey) {
         cache.remove(pubkey)
     }
-
-    /**
-     * What a failed lookup falls back to: the observers themselves, uncached.
-     * A reader's own lists still unpack — that half needs no store at all —
-     * and their services' lists stay shut until a read succeeds, which is the
-     * conservative direction for a gate.
-     */
-    private fun uncachedFallback(misses: List<HexKey>): Set<HexKey> = misses.toSet()
 
     /** The lists, or null when the store could not say — which is not the same as "none". */
     private suspend fun read(observers: List<HexKey>): List<Event>? =
@@ -220,6 +248,36 @@ internal class EnrolledSigners(
             println("search-expansion: provider-list lookup failed, expanding only the reader's own lists: ${e.message}")
             null
         }
+
+    /**
+     * ONE READ'S ANSWER: who this read may unpack a declaration of kind K
+     * from. Immutable and cheap to hold, so [SearchReferenceExpansion] resolves
+     * it once per lens and asks it per row.
+     */
+    internal class Enrolment(
+        /** Admitted on EVERY kind — a reader's own declarations need no delegation. */
+        private val observers: Set<HexKey>,
+        /** Delegated signers, keyed by the kind the Map entry appointed them for. */
+        private val byKind: Map<Int, Set<HexKey>>,
+    ) {
+        /**
+         * Whether [pubKey]'s declaration of [kind] is one this read asked for.
+         *
+         * The kind is the DECLARATION's, not the subject's: a 30392 list of
+         * pubkeys is admitted by a `30392` delegation, never by the `30382:rank`
+         * one that appoints a service to make assertions about those same
+         * pubkeys. Two different things to have asked for.
+         */
+        fun admits(
+            kind: Int,
+            pubKey: HexKey,
+        ): Boolean = pubKey in observers || pubKey in (byKind[kind] ?: emptySet())
+
+        companion object {
+            /** The anonymous read: no observer, so no declaration of any kind. */
+            val NONE = Enrolment(emptySet(), emptyMap())
+        }
+    }
 
     companion object {
         /**
