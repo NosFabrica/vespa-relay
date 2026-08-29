@@ -120,26 +120,38 @@ quartz = "029c40ebb4"
 # THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
 # on `InMemoryEventIndex` and cannot see a Vespa-only regression:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 130c2efa56
+#   git checkout 44515ff3e2
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against 130c2efa56 on a real Vespa in Docker: 11 tests across 10
-# suites, 0 skipped, 0 failures, 10m44s — AccessLogIT, ContainerJvmIT,
+# Run HERE against 44515ff3e2 on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures, 10m11s — AccessLogIT, ContainerJvmIT,
 # NearMergeSizingTest, ObserverGateIT, OrphanSweepIT, RankRegressionIT,
 # SearchBodyGramIT (2), SearchExactTextIT, SearchPrefixLadderIT, VespaParityIT.
+# It took three attempts to get that reading, and neither earlier failure was the
+# store's: a `NoClassDefFoundError` from recompiling :store under the live test
+# JVM, then a `NoSuchFileException` on Gradle's own binary results when a push
+# hook ran :benchmark:test into the same directory. Run this gate ALONE.
 # No schema movement in this range, so there is nothing for a deploy to do and no
-# upgrade path to probe this time either.
+# upgrade path to probe.
 #
-# DIRECTION: eaee359357 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates). The store's own quartz ask moves 98f09f29c0 ->
-# 029c40ebb4 across the range, which is the line above, now equal to it.
+# WHAT MOVED: the audit of the expansion this relay hands its caps to — a
+# truncated Trusted List keeping the confidence its members were scored with, a
+# lens that is the whole stripped query rather than its visibility half, a page
+# shifted onto a non-negative scale before a multiplicative discount is applied
+# to it, and keyed lookups that no longer drop the finding query's `ids` or its
+# `#d`. Plus a `Page` in place of `List<Ranked<R>>`, so a plain NIP-01 recall
+# stops allocating a wrapper per hit to carry a null.
 #
-# LEXICOGRAPHIC: '130c…' < 'eaee…' ('1' < 'e'), so this sorts BELOW the pin it
-# replaces — the unsafe direction, and BOTH pins go that way on this bump. Four
-# modules declare the store (:common, :relay, :sync, :peers), all through this
-# one alias, so there is a single string on the graph and nothing for ordering to
-# settle. The resolved graph is still the proof:
+# DIRECTION: 2a2a82bae7 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates). The store's own quartz ask does not move across
+# the range — it is 029c40ebb4 at both ends, equal to the line above.
+#
+# LEXICOGRAPHIC: '4451…' > '2a2a…' ('4' > '2'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, unlike the last bump. Four modules declare the
+# store (:common, :relay, :sync, :peers), all through this one alias, so there is
+# a single string on the graph and nothing for ordering to settle. The resolved
+# graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "2a2a82bae7"
+vespaEventStore = "44515ff3e2"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
