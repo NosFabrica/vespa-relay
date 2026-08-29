@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.experimental.trustedLists.treasureMap.TrustedListProviderTag
+import com.vitorpamplona.quartz.experimental.trustedLists.treasureMap.trustedListProvider
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -32,6 +34,40 @@ import java.util.concurrent.ConcurrentHashMap
  * WHOSE LISTS A READER HAS ASKED FOR: each observer, plus every service key
  * their own kind-10040 names. [SearchReferenceExpansion] gates the Trusted
  * List and Trusted Assertion families on this set.
+ *
+ * ## The Map delegates in TWO shapes, and this gate needs both
+ *
+ * A Treasure Map names a NIP-85 provider per kind AND metric —
+ * `["30382:rank", <pubkey>, <relay>]` — which is what `serviceProviders()`
+ * reads. Tapestry's Trusted Lists delegate through the same event in a
+ * different shape: a GENERIC BARE-KIND entry, `["30392", <pubkey>, <relay>]`,
+ * one of which delegates every list of that kind (ADR `tl-treasure-map/0001`).
+ * The Map stays a fixed size no matter how many lists the publisher computes,
+ * which is the point — list names are never enumerated.
+ *
+ * Reading only the first shape left the Trusted List half of this gate with no
+ * key: a bare-kind entry has no `:`, so NIP-85's parser has never returned one,
+ * and 30392-30395 could be admitted only by an observer who signed the lists
+ * themselves. Quartz `029c40ebb4` is what makes the second shape readable —
+ * it split the two parsers apart, bounding `ServiceProviderTag` to 30382-30385
+ * so a NIP-85 consumer is never handed a list delegation, and added
+ * [trustedListProvider] for the other side. Both are read here because the
+ * question this class answers — "did this reader ask for this signer's
+ * computations" — is one question across both specs.
+ *
+ * NAMED `3039x:<name>` entries are deliberately NOT admitted. The ADR reserves
+ * them and says they must drive no behavior until it defines them, and
+ * [TrustedListProviderTag.parseGeneric] is where that line is drawn upstream.
+ * A gate is the last place to act on a reservation. Asking per kind rather
+ * than folding every generic entry in also means a Map that violates the
+ * one-entry-per-kind invariant admits the publisher a conformant reader would
+ * resolve — the first — rather than everyone who ever appeared under that kind.
+ *
+ * THE PUBLIC HALF ONLY, for both shapes: half a Map's delegations may be
+ * NIP-44 encrypted to its owner, and a relay holds no signer. A reader who
+ * keeps a delegation private gets no expansion from it. That is not new here —
+ * `serviceProviders()` reads `tags` and has always had the same blind spot —
+ * and the direction is the safe one for a gate.
  *
  * ## Why it is cached at all
  *
@@ -124,6 +160,7 @@ internal class EnrolledSigners(
         for (list in lists) {
             val services = found[list.pubKey] ?: continue
             list.tags.serviceProviders().forEach { services.add(it.pubkey) }
+            TrustedListProviderTag.KINDS.forEach { kind -> list.tags.trustedListProvider(kind)?.let { services.add(it.pubkey) } }
         }
         val expiresAt = now + ttlMillis
         // A crude bound, and it wants to stay crude: the entries are two

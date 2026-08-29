@@ -383,6 +383,91 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
+    fun `a Trusted List publisher is enrolled by the Map's bare-kind entry`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // The OTHER delegation shape. NIP-85 names a kind AND metric
+                // (`30382:rank`); Tapestry's Trusted Lists are delegated by a
+                // generic bare-kind entry, one of which covers every list of
+                // that kind. It has no `:`, so NIP-85's parser has never
+                // returned it — read only that side, this reader enrols nobody
+                // and their Trusted List gate stays shut.
+                val subscriber = NostrSignerSync()
+                val subscriberLens = "include:spam observer:${subscriber.pubKey}"
+                publish(
+                    session,
+                    out,
+                    subscriber.sign<Event>(
+                        1_699_999_600L,
+                        10040,
+                        arrayOf(arrayOf("30392", curator.pubKey, "wss://lists.example")),
+                        "",
+                    ),
+                )
+
+                assertEquals(
+                    listOf(list.id, profile.id),
+                    page(session, out, "bare-kind", """{"kinds":[0,30392],"search":"podcaster $subscriberLens"}"""),
+                    "a bare-kind Map entry must enrol the publisher it delegates to",
+                )
+
+                // And it delegates that KIND, not the whole family: the entry
+                // above says 30392, so it cannot vouch for a signer nobody
+                // named on any kind.
+                assertEquals(
+                    listOf(strangerList.id),
+                    page(session, out, "bare-kind-stranger", """{"kinds":[0,30392],"search":"strangercast $subscriberLens"}"""),
+                    "the entry enrols its own publisher and nobody else",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `a reserved named Trusted List entry drives nothing`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                seed(session, out)
+
+                // `30392:<name>` is RESERVED by the ADR — parsed so a client can
+                // display it, explicitly not something to act on until the spec
+                // defines it. A gate is the last place to act on a reservation,
+                // so this reader is still enrolled in nothing.
+                val reserved = NostrSignerSync()
+                publish(
+                    session,
+                    out,
+                    reserved.sign<Event>(
+                        1_699_999_700L,
+                        10040,
+                        arrayOf(arrayOf("30392:podcasters", curator.pubKey, "wss://lists.example")),
+                        "",
+                    ),
+                )
+
+                assertEquals(
+                    listOf(list.id),
+                    page(
+                        session,
+                        out,
+                        "reserved",
+                        """{"kinds":[0,30392],"search":"podcaster include:spam observer:${reserved.pubKey}"}""",
+                    ),
+                    "a reserved named entry must not open the gate",
+                )
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
     fun `a signed-in connection is the observer whose services count`() =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())
