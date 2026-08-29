@@ -112,7 +112,6 @@ class NostrRelayServer(
     // Whether a NIP-50 search also answers with the records its Trusted Lists,
     // Trusted Assertions and NIP-32 labels point at, and how much of the feed
     // that splice may be. See [SearchReferenceExpansion].
-    searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
     // Fires once per successful NIP-42 AUTH, with the connection's send —
     // TrustNotice::check is what the composition root puts here. Unset is a
     // relay that stays silent on login.
@@ -142,27 +141,23 @@ class NostrRelayServer(
         limits = limits,
     ) {
     /**
-     * Who may cause a Trusted List or Assertion to expand, per reader. One per
-     * relay, because it is a property of the READER rather than of a REQ — see
-     * [EnrolledSigners]. Its own lookups go to the raw [store], so they can
-     * never recurse back through [reads].
+     * SPLICING A LABEL'S SUBJECT IN BEHIND IT IS THE STORE'S JOB NOW, and this
+     * relay's only remaining part in it is not asking for it: a plain NIP-01
+     * recall carries no terms and expands nothing, which is every read the
+     * router makes.
+     *
+     * It lived here as an `IEventStore` decorator until store `a9ce0d254c`. The
+     * two things that could not be fixed from this side are why it moved: the
+     * reader's enrolment had to be cached with a TTL, because a relay cannot see
+     * the sync process feeding 10040s into the same index from another JVM; and
+     * placing a subject by the confidence its pointer expressed needs the
+     * pointer's relevance, which `IEventStore` does not expose and a decorator
+     * above it therefore cannot reach.
      */
-    private val enrolment = EnrolledSigners(recall = { store.query<Event>(it) })
-
-    /**
-     * The store as this relay reads and writes it. With the expansion off this
-     * IS the store — the wrapper is absent rather than inert, so the untouched
-     * path is the code that ran before the feature existed. Ingest goes through
-     * it too, and only for the one thing it does on the write path: a kind
-     * 10040 accepted here invalidates that reader's enrolment immediately.
-     */
-    private val reads: IEventStore =
-        if (searchExpansion.enabled) ExpandingEventStore(store, searchExpansion, enrolment) else store
-
-    private val ingest = IngestQueue(store = reads, parentContext = parentContext, verify = { it.verify() })
+    private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(reads, ingest), onObserver, servingPressure)
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
 
     override fun close() {
         closeConnections()

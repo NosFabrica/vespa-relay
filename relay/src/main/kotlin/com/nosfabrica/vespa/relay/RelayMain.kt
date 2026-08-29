@@ -238,7 +238,15 @@ fun main() {
     // of this deployment and not of the library: the sync process writes the
     // same index, and the deletions this relay must honour are largely ones it
     // mirrored.
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
+    val store =
+        VespaEventStore.open(
+            vespaUrl,
+            relay = relayUrl,
+            autoDeploy = false,
+            configUrl = configUrl,
+            writers = STORE_WRITERS,
+            searchExpansion = searchExpansion,
+        )
 
     // Background maintenance. Everything here runs BEHIND the server and is
     // awaited nowhere: blocking the port on any of it turns every restart
@@ -353,7 +361,6 @@ fun main() {
             kindDeny = denyKindsFromEnv(env),
             rejectFutureSeconds = rejectFutureSeconds,
             requireReadLens = requireReadLens,
-            searchExpansion = searchExpansion,
         )
 
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).

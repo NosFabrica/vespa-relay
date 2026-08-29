@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -225,7 +226,10 @@ class SearchExpansionCostBench {
         index: CountingIndex,
     ) = runBlocking {
         val on = NostrRelayServer(store, relayUrl)
-        val off = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
+        // The OFF arm is a second store over the same index, because the splice
+        // moved into the store: "the same corpus without the expansion" is a
+        // store opened without it, not a relay told to skip it.
+        val off = NostrRelayServer(NostrSemanticsStore(index, relay = relayUrl, searchExpansion = SearchExpansionLimits.Off), relayUrl)
         try {
             seed(on)
             val arms =

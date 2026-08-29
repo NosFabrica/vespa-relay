@@ -495,138 +495,24 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         because scores here are public. `REQUIRE_READ_LENS=false`
                         is the older relay, for a deployment with no trust data
                         to gate on
-    SearchReferenceExpansion.kt  THE SUBJECT TRAVELS WITH THE POINTER. A REQ
-                        that actually SEARCHES answers with the record each
-                        Trusted List / NIP-85 Trusted Assertion / NIP-32 label
-                        hit points at, spliced in right behind it at the hit's
-                        own rank. It has to be the relay that does this: those
-                        three families carry text ABOUT something else — a
-                        list's `title`, a card's `petname`, a label's value —
-                        and the record on the other end holds none of it, so no
-                        ranking will ever recall it from the same search
-                        ("podcaster" finds the Podcaster Trust List and cannot
-                        find one podcaster). ADMISSION IS `Filter.match` — every
-                        filter of the REQ except its `search`, which is exactly
-                        what that quartz method tests — so a `kinds:[1985]` REQ
-                        gets labels and nothing else, and that is the rule
-                        working rather than a bug: a kinds-constrained
-                        subscription is the client saying what it will accept.
-                        The LENS travels with it (`include:spam` / `observer:` /
-                        `filter:rank:` are carried onto the lookup, inside the
-                        read's own StoreQueryContext), or the expansion would be
-                        a hole in the trust gate one way and needlessly empty
-                        the other. A LIST OR AN ASSERTION UNPACKS ONLY FOR THE
-                        READER WHO ENROLLED ITS SIGNER: those two families are a
-                        trust service's computed output and NIP-85 says how a
-                        reader picks services — a kind-10040 naming them — so
-                        the hit must be signed by one of THIS read's observer's
-                        services or by the observer themselves. Otherwise a
-                        stranger's computation arrives in the feed as if it had
-                        been asked for. EVERY service the 10040 names, not just
-                        `30382:rank` (TrustNotice's question is ranking; this
-                        one is not — a 30393 list comes from a `30383:`
-                        service), AND PER KIND: an entry names a kind in both
-                        shapes, and that kind is what the reader delegated, so
-                        `30382:rank` opens 30382 and leaves the other seven
-                        shut. The two shapes are NIP-85's `<kind>:<metric>` and
-                        the Tapestry ADR's generic bare-kind `["30392", pk,
-                        relay]` — quartz reads them with two different parsers
-                        that each refuse the other's, and `EnrolledSigners`
-                        reads both because "did this reader ask for this" is one
-                        question. The observer is the filter's `observer:` or
-                        the connection's NIP-42 pubkey, per filter, the store's
-                        own precedence — read through `Filter.observerLens`, the
-                        SAME acceptance test LensRequiredPolicy gates on, so a
-                        REQ cannot be understood one way by the gate and another
-                        here. PER SEARCHING FILTER AND NEVER POOLED, which is a
-                        HOLE if it is not: a filter saying `include:spam` beside
-                        one saying `observer:X` would lend its waiver to the
-                        other's subjects, and a search asking to be ranked
-                        through X would come back carrying records X's web of
-                        trust excludes. Each hit's subjects are recalled under
-                        the lens of the searching filter that FOUND it, so a
-                        two-lens subscription costs one lookup per lens rather
-                        than pooling them. An anonymous `include:spam` read therefore expands
-                        no list at all: nobody's services to check. Labels are
-                        deliberately NOT gated — anyone may label anything, and
-                        a label had to survive the trust-ranked search to be a
-                        hit. The 10040 recall is the one lookup here that is
-                        deliberately UNGATED (`include:spam`): reading a
-                        reader's own statement of whom they trust THROUGH the
-                        trust it establishes is circular, and it fails in the
-                        direction that silently removes the feature. EVERYTHING IS DRIVEN BY
-                        THE FILTERS THAT ACTUALLY SEARCH (`searching`), free
-                        text or a phrase and not merely "has a `search` field":
-                        under REQUIRE_READ_LENS every anonymous read carries
-                        `include:spam` — a mirror's paging, a NIP-77 catch-up
-                        and the dozen plain reference reads `shared/lens.js`
-                        stamps — so the looser test would put exactly the
-                        traffic that must not pay for this behind it. Per REQ
-                        and PER ROW both: a subscription ORs its filters and the
-                        store answers with one union, so a row cannot say which
-                        filter fetched it, but `Filter.match` says which would
-                        ACCEPT it — and a hit only the plain half of a mixed REQ
-                        could have produced is served exactly as it always was.
-                        Skipping them costs nothing in ANSWERS either — a
-                        TERMLESS recall already matches the very predicate the
-                        admission rule uses, so there is nothing an expansion
-                        could add to one. Only the STORED
-                        page expands; a live event is delivered as-is, because
-                        the fanout runs on the ingest writer's coroutine.
-                        `SEARCH_EXPAND_REFERENCES=false` is the relay before it.
-                        WHAT IT COSTS, measured (`SearchExpansionCostBench`,
-                        2026-08-27, real Vespa in Docker, medians over 201
-                        rounds, page 50/500): a recall +0.3%/+0.7%, a search
-                        whose `kinds` hold no pointer kind -0.7%/+0.4% (it takes
-                        the untouched path — `couldPoint` decides that off the
-                        filters, before a row is read), a search that COULD
-                        point and does not -0.0%/-0.5%. A page that really does
-                        expand pays ONE extra round trip whatever its size, and
-                        then the subjects — and the two expanding shapes
-                        DIVERGE, for reasons that are about the data rather than
-                        the code. Trusted Lists OVERLAP (500 rosters name the
-                        same 20 pubkeys), so the splice converges and the cost
-                        FALLS with page size: +44% at 50 hits, +15% at 500.
-                        NIP-32 LABELS DO NOT — each names its own event, the
-                        splice is as big as the page, FRAMES DOUBLE, and the
-                        cost RISES: +38% at 50, +61% at 500. That is the worst
-                        case the feature has in production and the one to look
-                        at first; marginal cost is ~48us per spliced event.
-                        Real labels carry a MEDIAN OF ONE nostr target (405 of
-                        433 sampled, thin tail to 40), so the default
-                        `SEARCH_EXPAND_MAX_TOTAL` of 1,000 is spent by a page of
-                        roughly 400-500 labels — which is what bounds a REQ that
-                        names no `limit` and takes the relay's 5,000 default.
-                        The bench found three things the correctness tests could
-                        not see: awaiting the replay from a child coroutine put
-                        back the scheduler hop quartz's UNDISPATCHED REQ exists
-                        to avoid (~90us on EVERY search — chasing that number is
-                        what exposed the SEAM as wrong, and `ExpandingEventStore`
-                        is the answer); reading every row's pointers before
-                        spending the budget paid 450 tags-parses on a 500-list
-                        page for rows it had already decided to take nothing
-                        from; and re-reading the reader's 10040 inside every REQ
-                        was a SECOND round trip for a document that changes when
-                        someone enrols a service — `EnrolledSigners` caches it
-                        per reader, exact on this process's own writes and
-                        TTL-bounded for the mirror's
-    SearchReferences.kt kind -> subjects, and dispatch is on the KIND, never on
-                        the runtime class. A `p` member (30392, a label's target,
-                        a 30382's `d`) resolves to that author's KIND 0; an `e`
-                        or an `a` resolves to that event. The 5-suffixed pair
-                        (30385/30395) is NIP-73 EXTERNAL ids and expands to
-                        nothing, as do a label's `r` and `t` — and they are
-                        absent from DECLARATIONS as well as KINDS, so a REQ
-                        naming only them never reaches the page-collecting path
-                        or pays the enrolment recall that gates a family it
-                        cannot expand. A list's `p`/`a`
-                        tags on the OTHER kinds are metadata (`aboutPubKeys`,
-                        `aboutAddresses`) and are never followed. Kind dispatch
-                        is the point: the forced quartz pin means a jar without
-                        an `EventFactory` branch for 30392-30395 hands back a
-                        base Event, every `is` check goes false, and the whole
-                        feature stops with nothing throwing — the same silent
-                        no-op TrustedListSearchTest exists to catch
+    (the search expansion)  THE SUBJECT TRAVELS WITH THE POINTER — a REQ that
+                        actually SEARCHES answers with the record each Trusted
+                        List / NIP-85 assertion / NIP-32 label hit points at,
+                        spliced in behind it. It LIVED HERE, as an IEventStore
+                        decorator, until store `4e38d9926d`; it is now
+                        `store/search/` in vespa-eventstore. Two things could
+                        not be fixed from this side and are why it moved: the
+                        reader's enrolment needed a TTL because a relay cannot
+                        see the sync process feeding 10040s into the same index
+                        from another JVM, and placing a subject by the
+                        confidence its pointer expressed needs the pointer's
+                        RELEVANCE, which `IEventStore` does not expose. What
+                        stays here is the budget — `SEARCH_EXPAND_*`, handed to
+                        `VespaEventStore.open()` — because a deployment's caps
+                        are the operator's call and applying them is the store's.
+                        The relay's own part is now not asking: a plain NIP-01
+                        recall carries no terms and expands nothing, which is
+                        every read the router makes.
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
                         OptionalAuthPolicy binds exactly one url. It also

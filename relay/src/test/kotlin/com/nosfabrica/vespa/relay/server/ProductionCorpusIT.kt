@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
@@ -33,6 +34,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.util.Collections
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -106,6 +108,30 @@ class ProductionCorpusIT {
                 }
             }
         }
+    }
+
+    /**
+     * THE CONTROL FOR THE FEATURE ITSELF: the same Vespa, the same documents,
+     * the same query — read through a store opened with the splice OFF.
+     *
+     * A second STORE rather than a second relay, because the knob moved with
+     * the feature: it is the store that splices now. Opened once and closed
+     * with the class, since every case that wants it wants the same one.
+     */
+    private var plainOpen: VespaEventStore? = null
+
+    private fun plainRelay(): NostrRelayServer {
+        val opened =
+            plainOpen ?: VespaEventStore
+                .open(vespa!!, relay = relayUrl, autoDeploy = false, searchExpansion = SearchExpansionLimits.Off)
+                .also { plainOpen = it }
+        return NostrRelayServer(opened, relayUrl)
+    }
+
+    @AfterTest
+    fun closePlain() {
+        plainOpen?.close()
+        plainOpen = null
     }
 
     private suspend fun load(store: VespaEventStore) {
@@ -269,34 +295,20 @@ class ProductionCorpusIT {
                 "expected production to name non-rank dimensions; got $dimensions",
             )
 
-            val enrolment = EnrolledSigners(recall = { filters -> corpus.filter { e -> filters.any { it.match(e) } } })
-            for (list in lists.take(25)) {
-                val named = list.tags.serviceProviders()
-                val enrolled = enrolment.of(setOf(list.pubKey))
-                for (kind in SearchReferences.DECLARATIONS) {
-                    assertTrue(enrolled.admits(kind, list.pubKey), "a reader is always their own signer, on every kind")
-                }
-
-                // Each entry opens the kind it names and no other. Real Maps
-                // are overwhelmingly 30382-only, so the second half of this is
-                // what the production shape actually exercises: a service
-                // appointed to rank users must not thereby be trusted to
-                // publish event or address declarations.
-                for (entry in named) {
-                    assertTrue(
-                        enrolled.admits(entry.service.kind, entry.pubkey),
-                        "10040 ${list.id} names ${entry.service.toValue()} -> ${entry.pubkey}, which the enrolment did not admit",
-                    )
-                    val elsewhere = SearchReferences.DECLARATIONS.filter { it != entry.service.kind }
-                    val named1 = named.map { it.service.kind }.toSet()
-                    for (kind in elsewhere.filter { it !in named1 }) {
-                        assertTrue(
-                            !enrolled.admits(kind, entry.pubkey),
-                            "10040 ${list.id} delegates ${entry.pubkey} for ${entry.service.kind} only, yet $kind was admitted too",
-                        )
-                    }
-                }
-            }
+            // WHAT THE GATE DOES WITH THESE IS THE STORE'S TEST NOW, and it is
+            // white-box by nature: `Delegations` and `Enrolment` are internal to
+            // vespa-eventstore, where `SearchExpansionTest` asserts per-kind
+            // admission directly. What belongs HERE is the shape of the real
+            // data those rules are aimed at — that production names dimensions
+            // past `rank`, and that every entry `serviceProviders()` returns
+            // names a kind inside NIP-85's own range, which is what makes "one
+            // entry, one kind" a rule a gate can keep. `ObserverTrustListIT`
+            // asserts the consequence over the wire on one real reader's chain.
+            val kinds = lists.flatMap { it.tags.serviceProviders() }.map { it.service.kind }.distinct()
+            assertTrue(
+                kinds.isNotEmpty() && kinds.all { it in 30382..30385 },
+                "a 10040 entry outside NIP-85's own kinds reached serviceProviders(): $kinds",
+            )
         }
 
     // ------------------------------------------------------------------
@@ -348,7 +360,7 @@ class ProductionCorpusIT {
     fun `and the same search cannot reach that event without the expansion`() =
         withRelay { _, store ->
             val (_, target, value) = labelPair() ?: fail("no usable label pair in the corpus")
-            val plain = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
+            val plain = plainRelay()
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = plain.connect { out.add(it) }
             try {
@@ -434,7 +446,7 @@ class ProductionCorpusIT {
             store.batchInsert(listOf(enrolment))
 
             val relay = NostrRelayServer(store, relayUrl)
-            val plain = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
+            val plain = plainRelay()
             try {
                 val filter = """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:${reader.pubKey}"}"""
 
@@ -513,7 +525,7 @@ class ProductionCorpusIT {
     @Test
     fun `a plain recall over the production corpus is answered exactly as before`() =
         withRelay { relay, store ->
-            val plain = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
+            val plain = plainRelay()
             try {
                 // A mirror's page: real kinds, no search text, a lens token
                 // because an anonymous read must carry one. The expansion must

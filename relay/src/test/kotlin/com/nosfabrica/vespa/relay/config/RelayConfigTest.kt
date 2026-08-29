@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
-import com.nosfabrica.vespa.relay.server.SearchExpansionLimits
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.utils.Hex

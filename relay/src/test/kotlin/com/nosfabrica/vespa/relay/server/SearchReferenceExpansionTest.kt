@@ -23,19 +23,17 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip01Core.store.RawEvent
-import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -111,11 +109,26 @@ class SearchReferenceExpansionTest {
     }
 
     private val index = CountingIndex()
-    private val store = NostrSemanticsStore(index, relay = relayUrl)
+
+    /**
+     * The stack the front door assembles, because the gate is part of it: a
+     * store over [TrustProjection] is the only shape where a 10040 write
+     * invalidates the delegation map the expansion reads. The counting index
+     * sits UNDER the projection, so it still sees every query either makes.
+     */
+    private val projection = TrustProjection(index, InMemoryReputationIndex())
+    private val store = NostrSemanticsStore(projection, relay = relayUrl)
     private val server = NostrRelayServer(store, relayUrl)
 
-    /** The same store, read by a relay with the expansion off — the control for the feature itself. */
-    private val plainServer = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits.Off)
+    /**
+     * The same corpus under different splice limits — the knob moved to the
+     * store when the expansion did, so a control is a second store over the
+     * SAME index rather than a second relay over the same store.
+     */
+    private fun storeWith(limits: SearchExpansionLimits) = NostrSemanticsStore(projection, relay = relayUrl, searchExpansion = limits)
+
+    /** The same corpus, read with the expansion off — the control for the feature itself. */
+    private val plainServer = NostrRelayServer(storeWith(SearchExpansionLimits.Off), relayUrl)
 
     private val reader = NostrSignerSync()
     private val curator = NostrSignerSync()
@@ -877,7 +890,7 @@ class SearchReferenceExpansionTest {
     @Test
     fun `a pubkey subject the REQ cannot admit does not spend the budget`() =
         runBlocking {
-            val capped = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits(maxPerRequest = 1))
+            val capped = NostrRelayServer(storeWith(SearchExpansionLimits(maxPerRequest = 1)), relayUrl)
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = capped.connect { out.add(it) }
             try {
@@ -1033,33 +1046,12 @@ class SearchReferenceExpansionTest {
                 session.close()
             }
 
-            // The store this relay runs on does not do this — `recallOrdered`
-            // dedups by id across a REQ's filters — so nothing above would
-            // notice if the guard went. But [ExpandingEventStore] is the thing
-            // ADDING events to a page, and a page it builds should be free of
-            // duplicates because of what IT does rather than because of what
-            // its store promises. This is that contract, stated against a store
-            // that breaks the promise.
-            val doubling =
-                object : IEventStore by store {
-                    override suspend fun rawQuery(
-                        filters: List<Filter>,
-                        onEach: (RawEvent) -> Unit,
-                    ) = store.rawQuery(filters) { raw ->
-                        onEach(raw)
-                        onEach(raw)
-                    }
-                }
-            val expanding =
-                ExpandingEventStore(doubling, SearchExpansionLimits.Default, EnrolledSigners(recall = { store.query<Event>(it) }))
-
-            val ids = ArrayList<String>()
-            withContext(StoreQueryContext(setOf(reader.pubKey))) {
-                expanding.rawQuery(listOf(Filter(kinds = listOf(0, 30392), search = "podcaster $lens"))) { ids.add(it.id) }
-            }
-            val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
-            assertEquals(emptySet(), twice, "a doubled row must not double on the wire: $ids")
-            assertTrue(list.id in ids, "and the page is still served: $ids")
+            // The other half of this contract — that the EXPANSION itself
+            // refuses to emit a row twice, even over a store that hands the
+            // same row back twice — moved into vespa-eventstore with the
+            // expansion, where `SearchExpansionTest` states it against a
+            // doubling index. It cannot be stated from here any more: there is
+            // no wrapper left to put between the relay and its store.
         }
 
     @Test
@@ -1148,7 +1140,7 @@ class SearchReferenceExpansionTest {
     @Test
     fun `the per-event cap truncates the splice rather than the page`() =
         runBlocking {
-            val capped = NostrRelayServer(store, relayUrl, searchExpansion = SearchExpansionLimits(maxPerEvent = 1))
+            val capped = NostrRelayServer(storeWith(SearchExpansionLimits(maxPerEvent = 1)), relayUrl)
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = capped.connect { out.add(it) }
             try {
