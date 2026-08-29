@@ -95,27 +95,30 @@ import kotlin.test.fail
  * assertion on a shared CI box is a flake generator, and the numbers are for a
  * person to read.
  *
- * ## What it read when the expansion landed
+ * ## What it reads with the splice in the store
  *
- * TAKEN BEFORE THE FEATURE MOVED INTO THE STORE, and the pointer arm's numbers
- * are the ones to re-take first: the gate was the relay's then and flat across
- * kinds, so a Treasure Map naming a `30382:rank` service unpacked Trusted Lists
- * too. The gate is per-kind now, and this bench's own corpus had to grow a bare
- * `30392` entry to keep that arm expanding at all — without it the arm ran at
- * +0.0 queries and +0.0 frames while still reporting a ~+50-100% median, which
- * is noise attributed to a splice that never happened. The label arm was never
- * gated (NIP-32 is ungated by design) and its numbers stand.
- *
- * 2026-08-27, 4-core sandbox, single-node Vespa in Docker, 2,521-event corpus,
+ * 2026-08-29, 4-core sandbox, single-node Vespa in Docker, 2,521-event corpus,
  * 201 rounds per arm, medians:
  *
  * | arm | page | off | on | | frames |
  * |---|---|---|---|---|---|
- * | recall | 50 / 500 | 9.5 / 26.0ms | 9.5 / 26.2ms | +0.3% / +0.7% | unchanged |
- * | search, no kind can point | 50 / 500 | 18.3 / 43.8ms | 18.2 / 44.0ms | -0.7% / +0.4% | unchanged |
- * | search, could point, none does | 50 / 500 | 17.1 / 42.1ms | 17.1 / 41.9ms | -0.0% / -0.5% | unchanged |
- * | search, every hit a pointer | 50 / 500 | 16.1 / 67.5ms | 23.2 / 77.2ms | +44% / +15% | +20 |
- * | search, every hit a label | 50 / 500 | 19.7 / 48.0ms | 27.2 / 77.2ms | +38% / +61% | x2 |
+ * | recall | 50 / 500 | 7.0 / 19.7ms | 7.0 / 19.8ms | -0.2% / +0.1% | unchanged |
+ * | search, no kind can point | 50 / 500 | 12.1 / 29.8ms | 12.2 / 29.6ms | +0.2% / -0.7% | unchanged |
+ * | search, could point, none does | 50 / 500 | 11.2 / 29.7ms | 11.3 / 29.4ms | +0.2% / -0.9% | unchanged |
+ * | search, every hit a pointer | 50 / 500 | 10.1 / 46.0ms | 14.4 / 50.0ms | +42% / +9% | +20 |
+ * | search, every hit a label | 50 / 500 | 13.4 / 34.0ms | 18.0 / 54.7ms | +35% / +61% | x2 |
+ *
+ * RE-TAKEN AFTER THE MOVE, and the pointer arm had to be, twice over. The gate
+ * was the relay's before and flat across kinds, so a Treasure Map naming a
+ * `30382:rank` service unpacked Trusted Lists too; it is per-kind now, and this
+ * bench's corpus had to grow a bare `30392` entry — and its store a
+ * `TrustProjection` — to keep that arm expanding at all. Without either it ran
+ * at +0.0 queries and +0.0 frames while still reporting a ~+50-100% median,
+ * which is noise attributed to a splice that never happened.
+ *
+ * The label arm was never gated (NIP-32 is ungated by design), and it is the
+ * check that the box has not changed shape under the table: +61% at 500 both
+ * times, against +15% -> +9% on the pointer arm.
  *
  * Everything that does not expand is free. A page that does expand pays ONE
  * extra round trip whatever its size, and then the subjects themselves.
