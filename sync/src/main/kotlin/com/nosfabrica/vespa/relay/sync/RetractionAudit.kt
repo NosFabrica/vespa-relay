@@ -96,6 +96,35 @@ internal class RetractionAudit(
     }
 
     /**
+     * WHEN THIS ASK'S COMPARISON NEXT COMES DUE — read-only, stamping nothing.
+     *
+     * [claimAudit] answers the same question and TAKES the attempt clock as it
+     * does, so it cannot be used to look before spending a workload permit.
+     * This can: same [ownedAskOf] derivation, same band, no side effect.
+     *
+     * On the OWNED projection, which is the point of it living here: the clock
+     * a reconcile advances is keyed by the filter it ran, so reading the full
+     * ask's filter finds a key nothing ever stamps and falls back to a band
+     * `fullAt` no reconcile moves — a schedule permanently in arrears while
+     * the audits run perfectly well.
+     *
+     * Returns an [AuditClock] rather than a boolean because the two extreme
+     * answers mean opposite things and both have to reach the status row:
+     * never compared yet is due by definition, and an ask this stream owns no
+     * kind of is compared by nothing and scheduled by nothing — counted as due
+     * it would be a backlog that can never drain.
+     */
+    fun auditClock(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+        negentropySyncThePastSeconds: Long,
+    ): AuditClock {
+        val ownedAsk = ownedAskOf(stream, ask) ?: return AuditClock.NOT_SCHEDULED
+        return AuditClock.of(bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds))
+    }
+
+    /**
      * Claim this ask's comparison if it is due — [SyncBands.claimAudit] on
      * the OWNED ask, the same filter [reconcileAndDelete]'s band record
      * advances, derived by the same [ownedAskOf]. True commits the caller

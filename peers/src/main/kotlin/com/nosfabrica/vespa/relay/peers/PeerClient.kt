@@ -99,6 +99,35 @@ class PeerClient(
             .build()
 
     /**
+     * WHAT THE SOCKET BUDGET IS DOING RIGHT NOW — calls running against
+     * [MAX_CONCURRENT_SOCKETS], and calls QUEUED behind it.
+     *
+     * The second number is the one worth publishing, and it is the only direct
+     * evidence this process can offer that the dispatcher is the constraint. A
+     * slow mirror has many explanations — a slow store, a saturated thread
+     * pool, relays that will not answer — and they all look alike from
+     * throughput. `queued` above zero means something else entirely: the calls
+     * exist, they are admissible, and OkHttp is holding them because the
+     * budget is full. That is a one-constant fix, and until now it could only
+     * be inferred from an ETA.
+     *
+     * It was inferred once, expensively: the dispatcher above is set to 1024
+     * because at OkHttp's stock 64 a 20,340-relay cycle projected 330 hours,
+     * and working that out took a measurement nobody should have to repeat.
+     *
+     * THE CLEARNET DISPATCHER ONLY. A Tor deployment has a second one with its
+     * own budget ([TorTransport]), and adding the two queues would produce a
+     * number that could not be read against the ceiling published beside it.
+     */
+    fun socketLoad() = SocketLoad(okhttp.dispatcher.runningCallsCount(), okhttp.dispatcher.queuedCallsCount())
+
+    /** See [socketLoad]. */
+    class SocketLoad(
+        val running: Int,
+        val queued: Int,
+    )
+
+    /**
      * The Tor client, when there is one, and which urls it takes. See
      * [TorTransport] for why resolution has to happen inside the proxy.
      */

@@ -133,6 +133,44 @@ export const BOTTLENECK = {
  * router whose heartbeat had gone stale; a document served by the process it
  * describes cannot be in that state.
  */
+/**
+ * HOW MUCH OF THE SOCKET BUDGET IS SPENT, and whether it is the constraint.
+ *
+ * The pair, because neither number decides alone. `sockets` near the ceiling
+ * is not a fault — a mirror whose whole job is to stay connected to every
+ * certified relay is SUPPOSED to sit near its budget, and a panel that
+ * coloured that would cry wolf on every healthy deployment. `queued` above
+ * zero is the fault: those calls are admissible and OkHttp is holding them
+ * because the budget is full.
+ *
+ * That distinction is the reason this exists. Every other symptom of a full
+ * dispatcher — a long ETA, a pool that looks idle, relays never reached — is
+ * shared with a slow store, a saturated thread pool and a roster of dead
+ * hosts, and telling them apart used to take a measurement. It took one once:
+ * the budget is 1024 because at OkHttp's stock 64 a 20,340-relay cycle
+ * projected 330 hours.
+ *
+ * Null where the router does not publish the ceiling — a mark reading "0 of 0"
+ * is worse than no mark.
+ */
+export function socketsOf(health) {
+  const ceiling = Number.isFinite(health?.socketCeiling) ? health.socketCeiling : null;
+  if (ceiling == null || !Number.isFinite(health?.sockets)) return null;
+  // `??`, not `||`: a router too old to publish the queue says nothing, and
+  // that must not read as "nothing is queued".
+  const queued = Number.isFinite(health?.socketsQueued) ? health.socketsQueued : null;
+  return {
+    open: health.sockets,
+    ceiling,
+    running: Number.isFinite(health?.socketsRunning) ? health.socketsRunning : null,
+    queued,
+    share: Math.min(1, health.sockets / Math.max(1, ceiling)),
+    // THE ONLY READING WORTH A COLOUR. Not "near the ceiling": that is the
+    // healthy steady state of a mirror that stays connected.
+    starved: (queued || 0) > 0,
+  };
+}
+
 export function constraintOf(health) {
   const word = health?.bottleneck;
   if (!word) return null;
@@ -306,7 +344,7 @@ export const ROTATING = "rotating";
  */
 export function rotationOf(s) {
   if (s?.phase !== ROTATING || s.roster == null) return null;
-  return { roster: s.roster, tails: s.tails ?? null, waiting: s.roster === 0 };
+  return { roster: s.roster, tails: s.liveHeld ?? null, waiting: s.roster === 0 };
 }
 
 /**
@@ -629,10 +667,18 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // download and must not read as one.
       slotless: r.transferringForSec == null,
       transferringForSec: r.transferringForSec ?? null,
+      // WHOSE row it is, where the document says — the root `live` list names
+      // an owner; a stream's own `inFlight` does not, and `poolsOf` supplies
+      // it from the row's position instead.
+      stream: r.stream || null,
       // WHAT IT IS DOING, straight from the router — see `doing` in the
       // glossary. Null on a router that predates the member, which reads as
       // "not known" and never as a stage.
       doing: r.doing || null,
+      // …and WHICH POOL that puts it in — the stable word `poolsOf` groups by,
+      // never the sentence above it. Null is a row in none of the four, which
+      // is a state (claiming a socket, draining the healer) and not a gap.
+      pool: r.pool || null,
       // `??`, not `||`: `created_at = 0` is a real second relays serve and the
       // deepest a walk can reach, not a leg with no cursor.
       pagingUntil: r.pagingUntil ?? null,
@@ -641,3 +687,449 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
 }
 
+
+/**
+ * THE FOUR POOLS, as the router names them — `pool` on every held row, and the
+ * word this module groups by. See `VisitPool.POOL_LIVE` and its neighbours.
+ *
+ * Read off the document rather than derived from `doing`. The stage sentences
+ * are written to be read once and have been reworded twice; grouping rows by
+ * prose would put a table's contents at the mercy of an edit to a sentence,
+ * which is the failure the router split these two members to avoid.
+ */
+export const POOL_LIVE = "live";
+export const POOL_CATCHING_UP = "catching-up";
+export const POOL_REFETCHING = "re-fetching";
+export const POOL_NEGENTROPY = "negentropy";
+
+/**
+ * …and the fifth group, which is NOT a pool: a visit still claiming its socket
+ * or draining the healer's queue on its way out is in none of the four, and the
+ * router says so by publishing no `pool` for it.
+ *
+ * It is a group rather than a filter because the alternative is dropping rows.
+ * A relay held for an hour "claiming the socket" is exactly the row an operator
+ * is looking for, and a panel that showed only the four named pools would be
+ * the one place it could not appear.
+ */
+export const POOL_BETWEEN = "between";
+
+/**
+ * …and the fifth BUDGETED job, which is not a pool either: a stream's dial
+ * width. No held row ever carries it — a row is in one of the four pools or
+ * between them — so it appears only in the limits table, which is where a dial
+ * width belongs. Named here so that table can label it like the rest.
+ */
+export const JOB_VISITING = "visiting";
+
+/** The order the panel draws them in: the steady state first, then the work. */
+export const POOL_ORDER = [POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_NEGENTROPY];
+
+/** …and those four plus the leftovers, which is the order the panel walks. */
+const GROUP_ORDER = [...POOL_ORDER, POOL_BETWEEN];
+
+/**
+ * What each one is called on the page, and what it MEANS — the sentence a
+ * heading cannot carry.
+ *
+ * Held here rather than in the card for the same reason every other judgement
+ * in this module is: the four keys and the four descriptions have to agree, and
+ * a mapping split across two files agrees until someone edits one of them.
+ */
+export const POOL_LABELS = {
+  __proto__: null,
+  [POOL_LIVE]: ["live", "Tail subscriptions held open. No worker sits on these — events arrive the moment they exist, and the socket is the whole cost."],
+  [POOL_CATCHING_UP]: ["catching up", "Paging forward over what each relay's band does not cover yet — the ordinary sync, newest-first towards the last pass."],
+  [POOL_REFETCHING]: ["re-fetching the past", "Paging over history the band ALREADY covers, because the stream's `refetchThePastSeconds` expired it. Same walk as a catch-up and a completely different bill: these relays are re-downloading years."],
+  [POOL_NEGENTROPY]: ["negentropy", "Reconciling the covered past over NIP-77 and downloading only the difference — the pass that finds what no catch-up ever saw. `negentropyConcurrency` is its budget."],
+  [JOB_VISITING]: ["visits", "How many relays may be VISITED for this stream at once — its share of the dial width. A visit that cannot get one of these does not dial at all, so this bounds simultaneous TLS handshakes and not merely work."],
+  [POOL_BETWEEN]: ["between jobs", "In none of the four: claiming a socket, working out what an ask still owes, or draining the healer's queue on the way out of a visit. Ordinary and usually brief — a row that sits here is one to look at."],
+};
+
+/**
+ * EVERY RELAY THIS MIRROR IS HOLDING, SPLIT BY WHAT IT IS BEING ASKED FOR.
+ *
+ * ## The question
+ *
+ * One rotating pool runs all four workloads (see `VisitPool`), so every number
+ * that used to describe it added them together: `visiting: 100` counted a
+ * catch-up, a history audit and a whole-corpus re-walk as one, and `tails: 412`
+ * counted the fourth without naming anybody. Those are not degrees of one
+ * thing — a mirror paging forward is keeping up, and the same mirror
+ * re-fetching is spending its whole budget re-downloading history it already
+ * has. Four lists is the shape of the question actually being asked.
+ *
+ * ## Where the rows come from
+ *
+ * The visiting three are per stream in the document (`streams[].inFlight`), so
+ * a row takes its owner from its position; the live pool is one list at the
+ * ROOT and each of its rows NAMES its stream, because a tail is held per
+ * (relay, stream) pair. Either way every row here knows whose it is, which is
+ * what lets the same rows be grouped by pool or by stream — see
+ * [poolsByStreamOf].
+ *
+ * ## What it will not do
+ *
+ * DROP A ROW. Every held relay the document names appears in exactly one group,
+ * including one whose `pool` the router did not publish — see [POOL_BETWEEN].
+ * And `omitted` is summed rather than attributed: what a truncated list left
+ * out has no pool by definition, so counting it against one would be inventing
+ * the very fact it is missing.
+ *
+ * Empty groups are KEPT. "Nothing is auditing right now" is an answer, and a
+ * panel that drew only the non-empty pools would answer it by looking identical
+ * to a build that had no audit pool at all.
+ *
+ * Null when the mirror is holding nothing anywhere — no visit, no tail — which
+ * is the one state where four empty tables say less than no panel.
+ *
+ * ## …and how big the pool is
+ *
+ * `totals` is the denominator every group count is a share of, because the
+ * tables alone answer "how many are working" and never "out of how many". The
+ * pool is ONE pool — one queue, one set of workers, one tail budget, shared by
+ * every visit-mode stream — so its size is a count of URLS and comes from the
+ * rotating pool's own row (`roster`, `awaitingVisit`), not from adding the
+ * streams' shares, which double-count every relay two streams both want.
+ *
+ * The rows are what the tables draw, so `working` and `tailed` are counted off
+ * the groups rather than read from `visiting`/`tails`: a summary that
+ * disagreed with the tables under it would be worse than no summary. See
+ * [poolTotals].
+ */
+export function poolsOf(progress, held = heldRows(progress)) {
+  if (!held.rows.length) return null;
+  const groups = groupByPool(held.rows);
+  return { groups, omitted: held.omitted, totals: poolTotals(progress, groups) };
+}
+
+/**
+ * EVERY HELD RELAY THE DOCUMENT NAMES, flattened into one list where each row
+ * knows its stream and its pool.
+ *
+ * Separated from the grouping because the grouping is done twice over the same
+ * rows — once for the mirror and once per stream — and a second collector
+ * would be a second place for a row to be dropped from.
+ */
+export function heldRows(progress) {
+  const rows = [];
+  let omitted = 0;
+  for (const s of progress?.streams || []) {
+    const legs = legsOf(s.inFlight);
+    omitted += legs.more;
+    // A visiting row takes its owner from its POSITION: it is published under
+    // the stream whose ask the visit is serving, and says nothing itself.
+    for (const r of legs.rows) rows.push({ ...r, stream: s.name || null });
+  }
+  const live = legsOf(progress?.live);
+  omitted += live.more;
+  // A live row NAMES its own, and `legsOf` has already normalised it: one
+  // subscription is held per (relay, stream) pair and carries that stream's
+  // filter alone. It used to be null here, when a tail carried every wanting
+  // stream's filter at once and belonged to none of them — and a per-stream
+  // live row was not a thing that existed.
+  rows.push(...live.rows);
+  return { rows, omitted };
+}
+
+/**
+ * …and the four pools those rows fall into, in the panel's order.
+ *
+ * Takes rows rather than the document so the caller decides WHICH rows: the
+ * whole mirror's, or one stream's. [owner] is the one thing the rows cannot
+ * say — the stream whose heading they are already under, if any — because a
+ * column repeating a heading is not a column, and a column carrying the only
+ * attribution a row has is the point. A NAME rather than a flag: the caller
+ * has one, and passing it says which heading is doing the naming.
+ */
+function groupByPool(rows, owner = null) {
+  const byPool = new Map(GROUP_ORDER.map((key) => [key, []]));
+  for (const r of rows) {
+    // An unknown word lands with the unpooled rather than making a group of its
+    // own: a page inventing a heading from a string off the wire is how a typo
+    // becomes a pool.
+    byPool.get(POOL_ORDER.includes(r.pool) ? r.pool : POOL_BETWEEN).push(r);
+  }
+
+  const groups = [];
+  for (const key of GROUP_ORDER) {
+    const found = byPool.get(key);
+    // The leftover group appears only when something is in it; the four named
+    // pools appear always. An empty `between` is the healthy case and a heading
+    // for it every tick would be a mark that reads the same every time.
+    if (key === POOL_BETWEEN && !found.length) continue;
+    // Quietest first, the router's own order — and re-applied here because the
+    // merge across streams interleaves lists that were each sorted alone.
+    found.sort((a, b) => b.quietForSec - a.quietForSec || b.heldForSec - a.heldForSec || a.relay.localeCompare(b.relay));
+    const [label, what] = POOL_LABELS[key] || [key, ""];
+    groups.push({
+      key,
+      label,
+      what,
+      rows: found,
+      // ONE WORD FOR THE WHOLE GROUP, or null where its rows disagree. A column
+      // whose every cell reads `holding a live tail` is not a column, so the
+      // page lifts it into the heading instead — and the negentropy pool, whose
+      // two stages are a history sweep and a provider's retraction comparison,
+      // keeps the column that tells them apart.
+      doing: found.length && found.every((r) => r.doing === found[0].doing) ? found[0].doing : null,
+      // …and the stream column, which is drawn wherever a row can name its
+      // owner — EXCEPT under a heading that has already named it, where the
+      // column would be that heading copied down the table. Not "do the rows
+      // disagree": a pool holding one row is the case where the attribution is
+      // hardest to get any other way, and dropping the column there would lose
+      // it exactly when it is scarcest.
+      streams: !owner && found.some((r) => r.stream),
+    });
+  }
+  return groups;
+}
+
+/**
+ * THE SAME ROWS, CUT BY STREAM instead of by the mirror — one entry per stream
+ * riding the pool, each carrying its own four pools and its own totals.
+ *
+ * ## Why both cuts exist
+ *
+ * [poolsOf] answers "what is this mirror doing": one negentropy table, every
+ * stream's reconciles in it, which is the comparison that matters when the
+ * question is where the sockets went. It cannot answer the next question —
+ * WHICH STREAM is spending them — because the answer is a column an operator
+ * has to read down and add up.
+ *
+ * That question is the one the per-stream budgets are configured against
+ * (`visitConcurrency`, `maxLiveConcurrency`, `refetchConcurrency`,
+ * `negentropyConcurrency`), so it needs the cut that matches the knob: this
+ * stream's four pools, against this stream's caps, over this stream's roster.
+ *
+ * ## The rows are the same rows
+ *
+ * Not a second read of the document and not a second judgement about it —
+ * [heldRows] once, [groupByPool] per stream. A row therefore appears in
+ * exactly one stream's block and the blocks sum to the mirror's, so the two
+ * cuts can be drawn on one card without disagreeing.
+ *
+ * A stream appears when it is riding the pool, INCLUDING when it is holding
+ * nothing: four empty tables under a stream's name is the answer "this stream
+ * is doing none of it", and it is the answer a starved stream gives. One that
+ * has not started rotating is left out entirely — it has no roster to be a
+ * share of yet.
+ */
+export function poolsByStreamOf(progress, held = heldRows(progress)) {
+  const rows = held.rows;
+  const out = [];
+  const claimed = new Set();
+  for (const s of progress?.streams || []) {
+    const rotating = s?.phase === ROTATING && s.roster != null;
+    const mine = rows.filter((r) => r.stream === s?.name);
+    if (!rotating && !mine.length) continue;
+    claimed.add(s?.name);
+    const groups = groupByPool(mine, s?.name);
+    out.push({ stream: s?.name || null, groups, totals: streamTotals(s, groups) });
+  }
+  // …and whatever no stream claimed, in a block of its own rather than left
+  // out. A live row from a router too old to name its stream, or one naming a
+  // stream that has since left the config, is exactly the row worth seeing —
+  // and this cut promises what the other one does, that every held relay the
+  // document names appears in it exactly once. Only when there IS one: an
+  // empty "unattributed" heading every tick is a mark that never moves.
+  const loose = rows.filter((r) => !claimed.has(r.stream));
+  if (loose.length) {
+    // …and NOT `named` for this one: its heading says only that nothing
+    // claimed these rows, so whatever name a row does carry is worth a column.
+    const groups = groupByPool(loose);
+    out.push({ stream: null, groups, totals: streamTotals(null, groups) });
+  }
+  return out;
+}
+
+/** The rotating pool's own processor row — the only place its SIZE is published. */
+const VISITS_PROCESSOR = "visits";
+
+/**
+ * HOW BIG THE POOL IS, and how its relays are split right now.
+ *
+ * Four numbers and one subtraction:
+ *
+ *  - `relays`      every relay in rotation. Context, and NOT the denominator:
+ *                  the pool's unit of work is a (relay, stream) PAIR, so a
+ *                  relay three streams want is one relay and three units.
+ *  - `units`       that same roster in units — `rosterVisits`. THIS is what
+ *                  the three below partition, and mixing the two is the
+ *                  arithmetic this comment exists to stop: subtracting pair
+ *                  counts from a relay count reads fine and is nonsense.
+ *  - `working`     has a worker this instant — the visit tables, which
+ *                  partition it.
+ *  - `queued`      waiting for a worker, `awaitingVisit`.
+ *  - `waiting`     the remainder: on a revisit timer, neither running nor
+ *                  queued, which is where most of a healthy roster sits.
+ *  - `tailed`      holds a live subscription. NOT a fourth share of the same
+ *                  whole — a live unit keeps its subscription while it is
+ *                  revisited, so it is in this number AND in `working` at the
+ *                  same time. The three above sum to `units`; this one
+ *                  crosses them.
+ *
+ * Null members rather than zeroes wherever the document does not say. A router
+ * that publishes no pool row is not a router with an empty pool, and "0 in the
+ * pool" beside four tables of relays is the kind of arithmetic that gets a
+ * panel disbelieved.
+ */
+export function poolTotals(progress, groups) {
+  const row = (progress?.processors || []).find((p) => p && p.name === VISITS_PROCESSOR);
+  return totalsOf(groups, {
+    relays: num(row?.roster),
+    units: num(row?.rosterVisits),
+    queued: num(row?.awaitingVisit),
+  });
+}
+
+/** A published member, or null where the document does not carry it. */
+const num = (v) => (Number.isFinite(v) ? v : null);
+
+/**
+ * THE ARITHMETIC BOTH CUTS SHARE: what the groups are holding, and what is
+ * left of the denominator once they are taken out.
+ *
+ * One function because the two summaries sit on one card and are read against
+ * each other — the per-stream lines must add up to the pool's. Written twice
+ * they had already drifted on the rule that matters most here: with `queued`
+ * absent, one rendered a remainder anyway (silently counting the queue as
+ * sitting between visits) and the other said nothing. Saying nothing is right,
+ * and now it is right in both.
+ */
+function totalsOf(groups, { relays, units, queued }) {
+  const working = groups.reduce((a, g) => a + (g.key === POOL_LIVE ? 0 : g.rows.length), 0);
+  return {
+    relays,
+    units,
+    working,
+    queued,
+    // A tailed unit keeps its tail while it is revisited, so this CROSSES the
+    // three above rather than joining them.
+    tailed: groups.find((g) => g.key === POOL_LIVE)?.rows.length ?? 0,
+    // Off UNITS, never off relays — pool-wide those are different
+    // denominators. Never negative either: the counts are read at one tick but
+    // not one instant, so a roster that shrank between them can leave the
+    // subtraction short, and "-2 between visits" reads as a bug in the router
+    // rather than as the rounding it is.
+    waiting: units == null || queued == null ? null : Math.max(0, units - working - queued),
+  };
+}
+
+/**
+ * …and the same five numbers for ONE stream, off that stream's own row.
+ *
+ * The pool-wide totals cannot be divided into these — `rosterVisits` is a sum
+ * over streams and `awaitingVisit` on the pool's row is the queue entire — so
+ * the stream row publishes its own `roster`, `liveHeld` and `awaitingVisit`
+ * and this reads them there.
+ *
+ * `units` IS `relays` here, and that is not a shortcut. The pool's unit of
+ * work is a (relay, stream) pair, so pool-wide the two differ by however much
+ * the streams overlap; inside ONE stream a relay is exactly one unit, which is
+ * what makes this subtraction sound where the pool-wide one needs a second
+ * denominator. It is filled in rather than left null because the pool blocks
+ * draw their `n of m` from it.
+ *
+ * Nulls where the row does not say — a stream published by a router too old
+ * for `awaitingVisit` gets no queued mark and no remainder, rather than a zero
+ * that would read as "nothing waiting".
+ */
+function streamTotals(s, groups) {
+  const relays = num(s?.roster);
+  // `units: relays` — inside ONE stream a relay is exactly one unit of work,
+  // which is what makes the remainder sound here where the pool-wide one needs
+  // a second denominator.
+  return totalsOf(groups, { relays, units: relays, queued: num(s?.awaitingVisit) });
+}
+
+/**
+ * WHAT EACH STREAM MAY SPEND on each of the pool's jobs, and what it has spent
+ * — one row per (stream, job) the router publishes a limit for.
+ *
+ * Flattened across streams because the caps are read as a TABLE: "who may have
+ * how much of the audits" is a comparison between streams, and a per-stream
+ * block would make it one paragraph each. The stream stays on the row.
+ *
+ * Uncapped rows are dropped: the router publishes every job for every stream so
+ * that "bounded by the dial width alone" is sayable, but a table of unlimited
+ * rows is the mark that reads the same on every deployment. What survives is
+ * what somebody configured — plus anything that has been deferred, which
+ * cannot happen without a cap and so is a row that has already earned itself.
+ */
+export function limitsOf(progress) {
+  const rows = [];
+  for (const s of progress?.streams || []) {
+    for (const l of s.limits || []) {
+      const streamCap = Number.isFinite(l.streamCap) ? l.streamCap : null;
+      const deferred = l.deferred || 0;
+      if (streamCap == null && !deferred) continue;
+      rows.push({
+        stream: s.name || null,
+        job: l.job || null,
+        label: POOL_LABELS[l.job]?.[0] || l.job || "—",
+        streamCap,
+        // `??`, not `||`: zero permits out is a real reading — the stream is
+        // capped and using none of it — and not a missing number.
+        inUse: Number.isFinite(l.inUse) ? l.inUse : null,
+        deferred,
+        // AT THE CAP is not a fault; at the cap WITH work being turned away is
+        // the cap biting, and only that is worth a colour. BOTH halves, which
+        // the comment has always said and the predicate did not: `deferred` is
+        // cumulative since boot, so on its own a single refusal at boot paints
+        // the row hot for the life of the process. Paired with "full right
+        // now" it says what an operator can act on — this cap is the reason
+        // work is not happening, at this moment.
+        //
+        // Uncapped rows only reach here by having deferred something, which
+        // cannot happen without a cap; they are marked on that alone.
+        biting: deferred > 0 && (streamCap == null || l.inUse >= streamCap),
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * WHEN EACH STREAM'S SCHEDULED RE-READS COME DUE — the audit's clock and the
+ * re-fetch's, over every ask.
+ *
+ * This is the half the counters cannot supply. `auditsRun` climbing says work
+ * happened; only `waiting` draining at the period says it happened BECAUSE it
+ * was due. So the row is published whole — due, never-run, waiting — rather
+ * than as a single "N due" that could not be checked against anything.
+ *
+ * `neverRun` is deliberately its own number and not folded into `due`. An ask
+ * with no completed pass is due by definition, which is the whole of a fresh
+ * deployment; folded together, a mirror that has never audited anything and
+ * one whose period has elapsed would read identically, and only the second is
+ * the schedule doing something.
+ */
+export function scheduleOf(progress) {
+  const rows = [];
+  for (const s of progress?.streams || []) {
+    for (const r of s.schedule || []) {
+      const due = r.due || 0;
+      const neverRun = r.neverRun || 0;
+      rows.push({
+        stream: s.name || null,
+        job: r.job || null,
+        label: POOL_LABELS[r.job]?.[0] || r.job || "—",
+        everySec: Number.isFinite(r.everySec) ? r.everySec : null,
+        due,
+        neverRun,
+        waiting: r.waiting || 0,
+        // Absent means nothing is waiting — every ask is already due — which
+        // is a state and not a zero countdown.
+        nextInSec: Number.isFinite(r.nextInSec) ? r.nextInSec : null,
+        // Work that is due and not moving is the one shape worth a colour, and
+        // it cannot be read off `due` alone: a fresh deployment is ALL due and
+        // perfectly healthy. Backed up means due work with nothing waiting
+        // behind it — the period has elapsed for everything and the pool is
+        // not getting to it.
+        backedUp: due > 0 && r.waiting === 0 && neverRun === 0,
+      });
+    }
+  }
+  return rows;
+}

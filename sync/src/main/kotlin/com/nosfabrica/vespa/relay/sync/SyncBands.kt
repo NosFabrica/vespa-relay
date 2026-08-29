@@ -191,12 +191,65 @@ class SyncBands(
         negentropySyncThePastSeconds: Long,
         now: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
+        // THROUGH [auditDueAt], so the clock chain and the arithmetic behind
+        // "due" exist once. They were spelled twice — a `verified ?: band ?:
+        // 0L` and an `auditDue(...)` here, the same chain and a `clock +
+        // period` there — which made the gate an audit actually runs on and
+        // the number the status page certifies it by two independent
+        // expressions. When those disagree, the panel written to prove the
+        // schedule is obeyed is the thing that lies.
+        val dueAt = auditDueAt(stream, url, filter, negentropySyncThePastSeconds)
+        if (dueAt != null && now < dueAt) return false
+        // The key is built only past the dueness gate: it costs a
+        // `filter.toJson()`, and on the overwhelmingly common answer — not due
+        // — the one inside `auditDueAt` is the only one paid.
         val key = VerifiedKey(stream, filter.toJson(), url.url)
-        val clock = verified[key] ?: band(stream, url, filter)?.fullAt ?: 0L
-        if (!auditDue(clock, now, negentropySyncThePastSeconds)) return false
         if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(negentropySyncThePastSeconds)) return false
         attempts[key] = now
         return true
+    }
+
+    /**
+     * WHEN this ask's negentropy audit comes due — the same arithmetic
+     * [claimAudit] gates on, exposed as a TIME rather than a yes/no.
+     *
+     * Null means never audited, which [auditDue] treats as always due: a
+     * relay's first audit happens on its first visit rather than a period
+     * later. That answer is the one worth publishing separately, because it is
+     * the only way a fresh deployment's audit storm reads as scheduled work
+     * instead of a rule being broken — every ask is due at once, exactly as
+     * designed, and it never happens again for the same ask.
+     *
+     * Read-only and stamps nothing. [claimAudit] takes the attempt clock as a
+     * side effect of returning true, so asking IT what is due would push every
+     * ask it was asked about hours into the future.
+     */
+    fun auditDueAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        negentropySyncThePastSeconds: Long,
+    ): Long? {
+        val clock = verified[VerifiedKey(stream, filter.toJson(), url.url)] ?: band(stream, url, filter)?.fullAt ?: 0L
+        return if (clock <= 0L) null else clock + negentropySyncThePastSeconds
+    }
+
+    /**
+     * …and when its bands expire onto the re-fetch, on the stream's
+     * `refetchThePastSeconds`. Null where the band has never completed a full
+     * pass — there is nothing recorded to re-fetch, so the walk it gets is a
+     * first catch-up and not a re-walk — or where the stream sets no period,
+     * which is a stream whose history is never re-fetched at all.
+     */
+    fun refetchDueAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): Long? {
+        val period = refetchThePastSecondsFor(stream)
+        if (period == NEVER) return null
+        val fullAt = band(stream, url, filter)?.fullAt ?: 0L
+        return if (fullAt <= 0L) null else fullAt + period
     }
 
     /** When this ask's history was last VERIFIED by a completed reconcile, or null before its first. */
@@ -690,6 +743,11 @@ class SyncBands(
          * has NEVER had a verified pass — always due, which is what makes a
          * fresh relay's first audit happen on its first visit rather than a
          * week later.
+         *
+         * The rule as a PREDICATE. [auditDueAt] is the same rule as a time and
+         * is what production takes — one expression for the gate an audit runs
+         * on and the number the status page certifies it by. This states it in
+         * the shape the tests assert, with no store behind it.
          */
         internal fun auditDue(
             fullAt: Long,

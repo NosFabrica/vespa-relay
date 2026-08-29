@@ -1454,9 +1454,16 @@ out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
 why the router does its own author-bound read instead of using it. **Admitting
 widens, holding out forecloses — do not give them the same default.** The pool
-then rotates VISITS (per-ask catch-up, the `negentropySyncThePastSeconds` audit, the heal
-drain) across `visitConcurrency` workers and holds up to `tailBudget` live
-tails, revisit-paced by each relay's recent yield. A scan whose select binds
+then rotates VISITS — whose unit is a (relay, STREAM) pair, so many streams work
+one relay at once over one refcounted socket while each stream sees it in one
+state (`VisitPool.VisitKey`) — running per-ask catch-up, the
+`negentropySyncThePastSeconds` audit and the heal
+drain, and holds live tails, revisit-paced by each relay's recent yield. Every
+width is the STREAM's — `visitConcurrency`, `maxLiveConcurrency`,
+`maxLiveConcurrency`, `refetchConcurrency`, `negentropyConcurrency` — taken as
+permits by `PoolLimits`, and the pool's worker count is their sum
+(`VisitPool.workersFor`). The router-wide `visitConcurrency` / `tailBudget` are
+refused at parse time. A scan whose select binds
 `authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
 `(relay, provider)` granularity NIP-85's tags already chose, and the band key
 that stays valid however many providers join. A retracting stream
@@ -2007,17 +2014,19 @@ rather than a missing one. `events` was checked against `fetchAllPages`'
 own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
 
 **`doing` names the JOB and then the TRANSPORT, and neither implies the other.**
-`catching up (paging)` is what is new since this relay's last pass; `auditing
-history (negentropy)` is the whole past re-checked on the stream's
+`catching up (paging)` is what is new since this relay's last pass; `negentropy
+sync of the past` is the whole past re-checked on the stream's
 `negentropySyncThePastSeconds` clock, whose purpose is to find what no catch-up ever saw; and
-`auditing the provider's own records (negentropy)` is the retraction comparison,
+`negentropy sync of the provider's own records` is the retraction comparison,
 the same clock and the same full-past sweep. Negentropy is NOT a synonym for the
 audit: the sweep pages any window a peer will not reconcile, and a static
 stream's whole backfill goes either way on `sync` — so "reconciling" alone never
 told a reader which of the two jobs was running, which is the half they were
-asking about. The `auditing` gauge counts rows by the two audit stages, so the
+asking about. The `negentropyRunning` gauge counts rows by the two stages, so the
 strings live in `VisitPool`'s companion and a reword goes through it or silently
-zeroes the gauge.
+zeroes the gauge. The page never groups on them either — the stable `pool` word
+beside the sentence is what the four tables are cut by, exactly so a reword
+cannot move a row.
 
 **Verified end to end against a real Vespa and real relays**, not only by
 probe: `docker compose` with the schema deployed, a `profileViaOutbox` stream
@@ -3453,7 +3462,8 @@ by rendering the real card against a live `/stats.json`, not by a unit test.
 > name — `concurrency`, `recycleSeconds`, `authorsPerLeg`, `sync`,
 > `SYNC_NEG_MIN_EVENTS`, an ungated scan — each with a migration note.
 > The war stories are KEPT because their lessons transferred: the two gates
-> became `visitConcurrency` against `tailBudget`; the leg give-up
+> became `visitConcurrency` against `tailBudget` (both per stream now, the
+> second as `maxLiveConcurrency`); the leg give-up
 > (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
 > `dropFolded` runs in `certifiedScan`; `refusedOutright` ends a visit as it
 > ended a leg; the bands survive unchanged. `SharedIdSet` and `CycleTally` do

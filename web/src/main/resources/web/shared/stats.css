@@ -825,9 +825,33 @@ a { color: var(--accent); }
 .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
 .sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
 .sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+/* ONE STREAM'S FOUR POOLS, once the card has more than one stream to cut by.
+   A rule down the left rather than a box: the four blocks inside already carry
+   their own separation, and a second border around them would read as a table
+   of tables. The indent is what says the pools below belong to the name above,
+   which is the whole job. */
+.sy-stream-pools { margin: 0 0 18px; padding: 0 0 0 11px; border-left: 2px solid var(--line); }
+/* The stream's name has to outrank the four pool names under it or the section
+   reads as a fifth pool. Size does that where weight cannot: the pool headings
+   are already bold, so a bolder one at the same size is a distinction nobody
+   sees while scrolling. */
+.sy-stream-pools > .sy-top { margin: 0 0 9px; flex-wrap: wrap; font-size: 14px; }
+.sy-stream-pools > .sy-top .sy-name { font-weight: 700; }
+/* ONE POOL: its heading, then its rows. The four sit under one sub-head, so
+   each block carries just enough separation to be scanned as a unit — the
+   gap does the grouping and no rule or box is needed for it. */
+.sy-pool { margin: 0 0 12px; }
+.sy-pool-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sy-pool-name { font-weight: 620; }
+/* The size of the pool and, where its rows agree on one, the stage word lifted
+   out of the column that would have repeated it. Both are context for the name
+   beside them rather than findings of their own. */
+.sy-pool-n, .sy-pool-doing { font-size: 12px; color: var(--muted); }
+.sy-pool-doing::before { content: "· "; }
 /* EVERY LEG, not a sample. The list is the thing an operator scans for the
    one bad row, so it scrolls on its own rather than pushing the rest of the
-   card off screen. */
+   card off screen. The live pool is the widest of them — one row per held
+   socket, up to the tail budget — and the same box holds it. */
 .sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: 6px 0 0; }
 table.sy-legs { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.sy-legs th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600;
@@ -836,10 +860,14 @@ table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white
 table.sy-legs tr:last-child td { border-bottom: 0; }
 table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+/* …and the heading over a numeric column, which was three inline styles in the
+   card until the three tables were built by one function. Same class as the
+   cells under it, so a column is right-aligned in one place. */
+table.sy-legs th.n { text-align: right; }
 /* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
    row, so the warning colour owns the whole row. */
-table.sy-legs .sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
-table.sy-legs tr.hot .sy-at { color: inherit; }
+table.sy-legs td.sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
+table.sy-legs tr.hot td.sy-at { color: inherit; }
 /* Quiet past the stuck threshold. The row is the finding, so the row is what
    is marked — a coloured cell would put the emphasis on the clock rather than
    on the relay it belongs to. */

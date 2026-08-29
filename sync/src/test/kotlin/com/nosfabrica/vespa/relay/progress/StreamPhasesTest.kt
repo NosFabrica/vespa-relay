@@ -35,7 +35,8 @@ class StreamPhasesTest {
     private fun rotating(
         relays: Int,
         tailed: Int,
-    ) = StreamPhases.Phase.Rotating(relays, tailed)
+        queued: Int = 0,
+    ) = StreamPhases.Phase.Rotating(relays, tailed, queued)
 
     @Test
     fun `a registered stream appears before it has done anything`() {
@@ -118,9 +119,9 @@ class StreamPhasesTest {
         // or wedged on one relay — so it is appended to whatever the phase says.
         val p = StreamPhases()
         p.set("content", rotating(5, 5))
-        p.namesInFlight("content") {
+        p.names("content", inFlight = {
             InFlight(listOf(InFlight.Relay("wss://slow.example/", heldForSec = 41_400, transferringForSec = 41_390, events = 2, quietForSec = 41_000)), 0)
-        }
+        })
 
         val line = p.report().single()
 
@@ -135,9 +136,9 @@ class StreamPhasesTest {
         // rather than a finding, which is how a warning stops being read.
         val p = StreamPhases()
         p.set("content", rotating(5, 4))
-        p.namesInFlight("content") {
+        p.names("content", inFlight = {
             InFlight(listOf(InFlight.Relay("wss://busy.example/", heldForSec = 12, transferringForSec = 10, events = 900, quietForSec = 0)), 0)
-        }
+        })
 
         assertFalse(p.report().single().contains("wss://busy.example/"))
     }
@@ -146,9 +147,9 @@ class StreamPhasesTest {
     fun `a leg with no socket says so, because absent is not zero`() {
         val p = StreamPhases()
         p.set("content", rotating(5, 1))
-        p.namesInFlight("content") {
+        p.names("content", inFlight = {
             InFlight(listOf(InFlight.Relay("wss://queued.example/", heldForSec = 40_000, transferringForSec = null, events = 0, quietForSec = 40_000)), 0)
-        }
+        })
 
         assertTrue(p.report().single().contains("not on a socket"))
     }

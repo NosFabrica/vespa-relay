@@ -39,6 +39,8 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StreamPhases
+import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
@@ -149,32 +151,56 @@ class VisitPoolLiveProbe {
                     )
                 ingest.start()
                 val refused = RefusedIds.disabled()
+
+                // TWO STREAMS OVER ONE ROSTER, which is the whole point of the
+                // probe now: the unit of work is a (relay, stream) pair, so
+                // every relay here is two units that must run at once, over
+                // ONE socket, each with its own tail carrying its own filter.
+                // A single-stream probe cannot see any of that.
+                //
+                // The second is MULTI-KIND on purpose. `rewalksCovered` reads
+                // a band's per-kind spans, and kinds do not cover the same
+                // time on a real relay — a single-kind probe is exactly the
+                // shape that hid the misfiled catch-up in the first place.
+                fun probeStream(
+                    name: String,
+                    filter: Filter,
+                    visits: Int,
+                    live: Int,
+                    audit: Long? = null,
+                ) = SyncStream(
+                    name = name,
+                    dir = SyncDirection.DOWN,
+                    filter = filter,
+                    urls = emptyList(),
+                    trusted = false,
+                    visitConcurrency = visits,
+                    maxLiveConcurrency = live,
+                    negentropySyncThePastSeconds = audit,
+                    discovery =
+                        RelayDiscoveryConfig(
+                            // The same source the roster printed above read,
+                            // identity and all: the halves of the probe have
+                            // to be about one thing.
+                            sources = listOf(probeSource(signer.pubKey)),
+                            refreshSeconds = 3600,
+                            exclude = RelayExcludes.NONE,
+                        ),
+                )
                 val probeStreams =
                     listOf(
-                        SyncStream(
-                            name = "liveProbe",
-                            dir = SyncDirection.DOWN,
-                            filter = Filter(kinds = listOf(1), limit = 50),
-                            urls = emptyList(),
-                            trusted = false,
-                            discovery =
-                                RelayDiscoveryConfig(
-                                    sources =
-                                        listOf(
-                                            // The same source the roster printed above
-                                            // read, identity and all: the two halves of
-                                            // the probe have to be about one thing.
-                                            probeSource(signer.pubKey),
-                                        ),
-                                    refreshSeconds = 3600,
-                                    exclude = RelayExcludes.NONE,
-                                ),
-                        ),
+                        probeStream("notes", Filter(kinds = listOf(1), limit = 50), visits = 4, live = 3),
+                        // Small budgets deliberately: with more relays than
+                        // permits the caps have to BITE, so `deferred` and the
+                        // schedule rows carry real numbers instead of zeroes.
+                        probeStream("mixed", Filter(kinds = listOf(0, 3, 10002), limit = 50), visits = 2, live = 1, audit = 3600),
                     )
                 val bands = SyncBands(null)
+                val phases = StreamPhases()
+                probeStreams.forEach { phases.register(it.name) }
                 val pool =
                     VisitPool(
-                        client = client,
+                        reads = ClientRelayReads(client),
                         bands = bands,
                         ingest = ingest,
                         pager =
@@ -196,9 +222,11 @@ class VisitPoolLiveProbe {
                             ),
                         streams = probeStreams,
                         progress = processors.of("visits"),
-                        visitConcurrency = 4,
-                        tailBudget = 3,
+                        phases = phases,
+                        workers = VisitPool.workersFor(probeStreams),
+                        limits = PoolLimits.of(probeStreams),
                     )
+                println("workers for these streams: ${VisitPool.workersFor(probeStreams)} (the SUM of their dial widths)")
                 pool.start()
                 // Long enough for the roster loop's first rebuild, a full
                 // rotation of visits, tails to open, and — with a 3-tail budget
@@ -208,6 +236,19 @@ class VisitPoolLiveProbe {
                 for (p in processors.snapshot()) {
                     println("  ${p.name}: ${p.phase} — " + p.counts.joinToString { "${it.name}=${it.value}" })
                 }
+                // THE DOCUMENT THE PAGE READS, in full: the four pools with a
+                // `pool` word per held row, each stream's limits with what
+                // they turned away, and the schedule rows. This is the half
+                // that has only ever been asserted against hand-written JSON.
+                println("=".repeat(78))
+                println(
+                    SyncProgress.document(
+                        streams = phases.snapshot(),
+                        processors = processors.snapshot(),
+                        live = pool.livePool(),
+                        nowSeconds = System.currentTimeMillis() / 1000,
+                    ),
+                )
                 println("=".repeat(78))
             }
         } finally {

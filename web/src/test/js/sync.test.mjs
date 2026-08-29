@@ -10,9 +10,12 @@
 //
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
-  IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf,
-  heldOf, legsOf, measuringOf, probeProgress, rotationOf,
+  IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
+  POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
+  JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
+  poolsByStreamOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -22,6 +25,73 @@ const leg = (n, quiet, over = {}) => ({
   relay: `wss://r${n}.example/`, heldForSec: 3600, transferringForSec: 3595,
   events: 1000 * n, quietForSec: quiet, ...over,
 });
+
+// ── the words this page and the router have to agree on ─────────────────────
+{
+  // THE ONE PLACE THE PAIRING WAS NOT UNDER TEST. The router pairs a stable
+  // `pool` word with the prose sentence beside it precisely so rewording the
+  // sentence cannot silently empty a table — and `VisitPoolTest` binds those
+  // words to the document's glossary. Nothing bound them to THIS file, which
+  // is the file that draws the tables: a rename in Kotlin passed the whole
+  // suite and emptied a panel on the page, with no failure in either language.
+  //
+  // Read out of the source rather than a build artefact, the way this suite
+  // already reads `stats.html` and `index.html`: the constants are `const val`
+  // literals, so the declaration IS the contract.
+  const pool = readFileSync(new URL("../../../../sync/src/main/kotlin/com/nosfabrica/vespa/relay/sync/VisitPool.kt", import.meta.url), "utf8");
+  const declared = Object.fromEntries(
+    [...pool.matchAll(/const val (POOL_[A-Z_]+|JOB_[A-Z_]+) = "([^"]+)"/g)].map((m) => [m[1], m[2]]),
+  );
+  assert.deepEqual(
+    { POOL_LIVE: declared.POOL_LIVE, POOL_CATCHING_UP: declared.POOL_CATCHING_UP,
+      POOL_REFETCHING: declared.POOL_REFETCHING, POOL_NEGENTROPY: declared.POOL_NEGENTROPY,
+      JOB_VISITING: declared.JOB_VISITING },
+    { POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_NEGENTROPY, JOB_VISITING },
+    "the router's pool words and this page's have drifted — one of the four tables is about to draw empty",
+  );
+  // …and every word the router declares is one this page knows how to label.
+  // A fifth pool added in Kotlin would otherwise land silently in `between`.
+  for (const word of Object.values(declared)) {
+    assert.ok(POOL_LABELS[word], `the router publishes pool word "${word}" and this page has no label for it`);
+  }
+  ok("the four pool words are the router's own, read out of its source");
+}
+
+// ── the socket budget ───────────────────────────────────────────────────────
+{
+  // NEAR THE CEILING IS NOT A FAULT, and this is the whole judgement. A mirror
+  // whose job is to stay connected to every certified relay is supposed to sit
+  // near its budget; colouring that would put a warning on every healthy
+  // deployment and teach an operator to ignore the mark.
+  const busy = socketsOf({ sockets: 1010, socketCeiling: 1024, socketsRunning: 1010, socketsQueued: 0 });
+  assert.equal(busy.starved, false, "99% of the budget with nothing waiting is a mirror doing its job");
+  assert.equal(busy.open, 1010);
+  assert.equal(busy.ceiling, 1024);
+
+  // A QUEUE IS. Those calls are admissible and OkHttp is holding them because
+  // the budget is full — the one symptom a slow store and a saturated thread
+  // pool cannot produce, which is why it is worth its own number.
+  const starved = socketsOf({ sockets: 1024, socketCeiling: 1024, socketsRunning: 1024, socketsQueued: 37 });
+  assert.equal(starved.starved, true);
+  assert.equal(starved.queued, 37);
+
+  // …and it is the QUEUE and not the fullness: a router well under its ceiling
+  // that is somehow queueing is still the same diagnosis.
+  assert.equal(socketsOf({ sockets: 40, socketCeiling: 1024, socketsQueued: 2 }).starved, true);
+
+  // A ROUTER TOO OLD TO PUBLISH THE QUEUE says nothing rather than "nothing is
+  // queued" — the difference between "not measured" and "measured as fine".
+  const old = socketsOf({ sockets: 412, socketCeiling: 1024 });
+  assert.equal(old.queued, null);
+  assert.equal(old.running, null);
+  assert.equal(old.starved, false, "unmeasured cannot raise an alarm, and must not");
+
+  // No ceiling is no mark: `0 of 0` is worse than nothing.
+  assert.equal(socketsOf({ sockets: 5 }), null);
+  assert.equal(socketsOf({ socketCeiling: 1024 }), null);
+  assert.equal(socketsOf(null), null);
+  ok("the socket budget is read on its queue, not on how full it is");
+}
 
 // ── the constraint ──────────────────────────────────────────────────────────
 {
@@ -296,7 +366,7 @@ const leg = (n, quiet, over = {}) => ({
   // pass, no fraction and no cycle, so every other mark on its row is absent —
   // and the line reads the same whether it is riding four hundred relays or
   // none.
-  const riding = rotationOf({ name: "visits", phase: ROTATING, roster: 412, tails: 300 });
+  const riding = rotationOf({ name: "visits", phase: ROTATING, roster: 412, liveHeld: 300 });
   assert.equal(riding.roster, 412);
   assert.equal(riding.tails, 300);
   assert.equal(riding.waiting, false);
@@ -304,8 +374,8 @@ const leg = (n, quiet, over = {}) => ({
   // ZERO IS THE READING WORTH HAVING: before the fitness pass signs its first
   // `prime`, a visit stream is a stream with an empty world — busy-looking
   // and dialling nothing.
-  assert.equal(rotationOf({ phase: ROTATING, roster: 0, tails: 0 }).waiting, true);
-  assert.equal(rotationOf({ phase: ROTATING, roster: 0 }).tails, null, "no tail count is not a claim of none");
+  assert.equal(rotationOf({ phase: ROTATING, roster: 0, liveHeld: 0 }).waiting, true);
+  assert.equal(rotationOf({ phase: ROTATING, roster: 0 }).tails, null, "no live count is not a claim of none");
 
   // Every other phase draws the marks it already had.
   assert.equal(rotationOf({ phase: "fetching", running: 128 }), null);
@@ -604,4 +674,420 @@ const leg = (n, quiet, over = {}) => ({
   // A router too old to make the claim is not a router making a false one.
   assert.equal(funnelOf(doc({})).accountedFor, null, "absent is not a verdict either way");
   ok("the relay's own arithmetic check rides on the tree, and absent is not false");
+}
+
+// ── the four pools ──────────────────────────────────────────────────────────
+{
+  // THE COMPLAINT this answers: one rotating pool runs four workloads, and
+  // every number describing it added them together. `visiting: 100` covered a
+  // catch-up, a history audit and a whole-corpus re-walk — a mirror keeping up
+  // and one re-downloading years read identically — while `tails: 412` counted
+  // the fourth and named nobody.
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  const doc = {
+    streams: [
+      { name: "content", inFlight: { relays: [
+        held("wss://a.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP, quietForSec: 1 }),
+        held("wss://b.example/", { doing: "negentropy sync of the past", pool: POOL_NEGENTROPY, quietForSec: 900 }),
+      ], omitted: 0 } },
+      { name: "indexers", inFlight: { relays: [
+        held("wss://c.example/", { doing: "re-fetching the past (paging)", pool: POOL_REFETCHING }),
+        held("wss://d.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP, quietForSec: 400 }),
+        held("wss://e.example/", { doing: "claiming the socket" }),
+      ], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { doing: "holding a live tail", pool: POOL_LIVE, stream: "content" })], omitted: 0 },
+  };
+  const pools = poolsOf(doc);
+  const at = (key) => pools.groups.find((g) => g.key === key);
+
+  assert.deepEqual(pools.groups.map((g) => g.key), [...POOL_ORDER, POOL_BETWEEN],
+    "the four the router names, in one order, and the leftovers last");
+  assert.deepEqual(at(POOL_CATCHING_UP).rows.map((r) => r.relay), ["wss://d.example/", "wss://a.example/"],
+    "quietest first ACROSS streams — the merge interleaves two lists that were each sorted alone");
+  assert.deepEqual(at(POOL_NEGENTROPY).rows.map((r) => r.relay), ["wss://b.example/"]);
+  assert.deepEqual(at(POOL_REFETCHING).rows.map((r) => r.relay), ["wss://c.example/"]);
+  assert.deepEqual(at(POOL_LIVE).rows.map((r) => r.relay), ["wss://f.example/"]);
+
+  // NOTHING IS DROPPED. A visit between jobs publishes no pool word, and the
+  // row an operator is chasing — held for an hour, still "claiming the socket"
+  // — is exactly the one a four-pool panel could lose.
+  assert.deepEqual(at(POOL_BETWEEN).rows.map((r) => r.relay), ["wss://e.example/"]);
+  assert.equal(pools.groups.reduce((a, g) => a + g.rows.length, 0), 6, "every row published is in exactly one group");
+
+  // The stream a row came from rides on the ROW: one visit serves every
+  // stream's asks over one dial, so a pool spans streams.
+  assert.deepEqual(at(POOL_CATCHING_UP).rows.map((r) => r.stream), ["indexers", "content"]);
+  // …and a tail names its OWN stream: one subscription serves one stream, so
+  // a live row has exactly one owner. It used to be null here, when a tail
+  // carried every wanting stream's filter and belonged to none of them.
+  assert.equal(at(POOL_LIVE).rows[0].stream, "content");
+  assert.equal(at(POOL_LIVE).streams, true, "so the live table draws a stream column like the rest");
+  assert.equal(at(POOL_CATCHING_UP).streams, true);
+  ok("every held relay lands in exactly one pool, quietest first, and none is dropped for want of a word");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A COLUMN WHOSE EVERY CELL READS THE SAME IS NOT A COLUMN. The pool's word
+  // is lifted into its heading when the rows agree, and kept as a column where
+  // they do not — the audit pool's two stages are a history sweep and a
+  // provider's retraction comparison, which is the distinction worth the width.
+  const one = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
+    held("wss://b.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
+  ], omitted: 0 } }] });
+  assert.equal(one.groups.find((g) => g.key === POOL_CATCHING_UP).doing, "catching up (paging)");
+
+  const two = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { doing: "negentropy sync of the past", pool: POOL_NEGENTROPY }),
+    held("wss://b.example/", { doing: "negentropy sync of the provider's own records", pool: POOL_NEGENTROPY }),
+  ], omitted: 0 } }] });
+  assert.equal(two.groups.find((g) => g.key === POOL_NEGENTROPY).doing, null, "two stages keep their column");
+  ok("a pool's stage word is lifted out of the table only where every row agrees on it");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // EMPTY IS AN ANSWER. "No relay is auditing right now" is a finding; a pool
+  // that vanished when it emptied would be indistinguishable from a build with
+  // no such pool, which is the reading the four names exist to prevent.
+  const sparse = poolsOf({ live: { relays: [held("wss://f.example/", { pool: POOL_LIVE })], omitted: 0 } });
+  assert.deepEqual(sparse.groups.map((g) => g.key), POOL_ORDER, "the four are always drawn…");
+  assert.deepEqual(sparse.groups.find((g) => g.key === POOL_NEGENTROPY).rows, []);
+  // …and the fifth group is not one of them: an empty `between` is the healthy
+  // case, and a heading for it on every tick is a mark that never varies.
+  assert.equal(sparse.groups.some((g) => g.key === POOL_BETWEEN), false);
+
+  // Holding nothing at all is the one state where four empty tables say less
+  // than no panel.
+  assert.equal(poolsOf({ streams: [{ name: "content" }] }), null);
+  assert.equal(poolsOf(null), null);
+
+  // WHAT NO POOL CAN ACCOUNT FOR is summed, never attributed: a row the router
+  // left out has no pool by definition, and filing it under one would invent
+  // the fact that is missing.
+  const cut = poolsOf({
+    streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 7 } }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE })], omitted: 2 },
+  });
+  assert.equal(cut.omitted, 9);
+  ok("an empty pool still says so, an empty mirror draws no panel, and what was cut is counted once");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A word off the wire is not a heading. A router naming a pool this page has
+  // not been taught puts the row with the unpooled rather than inventing a
+  // group from a string — and `__proto__` cannot reach Object.prototype
+  // through the label map on the way.
+  const odd = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
+    held("wss://a.example/", { pool: "quantum-sync" }),
+    held("wss://b.example/", { pool: "__proto__" }),
+  ], omitted: 0 } }] });
+  assert.deepEqual(odd.groups.find((g) => g.key === POOL_BETWEEN).rows.map((r) => r.relay),
+    ["wss://a.example/", "wss://b.example/"]);
+  assert.equal(odd.groups.every((g) => typeof g.label === "string"), true);
+  ok("a pool word this page has not been taught is drawn with the unpooled, never as a group of its own");
+}
+
+// ── how big the pool is ─────────────────────────────────────────────────────
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // ONE POOL, shared by every visit-mode stream, so its SIZE is a count of
+  // urls off the rotating pool's own row. Adding the stream rows' `roster`
+  // shares would double-count every relay two streams both want, which on this
+  // deployment is most of them.
+  const doc = {
+    processors: [
+      { name: "ingest", queued: 3 },
+      { name: "visits", roster: 412, rosterVisits: 431, awaitingVisit: 7, visiting: 3, liveHeld: 2 },
+    ],
+    streams: [
+      { name: "content", inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+        held("wss://b.example/", { pool: POOL_NEGENTROPY }),
+      ], omitted: 0 } },
+      { name: "indexers", inFlight: { relays: [held("wss://c.example/", { pool: POOL_REFETCHING })], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE }), held("wss://g.example/", { pool: POOL_LIVE })], omitted: 0 },
+  };
+  const { totals } = poolsOf(doc);
+  assert.equal(totals.relays, 412, "the pool's whole world, from the pool's own row");
+  // THE DENOMINATOR IS UNITS, NOT RELAYS. The pool's unit of work is a
+  // (relay, stream) pair, so a relay three streams want is one relay and three
+  // units — and subtracting pair counts from a relay count reads perfectly
+  // well and is nonsense.
+  assert.equal(totals.units, 431);
+  assert.equal(totals.working, 3, "counted off the ROWS, so the summary cannot disagree with the tables under it");
+  assert.equal(totals.queued, 7);
+  assert.equal(totals.waiting, 421, "the remainder: on a revisit timer, neither running nor queued");
+  assert.equal(totals.units, totals.working + totals.queued + totals.waiting, "those three partition the UNITS");
+  assert.notEqual(totals.relays, totals.units, "…and the relay count is context beside them, not the whole");
+  // …and the tail count crosses them rather than joining them: a tailed relay
+  // keeps its tail while it is revisited, so it is in both at once.
+  assert.equal(totals.tailed, 2);
+  ok("the pool's size is one number off one row, and three of the four marks partition it");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A ROUTER THAT PUBLISHES NO POOL ROW IS NOT A ROUTER WITH AN EMPTY POOL.
+  // `0 in the pool` beside a table of relays is the arithmetic that gets a
+  // whole panel disbelieved, so the total goes away instead.
+  const silent = poolsOf({ streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 0 } }] }).totals;
+  assert.equal(silent.relays, null);
+  assert.equal(silent.units, null);
+  assert.equal(silent.queued, null);
+  assert.equal(silent.waiting, null, "no roster is no remainder to compute");
+  assert.equal(silent.working, 1, "what the rows say is still said");
+  assert.equal(silent.tailed, 0);
+
+  // The three counts are read at one tick but not one instant, so a roster
+  // that shrank between them can leave the subtraction short. `-2 between
+  // visits` reads as a bug in the router rather than as the rounding it is.
+  const raced = poolsOf({
+    processors: [{ name: "visits", roster: 1, rosterVisits: 1, awaitingVisit: 4 }],
+    streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 0 } }],
+  }).totals;
+  assert.equal(raced.waiting, 0, "the remainder floors at zero rather than going negative");
+  ok("a pool the document does not size says nothing, and a raced subtraction never goes negative");
+}
+
+// ── the same rows, cut by stream ────────────────────────────────────────────
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // WHICH STREAM IS SPENDING THE POOL. The mirror-wide cut answers "how much
+  // of this is re-fetching" and makes an operator read a stream column down
+  // and add it up; the budgets are configured per stream, so this is the cut
+  // the knobs are set against.
+  const doc = {
+    processors: [{ name: "visits", roster: 3, rosterVisits: 4, awaitingVisit: 9 }],
+    streams: [
+      { name: "content", phase: ROTATING, roster: 100, liveHeld: 1, awaitingVisit: 6, inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+        held("wss://b.example/", { pool: POOL_NEGENTROPY }),
+      ], omitted: 0 } },
+      { name: "indexers", phase: ROTATING, roster: 40, liveHeld: 0, awaitingVisit: 3, inFlight: { relays: [
+        held("wss://a.example/", { pool: POOL_REFETCHING }),
+      ], omitted: 0 } },
+    ],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "content" })], omitted: 0 },
+  };
+  const cut = poolsByStreamOf(doc);
+  assert.deepEqual(cut.map((c) => c.stream), ["content", "indexers"], "one section per stream, in the document's order");
+  const rowsIn = (c, key) => c.groups.find((g) => g.key === key).rows.map((r) => r.relay);
+
+  // ONE RELAY, TWO STREAMS, TWO SECTIONS. The pool's unit of work is a
+  // (relay, stream) pair, so the same url is legitimately catching up for one
+  // stream and re-fetching for another at the same instant — and that is the
+  // reading the mirror-wide table cannot give without being read down a column.
+  assert.deepEqual(rowsIn(cut[0], POOL_CATCHING_UP), ["wss://a.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_REFETCHING), ["wss://a.example/"]);
+  assert.deepEqual(rowsIn(cut[0], POOL_NEGENTROPY), ["wss://b.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_NEGENTROPY), [], "and an empty pool under a stream still says so");
+
+  // THE LIVE ROW LANDS UNDER ITS OWN STREAM, which is the whole reason this
+  // cut is possible: a tail is held per (relay, stream) pair and names its
+  // owner. When one subscription carried every wanting stream's filter there
+  // was no such thing as one stream's live row.
+  assert.deepEqual(rowsIn(cut[0], POOL_LIVE), ["wss://f.example/"]);
+  assert.deepEqual(rowsIn(cut[1], POOL_LIVE), []);
+
+  // NOTHING IS DROPPED AND NOTHING IS DOUBLED: the sections partition the
+  // mirror's own rows, so both cuts can be drawn on one card without
+  // disagreeing about what is held.
+  const total = (list) => list.reduce((a, c) => a + c.groups.reduce((b, g) => b + g.rows.length, 0), 0);
+  assert.equal(total(cut), poolsOf(doc).groups.reduce((a, g) => a + g.rows.length, 0));
+
+  // A SECTION'S HEADING ALREADY NAMES THE STREAM, so the column under it would
+  // be that heading copied down the table.
+  assert.equal(cut[0].groups.every((g) => g.streams === false), true);
+  assert.equal(poolsOf(doc).groups.find((g) => g.key === POOL_LIVE).streams, true, "…where the mirror's does draw it");
+  ok("the four pools cut by stream put every held row under exactly one owner");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A STREAM'S OWN SHARE, off its own row. The pool-wide totals cannot be
+  // divided into these — `rosterVisits` is a sum over streams and the pool's
+  // `awaitingVisit` is the whole queue — so the stream row publishes its own.
+  //
+  // And `units` IS `relays` here: inside one stream a relay is exactly one
+  // unit of work, which is what makes this subtraction sound where the
+  // pool-wide one needs a second denominator.
+  const [content] = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 100, awaitingVisit: 6, inFlight: { relays: [
+      held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+      held("wss://b.example/", { pool: POOL_NEGENTROPY }),
+    ], omitted: 0 } }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "content" })], omitted: 0 },
+  });
+  assert.equal(content.totals.relays, 100);
+  assert.equal(content.totals.units, 100, "one relay is one unit for one stream");
+  assert.equal(content.totals.working, 2, "counted off the rows, like the mirror's");
+  assert.equal(content.totals.queued, 6);
+  assert.equal(content.totals.waiting, 92);
+  assert.equal(content.totals.relays, content.totals.working + content.totals.queued + content.totals.waiting);
+  assert.equal(content.totals.tailed, 1, "and the tail count crosses them rather than joining them");
+
+  // A ROUTER TOO OLD TO SPLIT THE QUEUE says nothing rather than zero: a
+  // remainder computed without the queued share would quietly count the queue
+  // as sitting between visits.
+  const [old] = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 100, inFlight: { relays: [
+      held("wss://a.example/", { pool: POOL_CATCHING_UP }),
+    ], omitted: 0 } }],
+  });
+  assert.equal(old.totals.queued, null);
+  assert.equal(old.totals.waiting, null);
+  assert.equal(old.totals.working, 1, "what the rows say is still said");
+  ok("a stream's share of the roster comes off its own row, and says nothing where that row does not");
+}
+
+{
+  const held = (relay, over = {}) => ({
+    relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
+  });
+  // A STREAM RIDING THE POOL AND HOLDING NOTHING STILL GETS ITS SECTION. Four
+  // empty tables under a name is the answer a starved stream gives, and a
+  // section that vanished when it emptied would leave an operator scrolling
+  // for a stream that is on the card.
+  const cut = poolsByStreamOf({
+    streams: [
+      { name: "content", phase: ROTATING, roster: 100, awaitingVisit: 100 },
+      { name: "notStarted", phase: "starting" },
+    ],
+  });
+  assert.deepEqual(cut.map((c) => c.stream), ["content"], "…but one that has not started rotating has no share yet");
+  assert.deepEqual(cut[0].groups.map((g) => g.key), POOL_ORDER);
+  assert.equal(cut[0].totals.working, 0);
+
+  // A ROW NO CONFIGURED STREAM CLAIMS gets a section of its own rather than
+  // being dropped — a tail naming a stream that has left the config is exactly
+  // the row worth seeing, and this cut promises what the other one does.
+  const orphan = poolsByStreamOf({
+    streams: [{ name: "content", phase: ROTATING, roster: 1, awaitingVisit: 0 }],
+    live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "retired" })], omitted: 0 },
+  });
+  assert.deepEqual(orphan.map((c) => c.stream), ["content", null]);
+  assert.deepEqual(orphan[1].groups.find((g) => g.key === POOL_LIVE).rows.map((r) => r.relay), ["wss://f.example/"]);
+  assert.equal(orphan[1].groups.find((g) => g.key === POOL_LIVE).streams, true,
+    "and it keeps its stream column: the heading says only that nothing claimed it");
+  assert.equal(poolsByStreamOf(null).length, 0);
+  ok("a stream holding nothing keeps its section, and a row no stream claims gets one");
+}
+
+// ── what each stream may spend ──────────────────────────────────────────────
+{
+  // ONE POOL, SHARED, so "how much may this stream cost" is a property of the
+  // admission gates and of no relay — it lived only in the config file until
+  // the router published it beside what has been spent against it.
+  const doc = {
+    streams: [
+      { name: "content", limits: [
+        { job: POOL_NEGENTROPY, streamCap: 4, inUse: 4, deferred: 91 },
+        { job: POOL_CATCHING_UP, streamCap: 48, inUse: 12, deferred: 0 },
+        { job: POOL_LIVE, deferred: 0 },
+      ] },
+      { name: "indexers", limits: [
+        { job: POOL_NEGENTROPY, streamCap: 2, inUse: 0, deferred: 0 },
+        { job: POOL_REFETCHING, deferred: 7 },
+      ] },
+    ],
+  };
+  const rows = limitsOf(doc);
+
+  // A job nothing caps is dropped — the router publishes every job for every
+  // stream so "bounded by the dial width alone" is sayable, but a table of
+  // unlimited rows is a mark that reads the same on every deployment.
+  assert.deepEqual(rows.map((r) => `${r.stream}/${r.job}`),
+    ["content/negentropy", "content/catching-up", "indexers/negentropy", "indexers/re-fetching"]);
+
+  // …except one that has TURNED WORK AWAY, which cannot happen without a cap:
+  // the row is there because something refused it, and it is the row an
+  // operator is looking for even when the number behind it is not on screen.
+  assert.equal(rows.find((r) => r.job === POOL_REFETCHING).streamCap, null);
+  assert.equal(rows.find((r) => r.job === POOL_REFETCHING).deferred, 7);
+
+  // AT THE CAP IS NOT A FAULT. Content's audits are at 4 of 4 and indexers'
+  // are at 0 of 2; only the one turning work away is marked, because a cap
+  // doing its job and a cap costing you coverage read identically from `inUse`.
+  assert.equal(rows.find((r) => r.stream === "content" && r.job === POOL_NEGENTROPY).biting, true);
+  assert.equal(rows.find((r) => r.stream === "content" && r.job === POOL_CATCHING_UP).biting, false,
+    "in use below the cap with nothing deferred is a stream inside its budget");
+
+  // …and NEITHER HALF ALONE. `deferred` is cumulative since boot, so a stream
+  // that filled its cap once hours ago and has room now is not biting — marked
+  // on the counter alone it would stay hot for the life of the process, which
+  // is a colour that stops meaning anything.
+  const past = limitsOf({ streams: [{ name: "content", limits: [
+    { job: POOL_NEGENTROPY, streamCap: 4, inUse: 1, deferred: 91 },
+  ] }] });
+  assert.equal(past[0].biting, false, "room at the cap now — whatever it turned away earlier");
+  assert.equal(past[0].deferred, 91, "…and the count is still published, because it is still the reading");
+
+  // Zero permits out is a reading — capped and using none — not a gap.
+  assert.equal(rows.find((r) => r.stream === "indexers" && r.job === POOL_NEGENTROPY).inUse, 0);
+  assert.equal(rows.find((r) => r.job === POOL_REFETCHING).inUse, null, "no cap of its own is no `in use` to report");
+  assert.deepEqual(limitsOf(null), []);
+  ok("the caps are a table across streams, an uncapped job is dropped unless it has refused work, and only a biting cap is marked");
+}
+
+// ── when the past is re-read ────────────────────────────────────────────────
+{
+  // THE CLAIM BEING CERTIFIED: the audits and the re-fetch run when their
+  // clocks run out and at no other time. `auditsRun` climbing says work
+  // happened; only `waiting` draining at the period says it happened BECAUSE
+  // it was due, so the whole distribution is published rather than one count.
+  const doc = {
+    streams: [
+      { name: "content", schedule: [
+        { job: POOL_NEGENTROPY, everySec: 604800, due: 3, neverRun: 12, waiting: 397, nextInSec: 41200 },
+        { job: POOL_REFETCHING, everySec: 2592000, due: 0, neverRun: 0, waiting: 412, nextInSec: 900000 },
+      ] },
+    ],
+  };
+  const rows = scheduleOf(doc);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].waiting, 397, "the healthy majority — nothing to do, which is what a period is FOR");
+  assert.equal(rows[0].nextInSec, 41200);
+  assert.equal(rows[0].backedUp, false, "due work with a queue waiting behind it is a schedule turning over");
+
+  // NEVER RUN IS ITS OWN NUMBER. An ask with no completed pass is due by
+  // definition — a relay's first audit happens on its first visit — which is
+  // the whole of a fresh deployment. Folded into `due`, a mirror that has
+  // never audited anything would read identically to one whose period elapsed.
+  const fresh = scheduleOf({ streams: [{ name: "content", schedule: [
+    { job: POOL_NEGENTROPY, everySec: 604800, due: 0, neverRun: 412, waiting: 0 },
+  ] }] })[0];
+  assert.equal(fresh.neverRun, 412);
+  assert.equal(fresh.due, 0);
+  assert.equal(fresh.nextInSec, null, "nothing waiting is no countdown, and must not read as due now");
+  assert.equal(fresh.backedUp, false, "a fresh deployment is ALL due and perfectly healthy");
+
+  // …and the shape that IS worth a colour: the period has elapsed for
+  // everything, nothing is waiting behind it, and none of it is a first pass.
+  const stuck = scheduleOf({ streams: [{ name: "content", schedule: [
+    { job: POOL_NEGENTROPY, everySec: 604800, due: 412, neverRun: 0, waiting: 0 },
+  ] }] })[0];
+  assert.equal(stuck.backedUp, true);
+  assert.deepEqual(scheduleOf(null), []);
+  ok("the schedule publishes the whole distribution, a first pass is told from an elapsed one, and only backed-up work is marked");
 }

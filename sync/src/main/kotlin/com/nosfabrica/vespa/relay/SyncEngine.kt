@@ -37,10 +37,12 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
+import com.nosfabrica.vespa.relay.sync.PoolLimits
 import com.nosfabrica.vespa.relay.sync.RetractionAudit
 import com.nosfabrica.vespa.relay.sync.RosterBuilder
 import com.nosfabrica.vespa.relay.sync.StoreWindowIndex
@@ -252,7 +254,7 @@ class SyncEngine(
     /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
     private val visitPool =
         VisitPool(
-            client = client,
+            reads = ClientRelayReads(client),
             bands = bands,
             ingest = ingest,
             pager = pager,
@@ -275,8 +277,13 @@ class SyncEngine(
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
             phases = phases,
-            visitConcurrency = config.visitConcurrency,
-            tailBudget = config.tailBudget,
+            // The pool's width is the sum of what its streams allow
+            // themselves — there is no router-wide number any more, and the
+            // tail budget lives on the streams too.
+            workers = VisitPool.workersFor(visitStreams),
+            // What each stream may spend on each of the four jobs. Empty
+            // where no stream configures a share, which is uncapped.
+            limits = PoolLimits.of(visitStreams),
         )
 
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
@@ -545,7 +552,7 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progress.publish(phases.snapshot(), processors.snapshot(), health, fatals.get())
+                progress.publish(phases.snapshot(), processors.snapshot(), health, visitPool.livePool(), fatals.get())
             }
         }
     }
@@ -578,6 +585,7 @@ class SyncEngine(
             // is that they cannot drift.
             val constraint = bottleneckOf(depth, rate)
             val open = client.connectedRelaysFlow().value.size
+            val load = peers.socketLoad()
             // Published before it is printed, so the document carries the same
             // verdict the log does even if the line below is ever reworded.
             health =
@@ -588,6 +596,11 @@ class SyncEngine(
                     heapMaxMb = maxMb,
                     sockets = open,
                     socketCeiling = PeerClient.MAX_CONCURRENT_SOCKETS,
+                    // …and what the budget is doing, which is what says
+                    // whether the ceiling above is the constraint or merely
+                    // the ceiling. See [PeerClient.socketLoad].
+                    socketsRunning = load.running,
+                    socketsQueued = load.queued,
                     servingMs = pressure?.meanMs(),
                 )
             System.err.println(

@@ -383,20 +383,25 @@ function processorFact(p) {
   }
   if (p.roster != null) {
     // The pool's one line, and the arithmetic it exists to make visible:
-    // visiting + tails IS the socket count, because a slot here is a socket.
-    add(`${fmt(p.roster)} on the roster`, "roster");
+    // visiting is counted in (relay, stream) UNITS now and several may share
+    // one socket, so this is an upper bound on the connections held.
+    add(`${fmt(p.roster)} relay(s) on the roster`, "roster");
+    // …and the same roster in the UNITS the three counts after it are in. A
+    // relay several streams want is one roster entry and several units, so
+    // "412 on the roster · 7 visiting" invites a subtraction that mixes them.
+    if (p.rosterVisits) add(`${fmt(p.rosterVisits)} stream-visit(s)`, "rosterVisits");
     if (p.awaitingVisit) add(`${fmt(p.awaitingVisit)} awaiting a visit`, "awaitingVisit");
     add(`${fmt(p.visiting || 0)} visiting`, "visiting");
-    add(`${fmt(p.tails || 0)} live tail(s)`, "tails");
+    add(`${fmt(p.liveHeld || 0)} live subscription(s)`, "liveHeld");
     if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
-    if (p.auditing) add(`${fmt(p.auditing)} auditing now`, "auditing");
-    if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
+    if (p.negentropyRunning) add(`${fmt(p.negentropyRunning)} negentropy sync(s) now`, "negentropyRunning");
+    if (p.negentropyRuns) add(`${fmt(p.negentropyRuns)} negentropy sync(s) of the past`, "negentropyRuns");
     // Not a fault, and not nothing: those relays are re-checked by paging or
     // not at all, and which one is a config question the tooltip names.
-    if (p.auditsSkipped) add(`${fmt(p.auditsSkipped)} skipped, no NIP-77`, "auditsSkipped");
+    if (p.negentropySkipped) add(`${fmt(p.negentropySkipped)} skipped, no NIP-77`, "negentropySkipped");
     if (p.retracted) add(`${fmt(p.retracted)} RETRACTED upstream`, "retracted", true);
     if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
-    if (p.evictedTails) add(`${fmt(p.evictedTails)} tail(s) rotated out`, "evictedTails");
+    if (p.liveEvicted) add(`${fmt(p.liveEvicted)} live subscription(s) rotated out`, "liveEvicted");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;
   }
