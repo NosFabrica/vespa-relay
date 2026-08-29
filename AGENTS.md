@@ -214,8 +214,9 @@ git checkout <the pinned commit>          # test what the relay actually resolve
 TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
 ```
 
-Eight ITs, ~9 min total, each standing up a real Vespa (six until the
-near-column work added NearMergeSizingTest and ObserverGateIT). Fetching that repo works
+Ten suites / 11 tests, ~11 min total, each standing up a real Vespa (six before
+the near-column work added NearMergeSizingTest and ObserverGateIT; measured at
+store 130c2efa56 — 0 skipped, 0 failures, 10m44s). Fetching that repo works
 here; pushing to it does not (the git proxy only holds a credential for repos in
 the session's sources).
 

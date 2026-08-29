@@ -122,9 +122,10 @@ quartz = "029c40ebb4"
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
 #   git checkout 130c2efa56
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# RUN IN FLIGHT AT THIS COMMIT — the numbers land in the follow-up commit that
-# replaces this paragraph. Until they do, this pin has NOT cleared the rule and
-# must not be treated as though it had.
+# Run HERE against 130c2efa56 on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures, 10m44s — AccessLogIT, ContainerJvmIT,
+# NearMergeSizingTest, ObserverGateIT, OrphanSweepIT, RankRegressionIT,
+# SearchBodyGramIT (2), SearchExactTextIT, SearchPrefixLadderIT, VespaParityIT.
 # No schema movement in this range, so there is nothing for a deploy to do and no
 # upgrade path to probe this time either.
 #
