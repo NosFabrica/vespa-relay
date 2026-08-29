@@ -354,6 +354,9 @@ than of one page, which is the work a COUNT exists to avoid.
 served; a 2,000-member list past `SEARCH_EXPAND_MAX_PER_EVENT` simply brings
 fewer members, and the client still has every member tag and the `#p`/`#e`/`#a`
 recall that served them before this existed. A cap of `0` means zero — use
+`SEARCH_EXPAND_REFERENCES=false` to turn the feature off, and the boot log says
+so either way.
+
 A spliced member lands where the confidence its publisher expressed puts it: a
 Trusted List scores each member 0..100 for how sure it is that the list's NAME
 applies, and a member the publisher doubts sinks past the organic hits it would
@@ -366,9 +369,6 @@ The splice itself runs in the event store now (vespa-eventstore
 that changes what a REQ sees: the expansion only ever engages on a read
 carrying search TERMS, so a plain NIP-01 recall, a mirror's paging and a NIP-77
 catch-up are untouched.
-
-`SEARCH_EXPAND_REFERENCES=false` to turn the feature off, and the boot log says
-so either way.
 
 ## Admin (NIP-86)
 

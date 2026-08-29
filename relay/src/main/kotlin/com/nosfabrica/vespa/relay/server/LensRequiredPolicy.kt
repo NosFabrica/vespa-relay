@@ -173,9 +173,9 @@ internal fun Filter.declaresLens(): Boolean {
 
 /**
  * The pubkey this filter names as its ranking lens, or null when it names
- * none — the ONE reading of the `observer:` token in this module, shared with
- * [SearchReferenceExpansion.observersOf] so a REQ cannot be understood one way
- * by the gate and another by the expansion.
+ * none — the ONE reading of the `observer:` token in this module, and the same
+ * one the store's `SearchQuery` applies when it resolves a query's lens, so a
+ * REQ cannot be understood one way by the gate and another by the expansion.
  *
  * It must be a USABLE lens — 64 hex, the store's own acceptance test
  * ([com.nosfabrica.vespa.eventstore.mapping] drops anything else) — or

@@ -109,9 +109,6 @@ class NostrRelayServer(
     requireReadLens: Boolean = true,
     // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
-    // Whether a NIP-50 search also answers with the records its Trusted Lists,
-    // Trusted Assertions and NIP-32 labels point at, and how much of the feed
-    // that splice may be. See [SearchReferenceExpansion].
     // Fires once per successful NIP-42 AUTH, with the connection's send —
     // TrustNotice::check is what the composition root puts here. Unset is a
     // relay that stays silent on login.
@@ -194,10 +191,10 @@ class NostrRelayServer(
  * The reference expansion is NOT here. A search that answers with the records
  * its Trusted Lists, Assertions and NIP-32 labels point at needs a store lookup
  * in the middle of a page, and no callback on this interface can suspend — so
- * it lives one layer down, in [ExpandingEventStore], where the same two calls
- * are ordinary suspend functions that return. What this class contributes to it
- * is the [StoreQueryContext] installed below, which is how the expansion learns
- * whose enrolment gates it.
+ * it lives in the store, where the same two calls are ordinary suspend
+ * functions that return. What this class contributes to it is the
+ * [StoreQueryContext] installed below, which is how the expansion learns whose
+ * enrolment gates it.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
