@@ -117,56 +117,69 @@ quartz = "029c40ebb4"
 # re-derived here rather than taken on trust, because the relay reads
 # `serviceProviders()` directly and `ProviderMap` does not cover us.
 #
-# ON MAIN, the merge of NosFabrica/vespa-eventstore#87 — where a spliced
-# Trusted List member is scored.
+# ON MAIN, the merge of NosFabrica/vespa-eventstore#88 — where a kind-restricted
+# search learns to reach the pointers that convert into what it asked for.
 #
-# WHAT MOVED: the member's placement, out of the client and into a rank profile.
-# It used to be the LIST's relevance multiplied by the member's 0..100
-# confidence, and measured against this relay's own corpus that does not sink a
-# member proportionally, it ejects it from its band: a member at 87% of a list
-# scoring 620 landed BELOW ALL 30 HITS, and 95%/87%/75% of a list scoring 1306
-# all landed in the SAME position. The rungs in `event.sd` are bands, and
-# `relevance()` is a narrow range far from zero, so a multiplicative discount is
-# huge against a page's real dynamic range. A member now sits ON the affiliation
-# rung — the band a bio mention or a nip05 hit lands in, which is the same
-# strength of claim as "somebody put this person on a list called X" — with
-# confidence ordering members inside it.
+# WHAT MOVED: the recall, not just the splice. A client hunting people sends
+# `kinds:[0]`, and the Trusted List whose title carries the searched word is a
+# 30392 — so the read never recalled it, the expansion never saw it, and the
+# page held none of the profiles the corpus vouches for. `companions()` now
+# re-aims each searching query at the pointer kinds that CONVERT into its kinds
+# (`SearchReferences.converts`, by tag shape: the event-id families into
+# anything, the pubkey families only into kind 0, the addressable families only
+# into addressable kinds), run WITH the caller's queries under the same lens,
+# terms and window. A declaration companion fetches from the reader's enrolled
+# signers ONLY, and waives the default trust floor to INCLUDE_SPAM_MIN_RANK —
+# the canonical NIP-85 service key is unranked in every reputation tensor, so
+# the default floor would spam-filter the very lists the fetch exists to find;
+# a floor the caller raised survives, and the subject lookups keep the read's
+# own floor untouched. Labels stay ungated. Lens attribution now runs two
+# passes, asked-for before converted, and the enrolment gate read turned LAZY:
+# resolved at most once per read, only on the paths that consult it.
 #
-# WHAT THIS RELAY SEES: a member is placed by its own rung rather than by its
-# list's score, so it no longer rides directly behind the list. It still cannot
-# pass the hit that named it. A NIP-32 label expresses no confidence, so its
-# subject keeps the list-behind-pointer placement it always had. The
-# `SEARCH_EXPAND_*` caps are unchanged and still this deployment's call.
+# WHAT THIS RELAY SEES: a REQ that restricts kinds AND carries terms can be
+# answered with kinds the filter did not name — the converted pointers and
+# their spliced subjects. The store's KDoc on `query` therefore requires a
+# searching page be consumed as `Event`, never as a subtype; every main-code
+# call site here already does, and none of the relay's own reads carry terms,
+# so only client REQs — the feature — see the difference. NIP-45 COUNT
+# deliberately does NOT count the expansion's added rows; it stays the match
+# set a client could verify. The `SEARCH_EXPAND_*` caps are unchanged, and NO
+# SCHEMA MOVES in the range (`git diff --stat` names no .sd), so there is
+# nothing to deploy and nothing to reindex.
 #
 # THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
-# on `InMemoryEventIndex` and cannot see a Vespa-only regression, and this bump
-# adds a RANK PROFILE, which is exactly the kind of change only the gate can
-# check:
+# on `InMemoryEventIndex` and cannot see a Vespa-only regression, and the
+# companion's gated recall executes only on a real Vespa (the in-memory
+# reference recalls ungated, the store's own KDoc says so), which is exactly
+# the split the gate exists for:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout fcc7bad63b
+#   git checkout 23293dae10
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against fcc7bad63b on a real Vespa in Docker: 11 tests across 10
-# suites, 0 skipped, 0 failures — RankRegressionIT included, which is what says
-# the new profile deploys without disturbing the existing ladder. Run that gate
-# ALONE: two earlier readings were lost to a second Gradle invocation in the
-# same project (a NoClassDefFoundError from recompiling :store under the live
-# test JVM, then a NoSuchFileException on Gradle's own binary results).
+# Run HERE against 23293dae10 on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures, 14m32s. Run that gate ALONE: two earlier
+# readings were lost to a second Gradle invocation in the same project (a
+# NoClassDefFoundError from recompiling :store under the live test JVM, then a
+# NoSuchFileException on Gradle's own binary results).
 #
-# `git diff 029615f fcc7bad63b` is EMPTY — main had not moved since the branch
-# point, so the merge carries a byte-identical tree. The gate was still run at
-# the merge rather than inherited, because the rule is about the commit pinned.
+# `git diff af29850 23293dae10` is EMPTY — the branch point IS fcc7bad63b and
+# main had not moved, so the merge carries the branch's tree byte-identical.
+# The gate was still run at the merge rather than inherited, because the rule
+# is about the commit pinned.
 #
-# DIRECTION: 68f07ce958 is a strict ancestor of this (`git merge-base
+# DIRECTION: fcc7bad63b is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates). The store's quartz ask does not move across
 # the range — 029c40ebb4 at both ends, equal to the line above.
 #
-# LEXICOGRAPHIC: 'fcc7…' > '68f0…' ('f' > '6'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction, as the last two bumps were. Four modules declare
-# the store (:common, :relay, :sync, :peers), all through this one alias, so
-# there is a single string on the graph and nothing for ordering to settle. The
-# resolved graph is still the proof:
+# LEXICOGRAPHIC: '2329…' < 'fcc7…' ('2' < 'f'), so this sorts BELOW the pin it
+# replaces — the UNSAFE direction, the first on this line (the note at the top
+# says what that does and does not mean: it decides a conflict, and with four
+# modules (:common, :relay, :sync, :peers) declaring the store through this one
+# alias there is a single string on the graph and no conflict to decide). The
+# resolved graph is still the proof, and on this bump every eventstore line in
+# it reads 23293dae10 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "fcc7bad63b"
+vespaEventStore = "23293dae10"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

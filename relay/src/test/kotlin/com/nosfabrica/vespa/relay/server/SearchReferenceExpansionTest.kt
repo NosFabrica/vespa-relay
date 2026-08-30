@@ -925,7 +925,7 @@ class SearchReferenceExpansionTest {
         }
 
     @Test
-    fun `a search for the external-id family costs no enrolment lookup`() =
+    fun `a search for the external-id family spends the companion recall and nothing more`() =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
@@ -934,10 +934,17 @@ class SearchReferenceExpansionTest {
 
                 // 30385 and 30395 are the NIP-73 external-id pair: their
                 // subjects are urls and ISBNs, not nostr events, so they can
-                // never expand. A REQ naming nothing else must therefore stay
-                // off the page-collecting path entirely — and above all must
-                // not pay the 10040 recall that gates a family it cannot
-                // expand.
+                // never expand. Since the store's conversion recall
+                // (vespa-eventstore#88) the read is still not one query: a
+                // kind-restricted search also fetches the pointer kinds that
+                // could NAME a 30395 — labels for everyone, the event- and
+                // addressable-shaped declaration families from the reader's
+                // enrolled signers only. What this pins is the cost's SHAPE:
+                // the recall is all there is. Every query carries the terms
+                // (the 10040 pass was paid on the write path, not per REQ),
+                // the declaration companions name nobody the reader did not
+                // enrol, and no lookup follows the page — a roster of ISBNs
+                // still has nothing to unpack.
                 val external =
                     curator.sign<Event>(
                         1_700_002_000L,
@@ -947,13 +954,25 @@ class SearchReferenceExpansionTest {
                     )
                 publish(session, out, external)
 
-                val before = index.searches.get()
+                val before = index.queries.size
                 assertEquals(
                     listOf(external.id),
                     page(session, out, "external", """{"kinds":[30395],"search":"bookshelf $lens"}"""),
                     "the list is served; it just has nothing to unpack",
                 )
-                assertEquals(1, index.searches.get() - before, "and it costs exactly its own query")
+                val cost = index.queries.drop(before)
+                assertEquals(
+                    setOf(listOf(30395), listOf(1985), listOf(30383, 30384), listOf(30393, 30394)),
+                    cost.map { it.kinds }.toSet(),
+                    "the REQ's own query and the three companions, nothing else: $cost",
+                )
+                assertTrue(cost.all { it.search == "bookshelf" }, "the recall is all there is — nothing followed the page: $cost")
+                val declarations = cost.filter { it.authors.isNotEmpty() }
+                assertTrue(declarations.isNotEmpty(), "the enrolled fetch must have happened for the two lines above to have pinned it")
+                assertTrue(
+                    declarations.all { setOf(reader.pubKey, curator.pubKey).containsAll(it.authors) },
+                    "a declaration companion fetches from enrolled signers only: $declarations",
+                )
             } finally {
                 session.close()
             }
