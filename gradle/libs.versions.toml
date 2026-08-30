@@ -117,42 +117,56 @@ quartz = "029c40ebb4"
 # re-derived here rather than taken on trust, because the relay reads
 # `serviceProviders()` directly and `ProviderMap` does not cover us.
 #
-# ON MAIN NOW, not a branch: this is the merge of NosFabrica/vespa-eventstore#86,
-# which moved the search expansion into the store. The two pins before it were
-# branch commits carrying unreviewed work, and this is the first that is not.
+# ON MAIN, the merge of NosFabrica/vespa-eventstore#87 — where a spliced
+# Trusted List member is scored.
+#
+# WHAT MOVED: the member's placement, out of the client and into a rank profile.
+# It used to be the LIST's relevance multiplied by the member's 0..100
+# confidence, and measured against this relay's own corpus that does not sink a
+# member proportionally, it ejects it from its band: a member at 87% of a list
+# scoring 620 landed BELOW ALL 30 HITS, and 95%/87%/75% of a list scoring 1306
+# all landed in the SAME position. The rungs in `event.sd` are bands, and
+# `relevance()` is a narrow range far from zero, so a multiplicative discount is
+# huge against a page's real dynamic range. A member now sits ON the affiliation
+# rung — the band a bio mention or a nip05 hit lands in, which is the same
+# strength of claim as "somebody put this person on a list called X" — with
+# confidence ordering members inside it.
+#
+# WHAT THIS RELAY SEES: a member is placed by its own rung rather than by its
+# list's score, so it no longer rides directly behind the list. It still cannot
+# pass the hit that named it. A NIP-32 label expresses no confidence, so its
+# subject keeps the list-behind-pointer placement it always had. The
+# `SEARCH_EXPAND_*` caps are unchanged and still this deployment's call.
 #
 # THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
-# on `InMemoryEventIndex` and cannot see a Vespa-only regression:
+# on `InMemoryEventIndex` and cannot see a Vespa-only regression, and this bump
+# adds a RANK PROFILE, which is exactly the kind of change only the gate can
+# check:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 68f07ce958
+#   git checkout fcc7bad63b
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against 68f07ce958 on a real Vespa in Docker: 11 tests across 10
-# suites, 0 skipped, 0 failures — AccessLogIT, ContainerJvmIT, NearMergeSizingTest,
-# ObserverGateIT, OrphanSweepIT, RankRegressionIT, SearchBodyGramIT (2),
-# SearchExactTextIT, SearchPrefixLadderIT, VespaParityIT. Run that gate ALONE:
-# two readings were lost to a second Gradle invocation in the same project — a
-# `NoClassDefFoundError` from recompiling :store under the live test JVM, then a
-# `NoSuchFileException` on Gradle's own binary results when a push hook ran
-# :benchmark:test into the same directory. Neither was the store's.
+# Run HERE against fcc7bad63b on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures — RankRegressionIT included, which is what says
+# the new profile deploys without disturbing the existing ladder. Run that gate
+# ALONE: two earlier readings were lost to a second Gradle invocation in the
+# same project (a NoClassDefFoundError from recompiling :store under the live
+# test JVM, then a NoSuchFileException on Gradle's own binary results).
 #
-# No schema movement in this range, so there is nothing for a deploy to do and
-# no upgrade path to probe.
+# `git diff 029615f fcc7bad63b` is EMPTY — main had not moved since the branch
+# point, so the merge carries a byte-identical tree. The gate was still run at
+# the merge rather than inherited, because the rule is about the commit pinned.
 #
-# WHAT MOVED, versus 44515ff3e2: nothing. `git diff 44515ff3e2 68f07ce958` is
-# EMPTY — main had not moved since the branch point, so the merge commit carries
-# a byte-identical tree. The gate was run again at the merge anyway rather than
-# inherited, because the rule above is about the commit that is pinned.
+# DIRECTION: 68f07ce958 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates). The store's quartz ask does not move across
+# the range — 029c40ebb4 at both ends, equal to the line above.
 #
-# DIRECTION: 44515ff3e2 is a strict ancestor of this (its second parent —
-# `git merge-base --is-ancestor`, not the dates).
-#
-# LEXICOGRAPHIC: '68f0…' > '4451…' ('6' > '4'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction, as the last bump was. Four modules declare the
-# store (:common, :relay, :sync, :peers), all through this one alias, so there is
-# a single string on the graph and nothing for ordering to settle. The resolved
-# graph is still the proof:
+# LEXICOGRAPHIC: 'fcc7…' > '68f0…' ('f' > '6'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, as the last two bumps were. Four modules declare
+# the store (:common, :relay, :sync, :peers), all through this one alias, so
+# there is a single string on the graph and nothing for ordering to settle. The
+# resolved graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "68f07ce958"
+vespaEventStore = "fcc7bad63b"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
