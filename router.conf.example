@@ -121,9 +121,26 @@ monitor {
             # As writable as a 10002 — same dead hosts, same spammed urls — so
             # they earn verdicts here and the assertions stream dials only the
             # ones a verdict vouches for.
+            #
+            # NO TAG NAME, because a 10040 delegates in TWO shapes and the
+            # vocabulary of the first is open-ended: NIP-85 names a service per
+            # kind AND metric (`["30382:rank", <pubkey>, <relay>]` — quartz's
+            # ProviderTypes lists 34 of them across 30382-30385, and the next
+            # metric is somebody else's release), while Tapestry's Trusted
+            # Lists delegate bare (`["30392", <pubkey>, <relay>]`, ADR
+            # tl-treasure-map/0001). Both put the pubkey at 1 and the url at 2,
+            # so ONE tagless select spans every kind and metric either shape
+            # can carry — where naming them would be 38 lines that a new metric
+            # silently outdates, and a provider we never probe is one the
+            # assertions stream can never dial.
+            #
+            # What keeps this from reading prose as a relay: a url is taken
+            # only if element 2 parses as ws:// or wss:// (a 10040's `alt` or
+            # `d` has nothing there), and the cost is that a tagless select
+            # gives up the indexed tag projection for a paged scan — over
+            # 10040, a kind that runs to thousands, not to millions.
             select = [
-                { tag = "30382:rank",      relay = 2 }
-                { tag = "30382:followers", relay = 2 }
+                { relay = 2 }
             ]
             filter = { "kinds": [10040] }
         }
@@ -292,8 +309,16 @@ streams {
         # would-delete lines for a few days before flipping this.
         deleteMissing = true
         # The provider's relay is the source of truth for its OWN scores, and
-        # for nothing else here.
-        ownedKinds = [30382]
+        # for nothing else here. All eight declaration kinds, not 30382 alone:
+        # a service that computes them publishes them side by side, and a
+        # kind left out here is one this stream mirrors without ever
+        # reconciling — the exact shape `deleteMissing` exists to close.
+        # It also WIDENS what a bad reconcile can remove, which is why the
+        # dryRun advice above is worth taking on the way in.
+        ownedKinds = [
+            30382, 30383, 30384, 30385,   # NIP-85 assertions: user, event, address, external id
+            30392, 30393, 30394, 30395,   # Tapestry Trusted Lists, same four subjects
+        ]
         # Only what this relay actually serves, and nothing else — which here
         # means ownedKinds and the filter say the same thing. NIP-85 says a
         # provider should also serve its service key's kind 0 and 10002;
@@ -305,8 +330,13 @@ streams {
         #
         # A band is keyed by the whole filter, so editing this line starts
         # every (relay, provider) walk over once — the intended way to force a
-        # re-walk, and one pass.
-        filter = { "kinds": [30382] }
+        # re-walk, and one pass. Widening it from 30382 to the eight is exactly
+        # that edit: expect one full re-walk per (relay, provider) after the
+        # first deploy that carries this.
+        filter = { "kinds": [
+            30382, 30383, 30384, 30385,
+            30392, 30393, 30394, 30395,
+        ] }
         refreshSeconds = 21600
         # Still a scanned source, and still author-bound: a provider stream's
         # whole meaning is "THIS service's records from THIS relay", which is
@@ -314,9 +344,15 @@ streams {
         # bound author, so each (relay, service) band stays valid forever.
         relaySource = [
             {
+                # Tagless for the reason the monitor's 10040 source is —
+                # 34 NIP-85 `kind:metric` names plus 4 bare Tapestry kinds,
+                # both shapes carrying the pubkey at 1 and the url at 2. The
+                # `authors` binding is what makes it safe to be this wide: the
+                # relay is asked for THAT provider's records, never for the
+                # kind at large, so a tag naming a service we do not model
+                # still only ever widens the ask by one author on one relay.
                 select = [
-                    { tag = "30382:rank",      relay = 2, authors = 1 }
-                    { tag = "30382:followers", relay = 2, authors = 1 }
+                    { relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
             }
@@ -364,6 +400,15 @@ streams {
     # at insert, and the stored tombstone is what keeps later downloads from
     # resurrecting a deleted note. 10009 rides along both as the group picker's
     # source and as the monitor's group-host source.
+    #
+    # The trusted families (1985, 30382-30385, 30392-30395) are here because a
+    # search EXPANDS them: a hit on one is answered with the records it points
+    # at, and a pointer resolves against what this store holds. Mirroring the
+    # 30382s alone — as this file did before — left the other seven pointing
+    # into an empty store, so the whole Trusted List half expanded to nothing
+    # and looked to a reader exactly like a relay with no lists on it. The
+    # `assertions` stream below is the narrow, reconciled version of the same
+    # ask, bound to a provider's own relay; this is the wide one.
     contentViaOutbox {
         # The widest stream here, and the one whose audits cost the most: a
         # negentropy pass over ~130 kinds of covered history builds and
@@ -385,7 +430,8 @@ streams {
             11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005,
             30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030,
             30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297,
-            30298, 30311, 30312, 30313, 30315, 30382, 30402, 30617, 30620,
+            30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385,
+            30392, 30393, 30394, 30395, 30402, 30617, 30620,
             30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923,
             31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236,
             34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089,

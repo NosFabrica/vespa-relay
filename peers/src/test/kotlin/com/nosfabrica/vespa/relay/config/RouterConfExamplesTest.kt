@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.peers.RelayDiscovery
+import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -30,6 +33,17 @@ import kotlin.test.assertTrue
  * into what it claims to be — a broken example is a broken feature.
  */
 class RouterConfExamplesTest {
+    /**
+     * The eight kinds a trust service DECLARES, and the unit they travel in.
+     *
+     * NIP-85 assertions (30382-30385) and Tapestry Trusted Lists (30392-30395)
+     * are the same statement about the same four subjects — a user, an event,
+     * an addressable event, an external id — in two vocabularies. A search
+     * EXPANDS all eight: a hit on one is answered with the records it points
+     * at. So they are a family here, not eight independent dials.
+     */
+    private val trustedKinds = listOf(30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395)
+
     /** Tests run from the module dir; the example sits at the repo root. */
     private val example: RouterConfig =
         RouterConfigLoader.parse(
@@ -233,22 +247,31 @@ class RouterConfExamplesTest {
         val source = assertions.discovery!!.sources.single()
         assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
         assertEquals(listOf(10040), source.filter.kinds)
-        // Every select is a service tag with the url AFTER the provider pubkey.
+        // Every select reads the url AFTER the provider pubkey, and NAMES NO
+        // TAG. A 10040 delegates in two shapes — NIP-85's `kind:metric`
+        // (`["30382:rank", <pubkey>, <relay>]`, 34 of them across 30382-30385
+        // in quartz's ProviderTypes) and Tapestry's bare kind (`["30392",
+        // <pubkey>, <relay>]`) — and both put the pubkey at 1 and the url at
+        // 2. Naming them would be 38 entries that the next metric outdates
+        // silently, which is the failure this stream cannot report: a provider
+        // never discovered is not an error, just a relay never dialled.
         assertTrue(source.selects.all { it.urlIndex == 2 })
-        assertTrue(source.selects.any { it.tag == "30382:rank" })
-        assertTrue(source.selects.any { it.tag == "30382:followers" })
-        // The stream asks for the scores and NOTHING else: a provider relay
-        // serves no kind 0 or 10002 (measured, 12 pairs), and a kind that
+        assertTrue(
+            source.selects.all { it.tag == null },
+            "a named tag reads one metric of one kind; the delegation vocabulary is open-ended",
+        )
+        // The stream asks for the declarations and NOTHING else: a provider
+        // relay serves no kind 0 or 10002 (measured, 12 pairs), and a kind that
         // never returns an event never earns a band span — so asking for one
         // re-opens a leg over the whole past at every visit, per (relay,
         // provider), forever.
-        assertEquals(listOf(30382), assertions.filter.kinds)
+        assertEquals(trustedKinds, assertions.filter.kinds)
         // Every kind it asks for is a kind its upstream owns, which is what
         // lets the retraction audit's band land on the same key the catch-up
-        // reads — see `RetractionAudit`.
-        assertEquals(setOf(30382), assertions.ownedKinds)
-        // Mirroring 30382 is the point: the scores those services publish.
-        assertTrue(assertions.filter.kinds?.contains(30382) == true)
+        // reads — see `RetractionAudit`. Owning the whole family is what makes
+        // `deleteMissing` mean anything on it: a kind mirrored but not owned is
+        // one nothing ever reconciles.
+        assertEquals(trustedKinds.toSet(), assertions.ownedKinds)
         // ...and only from the services the SAME tag paired with each relay. The
         // service sits at slot 1 of the tag whose slot 2 named the url, so the
         // two travel together; binding it from anywhere else would be the cross
@@ -276,12 +299,105 @@ class RouterConfExamplesTest {
         val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }
         assertTrue(monitor10040.isNotEmpty(), "the assertions scan is gated on verdicts no monitor source would ever take")
         assertTrue(
-            monitor10040.flatMap { it.selects }.map { it.tag }.containsAll(listOf("30382:rank", "30382:followers")),
-            "the monitor reads the service tags the assertions stream scans",
+            monitor10040.flatMap { it.selects }.all { it.tag == null },
+            "the monitor must read the same 10040 tags the assertions stream does — every shape, not two names",
         )
         assertTrue(
             monitor10040.flatMap { it.selects }.all { it.urlIndex == 2 },
             "the service tag carries the url at element 2 — reading 1 would probe provider pubkeys as urls",
+        )
+    }
+
+    @Test
+    fun `the 10040 scans discover a provider of every delegated kind, in both shapes`() {
+        // THE CONFIG ASSERTIONS ABOVE ARE STRUCTURE; this is the behaviour they
+        // exist for, run through the example's OWN selects rather than a
+        // hand-built one. Before this, both scans named `30382:rank` and
+        // `30382:followers`, so a service delegated for events (30383), for
+        // addresses (30384), for external ids (30385) or for any Trusted List
+        // (30392-30395) was never discovered, never probed, never verdicted —
+        // and the assertions stream dials only what a verdict vouches for, so
+        // it could not have reached one even with the kinds in its filter.
+        val selects =
+            example.monitor!!
+                .sources
+                .filter { it.filter.kinds == listOf(10040) }
+                .flatMap { it.selects } +
+                example
+                    .discoveryStreams()
+                    .first { it.name == "assertions" }
+                    .discovery!!
+                    .sources
+                    .single()
+                    .selects
+
+        val provider = "a".repeat(64)
+        // One tag per delegation shape the ADRs define, plus the two a 10040
+        // carries that are NOT delegations — neither has a url at 2, which is
+        // what keeps a tagless select from reading prose as a relay.
+        val shapes =
+            mapOf(
+                "30382:rank" to "wss://users.example",
+                "30382:zap_amt_recd" to "wss://zaps.example",
+                "30383:rank" to "wss://events.example",
+                "30384:comment_cnt" to "wss://addresses.example",
+                "30385:rank" to "wss://external.example",
+                "30392" to "wss://userlists.example",
+                "30393" to "wss://eventlists.example",
+                "30394" to "wss://addresslists.example",
+                "30395" to "wss://externallists.example",
+            )
+        for ((service, url) in shapes) {
+            val map: Event =
+                NostrSignerSync().sign(
+                    1_700_000_000L,
+                    10040,
+                    arrayOf(
+                        arrayOf(service, provider, url),
+                        arrayOf("alt", "a trust provider list"),
+                        arrayOf("d", "map"),
+                    ),
+                    "",
+                )
+            for (select in selects) {
+                // The normalizer gives every url an explicit path, so the
+                // expectation carries the `/` it adds rather than pretending
+                // discovery hands back the string the tag wrote.
+                assertEquals(
+                    listOf("$url/"),
+                    RelayDiscovery.urlsIn(map, select).map { it.url },
+                    "a `$service` delegation names $url, and a scan that cannot see it leaves that provider undialled",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a stream that mirrors one trusted declaration mirrors the whole family`() {
+        // A SEARCH EXPANDS THESE: a hit on a Trusted List or an assertion is
+        // answered with the records it points at, and a pointer resolves
+        // against what this store holds. Mirroring part of the family is the
+        // silent half-feature — the expansion runs, finds nothing, and reads
+        // to a client exactly like a relay with no lists on it.
+        //
+        // By SHAPE, not by stream name: whichever stream carries one of the
+        // eight has to carry all eight, so a future stream inherits the rule.
+        example.streams.forEach { stream ->
+            val kinds = stream.filter.kinds.orEmpty()
+            val carried = trustedKinds.filter { it in kinds }
+            if (carried.isNotEmpty()) {
+                assertEquals(
+                    trustedKinds,
+                    carried,
+                    "stream '${stream.name}' mirrors ${carried.size} of the 8 trusted declaration kinds — a search " +
+                        "expanding the missing ${trustedKinds.filterNot { it in kinds }} would resolve into an empty store",
+                )
+            }
+        }
+        // And somebody has to carry them, or the rule above is vacuous.
+        assertTrue(
+            example.streams.any { s -> trustedKinds.all { it in s.filter.kinds.orEmpty() } },
+            "no stream mirrors the trusted declaration kinds at all",
         )
     }
 
