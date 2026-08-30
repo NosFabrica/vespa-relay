@@ -197,6 +197,33 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 }
 
 {
+  // THE THIRD VERDICT AGES LIKE THE OTHER TWO, and it did not: `unstable`
+  // counted every `self-consistent: false` ever written, so a refusal past
+  // its TTL — or every refusal at once, the moment CONSISTENCY_EPOCH bumps —
+  // kept drawing as "refused as inconsistent" while the router was already
+  // re-dialling the relay. The exact disagreement with the router's own
+  // `current` this panel exists to avoid, and the same omission fixed twice
+  // before, for the cleared form and for the grade.
+  const events = [
+    rec("wss://flaky.example/", [consistent("false", "e", NOW)]),
+    rec("wss://aged.example/", [consistent("false", "e", NOW - TTL_SECONDS - 1)]),
+    rec("wss://ruled.example/", [consistent("false", "e", NOW, "0")]),
+    rec("wss://steady.example/", [consistent("true", "s", NOW - TTL_SECONDS - 1)]),
+  ];
+  const groups = groupByHost(events, NOW);
+  const sum = summarise(groups, NOW);
+  assert.equal(sum.unstable, 1, "only the refusal the router still acts on may count as a refusal");
+  assert.equal(sum.stable, 0, "an aged-out 'consistent' is re-measured, not trusted");
+  const urls = groups.flatMap((g) => g.urls);
+  assert.equal(urls.find((u) => u.url === "wss://flaky.example/").stableCurrent, true);
+  assert.equal(urls.find((u) => u.url === "wss://aged.example/").stableCurrent, false,
+    "…and the row says so, so the card can draw the verdict struck rather than hidden");
+  assert.equal(urls.find((u) => u.url === "wss://ruled.example/").stableCurrent, false,
+    "a refusal measured under superseded rules is a reading of a different rule, not a standing refusal");
+  ok("a stability verdict past its TTL or epoch stops counting, and the row can say why");
+}
+
+{
   // 30166 is addressable, so a paged read can serve two versions of one
   // address. The newest wins, or a stale copy draws over the current verdict.
   const events = [
@@ -491,4 +518,29 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
   assert.equal(spin.events.length, 2, "a relay that will not walk backwards is given up on, not spun on");
   assert.ok(spin.pages < 50);
   ok("an empty store completes, and a relay that repeats itself is abandoned");
+}
+
+{
+  // A TIMED-OUT ask is not the relay's answer. `Relay.reqOnce` marks the page
+  // it cut with `complete: false`; the walk used to read a cut-empty page as
+  // "the store is exhausted" — all-zero tallies with no partial-read warning,
+  // on exactly the loaded relay the timeout exists for — and to step the
+  // cursor below a cut page of pure duplicates, skipping whatever the cut
+  // withheld.
+  const cut = (arr) => { arr.complete = false; return arr; };
+
+  const timedOut = await walkRecords({ ask: async () => cut([]) });
+  assert.equal(timedOut.complete, false, "an empty page the timeout cut must not read as an exhausted store");
+
+  const untils = [];
+  const page = [{ id: "a", created_at: 500 }, { id: "b", created_at: 400 }];
+  const walk = await walkRecords({
+    ask: async (limit, until) => { untils.push(until); return cut(page.filter((e) => until == null || e.created_at <= until)); },
+    pageSize: 500,
+    maxPage: 500,
+    maxPages: 10,
+  });
+  assert.equal(walk.complete, false);
+  assert.ok(!untils.some((u) => u != null && u < 400), `the cursor must never step below a cut page: ${untils}`);
+  ok("a page the timeout cut ends the walk as partial, with the cursor held above what it withheld");
 }

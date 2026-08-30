@@ -180,6 +180,20 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
+  // …and the NUMERATOR's non-answers mean the same thing, which they did
+  // not: a sentinel in `here` fell into the answered-zero branch and raised
+  // the blocked panel — "none of your provider's scores have reached this
+  // relay yet" — off a 20s COUNT timeout, for a reader whose scores may be
+  // fully mirrored. A claim needs an answer; a non-answer keeps checking.
+  for (const here of [REFUSED, TIMED_OUT]) {
+    const v = assess({ ...healthy(), scores: { here, there: 145968 } });
+    assert.equal(v.state, "checking", `here=${JSON.stringify(here)}`);
+    assert.notEqual(v.tone, "blocked", "a non-answer must never raise the blocked panel");
+  }
+  ok("an unanswered count is not an answered zero");
+}
+
+{
   // We can hold MORE than an upstream serves — it deleted, we did not — and
   // 118% reads as a bug rather than as good news.
   assert.equal(fraction(200, 100), 1);

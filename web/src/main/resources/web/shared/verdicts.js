@@ -392,7 +392,15 @@ export function groupByHost(events, nowSec) {
     const group = hosts.get(rec.host);
     const current = isCurrent(rec.foldMeasuredAt, nowSec, rec.foldEpoch, FOLD_EPOCH);
     const gradeCurrent = isCurrent(rec.gradeMeasuredAt, nowSec, rec.gradeEpoch, FITNESS_EPOCH);
-    group.urls.push({ ...rec, foldCurrent: current, gradeCurrent });
+    // The THIRD verdict's currency, asked exactly like the other two. It was
+    // not asked at all: `unstable` counted every `self-consistent: false` ever
+    // written, so a refusal past its TTL — or every refusal at once, the
+    // moment CONSISTENCY_EPOCH bumps — kept drawing as "refused as
+    // inconsistent" while the router was already re-dialling the relay. The
+    // same omission this file fixed twice before, for the cleared form and
+    // for the grade.
+    const stableCurrent = isCurrent(rec.stableMeasuredAt, nowSec, rec.stableEpoch, CONSISTENCY_EPOCH);
+    group.urls.push({ ...rec, foldCurrent: current, gradeCurrent, stableCurrent });
     if (rec.grade && gradeCurrent) group.graded++;
     if (rec.grade === PRIME && gradeCurrent) {
       group.prime++;
@@ -417,7 +425,7 @@ export function groupByHost(events, nowSec) {
     if (rec.fold && current) group.folded++;
     else if (rec.cleared && current) group.cleared++;
     else if (rec.fold || rec.cleared) group.expired++;
-    if (rec.stable === false) group.unstable++;
+    if (rec.stable === false && stableCurrent) group.unstable++;
   }
   for (const group of hosts.values()) {
     // THE SURVIVOR USUALLY HAS NO RECORD OF ITS OWN, and leaving it off the
@@ -509,7 +517,12 @@ export function groupByHost(events, nowSec) {
  *
  * If a run is longer than the relay will serve in one ask, the walk CANNOT be
  * completed and says so rather than stepping over the remainder. `complete` is
- * true only when a page came back empty.
+ * true only when a page came back empty AND the relay ended it — an EOSE, not
+ * our timeout. [Relay.reqOnce] marks a timed-out page (`events.complete ===
+ * false`) precisely so a caller does not cache a fact the relay never stated,
+ * and this walk used to do exactly that: on a loaded relay an ask that
+ * delivered nothing before the timeout read as "the store is exhausted", and
+ * the panel drew all-zero tallies with no partial-read warning.
  *
  * [ask] is `(limit, until) -> events` so the walk can be tested without a
  * relay, the same shape `AliasProbe` takes its `fetch` in.
@@ -540,7 +553,7 @@ export async function walkRecords({
       pages++;
       grew++;
     }
-    if (!events.length) { complete = true; break; }
+    if (!events.length) { complete = events.complete !== false; break; }
     const before = seen.size;
     let oldest = Infinity;
     for (const ev of events) {
@@ -558,7 +571,12 @@ export async function walkRecords({
     // second — so stop, and let the caller say the read is partial rather than
     // draw a number that quietly excludes them.
     if (events.length >= size && size >= maxPage && oneSecond(events)) break;
-    until = oldest - 1;
+    // A page the TIMEOUT cut is not the relay's answer about what lies below
+    // `oldest` — a cut page that held only already-seen duplicates would step
+    // the cursor past the remainder the cut withheld. Hold the cursor and ask
+    // again; a second short answer ends the walk through the stall break
+    // below, with `complete` still false.
+    if (events.complete !== false) until = oldest - 1;
     if (++stalls >= 2) break;
   }
   return { events: [...seen.values()], complete, pages, grew };
@@ -629,7 +647,11 @@ export function summarise(groups, nowSec) {
       // looked at this". A store mid-sweep read as a store with no monitor
       // running, which is the exact confusion the tile exists to end.
       if (!u.fold && !u.cleared && u.stable == null && !u.grade) silent++;
-      if (u.stable === true) stable++;
+      // Only what the router would act on — a "consistent" past its TTL or
+      // epoch is re-measured, not trusted, and the tile must not claim more
+      // measured stability than the fan-out actually has. `unstable` gets the
+      // same gate where the groups are counted.
+      if (u.stable === true && u.stableCurrent) stable++;
     }
   }
   return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred, graded, prime, primeTor };

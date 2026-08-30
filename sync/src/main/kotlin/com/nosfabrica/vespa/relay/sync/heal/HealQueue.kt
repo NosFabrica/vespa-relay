@@ -123,11 +123,14 @@ class HealQueue(
     ): Boolean {
         val slot = byRelay.computeIfAbsent(url) { ConcurrentHashMap() }
         // Overwriting an existing key is always allowed: it costs no new room
-        // and keeps the freshest stale reference.
-        if (slot.containsKey(key)) {
-            slot[key] = stale
-            return true
-        }
+        // and keeps the freshest stale reference. ATOMIC, not check-then-act —
+        // a drain removing this key between a `containsKey` and a plain put
+        // re-inserted an entry [total] never counted, and its eventual drain
+        // decremented the counter below the real size. That drift is the
+        // MIRROR of the swap bug [drain]'s KDoc records: there the counter
+        // only ever rose until the healer silently stopped; here it only ever
+        // fell, and the memory bound [totalLimit] enforces quietly widened.
+        if (slot.computeIfPresent(key) { _, _ -> stale } != null) return true
         if (slot.size >= perRelayLimit || total.get() >= totalLimit) {
             dropped.incrementAndGet()
             return false

@@ -199,4 +199,33 @@ class HealQueueAccountingTest {
         assertEquals(0, q.sizeFor(a), "a full drain leaves nothing behind")
         assertEquals(0, q.size(), "and settles the counter at zero")
     }
+
+    @Test
+    fun `an overwrite racing a drain never deflates the total`() {
+        // The mirror of the test above, through the other door. The overwrite
+        // path was a `containsKey` followed by a plain put, so a drain
+        // removing the key between the two re-inserted an entry the counter
+        // never saw — and its eventual drain decremented the total below the
+        // truth. Drift downward is the memory bound quietly widening: size()
+        // under-reports and totalLimit stops enforcing. A handful of hot keys
+        // makes the overwrite-vs-drain interleaving constant rather than
+        // lucky.
+        val q = HealQueue()
+        val threads =
+            (0 until 8).map { t ->
+                Thread {
+                    repeat(2_000) { i ->
+                        q.offer(a, key(i % 5), stale(t * 10_000 + i))
+                        if (i % 3 == 0) q.drain(a, limit = 2)
+                    }
+                }
+            }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        assertEquals(q.sizeFor(a), q.size(), "the running total must equal what is actually queued")
+        q.drain(a)
+        assertEquals(0, q.sizeFor(a))
+        assertEquals(0, q.size(), "a settled queue counts zero — never negative")
+    }
 }

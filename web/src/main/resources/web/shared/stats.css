@@ -660,6 +660,10 @@ td.share i { display: block; height: .5rem; border-radius: 0 2px 2px 0; backgrou
   vertical-align: .15em; margin-left: .4rem; font-weight: 700;
 }
 .badge.bad { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
+/* A verdict the router has retired — aged out, or measured under superseded
+   rules. Same treatment as .vd-grade.retired: legible, and visibly not acted
+   on. */
+.badge.retired { background: transparent; color: var(--muted); border: 1px solid var(--muted); opacity: .7; text-decoration: line-through; }
 .err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
 /* The granularity toggle: one row above the series it drives. */
 .seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }

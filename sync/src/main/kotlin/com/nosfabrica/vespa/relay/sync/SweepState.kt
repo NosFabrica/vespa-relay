@@ -218,15 +218,35 @@ class SweepState(
         // legs against one relay) would otherwise be able to drop one's
         // progress.
         //
-        // Only ever widened, never replaced: windows land newest-first, so the
-        // low edge is the one that moves, and a `downTo` that jumped BACKWARD
-        // would silently claim an un-compared hole.
+        // MERGED ONLY WHEN THE WINDOW TOUCHES THE CLAIM — overlapping or
+        // adjacent — because the claim is ONE range and a range can only mean
+        // "everything in here was compared" while that stays true. Blind
+        // min/max widening broke it on exactly one path: a RESUMED sweep
+        // pushes the slice ABOVE the old claim (`pushResumed`'s second
+        // segment), the first window it completes up there bisects down from
+        // the new ceiling, and merging that window absorbed the un-compared
+        // gap between the old `upTo` and the window's floor. Interrupted a
+        // second time, the cursor then claimed ground no one compared, the
+        // next resume skipped it, and `finish` recorded a history audit as
+        // verified with a hole in it — the very rule the pager's OVER_MAX
+        // branch spells out for a slice out of a window's middle.
+        //
+        // A DISJOINT window keeps the standing claim instead. That forfeits
+        // the disjoint window's progress on the next resume — it is
+        // re-compared, which negentropy makes cheap — and correctness here is
+        // the whole reason the cursor exists. The clock still moves: `at` is
+        // the cursor's liveness stamp, and a sweep actively completing
+        // windows above the claim must not have its cursor age out under it.
         sweeps.compute(key) { _, before ->
-            Reconciled(
-                downTo = minOf(before?.downTo ?: downTo, downTo),
-                upTo = maxOf(before?.upTo ?: upTo, upTo),
-                at = nowSeconds(),
-            )
+            if (before == null || (downTo <= before.upTo + 1 && upTo >= before.downTo - 1)) {
+                Reconciled(
+                    downTo = minOf(before?.downTo ?: downTo, downTo),
+                    upTo = maxOf(before?.upTo ?: upTo, upTo),
+                    at = nowSeconds(),
+                )
+            } else {
+                Reconciled(downTo = before.downTo, upTo = before.upTo, at = nowSeconds())
+            }
         }
         dirty = true
     }

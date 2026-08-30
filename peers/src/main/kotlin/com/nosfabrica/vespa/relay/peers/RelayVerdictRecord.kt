@@ -660,7 +660,24 @@ class RelayVerdictRecord(
     ): Event? {
         val signer = signer ?: return null
         return withTimeoutOrNull(EDIT_DEADLINE_MS) {
-            val current = currentRecord(url)
+            // A READ THE STORE FAILED ABORTS THE EDIT — it is not "no record".
+            // Folding the two together let a transient store failure on this
+            // one query sign a FRESH record built from [add] alone: every tag
+            // this writer does not own — the fold's `same-as`, the gate's
+            // `self-consistent`, a foreign monitor's labels — replaced by a
+            // record that says less, at a newer timestamp, with nothing
+            // looking wrong. That is [load]'s rule ("a partial answer is not
+            // 'no verdict'") applied to the write side, where the stake is
+            // higher: a reader that guesses wrong asks again next pass, a
+            // writer that guesses wrong destroys other writers' work.
+            val current =
+                try {
+                    currentRecord(url)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    return@withTimeoutOrNull null
+                }
             val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
             val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
             val template =
@@ -766,24 +783,18 @@ class RelayVerdictRecord(
         return measuredAt >= floor
     }
 
-    /** This url's current record, or null when nothing holds one yet. */
+    /**
+     * This url's current record, null when nothing holds one — and a THROW
+     * when the store cannot answer, which is neither. It used to catch the
+     * store's failure into "no record", and [edit] then wrote as if the
+     * address were empty — see the abort there for what that erased.
+     */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
-        // Cancellation rethrown, not caught — [edit] says why. Caught here it
-        // would be worse than there: a cancelled read looks like "no record",
-        // and the edit would then sign a FRESH record that drops every tag the
-        // real one carries — the passive monitor's, the fold's, everyone's.
-        val held: List<Event> =
-            try {
-                store.query<Event>(
-                    Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url))),
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                emptyList()
-            }
-        return held.maxByOrNull { it.createdAt }
+        return store
+            .query<Event>(
+                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url))),
+            ).maxByOrNull { it.createdAt }
     }
 
     companion object {
