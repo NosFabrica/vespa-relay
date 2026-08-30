@@ -84,6 +84,17 @@ class IngestCostBench {
         val label: String,
         val events: List<Event>,
         val probe: Boolean,
+        /**
+         * The pipeline shape to price this arm at. Default is the historical
+         * one, so every existing arm reads exactly as it did.
+         *
+         * A parameter at all because at a mirror's real duplicate rate the
+         * shape is the finding: the store serializes every commit on one
+         * writer mutex, so what a batch is worth is how many SURVIVORS it
+         * carries into that one lock hold — and survivors per commit is
+         * `batch x (1 - dropRate)`. See [sweepShapes].
+         */
+        val tuning: IngestTuning = IngestTuning(concurrency = 2, batch = 1000),
     )
 
     private fun run(
@@ -94,7 +105,7 @@ class IngestCostBench {
         val pipeline =
             IngestPipeline(
                 store,
-                IngestTuning(concurrency = 2, batch = 1000),
+                arm.tuning,
                 audit = null,
                 servingPressure = null,
                 scope = scope,
@@ -122,6 +133,7 @@ class IngestCostBench {
         val n = arm.events.size
         println(
             "COST-BENCH ${arm.label.padEnd(34)} probe=${if (arm.probe) "on " else "off"} " +
+                "w=${arm.tuning.concurrency}x${arm.tuning.batch} " +
                 "n=$n  ${"%.1f".format(dt / 1e6)}ms  ${"%.0f".format(n * 1e9 / dt)} ev/s  " +
                 "${"%.0f".format(dt / 1e3 / n)}us/ev  accepted=${pipeline.accepted.get()} rejected=${pipeline.rejected.get()}" +
                 pipeline.rejectionBreakdown(),
@@ -192,13 +204,55 @@ class IngestCostBench {
             run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 6)).shuffled(Random(7)), probe = true))
             run(store, Arm("98% dup / 2% fresh (repeat)", (base.take(keep) + notes(add, gen = 7)).shuffled(Random(7)), probe = true))
 
-            // 7. What a SUPERSESSION pre-filter would cost: the batched read
+            // 7. THE SHAPE SWEEP, and at a mirror's duplicate rate it is the
+            //    one that decides throughput. Same 98/2 work, three pipeline
+            //    shapes. See [sweepShapes].
+            sweepShapes(store, base.take(keep))
+
+            // 8. What a SUPERSESSION pre-filter would cost: the batched read
             //    that answers "do we hold a newer version of this address", in
             //    the shape stage C uses for its guards — chunked by author,
             //    bounded fan-out. Priced against arm 3's per-event cost, this
             //    is the whole business case for building it.
             priceVersionLookup(store, genZero)
             priceIdProbe(store, base)
+        }
+    }
+
+    /**
+     * The same 98/2 batch through three pipeline shapes — because at this
+     * duplicate rate the shape, not the probe, is what moves the number.
+     *
+     * The store takes ONE writer mutex for the whole of `commit`, so writes
+     * never run in parallel however many ingest workers there are: more
+     * workers only lengthens the queue for it. What a lock hold is WORTH is
+     * how many surviving events it writes, and that is `batch x (1 - dropRate)`
+     * — at 98% dropped, a 1024-event batch carries about twenty. So the
+     * hypothesis this prices is that FEWER, WIDER workers beat more, narrower
+     * ones: same survivors, far fewer lock acquisitions.
+     *
+     * The production shape is first. Note `IngestPipeline` caps a batch at its
+     * share of the queue (`capacity / workers`, and capacity itself at
+     * MAX_INBOUND_QUEUE), so at eight workers a batch cannot exceed 2048
+     * however high SYNC_INGEST_BATCH is set — the cap is derived from a queue
+     * sized for MEMORY, and it lands on the number that decides write
+     * efficiency. That interaction is the reason for the third row.
+     */
+    private fun sweepShapes(
+        store: VespaEventStore,
+        dupes: List<Event>,
+    ) {
+        val add = CORPUS - dupes.size
+        listOf(
+            IngestTuning(concurrency = 8, batch = 1024),
+            IngestTuning(concurrency = 2, batch = 8192),
+            IngestTuning(concurrency = 1, batch = 16384),
+        ).forEachIndexed { i, tuning ->
+            // A distinct generation per shape: each one STORES its 2%, and
+            // reusing them would quietly make the next shape 100% duplicate
+            // and time a batch that never writes.
+            val mix = (dupes + notes(add, gen = 10 + i)).shuffled(Random(7))
+            run(store, Arm("98/2 shape sweep", mix, probe = true, tuning = tuning))
         }
     }
 
