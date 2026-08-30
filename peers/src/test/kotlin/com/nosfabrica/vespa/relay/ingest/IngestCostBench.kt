@@ -209,6 +209,18 @@ class IngestCostBench {
             //    shapes. See [sweepShapes].
             sweepShapes(store, base.take(keep))
 
+            // 8. THE SAME SWEEP ON A BURST OF ALL-FRESH EVENTS, which is the
+            //    OTHER regime and the one the 98/2 answer says nothing about.
+            //    A mirror's steady state rejects almost everything and barely
+            //    touches the writer lock; a burst of genuinely new events is
+            //    100% write, and there the lock is held for essentially the
+            //    whole wall clock. Whether that is the LOCK or the ENGINE is
+            //    the question, and the shapes answer it: throughput that is
+            //    flat across them means the engine is saturated and no amount
+            //    of lock work helps, while throughput that climbs with width
+            //    means the batching does.
+            sweepFreshShapes(store)
+
             // 8. What a SUPERSESSION pre-filter would cost: the batched read
             //    that answers "do we hold a newer version of this address", in
             //    the shape stage C uses for its guards — chunked by author,
@@ -216,6 +228,28 @@ class IngestCostBench {
             //    is the whole business case for building it.
             priceVersionLookup(store, genZero)
             priceIdProbe(store, base)
+        }
+    }
+
+    /**
+     * A 100%-fresh burst through the same three shapes — the regime the 98/2
+     * sweep cannot speak for.
+     *
+     * Every event here is written, so `lock.ingest.hold` covers a real write
+     * rather than a near-empty commit, and the feed client's own pipelining is
+     * in play: a wider batch is both fewer lock acquisitions AND a bigger
+     * `putAll`. The two move together on purpose — the question this answers is
+     * "what shape absorbs a burst fastest", not "which of the two is
+     * responsible", and the flat-versus-climbing shape of the answer is what
+     * says whether the engine or the pipeline is the ceiling.
+     */
+    private fun sweepFreshShapes(store: VespaEventStore) {
+        listOf(
+            IngestTuning(concurrency = 8, batch = 1024),
+            IngestTuning(concurrency = 2, batch = 8192),
+            IngestTuning(concurrency = 1, batch = 16384),
+        ).forEachIndexed { i, tuning ->
+            run(store, Arm("fresh burst sweep", notes(CORPUS, gen = 20 + i), probe = true, tuning = tuning))
         }
     }
 
