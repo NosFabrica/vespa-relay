@@ -231,7 +231,7 @@ class RouterConfExamplesTest {
             )
         }
         // The two outbox streams are the ones it costs most: every certified
-        // relay, ~130 kinds on the content mirror.
+        // relay, ~140 kinds on the content mirror.
         listOf("profileViaOutbox", "contentViaOutbox").forEach { name ->
             assertEquals(
                 2_592_000L,
@@ -367,6 +367,27 @@ class RouterConfExamplesTest {
                     listOf("$url/"),
                     RelayDiscovery.urlsIn(map, select).map { it.url },
                     "a `$service` delegation names $url, and a scan that cannot see it leaves that provider undialled",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a stream that mirrors git objects mirrors the statuses that close them`() {
+        // Same shape as the retraction rule above, and found the same way: the
+        // store INDEXES all four NIP-34 status kinds, and the example mirrored
+        // only 1630. A patch or issue whose status never arrives reads as open
+        // forever — and 1631/1632/1633 were searchable kinds that no stream
+        // fetched at all, so nothing could ever match them.
+        val statuses = listOf(1630, 1631, 1632, 1633)
+        example.streams.forEach { stream ->
+            val kinds = stream.filter.kinds.orEmpty()
+            // 1617 patches, 1621 issues — the objects a status is ABOUT.
+            if (1617 in kinds || 1621 in kinds) {
+                assertEquals(
+                    statuses,
+                    statuses.filter { it in kinds },
+                    "stream '${stream.name}' mirrors git patches or issues but not every status that resolves them",
                 )
             }
         }
