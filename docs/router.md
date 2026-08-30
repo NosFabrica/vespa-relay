@@ -65,8 +65,9 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
 - **`negentropySyncThePastSeconds`** *(optional, was `auditSeconds`)* — how
-  often to reconcile the covered past over NIP-77, against the relays a verdict
-  says can answer one. See
+  often to reconcile the whole past over NIP-77, against the relays a verdict
+  says can answer one. It reconciles the stream's entire range, not only what
+  the bands already cover — they clock this pass, they do not bound it. See
   [`refetchThePastSeconds` and the reconcile](#refetchthepastseconds-and-the-audit).
 - **`refetchThePastSeconds`** *(optional)* — how often this stream's bands
   expire, putting its whole filter back on the walk — the same job for the
@@ -816,7 +817,7 @@ Some notes on the other knobs:
 
 - **the filter's `since`** bounds how far back this stream ever asks. Leave it
   unset and the catch-up walks each relay's whole history once, then only what
-  is new; what re-checks the covered past after that is
+  is new; what re-checks that history afterwards is
   `negentropySyncThePastSeconds` and `refetchThePastSeconds`, on their own
   clocks.
 - **`visitConcurrency`** is the one dial on dialling cost, and it is per

@@ -744,8 +744,22 @@ a { color: var(--accent); }
 .sy-dot.bad { background: var(--warn); }
 .sy-h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
         margin: 16px 0 7px; border-top: 1px solid var(--line); padding-top: 10px; }
-.sy-stream { margin: 0 0 13px; }
+/* ONE STREAM, ONE SECTION — and the reason it is a box and not a rule.
+   A stream is now the only place its own numbers appear: its roster line, its
+   two config tables and its five pools are all inside this, and the next
+   stream's are inside the next one. The reader's question is "where does
+   `content` end and `indexers` begin", and at this height — five scrolling
+   tables deep — an indent answers it only where both edges are on screen at
+   once, which they are not. The box travels with the scroll. */
+.sy-stream { margin: 0 0 14px; padding: 11px 12px 5px; border: 1px solid var(--line); border-radius: .5rem;
+             background: var(--bg); }
 .sy-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+/* The stream's name has to outrank the pool names inside it or the section
+   reads as a sixth pool. Size does that where weight cannot: the pool headings
+   are already bold, so a bolder one at the same size is a distinction nobody
+   sees while scrolling. */
+.sy-stream > .sy-top { font-size: 14px; flex-wrap: wrap; }
+.sy-stream > .sy-top .sy-name { font-weight: 700; }
 .sy-name { font-weight: 600; }
 .sy-meta, .sy-sub { color: var(--muted); }
 .sy-sub { font-size: 12px; }
@@ -753,10 +767,6 @@ a { color: var(--accent); }
    tag is `s` because that is what this card marks a fault with, and the
    browser's own strikethrough is the one thing it must not mean. */
 .sy-sub s { text-decoration: none; color: var(--warn); }
-/* A LEVEL the reader can compare across streams, so the track is always the
-   full width and only the fill moves. */
-.sy-track { position: relative; height: 7px; border-radius: 4px; background: var(--bar); overflow: hidden; margin: 6px 0 4px; }
-.sy-track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
 .sy-bg { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 14px; font-size: 12.5px; align-items: baseline; }
 .sy-bg b { font-weight: 600; }
 .sy-bg em { font-style: normal; color: var(--muted); }
@@ -825,18 +835,25 @@ a { color: var(--accent); }
 .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
 .sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
 .sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
-/* ONE STREAM'S FOUR POOLS, once the card has more than one stream to cut by.
-   A rule down the left rather than a box: the four blocks inside already carry
-   their own separation, and a second border around them would read as a table
-   of tables. The indent is what says the pools below belong to the name above,
-   which is the whole job. */
-.sy-stream-pools { margin: 0 0 18px; padding: 0 0 0 11px; border-left: 2px solid var(--line); }
-/* The stream's name has to outrank the four pool names under it or the section
-   reads as a fifth pool. Size does that where weight cannot: the pool headings
-   are already bold, so a bolder one at the same size is a distinction nobody
-   sees while scrolling. */
-.sy-stream-pools > .sy-top { margin: 0 0 9px; flex-wrap: wrap; font-size: 14px; }
-.sy-stream-pools > .sy-top .sy-name { font-weight: 700; }
+/* THE PARTS OF A SECTION — what it may spend, when its clocks come due, what
+   it is holding. One level below the card's own `.sy-h` bands, because the
+   card's bands separate SUBJECTS (the mirror, the streams, the pipeline) and
+   these separate one subject's answers. Lighter and smaller for exactly that
+   reason: a sub-head that competed with the band above it would flatten the
+   two levels the section shape exists to create. */
+.sy-part { margin: 11px 0 0; }
+.sy-sub-h { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+            font-weight: 600; margin: 0 0 5px; }
+/* A TABLE OF CONFIGURATION, not of relays: a handful of rows that are all
+   worth seeing, so it takes the width its columns need and no scroll box. The
+   pool tables keep both — they are the ones with three hundred rows and a url
+   column that has to be cut somewhere. */
+.sy-legs-box.sy-fit { max-height: none; width: max-content; max-width: 100%; }
+.sy-legs-box.sy-fit table.sy-legs { width: auto; }
+/* NOTHING TO SHOW, said rather than left blank. Dimmer than a `.sy-sub`
+   carrying numbers: it is the absence of a finding and must not be scanned as
+   one. */
+.sy-quiet { opacity: .75; font-style: italic; }
 /* ONE POOL: its heading, then its rows. The four sit under one sub-head, so
    each block carries just enough separation to be scanned as a unit — the
    gap does the grouping and no rule or box is needed for it. */
@@ -852,7 +869,14 @@ a { color: var(--accent); }
    one bad row, so it scrolls on its own rather than pushing the rest of the
    card off screen. The live pool is the widest of them — one row per held
    socket, up to the tail budget — and the same box holds it. */
-.sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: 6px 0 0; }
+/* …on `--surface`, which is what makes the tables read as panels INSIDE a
+   section rather than as more of it: the section sits on `--bg` and the card
+   around it on `--surface`, so the nesting alternates rather than relying on a
+   hairline that a dark theme all but swallows. It also keeps the sticky
+   heading opaque against the rows it scrolls over, which is the reason the
+   heading carried that colour before anything else did. */
+.sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px;
+               margin: 6px 0 0; background: var(--surface); }
 table.sy-legs { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.sy-legs th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600;
                    color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -864,6 +888,20 @@ table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
    card until the three tables were built by one function. Same class as the
    cells under it, so a column is right-aligned in one place. */
 table.sy-legs th.n { text-align: right; }
+/* THE GROUP BAND over a table whose columns fall into named halves. Lighter
+   than the column headings under it and ruled only between the groups, so it
+   reads as a bracket over them rather than as a third row of headings. */
+table.sy-legs tr.sy-group th { font-weight: 600; font-size: 10.5px; letter-spacing: .04em;
+                               text-transform: none; padding-bottom: 1px; border-bottom: 0;
+                               color: var(--muted); opacity: .85; }
+table.sy-legs tr.sy-group th + th { border-left: 1px solid var(--line); }
+table.sy-legs tr.sy-group + tr th { position: static; }
+/* …and the same divide carried down the body, so a reader crossing from one
+   half to the other can see where they crossed. */
+table.sy-legs td.half, table.sy-legs th.half { border-left: 1px solid var(--line); }
+/* ONE CELL, not the whole row. Two independent faults share a row in the jobs
+   table, so the mark has to say which — see `jobsTable`. */
+table.sy-legs td.hot { color: var(--warn); font-weight: 620; }
 /* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
    row, so the warning colour owns the whole row. */
 table.sy-legs td.sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }

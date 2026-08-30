@@ -239,7 +239,10 @@ object StatusVocabulary {
                     "by: `live` is a held tail subscription — no worker, events as they exist; `catching-up` is " +
                     "paging forward over what this relay's band does not cover yet; `re-fetching` is paging over " +
                     "what it DOES, the whole-history re-walk a stream's `refetchThePastSeconds` schedules; " +
-                    "`negentropy` is reconciling the covered past over NIP-77, both kinds. One rotating pool runs all four, " +
+                    "`negentropy` is reconciling the WHOLE past over NIP-77, both kinds — every window from the ask's " +
+                    "own `since` (or the plausible floor) up to the sweep's head, NOT only what the band covers, " +
+                    "because a relay that back-filled behind a catch-up leaves the band saying `walked` and the " +
+                    "events missing. One rotating pool runs all four, " +
                     "which is why the split had to be published rather than inferred: `visiting` counts a " +
                     "catch-up, an audit and a whole-corpus re-walk as one number, and the first is a mirror " +
                     "keeping up while the third is one re-downloading years of history — the same transport, the " +
