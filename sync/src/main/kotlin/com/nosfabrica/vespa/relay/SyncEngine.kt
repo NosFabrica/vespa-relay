@@ -456,6 +456,15 @@ class SyncEngine(
                     // passed every check and then could not be written. Good
                     // events, gone. It reached a stderr line and nothing else.
                     Processors.Count("lostToStore", ingest.lostToStore.get()),
+                    // AND THE PAIR THAT SAYS WHETHER A FULL QUEUE IS
+                    // BACKPRESSURE OR A STOPPED PIPELINE. Both are the queue at
+                    // its ceiling; only these tell them apart — see
+                    // [IngestPipeline.inBatch]. `workers` is the denominator
+                    // `inBatch` has no meaning without, and it is the CONFIGURED
+                    // count: a worker that exited shows as the gap.
+                    Processors.Count("inBatch", ingest.inBatch().toLong()),
+                    Processors.Count("workers", ingest.workerCount.toLong()),
+                    Processors.Count("oldestBatchSec", ingest.oldestBatchMs() / 1000),
                 )
             }
         }
@@ -506,12 +515,22 @@ class SyncEngine(
      * document says the same word, from the same function, so the log and the
      * dashboard cannot drift into disagreeing about the one thing an operator
      * asks first.
+     *
+     * **A THIRD PAIR HIDES INSIDE THE FULL ONE**, and it cost #167 a whole
+     * investigation: a queue at its ceiling because ingest is writing as fast
+     * as it can, and a queue at its ceiling because ingest has STOPPED, look
+     * the same from the depth. `ingest` was the answer to both, so the line
+     * said "downloads are backpressured" — which reads as a busy mirror —
+     * while nothing was draining the queue at all and three events landed in
+     * nine minutes. [IngestPipeline.wedged] is the fact that separates them:
+     * a worker still inside one batch pass minutes after it started.
      */
     private fun bottleneckOf(
         depth: Int,
         rate: Int,
     ): String =
         when {
+            ingest.wedged() -> "wedged"
             depth >= ingest.capacity -> "ingest"
             depth == 0 && rate == 0 -> "upstream"
             depth == 0 -> "downloads"
@@ -613,10 +632,28 @@ class SyncEngine(
                     // apart.
                     (
                         when (constraint) {
-                            "ingest" -> " FULL (ingest is the limit — downloads are backpressured)"
-                            "upstream" -> " empty (nothing is arriving — the limit is upstream of ingest)"
-                            "downloads" -> " drained (ingest is keeping up; downloads are the limit)"
-                            else -> ""
+                            "wedged" -> {
+                                " FULL and NOT DRAINING — ingest is wedged, not backpressured: " +
+                                    "${ingest.inBatch()}/${ingest.workerCount} worker(s) in a batch, the oldest " +
+                                    "for ${ingest.oldestBatchMs() / 1000}s. The store stopped answering; look " +
+                                    "there, not at the relays"
+                            }
+
+                            "ingest" -> {
+                                " FULL (ingest is the limit — downloads are backpressured)"
+                            }
+
+                            "upstream" -> {
+                                " empty (nothing is arriving — the limit is upstream of ingest)"
+                            }
+
+                            "downloads" -> {
+                                " drained (ingest is keeping up; downloads are the limit)"
+                            }
+
+                            else -> {
+                                ""
+                            }
                         }
                     ) +
                     ", $rate ev/s" +
@@ -629,6 +666,13 @@ class SyncEngine(
                             ?.let { ", $it record(s) DELETED as retracted upstream" } ?: ""
                     ) +
                     (pressure?.describe()?.let { ", $it" } ?: "") +
+                    (
+                        ingest.workerCount
+                            .minus(ingest.workersRunning())
+                            .takeIf { it > 0 }
+                            ?.let { ", $it of ${ingest.workerCount} ingest worker(s) HAVE STOPPED — that share of the queue has no drain" }
+                            ?: ""
+                    ) +
                     (
                         if (ingest.lostToStore.get() > 0) {
                             ", ${ingest.lostToStore.get()} event(s) LOST to store errors (good events, gone — check the schema)"

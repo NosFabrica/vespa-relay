@@ -50,6 +50,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicLongArray
 
 /**
  * The download-to-store pipeline every mirrored event funnels through: a
@@ -98,6 +99,15 @@ class IngestPipeline(
      * did before this existed.
      */
     private val refusals: RefusalSink = RefusalSink.None,
+    /**
+     * How long a batch pass has to have been running before a full queue reads
+     * as wedged rather than as backpressure — see [wedged].
+     *
+     * A parameter only so a test can reach the state without waiting two
+     * minutes for it; nothing configures it, and [WEDGE_AFTER_MS] is the number
+     * that ships.
+     */
+    private val wedgeAfterMs: Long = WEDGE_AFTER_MS,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -208,6 +218,23 @@ class IngestPipeline(
      */
     private val versionGate = ProbeGate(minHitRate = 0.20)
 
+    /**
+     * When each worker entered its current batch pass, or 0 while it is waiting
+     * on the channel — the instrument [inBatch] and [oldestBatchMs] read.
+     *
+     * A suspended coroutine has no frame, so a worker parked inside a store
+     * round trip is invisible in a thread dump: its pool thread is back in
+     * `LinkedBlockingQueue.take` looking idle, which reads as "the workers are
+     * starving" at the exact moment they are all stuck. That contradiction — a
+     * queue reported FULL with every ingest thread apparently idle — is what
+     * #167 had to be diagnosed around, and these two numbers are what settles
+     * it from outside the process.
+     */
+    private val busySince = AtomicLongArray(workers)
+
+    /** Worker loops still running. Anything below [workers] means one exited and nothing drains its share. */
+    private val loopsRunning = AtomicInteger()
+
     fun start() {
         // Announced when the batch is capped: an operator who set
         // SYNC_INGEST_BATCH and silently got a different number would be
@@ -229,7 +256,7 @@ class IngestPipeline(
                     "probe needs — duplicates will be verified before the store rejects them",
             )
         }
-        repeat(workers) { scope.launch(pool) { loop() } }
+        repeat(workers) { worker -> scope.launch(pool) { loop(worker) } }
     }
 
     /**
@@ -287,7 +314,35 @@ class IngestPipeline(
         }
     }
 
-    private suspend fun loop() {
+    /**
+     * One worker: take a batch off the channel, run it through the store, and
+     * go back for the next one — for as long as the scope lives.
+     *
+     * The loop's exit is reported rather than silent. The scope carries a
+     * `SupervisorJob`, so a throw out of here kills THIS worker and leaves the
+     * others running: ingest quietly loses an eighth of its throughput, and
+     * with every worker gone the queue fills, backpressures the downloads and
+     * reports itself full while nothing is draining it. [loopsRunning] is what
+     * says which of those happened.
+     */
+    private suspend fun loop(worker: Int) {
+        loopsRunning.incrementAndGet()
+        try {
+            drain(worker)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            System.err.println(
+                "router: ingest worker $worker STOPPED on ${e.javaClass.simpleName}: ${e.message} — " +
+                    "${loopsRunning.get() - 1} of $workers worker(s) left to drain the queue",
+            )
+            throw e
+        } finally {
+            loopsRunning.decrementAndGet()
+        }
+    }
+
+    private suspend fun drain(worker: Int) {
         val batch = ArrayList<Inbound>(batchSize)
         while (scope.isActive) {
             // Clients first: a batch's dedup and projection queries land in
@@ -303,48 +358,57 @@ class IngestPipeline(
                 queued.decrementAndGet()
                 batch.add(next)
             }
-            // BEFORE verify, which is the whole point — see [dropDuplicates]
-            // and [dropSuperseded].
-            val fresh = dropSuperseded(dropDuplicates(batch))
-            if (fresh.isEmpty()) continue
-            val valid = ArrayList<Event>(fresh.size)
-            // Only built when something will read it. The sink is inert unless
-            // SYNC_REFUSED_DIR is set, and the pipeline is shared by every
-            // stream, so an unconditional map made every existing deployment
-            // allocate and hash one entry per event for a lookup that never
-            // happens.
-            val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
-            var verifyRejected = 0
-            // Booked as a stage so it lands on the same `router: ingest stages`
-            // line as the store's own dedup/guards/write. It was invisible
-            // there for as long as it existed, which made "is verification the
-            // limit?" a question no instrument in this repo could answer.
-            IngestStats.timed("verify") {
-                for (msg in fresh) {
-                    if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
-                        valid.add(msg.event)
-                        // A bad signature never reaches this map, and so can
-                        // never reach the refusal sink: an id is the hash of
-                        // the CONTENT, not of the signature, so the same id can
-                        // arrive correctly signed from another relay.
-                        // Remembering it would make one relay's corruption
-                        // permanent.
-                        origins?.put(msg.event.id, msg.origin)
-                    } else {
-                        verifyRejected++
+            // Marked around the WHOLE pass, and in a finally so a throw
+            // clears it: this is the only record that a worker is inside a
+            // store round trip rather than waiting on the channel, and a
+            // worker that never comes out is what [wedged] reports.
+            busySince.set(worker, System.currentTimeMillis())
+            try {
+                // BEFORE verify, which is the whole point — see [dropDuplicates]
+                // and [dropSuperseded].
+                val fresh = dropSuperseded(dropDuplicates(batch))
+                if (fresh.isEmpty()) continue
+                val valid = ArrayList<Event>(fresh.size)
+                // Only built when something will read it. The sink is inert unless
+                // SYNC_REFUSED_DIR is set, and the pipeline is shared by every
+                // stream, so an unconditional map made every existing deployment
+                // allocate and hash one entry per event for a lookup that never
+                // happens.
+                val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
+                var verifyRejected = 0
+                // Booked as a stage so it lands on the same `router: ingest stages`
+                // line as the store's own dedup/guards/write. It was invisible
+                // there for as long as it existed, which made "is verification the
+                // limit?" a question no instrument in this repo could answer.
+                IngestStats.timed("verify") {
+                    for (msg in fresh) {
+                        if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
+                            valid.add(msg.event)
+                            // A bad signature never reaches this map, and so can
+                            // never reach the refusal sink: an id is the hash of
+                            // the CONTENT, not of the signature, so the same id can
+                            // arrive correctly signed from another relay.
+                            // Remembering it would make one relay's corruption
+                            // permanent.
+                            origins?.put(msg.event.id, msg.origin)
+                        } else {
+                            verifyRejected++
+                        }
                     }
                 }
+                if (verifyRejected > 0) {
+                    rejected.addAndGet(verifyRejected.toLong())
+                    badSignatures.addAndGet(verifyRejected.toLong())
+                }
+                if (valid.isEmpty()) continue
+                // Before the batch write: the store feeds Vespa in parallel, so a
+                // parse report raised inside batchInsert cannot be attributed to
+                // one event. Inspecting here keeps the audit's ThreadLocal exact.
+                audit?.let { for (event in valid) it.inspect(event) }
+                insertIsolating(valid, origins ?: emptyMap())
+            } finally {
+                busySince.set(worker, 0)
             }
-            if (verifyRejected > 0) {
-                rejected.addAndGet(verifyRejected.toLong())
-                badSignatures.addAndGet(verifyRejected.toLong())
-            }
-            if (valid.isEmpty()) continue
-            // Before the batch write: the store feeds Vespa in parallel, so a
-            // parse report raised inside batchInsert cannot be attributed to
-            // one event. Inspecting here keeps the audit's ThreadLocal exact.
-            audit?.let { for (event in valid) it.inspect(event) }
-            insertIsolating(valid, origins ?: emptyMap())
         }
     }
 
@@ -830,6 +894,51 @@ class IngestPipeline(
     }
 
     /**
+     * WORKERS INSIDE A BATCH PASS RIGHT NOW, and how long the oldest has been
+     * there.
+     *
+     * The pair that tells a backpressured pipeline from a wedged one, which
+     * every other number this class publishes reports identically. A full queue
+     * with every worker in a pass that started seconds ago is ingest keeping up
+     * badly; a full queue with every worker in a pass minutes old is ingest not
+     * running at all, and the events counted as `queued` will never reach a
+     * worker. Without these the only evidence was a thread dump, where a
+     * suspended worker has no frame and its pool thread looks idle — see
+     * [busySince].
+     */
+    fun inBatch(): Int = (0 until workers).count { busySince.get(it) != 0L }
+
+    fun oldestBatchMs(): Long {
+        val now = System.currentTimeMillis()
+        var oldest = 0L
+        for (i in 0 until workers) {
+            busySince.get(i).takeIf { it != 0L }?.let { oldest = maxOf(oldest, now - it) }
+        }
+        return oldest
+    }
+
+    /** How many workers were configured, so [inBatch] has a denominator outside this class. */
+    val workerCount: Int get() = workers
+
+    /** …and how many of them are still looping. Below [workerCount] means a worker exited — see [loop]. */
+    fun workersRunning(): Int = loopsRunning.get()
+
+    /**
+     * Whether ingest has stopped rather than merely filled up: the queue is at
+     * its ceiling AND some worker has been in one batch pass longer than any
+     * batch can honestly take.
+     *
+     * **This REPORTS the wedge; nothing here ends it.** Deliberately so: the
+     * only way to end one from this side is to cut the pass, and cutting a
+     * pass discards a batch of good events that nothing re-offers before the
+     * next full resync. A router that quietly bleeds twenty thousand events
+     * every few minutes while the store is sick is a worse failure than one
+     * that stops and says which store call it stopped in. So the worker stays
+     * where it is, the health line names it, and the operator decides.
+     */
+    fun wedged(): Boolean = queued.get() >= capacity && oldestBatchMs() >= wedgeAfterMs
+
+    /**
      * WHY events were rejected, as counts rather than as the log line's prose.
      *
      * A mirror is offered the same event once per relay holding it, so rejecting
@@ -929,6 +1038,24 @@ class IngestPipeline(
 
         // Enough of the event to reproduce it, even with a long kind-0 content.
         private const val POISON_JSON_CHARS = 4_000
+
+        /**
+         * How long a batch pass has to have been running before a full queue
+         * is reported as WEDGED rather than as backpressure — see [wedged].
+         *
+         * Two minutes, against the arithmetic of an honest batch: a
+         * 20k-event batch writes in ~12s at the measured ~600µs/event, and
+         * eight workers queued on the store's shared ingest mutex have been
+         * seen several deep at ~10s a hold. So a pass still running at two
+         * minutes is not slow, it is stopped — and NOTHING here stops it. The
+         * store's query client sets `readTimeout(0)`/`callTimeout(0)` on
+         * purpose (an unlimited query may run as long as it takes, and it
+         * cannot tell "engine still matching" from "connection dead"), so a
+         * response that never comes holds this worker for the life of the
+         * process. This number does not bound that; it only makes the router
+         * say so, which is the whole of what #167 could not do.
+         */
+        const val WEDGE_AFTER_MS = 120_000L
     }
 }
 

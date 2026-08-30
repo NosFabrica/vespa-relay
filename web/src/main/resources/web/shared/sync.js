@@ -104,6 +104,11 @@ export const BOTTLENECK = {
   // Object.prototype, and destructuring a function below throws out the render.
   __proto__: null,
   ingest: ["ingest is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at ingest and the store behind it, not at the relays."],
+  // FULL, and nothing draining it — the reading `ingest` used to cover as well
+  // as the healthy-but-saturated one. The workers are held inside a store round
+  // trip that has not come back, so the queue is not backpressure: it is a
+  // pipeline that has stopped with those events in it.
+  wedged: ["ingest has stopped", "Ingest's queue is full and its workers are stuck in a batch that is not finishing. The store is not answering, nothing queued here is being written, and nothing in the router will end it — the remedy is at the store."],
   downloads: ["relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
   upstream: ["nothing arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
   mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
@@ -175,7 +180,7 @@ export function constraintOf(health) {
   const word = health?.bottleneck;
   if (!word) return null;
   const [text, why] = BOTTLENECK[word] || [word, ""];
-  return { word, text, why, tone: word === "ingest" ? "warn" : null };
+  return { word, text, why, tone: word === "ingest" || word === "wedged" ? "warn" : null };
 }
 
 /** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */

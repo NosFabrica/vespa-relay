@@ -1372,6 +1372,40 @@ nine days of a pass that should end in three minutes. A cut write publishes
 nothing and the url re-earns its verdict next sweep, the same bargain an
 abandoned dial gets.
 
+**THE MIRROR'S READS HAVE THE SAME HOLE AND ARE DELIBERATELY LEFT WITH IT
+(#167).** Same deadline-less client, same failure — a response that never comes
+suspends its caller for the life of the process — but on the read side the
+caller is one of eight `IngestPipeline` workers, and eight is the whole of
+ingest. On staging the queue sat at 8206/8192 backpressuring every download
+while three events were accepted in nine minutes. The write side's answer does
+not port: a verdict write that is cut publishes nothing and the url re-earns it
+next sweep, whereas an ingest pass that is cut DISCARDS twenty thousand
+mirrored events that nothing re-offers before the next full resync. A router
+quietly bleeding a batch every few minutes while the store is sick is a worse
+failure than one that stops. **So nothing bounds these reads, and the wedge is
+reported instead — the remedy is at the store.** Read that as a decision, not
+an omission; the deadlines were written and removed.
+
+**The thread dump for it reads as the exact opposite of the truth, and that is
+what the reporting is for.** All eight ingest threads were parked in
+`LinkedBlockingQueue.take` on an empty pool queue, having burned 1-5ms of CPU in
+398s — which reads as workers STARVING while the queue is reported full, a
+contradiction with no explanation. There isn't one: the workers were suspended
+inside a store round trip, and a suspended coroutine has no frame, so its pool
+thread goes back to `take()` looking idle. The queue depth cannot tell that
+apart from honest backpressure either, which is why `bottleneckOf` said `ingest`
+— "downloads are backpressured", the busy-mirror reading — for a pipeline that
+had stopped. So `IngestPipeline` marks `busySince` around the whole batch pass:
+`inBatch`/`oldestBatchMs` settle it from outside the process, a full queue whose
+oldest pass is past `WEDGE_AFTER_MS` gets its own bottleneck word (`wedged`) on
+the health line and the card, and a worker loop that exits says so rather than
+silently taking its share of the queue with it. Also worth knowing before
+theorising off that dump: `router: ingest probes id 99% dropped` is the probe
+WORKING — `dropped` is duplicates it caught, so 99% is a converged fan-out —
+not the probe being dropped. And the store's VISIT path is not the hole: it has
+carried a 120s read deadline and a cancellation guard since before that pin, so
+threads in `VespaVisits.streamOnce` are a streaming walk, not a wedge.
+
 **NOTHING IN THE SYNC PLANE KNOWS THAT `l` IS THE TAG OR THAT `prime` IS THE
 VALUE.** That is the whole point of a gate being a filter: another monitor
 spelling its opinion `["l", "online", "monitor.example"]` — or on a tag of its
@@ -1668,7 +1702,7 @@ still pins them; `processorFact` is where the choice lives:
 | `aliasSource` | `StreamWorld.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
-| `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
+| `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected`, and `inBatch` of `workers` with `oldestBatchSec` — what tells a full queue apart from a stopped one |
 | `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
 | `upstreamPush` | `UpstreamPush` | `pushed` |
 
@@ -3863,7 +3897,8 @@ Reach for it first.
 - **health line** (once a minute) — heap, ingest queue depth vs capacity, ev/s,
   relays transferring, connected, fatal count, events lost to store errors. A
   full queue and an empty queue are opposite diagnoses that look identical
-  everywhere else.
+  everywhere else — and so are the two FULL ones, which is why the line names
+  the workers in a batch and the age of the oldest when it says `wedged`.
 - **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because
