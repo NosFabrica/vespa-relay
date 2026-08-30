@@ -21,8 +21,11 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
+import com.vitorpamplona.quartz.experimental.trustedLists.treasureMap.TrustedListProviderTag
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ServiceType
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -257,8 +260,8 @@ class RouterConfExamplesTest {
         // never discovered is not an error, just a relay never dialled.
         assertTrue(source.selects.all { it.urlIndex == 2 })
         assertTrue(
-            source.selects.all { it.tag == null },
-            "a named tag reads one metric of one kind; the delegation vocabulary is open-ended",
+            source.selects.all { it.tag != null },
+            "every select NAMES its delegation tag — see `the 10040 scans read delegations and nothing else`",
         )
         // The stream asks for the declarations and NOTHING else: a provider
         // relay serves no kind 0 or 10002 (measured, 12 pairs), and a kind that
@@ -298,9 +301,19 @@ class RouterConfExamplesTest {
         // read the same 10040 tags as candidates.
         val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }
         assertTrue(monitor10040.isNotEmpty(), "the assertions scan is gated on verdicts no monitor source would ever take")
-        assertTrue(
-            monitor10040.flatMap { it.selects }.all { it.tag == null },
-            "the monitor must read the same 10040 tags the assertions stream does — every shape, not two names",
+        assertEquals(
+            example
+                .discoveryStreams()
+                .first { it.name == "assertions" }
+                .discovery!!
+                .sources
+                .single()
+                .selects
+                .mapNotNull { it.tag }
+                .toSet(),
+            monitor10040.flatMap { it.selects }.mapNotNull { it.tag }.toSet(),
+            "the monitor must read the SAME 10040 tags the assertions stream scans, or it certifies relays that " +
+                "stream never asks and leaves ones it does ask uncertified",
         )
         assertTrue(
             monitor10040.flatMap { it.selects }.all { it.urlIndex == 2 },
@@ -308,67 +321,95 @@ class RouterConfExamplesTest {
         )
     }
 
-    @Test
-    fun `the 10040 scans discover a provider of every delegated kind, in both shapes`() {
-        // THE CONFIG ASSERTIONS ABOVE ARE STRUCTURE; this is the behaviour they
-        // exist for, run through the example's OWN selects rather than a
-        // hand-built one. Before this, both scans named `30382:rank` and
-        // `30382:followers`, so a service delegated for events (30383), for
-        // addresses (30384), for external ids (30385) or for any Trusted List
-        // (30392-30395) was never discovered, never probed, never verdicted —
-        // and the assertions stream dials only what a verdict vouches for, so
-        // it could not have reached one even with the kinds in its filter.
-        val selects =
-            example.monitor!!
-                .sources
-                .filter { it.filter.kinds == listOf(10040) }
-                .flatMap { it.selects } +
+    /**
+     * The two 10040 scans, kept APART: the monitor's candidate source and the
+     * assertions stream's own. Checked separately, never unioned — a rule
+     * asserted over the union passes while one of the two is missing a tag,
+     * which is the hole this shape exists to close.
+     */
+    private fun scans10040() =
+        mapOf(
+            "monitor" to
+                example.monitor!!
+                    .sources
+                    .filter { it.filter.kinds == listOf(10040) }
+                    .flatMap { it.selects },
+            "assertions" to
                 example
                     .discoveryStreams()
                     .first { it.name == "assertions" }
                     .discovery!!
                     .sources
                     .single()
-                    .selects
+                    .selects,
+        )
 
-        val provider = "a".repeat(64)
-        // One tag per delegation shape the ADRs define, plus the two a 10040
-        // carries that are NOT delegations — neither has a url at 2, which is
-        // what keeps a tagless select from reading prose as a relay.
-        val shapes =
-            mapOf(
-                "30382:rank" to "wss://users.example",
-                "30382:zap_amt_recd" to "wss://zaps.example",
-                "30383:rank" to "wss://events.example",
-                "30384:comment_cnt" to "wss://addresses.example",
-                "30385:rank" to "wss://external.example",
-                "30392" to "wss://userlists.example",
-                "30393" to "wss://eventlists.example",
-                "30394" to "wss://addresslists.example",
-                "30395" to "wss://externallists.example",
+    private fun map10040(vararg tags: Array<String>) = NostrSignerSync().sign<Event>(1_700_000_000L, 10040, arrayOf(*tags), "")
+
+    @Test
+    fun `the 10040 scans name every delegation quartz defines`() {
+        // THE LIST IS LONG AND HAND-WRITTEN, so it is held to its source
+        // rather than trusted. NIP-85's vocabulary is `kind:metric` and grows
+        // upstream — a metric added to ProviderTypes and not added here is a
+        // provider this router never discovers, and nothing about that failure
+        // is visible: no error, no warning, just a relay never dialled. This
+        // is what makes naming the tags safe instead of a slow leak.
+        val declared =
+            ProviderTypes.javaClass.methods
+                .filter { it.parameterCount == 0 && it.returnType == ServiceType::class.java }
+                .mapNotNull { runCatching { it.invoke(ProviderTypes) as ServiceType }.getOrNull() }
+                .map { it.toValue() }
+                .toSet() + TrustedListProviderTag.KINDS.map { it.toString() }
+
+        scans10040().forEach { (name, selects) ->
+            assertEquals(
+                declared.sorted(),
+                selects.mapNotNull { it.tag }.distinct().sorted(),
+                "the '$name' 10040 scan and quartz disagree on the delegation vocabulary",
             )
-        for ((service, url) in shapes) {
-            val map: Event =
-                NostrSignerSync().sign(
-                    1_700_000_000L,
-                    10040,
-                    arrayOf(
-                        arrayOf(service, provider, url),
-                        arrayOf("alt", "a trust provider list"),
-                        arrayOf("d", "map"),
-                    ),
-                    "",
-                )
-            for (select in selects) {
-                // The normalizer gives every url an explicit path, so the
-                // expectation carries the `/` it adds rather than pretending
-                // discovery hands back the string the tag wrote.
+        }
+    }
+
+    @Test
+    fun `the 10040 scans read delegations and nothing else`() {
+        // THE BEHAVIOUR THE NAMES BUY, run through the example's OWN selects.
+        // A delegation and a relay hint are the same SHAPE — three elements,
+        // hex at 1, a url at 2 — so a scan that took every tag with a url at 2
+        // would read `p` and `e` hints as delegations. On the assertions
+        // stream that is worse than noise: its `authors` binding would bind an
+        // EVENT ID as the author to ask for, which is a band per bogus
+        // (relay, author) pair that can never return an event.
+        val provider = "a".repeat(64)
+
+        // Both delegation shapes are read, by whichever select names them —
+        // and by EACH scan, since the two are dialled for different reasons.
+        scans10040().forEach { (name, selects) ->
+            for (service in listOf("30382:rank", "30383:zap_cnt", "30385:reaction_cnt", "30392", "30395")) {
+                val map = map10040(arrayOf(service, provider, "wss://provider.example"))
                 assertEquals(
-                    listOf("$url/"),
-                    RelayDiscovery.urlsIn(map, select).map { it.url },
-                    "a `$service` delegation names $url, and a scan that cannot see it leaves that provider undialled",
+                    listOf("wss://provider.example/"),
+                    selects.flatMap { RelayDiscovery.urlsIn(map, it) }.map { it.url }.distinct(),
+                    "the '$name' scan cannot see a `$service` delegation, so that provider is never dialled",
                 )
             }
+        }
+
+        // ...and nothing else in a 10040 is read as one.
+        val noise =
+            map10040(
+                arrayOf("p", provider, "wss://hint.example"),
+                arrayOf("e", "b".repeat(64), "wss://hint.example"),
+                arrayOf("alt", "a trust provider list"),
+                arrayOf("d", "map"),
+                arrayOf("client", "someclient", "wss://hint.example"),
+            )
+        scans10040().forEach { (name, selects) ->
+            assertEquals(
+                emptyList(),
+                selects.flatMap { RelayDiscovery.urlsIn(noise, it) }.map { it.url }.distinct(),
+                "the '$name' scan reads a relay HINT as a delegation — which binds a stranger's pubkey, or an " +
+                    "event id, as a provider to ask for",
+            )
         }
     }
 

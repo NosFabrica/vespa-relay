@@ -122,25 +122,70 @@ monitor {
             # they earn verdicts here and the assertions stream dials only the
             # ones a verdict vouches for.
             #
-            # NO TAG NAME, because a 10040 delegates in TWO shapes and the
-            # vocabulary of the first is open-ended: NIP-85 names a service per
-            # kind AND metric (`["30382:rank", <pubkey>, <relay>]` — quartz's
-            # ProviderTypes lists 34 of them across 30382-30385, and the next
-            # metric is somebody else's release), while Tapestry's Trusted
-            # Lists delegate bare (`["30392", <pubkey>, <relay>]`, ADR
-            # tl-treasure-map/0001). Both put the pubkey at 1 and the url at 2,
-            # so ONE tagless select spans every kind and metric either shape
-            # can carry — where naming them would be 38 lines that a new metric
-            # silently outdates, and a provider we never probe is one the
-            # assertions stream can never dial.
+            # EVERY DELEGATION TAG, NAMED. A 10040 delegates in two shapes:
+            # NIP-85 names a service per kind AND metric (`["30382:rank",
+            # <pubkey>, <relay>]` — quartz's ProviderTypes defines 34 of them
+            # across 30382-30385), and Tapestry's Trusted Lists delegate bare
+            # (`["30392", <pubkey>, <relay>]`, ADR tl-treasure-map/0001). Both
+            # put the pubkey at 1 and the url at 2.
             #
-            # What keeps this from reading prose as a relay: a url is taken
-            # only if element 2 parses as ws:// or wss:// (a 10040's `alt` or
-            # `d` has nothing there), and the cost is that a tagless select
-            # gives up the indexed tag projection for a paged scan — over
-            # 10040, a kind that runs to thousands, not to millions.
+            # NAMED RATHER THAN TAGLESS, though one tagless select would match
+            # both shapes: it would also match every OTHER tag carrying a url
+            # at 2, and a 10040 may hold `["p", <pubkey>, <relay>]` or
+            # `["e", <id>, <relay>]` relay hints that fit exactly that shape.
+            # What a stranger puts in their Treasure Map is not ours to
+            # predict, so the scan SAYS which tags are delegations rather than
+            # inferring it from where a url happens to sit. Naming them also
+            # keeps the indexed tag projection, which a tagless select gives up
+            # for a paged scan over whole events.
+            #
+            # The list is held to quartz by `the 10040 scans name every
+            # delegation quartz defines`, so a metric added upstream fails the
+            # build here instead of going silently undiscovered.
             select = [
-                { relay = 2 }
+                # kind 30382
+                { tag = "30382:rank",                 relay = 2 }
+                { tag = "30382:followers",            relay = 2 }
+                { tag = "30382:active_hours_end",     relay = 2 }
+                { tag = "30382:active_hours_start",   relay = 2 }
+                { tag = "30382:first_created_at",     relay = 2 }
+                { tag = "30382:post_cnt",             relay = 2 }
+                { tag = "30382:reactions_cnt",        relay = 2 }
+                { tag = "30382:reply_cnt",            relay = 2 }
+                { tag = "30382:reports_cnt_recd",     relay = 2 }
+                { tag = "30382:reports_cnt_sent",     relay = 2 }
+                { tag = "30382:t",                    relay = 2 }
+                { tag = "30382:zap_amt_recd",         relay = 2 }
+                { tag = "30382:zap_amt_sent",         relay = 2 }
+                { tag = "30382:zap_avg_amt_day_recd", relay = 2 }
+                { tag = "30382:zap_avg_amt_day_sent", relay = 2 }
+                { tag = "30382:zap_cnt_recd",         relay = 2 }
+                { tag = "30382:zap_cnt_sent",         relay = 2 }
+                # kind 30383
+                { tag = "30383:rank",                 relay = 2 }
+                { tag = "30383:comment_cnt",          relay = 2 }
+                { tag = "30383:quote_cnt",            relay = 2 }
+                { tag = "30383:reaction_cnt",         relay = 2 }
+                { tag = "30383:repost_cnt",           relay = 2 }
+                { tag = "30383:zap_amount",           relay = 2 }
+                { tag = "30383:zap_cnt",              relay = 2 }
+                # kind 30384
+                { tag = "30384:rank",                 relay = 2 }
+                { tag = "30384:comment_cnt",          relay = 2 }
+                { tag = "30384:quote_cnt",            relay = 2 }
+                { tag = "30384:reaction_cnt",         relay = 2 }
+                { tag = "30384:repost_cnt",           relay = 2 }
+                { tag = "30384:zap_amount",           relay = 2 }
+                { tag = "30384:zap_cnt",              relay = 2 }
+                # kind 30385
+                { tag = "30385:rank",                 relay = 2 }
+                { tag = "30385:comment_cnt",          relay = 2 }
+                { tag = "30385:reaction_cnt",         relay = 2 }
+                # Tapestry Trusted Lists delegate bare: no metric, one entry per kind.
+                { tag = "30392",                      relay = 2 }
+                { tag = "30393",                      relay = 2 }
+                { tag = "30394",                      relay = 2 }
+                { tag = "30395",                      relay = 2 }
             ]
             filter = { "kinds": [10040] }
         }
@@ -344,15 +389,58 @@ streams {
         # bound author, so each (relay, service) band stays valid forever.
         relaySource = [
             {
-                # Tagless for the reason the monitor's 10040 source is —
-                # 34 NIP-85 `kind:metric` names plus 4 bare Tapestry kinds,
-                # both shapes carrying the pubkey at 1 and the url at 2. The
-                # `authors` binding is what makes it safe to be this wide: the
-                # relay is asked for THAT provider's records, never for the
-                # kind at large, so a tag naming a service we do not model
-                # still only ever widens the ask by one author on one relay.
+                # The same 38 delegation tags the monitor's 10040 source
+                # names, and named here for a sharper reason: this select
+                # BINDS `authors` off element 1. A tagless version would read
+                # an `["e", <id>, <relay>]` relay hint as a delegation and bind
+                # an EVENT ID as the author to ask for — a band per bogus
+                # (relay, author) pair that can never return an event and never
+                # stops being re-walked. The tag name is what says element 1 is
+                # a provider.
                 select = [
-                    { relay = 2, authors = 1 }
+                    # kind 30382
+                    { tag = "30382:rank",                 relay = 2, authors = 1 }
+                    { tag = "30382:followers",            relay = 2, authors = 1 }
+                    { tag = "30382:active_hours_end",     relay = 2, authors = 1 }
+                    { tag = "30382:active_hours_start",   relay = 2, authors = 1 }
+                    { tag = "30382:first_created_at",     relay = 2, authors = 1 }
+                    { tag = "30382:post_cnt",             relay = 2, authors = 1 }
+                    { tag = "30382:reactions_cnt",        relay = 2, authors = 1 }
+                    { tag = "30382:reply_cnt",            relay = 2, authors = 1 }
+                    { tag = "30382:reports_cnt_recd",     relay = 2, authors = 1 }
+                    { tag = "30382:reports_cnt_sent",     relay = 2, authors = 1 }
+                    { tag = "30382:t",                    relay = 2, authors = 1 }
+                    { tag = "30382:zap_amt_recd",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_amt_sent",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_avg_amt_day_recd", relay = 2, authors = 1 }
+                    { tag = "30382:zap_avg_amt_day_sent", relay = 2, authors = 1 }
+                    { tag = "30382:zap_cnt_recd",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_cnt_sent",         relay = 2, authors = 1 }
+                    # kind 30383
+                    { tag = "30383:rank",                 relay = 2, authors = 1 }
+                    { tag = "30383:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30383:quote_cnt",            relay = 2, authors = 1 }
+                    { tag = "30383:reaction_cnt",         relay = 2, authors = 1 }
+                    { tag = "30383:repost_cnt",           relay = 2, authors = 1 }
+                    { tag = "30383:zap_amount",           relay = 2, authors = 1 }
+                    { tag = "30383:zap_cnt",              relay = 2, authors = 1 }
+                    # kind 30384
+                    { tag = "30384:rank",                 relay = 2, authors = 1 }
+                    { tag = "30384:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30384:quote_cnt",            relay = 2, authors = 1 }
+                    { tag = "30384:reaction_cnt",         relay = 2, authors = 1 }
+                    { tag = "30384:repost_cnt",           relay = 2, authors = 1 }
+                    { tag = "30384:zap_amount",           relay = 2, authors = 1 }
+                    { tag = "30384:zap_cnt",              relay = 2, authors = 1 }
+                    # kind 30385
+                    { tag = "30385:rank",                 relay = 2, authors = 1 }
+                    { tag = "30385:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30385:reaction_cnt",         relay = 2, authors = 1 }
+                    # Tapestry Trusted Lists delegate bare: no metric, one entry per kind.
+                    { tag = "30392",                      relay = 2, authors = 1 }
+                    { tag = "30393",                      relay = 2, authors = 1 }
+                    { tag = "30394",                      relay = 2, authors = 1 }
+                    { tag = "30395",                      relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
             }
