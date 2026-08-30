@@ -121,9 +121,71 @@ monitor {
             # As writable as a 10002 — same dead hosts, same spammed urls — so
             # they earn verdicts here and the assertions stream dials only the
             # ones a verdict vouches for.
+            #
+            # EVERY DELEGATION TAG, NAMED. A 10040 delegates in two shapes:
+            # NIP-85 names a service per kind AND metric (`["30382:rank",
+            # <pubkey>, <relay>]` — quartz's ProviderTypes defines 34 of them
+            # across 30382-30385), and Tapestry's Trusted Lists delegate bare
+            # (`["30392", <pubkey>, <relay>]`, ADR tl-treasure-map/0001). Both
+            # put the pubkey at 1 and the url at 2.
+            #
+            # NAMED RATHER THAN TAGLESS, though one tagless select would match
+            # both shapes: it would also match every OTHER tag carrying a url
+            # at 2, and a 10040 may hold `["p", <pubkey>, <relay>]` or
+            # `["e", <id>, <relay>]` relay hints that fit exactly that shape.
+            # What a stranger puts in their Treasure Map is not ours to
+            # predict, so the scan SAYS which tags are delegations rather than
+            # inferring it from where a url happens to sit. Naming them also
+            # keeps the indexed tag projection, which a tagless select gives up
+            # for a paged scan over whole events.
+            #
+            # The list is held to quartz by `the 10040 scans name every
+            # delegation quartz defines`, so a metric added upstream fails the
+            # build here instead of going silently undiscovered.
             select = [
-                { tag = "30382:rank",      relay = 2 }
-                { tag = "30382:followers", relay = 2 }
+                # kind 30382
+                { tag = "30382:rank",                 relay = 2 }
+                { tag = "30382:followers",            relay = 2 }
+                { tag = "30382:active_hours_end",     relay = 2 }
+                { tag = "30382:active_hours_start",   relay = 2 }
+                { tag = "30382:first_created_at",     relay = 2 }
+                { tag = "30382:post_cnt",             relay = 2 }
+                { tag = "30382:reactions_cnt",        relay = 2 }
+                { tag = "30382:reply_cnt",            relay = 2 }
+                { tag = "30382:reports_cnt_recd",     relay = 2 }
+                { tag = "30382:reports_cnt_sent",     relay = 2 }
+                { tag = "30382:t",                    relay = 2 }
+                { tag = "30382:zap_amt_recd",         relay = 2 }
+                { tag = "30382:zap_amt_sent",         relay = 2 }
+                { tag = "30382:zap_avg_amt_day_recd", relay = 2 }
+                { tag = "30382:zap_avg_amt_day_sent", relay = 2 }
+                { tag = "30382:zap_cnt_recd",         relay = 2 }
+                { tag = "30382:zap_cnt_sent",         relay = 2 }
+                # kind 30383
+                { tag = "30383:rank",                 relay = 2 }
+                { tag = "30383:comment_cnt",          relay = 2 }
+                { tag = "30383:quote_cnt",            relay = 2 }
+                { tag = "30383:reaction_cnt",         relay = 2 }
+                { tag = "30383:repost_cnt",           relay = 2 }
+                { tag = "30383:zap_amount",           relay = 2 }
+                { tag = "30383:zap_cnt",              relay = 2 }
+                # kind 30384
+                { tag = "30384:rank",                 relay = 2 }
+                { tag = "30384:comment_cnt",          relay = 2 }
+                { tag = "30384:quote_cnt",            relay = 2 }
+                { tag = "30384:reaction_cnt",         relay = 2 }
+                { tag = "30384:repost_cnt",           relay = 2 }
+                { tag = "30384:zap_amount",           relay = 2 }
+                { tag = "30384:zap_cnt",              relay = 2 }
+                # kind 30385
+                { tag = "30385:rank",                 relay = 2 }
+                { tag = "30385:comment_cnt",          relay = 2 }
+                { tag = "30385:reaction_cnt",         relay = 2 }
+                # Tapestry Trusted Lists delegate bare: no metric, one entry per kind.
+                { tag = "30392",                      relay = 2 }
+                { tag = "30393",                      relay = 2 }
+                { tag = "30394",                      relay = 2 }
+                { tag = "30395",                      relay = 2 }
             ]
             filter = { "kinds": [10040] }
         }
@@ -292,8 +354,16 @@ streams {
         # would-delete lines for a few days before flipping this.
         deleteMissing = true
         # The provider's relay is the source of truth for its OWN scores, and
-        # for nothing else here.
-        ownedKinds = [30382]
+        # for nothing else here. All eight declaration kinds, not 30382 alone:
+        # a service that computes them publishes them side by side, and a
+        # kind left out here is one this stream mirrors without ever
+        # reconciling — the exact shape `deleteMissing` exists to close.
+        # It also WIDENS what a bad reconcile can remove, which is why the
+        # dryRun advice above is worth taking on the way in.
+        ownedKinds = [
+            30382, 30383, 30384, 30385,   # NIP-85 assertions: user, event, address, external id
+            30392, 30393, 30394, 30395,   # Tapestry Trusted Lists, same four subjects
+        ]
         # Only what this relay actually serves, and nothing else — which here
         # means ownedKinds and the filter say the same thing. NIP-85 says a
         # provider should also serve its service key's kind 0 and 10002;
@@ -305,8 +375,13 @@ streams {
         #
         # A band is keyed by the whole filter, so editing this line starts
         # every (relay, provider) walk over once — the intended way to force a
-        # re-walk, and one pass.
-        filter = { "kinds": [30382] }
+        # re-walk, and one pass. Widening it from 30382 to the eight is exactly
+        # that edit: expect one full re-walk per (relay, provider) after the
+        # first deploy that carries this.
+        filter = { "kinds": [
+            30382, 30383, 30384, 30385,
+            30392, 30393, 30394, 30395,
+        ] }
         refreshSeconds = 21600
         # Still a scanned source, and still author-bound: a provider stream's
         # whole meaning is "THIS service's records from THIS relay", which is
@@ -314,9 +389,58 @@ streams {
         # bound author, so each (relay, service) band stays valid forever.
         relaySource = [
             {
+                # The same 38 delegation tags the monitor's 10040 source
+                # names, and named here for a sharper reason: this select
+                # BINDS `authors` off element 1. A tagless version would read
+                # an `["e", <id>, <relay>]` relay hint as a delegation and bind
+                # an EVENT ID as the author to ask for — a band per bogus
+                # (relay, author) pair that can never return an event and never
+                # stops being re-walked. The tag name is what says element 1 is
+                # a provider.
                 select = [
-                    { tag = "30382:rank",      relay = 2, authors = 1 }
-                    { tag = "30382:followers", relay = 2, authors = 1 }
+                    # kind 30382
+                    { tag = "30382:rank",                 relay = 2, authors = 1 }
+                    { tag = "30382:followers",            relay = 2, authors = 1 }
+                    { tag = "30382:active_hours_end",     relay = 2, authors = 1 }
+                    { tag = "30382:active_hours_start",   relay = 2, authors = 1 }
+                    { tag = "30382:first_created_at",     relay = 2, authors = 1 }
+                    { tag = "30382:post_cnt",             relay = 2, authors = 1 }
+                    { tag = "30382:reactions_cnt",        relay = 2, authors = 1 }
+                    { tag = "30382:reply_cnt",            relay = 2, authors = 1 }
+                    { tag = "30382:reports_cnt_recd",     relay = 2, authors = 1 }
+                    { tag = "30382:reports_cnt_sent",     relay = 2, authors = 1 }
+                    { tag = "30382:t",                    relay = 2, authors = 1 }
+                    { tag = "30382:zap_amt_recd",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_amt_sent",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_avg_amt_day_recd", relay = 2, authors = 1 }
+                    { tag = "30382:zap_avg_amt_day_sent", relay = 2, authors = 1 }
+                    { tag = "30382:zap_cnt_recd",         relay = 2, authors = 1 }
+                    { tag = "30382:zap_cnt_sent",         relay = 2, authors = 1 }
+                    # kind 30383
+                    { tag = "30383:rank",                 relay = 2, authors = 1 }
+                    { tag = "30383:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30383:quote_cnt",            relay = 2, authors = 1 }
+                    { tag = "30383:reaction_cnt",         relay = 2, authors = 1 }
+                    { tag = "30383:repost_cnt",           relay = 2, authors = 1 }
+                    { tag = "30383:zap_amount",           relay = 2, authors = 1 }
+                    { tag = "30383:zap_cnt",              relay = 2, authors = 1 }
+                    # kind 30384
+                    { tag = "30384:rank",                 relay = 2, authors = 1 }
+                    { tag = "30384:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30384:quote_cnt",            relay = 2, authors = 1 }
+                    { tag = "30384:reaction_cnt",         relay = 2, authors = 1 }
+                    { tag = "30384:repost_cnt",           relay = 2, authors = 1 }
+                    { tag = "30384:zap_amount",           relay = 2, authors = 1 }
+                    { tag = "30384:zap_cnt",              relay = 2, authors = 1 }
+                    # kind 30385
+                    { tag = "30385:rank",                 relay = 2, authors = 1 }
+                    { tag = "30385:comment_cnt",          relay = 2, authors = 1 }
+                    { tag = "30385:reaction_cnt",         relay = 2, authors = 1 }
+                    # Tapestry Trusted Lists delegate bare: no metric, one entry per kind.
+                    { tag = "30392",                      relay = 2, authors = 1 }
+                    { tag = "30393",                      relay = 2, authors = 1 }
+                    { tag = "30394",                      relay = 2, authors = 1 }
+                    { tag = "30395",                      relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
             }
@@ -364,9 +488,24 @@ streams {
     # at insert, and the stored tombstone is what keeps later downloads from
     # resurrecting a deleted note. 10009 rides along both as the group picker's
     # source and as the monitor's group-host source.
+    #
+    # NIP-34's git statuses travel as a set: 1630 opens, and 1631 (applied),
+    # 1632 (closed) and 1633 (draft) are how that state ever changes. Mirroring
+    # the open one alone — as this file did — leaves every patch and issue
+    # showing open forever, and the store INDEXES all four, so the three that
+    # were missing were searchable kinds no stream ever fetched.
+    #
+    # The trusted families (1985, 30382-30385, 30392-30395) are here because a
+    # search EXPANDS them: a hit on one is answered with the records it points
+    # at, and a pointer resolves against what this store holds. Mirroring the
+    # 30382s alone — as this file did before — left the other seven pointing
+    # into an empty store, so the whole Trusted List half expanded to nothing
+    # and looked to a reader exactly like a relay with no lists on it. The
+    # `assertions` stream below is the narrow, reconciled version of the same
+    # ask, bound to a provider's own relay; this is the wide one.
     contentViaOutbox {
         # The widest stream here, and the one whose audits cost the most: a
-        # negentropy pass over ~130 kinds of covered history builds and
+        # negentropy pass over ~140 kinds of covered history builds and
         # compares id sets per window, so it is capped well under its dial
         # width. `deferred` on the status page says when a cap is turning work
         # away rather than merely bounding it.
@@ -379,13 +518,15 @@ streams {
         filter = { "kinds": [
             0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063,
             1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617,
-            1618, 1621, 1622, 1630, 1808, 1985, 2003, 2004, 2473, 3302, 5050,
+            1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004,
+            2473, 3302, 5050,
             5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734,
             9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154,
             11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005,
             30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030,
             30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297,
-            30298, 30311, 30312, 30313, 30315, 30382, 30402, 30617, 30620,
+            30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385,
+            30392, 30393, 30394, 30395, 30402, 30617, 30620,
             30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923,
             31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236,
             34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089,
