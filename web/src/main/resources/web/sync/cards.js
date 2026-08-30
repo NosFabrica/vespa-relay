@@ -494,6 +494,13 @@ function poolBlock(group) {
  */
 function poolTable(group) {
   const cursors = group.rows.some((r) => r.pagingUntil != null);
+  // ONE CLOCK FOR THE TABLE, read once. It was read per row, which is a
+  // `Date.now()` per held relay on a list that is three hundred rows on this
+  // deployment — and, more to the point, let two rows in one table be measured
+  // against two different instants. It only decides a LABEL's precision, so the
+  // cost of that was never a wrong date; it was a table that could draw the
+  // same cursor two ways.
+  const nowSec = Date.now() / 1000;
   const columns = [["relay", null, false]];
   if (group.streams) columns.push(["stream", null, false]);
   // Only where the group's own rows disagree — otherwise the word is in the
@@ -522,7 +529,7 @@ function poolTable(group) {
     if (cursors) {
       // The reader's own clock, and it only decides the LABEL's precision — a
       // skewed one draws a coarser or finer cursor, never a wrong one.
-      const at = el("td", "sy-at", r.pagingUntil != null ? cursorOf(r.pagingUntil, Date.now() / 1000) : "—");
+      const at = el("td", "sy-at", r.pagingUntil != null ? cursorOf(r.pagingUntil, nowSec) : "—");
       tr.appendChild(at);
     }
     tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));

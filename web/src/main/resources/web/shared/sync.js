@@ -330,6 +330,14 @@ export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
 export const ROTATING = "rotating";
 
 /**
+ * …and the page's own word for a configured stream the router has published no
+ * phase for. Not one of `StreamPhases.Phase`'s: it is what this page says when
+ * the document says nothing, which is why the glossary has no entry for it and
+ * the mark it draws carries no tooltip.
+ */
+export const STARTING = "starting";
+
+/**
  * WHAT A ROTATING STREAM IS ACTUALLY RIDING, which its row could not say.
  *
  * A stream's engine is the pool and its phase lasts the life of the process, so
@@ -1021,7 +1029,13 @@ export function streamSections(progress, held = heldRows(progress)) {
     const groups = groupByPool(mine(held.rows, name), name);
     out.push({
       stream: name,
-      phase: s?.phase || null,
+      // A CONFIGURED STREAM ALWAYS HAS A PHASE MARK, even before the router
+      // has published one: `starting` is the page's word for a stream that is
+      // in the config and has not said anything yet, and it is the state a
+      // section exists to show. Defaulted here rather than at the mark, so the
+      // one section that must NOT get it — the unattributed rows below, which
+      // are not a stream and are not starting — is the one that carries null.
+      phase: s?.phase || STARTING,
       phaseForSec: num(s?.phaseForSec),
       // The one reading here that is a judgement rather than a number: a
       // rotating stream with an empty roster is waiting on the fitness pass,

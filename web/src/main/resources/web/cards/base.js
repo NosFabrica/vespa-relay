@@ -139,8 +139,21 @@ export const eventHref = (id, hints = {}) => {
  */
 export const selfHref = (ev) => {
   if (ev && ev.kind === 0 && HEX64.test(ev.pubkey || "")) return keyHref(ev.pubkey);
+  // ADDRESSABLE IS NOT THE SAME AS ENCODABLE, and returning `addrHref`'s answer
+  // straight through conflated them. [addrHref] is null wherever [naddr] cannot
+  // encode the coordinate — a `d` over 255 UTF-8 bytes has no legal TLV, which
+  // is the spec's limit and fires on a WELL-FORMED tag — and the card then had
+  // no link at all: not its date, not its body, and `openPicked` silently did
+  // nothing for it. The event id was sitting right there the whole time.
+  //
+  // So the addressable branch is a PREFERENCE, not a commitment: take the
+  // stable address when there is one, and fall through to the note when the
+  // address will not encode. Null still means what it always meant — no usable
+  // identifier of either kind — and a card with nowhere to go must not become
+  // one that navigates to "/".
   const addr = addrOf(ev);
-  if (addr) return addrHref(addr);
+  const byAddr = addr ? addrHref(addr) : null;
+  if (byAddr) return byAddr;
   return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
 };
 

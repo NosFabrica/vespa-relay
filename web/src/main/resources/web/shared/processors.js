@@ -401,7 +401,15 @@ function processorFact(p) {
     // since boot — so that is what the row keeps. `roster` is still the key
     // that identifies the row, because it is the member no other processor
     // publishes.
-    if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
+    //
+    // UNCONDITIONAL, and it is the only one here that is. Every counter under
+    // it is drawn on being non-zero, which is right for each of them and wrong
+    // for all of them at once: a pool that has just booted has zero of
+    // everything, and a cell guarded all the way down renders EMPTY beside a
+    // row that is plainly working. `0 visit(s) run` is a reading — the pool is
+    // up and has not finished one yet — where a blank cell is a rendering
+    // fault, and this is the row's headline in any case.
+    add(`${fmt(p.visitsRun || 0)} visit(s) run`, "visitsRun");
     if (p.negentropyRunning) add(`${fmt(p.negentropyRunning)} negentropy sync(s) now`, "negentropyRunning");
     if (p.negentropyRuns) add(`${fmt(p.negentropyRuns)} negentropy sync(s) of the past`, "negentropyRuns");
     // Not a fault, and not nothing: those relays are re-checked by paging or

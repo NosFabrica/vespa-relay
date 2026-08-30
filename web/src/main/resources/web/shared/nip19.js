@@ -109,16 +109,6 @@ export const tinyNpub = (hex) => npub(hex).slice(0, 12) + "…";
 export const shortNote = (hex) => shortB32(noteId(hex));
 
 /**
- * `kind:pubkey:d` — an `a` tag as written — to an naddr, or null when the tag
- * is malformed. Null rather than a best effort on purpose: a card that cannot
- * form a valid address renders the entry as plain text, which is honest,
- * whereas a corrupted naddr is a link to a page that will never resolve.
- *
- * The TLV length prefix is ONE byte, so a `d` over 255 UTF-8 bytes has no
- * legal encoding at all — that is the spec's limit, not ours, and it is the
- * one case here that fails on a well-formed tag.
- */
-/**
  * The `kind:pubkey:d` coordinate of a PARAMETERIZED REPLACEABLE event, or null
  * — the address [naddr] encodes, taken off the event itself.
  *
@@ -140,6 +130,16 @@ export function addrOf(ev) {
   return `${ev.kind}:${ev.pubkey}:${d}`;
 }
 
+/**
+ * `kind:pubkey:d` — an `a` tag as written — to an naddr, or null when the tag
+ * is malformed. Null rather than a best effort on purpose: a card that cannot
+ * form a valid address renders the entry as plain text, which is honest,
+ * whereas a corrupted naddr is a link to a page that will never resolve.
+ *
+ * The TLV length prefix is ONE byte, so a `d` over 255 UTF-8 bytes has no
+ * legal encoding at all — that is the spec's limit, not ours, and it is the
+ * one case here that fails on a well-formed tag.
+ */
 export function naddr(a) {
   const m = /^(\d+):([0-9a-f]{64}):([\s\S]*)$/.exec(String(a || ""));
   if (!m) return null;

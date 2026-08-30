@@ -15,7 +15,7 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf, streamSections,
+  STARTING, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf, streamSections,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1001,6 +1001,14 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(cut[1].rotation, null, "…and one that is not rotating has no roster to be a share of");
   assert.equal(cut[1].totals.relays, null, "which is said as absent, never as zero");
 
+  // A CONFIGURED STREAM ALWAYS CARRIES A PHASE WORD. The card draws its mark
+  // only where there is one, so a stream the router has published no phase for
+  // would otherwise render its name and NOTHING — which is the state a section
+  // exists to show. The page's own word fills it.
+  const [silent] = streamSections({ streams: [{ name: "content" }] });
+  assert.equal(silent.phase, STARTING);
+  assert.equal(silent.phaseForSec, null, "…and no clock is invented to go with it");
+
   // A ROW NO CONFIGURED STREAM CLAIMS gets a section of its own rather than
   // being dropped — a tail naming a stream that has left the config is exactly
   // the row worth seeing, and this cut promises every held row a home.
@@ -1009,6 +1017,9 @@ const leg = (n, quiet, over = {}) => ({
     live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "retired" })], omitted: 0 },
   });
   assert.deepEqual(orphan.map((c) => c.stream), ["content", null]);
+  // …and it is the ONE section that carries no phase. It is not a stream and
+  // it is not starting, so the default above must not reach it.
+  assert.equal(orphan[1].phase, null, "the unattributed rows are not a stream and get no phase word");
   assert.deepEqual(orphan[1].groups.find((g) => g.key === POOL_LIVE).rows.map((r) => r.relay), ["wss://f.example/"]);
   assert.equal(orphan[1].groups.find((g) => g.key === POOL_LIVE).streams, true,
     "and it keeps its stream column: the heading says only that nothing claimed it");

@@ -894,6 +894,23 @@ assert.strictEqual(hrefAttr(card(ev(30392, [["title", "Untitled"], ["p", pk]])))
 // has no `d` to be addressed by.
 assert.strictEqual(hrefAttr(card(ev(10040, [["30382:rank", pk, "wss://x"]]))),
   `/${noteId(eid)}`, "a non-addressable replaceable kind still opens by id");
+// ADDRESSABLE IS NOT THE SAME AS ENCODABLE, and the address is a PREFERENCE
+// rather than a commitment. `naddr`'s TLV length prefix is one byte, so a `d`
+// over 255 UTF-8 bytes has no legal encoding — the spec's limit, on a
+// perfectly well-formed tag — and the addressable branch used to return that
+// null straight through. The card then had no link AT ALL: not its date, not
+// its body, and `openPicked` silently did nothing for it, with the event id
+// sitting right there unused.
+assert.strictEqual(
+  hrefAttr(card(ev(30023, [["d", "d".repeat(256)], ["title", "Long d"]], "words"))),
+  `/${noteId(eid)}`,
+  "an address that cannot be encoded falls through to the note — a card with an id is never unclickable",
+);
+// …and the fall-through is the ENCODING's, not a relaxation of the rule: an
+// address that encodes is still what the card opens.
+assert.strictEqual(hrefAttr(card(ev(30023, [["d", "d".repeat(255)], ["title", "Long d"]], "words"))),
+  `/${naddr(`30023:${pk}:${"d".repeat(255)}`)}`, "…and one that fits its byte is still addressed");
+
 // An event with no usable id has nowhere to go, and must not offer "/".
 assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [], content: "x" })), null,
   "no id, no click target — navigating to the home page is not the same as opening the note");
