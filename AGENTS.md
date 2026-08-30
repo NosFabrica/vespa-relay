@@ -214,8 +214,9 @@ git checkout <the pinned commit>          # test what the relay actually resolve
 TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
 ```
 
-Eight ITs, ~9 min total, each standing up a real Vespa (six until the
-near-column work added NearMergeSizingTest and ObserverGateIT). Fetching that repo works
+Ten suites / 11 tests, ~11 min total, each standing up a real Vespa (six before
+the near-column work added NearMergeSizingTest and ObserverGateIT; measured at
+store 130c2efa56 — 0 skipped, 0 failures, 10m44s). Fetching that repo works
 here; pushing to it does not (the git proxy only holds a credential for repos in
 the session's sources).
 
@@ -232,6 +233,26 @@ reach for it before inventing a fixture, because the things a fixture gets
 wrong (how big a lens is, what a real 10040 names, what a full corpus card
 looks like) are exactly what it can hand you.
 
+- **what it holds, counted 2026-08-26**: kind 0 **54.9M**, kind 1 **149.5M**,
+  NIP-32 labels (1985) **1.34M**, NIP-85 contact cards (30382) **32.6M**,
+  provider lists (10040) **337**, and on the Trusted List kinds **30392: 9,
+  30393: 1, 30394: 44, 30395: 0**. Count off **`/stats.json`**, whose `kinds`
+  section groups over the whole store — a per-kind COUNT is fine too but a
+  corpus this live drifts between asks, and an earlier read of these numbers
+  reported the 30392-30395 range as empty when it was not.
+  **NONE of those 54 are Tapestry lists**: those kind numbers are squatted by
+  an omikuji fortune generator on 30394, WireGuard room records and
+  `trusted-attestor:` entries on 30392, an Alexandria manifest on 30393 — and
+  nos.lol, relay.damus.io, relay.primal.net, nostr.wine and purplepag.es hold
+  the same sort of thing. **The real family is on
+  `wss://tapestry.brainstorm.world/relay`** (below), so anything testing it
+  needs that relay and anything READING these kinds will meet squatters first.
+  The 337 provider lists are the only honest sample of which NIP-85 DIMENSIONS
+  are used in the wild — `30382:rank` (328) but also `followers`, `hops`,
+  `personalizedGrapeRank_influence`, `personalizedPageRank`, which is why
+  anything reading a 10040 for enrolment must take every dimension rather than
+  filtering to `rank` the way TrustNotice does for its own narrower question.
+
 - **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
   42, 45, 50, 62, 77, 86; `auth_required` is false, and still false now that
   reads DECLARE A LENS (`LensRequiredPolicy`): both ways past that gate are
@@ -243,6 +264,33 @@ looks like) are exactly what it can hand you.
   the shape that gets it. (Staging runs deployed code, so check what it
   actually does before concluding a local change is wrong: `auth-required`
   means the gate has shipped there, an answer means it has not yet.)
+- **`wss://tapestry.brainstorm.world/relay` — where the Trusted Lists actually
+  are.** 500+ titled kinds 30392/30393 and a couple of 30394, every one of them
+  carrying `title`, `metric`, `observer`, `min-rank` and `cutoff` exactly as
+  quartz models the family, plus 14 kind-10040s. All 500 are signed by ONE
+  publisher, `919ba08af7786892…`. Two things about it cost real time:
+  it **answers a filter carrying `search` with silence** rather than a refusal
+  — NIP-50 says ignore an unsupported extension, and ignoring the TOKEN is not
+  the same as ignoring the FIELD — so a corpus fetched with the search relay's
+  mandatory `include:spam` on every filter comes back complete-looking and
+  without a single list in it. `fetch-corpus.mjs` therefore asks each relay
+  once, with a lensless probe, which kind of reader it wants.
+  **The bare-kind delegation is now live on staging.** Observer
+  `f8ff11c7a7d3…` publishes a 10040 (2026-08-28) reading `["30382:rank", …],
+  ["30382:followers", …], ["30392", "8e901369d450…", …]` — the ADR's generic
+  entry, and the ONLY thing naming that publisher. Its 11 titled lists carry
+  `title`, `metric`, `observer`, `source-tag`, `cutoff`, `min-rank`, `rigor`
+  and `p` members. `ObserverTrustListIT` walks exactly this chain; probed by
+  deleting the bare-kind read, the reader's list comes back with all 88 member
+  profiles missing and nothing anywhere throwing.
+
+  And **kind 10040 is REPLACEABLE**: merging two relays hands you several
+  versions of one author's provider list, only the newest of which the store
+  keeps. Exactly one 10040 version anywhere names the Tapestry publisher as a
+  service, and its author replaced it in August with one naming somebody else —
+  so as of now those lists expand for NOBODY, and a "real trust chain" built out
+  of the superseded version is a test that asserts the relay is broken. Group by
+  author and take the newest, the way the store does.
 - **the diagnostics `:relay` serves** — `/stats.json`, `/stats.html`,
   `/observer_stats.html`, `/pressure`, `/` (NIP-11 with
   `Accept: application/nostr+json`). These are the same pages this repo builds,
@@ -447,6 +495,24 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         because scores here are public. `REQUIRE_READ_LENS=false`
                         is the older relay, for a deployment with no trust data
                         to gate on
+    (the search expansion)  THE SUBJECT TRAVELS WITH THE POINTER — a REQ that
+                        actually SEARCHES answers with the record each Trusted
+                        List / NIP-85 assertion / NIP-32 label hit points at,
+                        spliced in behind it. It LIVED HERE, as an IEventStore
+                        decorator, until store `68f07ce958`; it is now
+                        `store/search/` in vespa-eventstore. Two things could
+                        not be fixed from this side and are why it moved: the
+                        reader's enrolment needed a TTL because a relay cannot
+                        see the sync process feeding 10040s into the same index
+                        from another JVM, and placing a subject by the
+                        confidence its pointer expressed needs the pointer's
+                        RELEVANCE, which `IEventStore` does not expose. What
+                        stays here is the budget — `SEARCH_EXPAND_*`, handed to
+                        `VespaEventStore.open()` — because a deployment's caps
+                        are the operator's call and applying them is the store's.
+                        The relay's own part is now not asking: a plain NIP-01
+                        recall carries no terms and expands nothing, which is
+                        every read the router makes.
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
                         OptionalAuthPolicy binds exactly one url. It also

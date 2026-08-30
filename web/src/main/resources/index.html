@@ -360,6 +360,8 @@
 <link rel="modulepreload" href="./web/cards/people.js" />
 <link rel="modulepreload" href="./web/cards/profile.js" />
 <link rel="modulepreload" href="./web/cards/relays.js" />
+<link rel="modulepreload" href="./web/cards/trust.js" />
+<link rel="modulepreload" href="./web/provenance.js" />
 <link rel="modulepreload" href="./web/cards/social.js" />
 <link rel="modulepreload" href="./web/entity.js" />
 <link rel="modulepreload" href="./web/feed.js" />
@@ -1423,6 +1425,42 @@
   /* Where a hint-fetched event came from, and this relay's verdict on it —
      or, in .warn, that the reader chose to step outside their lens. */
   .prov { margin: 0 2px 10px; font-size: 12.5px; color: var(--muted); }
+  /* WHY AN EVENT IS IN THIS PAGE, as pills. No standing label in front of them
+     — the pills are the whole row. See web/provenance.js for the rules and for
+     the three ways the row is deliberately partial. */
+  .prov.pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .prov-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; line-height: 1.5; padding: .16em .6em;
+    border-radius: 999px; border: 1px solid transparent;
+    background: var(--surface-2); color: var(--muted);
+    text-decoration: none; max-width: 24ch;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .prov-pill:hover { border-color: var(--border-strong); color: var(--fg); }
+  /* DELEGATED: the reader's own provider list named this signer for this kind,
+     which is what the relay's gate checked before splicing it. --accent-soft is
+     the tone this page already spends on "yours" (.grouppill, .group-mine). */
+  .prov-pill.vouched { background: var(--accent-soft); color: var(--accent); }
+  .prov-pill.vouched:hover { border-color: var(--accent); }
+  /* OPEN: a NIP-32 label, which anyone may publish about anything. Never the
+     delegated tone — a card must not imply the reader's web of trust endorsed
+     something it never gated. */
+  .prov-pill.open { background: transparent; border-color: var(--border); }
+  .prov-pill .n { font-variant-numeric: tabular-nums; font-size: 10.5px; opacity: .7; font-weight: 600; }
+  /* The attribution face rides at the pill's own scale rather than av-xs's
+     20px, and drops the score chip: a second round trip for a number nobody
+     asked for, on a face that is 15px wide. */
+  .prov-pill .av-wrap { --av: 15px; }
+  .prov-pill .score-chip { display: none; }
+  .prov-pile { display: inline-flex; align-items: center; }
+  .prov-pile .av-wrap + .av-wrap { margin-left: -6px; }
+  .prov-pile .avatar { box-shadow: 0 0 0 1.5px var(--surface); }
+  .prov-more {
+    font-size: 11.5px; color: var(--faint); background: none; border: 0;
+    cursor: pointer; padding: .16em .3em; font-family: inherit;
+  }
+  .prov-more:hover { color: var(--accent); text-decoration: underline; }
   .prov .mono { font-family: var(--mono); font-size: 11.5px; }
   .prov.warn { color: var(--warn); }
   /* The entity page narrates its wait; the pulse says "working", the text

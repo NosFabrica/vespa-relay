@@ -41,6 +41,11 @@ const KIND_LABELS = {
   30166: "relay", 30267: "app set", 30311: "live", 30312: "room",
   30313: "conference", 30315: "status", 30382: "score", 30383: "event score",
   30384: "entry score", 30402: "listing", 30403: "draft listing",
+  // The Tapestry Trusted Lists. Named by WHAT THEY HOLD rather than all four
+  // reading "trusted list": the four kinds differ only in their member type,
+  // and that difference is the entire reason there are four of them.
+  30392: "trusted people", 30393: "trusted events", 30394: "trusted articles",
+  30395: "trusted identifiers",
   30617: "repository", 30618: "repo state", 30818: "wiki", 31890: "feed",
   // The NIP-29 group itself, signed by its HOST RELAY's key — the record the
   // `group:` search token resolves a name against. Its siblings (39001-39005:
@@ -72,7 +77,7 @@ export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a
 // under another name and tints like one, and the NIP-51 lists tint by what
 // they hold rather than all going grey as "some list".
 const KIND_TONES = {
-  people: [0, 3, 10002, 10040, 10166, 30000, 30002, 30166, 30382, 30383, 30384, 39089, 39092],
+  people: [0, 3, 10002, 10040, 10166, 30000, 30002, 30166, 30382, 30383, 30384, 30392, 30393, 30394, 30395, 39089, 39092],
   note: [1, 9, 11, 40, 41, 42, 1111, 1311, 9802, 34550, 39000],
   social: [5, 6, 7, 8, 16, 17, 1018, 1068, 1984, 1985, 4550, 9734, 9735, 30315],
   article: [30004, 30023, 30024, 30040, 30041, 30818],

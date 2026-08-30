@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.utils.Hex
@@ -57,6 +58,37 @@ class RelayConfigTest {
         assertEquals(999, limits.maxLimit)
         assertEquals(50, limits.maxSubscriptions) // default kept
         assertEquals(1_900_000_000L, limits.createdAtUpperLimit)
+    }
+
+    @Test
+    fun `an unreadable expansion cap keeps the default rather than disabling the splice`() {
+        val d = SearchExpansionLimits.Default
+        // A NEGATIVE used to be coerced to zero — the feature on and adding
+        // nothing, which reads from the outside exactly like a corpus with no
+        // trust records in it. Unparseable in spirit, so it keeps the default
+        // like every other limit here.
+        for (bad in listOf("-1", "-1000", "many", "", "  ")) {
+            val got = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to bad, "SEARCH_EXPAND_MAX_TOTAL" to bad))
+            assertEquals(d.maxPerEvent, got.maxPerEvent, "SEARCH_EXPAND_MAX_PER_EVENT=$bad")
+            assertEquals(d.maxPerRequest, got.maxPerRequest, "SEARCH_EXPAND_MAX_TOTAL=$bad")
+            assertTrue(got.enabled, "a bad cap is not a way to turn the feature off")
+        }
+    }
+
+    @Test
+    fun `zero is honoured as zero, and off is its own switch`() {
+        // 0 means "add nothing" and is a real answer — the boot log says so.
+        // Turning the feature OFF is `SEARCH_EXPAND_REFERENCES`, and the two
+        // must not be spelled the same way.
+        val zero = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to "0"))
+        assertEquals(0, zero.maxPerEvent)
+        assertTrue(zero.enabled)
+
+        for (off in listOf("false", "0", "no", "off", "OFF")) {
+            assertFalse(searchExpansionFromEnv(mapOf("SEARCH_EXPAND_REFERENCES" to off)).enabled, off)
+        }
+        assertTrue(searchExpansionFromEnv(mapOf("SEARCH_EXPAND_REFERENCES" to "flase")).enabled, "a typo leaves it ON")
+        assertEquals(SearchExpansionLimits.Default, searchExpansionFromEnv(emptyMap()))
     }
 
     @Test

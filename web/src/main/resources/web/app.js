@@ -16,6 +16,7 @@ import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNa
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
+import { seedProvenance } from "./provenance.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
@@ -436,13 +437,16 @@ function buildFilters(text, limit) {
 /**
  * The feed's ask: the SAME builder with nothing to say but its kinds.
  *
- * No words, and — pointedly — no `searchString`, so the sort menu, the spam
- * toggle and the "ranking as" lens do not ride along. What is left is
- * `{ kinds, limit }`: a plain NIP-01 read, which is what the store answers
- * newest-first. Any of those three would make it a NIP-50 query for an ORDER
- * instead, and the page would be saying "latest" over a ranked list. That is
- * why the feed view hides the Filters disclosure rather than leaving three
- * controls on screen that this ask cannot carry.
+ * No words, and none of the SEARCH string the search view sends: the sort menu
+ * and the spam toggle do not ride along, because either would make this a
+ * NIP-50 query for an ORDER and the page would be saying "latest" over a
+ * ranked list. That is why the feed view hides the Filters disclosure rather
+ * than leaving controls on screen that this ask cannot carry.
+ *
+ * What it DOES send is `feedSearchString` — the lens declaration and nothing
+ * else, which the relay now requires of any read and which carries neither an
+ * order nor a floor on a termless filter. See its own doc below: the shape is
+ * still `{ kinds, limit }` plus the one token that makes it answerable.
  *
  * `kinds` is the exception, and the reason the chip row stays: it is a field
  * of this filter, not an extension on a search string, so the tab narrows the
@@ -532,6 +536,14 @@ async function fetchFeed(want) {
  */
 function hydrate(events, deep) {
   seedProfiles(events);
+  // WHY each of these is here, computed from the page itself — the relay sends
+  // a pointer and everything it names on one subscription, so the answer is
+  // already in this array and costs no round trip. NOT by position: a spliced
+  // member is placed by the confidence its list expressed about it and can sit
+  // far from the pointer that named it, so provenance.js indexes the page
+  // rather than reading neighbours. Before the render, because the row is part
+  // of the card rather than something painted onto it after.
+  seedProvenance(events);
   // The same for the search box's `group:` pill, and it is nearly free: a
   // `group:` query already asks for the group's own kind 39000 beside its
   // posts (query.js's buildFilters sends the `#d` with the `#h`), so the name
@@ -2177,6 +2189,17 @@ const cardClicks = (hitsOf) => (e) => {
     a.download = `sot-${slug}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.txt`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    return;
+  }
+  // The provenance row's overflow. The pills are already in the DOM behind
+  // `hidden`, so this reveals rather than re-renders — no second pass over the
+  // page's pointers, and the card keeps its height until asked.
+  const more = e.target.closest(".prov-more");
+  if (more) {
+    const open = more.getAttribute("aria-expanded") === "true";
+    for (const pill of more.parentElement.querySelectorAll(".prov-pill.extra")) pill.hidden = open;
+    more.setAttribute("aria-expanded", String(!open));
+    more.textContent = open ? more.dataset.label : "show fewer";
     return;
   }
   const btn = e.target.closest(".raw-toggle");

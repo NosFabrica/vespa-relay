@@ -29,6 +29,7 @@ import "./cards/live.js";
 import "./cards/market.js";
 import "./cards/apps.js";
 import "./cards/relays.js";
+import "./cards/trust.js";
 
 /**
  * One event to one card. `opts.full` is the permalink depth — nothing

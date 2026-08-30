@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.config.requireReadLensFromEnv
+import com.nosfabrica.vespa.relay.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
@@ -161,6 +162,18 @@ fun main() {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
     }
 
+    // Whether a search also answers with the records its hits point at. On by
+    // default, and announced only when it is OFF or capped at nothing, for the
+    // same reason as the line above: a client getting FEWER events than the
+    // feature promises has no way to tell that from a corpus that holds none
+    // of them, and this is the line that says which it was.
+    val searchExpansion = searchExpansionFromEnv(env)
+    if (!searchExpansion.enabled) {
+        System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
+    } else if (searchExpansion.maxPerEvent == 0 || searchExpansion.maxPerRequest == 0) {
+        System.err.println("relay: search reference expansion is on but capped at 0 — it will add nothing")
+    }
+
     // The icon this relay serves on its own tab, as an absolute url a stranger
     // can fetch — the value `RELAY_ICON` defaults to, and the one the server
     // compares against to tell "no override" from an operator's own icon.
@@ -225,7 +238,15 @@ fun main() {
     // of this deployment and not of the library: the sync process writes the
     // same index, and the deletions this relay must honour are largely ones it
     // mirrored.
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
+    val store =
+        VespaEventStore.open(
+            vespaUrl,
+            relay = relayUrl,
+            autoDeploy = false,
+            configUrl = configUrl,
+            writers = STORE_WRITERS,
+            searchExpansion = searchExpansion,
+        )
 
     // Background maintenance. Everything here runs BEHIND the server and is
     // awaited nowhere: blocking the port on any of it turns every restart

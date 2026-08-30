@@ -137,6 +137,20 @@ class NostrRelayServer(
         listener = listener,
         limits = limits,
     ) {
+    /**
+     * SPLICING A LABEL'S SUBJECT IN BEHIND IT IS THE STORE'S JOB NOW, and this
+     * relay's only remaining part in it is not asking for it: a plain NIP-01
+     * recall carries no terms and expands nothing, which is every read the
+     * router makes.
+     *
+     * It lived here as an `IEventStore` decorator until store `a9ce0d254c`. The
+     * two things that could not be fixed from this side are why it moved: the
+     * reader's enrolment had to be cached with a TTL, because a relay cannot see
+     * the sync process feeding 10040s into the same index from another JVM; and
+     * placing a subject by the confidence its pointer expressed needs the
+     * pointer's relevance, which `IEventStore` does not expose and a decorator
+     * above it therefore cannot reach.
+     */
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
@@ -173,6 +187,14 @@ class NostrRelayServer(
  * policy decides what is ANSWERED, this decides what a read is answered
  * THROUGH, and an operator who turns the policy off still gets exactly the
  * behaviour documented above.
+ *
+ * The reference expansion is NOT here. A search that answers with the records
+ * its Trusted Lists, Assertions and NIP-32 labels point at needs a store lookup
+ * in the middle of a page, and no callback on this interface can suspend — so
+ * it lives in the store, where the same two calls are ordinary suspend
+ * functions that return. What this class contributes to it is the
+ * [StoreQueryContext] installed below, which is how the expansion learns whose
+ * enrolment gates it.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,

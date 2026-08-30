@@ -4,7 +4,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { card, rowOf, popupRow, namedPubkeys } = await import(new URL("../../main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam, nip19Parse, npub, noteId, shortNpub } = await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId, naddr, shortNpub } = await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../main/resources/web/shared/query.js", import.meta.url));
 const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../main/resources/web/cards/base.js", import.meta.url));
 const { parsePatch } = await import(new URL("../../main/resources/web/cards/code.js", import.meta.url));
@@ -154,6 +154,14 @@ const FIXTURES = [
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
+  // The Trusted Lists, one per member type — the `p`/`e`/`a`/`i` dispatch is
+  // the whole reason there are four kinds, so each fixture asserts the noun
+  // its own kind counts in rather than all four asserting "member".
+  [30392, ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["metric", "influence"],
+                     ["p", pk, "", "88"]]), "1 member"],
+  [30393, ev(30393, [["d", "tl-notes"], ["title", "Worth Reading"], ["e", eid]]), "1 event"],
+  [30394, ev(30394, [["d", "tl-articles"], ["title", "Long Reads"], ["a", `30023:${pk}:essay`]]), "1 article"],
+  [30395, ev(30395, [["d", "tl-ids"], ["title", "Known Books"], ["i", "isbn:9780316769488"]]), "1 identifier"],
 ];
 
 // THE COVERAGE CLAIM, enforced: every registered kind must have a fixture,
@@ -745,6 +753,94 @@ const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
 
+// ---- a Trusted List's members are people, deduped and hex-only ------------
+//
+// Two halves, both paid for elsewhere in this file's history. Lists in the
+// wild REPEAT entries — clients append without checking — and a raw `p` scan
+// counts a member twice and draws two faces for one person. And a value that
+// is not a key must never reach npub(), which would label somebody who does
+// not exist. `peopleOf` is the one answer, which is also what gridPeople
+// declares to the profile loader: the faces on the page and the profiles
+// fetched for them cannot be two different sets.
+{
+  const lister = "b".repeat(64);
+  const dup = ev(30392, [["d", "x"], ["title", "VH"], ["p", pk], ["p", pk], ["p", "not-a-key"]]);
+  const html = card({ ...dup, pubkey: lister }, { full: true });
+  assert(/>1 member</.test(html), `a repeated member is counted once: ${/result-body">([^<]*)</.exec(html)[1]}`);
+  // person-cell, not av-wrap: the byline draws a face of its own, and counting
+  // those together would pass whatever the grid did.
+  assert.strictEqual((html.match(/person-cell/g) || []).length, 1, "and drawn once");
+  assert.deepStrictEqual(namedPubkeys({ ...dup, pubkey: lister }, { full: true }), [pk],
+    "the profiles the page fetches are exactly the faces it draws");
+}
+
+// ---- the provenance row ---------------------------------------------------
+//
+// The pills are the whole row: no standing label, because a word repeated down
+// forty cards teaches the reader nothing after the first. Every card gets the
+// row from ONE seam (shell), so this is asserted through the renderer rather
+// than by calling provHtml directly.
+{
+  const { seedProvenance } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
+  const lister = "b".repeat(64), bot = "d".repeat(64);
+  const target = { id: eid, pubkey: pk, kind: 0, created_at: now, tags: [], content: "{}" };
+  const page = [
+    target,
+    { id: "2".repeat(64), pubkey: lister, kind: 30392, created_at: now, tags: [["d", "x"], ["title", "Verified Human"], ["p", pk]], content: "" },
+    { id: "3".repeat(64), pubkey: lister, kind: 30392, created_at: now, tags: [["d", "y"], ["title", "Verified Human"], ["p", pk]], content: "" },
+    { id: "4".repeat(64), pubkey: bot, kind: 1985, created_at: now, tags: [["L", "ugc"], ["l", "zapped", "ugc"], ["p", pk]], content: "" },
+  ];
+  seedProvenance(page);
+  const html = card(target);
+  assert(html.includes('class="prov pills"'), "a spliced card draws its provenance row");
+  assert(!/prov-why|>why</.test(html), "the row carries no standing label — the pills are the row");
+
+  // The three destinations, spelled by base.js and nowhere else.
+  assert(html.includes(`href="/${naddr(`30392:${lister}:x`)}"`),
+    "a list pill opens the list's own page — the same address its card opens");
+  assert(html.includes(`href="/?q=zapped"`), "a label pill runs a search for itself");
+
+  // Two tones, and the count that makes the duplicate honest.
+  assert(html.includes('class="prov-pill vouched"'), "a delegated source takes the yours tone");
+  assert(html.includes('class="prov-pill open"'), "an ungated label never takes it");
+  assert(/Verified Human <span class="n">2<\/span>/.test(html),
+    "two lists with one title are one pill and a count, not two identical chips");
+
+  // Attribution: one delegated publisher on this page, so a face on the gated
+  // pill would be the same face every time. The ungated one always carries it.
+  const gated = /<a class="prov-pill vouched"[^>]*>(.*?)<\/a>/.exec(html)[1];
+  const open = /<a class="prov-pill open"[^>]*>(.*?)<\/a>/.exec(html)[1];
+  assert(!gated.includes("av-wrap"), "one publisher: the tone already says it is yours");
+  assert(open.includes("av-wrap"), "nothing gated a label, so who said it is the whole question");
+
+  // EVERY RENDERER, not just the ones that go through shell(). The profile
+  // card is hand-rolled and was missing the row until this asserted it — which
+  // is the worst possible one to miss, since a profile is what a Trusted List
+  // of pubkeys and a contact card both splice. A family that rolls its own
+  // frame must not be able to drop the row silently.
+  for (const [kind, fixture] of FIXTURES) {
+    // ONE POINTER for every target shape: a NIP-32 label may name an event, a
+    // pubkey and an address at once, which is exactly the three ways a card
+    // can be the thing something points at.
+    seedProvenance([
+      fixture,
+      { id: "2".repeat(64), pubkey: bot, kind: 1985, created_at: now,
+        tags: [["L", "ugc"], ["l", "spliced", "ugc"], ["e", fixture.id], ["p", fixture.pubkey],
+               ["a", `${fixture.kind}:${fixture.pubkey}:${(fixture.tags.find((t) => t[0] === "d") || [])[1] || ""}`]],
+        content: "" },
+    ]);
+    assert(card(fixture).includes('class="prov pills"'),
+      `kind ${kind}: a spliced card draws no provenance row — a hand-rolled frame that forgot it`);
+  }
+
+  // A card nothing points at draws no row at all — its presence is the signal.
+  seedProvenance(page);
+  assert(!card({ id: "9".repeat(64), pubkey: pk, kind: 1, created_at: now, tags: [], content: "hi" }).includes("prov pills"),
+    "an ordinary hit gets no row");
+  seedProvenance([]);
+  assert(!card(target).includes("prov pills"), "and the row clears with the page");
+}
+
 // ---- every card is a link to its own page --------------------------------
 //
 // Two routes to one destination, and the pair is the point: `data-href` is
@@ -777,7 +873,27 @@ assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
 // A profile's page is the PERSON, not the kind 0's id — that id names one
 // revision of a bio and stops resolving the moment it is edited.
 assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
-assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "everything else opens the event");
+assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "a regular event opens the event");
+
+// A PARAMETERIZED REPLACEABLE event's page is its ADDRESS, for the same reason
+// a profile's is the person: an id names one revision. It bites hardest on the
+// Trusted Lists, whose entire purpose is to be recomputed and republished — a
+// note1… to one has a shelf life measured in hours. It is also what makes the
+// provenance pill on a spliced result and the list card it came from open the
+// same page; two links to one list that agree only sometimes is a bug the
+// spelling should not permit.
+assert.strictEqual(hrefAttr(card(ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["p", pk]]))),
+  `/${naddr(`30392:${pk}:tl-verified`)}`, "a Trusted List opens its address, not one revision of it");
+assert.strictEqual(hrefAttr(card(ev(30023, [["d", "essay"], ["title", "An Essay"]], "words"))),
+  `/${naddr(`30023:${pk}:essay`)}`, "every addressable kind takes the same rule, not just the new ones");
+// An absent `d` is a legal address (NIP-01 reads it as the empty string), so
+// the card still opens its coordinate rather than falling back to the id.
+assert.strictEqual(hrefAttr(card(ev(30392, [["title", "Untitled"], ["p", pk]]))),
+  `/${naddr(`30392:${pk}:`)}`, "an addressable event with no d is addressed by the empty d");
+// Not addressable: 10040 is a plain replaceable kind, outside 30000-39999, and
+// has no `d` to be addressed by.
+assert.strictEqual(hrefAttr(card(ev(10040, [["30382:rank", pk, "wss://x"]]))),
+  `/${noteId(eid)}`, "a non-addressable replaceable kind still opens by id");
 // An event with no usable id has nowhere to go, and must not offer "/".
 assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [], content: "x" })), null,
   "no id, no click target — navigating to the home page is not the same as opening the note");

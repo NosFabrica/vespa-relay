@@ -93,4 +93,13 @@ tasks.test {
     // probe left in `prodScaleDir`, and stays off unless asked for by name.
     System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
     System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
+    // Same rule for the expansion cost bench, and it has to be listed here or
+    // `-DsearchExpansionBench` reaches the daemon and the bench reports itself
+    // skipped — which reads exactly like a bench that ran and found nothing.
+    System.getProperty("searchExpansionBench")?.let { systemProperty("searchExpansionBench", it) }
+    // ProductionCorpusIT: a live Vespa and a corpus pulled off staging, both
+    // named on the command line for the same reason — a forked test JVM never
+    // sees a -D that only reached the daemon.
+    System.getProperty("itVespa")?.let { systemProperty("itVespa", it) }
+    System.getProperty("itCorpus")?.let { systemProperty("itCorpus", it) }
 }

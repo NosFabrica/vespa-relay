@@ -20,6 +20,20 @@ engine, because it is one — the store is
   (the scores are public), or `include:spam` for the whole corpus, unranked.
   A read that says neither is refused with `auth-required:` rather than
   silently answered out of an index with the trust switched off.
+- **The subject travels with the pointer.** A search that matches a Trusted List,
+  a NIP-85 Trusted Assertion or a NIP-32 label also answers with the record that
+  pointer is *about*, placed by the pointer's own rank discounted by how sure
+  the pointer was — a Trusted List scores each member 0..100, so a member its
+  publisher doubts sinks past the organic hits it would otherwise sit above. A
+  label and an assertion express no confidence, so their subjects land directly
+  behind them. Those kinds carry text about
+  something else — a list's title, a card's petname, a label's value — so the
+  record on the other end holds none of the words searched for and no ranking
+  would ever surface it: "podcaster" finds the *Podcaster Trust List* and, now,
+  the podcasters in it. A list or an assertion unpacks only for a reader whose
+  own kind-10040 named its signer, so it is never a stranger's computation
+  arriving unasked; subjects still have to match the rest of the subscription's
+  filter, so ask for their kinds too.
 - **A relay that fills itself.** The **router** — a sibling process sharing the
   same store — mirrors events from upstream relays: strfry-style `streams` of
   live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
@@ -120,6 +134,38 @@ you lift it. The full grammar — how the tokens stack, where trust scores come
 from (NIP-85), what falls back when no observer resolves — is documented in
 [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore), which
 implements it.
+
+### A search answers with what its hits are about
+
+Three kinds of event are found by text that describes *something else*: a
+Tapestry Trusted List (30392-30395) by its `title`, a NIP-85 Trusted Assertion
+(30382-30385) by its `petname` or `summary`, a NIP-32 label (1985) by its label
+value. This relay follows the pointer and serves the record beside the hit, at
+the hit's own rank discounted by the confidence the hit expressed about it:
+
+```
+["REQ","s",{"kinds":[0,30392],"search":"podcaster"}]
+  <- ["EVENT","s", … kind 30392 "Podcaster Trust List" …]
+  <- ["EVENT","s", … kind 0, a member's profile …]     <- would never match "podcaster"
+```
+
+A `p` member (and a label's `p` target, and a 30382's subject) resolves to that
+author's kind-0 profile; an `e` or an `a` resolves to that event. Two rules bound
+it:
+
+- **A subject must match the subscription's own filter** with the `search` field
+  left out of the test — so `{"kinds":[1985],…}` gets labels and nothing else,
+  and a client that wants the subjects names their kinds as well.
+- **A list or an assertion unpacks only for the reader who enrolled its signer.**
+  Those two families are a trust service's computed output, and NIP-85 says how a
+  reader picks services: a kind-10040 naming them. So the hit has to be signed by
+  one of *this read's observer's* services, or by the observer themselves — an
+  anonymous `include:spam` read has no observer and gets no list expansion at
+  all. Labels are not gated this way; anyone may label anything, and the label
+  still had to survive the trust-ranked search to be a hit.
+
+Operators can tune or disable the whole thing:
+[`SEARCH_EXPAND_REFERENCES`](docs/configuration.md#search-the-subject-travels-with-the-pointer).
 
 ### Every read says whose eyes it is read through
 

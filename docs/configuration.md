@@ -222,6 +222,166 @@ key nobody has scored is an empty answer rather than an error — the quieter
 failure of the two. Until the router learns to declare, peer a gated relay by
 turning the gate off there, or by giving the mirroring key a real lens.
 
+## Search: the subject travels with the pointer
+
+| var | meaning | default |
+|---|---|---|
+| `SEARCH_EXPAND_REFERENCES` | a NIP-50 search also answers with the records its hits point at. `false`/`0`/`no`/`off` turns it off | on |
+| `SEARCH_EXPAND_MAX_PER_EVENT` | how many subjects one hit may bring with it | `100` |
+| `SEARCH_EXPAND_MAX_TOTAL` | how many subjects a whole REQ may collect | `1000` |
+
+Three families of event carry text that is **about something else**: a Tapestry
+Trusted List (kinds 30392-30395) is found by its `title`, a NIP-85 Trusted
+Assertion (30382-30385) by its `petname` or `summary`, a NIP-32 label (1985) by
+its label value. The record on the other end of the pointer holds none of that
+text, so no amount of ranking will ever recall it from the same search —
+searching "podcaster" finds the *Podcaster Trust List* and cannot find a single
+podcaster.
+
+With this on, it finds both. Each hit of those kinds also brings the records it
+names, placed at the hit's own rank discounted by the confidence the hit
+expressed about that record — so a Trusted List's members spread out below it by
+how sure the publisher was, rather than all riding directly behind it (see the
+placement note below):
+
+* a **pubkey** — a list's `p` member, a label's `p` target, a 30382's `d` —
+  resolves to that author's **kind-0 profile**,
+* an **event id** (`e`, a 30393 member, a 30383's `d`) and an **a-coordinate**
+  (`a`, a 30394 member, a 30384's `d`) resolve to that event.
+
+A list's `p`/`a` tags on the *other* kinds are metadata (the observer it was
+computed under, the tag coordinate it covers), never membership, and are not
+followed. NIP-73 external identifiers (30385, 30395, `i` tags) name things that
+are not nostr events, and neither are a label's `r` (relay) and `t` (hashtag)
+targets; none of them expand.
+
+**A list or an assertion expands only for the reader who enrolled it.** The two
+provider-published families are a trust service's computed *output*, and NIP-85
+says how a reader chooses services: they publish a kind-10040 naming them. So a
+Trusted List or a Trusted Assertion is unpacked only when it is signed by one of
+**this read's observer's** services, or by the observer themselves. A list from a
+service nobody named is a stranger's computation, and splicing its members into a
+feed would put it in front of a reader as if they had asked for it.
+
+The observer is the connection's NIP-42 pubkey, or the filter's own
+`observer:<64-hex>` where it names one (the filter wins, exactly as it does for
+ranking) — **per searching filter, never pooled across the subscription**. A
+filter saying `include:spam` beside one saying `observer:X` does not lend its
+waiver to the other's subjects: each hit's subjects are recalled under the lens
+of the searching filter that found it, so a search asking to be ranked through X
+can never come back carrying records X's web of trust excludes. A subscription
+that genuinely declares two lenses pays one subject lookup per lens, which is the
+honest price of asking two questions at once. *Every* service its 10040 names counts, not only `30382:rank` — a list
+of events is published by a `30383:` service and a list of addresses by a
+`30384:` one. The private half of a 10040 is NIP-44 encrypted and names nothing a
+relay can read, the same limit the store's own provider map has.
+
+The consequence, and it is the intended one: **an anonymous `include:spam` read
+gets no list or assertion expansion at all** — there is nobody whose services to
+check. Its hits are served as always; only the splice is withheld. NIP-32 labels
+are *not* gated this way: a label is a first-class public annotation anyone may
+publish, distributed moderation is the NIP's stated purpose, and it had to
+survive this relay's trust-ranked search to be a hit in the first place.
+
+The 10040 lookup is the one recall here that is deliberately **ungated**
+(`include:spam`): reading a reader's own statement of whom they trust *through*
+the trust that statement establishes is circular, and it fails in the worst
+direction — a reader whose provider has not scored the reader personally would
+silently lose the whole feature. Being lensless is also what makes its answer
+the same for everybody and so safe to cache, which is why an expanded search
+costs one extra store round trip rather than two.
+
+**The enrolment is cached for 60 seconds, and exactly for a write this relay
+took.** A reader publishing a provider list *here* has it applied on their very
+next search; one mirrored in by the router — a different process, whose writes
+this one cannot see — applies within the minute. That is the window in both
+directions: a newly-enrolled service's lists take up to a minute to start
+unpacking, a dropped one's up to a minute to stop.
+
+**A subject must still match the REQ.** It is added only when it matches at
+least one of the subscription's own filters with the `search` field taken out of
+the test — `ids`, `authors`, `kinds`, `#tags`, `since` and `until` all still
+apply, and the filters are ORed as NIP-01 says. The consequence is worth stating
+because it looks like a bug from the outside:
+
+```
+["REQ","s",{"kinds":[1985],"search":"medical"}]     -> labels, and nothing else
+["REQ","s",{"kinds":[0,1,1985],"search":"medical"}] -> labels, and what they label
+```
+
+A `kinds`-constrained subscription is the client saying what it is prepared to
+receive; a relay that answered it with other kinds would be lying about its own
+protocol. Clients that want the subjects ask for their kinds too.
+
+**The lens travels with it.** The subject lookup is answered through the same
+web-of-trust lens as the search that produced it: the REQ's `include:spam`,
+`observer:` and `filter:rank:` tokens are carried onto it (and a NIP-42
+connection's own pubkey applies as it always does). So the expansion is neither
+a hole in the trust gate on a ranked read nor needlessly empty on an
+`include:spam` one.
+
+**Only a filter that actually searches drives any of this**, and "searches" means
+free text or a quoted phrase — **not** merely a non-empty `search` field. With
+`REQUIRE_READ_LENS` on, every anonymous read has to carry one: a mirror's paging,
+a NIP-77 catch-up and the dozen plain reference reads the web page makes all
+carry `include:spam`, so gating on non-empty would put exactly the traffic that
+must not pay for this behind it. A REQ carrying no searching filter takes the
+untouched path, and so does the plain half of a REQ that mixes the two — a hit
+that only a plain-recall filter could have produced is served exactly as it was
+before this feature existed. Leaving those alone costs nothing in *answers*
+either: a termless recall already matches the very predicate the admission rule
+uses, so there was never anything for an expansion to add to one.
+
+**What it does not touch.** A hit whose expansion is withheld — no observer, an
+unenrolled signer, a subject that fails the filter, a filter that does not search
+— is still served in full; nothing is ever dropped from the page by any of this.
+Only a REQ with real search *text* is expanded — a
+lens token is not text. A mirror's paging, a NIP-77 catch-up and a plain `#p`
+recall all carry `search:"include:spam"` under `REQUIRE_READ_LENS` and none of
+them pays for any of this. Nor does it change what a *termless* read returns: a
+termless recall already matches exactly the predicate the admission rule uses,
+so there is nothing an expansion could add to it. Only the stored page expands;
+an event that arrives live on an open subscription is delivered as-is, because
+the live fanout runs on the ingest writer's coroutine, where a lookup would
+stall the batch for every other subscriber.
+
+**`limit` bounds the hits, and `COUNT` counts them.** A `limit:10` search still
+gets ten hits; the subjects ride in over and above them, bounded by the two caps
+instead — a page of ten labels serving nine labels and one note would be the
+client's question answered less well, not more. For the same reason a NIP-45
+`COUNT` reports the hits alone and under-reports what the REQ will deliver:
+counting exactly would mean resolving the subjects of the whole match set rather
+than of one page, which is the work a COUNT exists to avoid.
+
+**The caps truncate the splice, never the page.** The hit itself is always
+served; a 2,000-member list past `SEARCH_EXPAND_MAX_PER_EVENT` simply brings
+fewer members, and the client still has every member tag and the `#p`/`#e`/`#a`
+recall that served them before this existed. A cap of `0` means zero — use
+`SEARCH_EXPAND_REFERENCES=false` to turn the feature off, and the boot log says
+so either way.
+
+Which members survive that truncation is the list's OWN ORDER — the first N it
+names, not the N with the highest scores. Those coincide for a publisher who
+sorts, and the store's default of 100 is above every list in production today,
+so this is latent rather than live. It is worth knowing anyway: of the 33
+member-bearing Trusted Lists in the corpus sampled from the Tapestry relay, 14
+are **not** sorted by score (`[73, 72, 89]` and `[95, 100, 84, 98, 96]` are real
+ones) and 6 score their first member not at all. On a list long enough to
+truncate, one of those would drop a member scored 89 and keep one scored 72.
+
+A spliced member lands where the confidence its publisher expressed puts it: a
+Trusted List scores each member 0..100 for how sure it is that the list's NAME
+applies, and a member the publisher doubts sinks past the organic hits it would
+otherwise have sat above. There is no switch for that — it is what the scores
+mean. A label and a NIP-85 assertion express no confidence (neither claim is
+probabilistic), so their subjects stay directly behind them.
+
+The splice itself runs in the event store now (vespa-eventstore
+`store/search/`), and these settings are handed to it at startup. Nothing about
+that changes what a REQ sees: the expansion only ever engages on a read
+carrying search TERMS, so a plain NIP-01 recall, a mirror's paging and a NIP-77
+catch-up are untouched.
+
 ## Admin (NIP-86)
 
 | var | meaning | default |

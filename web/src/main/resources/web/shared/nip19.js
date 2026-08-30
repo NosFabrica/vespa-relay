@@ -118,6 +118,28 @@ export const shortNote = (hex) => shortB32(noteId(hex));
  * legal encoding at all — that is the spec's limit, not ours, and it is the
  * one case here that fails on a well-formed tag.
  */
+/**
+ * The `kind:pubkey:d` coordinate of a PARAMETERIZED REPLACEABLE event, or null
+ * — the address [naddr] encodes, taken off the event itself.
+ *
+ * 30000-39999 is NIP-01's range, and a `d` is what makes a coordinate: the tag
+ * may be missing (the spec reads an absent `d` as the empty string, which is a
+ * legal address) but the author must be a key we can encode. Anything else is
+ * not addressable, and an naddr minted from a pubkey that is not one links
+ * nowhere.
+ *
+ * It lives HERE, beside the encoder it feeds, because two callers need it —
+ * the card that links to its own page and the provenance pill that links to
+ * the same one — and two spellings of one address is how those two come to
+ * disagree about where a list lives.
+ */
+export function addrOf(ev) {
+  if (!ev || !Number.isInteger(ev.kind) || ev.kind < 30000 || ev.kind > 39999) return null;
+  if (!/^[0-9a-f]{64}$/.test(ev.pubkey || "")) return null;
+  const d = ((ev.tags || []).find((t) => Array.isArray(t) && t[0] === "d" && typeof t[1] === "string") || [])[1] || "";
+  return `${ev.kind}:${ev.pubkey}:${d}`;
+}
+
 export function naddr(a) {
   const m = /^(\d+):([0-9a-f]{64}):([\s\S]*)$/.exec(String(a || ""));
   if (!m) return null;

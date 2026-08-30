@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -133,6 +134,48 @@ fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
     }
 
 /**
+ * Whether a NIP-50 search also answers with the records its hits point at, and
+ * how much of the feed that splice may be:
+ * `SEARCH_EXPAND_REFERENCES` (off with `false`/`0`/`no`/`off`),
+ * `SEARCH_EXPAND_MAX_PER_EVENT` and `SEARCH_EXPAND_MAX_TOTAL`.
+ *
+ * On is the default, and the reason is the shape of the data rather than a
+ * preference: a Trusted List, a NIP-85 assertion and a NIP-32 label carry text
+ * that is ABOUT something else, so the record a reader actually wants holds
+ * none of the matched words and no ranking will ever recall it from the same
+ * search. The splice itself lives in the store now; what this relay owns is the
+ * budget for it, which is a property of a deployment rather than of a store.
+ *
+ * PLACEMENT IS NOT A KNOB. A spliced member lands where the confidence its
+ * publisher expressed puts it, always — that is what a 0..100 score on a
+ * Trusted List member MEANS, and an operator should not have to know a variable
+ * name to get the behaviour the data already describes.
+ *
+ * A cap of 0 is honoured as 0 — an expansion that adds nothing — rather than
+ * quietly meaning "unbounded"; turning the feature off is what
+ * `SEARCH_EXPAND_REFERENCES=false` is for, and the two should not be spelled
+ * the same way. Negative and unparseable values keep the default.
+ */
+fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
+    val d = SearchExpansionLimits.Default
+    return SearchExpansionLimits(
+        enabled =
+            when (env["SEARCH_EXPAND_REFERENCES"]?.trim()?.lowercase()) {
+                "false", "0", "no", "off" -> false
+                else -> true
+            },
+        // `coerceAtLeast(0)` here turned `-1` into a cap of ZERO — the feature
+        // on and adding nothing, which is the silent inertness this codebase
+        // forbids and the opposite of what the KDoc above promises. A negative
+        // is unparseable in spirit and keeps the default, like every other
+        // limit in this file; zero is honoured as zero, and the boot log says
+        // so.
+        maxPerEvent = env.capOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent),
+        maxPerRequest = env.capOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest),
+    )
+}
+
+/**
  * Reject events dated more than `REJECT_FUTURE_SECONDS` in the future.
  * 0 (the default) disables the check.
  */
@@ -163,6 +206,17 @@ private fun parseIntSet(
                 ?: throw IllegalArgumentException("$varName must be a list of kind numbers, got \"$it\"")
         }?.toSet()
         .orEmpty()
+
+/** Parse an env var as a non-negative cap, keeping [fallback] when absent, blank, negative or unparseable. */
+private fun Map<String, String>.capOr(
+    key: String,
+    fallback: Int,
+): Int =
+    this[key]
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.toIntOrNull()
+        ?.takeIf { it >= 0 } ?: fallback
 
 /** Parse an env var as Int, keeping [fallback] when absent, blank, or unparseable. */
 private fun Map<String, String>.intOr(

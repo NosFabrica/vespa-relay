@@ -31,110 +31,142 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 98f09f29c0 = amethyst main @ 2026-08-25 (PR #3983). The range over 159afc0423
-# is 66 commits, and exactly THREE of them touch `quartz/` — the Tapestry
-# Trusted List family (kinds 30392-30395) landing in three steps:
+# 029c40ebb4 = amethyst main @ 2026-08-28 (PR #4006). The range over 98f09f29c0
+# is 85 commits, ELEVEN of which touch `quartz/`, and unlike the last two bumps
+# it is not purely additive: `git diff --shortstat 98f09f29c0..029c40ebb4 --
+# quartz/` reads 35 files changed, 1606 insertions, 33 DELETIONS. Four of the
+# eleven are the Trusted List family again, and three of those land on surfaces
+# this repo calls, so the deletions were read one by one rather than trusted:
 #
-#   c0f812e4  implement the Tapestry Trusted List family (30392-30395)
-#   509075ab  guard trusted-list member hints, drop member-scan allocations
-#   f5f8f605  index Trusted List titles for NIP-50 search
+#   ServiceProviderTag.parse NOW REFUSES a `<kind>:<metric>` entry outside
+#     30382-30385, and the constructor throws for one. A Treasure Map is an open
+#     tag set — `["client", …]` rides on it, and Tapestry's Trusted Lists hang
+#     `3039x:<name>` off the same event — so unbounded, a list delegation parsed
+#     as a NIP-85 provider and was handed to code looking for a rank service.
+#     [EnrolledSigners] is this repo's only reader of `serviceProviders()`, and
+#     what the new bound costs it was MEASURED rather than reasoned: across the
+#     337 distinct real 10040s in the staging + tapestry corpus the entries are
+#     1166 `30382:<metric>`, 9 `30383:`, 9 `30384:`, 2 `30385:` and 2
+#     `30392:k:37515`. Only those last two fall outside the new range, and they
+#     were already unreadable — both are two-element tags, and `parse` has
+#     always required a relay at index 2. Zero service keys change hands.
 #
-# ADDITIVE, in the strict sense: `git diff --shortstat 159afc0423..98f09f29c0 --
-# quartz/` reads 35 files changed, 2646 insertions, ZERO deletions. Thirty-two
-# of those files are the new `experimental/trustedLists/` package; the rest is
-# four `KIND ->` branches in `EventFactory`, four rows in `KindNames`, and a
-# SQLite `SearchTest` case. Nothing this repo compiles against moved, which is
-# why this bump costs no source change here — and the whole suite confirms it
-# rather than the diff alone.
+#   MemberTagFields.score IS NOW A 0..100 PERCENTAGE, dropped rather than
+#     clamped when a publisher counts on some other scale (a 950 clamped to 100
+#     would outrank every honestly-scored peer), and the builders clamp on write.
+#     `SearchReferences` reads membership through `parseKey`, which is
+#     byte-identical across the range; no score reaches an expansion decision.
 #
-# WHY WE MOVE IT AT ALL, since none of the new kinds are ours: the store pin
-# below asks for this exact commit, and `resolutionStrategy { force(libs.quartz)
-# }` means OUR pin is what every module resolves. Left at 159afc0423 the store's
-# newly searchable kinds would be silently inert — that quartz has no
-# `EventFactory` branch for 30392-30395, so `doc.toEvent()` hands back a base
-# `Event`, the store's `is SearchableEvent ->` mirror never fires, and the four
-# kinds are stored with empty search text. Nothing throws; the titles simply
-# never become findable. That silent no-op is exactly the failure mode the force
-# can produce, and the reason a store bump that moves the store's own quartz ask
-# ABOVE our pin has to move this line too. `TrustedListSearchTest` pins the
-# working direction so the pair cannot drift apart unnoticed again, and it was
-# confirmed to FAIL on 159afc0423 before this line moved — a pin test that
-# cannot fail on the old pin is pinning nothing.
+#   TrustedListEvent.memberValues() and the three `linked*()` accessors swapped
+#     `mapNotNull` for the new `TagArray.fastMapNotNullDense`, which presizes the
+#     destination for scans where most tags match. Same results, and this repo
+#     calls none of them.
 #
-# DIRECTION: 159afc0423 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates), and so is 1866007e99, the store's PREVIOUS
-# ask. The store now asks for this commit exactly — the equality case, where
-# forcing changes nothing about which jar is used.
+# WHAT IT BUYS US, and it is not nothing: the new
+# `experimental/trustedLists/treasureMap` package parses the GENERIC BARE-KIND
+# Map entry — `["30392", <pubkey>, <relay>]`, one entry delegating every list of
+# that kind — which is the shape Tapestry's ADR defines for delegating a Trusted
+# List publisher and the shape NIP-85's parser above now explicitly refuses. A
+# bare kind has no `:`, so `ServiceType.parse` never returned one either, which
+# means [EnrolledSigners] had NO key for the Trusted List half of its gate: those
+# kinds could be admitted only by an observer who signed the lists themselves.
+# This bump is what makes that readable, and the gate now reads both shapes.
+# (Zero bare-kind entries exist in the corpus today — which is exactly why no
+# 10040 could be found enrolling the tapestry publisher when this feature was
+# built against production data.)
 #
-# LEXICOGRAPHIC: '98f0…' > '159a…' ('9' > '1'), so this sorts ABOVE the pin it
-# replaces — the safe direction, which the last three bumps on this line did
-# not have.
-# Ordering settles nothing about whether the pin took; only the resolved graph
-# does, and on this bump every quartz line reads 98f09f29c0 with no `->` left
-# anywhere, the store's included:
+# DIRECTION: 98f09f29c0 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates), and so is the store's previous ask. The store
+# pin below asks for this commit exactly — the equality case, where forcing
+# changes nothing about which jar is used.
+#
+# LEXICOGRAPHIC: '029c…' < '98f0…' ('0' < '9'), so this sorts BELOW the pin it
+# replaces — the UNSAFE direction, and the first bump on this line to have it in
+# a while. Nothing is riding on that today: the store is the only other part of
+# the graph that asks for quartz, and it asks for this exact string, so there is
+# no conflict for ordering to settle. It matters for the NEXT bump: if a store commit
+# ever asks for a hash sorting above ours, `resolutionStrategy { force }` is the
+# only thing keeping our pin, and a bump that forgets to move this line fails
+# silently. The resolved graph is the proof either way, and on this bump every
+# quartz line reads 029c40ebb4 with no `->` left anywhere, in all five JVM
+# modules:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "98f09f29c0"
+quartz = "029c40ebb4"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# eaee359357 = store main through PR #84 (`Index Quartz's Trusted Lists`). The
-# range over 95ded7b3de is one PR, four commits, and NO store source at all —
-# `git diff --stat` reads seven files: this store's own quartz pin, a new
-# `TrustedListIndexingTest`, a README row and three imported skill docs. The
-# store's Kotlin is byte-identical to the last pin. What the bump carries is
-# the QUARTZ ask, and that is why the line above moved with it.
+# 130c2efa56 = store main through PR #85 (`Bump Quartz to 029c40ebb4`). The
+# range over eaee359357 is one PR, two commits, and `git diff --stat` reads TWO
+# files: the store's own quartz pin and a new `TrustProjectionTest` case. The
+# store's Kotlin is byte-identical to the last pin — as it was on the last bump,
+# for the same reason. What this carries is the QUARTZ ask, which is why the
+# line above moved with it and why the two must land together.
 #
-# WHAT IT BUYS: kinds 30392-30395 — the Tapestry Trusted List family, a curated
-# membership published under one point of view, the bulk form of a NIP-85
-# assertion — become SEARCHABLE. `SearchExtractors` mirrors quartz's searchable
-# set rather than deciding it, so upstream implementing `SearchableEvent` on
-# `TrustedListEvent` (`indexableContent() = title() ?: ""`) is the whole
-# mechanism: no store code changed, and the store's test flipped from pinning
-# the absence to pinning the title. The searchable set goes 126 classes / 129
-# kind values -> 130 / 133. The recall side never needed this — `#p`/`#e`/`#a`/
-# `#i` over `tag_index` already served a 2,000-member list entry for entry, and
-# the store's own test pins that too.
+# NOTHING TO REINDEX. `SearchExtractors`, `SearchFieldExtractor`,
+# `IndexableFields`, `SearchableEvent`, `EventFactory`, `Filter` and
+# `SearchQuery` are all byte-identical across the quartz range, so the searchable
+# set stays at 130 classes / 133 kind values and every derived column extracts to
+# what is already stored. Unlike the last bump there is no fed-field migration
+# and no `REINDEX_FTS_ON_START` pass to schedule.
 #
-# THE TITLE ALONE is indexed: `metric` names a computation and `d` identifies
-# the list, so a search for a common word must not return every list that ran
-# the same job; the member tags are hex ids and `content` is a JSON echo of the
-# same membership. A titleless list indexes "" rather than throwing —
-# `indexableContent()` runs inside the insert transaction.
+# THE STORE IS UNMOVED BY THE ONE BEHAVIOUR CHANGE IN ITS OWN BLAST RADIUS:
+# `ProviderMap` reads `serviceProviders()` and then matches only
+# `ProviderTypes.rank` / `followerCount`, both 30382, so a `3039x` entry was
+# already dropped by that `when` and is now dropped one parser step earlier. The
+# store never constructs a `ServiceProviderTag`, so the new `require` cannot fire
+# there. That reasoning is the store's own, in its catalog at this commit; it was
+# re-derived here rather than taken on trust, because the relay reads
+# `serviceProviders()` directly and `ProviderMap` does not cover us.
 #
-# THE TIER IS NOT THE ONE A TITLED KIND USUALLY GETS, and the store's comment is
-# explicit that it is observed rather than endorsed: upstream gave the family no
-# `SearchFieldExtractor` branch, so it takes the generic `is SearchableEvent ->`
-# fallback, which puts the whole string in the TERTIARY tier — `search_text`,
-# the BODY column, not `search_primary`. A list title is therefore weighted like
-# note content and reached by trigram substring rather than the prefix/typo
-# attributes every other titled kind enjoys: "podcast" finds "Podcaster", a typo
-# does not. The fix, if we want one, is one branch UPSTREAM, never a local
-# divergence — which tier an accessor lands in is Quartz's call.
+# ON MAIN, the merge of NosFabrica/vespa-eventstore#87 — where a spliced
+# Trusted List member is scored.
 #
-# A MIGRATION APPLIES, and it is the fed-field one: search text is data we WRITE
-# on put, so the four kinds already in the corpus carry none until
-# `REINDEX_FTS_ON_START` walks it (new writes are indexed immediately). The
-# store's drift check re-puts a document whose extracted columns differ from the
-# stored ones, which is precisely this case — unlike `search_text_gram`, the
-# derived column that walk cannot repair. Procedure and the distinction:
-# docs/migrations.md.
+# WHAT MOVED: the member's placement, out of the client and into a rank profile.
+# It used to be the LIST's relevance multiplied by the member's 0..100
+# confidence, and measured against this relay's own corpus that does not sink a
+# member proportionally, it ejects it from its band: a member at 87% of a list
+# scoring 620 landed BELOW ALL 30 HITS, and 95%/87%/75% of a list scoring 1306
+# all landed in the SAME position. The rungs in `event.sd` are bands, and
+# `relevance()` is a narrow range far from zero, so a multiplicative discount is
+# huge against a page's real dynamic range. A member now sits ON the affiliation
+# rung — the band a bio mention or a nip05 hit lands in, which is the same
+# strength of claim as "somebody put this person on a list called X" — with
+# confidence ordering members inside it.
 #
-# THE GATE IS GREEN AT THIS COMMIT, per this file's rule: `:benchmark:test
-# -Pintegration` run HERE against eaee359357 on a real Vespa in Docker — 11
-# tests, 0 skipped, 0 failures, 11m05s. No schema movement in this range, so there is
-# nothing for a deploy to do and no upgrade path to probe this time.
+# WHAT THIS RELAY SEES: a member is placed by its own rung rather than by its
+# list's score, so it no longer rides directly behind the list. It still cannot
+# pass the hit that named it. A NIP-32 label expresses no confidence, so its
+# subject keeps the list-behind-pointer placement it always had. The
+# `SEARCH_EXPAND_*` caps are unchanged and still this deployment's call.
 #
-# DIRECTION: 95ded7b3de is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates). The store's own quartz ask moves 1866007e99 ->
-# 98f09f29c0 across the range (via 509075abde), which is the line above, now
-# equal to it.
+# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
+# on `InMemoryEventIndex` and cannot see a Vespa-only regression, and this bump
+# adds a RANK PROFILE, which is exactly the kind of change only the gate can
+# check:
+#   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
+#   git checkout fcc7bad63b
+#   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
+# Run HERE against fcc7bad63b on a real Vespa in Docker: 11 tests across 10
+# suites, 0 skipped, 0 failures — RankRegressionIT included, which is what says
+# the new profile deploys without disturbing the existing ladder. Run that gate
+# ALONE: two earlier readings were lost to a second Gradle invocation in the
+# same project (a NoClassDefFoundError from recompiling :store under the live
+# test JVM, then a NoSuchFileException on Gradle's own binary results).
 #
-# LEXICOGRAPHIC: 'eaee…' > '95de…' ('e' > '9'), so this sorts ABOVE the pin it
-# replaces — the safe direction, and both pins move that way on this bump. Four
-# modules declare the store (:common, :relay, :sync, :peers), all through this
-# one alias, so there is a single string on the graph and nothing for ordering
-# to settle. The resolved graph is still the proof:
+# `git diff 029615f fcc7bad63b` is EMPTY — main had not moved since the branch
+# point, so the merge carries a byte-identical tree. The gate was still run at
+# the merge rather than inherited, because the rule is about the commit pinned.
+#
+# DIRECTION: 68f07ce958 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates). The store's quartz ask does not move across
+# the range — 029c40ebb4 at both ends, equal to the line above.
+#
+# LEXICOGRAPHIC: 'fcc7…' > '68f0…' ('f' > '6'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, as the last two bumps were. Four modules declare
+# the store (:common, :relay, :sync, :peers), all through this one alias, so
+# there is a single string on the graph and nothing for ordering to settle. The
+# resolved graph is still the proof:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "eaee359357"
+vespaEventStore = "fcc7bad63b"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
