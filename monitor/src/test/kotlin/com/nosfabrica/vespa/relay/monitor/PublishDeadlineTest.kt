@@ -28,17 +28,22 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.EmptyNostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * A STORE THAT STOPS ANSWERING MUST NOT BE ABLE TO HOLD THE MONITOR OPEN —
@@ -157,5 +162,134 @@ class PublishDeadlineTest {
             assertEquals(1L, row.passes, "a pass the store wedged must still count as a pass that ran")
             assertEquals(Processors.IDLE, row.phase, "…and must not be left reading `measuring` forever")
             assertNull(row.measuring, "a finished pass holds no position")
+        }
+
+    /**
+     * A store that answers every write with a THROW — the fast-fail shape of
+     * the same outage. The first cut of the write loop counted any write that
+     * did not time out as published, so a store that was down-but-answering
+     * (connection refused, HTTP 5xx) reported a clean pass with every verdict
+     * "written": the exact invisibility #165's fix exists to end, one failure
+     * mode over.
+     */
+    private class DecliningWrites(
+        inner: NostrSemanticsStore,
+    ) : IEventStore by inner {
+        val insertsAttempted = AtomicInteger()
+
+        override suspend fun insert(event: Event) {
+            insertsAttempted.incrementAndGet()
+            error("store declines every write")
+        }
+    }
+
+    @Test
+    fun `a store that fails every write PROMPTLY is reported as a store that wrote nothing`() =
+        runBlocking {
+            val store = DecliningWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = self))
+            val answering = (0 until 5).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { tinyIdleMs },
+                        ),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                )
+
+            // The report is the observable: the counters it prints are the only
+            // place "published" exists, so the assertion reads the line itself.
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            System.setErr(PrintStream(captured, true))
+            try {
+                withTimeout(30_000) {
+                    pass.measure("declining store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                }
+            } finally {
+                System.setErr(realErr)
+            }
+
+            // Every write was attempted — a prompt failure costs nothing per
+            // verdict, so there is no batch to abandon…
+            assertEquals(5, store.insertsAttempted.get(), "prompt failures must not abandon the batch")
+            // …and none of them may be counted as published: the pass must say
+            // five earned verdicts were not written, and say the store
+            // ANSWERED, which points away from the wedge and at the store's
+            // own error path.
+            val err = captured.toString()
+            assertTrue("5 earned verdict(s) NOT written" in err, "a store failing every write must not read as a clean pass; got: $err")
+            assertTrue("failed outright" in err, "a prompt failure must be told apart from a deadline; got: $err")
+        }
+
+    /**
+     * One write stalls, the writes around it succeed — ordinary load, not a
+     * wedge. [FitnessPass.PUBLISH_DEADLINE_MS]'s own KDoc says a write queued
+     * behind the mirror's bulk commits is legitimate and must not cost a
+     * verdict, so the wedge limit is CONSECUTIVE: a straggler costs its own
+     * verdict and nothing after it. A straight tally of three would have
+     * dropped every verdict past the third straggler in a 13,560-url batch
+     * whose store was taking writes the whole time.
+     */
+    private class OneStraggler(
+        private val inner: NostrSemanticsStore,
+    ) : IEventStore by inner {
+        val insertsAttempted = AtomicInteger()
+
+        override suspend fun insert(event: Event) {
+            if (insertsAttempted.incrementAndGet() == 2) {
+                CompletableDeferred<Unit>().await()
+                error("unreachable")
+            }
+            inner.insert(event)
+        }
+    }
+
+    @Test
+    fun `one stalled write costs ONE verdict, not the rest of the batch`() =
+        runBlocking {
+            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val store = OneStraggler(inner)
+            val answering = (0 until 8).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { tinyIdleMs },
+                        ),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                )
+
+            withTimeout(30_000) {
+                pass.measure("one straggler", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+
+            // Every url's write was attempted — the run counter reset on the
+            // successes around the straggler, so nothing tripped the limit…
+            assertEquals(8, store.insertsAttempted.get(), "a lone straggler must not abandon the batch")
+            // …and exactly one verdict is missing: the straggler's own.
+            val graded =
+                inner
+                    .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey)))
+                    .count { event -> event.tags.any { it.size >= 3 && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE } }
+            assertEquals(7, graded, "the writes around a straggler must land; only the straggler's verdict waits for the next pass")
         }
 }

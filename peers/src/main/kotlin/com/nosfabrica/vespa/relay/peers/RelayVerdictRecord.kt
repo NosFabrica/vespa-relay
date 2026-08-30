@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The NIP-66 half of [RelayAliases]: a fold verdict, written down where the
@@ -638,6 +639,19 @@ class RelayVerdictRecord(
      * — and two writers seconds apart, or a clock that has not moved, are
      * ordinary. Silently losing the write to `replaced: a newer version
      * exists` is how a repair pass reports success having done nothing.
+     *
+     * **BOUNDED WHOLE by [EDIT_DEADLINE_MS], because the store is not.** The
+     * store's HTTP client deliberately carries no read deadline, so a request
+     * whose response never comes suspends its caller for the life of the
+     * process — which held a fitness pass, the sweep behind it and the fast
+     * lane behind that for ten hours on staging (#165). The fitness pass's
+     * write loop carries its own tighter clock for reporting; this one is the
+     * floor under EVERY writer, put here rather than at each call site
+     * because the call sites keep growing and the one that forgets is the one
+     * that hangs — the fold publishes a group's verdicts outside any dial
+     * deadline, and the boot retractions run inside the `runBlocking` the
+     * roster's first rebuild waits on, where a wedge is a router that never
+     * starts.
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
@@ -645,29 +659,30 @@ class RelayVerdictRecord(
         add: List<Array<String>>,
     ): Event? {
         val signer = signer ?: return null
-        val current = currentRecord(url)
-        val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
-        val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
-        val template =
-            RelayDiscoveryEvent.build(url, current?.content.orEmpty(), at) {
-                for (tag in kept) add(tag)
-                for (tag in add) add(tag)
+        return withTimeoutOrNull(EDIT_DEADLINE_MS) {
+            val current = currentRecord(url)
+            val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
+            val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
+            val template =
+                RelayDiscoveryEvent.build(url, current?.content.orEmpty(), at) {
+                    for (tag in kept) add(tag)
+                    for (tag in add) add(tag)
+                }
+            // NOT `runCatching`, which swallows CancellationException: both the
+            // deadline above and the fitness pass's own per-write clock work by
+            // cancellation. Swallowed, the cancelled write would return null as
+            // if the store had merely declined — and a caller cancelled at
+            // shutdown would keep looping, mislabelling every remaining url on
+            // its way out.
+            try {
+                val event = signer.sign(template)
+                store.insert(event)
+                event
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
             }
-        // NOT `runCatching`, which swallows CancellationException: the fitness
-        // pass puts a deadline on each of these writes precisely because a
-        // store request whose response never comes suspends its caller forever
-        // (#165), and that deadline works by cancellation. Swallowed, the
-        // cancelled write would return null as if the store had merely
-        // declined — and a caller cancelled at shutdown would keep looping,
-        // mislabelling every remaining url on its way out.
-        return try {
-            val event = signer.sign(template)
-            store.insert(event)
-            event
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
         }
     }
 
@@ -957,6 +972,23 @@ class RelayVerdictRecord(
          * endpoint into several real relays is noticed within a month.
          */
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
+
+        /**
+         * The wall clock on one whole [edit] — read, sign, insert.
+         *
+         * Two minutes, and DELIBERATELY WIDER than the fitness pass's own
+         * per-write clock (`FitnessPass.PUBLISH_DEADLINE_MS`, a minute): that
+         * one is an instrument — it counts what it cuts, runs a wedge limit
+         * off the count and reports it — so it must always fire first, and
+         * this one is the floor that catches every writer that has no
+         * instrument of its own. Wide enough that a write queued behind the
+         * mirror's bulk commits on the store's shared ingest mutex (~10s per
+         * 20k-event batch, several deep under load) never loses a verdict to
+         * it; the fault it exists for is not slowness but a response that
+         * never comes (#165), and against forever any finite number is the
+         * whole fix.
+         */
+        const val EDIT_DEADLINE_MS = 120_000L
 
         /**
          * Urls per `#d` query. The fan-out is five figures wide; the filter

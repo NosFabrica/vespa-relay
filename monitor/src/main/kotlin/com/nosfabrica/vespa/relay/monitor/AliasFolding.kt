@@ -601,7 +601,7 @@ class AliasFolding(
                                     val survivor = wanted.first()
                                     val folds = aliases.foldUnreadable(wanted, survivor)
                                     for (alias in folds.keys) {
-                                        runCatching { record.publishUnreadable(alias, survivor, wanted.size) }
+                                        guarded { record.publishUnreadable(alias, survivor, wanted.size) }
                                     }
                                     if (folds.isNotEmpty()) {
                                         newVerdicts += folds.keys
@@ -801,7 +801,7 @@ class AliasFolding(
                             undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
                         }
                         for ((alias, v) in verdicts) {
-                            runCatching {
+                            guarded {
                                 // Each verdict published with the argument it was
                                 // actually made on — see [RelayVerdictRecord.publishSecureTwin].
                                 if (v.secureTwin) {
@@ -818,7 +818,7 @@ class AliasFolding(
                             }
                         }
                         for ((url, c) in cleared) {
-                            runCatching { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
+                            guarded { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
                         }
                         // FROM THE JOB'S COMPLETION, not from a counter inside
                         // the body: this host is behind the pass however it
@@ -984,6 +984,27 @@ class AliasFolding(
                 progress?.released(url.url)
             }
         }
+
+    /**
+     * One verdict write, guarded: these are signed public statements about
+     * other people's servers, and a failure to write one must not take the
+     * pass down with it — the url simply re-earns its verdict next pass.
+     *
+     * NOT `runCatching`, which is what these sites used and which swallows
+     * CancellationException — the rule [ConsistencyPass.measureOne] states
+     * for its pre-probe, and [RelayVerdictRecord.edit] for the write itself:
+     * both the record's own deadline and a shutdown work by cancellation,
+     * and a pass that eats one keeps looping through its remaining writes on
+     * the way out, each failing the same way.
+     */
+    private suspend fun guarded(write: suspend () -> Unit) {
+        try {
+            write()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
 
     /**
      * Is this group's host still inside the window a failed pass bought it?
