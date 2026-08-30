@@ -141,6 +141,13 @@ class FitnessPass(
      */
     private val tor: TorTransport? = null,
     private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
+    /**
+     * The wall clock on ONE verdict write — see the write loop in [measure]
+     * for why it exists. A parameter for [AliasProbe.idleMs]'s reason: the
+     * production value is a minute, and a test that cannot shrink it can only
+     * assert that the deadline compiles.
+     */
+    private val publishDeadlineMs: Long = PUBLISH_DEADLINE_MS,
 ) {
     /** One gate object for every pass this component runs — see [DialGate], and [AliasFolding]. */
     private val gate = DialGate.over(concurrency, tor)
@@ -337,15 +344,64 @@ class FitnessPass(
             // The writes, serial and after the dials: the record edit is a
             // read-modify-write with no CAS, and this pass is its only writer
             // for these tags — see [AliasMonitor] for why passes never overlap.
+            //
+            // EACH WRITE UNDER ITS OWN WALL CLOCK, because this loop is the one
+            // stretch of the monitor plane that had none — the dials above are
+            // bounded per url by [AliasProbe.deadlineMs], and these writes were
+            // bounded by nothing but the store answering. The store's HTTP
+            // client carries NO read deadline by design (an unlimited query may
+            // take as long as it takes), so a store request whose response
+            // never comes suspends its caller FOREVER — and a suspended
+            // coroutine holds no thread, so nothing anywhere names the fault.
+            // Measured on `vespa-eventstore-staging` (#165): a 13,560-url pass
+            // finished every dial in 40 minutes, then sat in `measuring
+            // fitness` for TEN HOURS with `attempted == toProbe`, no thread in
+            // any monitor frame and the process nearly idle. And because the
+            // sweep holds [AliasMonitor]'s pass gate while it runs, the one
+            // suspended write also stopped every future sweep AND the fast
+            // lane — `passesRun: 0` for the life of the process, no relay
+            // re-graded again, masked by quartz's passive record refresh
+            // keeping verdict ages looking healthy.
+            //
+            // A write the clock cuts is NOT retried and NOT mourned: the old
+            // record stands, the url reads as it did before this pass, and the
+            // next sweep re-earns the verdict — the same bargain an abandoned
+            // dial gets. And it is held/released like a dial, so the ten
+            // invisible hours become one nameable url on one nameable stage.
+            var published = 0
+            var wedged = 0
             for ((url, outcome) in outcomes) {
-                record.publishFitness(
-                    url = url,
-                    status = outcome.verdict.value,
-                    evidence = outcome.evidence,
-                    pageable = outcome.pageable,
-                    nip77 = outcome.nip77,
-                    facts = factsOf(url, outcome, readings[url]),
-                )
+                progress.holding(url.url, STAGE_PUBLISH)
+                val wrote =
+                    try {
+                        withTimeoutOrNull(publishDeadlineMs) {
+                            record.publishFitness(
+                                url = url,
+                                status = outcome.verdict.value,
+                                evidence = outcome.evidence,
+                                pageable = outcome.pageable,
+                                nip77 = outcome.nip77,
+                                facts = factsOf(url, outcome, readings[url]),
+                            )
+                            true
+                        } != null
+                    } finally {
+                        progress.released(url.url)
+                    }
+                if (wrote) {
+                    published++
+                } else {
+                    // THE WEDGE LIMIT. One timed-out write could be one slow
+                    // moment, but each one costs the full deadline — so a
+                    // store that has stopped answering must not be paid a
+                    // minute per verdict, 13,560 times. Three distinct writes
+                    // on distinct urls hitting the same wall is the store, not
+                    // the writes: drop the rest of the batch and let the pass
+                    // END, loudly, so the sweep clock keeps running and the
+                    // fault is a log line instead of a phase that never moves.
+                    wedged++
+                    if (wedged >= PUBLISH_WEDGE_LIMIT) break
+                }
             }
 
             report(
@@ -357,6 +413,8 @@ class FitnessPass(
                 abandoned,
                 unmeasured.size,
                 downloaded.get(),
+                unwrittenCount = outcomes.size - published,
+                wedgedWrites = wedged,
             )
         } finally {
             progress.finish()
@@ -678,6 +736,17 @@ class FitnessPass(
          * included. See [AliasProbe.over]'s `page`.
          */
         downloadedCount: Int,
+        /**
+         * How many EARNED verdicts never reached the store — writes the
+         * per-write deadline cut, plus the rest of a batch dropped once
+         * [PUBLISH_WEDGE_LIMIT] writes had wedged. Zero on the guard's
+         * refuse-to-publish path, which has its own louder line: these are the
+         * verdicts the pass stood behind and could not put down, and a pass
+         * that ends that way must say so or the fault is invisible again.
+         */
+        unwrittenCount: Int = 0,
+        /** …of which this many are writes that actually hit the deadline. */
+        wedgedWrites: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -701,6 +770,18 @@ class FitnessPass(
             val more = if (abandonedCount > abandoned.size) " (+${abandonedCount - abandoned.size} more)" else ""
             System.err.println(
                 "router: fitness [$label] — gave up on $abandonedCount url(s) at the per-url deadline, no verdict written: $named$more",
+            )
+        }
+        // THE PASS ENDED ABNORMALLY, and this line is the difference between a
+        // fault an operator can read and the ten silent hours of #165. The
+        // verdicts were earned; the store would not take them.
+        if (unwrittenCount > 0) {
+            val dropped = unwrittenCount - wedgedWrites
+            System.err.println(
+                "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: $wedgedWrites write(s) hit the " +
+                    "per-write store deadline" +
+                    (if (dropped > 0) ", and the remaining $dropped were dropped rather than paying it each — the store, not the writes, is the fault" else "") +
+                    "; every url is measured again next pass",
             )
         }
         progress.counts {
@@ -969,6 +1050,46 @@ class FitnessPass(
         const val STAGE_LADDER = "ask ladder"
 
         const val STAGE_NIP77 = "neg-open"
+
+        /**
+         * …and the one stage that is not a dial: the record edit that puts a
+         * verdict down. Named so the held set can answer "what has this pass
+         * been doing for nine hours" when the answer is a store write — the
+         * question #165 could not answer from the position, the log, or a
+         * thread dump.
+         */
+        const val STAGE_PUBLISH = "verdict write"
+
+        /**
+         * The wall clock on one verdict write — see the write loop in
+         * [measure].
+         *
+         * A minute, sized against the store's own worst honest case rather
+         * than its typical one: a write queues on the store's single ingest
+         * mutex behind the mirror's bulk commits, and a 20k-event bulk at the
+         * measured ~500µs/event holds it for ~10s, so tens of seconds of
+         * queueing is legitimate under load and must not cost a verdict. The
+         * fault this bounds is not slowness but FOREVER — the store's HTTP
+         * client deliberately carries no read deadline, so a response that
+         * never comes suspends the caller for the life of the process (#165:
+         * ten hours and counting, sweep and fast lane both stopped behind it).
+         * Any finite number ends that; a generous one never fires by accident.
+         */
+        const val PUBLISH_DEADLINE_MS = 60_000L
+
+        /**
+         * How many writes may hit [PUBLISH_DEADLINE_MS] before the pass stops
+         * publishing the rest of the batch.
+         *
+         * Each timed-out write costs the full deadline, and the failure this
+         * exists for is batch-shaped: a wedged store connection fails every
+         * write the same way, and paying a minute apiece over 13,560 verdicts
+         * is nine days of a pass that should have ended in three minutes.
+         * Three distinct writes on distinct urls hitting the same wall is the
+         * store and not the writes — the same population logic as
+         * [GUARD_SHARE], at the other end of the pass.
+         */
+        const val PUBLISH_WEDGE_LIMIT = 3
 
         /**
          * How many abandoned urls a pass names in its log line.

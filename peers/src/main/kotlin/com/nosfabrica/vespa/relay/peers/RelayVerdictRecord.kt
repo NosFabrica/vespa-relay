@@ -28,6 +28,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.CancellationException
 
 /**
  * The NIP-66 half of [RelayAliases]: a fold verdict, written down where the
@@ -652,11 +653,22 @@ class RelayVerdictRecord(
                 for (tag in kept) add(tag)
                 for (tag in add) add(tag)
             }
-        return runCatching {
+        // NOT `runCatching`, which swallows CancellationException: the fitness
+        // pass puts a deadline on each of these writes precisely because a
+        // store request whose response never comes suspends its caller forever
+        // (#165), and that deadline works by cancellation. Swallowed, the
+        // cancelled write would return null as if the store had merely
+        // declined — and a caller cancelled at shutdown would keep looping,
+        // mislabelling every remaining url on its way out.
+        return try {
             val event = signer.sign(template)
             store.insert(event)
             event
-        }.getOrNull()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -742,12 +754,20 @@ class RelayVerdictRecord(
     /** This url's current record, or null when nothing holds one yet. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
+        // Cancellation rethrown, not caught — [edit] says why. Caught here it
+        // would be worse than there: a cancelled read looks like "no record",
+        // and the edit would then sign a FRESH record that drops every tag the
+        // real one carries — the passive monitor's, the fold's, everyone's.
         val held: List<Event> =
-            runCatching {
+            try {
                 store.query<Event>(
                     Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url))),
                 )
-            }.getOrNull().orEmpty()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
         return held.maxByOrNull { it.createdAt }
     }
 
