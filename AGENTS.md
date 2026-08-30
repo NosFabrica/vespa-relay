@@ -3916,11 +3916,30 @@ Reach for it first.
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
-  Vespa. Skipped unless `BENCH_VESPA_URL` names a live engine:
-  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :sync:test
-  --tests '*IngestCostBench*' --rerun-tasks -i` (Gradle treats env vars as
-  invisible, so without `--rerun-tasks` a second run is silently UP-TO-DATE and
-  prints the FIRST run's numbers).
+  Vespa. It lives in `:peers` with the pipeline it measures — this said
+  `:sync:test` for a while, which matches no test and reports BUILD SUCCESSFUL
+  having run nothing. Skipped unless `BENCH_VESPA_URL` names a live engine:
+  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test
+  --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i` (Gradle treats env
+  vars as invisible, so without `--rerun-tasks` a second run is silently
+  UP-TO-DATE and prints the FIRST run's numbers).
+
+  **`-PtestHeap` is not optional at six figures.** The test task takes Gradle's
+  512m default, and a `BENCH_N=100000` corpus — the events, plus a `NostrSignerSync`
+  per author — is several GB. It is opt-in rather than the default because no
+  unit test needs it and every CI box would pay for it.
+
+  **Standing a Vespa up for it, on a machine that is not the deployment.** The
+  compose service is enough (`VESPA_MEM_LIMIT=9g docker compose up -d vespa`;
+  the committed 34g default is a limit sized for the real host and a small box
+  will not honour it). Do NOT wait on its healthcheck first: that check requires
+  a search returning a content node, a content node requires a deployed
+  application package, and nothing deploys one until the relay boots or the
+  store's `autoDeploy` runs — so a bare `up vespa` sits at `health: starting`
+  forever while the container logs `No response / error from config server. This
+  is normal before an application package is deployed.` The bench bootstraps
+  itself (`VespaEventStore.open(autoDeploy = true)` → `deployIfAbsent`, which
+  deploys AND waits for serving), so just run it and let it deploy.
 
   Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
   20k-event batches — the ratios are what travel, not the absolute times:
