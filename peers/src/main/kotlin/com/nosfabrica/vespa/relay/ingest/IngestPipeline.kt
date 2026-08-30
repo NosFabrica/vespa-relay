@@ -130,9 +130,35 @@ class IngestPipeline(
 
     /**
      * How many events one worker takes per pass — capped to its fair share of
-     * the channel. A batch bigger than that lets the first worker take
-     * everything while the rest idle, collapsing ingest to one thread
-     * grinding a very long batch.
+     * the channel.
+     *
+     * **The fairness this protects is worth less than the width it costs, and
+     * the cap is the binding constraint on a mirror's throughput.** The
+     * original argument was that a wider batch lets one worker take everything
+     * while the rest idle, collapsing ingest to a single thread. That is true
+     * and it is not a problem: the store takes ONE writer mutex for the whole
+     * of `commit`, so commits never run in parallel anyway — the other workers
+     * were never going to write concurrently, only queue. What a lock hold is
+     * worth is the SURVIVORS it carries, `batchSize x (1 - dropRate)`, and at
+     * a mirror's 98% duplicate rate a 512-event batch carries ten.
+     *
+     * `IngestCostBench`'s shape sweep, on identical 100k work: `8 x 1024` —
+     * which this formula turns into a real batch of 512 — ran at 6,685 ev/s,
+     * spending 99.1s of aggregate `lock.ingest.wait` across a 15s wall to
+     * perform 0.2s of writing. `2 x 8192` ran the same work at 60,492 ev/s.
+     * Nine times, from shape alone, and `1 x 16384` matched it — concurrency
+     * past one or two buys nothing once batches are wide, exactly as a
+     * serializing mutex predicts.
+     *
+     * **Left as it is on purpose.** Widening is not free in the other
+     * direction: every other writer — the monitor's verdict edits, the healer,
+     * the sweep — queues on that same mutex, and
+     * `RelayVerdictRecord.EDIT_DEADLINE_MS` exists because they already wait
+     * behind "~10s per 20k-event batch, several deep under load". A wider
+     * batch makes ingest faster and that tail longer, and nothing has measured
+     * the tail. The operator lever needs no code
+     * (`SYNC_INGEST_CONCURRENCY=2 SYNC_INGEST_BATCH=8192`), and `start` says so
+     * when the cap bites.
      */
     private val batchSize = tuning.batch.coerceAtMost((capacity / workers).coerceAtLeast(1))
 
@@ -239,11 +265,26 @@ class IngestPipeline(
         // Announced when the batch is capped: an operator who set
         // SYNC_INGEST_BATCH and silently got a different number would be
         // tuning a knob that is not connected.
+        //
+        // This line used to end "…collapses ingest to a single thread", offered
+        // as the reason the cap is a good thing. THAT IS BACKWARDS on a mirror,
+        // and `IngestCostBench`'s shape sweep is what settled it: the store
+        // takes one writer mutex for the whole of `commit`, so commits never
+        // run in parallel and extra workers only queue for it. What a lock hold
+        // is worth is the SURVIVORS it writes — `batchSize x (1 - dropRate)` —
+        // and at a mirror's 98% duplicate rate a 512-event batch carries ten.
+        // Measured on identical 100k work: 8x1024 (a real batch of 512) ran at
+        // 6,685 ev/s with 99.1s of aggregate `lock.ingest.wait` to perform 0.2s
+        // of writing, against 60,492 ev/s at 2x8192. Nine times, from shape.
+        // So the cap is a COST, and the line now says so rather than
+        // congratulating itself.
         if (batchSize < configuredBatch) {
             System.err.println(
                 "router: SYNC_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
-                    "$workers worker(s) share a $capacity-event queue, and a batch bigger than " +
-                    "one worker's share collapses ingest to a single thread",
+                    "$workers worker(s) share a $capacity-event queue. Every commit serializes on the store's " +
+                    "one writer mutex, so a narrow batch buys nothing back: it writes fewer surviving events per " +
+                    "lock hold and takes the lock more often. Fewer, WIDER workers ingest faster on a mirror " +
+                    "(measured 9x) — at the cost of a longer lock hold for every other writer",
             )
         }
         // The dedup probe needs a wide batch to be worth its round trip, so
@@ -991,6 +1032,14 @@ class IngestPipeline(
          * Ceiling on queued-but-not-yet-ingested events, independent of batch
          * size. 16k events is a few hundred MB at Nostr's event sizes — far
          * short of the 80,000 that killed the process.
+         *
+         * **It is doing a second job it was never sized for.** [batchSize] is
+         * derived from [capacity], which this bounds, so this number also caps
+         * how wide a batch can ever be — 2048 at eight workers, whatever
+         * `SYNC_INGEST_BATCH` says — and batch width is what decides survivors
+         * per lock hold. One constant, two unrelated concerns: heap here, write
+         * efficiency there. Splitting them is the change [batchSize] describes
+         * and declines to make blind.
          */
         private const val MAX_INBOUND_QUEUE = 16_384
 

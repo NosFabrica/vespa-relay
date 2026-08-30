@@ -3965,6 +3965,57 @@ Reach for it first.
   the id probe (10-23µs/id against the ~44µs a drop saves), ~20% stale for the
   version probe (21-29µs against ~110).
 
+  **EVERY ROW ABOVE IS A PURE BATCH, AND A MIRROR NEVER SEES ONE.** They price
+  one verdict at a time, and the omission matters more than the numbers do: a
+  100%-duplicate batch is dropped whole by the probe, so it never reaches the
+  write and never takes the writer lock. A real batch carries a couple of
+  percent that must be written, and that is where the lock is. At
+  `BENCH_N=100000` on the same 4-core box, the `98% dup / 2% fresh` arm:
+
+  | batch | us/event, probe off -> on |
+  |---|---:|
+  | 100% duplicate | 37 -> 11 (**3.3x**) |
+  | 98% duplicate / 2% fresh | 48 -> 46 (**1.04x**) |
+
+  **At a mirror's real mix the id probe is worth a few percent, not 3.3x**, and
+  the mix costs 2.4x what its parts predict (0.98 x 11 + 0.02 x 349 = 19us
+  against 46 measured). Neither is a slow stage. Both are batch COMPOSITION.
+
+  ### Survivors per lock hold is what decides ingest throughput
+
+  The store takes ONE writer mutex for the whole of `commit`, so commits never
+  run in parallel however many ingest workers exist - more workers only lengthen
+  the queue for it. What a lock hold is worth is how many surviving events it
+  writes, and that is `batchSize x (1 - dropRate)`. At 98% dropped, a 512-event
+  batch carries **ten**. The `98/2 shape sweep` arm - same work, three shapes:
+
+  | `concurrency x batch` | real batchSize | commits for 100k | survivors each | us/event | ev/s |
+  |---|---:|---:|---:|---:|---:|
+  | `8 x 1024` | **512** | 195 | ~10 | 150 | 6,685 |
+  | `2 x 8192` | 8192 | 12 | ~164 | **17** | **60,492** |
+  | `1 x 16384` | 16384 | 6 | ~328 | 18 | 56,439 |
+
+  **9x, on identical work, from shape alone.** The eight-worker row spent
+  `lock.ingest.wait 99.1s` of aggregate thread time across a 15s wall - each
+  worker queued ~12.4 of 15 seconds - to perform `write 0.2s` of writing.
+  Concurrency past 1-2 buys nothing once batches are wide, exactly as a
+  serializing mutex predicts; width is the whole lever.
+
+  **And the configured batch is not the batch.** `capacity = (batch * 4)
+  .coerceIn(4096, MAX_INBOUND_QUEUE)`, then `batchSize = min(batch, capacity /
+  workers)` - so at eight workers `SYNC_INGEST_BATCH=1024` yields 512, and no
+  setting can exceed 2048. `MAX_INBOUND_QUEUE` was sized for MEMORY ("16k events
+  is a few hundred MB") and now binds write efficiency too: one constant, two
+  unrelated concerns.
+
+  The operator-level fix needs no code: `SYNC_INGEST_CONCURRENCY=2
+  SYNC_INGEST_BATCH=8192`. **The formula was deliberately NOT changed**, because
+  widening batches is not free in the other direction: every other writer - the
+  monitor's verdict edits, the healer, the sweep - queues on that same mutex,
+  and `RelayVerdictRecord.EDIT_DEADLINE_MS` exists because they already wait
+  "~10s per 20k-event batch, several deep under load". Wider batches make ingest
+  faster and that tail longer. Measure both before moving the default.
+
 ## Conventions
 
 **Comments say why, with evidence.** The codebase's KDoc records what actually
