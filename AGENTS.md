@@ -1348,6 +1348,30 @@ misleading as a signal — it is the same `0` a pass one url from done reports. 
 seconds since a unit last ENDED is what separates them, and the card draws it
 only past `STUCK_PASS_SEC`.
 
+**The STORE is the pass's other unbounded dependency, and its writes get the
+same treatment as its dials.** The fitness pass defers its record edits to
+after the join — the batch guard has to see the whole batch before anything may
+publish — and that loop was the one stretch of the monitor plane with no
+deadline on it: the store's HTTP client deliberately carries no read deadline
+(an unlimited query may take as long as it takes; dead connections are caught by
+HTTP/2 pings), so a request whose response never comes while the connection
+stays healthy suspends its caller for the life of the process. Measured on
+staging (#165): a 13,560-url pass finished every dial in 40 minutes —
+`attempted == toProbe`, `quietForSec` climbing 1:1 with wall clock — then held
+`measuring fitness` for ten hours with no thread in any monitor frame, because
+a suspended coroutine has none. And since the sweep runs under `AliasMonitor`'s
+pass gate, the one suspended write also stopped every future sweep AND starved
+the fast lane on the same mutex, silently — while quartz's passive
+`RelayMonitor` kept bumping `createdAt` on every connected relay's 30166, so
+verdict ages read fresh and the outage was invisible from freshness. So each
+verdict write now runs under `FitnessPass.PUBLISH_DEADLINE_MS`, is named in the
+held set (`verdict write`) while it runs, and after `PUBLISH_WEDGE_LIMIT` cut
+writes the pass drops the rest of the batch and ends loudly — a wedged store
+fails every write the same way, and a minute apiece over 13,560 verdicts is
+nine days of a pass that should end in three minutes. A cut write publishes
+nothing and the url re-earns its verdict next sweep, the same bargain an
+abandoned dial gets.
+
 **NOTHING IN THE SYNC PLANE KNOWS THAT `l` IS THE TAG OR THAT `prime` IS THE
 VALUE.** That is the whole point of a gate being a filter: another monitor
 spelling its opinion `["l", "online", "monitor.example"]` — or on a tag of its

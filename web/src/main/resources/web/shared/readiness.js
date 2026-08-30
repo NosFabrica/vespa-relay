@@ -132,8 +132,18 @@ export function assess(facts) {
   // --- link 3: have the scores arrived? -----------------------------------
   const scores = f.scores || {};
   if (scores.here == null) return checking(chain);
+  // A sentinel here is the count ASKED and not answered — REFUSED and
+  // TIMED_OUT ride in `here` exactly as they do in `there` (the facts
+  // contract above: "counts, or a sentinel each"). Folded into the
+  // answered-zero branch below, a 20s COUNT timeout raised the blocked
+  // panel — "none of your provider's scores have reached this relay yet" —
+  // for a reader whose scores may be fully mirrored: a claim from a
+  // non-answer, the one conflation every sentinel in this module exists to
+  // prevent. No answer is no claim; keep checking and let a later count
+  // settle it.
+  if (!counted(scores.here)) return checking(chain);
   const pct = fraction(scores.here, scores.there);
-  const here = counted(scores.here) ? scores.here : 0;
+  const here = scores.here;
   if (here === 0) {
     // Zero here IS a claim — this relay answered, and it holds none of that
     // service's cards. Ranked search returns nothing, so this is blocked, not

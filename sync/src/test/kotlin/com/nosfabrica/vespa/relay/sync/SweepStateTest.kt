@@ -104,6 +104,29 @@ class SweepStateTest {
     }
 
     @Test
+    fun `a window disjoint from the claim is not merged across the gap`() {
+        // The resumed-sweep shape: a standing claim, and the slice ABOVE it
+        // pushed as its own segment (`pushResumed`). The first window that
+        // segment completes bisects down from the NEW ceiling, so it lands
+        // disjoint from the claim — and a min/max merge absorbed the
+        // un-compared gap between 2_000 and 3_000, which an interruption then
+        // persisted: a history audit recorded as verified with a hole in it.
+        val state = SweepState(null)
+        state.advance(SweepState.keyFor(mirror, relay, notes), 1_000, 2_000)
+        state.advance(SweepState.keyFor(mirror, relay, notes), 3_000, 4_000)
+        val mark = assertNotNull(state.reconciled(SweepState.keyFor(mirror, relay, notes)))
+        assertEquals(1_000, mark.downTo)
+        assertEquals(2_000, mark.upTo, "a claim may only ever mean 'everything in here was compared'")
+
+        // The disjoint window's progress is forfeited, not banked — but the
+        // moment the segment reaches back down to the claim, the touch merges
+        // and the region is one range again, honestly.
+        state.advance(SweepState.keyFor(mirror, relay, notes), 2_001, 2_999)
+        assertEquals(1_000, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.downTo)
+        assertEquals(2_999, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.upTo)
+    }
+
+    @Test
     fun `the cursor ignores the time bounds and nothing else`() {
         val state = SweepState(null)
         state.advance(SweepState.keyFor(mirror, relay, notes), 1_000, 2_000)

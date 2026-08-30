@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -232,13 +233,21 @@ internal class RosterBuilder(
         // discovered universe: the read is chunked by `#d`, and the fan-out
         // discovers an order of magnitude more urls than it dials.
         val negentropy =
-            runCatching { speaksNegentropy(asksByUrl.keys.toList()) }.getOrElse {
+            try {
+                speaksNegentropy(asksByUrl.keys.toList())
+            } catch (e: CancellationException) {
+                // A rebuild cancelled at shutdown is not a store that could not
+                // answer — swallowed here it printed the could-not-read line
+                // during every ordinary stop, which is a wolf cry against the
+                // one line that matters when the store really cannot.
+                throw e
+            } catch (e: Exception) {
                 // The read throws rather than answering partially, and an
                 // unread verdict is UNMEASURED — every ask keeps trying, which
                 // is what this did before it could read one at all. Said out
                 // loud because the alternative reading, "no relay speaks
                 // negentropy", would stop every audit in the router.
-                System.err.println("router: could not read the NIP-77 verdicts (${it.message?.take(120)}) — audits will try every relay this rebuild")
+                System.err.println("router: could not read the NIP-77 verdicts (${e.message?.take(120)}) — audits will try every relay this rebuild")
                 emptyMap()
             }
         // SEALED HERE, and this is the only place the two halves are ever

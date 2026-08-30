@@ -482,7 +482,15 @@ function drawVerdicts(box, groups, nowSec) {
           (u.gradeCurrent ? "" : "; the router has retired this grade and will re-take it");
         left.append(" ", badge);
       }
-      if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));
+      // Struck rather than hidden when the verdict has aged out or its rules
+      // epoch moved on — the same bargain the grade badge makes two lines up:
+      // the reader sees what was decided AND that the router no longer acts
+      // on it.
+      if (u.stable === false) {
+        const badge = el("span", u.stableCurrent ? "badge bad" : "badge retired", "inconsistent");
+        if (!u.stableCurrent) badge.title = "the router has retired this refusal and will re-measure";
+        left.append(" ", badge);
+      }
       row.append(left, right);
       // ONE evidence line, and NAMED — the two verdicts answer different
       // questions about the same url, and an unlabelled sentence is read as

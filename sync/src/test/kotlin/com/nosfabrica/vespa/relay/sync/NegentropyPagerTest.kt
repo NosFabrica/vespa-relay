@@ -464,6 +464,31 @@ class NegentropyPagerTest {
         }
 
     @Test
+    fun `a per-kind slice the peer still refuses falls to paging, never to the floor`() =
+        runBlocking {
+            // The kind split is a retry, not an answer. Here the second is
+            // dense at the PEER for every kind while our side of it is thin,
+            // so each per-kind reconcile hands the slice straight back through
+            // `onUnreconcilable` — and that hook used to be `{ }`: the slice
+            // was neither reconciled nor paged, `stillOver` never counted it,
+            // the surrounding window completed and the cursor claimed it, and
+            // events dense at the peer but absent here — a spam burst we never
+            // mirrored, the exact thing an audit exists to find — stayed
+            // unreachable on every later audit. The KDoc's terminal fallback
+            // ("Page it over REQ. Always available") must actually run.
+            val shape = Filter(kinds = listOf(1, 7))
+            val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
+            val peer = FakePeer(hot, cap = 5_000)
+            val out = pager(FakeIndex(Density(perSecond = 0)), peer).sweep(mirror, relay, shape, shape.copy(since = 1_000, until = 1_999)) {}
+
+            assertTrue(out.complete)
+            assertTrue(
+                peer.pagedRanges.any { 1_500L in it },
+                "a per-kind slice refused at any window size must be paged over REQ: ${peer.pagedRanges}",
+            )
+        }
+
+    @Test
     fun `a single-kind second the peer will not reconcile is paged`() =
         runBlocking {
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))

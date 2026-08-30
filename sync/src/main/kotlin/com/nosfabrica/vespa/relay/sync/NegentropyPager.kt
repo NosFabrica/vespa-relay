@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import kotlinx.coroutines.CancellationException
 
 /**
  * Sizes for the window stack. All three are counts of EVENTS; the pager turns
@@ -91,7 +92,17 @@ internal class StoreWindowIndex(
 ) : NegentropyLocalIndex {
     // A count that fails is not fatal — quartz falls back to letting the peer's
     // refusal do the splitting — so it must not take the sweep down with it.
-    override suspend fun count(window: Filter): Int? = runCatching { store.count(window) }.getOrNull()
+    // Cancellation is not a failed count, though: swallowed, a cancelled sweep
+    // read "uncountable" and walked into the reconcile it was being stopped
+    // from — the trap [IngestPipeline.dropDuplicates] names.
+    override suspend fun count(window: Filter): Int? =
+        try {
+            store.count(window)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
 
     override suspend fun entriesFor(window: Filter): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
 }
@@ -574,10 +585,27 @@ internal class NegentropyPager(
                     continue
                 }
                 try {
+                    // A slice INSIDE the per-kind reconcile that the peer still
+                    // refuses at any size lands on this hook, not in the catch —
+                    // quartz hands it over instead of throwing, exactly as the
+                    // outer sweep's `onUnreconcilable` documents. This hook was
+                    // `{ }`: a (kind, second) denser than the peer's cap AT THE
+                    // PEER while thin here — a spam burst we never mirrored,
+                    // the exact thing an audit exists to find — was neither
+                    // reconciled nor paged, and the surrounding window then
+                    // completed and was claimed by the cursor with the slice's
+                    // events unreachable on every later audit. The KDoc's own
+                    // terminal fallback ("Page it over REQ. Always available")
+                    // now actually runs for it.
+                    var pagedSlices = 0
                     downloaded +=
                         peer
-                            .reconcile(url, perKind, PrimedIndex(local, perKind, mine), target, null, { }, onEvent)
+                            .reconcile(url, perKind, PrimedIndex(local, perKind, mine), target, null, { slice ->
+                                pagedSlices++
+                                downloaded += peer.page(url, slice, onEvent)
+                            }, onEvent)
                             .downloaded
+                    if (pagedSlices > 0) stillOver++
                 } catch (_: NegentropySyncException) {
                     stillOver++
                     downloaded += peer.page(url, perKind, onEvent)

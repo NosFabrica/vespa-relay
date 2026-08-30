@@ -600,8 +600,14 @@ class ConsistencyPass(
         // in the middle must not throw away what was already
         // proved. Guarded, because these are signed public
         // statements and one failing to write must not take the
-        // pass down.
-        runCatching {
+        // pass down — but NOT with `runCatching`, which swallows
+        // CancellationException: this write runs INSIDE the
+        // per-url deadline, and a deadline that fired mid-write
+        // and was eaten here let `measureOne` return normally
+        // while the job was cancelled — the url filed as
+        // ABANDONED by the caller after `decided` already counted
+        // it, and the published partition stopped summing.
+        try {
             record.publishConsistency(
                 url,
                 consistent = answer == RelayConsistency.Verdict.CONSISTENT,
@@ -613,6 +619,9 @@ class ConsistencyPass(
                 // out of it — see [RelayVerdictRecord.publishConsistency].
                 anchorDays = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60),
             )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
         }
     }
 
