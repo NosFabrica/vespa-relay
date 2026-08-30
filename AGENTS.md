@@ -3939,7 +3939,12 @@ Reach for it first.
   forever while the container logs `No response / error from config server. This
   is normal before an application package is deployed.` The bench bootstraps
   itself (`VespaEventStore.open(autoDeploy = true)` → `deployIfAbsent`, which
-  deploys AND waits for serving), so just run it and let it deploy.
+  deploys AND waits for serving), so just run it and let it deploy — but WAIT FOR
+  THE CONFIG SERVER FIRST. `deployIfAbsent` gives up after two minutes, and a
+  container still booting eats that whole budget, so the bench throws before
+  printing a single line (and a grep for `COST-BENCH` shows an empty file and a
+  clean exit code, which reads like a bench that ran and found nothing):
+  `until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done`
 
   Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
   20k-event batches — the ratios are what travel, not the absolute times:
@@ -4007,6 +4012,47 @@ Reach for it first.
   setting can exceed 2048. `MAX_INBOUND_QUEUE` was sized for MEMORY ("16k events
   is a few hundred MB") and now binds write efficiency too: one constant, two
   unrelated concerns.
+
+  ### …and on an all-fresh burst, shape does not matter at all
+
+  The row above is a mirror's steady state. A sudden burst of genuinely NEW
+  events is the opposite regime, and the same three shapes over 100k fresh
+  events answer it flatly:
+
+  | `concurrency x batch` | us/event | ev/s | `lock.ingest.wait` | `hold` | `write` |
+  |---|---:|---:|---:|---:|---:|
+  | `8 x 1024` | 377 | 2,656 | **243.9s** | 37.6s | 36.2s |
+  | `2 x 8192` | 401 | 2,493 | 31.9s | 39.6s | 39.4s |
+  | `1 x 16384` | 420 | 2,378 | — | 36.7s | 36.6s |
+
+  **Within 11%, and if anything DECREASING with width.** In every row `write`
+  is 96-99% of `hold`: the lock is held essentially the whole wall clock, and
+  essentially all of that holding is the write itself. There is no non-write
+  time inside the lock to reclaim, so **removing or striping the writer mutex
+  cannot make a burst faster** — a burst is engine-bound, and the feed client
+  already pipelines 32 connections inside a single `putAll`.
+
+  The eight-worker row is the cleanest proof: `lock.ingest.wait 243.9s` across a
+  37.6s wall — each worker queued ~30 of 37.6 seconds — for the SAME throughput
+  as one worker that waits for nothing. **Contention here is a symptom, not a
+  cause**; the workers are queueing for a resource that is already saturated.
+  Read `lock.*.wait` against `write`/`hold` before concluding a lock is a
+  bottleneck, or the 98/2 and burst rows look identical and are opposites.
+
+  Two things follow. Wider batches are safe for bursts as well as 9x better for
+  the steady state — the 6% here is inside the noise of a shared box. And if a
+  burst must be absorbed FASTER, the lever is the feed client or Vespa, not the
+  router's pipeline: `VESPA_FEED_CONNECTIONS` / `VESPA_FEED_STREAMS` /
+  `VESPA_FEED_INFLIGHT_FACTOR`, and `VespaFeed.statusLine()` — acks, inflight
+  window, latency, exceptions, already computed and never printed by the router
+  — is the instrument that says whether the client is throttling itself or the
+  engine is pushing back. Nothing here can tell those apart today.
+
+  What a burst still costs is not throughput but STARVATION: for its ~40s every
+  other writer in the process (verdict edits, the healer, the sweep) queues on
+  that same mutex, which is what `EDIT_DEADLINE_MS` was written for. This bench
+  runs no other writers, so it does not measure that; `lock.gate.wait` during a
+  burst is the number nobody has.
 
   The operator-level fix needs no code: `SYNC_INGEST_CONCURRENCY=2
   SYNC_INGEST_BATCH=8192`. **The formula was deliberately NOT changed**, because
