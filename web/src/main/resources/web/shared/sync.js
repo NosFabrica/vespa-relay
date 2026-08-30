@@ -741,7 +741,7 @@ export const POOL_LABELS = {
   [POOL_LIVE]: ["live", "Tail subscriptions held open. No worker sits on these — events arrive the moment they exist, and the socket is the whole cost."],
   [POOL_CATCHING_UP]: ["catching up", "Paging forward over what each relay's band does not cover yet — the ordinary sync, newest-first towards the last pass."],
   [POOL_REFETCHING]: ["re-fetching the past", "Paging over history the band ALREADY covers, because the stream's `refetchThePastSeconds` expired it. Same walk as a catch-up and a completely different bill: these relays are re-downloading years."],
-  [POOL_NEGENTROPY]: ["negentropy", "Reconciling the covered past over NIP-77 and downloading only the difference — the pass that finds what no catch-up ever saw. `negentropyConcurrency` is its budget."],
+  [POOL_NEGENTROPY]: ["negentropy", "Reconciling the WHOLE past over NIP-77 and downloading only the difference. It does not stop at what the bands cover, and that is the point: a relay that back-filled behind a catch-up leaves the band saying `walked` and the events missing, so a pass bounded by the bands could never find them. Comparing id sets rather than pages is what makes the whole range affordable. `negentropyConcurrency` is its budget."],
   [JOB_VISITING]: ["visits", "How many relays may be VISITED for this stream at once — its share of the dial width. A visit that cannot get one of these does not dial at all, so this bounds simultaneous TLS handshakes and not merely work."],
   [POOL_BETWEEN]: ["between jobs", "In none of the four: claiming a socket, working out what an ask still owes, or draining the healer's queue on the way out of a visit. Ordinary and usually brief — a row that sits here is one to look at."],
 };

@@ -1950,7 +1950,23 @@ own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
 sync of the past` is the whole past re-checked on the stream's
 `negentropySyncThePastSeconds` clock, whose purpose is to find what no catch-up ever saw; and
 `negentropy sync of the provider's own records` is the retraction comparison,
-the same clock and the same full-past sweep. Negentropy is NOT a synonym for the
+the same clock and the same full-past sweep.
+
+**THE BANDS CLOCK THAT SWEEP; THEY DO NOT BOUND IT**, and nine places in this
+repo had drifted into saying "reconcile the covered past" — a phrase that reads
+as the opposite. The paging pools take their legs from `SyncBands.legs`, so
+outside the band is `catching-up` and inside it is `re-fetching`; the audit
+hands `ask.filter` to `NegentropyPager.sweep` VERBATIM, and the range is
+`filter.since ?: PLAUSIBLE_FLOOR` up to `now - slackSeconds`. Nothing subtracts
+what is already covered, and it must not: a relay that back-filled behind a
+catch-up leaves the band claiming that ground and the store missing the events,
+so a sweep narrowed to what the band does not cover could never find them —
+which is the pass's entire reason to exist. The bands decide only WHEN, through
+`auditDueAt` off the last `reconciledThrough` stamp, and an ask with no stamp is
+`AuditClock.NEVER_AUDITED`, which is ALWAYS due — so a relay's first audit
+reconciles a history the bands cover none of. What makes the full range
+affordable every time is that a reconcile compares ID SETS: a range that already
+agrees costs round trips and no events. Negentropy is NOT a synonym for the
 audit: the sweep pages any window a peer will not reconcile, and a static
 stream's whole backfill goes either way on `sync` — so "reconciling" alone never
 told a reader which of the two jobs was running, which is the half they were

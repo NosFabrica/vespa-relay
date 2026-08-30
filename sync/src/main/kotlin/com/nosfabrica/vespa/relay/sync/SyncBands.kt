@@ -285,7 +285,8 @@ class SyncBands(
      * Say WHICH streams have no way back into their own past, at boot.
      *
      * A stream re-reads history two ways: [SyncStream.negentropySyncThePastSeconds] reconciles
-     * the covered past and downloads the difference, and
+     * the whole past — these bands clock that pass, they do not bound it — and
+     * downloads the difference, and
      * [SyncStream.refetchThePastSeconds] expires the band so the past is walked
      * again. With neither, a walk that missed a window — a relay that
      * back-filled after we passed it, a leg that recorded a band on a page it

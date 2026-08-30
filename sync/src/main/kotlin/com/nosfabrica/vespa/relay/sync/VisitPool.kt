@@ -1092,10 +1092,26 @@ internal class VisitPool(
 
     /**
      * The weekly (or whatever `negentropySyncThePastSeconds` says) negentropy audit: when the
-     * band's last full pass has aged past the knob, reconcile the covered past
-     * in windows and download only the diff. Staggering is free — each relay's
+     * band's last full pass has aged past the knob, reconcile the WHOLE past in
+     * windows and download only the diff. Staggering is free — each relay's
      * band ages on its own clock — so the steady state is
      * `roster / negentropySyncThePastSeconds`, a trickle, and no cap is needed.
+     *
+     * **THE BANDS SCHEDULE THIS PASS; THEY DO NOT BOUND IT.** The ask's filter
+     * goes to [NegentropyPager.sweep] verbatim, so the range is
+     * `filter.since ?: PLAUSIBLE_FLOOR` up to the sweep's head — no
+     * [SyncBands.legs], no subtraction of what is already covered. That is the
+     * whole point of the pass and not an oversight: a relay that back-filled
+     * behind a catch-up leaves the band claiming that ground and the store
+     * missing the events, so a sweep narrowed to what the band does NOT cover
+     * could never find them. The bands decide only WHEN — `auditDueAt` off the
+     * last `reconciledThrough` stamp, and an ask with no stamp is
+     * [AuditClock.NEVER_AUDITED], which is always due — so a relay's first
+     * audit reconciles a history the bands cover none of.
+     *
+     * The affordable part is that a reconcile compares ID SETS: a range that
+     * already agrees costs the round trips and no events, which is what lets
+     * the range be the whole of it every time.
      */
     private suspend fun sweepAudit(
         ask: RosterBuilder.Ask,
@@ -1537,7 +1553,8 @@ internal class VisitPool(
          *  - [POOL_LIVE] a held subscription: no worker, events as they exist.
          *  - [POOL_CATCHING_UP] paging forward over what the band does not cover.
          *  - [POOL_REFETCHING] paging over what it DOES — `refetchThePastSeconds`.
-         *  - [POOL_AUDITING] reconciling the covered past, both audits.
+         *  - [POOL_AUDITING] reconciling the whole past, both audits — see
+         *    [sweepAudit] for why the bands schedule it and do not bound it.
          *
          * A visit between them — claiming its socket, working out what an ask
          * still owes, draining the healer — carries no pool word at all, and

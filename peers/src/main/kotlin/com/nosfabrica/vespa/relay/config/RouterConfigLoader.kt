@@ -217,7 +217,7 @@ object RouterConfigLoader {
                 // name, honored with a nudge — a renamed key must never
                 // silently turn a deployment's audits off.
                 // Renamed twice, and both older spellings still parse: the
-                // knob clocks a NEGENTROPY reconcile of the covered past, and
+                // knob clocks a NEGENTROPY reconcile of the whole past, and
                 // neither `auditSeconds` nor `verifySeconds` said which of the
                 // two re-checks it schedules — the other one now being
                 // `refetchThePastSeconds`, over a different transport, for a
@@ -231,7 +231,7 @@ object RouterConfigLoader {
                         s.hasPath("auditSeconds") -> {
                             System.err.println(
                                 "router: stream '$name' uses auditSeconds — renamed to negentropySyncThePastSeconds " +
-                                    "(it clocks the reconcile of the covered past, against relays that answer a NEG-OPEN); " +
+                                    "(it clocks the reconcile of the whole past, against relays that answer a NEG-OPEN); " +
                                     "the old name still works",
                             )
                             s.getLong("auditSeconds")
@@ -594,7 +594,7 @@ object RouterConfigLoader {
         }
         require(!s.hasPath("sync")) {
             "router: stream '$stream' sets `sync` beside a relaySource — the pool has one shape for every " +
-                "stream: page forward from the band's edge, reconcile the covered past on the " +
+                "stream: page forward from the band's edge, reconcile the whole past on the " +
                 "negentropySyncThePastSeconds " +
                 "audit. `sync` chooses transport for static `urls` streams only; writing it here would claim " +
                 "a choice nothing reads"
