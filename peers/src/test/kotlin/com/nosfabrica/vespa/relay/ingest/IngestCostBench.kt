@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlin.random.Random
 import kotlin.test.Test
 
 /**
@@ -171,7 +172,27 @@ class IngestCostBench {
             run(store, Arm("duplicate notes (repeat)", base, probe = false))
             run(store, Arm("duplicate notes (repeat)", base, probe = true))
 
-            // 6. What a SUPERSESSION pre-filter would cost: the batched read
+            // 6. THE PRODUCTION SHAPE, which none of the pure arms above can
+            //    show: 98% already held, 2% new. A 100%-duplicate batch is
+            //    dropped entirely by the probe — it never reaches verify, never
+            //    reaches the write, and never takes the writer lock — so it
+            //    prices the rejection path and nothing else. A mirror's real
+            //    batch carries a couple of percent that must be WRITTEN, and
+            //    the write is where the lock is held. The pair of arms above
+            //    brackets this one; only this one says which side dominates.
+            //
+            //    Shuffled with a fixed seed so the new events are spread
+            //    through the batch rather than sitting in one tail, and so two
+            //    runs compare. Distinct generations per arm: the first arm
+            //    STORES its 2%, and reusing them would make the second arm
+            //    100% duplicate without saying so.
+            val keep = CORPUS * 98 / 100
+            val add = CORPUS - keep
+            run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 5)).shuffled(Random(7)), probe = false))
+            run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 6)).shuffled(Random(7)), probe = true))
+            run(store, Arm("98% dup / 2% fresh (repeat)", (base.take(keep) + notes(add, gen = 7)).shuffled(Random(7)), probe = true))
+
+            // 7. What a SUPERSESSION pre-filter would cost: the batched read
             //    that answers "do we hold a newer version of this address", in
             //    the shape stage C uses for its guards — chunked by author,
             //    bounded fan-out. Priced against arm 3's per-event cost, this
