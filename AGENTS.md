@@ -1057,11 +1057,26 @@ relay/src/main/resources/
                         websocket, so every chart here is a rollup read.
                         The router's state is TWO cards off one `sync` section,
                         split by what each row decides. *Sync coverage* answers
-                        "is the mirror keeping up": the heartbeat and the
-                        constraint, a block per stream, then *the pipeline* —
-                        the pool, ingest, the healer, the push, which move
-                        EVENTS — and last the coverage bars, which are where it
-                        has WALKED rather than what it is doing. *Relay monitor*
+                        "is the mirror keeping up": the constraint line, then
+                        ONE BORDERED SECTION PER STREAM, then *the pipeline* —
+                        ingest, the healer, the push and the pool's lifetime
+                        counters, which move EVENTS — and last the coverage
+                        bars, which are where it has WALKED rather than what it
+                        is doing. THE STREAM IS THE SECTION and it is the only
+                        place a stream appears: its phase, its share of the
+                        roster, its caps and clocks as one row per job, and its
+                        five pool tables. It was drawn FOUR times before that —
+                        a phase line, a pool section repeating it, and its name
+                        in the first column of two card-level tables once per
+                        job — off four independent walks of `progress.streams`,
+                        so the reader did the join and the two roster lines came
+                        off different members and could disagree. The join is
+                        `streamSections` (shared/sync.js) now, done once and
+                        pinned; the card level keeps only what is not about any
+                        one stream, and the pool-wide summary is drawn above
+                        more than one stream and not at all below that, where it
+                        would be the single stream's own line again.
+                        *Relay monitor*
                         answers "which relays may we dial at all": the corpus
                         tree, then the url round-up (`aliasSource`, the store
                         walk that derives the candidate set — its own row
@@ -1070,11 +1085,14 @@ relay/src/main/resources/
                         fitness, whose unit is a URL, whose clock is the
                         monitor's own and whose output is a signed 30166 record
                         — so it sits beside the panel that reads those records
-                        back. `splitProcessors` (shared/sync.js) is the rule and
-                        it is a PARTITION: a processor name the page has not been
-                        taught draws on the sync side rather than nowhere, since
-                        dropping a row to keep a card tidy is how a new job runs
-                        unwatched. The pin that keeps the JS honest against the
+                        back. The rule for a processor name the page has not
+                        been taught is still that it DRAWS — under the router's
+                        own word, off `BACKGROUND` in shared/processors.js —
+                        since dropping a row to keep a card tidy is how a new
+                        job runs unwatched. `splitProcessors` was that rule while
+                        the two planes shared one array; each publishes its own
+                        document now, so a row is on a card because that plane
+                        registered it. The pin that keeps the JS honest against the
                         Kotlin that feeds it is `SyncVocabularyTest`: every
                         published member must have a term, and every term a
                         published member, because a name added on one side only
@@ -1605,11 +1623,21 @@ now, and `inFlight` rows carry `pass`.
 
 **…and a FIFTH member says what is running that is not a stream at all.**
 `processors` (`Processors`, published under `sync.progress.processors` and drawn
-as *Also running* on the coverage card) is the other half of "what is this
+as *the pipeline* on the coverage card) is the other half of "what is this
 router doing". A stream is the part an operator CONFIGURED; these run beside
 them with nothing configured about them, and until they were published the only
 trace any of them left was a stderr line on a container whose logs rotate inside
-the hour:
+the hour.
+
+The `visits` row is the exception, and what it DRAWS is not what it publishes:
+`roster`, `rosterVisits`, `awaitingVisit`, `visiting` and `liveHeld` are the
+five members the card's pool summary partitions, so the row drew them a second
+time as a sentence, in a second vocabulary (`24 visiting` against `24 with a
+worker now`), a few hundred pixels below the line that partitions them. The
+summary owns the split — it states the arithmetic they are parts of, and it can
+be cut per stream — and the row keeps what nothing else counts, which is what
+the pool has DONE since boot. All five are still published, and the terms test
+still pins them; `processorFact` is where the choice lives:
 
 | processor | what it is | how far along it is |
 |---|---|---|

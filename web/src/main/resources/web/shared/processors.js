@@ -69,12 +69,16 @@ function chip(text, tone, title) {
  * this card was "the monitor is between passes" and the truth was "the monitor
  * is working, on the one part of it nothing published".
  *
- * ONE TABLE, TWO CARDS. The rows are split by `splitProcessors` into what the
- * MONITOR decides (which urls may be dialled at all) and what the SYNC does
- * (moving events), because those are two questions and reading one array meant
- * holding both at once. This table is the labels and the tooltips for either
- * side; the split itself is a judgement and lives in `/web/shared/sync.js`
- * where it can be tested.
+ * ONE TABLE, TWO CARDS, and the split is no longer this file's to make. It was
+ * `splitProcessors`, a partition of one shared array into what the MONITOR
+ * decides (which urls may be dialled at all) and what the SYNC does (moving
+ * events) — two questions that reading one array meant holding at once. Each
+ * plane keeps its own `Processors` and publishes its own document now, so a row
+ * is on a card because that plane registered it. What survives is this table,
+ * which is the labels and the tooltips for either side, and the rule it is
+ * written to: a name NOT in it is drawn under the router's own word rather than
+ * dropped, because dropping a row to keep a card tidy is how a new job runs
+ * unwatched.
  *
  * The probe passes' number is `probeProgress`, in `/web/shared/sync.js` — it
  * sums across streams, drops the urls the fold removed from BOTH halves, draws
@@ -382,17 +386,21 @@ function processorFact(p) {
     return cell;
   }
   if (p.roster != null) {
-    // The pool's one line, and the arithmetic it exists to make visible:
-    // visiting is counted in (relay, stream) UNITS now and several may share
-    // one socket, so this is an upper bound on the connections held.
-    add(`${fmt(p.roster)} relay(s) on the roster`, "roster");
-    // …and the same roster in the UNITS the three counts after it are in. A
-    // relay several streams want is one roster entry and several units, so
-    // "412 on the roster · 7 visiting" invites a subtraction that mixes them.
-    if (p.rosterVisits) add(`${fmt(p.rosterVisits)} stream-visit(s)`, "rosterVisits");
-    if (p.awaitingVisit) add(`${fmt(p.awaitingVisit)} awaiting a visit`, "awaitingVisit");
-    add(`${fmt(p.visiting || 0)} visiting`, "visiting");
-    add(`${fmt(p.liveHeld || 0)} live subscription(s)`, "liveHeld");
+    // THE POOL'S LIFETIME COUNTERS, and not its split.
+    //
+    // This row used to open with `roster`, `rosterVisits`, `awaitingVisit`,
+    // `visiting` and `liveHeld` — the five members the sync card's pool
+    // summary partitions, drawn a second time as a sentence a few hundred
+    // pixels below the line that partitions them. Five numbers twice, in two
+    // vocabularies (`24 visiting` there, `24 with a worker now` here), which is
+    // the shape that makes a reader check whether they are the same quantity.
+    //
+    // They are the same quantity, and the summary is where they belong: it
+    // states the arithmetic they are parts of, and it can be drawn per stream.
+    // What no other panel counts is everything below — what this pool has DONE
+    // since boot — so that is what the row keeps. `roster` is still the key
+    // that identifies the row, because it is the member no other processor
+    // publishes.
     if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
     if (p.negentropyRunning) add(`${fmt(p.negentropyRunning)} negentropy sync(s) now`, "negentropyRunning");
     if (p.negentropyRuns) add(`${fmt(p.negentropyRuns)} negentropy sync(s) of the past`, "negentropyRuns");

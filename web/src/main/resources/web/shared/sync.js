@@ -766,7 +766,7 @@ export const POOL_LABELS = {
  * ROOT and each of its rows NAMES its stream, because a tail is held per
  * (relay, stream) pair. Either way every row here knows whose it is, which is
  * what lets the same rows be grouped by pool or by stream — see
- * [poolsByStreamOf].
+ * [streamSections].
  *
  * ## What it will not do
  *
@@ -886,59 +886,147 @@ function groupByPool(rows, owner = null) {
 }
 
 /**
- * THE SAME ROWS, CUT BY STREAM instead of by the mirror — one entry per stream
- * riding the pool, each carrying its own four pools and its own totals.
+ * THE ORDER THE JOBS ARE DRAWN IN — the pool's own, cheapest first.
  *
- * ## Why both cuts exist
- *
- * [poolsOf] answers "what is this mirror doing": one negentropy table, every
- * stream's reconciles in it, which is the comparison that matters when the
- * question is where the sockets went. It cannot answer the next question —
- * WHICH STREAM is spending them — because the answer is a column an operator
- * has to read down and add up.
- *
- * That question is the one the per-stream budgets are configured against
- * (`visitConcurrency`, `maxLiveConcurrency`, `refetchConcurrency`,
- * `negentropyConcurrency`), so it needs the cut that matches the knob: this
- * stream's four pools, against this stream's caps, over this stream's roster.
- *
- * ## The rows are the same rows
- *
- * Not a second read of the document and not a second judgement about it —
- * [heldRows] once, [groupByPool] per stream. A row therefore appears in
- * exactly one stream's block and the blocks sum to the mirror's, so the two
- * cuts can be drawn on one card without disagreeing.
- *
- * A stream appears when it is riding the pool, INCLUDING when it is holding
- * nothing: four empty tables under a stream's name is the answer "this stream
- * is doing none of it", and it is the answer a starved stream gives. One that
- * has not started rotating is left out entirely — it has no roster to be a
- * share of yet.
+ * `PoolLimits.JOBS` publishes them in this order and `AuditSchedule` publishes
+ * a subset, so a merged table has to choose one. The router's is the right one
+ * and it is not alphabetical: a dial width, a tail budget, then the two walks
+ * that spend real bandwidth.
  */
-export function poolsByStreamOf(progress, held = heldRows(progress)) {
-  const rows = held.rows;
+const JOB_ORDER = [JOB_VISITING, POOL_LIVE, POOL_CATCHING_UP, POOL_REFETCHING, POOL_NEGENTROPY];
+
+/**
+ * WHAT A STREAM MAY SPEND ON A JOB AND WHEN THAT JOB COMES DUE — one row per
+ * job, out of the two lists that each carried half of it.
+ *
+ * ## Why they are one row
+ *
+ * They were two tables, and both were keyed by (stream, job): the same four
+ * job names down two first columns, in two panels, at two ends of the card.
+ * That is not two subjects. `re-fetching the past` is capped at 4, has 4 in
+ * use, has turned 1,207 asks away, and has 400 more waiting on a 30-day clock
+ * — one sentence about one job, which a reader had to assemble from two tables
+ * by matching a word.
+ *
+ * And the halves only mean anything TOGETHER. A cap at its ceiling is not a
+ * fault; a cap at its ceiling with work backing up behind it is the cap
+ * biting, and the queue behind it was in the other table. Read across one row
+ * it is a glance.
+ *
+ * ## What it will not do
+ *
+ * DROP A JOB. The two lists are near-subsets today — every scheduled job is
+ * also a capped one — and this does not assume it: the union is walked, in
+ * [JOB_ORDER] with anything the router has since added on the end, and a row
+ * with only one half draws the other as absent. `limitsOf` already drops
+ * uncapped-and-undeferred rows, so a job that is only ever scheduled arrives
+ * here with no limit at all, which is a shape this must survive rather than a
+ * shape it may assume away.
+ */
+export function jobsOf(limits, schedule) {
+  const by = new Map();
+  const seen = [];
+  const slot = (job) => {
+    if (!by.has(job)) {
+      by.set(job, { job, label: POOL_LABELS[job]?.[0] || job || "—", limit: null, schedule: null });
+      seen.push(job);
+    }
+    return by.get(job);
+  };
+  for (const l of limits) slot(l.job).limit = l;
+  for (const r of schedule) slot(r.job).schedule = r;
+  // The router's order, then whatever it has since added — never dropped for
+  // being a word this page was not taught.
+  const order = [...JOB_ORDER.filter((j) => by.has(j)), ...seen.filter((j) => !JOB_ORDER.includes(j))];
+  return order.map((j) => by.get(j));
+}
+
+/**
+ * ONE STREAM, WHOLE — its phase, its share of the roster, its four pools, its
+ * budgets and its schedule, in one object per configured stream.
+ *
+ * ## Why the section and not four cuts of four tables
+ *
+ * The card used to draw a stream FIVE TIMES: a one-line block under *streams*
+ * saying what it was riding, a pool section repeating that same line and
+ * holding its tables, and a row per (stream, job) in each of two card-level
+ * tables whose first column was the name again. Nothing joined them — they
+ * were four independent walks of `progress.streams` — so an operator asking
+ * "what is `content` doing" read four places and did the join by eye, and the
+ * two roster numbers in the first two of them came off different members and
+ * could disagree.
+ *
+ * A stream is one subject. It gets one section, and the join that used to be
+ * the reader's is done here, once, where it can be checked.
+ *
+ * ## What it promises
+ *
+ * A SECTION PER CONFIGURED STREAM, in the document's order, whatever the
+ * stream is doing. The cut this replaced left out a stream that had not
+ * started rotating, which was right when a section was only a place to hang
+ * pool tables and wrong now that it is the only place a stream appears at all:
+ * a stream in `router.conf` that has never come up is exactly the one an
+ * operator goes looking for, and it would have been on no card.
+ *
+ * AND EVERY ROW UNDER EXACTLY ONE OF THEM. Held rows, limit rows and schedule
+ * rows are all attributed by stream name, and whatever no configured stream
+ * claims goes to a section of its own rather than being dropped — a tail
+ * naming a stream that has left the config is the row worth seeing. The three
+ * are filtered against ONE `claimed` set for that reason: two of them can only
+ * come from `progress.streams` today, and a promise that holds by construction
+ * is one that stops holding silently when the construction changes.
+ *
+ * [held] is taken rather than read, for the reason [poolsOf] takes it: the two
+ * are drawn on one card off one document, and a second walk would both allocate
+ * a second object per held relay and give the summary a chance to disagree with
+ * the sections under it.
+ *
+ * `jobs` is the two config lists merged on the job they are both keyed by —
+ * see [jobsOf], which is where that join and its no-dropping promise live.
+ *
+ * `holding` is the row count across the four pools, so the card can tell a
+ * stream that is spending nothing from one that is spending a little without
+ * summing the groups itself — four empty tables and a line saying so are the
+ * same answer, and only one of them is worth 200 pixels.
+ */
+export function streamSections(progress, held = heldRows(progress)) {
+  const limits = limitsOf(progress);
+  const schedule = scheduleOf(progress);
   const out = [];
   const claimed = new Set();
+  const mine = (list, name) => list.filter((r) => r.stream === name);
   for (const s of progress?.streams || []) {
-    const rotating = s?.phase === ROTATING && s.roster != null;
-    const mine = rows.filter((r) => r.stream === s?.name);
-    if (!rotating && !mine.length) continue;
-    claimed.add(s?.name);
-    const groups = groupByPool(mine, s?.name);
-    out.push({ stream: s?.name || null, groups, totals: streamTotals(s, groups) });
+    const name = s?.name || null;
+    claimed.add(name);
+    const groups = groupByPool(mine(held.rows, name), name);
+    out.push({
+      stream: name,
+      phase: s?.phase || null,
+      phaseForSec: num(s?.phaseForSec),
+      // The one reading here that is a judgement rather than a number: a
+      // rotating stream with an empty roster is waiting on the fitness pass,
+      // and it looks exactly like a busy one from every other member.
+      rotation: rotationOf(s),
+      groups,
+      totals: streamTotals(s, groups),
+      jobs: jobsOf(mine(limits, name), mine(schedule, name)),
+      holding: groups.reduce((a, g) => a + g.rows.length, 0),
+    });
   }
-  // …and whatever no stream claimed, in a block of its own rather than left
-  // out. A live row from a router too old to name its stream, or one naming a
-  // stream that has since left the config, is exactly the row worth seeing —
-  // and this cut promises what the other one does, that every held relay the
-  // document names appears in it exactly once. Only when there IS one: an
-  // empty "unattributed" heading every tick is a mark that never moves.
-  const loose = rows.filter((r) => !claimed.has(r.stream));
-  if (loose.length) {
-    // …and NOT `named` for this one: its heading says only that nothing
-    // claimed these rows, so whatever name a row does carry is worth a column.
-    const groups = groupByPool(loose);
-    out.push({ stream: null, groups, totals: streamTotals(null, groups) });
+  // …and whatever no configured stream claimed. Only when there IS something:
+  // an empty "unattributed" heading every tick is a mark that never moves.
+  const looseRows = held.rows.filter((r) => !claimed.has(r.stream));
+  const looseLimits = limits.filter((r) => !claimed.has(r.stream));
+  const looseSchedule = schedule.filter((r) => !claimed.has(r.stream));
+  if (looseRows.length || looseLimits.length || looseSchedule.length) {
+    // NOT `named` for this one: its heading says only that nothing claimed
+    // these, so whatever name a row does carry is worth a column.
+    const groups = groupByPool(looseRows);
+    out.push({
+      stream: null, phase: null, phaseForSec: null, rotation: null,
+      groups, totals: streamTotals(null, groups),
+      jobs: jobsOf(looseLimits, looseSchedule), holding: looseRows.length,
+    });
   }
   return out;
 }
