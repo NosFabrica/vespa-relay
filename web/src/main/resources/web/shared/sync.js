@@ -735,13 +735,33 @@ const GROUP_ORDER = [...POOL_ORDER, POOL_BETWEEN];
  * Held here rather than in the card for the same reason every other judgement
  * in this module is: the four keys and the four descriptions have to agree, and
  * a mapping split across two files agrees until someone edits one of them.
+ *
+ * ## The two that re-read the past are LABELLED as a pair
+ *
+ * `re-fetching the past` and `negentropy the past` are the mirror's two ways
+ * back into history — the same question over two transports, on two knobs
+ * (`refetchThePastSeconds`, `negentropySyncThePastSeconds`) — and the second
+ * used to be labelled `negentropy`, which named its TRANSPORT while its
+ * sibling named its JOB. Beside each other in the jobs table that read as one
+ * row about time and one about a protocol, and a reader comparing the two
+ * clocks had no cue that they are alternatives at all. Both carry `the past`
+ * now, and the sentence beside each is what separates them.
+ *
+ * The word is used as the knob uses it — `negentropySyncThePastSeconds` is
+ * "negentropy-sync the past", and this is that with the seam taken out.
+ *
+ * ## The label is not the key
+ *
+ * These are display strings, and nothing groups by them: the router's stable
+ * `pool` word is the key and `POOL_NEGENTROPY` is untouched, which is the whole
+ * reason the two were split. A reword here cannot empty a table.
  */
 export const POOL_LABELS = {
   __proto__: null,
   [POOL_LIVE]: ["live", "Tail subscriptions held open. No worker sits on these — events arrive the moment they exist, and the socket is the whole cost."],
   [POOL_CATCHING_UP]: ["catching up", "Paging forward over what each relay's band does not cover yet — the ordinary sync, newest-first towards the last pass."],
   [POOL_REFETCHING]: ["re-fetching the past", "Paging over history the band ALREADY covers, because the stream's `refetchThePastSeconds` expired it. Same walk as a catch-up and a completely different bill: these relays are re-downloading years."],
-  [POOL_NEGENTROPY]: ["negentropy", "Reconciling the WHOLE past over NIP-77 and downloading only the difference. It does not stop at what the bands cover, and that is the point: a relay that back-filled behind a catch-up leaves the band saying `walked` and the events missing, so a pass bounded by the bands could never find them. Comparing id sets rather than pages is what makes the whole range affordable. `negentropyConcurrency` is its budget."],
+  [POOL_NEGENTROPY]: ["negentropy the past", "Reconciling the WHOLE past over NIP-77 and downloading only the difference. It does not stop at what the bands cover, and that is the point: a relay that back-filled behind a catch-up leaves the band saying `walked` and the events missing, so a pass bounded by the bands could never find them. Comparing id sets rather than pages is what makes the whole range affordable. `negentropyConcurrency` is its budget."],
   [JOB_VISITING]: ["visits", "How many relays may be VISITED for this stream at once — its share of the dial width. A visit that cannot get one of these does not dial at all, so this bounds simultaneous TLS handshakes and not merely work."],
   [POOL_BETWEEN]: ["between jobs", "In none of the four: claiming a socket, working out what an ask still owes, or draining the healer's queue on the way out of a visit. Ordinary and usually brief — a row that sits here is one to look at."],
 };
