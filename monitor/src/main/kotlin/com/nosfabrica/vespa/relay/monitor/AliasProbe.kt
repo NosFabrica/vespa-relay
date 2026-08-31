@@ -147,14 +147,21 @@ class AliasProbe(
      * relay that would have answered is one more pass, and the cost of not
      * cutting one is the whole mirror.
      *
-     * **The converse is the half that was missing, and it cost #172.** A
-     * verdict the dial had ALREADY EARNED before the clock fired is not our
-     * timeout talking — the relay answered, and our giving up one step later
-     * does not un-answer it. A pass that threw those away re-graded the corpus
-     * at a cadence set by how long each url's job ran, which is the slowest
-     * relays last and, past a point, never; see [FitnessPass]'s cut-late
-     * branch for what it does with one instead. The rule is the walk's own,
-     * one level up: keep what was proved, publish nothing that was not.
+     * **The converse is the half that was missing.** A verdict the dial had
+     * ALREADY EARNED before the clock fired is not our timeout talking — the
+     * relay answered, and our giving up one step later does not un-answer it.
+     * A pass that threw those away would re-grade the corpus at a cadence set
+     * by how long each url's job ran, which is the slowest relays last and,
+     * past a point, never; see [FitnessPass]'s cut-late branch for what it
+     * does with one instead. The rule is the walk's own, one level up: keep
+     * what was proved, publish nothing that was not.
+     *
+     * That was also the first theory for #172 and it was WRONG — the cause was
+     * the write loop, and [FitnessBudgetLiveProbe] is the measurement that
+     * separated them: against the nine relays the issue names, a whole url job
+     * runs 1.1-11.9s against a 240s budget. Recorded because "the deadline is a
+     * backstop and not the fix for a specific relay" now has a second corpus
+     * behind it.
      */
     fun deadlineMs(url: NormalizedRelayUrl): Long = WINDOWS_PER_URL * idleMs(url)
 

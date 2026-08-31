@@ -348,15 +348,18 @@ class FitnessPass(
                                     // url then aged a whole sweep on a measurement
                                     // the pass had already taken.
                                     //
-                                    // Which urls it threw away was not random. The
-                                    // step after the verdict is the NEG-OPEN, and a
-                                    // reconciliation is rounds of streaming bounded
-                                    // by an idle window rather than a wall clock —
-                                    // so the relays that ran past the budget were
-                                    // the ones slowest to answer, every sweep, for
-                                    // as long as they stayed slow. Their verdicts
-                                    // aged past every `gatedBy` bound while the
-                                    // relay was `prime` the whole time (#172).
+                                    // **NOT #172, and the measurement that says so
+                                    // is worth keeping.** This was the first theory
+                                    // for it — the NEG-OPEN is the last step and
+                                    // had no wall clock, so a slow relay would lose
+                                    // its verdict to the budget every sweep — and
+                                    // [FitnessBudgetLiveProbe] refuted it against
+                                    // the real relays: the whole job runs 1.1-11.9s
+                                    // against a 240s budget, the NEG-OPEN's own
+                                    // share never exceeding the 10s idle window it
+                                    // already had. #172 was the write loop below.
+                                    // This branch is the hole that theory found on
+                                    // the way, which is real and is now shut.
                                     cutLate.incrementAndGet()
                                 } else {
                                     // NO VERDICT IS WRITTEN. Our instrument gave up
@@ -453,6 +456,7 @@ class FitnessPass(
             var wedgedRun = 0
             var wedgedTotal = 0
             // WHERE THIS BATCH PICKS UP, AND WHY THE ORDER IS NOT THE MAP'S.
+            // THIS IS #172.
             //
             // Both wedge limits below END the loop, and the verdicts after the
             // break are dropped. `outcomes` is a [ConcurrentHashMap], so
@@ -462,6 +466,24 @@ class FitnessPass(
             // pass" was true of the urls at the front and false forever of the
             // ones at the back: a healthy relay whose url happened to hash
             // late could never be re-graded, however often the pass ran.
+            //
+            // MEASURED, on the 20,075 graded records
+            // `search-staging.brainstorm.world` was serving — see
+            // [WriteOrderForensicProbe], which rebuilds this very map from them
+            // and walks it. Replayed in bucket order the verdict ages are a
+            // staircase, not a spread: positions 0-12,043 stamped 1.2-1.5h ago,
+            // 12,043-15,555 stamped 29.1-29.9h ago, 15,555-20,072 stamped
+            // 72.3h ago — each cohort a CONTIGUOUS slice, ages decreasing
+            // across it exactly as a loop stamping `now` as it walks would
+            // leave them. 735 crossings between written and not where a
+            // per-url cause predicts ~9,700. Three sweeps, each starting at
+            // position zero, each reaching less far than the last (20,072 ->
+            // 15,555 -> 12,191), and the 7,881 urls past the newest cut had
+            // gone un-regraded for three days.
+            //
+            // The share was the same in every grade — `prime` 55.8% fresh,
+            // `dead` 57.7%, `alias` 61.8%, `silent` 57.7% — which is what
+            // rules out the relay having anything to do with it.
             //
             // So the order is the url, and the batch resumes where the last one
             // stopped. A wedge that costs this pass the tail costs the NEXT
@@ -1252,11 +1274,15 @@ class FitnessPass(
          * property quartz states for its fetch loop, one verb over, and the
          * reason [AliasProbe.deadlineMs] exists at all.
          *
-         * That made this the one step of a url's job able to spend the WHOLE
+         * That makes this the one step of a url's job able to spend the WHOLE
          * per-url budget, and it sits last — after the ladder has settled the
-         * verdict. Left unbounded it took the verdict with it when the budget
-         * ran out, and it took it from the slowest relays first, every sweep
-         * (#172). Three windows: a yes/no about a protocol that has already
+         * verdict, so what it spends is taken from a measurement already in
+         * hand. Measured against real relays ([FitnessBudgetLiveProbe]) it does
+         * not currently come close: 59ms to 10.1s across nine, the ceiling
+         * being [NIP77_IDLE_MS] firing on a relay that declines. That is a
+         * reading of one afternoon, not a bound — the window is re-armed by
+         * traffic, so nothing in it says a busier relay cannot stream for
+         * minutes. Three windows: a yes/no about a protocol that has already
          * been answered by the first NEG-MSG, with room for a slow one.
          */
         const val NIP77_DEADLINE_MS = 3 * NIP77_IDLE_MS

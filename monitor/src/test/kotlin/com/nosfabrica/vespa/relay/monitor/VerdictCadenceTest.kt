@@ -49,8 +49,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * HOW OFTEN A RELAY IS RE-GRADED MUST NOT DEPEND ON HOW LONG ITS JOB TAKES —
- * the rule #172 was the absence of.
+ * HOW OFTEN A RELAY IS RE-GRADED MUST NOT DEPEND ON ANYTHING BUT WHEN IT WAS
+ * LAST GRADED — the rule #172 was the absence of.
  *
  * ## The failure being pinned
  *
@@ -75,26 +75,30 @@ import kotlin.test.assertTrue
  * median no bound short of "never expire" holds, while each bump weakens the
  * gate for every relay that genuinely went bad.
  *
- * ## The two ways a healthy relay's verdict went un-taken
+ * ## What it actually was, and what it was not
  *
- * Both are in [FitnessPass], and both are shaped like starvation rather than
- * like a failed measurement — which is why nothing in the pass's own report
- * ever said anything was wrong.
+ * **THE CAUSE: the write loop's early exits dropped the SAME urls every pass.**
+ * The wedge limits end the batch, and the loop walked a
+ * [java.util.concurrent.ConcurrentHashMap] — hash order, arbitrary but STABLE
+ * across passes. "Every url is measured again next pass" was therefore true of
+ * the head and false forever of the tail. [WriteOrderForensicProbe] rebuilds
+ * that map from the 20,075 records staging was serving and shows the staircase:
+ * three contiguous slices at 1.2-1.5h, 29.1-29.9h and 72.3h, 735 crossings
+ * where a per-url cause predicts ~9,700, and the same fresh share in every
+ * grade. Three sweeps, each from position zero, each reaching less far.
  *
- *  - **A wall clock that fires after the verdict is EARNED threw it away.** The
- *    last step of a url's job is the NEG-OPEN, and a negentropy reconciliation
- *    is rounds bounded by an idle window that every round re-arms — so it was
- *    the one step with no bound of its own and the one able to spend the whole
- *    per-url budget. When it did, [AliasProbe.deadlineMs] cut the job and the
- *    pass published NOTHING, including the `prime` the ladder had already
- *    settled. Slow relays run that budget down; fast ones never approach it. So
- *    the pass re-graded the corpus at a cadence set by per-url job duration.
- *
- *  - **The write loop's early exits dropped the SAME urls every pass.** The
- *    wedge limits end the batch, and the loop walked a [java.util.concurrent.ConcurrentHashMap]
- *    — hash order, arbitrary but STABLE across passes. "Every url is measured
- *    again next pass" was therefore true of the head and false forever of the
- *    tail.
+ * **NOT the cause, though it is a real hole and is fixed here too: a wall clock
+ * that fires after the verdict is EARNED threw it away.** The last step of a
+ * url's job is the NEG-OPEN, an idle-bounded reconciliation that every round
+ * re-arms, so it is the one step able to spend the whole per-url budget — and
+ * when it did, [AliasProbe.deadlineMs] cut the job and the pass published
+ * NOTHING, including the `prime` the ladder had already settled. That predicts
+ * exactly the reported `rtt-read` correlation, which is why it was the first
+ * theory. [FitnessBudgetLiveProbe] measured it against the real relays and it
+ * does not happen: a whole job runs 1.1-11.9s against a 240s budget. Binned by
+ * verdict AGE rather than by rtt, the median read is flat across the cohorts
+ * (664ms fresh, 937ms at 48-96h) — the 20x tail in the issue is what binning by
+ * the rtt itself surfaces out of 74 records.
  */
 class VerdictCadenceTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
