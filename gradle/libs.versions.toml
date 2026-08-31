@@ -74,64 +74,78 @@ app = "0.1.0"
 quartz = "b10be95a6e"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 83cdd0dea9 = store main through PR #89. The range over 23293dae10 is one PR,
-# three commits, and it is the OTHER half of the quartz line above — the two
-# must land together, and this time the reason is a ranking regression the
-# relay was serving.
+# 94be3000a1 = store main through PR #90. One PR, one commit over 83cdd0dea9,
+# and it stands ALONE: the store's quartz ask does not move across the range
+# (`git diff --name-only` names no libs.versions.toml), so the quartz line
+# above is untouched by this bump.
 #
-# WHAT MOVED, and why staging looked unchanged after PR #89 merged: a spliced
-# Trusted List member used to be CLAMPED to its pointer's relevance
-# (`minOf(own, pointer)`), which made the SIGNER's trust the ceiling for
-# everyone the list names. A NIP-85 service key is followed by nobody, so on
-# the `Verified Human` list — signed by a service the observer scores 26 —
-# sixteen members scored 65..100 all collapsed onto 550 x wot(26), tied, came
-# back in the publisher's tag order and sat beneath organic hits from authors
-# trusted 7. The pointer now LIFTS to the best of its own scored members
-# instead: no subject can pass it (the lift is a max over exactly those
-# members), a tie resolves pointer-first (the pointer is appended before its
-# subjects and the sort is stable), and the block's position is decided by the
-# people on the list rather than by whoever signed it. A member the list
-# expressed no confidence about rides the lifted score too, so it stays
-# adjacent to its block. A NIP-32 label has no scored member, so `lifted` is
-# `pointer` and label placement is bit-identical.
+# WHAT MOVED: a search with no `kinds` now fetches the DECLARATION COMPANION —
+# the searching query re-aimed at the Trusted List and Assertion kinds, authors
+# narrowed to the reader's own enrolled signers, default trust floor waived.
+# The store built that companion for a kind-RESTRICTED search only, on the
+# reasoning that a read with no kinds "already recalls every pointer": true of
+# what such a read ADMITS, and not of what fits inside the caller's `limit`. A
+# declaration is signed by a NIP-85 service key — nobody follows it and no
+# reputation tensor ranks it — so it competes for one of those slots from the
+# bottom of the trust curve and loses to ordinary hits.
 #
-# WHAT THIS RELAY SEES: the ORDER of a searching page that splices. Recall is
-# untouched — the same rows, rearranged — and COUNT never counted the
-# expansion's added rows, so it is unmoved. NO SCHEMA MOVES in the range
-# (`git diff --name-only` names no .sd), so there is nothing to deploy on the
-# Vespa side.
+# WHAT THIS RELAY SEES, and the bug that prompted it, measured on staging
+# BEFORE the fix: `?q="Verified Human"` under a lens whose 10040 delegates
+# 30392 to `8e901369…` put that list at organic rank 80, while the five
+# kind-30000 re-publications of it ranked 1..5. So the People chip (kinds:[0],
+# which does build a companion) unpacked all seventeen member profiles, and the
+# Everything chip (no kinds, a page of 40) showed neither the list nor one
+# member of it. Both chips now answer the same way. Recall is otherwise
+# unchanged and COUNT never counted the expansion's added rows, so it is
+# unmoved. The LABEL companion is deliberately NOT extended to unrestricted
+# reads: ungated and author-unconstrained, it would re-fetch rows the ranking
+# had already placed below the page, on every searching read this relay serves.
 #
-# REINDEX REQUIRED — the first bump on this line that needs one. The tiering
-# above is DERIVED-ON-PUT data, so every 30382 and 3039x already stored keeps
-# its old columns until it is re-fed. This is the fed-field case
-# `docs/migrations.md` describes and the case `REINDEX_FTS_ON_START` is FOR,
-# not the derived-column trap beside it: the extraction genuinely differs for
-# those kinds (a title moves from `search_text` to `search_primary`), so the
-# store's drift check sees `fields != doc.search` and re-puts, and the re-put
-# rebuilds that document's index-time columns with it. Schedule ONE boot with
-# `REINDEX_FTS_ON_START=true`. Until it runs, search still finds the same
-# events — the words are all still indexed — they are ranked on the old rung.
+# THE COST, since a searching read is most of what this relay answers: an
+# unrestricted search carrying an `observer:` (or arriving on an authenticated
+# socket) now resolves the reader's enrolment — one small engine query, and
+# only uncached on a relay holding no 10040s, which this is not. A search with
+# no lens still resolves nothing: an anonymous read is `Enrolment.NONE` without
+# ever asking.
+#
+# NO SCHEMA MOVES in the range (`git diff --name-only` names no .sd), so there
+# is nothing to deploy on the Vespa side. NO REINDEX either, unlike the bump
+# this replaces: what changed is which queries a searching read issues, not how
+# a document is extracted or which columns it derives on put.
 #
 # THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests
-# run on `InMemoryEventIndex`, and the splice ordering this bump changes is
-# scored by a rank profile only a real Vespa executes:
+# run on `InMemoryEventIndex`, and the companion's recall side (the enrolment
+# gate, the floor waiver) is executed only by a real Vespa:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 83cdd0dea9
+#   git checkout 94be3000a1
+#   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against 83cdd0dea9 on a real Vespa in Docker: 10 suites, 11 tests,
-# 0 skipped, 0 failures, 12m15s. RankRegressionIT and ObserverGateIT are the two
-# that matter for this bump — they are the only tests anywhere that both rank
-# and gate, and the placement change is invisible to everything else.
+# Run HERE against 94be3000a1 on a real Vespa in Docker: 10 suites, 11 tests,
+# 0 skipped, 0 failures, 13m08s (`skipped="0"` read off the result XML, not off
+# `BUILD SUCCESSFUL`, per AGENTS.md). ObserverGateIT is the one that matters for
+# this bump — it is the only test anywhere that exercises the trust gate
+# engine-side, which is exactly what the new companion path leans on. The
+# store's own CI is green on the same tree: `git diff 46e1feb 94be3000a1` is
+# empty, so its lint/build/integration jobs cover this commit byte for byte.
 #
-# DIRECTION: 23293dae10 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates). The store's quartz ask DOES move across the
-# range, 029c40ebb4 -> b10be95a6e, which is why the line above moved with it.
+# WHAT THIS BUMP COST HERE: one relay test. `RelayProtocolTest`'s NIP-50
+# extension case read `index.searchQueries.last()`, and every REQ in it is
+# kindless — so the row it read became the new companion, whose waived floor
+# then read as the relay having dropped its trust gate. The property it asserts
+# is unchanged and still holds of the query the REQ asked; only the way it
+# NAMED that query had to move. It now selects on kinds and pins the companion
+# beside it, so a store bump that widened either half of that fetch fails here
+# rather than passing quietly.
 #
-# LEXICOGRAPHIC: '2329…' < '83cd…' ('2' < '8'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction. As always the resolved graph is the proof, and
-# on this bump every eventstore line in it reads 83cdd0dea9 with no `->`:
+# DIRECTION: 83cdd0dea9 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates).
+#
+# LEXICOGRAPHIC: '83cd…' < '94be…' ('8' < '9'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction. That is this bump's dice roll and not a
+# property this line keeps; the resolved graph is the proof, and on this bump
+# every eventstore line in it reads 94be3000a1 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "83cdd0dea9"
+vespaEventStore = "94be3000a1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
