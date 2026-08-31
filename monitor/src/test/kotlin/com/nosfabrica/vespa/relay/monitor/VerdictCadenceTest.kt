@@ -1,0 +1,359 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.monitor
+
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
+import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.Verdict
+import com.nosfabrica.vespa.relay.progress.Processors
+import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.client.EmptyNostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * HOW OFTEN A RELAY IS RE-GRADED MUST NOT DEPEND ON HOW LONG ITS JOB TAKES —
+ * the rule #172 was the absence of.
+ *
+ * ## The failure being pinned
+ *
+ * On `vespa-eventstore-staging` the two relays carrying the most NIP-85
+ * delegations fell out of every `assertions` roster. Both were `prime`,
+ * `self-consistent 1.000`, `pageable`, and opened in under 20ms; they were
+ * excluded because their verdicts had aged 68.4h past a 48h `gatedBy` bound and
+ * nothing was re-taking them. Measured 1.7h apart they went 66.7h -> 68.4h:
+ * ageing, not oscillating.
+ *
+ * The correlation across every kind-30166 this monitor has signed carrying an
+ * `rtt-read` was with the READ, and only the read:
+ *
+ * ```
+ * rtt-read >= 10s : n=74    median verdict age 530.5h   (22 days)
+ * rtt-read <  1s  : n=1567  median verdict age  25.7h
+ * ```
+ *
+ * `rtt-open` predicted nothing — the two stalled relays open FASTER than
+ * `nos.lol`, which was re-graded every few hours. Raising the bound had already
+ * been tried once (14h -> 48h) for the same class of problem, and at a 22-day
+ * median no bound short of "never expire" holds, while each bump weakens the
+ * gate for every relay that genuinely went bad.
+ *
+ * ## The two ways a healthy relay's verdict went un-taken
+ *
+ * Both are in [FitnessPass], and both are shaped like starvation rather than
+ * like a failed measurement — which is why nothing in the pass's own report
+ * ever said anything was wrong.
+ *
+ *  - **A wall clock that fires after the verdict is EARNED threw it away.** The
+ *    last step of a url's job is the NEG-OPEN, and a negentropy reconciliation
+ *    is rounds bounded by an idle window that every round re-arms — so it was
+ *    the one step with no bound of its own and the one able to spend the whole
+ *    per-url budget. When it did, [AliasProbe.deadlineMs] cut the job and the
+ *    pass published NOTHING, including the `prime` the ladder had already
+ *    settled. Slow relays run that budget down; fast ones never approach it. So
+ *    the pass re-graded the corpus at a cadence set by per-url job duration.
+ *
+ *  - **The write loop's early exits dropped the SAME urls every pass.** The
+ *    wedge limits end the batch, and the loop walked a [java.util.concurrent.ConcurrentHashMap]
+ *    — hash order, arbitrary but STABLE across passes. "Every url is measured
+ *    again next pass" was therefore true of the head and false forever of the
+ *    tail.
+ */
+class VerdictCadenceTest {
+    private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
+    private val signer = NostrSignerInternal(KeyPair())
+    private val events = NostrSignerSync()
+
+    private fun newStore() = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+
+    private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+
+    /** [ProbeDeadlineTest.tinyIdleMs]'s reason: twelve of these is a whole per-url deadline in test time. */
+    private val tinyIdleMs = 20L
+
+    private fun deadlineMs() = AliasProbe.WINDOWS_PER_URL * tinyIdleMs
+
+    /** Answers every ask promptly and in full — the ladder settles a `prime` on the first rung. */
+    private fun answeringProbe(idleMs: Long = tinyIdleMs) =
+        AliasProbe(
+            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+            target = 40,
+            page = 40,
+            fallbackPage = 40,
+            idleMs = { idleMs },
+        )
+
+    /**
+     * A NEG-OPEN that never comes back — parked on a `CompletableDeferred`
+     * nobody completes rather than on a `delay`, for [ProbeDeadlineTest]'s
+     * reason: a sleeper only proves that a timeout cancels a sleeper, where
+     * this has no timer under it at all, which is the shape of a
+     * reconciliation whose idle window keeps being re-armed.
+     */
+    private fun parkingNegOpen(hits: AtomicInteger? = null): suspend (NormalizedRelayUrl, Filter) -> Unit =
+        { _, _ ->
+            hits?.incrementAndGet()
+            CompletableDeferred<Unit>().await()
+        }
+
+    @Test
+    fun `a job the clock cuts AFTER the ladder earned a verdict still publishes it`() =
+        runBlocking {
+            val store = newStore()
+            val slow = RelayUrlNormalizer.normalize("wss://slow.example")
+            val hits = AtomicInteger()
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    // Longer than the per-url deadline, so the OUTER clock is
+                    // the one that fires — which is exactly the production
+                    // ordering: the NEG-OPEN's own bound is generous and the
+                    // url's whole budget is what runs out first.
+                    nip77DeadlineMs = deadlineMs() * 100,
+                    reconcile = parkingNegOpen(hits),
+                )
+
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            System.setErr(PrintStream(captured, true))
+            try {
+                withTimeout(deadlineMs() * 40) {
+                    pass.measure("cut late", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                }
+            } finally {
+                System.setErr(realErr)
+            }
+
+            assertTrue(hits.get() > 0, "the NEG-OPEN has to have been reached, or this proves nothing")
+            // THE WHOLE POINT. The relay answered the ladder; our clock firing
+            // one step later is not a fact about it, and the verdict it earned
+            // must be on the record. Before this, the url carried no grade and
+            // aged another whole sweep — every sweep, for as long as it stayed
+            // slow.
+            assertEquals(
+                Verdict.PRIME.value,
+                gradeOf(store, slow),
+                "a verdict the dial had already earned must survive the wall clock that cut the job",
+            )
+            // …and it must not be counted as a url the pass lost: an abandoned
+            // url is one that told us nothing, and this one told us everything
+            // `prime` asserts.
+            val err = captured.toString()
+            assertTrue(
+                "gave up on" !in err,
+                "a url cut with a verdict in hand is not abandoned; got: $err",
+            )
+            assertTrue(
+                "ran past the per-url deadline AFTER earning a verdict" in err,
+                "the pass must still say the budget was spent — that is the warning #172 had none of; got: $err",
+            )
+        }
+
+    @Test
+    fun `the NEG-OPEN cannot spend the url's whole budget`() =
+        runBlocking {
+            val store = newStore()
+            val slow = RelayUrlNormalizer.normalize("wss://slow.example")
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    // A per-url deadline far out of a test's reach, so the only
+                    // thing that can end this job is the NEG-OPEN's own clock.
+                    probe = answeringProbe(idleMs = 60_000L),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    nip77DeadlineMs = 100L,
+                    reconcile = parkingNegOpen(),
+                )
+
+            // The bound this test is about: an idle window is not a wall clock,
+            // so without one this call does not return.
+            withTimeout(30_000) {
+                pass.measure("neg-open clock", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+
+            assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
+            // A cut NEG-OPEN is NO FACT, not a false one: the relay never
+            // declined anything, and publishing `nip77 false` off our own clock
+            // would tell the network a reconciling relay does not reconcile.
+            assertNull(
+                tagOf(store, slow, RelayVerdictRecord.NIP77_TAG),
+                "a NEG-OPEN our own clock cut must publish no nip77 fact in either direction",
+            )
+        }
+
+    /** A store whose writes never answer — [PublishDeadlineTest]'s wedge, which is what ends a batch early. */
+    private class WedgedWrites(
+        private val inner: NostrSemanticsStore,
+    ) : IEventStore by inner {
+        @Volatile
+        var wedged = true
+
+        override suspend fun insert(event: Event) {
+            if (wedged) {
+                CompletableDeferred<Unit>().await()
+                error("unreachable")
+            }
+            inner.insert(event)
+        }
+    }
+
+    @Test
+    fun `a batch the store wedged does not drop the same urls again next pass`() =
+        runBlocking {
+            // Enough urls that the wedge limit cannot reach the end of the
+            // batch: whatever the first pass fails to write, the second one has
+            // to start from, or those urls are never re-graded however often
+            // the sweep runs.
+            val urls = (0 until 12).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
+            val store = WedgedWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = self))
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                    reconcile = { _, _ -> },
+                )
+
+            // Pass one: the store takes nothing, and the wedge limit ends the
+            // batch after [FitnessPass.PUBLISH_WEDGE_LIMIT] writes.
+            withTimeout(30_000) {
+                pass.measure("wedged", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+
+            // Pass two, store healthy again. The urls the wedge cost pass one
+            // are the ones pass two must reach FIRST — and with the whole batch
+            // writable it reaches all of them, so the assertion that matters is
+            // that no url is left ungraded by two passes over the same set.
+            store.wedged = false
+            withTimeout(30_000) {
+                pass.measure("recovered", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+
+            for (url in urls) {
+                assertEquals(
+                    Verdict.PRIME.value,
+                    gradeOf(store, url),
+                    "${url.url} was earned twice and written never — a cut batch must not drop the same tail every pass",
+                )
+            }
+        }
+
+    @Test
+    fun `the write loop resumes where the wedge stopped it`() =
+        runBlocking {
+            // The direct statement of the rule, on a batch big enough that the
+            // wedge limit leaves most of it unwritten: pass one attempts the
+            // first few urls in url order, pass two must NOT attempt the same
+            // ones again first.
+            val urls = (0 until 12).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val attempted = mutableListOf<String>()
+            val recording =
+                object : IEventStore by store {
+                    override suspend fun insert(event: Event) {
+                        event.tags
+                            .firstOrNull { it.firstOrNull() == "d" }
+                            ?.getOrNull(1)
+                            ?.let { synchronized(attempted) { attempted += it } }
+                        CompletableDeferred<Unit>().await()
+                        error("unreachable")
+                    }
+                }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(recording, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                    reconcile = { _, _ -> },
+                )
+
+            withTimeout(30_000) { pass.measure("first", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            val first = synchronized(attempted) { attempted.toList() }
+            synchronized(attempted) { attempted.clear() }
+            withTimeout(30_000) { pass.measure("second", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            val second = synchronized(attempted) { attempted.toList() }
+
+            assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
+            assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, second.size)
+            // The one that tripped the limit is retried — it is the write that
+            // did not land, and the limit is a statement about the store rather
+            // than about that url — but the ones BEFORE it are behind us.
+            assertEquals(
+                first.last(),
+                second.first(),
+                "the next batch must pick up at the write the wedge stopped on: $first then $second",
+            )
+            assertTrue(
+                first.dropLast(1).none { it in second },
+                "urls a wedged batch already wrote off must not be retried ahead of the ones it never reached: $first then $second",
+            )
+        }
+
+    private suspend fun gradeOf(
+        store: IEventStore,
+        url: NormalizedRelayUrl,
+    ): String? = tagOf(store, url, "l")?.let { if (it.size >= 3 && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE) it[1] else null }
+
+    private suspend fun tagOf(
+        store: IEventStore,
+        url: NormalizedRelayUrl,
+        name: String,
+    ): Array<String>? =
+        store
+            .query<Event>(
+                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
+            ).flatMap { it.tags.toList() }
+            .firstOrNull { it.firstOrNull() == name }
+}

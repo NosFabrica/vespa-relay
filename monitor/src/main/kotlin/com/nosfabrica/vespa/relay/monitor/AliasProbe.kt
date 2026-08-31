@@ -138,13 +138,23 @@ class AliasProbe(
      *
      * ## What a pass does when it fires, and why that is not a verdict
      *
-     * NOTHING IS PUBLISHED ABOUT A URL THIS CUT. A deadline says our instrument
-     * gave up, not that the relay is slow, dead or unreadable — the same rule
+     * NOTHING IS PUBLISHED ABOUT A URL THIS CUT — nothing this cut DECIDED, at
+     * least. A deadline says our instrument gave up, not that the relay is
+     * slow, dead or unreadable — the same rule
      * [ConsistencyPass.Unmeasured.FAILED] already carries for a probe that
      * threw. The url is counted, named, and measured again next pass. That is
      * what makes the number below safe to set close: the cost of cutting a
      * relay that would have answered is one more pass, and the cost of not
      * cutting one is the whole mirror.
+     *
+     * **The converse is the half that was missing, and it cost #172.** A
+     * verdict the dial had ALREADY EARNED before the clock fired is not our
+     * timeout talking — the relay answered, and our giving up one step later
+     * does not un-answer it. A pass that threw those away re-graded the corpus
+     * at a cadence set by how long each url's job ran, which is the slowest
+     * relays last and, past a point, never; see [FitnessPass]'s cut-late
+     * branch for what it does with one instead. The rule is the walk's own,
+     * one level up: keep what was proved, publish nothing that was not.
      */
     fun deadlineMs(url: NormalizedRelayUrl): Long = WINDOWS_PER_URL * idleMs(url)
 
