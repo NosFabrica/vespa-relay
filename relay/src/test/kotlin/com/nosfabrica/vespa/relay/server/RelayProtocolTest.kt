@@ -224,9 +224,32 @@ class RelayProtocolTest {
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
 
+                // THE QUERY THE REQ ASKED, which is no longer the last row the
+                // engine saw. Every REQ below is kindless, and since store
+                // 94be3000a1 a kindless searching read also issues a
+                // DECLARATION COMPANION — the same terms re-aimed at the
+                // Trusted List and Assertion kinds, authors narrowed to the
+                // signers this reader enrolled (themselves, here), trust floor
+                // waived. `last()` therefore reads that companion, and read the
+                // floor assertion below as this relay having dropped its gate.
+                // The kinds tell the two apart: the caller asked for none.
+                fun asked() = index.searchQueries.last { it.kinds.isEmpty() }
+
                 session.receive("""["REQ","x1",{"search":"ali","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x1"]""") }
-                assertEquals(DEFAULT_MIN_RANK, index.searchQueries.last().minRank, "a plain search is trust-gated by default")
+                assertEquals(DEFAULT_MIN_RANK, asked().minRank, "a plain search is trust-gated by default")
+
+                // The companion itself, pinned rather than merely tolerated:
+                // what makes its waived floor safe is that it can only name
+                // declaration kinds signed by someone this reader enrolled, so
+                // a bump that widened either half would land here.
+                val companion = index.searchQueries.last()
+                assertTrue(
+                    companion.kinds.isNotEmpty() && companion.kinds.all { it in 30382..30395 },
+                    "the extra read a kindless search now makes is for declaration kinds only: ${companion.kinds}",
+                )
+                assertEquals(listOf(signer.pubKey), companion.authors, "and only from signers this reader enrolled — here, themselves")
+                assertEquals(INCLUDE_SPAM_MIN_RANK, companion.minRank, "its floor is waived on purpose: a service key nobody follows signs the lists it looks for")
 
                 session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
@@ -238,15 +261,15 @@ class RelayProtocolTest {
                 // which is what the extension promises.
                 assertEquals(
                     INCLUDE_SPAM_MIN_RANK,
-                    index.searchQueries.last().minRank,
+                    asked().minRank,
                     "include:spam keeps every hit, and still sends the floor the boost anchors on",
                 )
-                assertEquals("ali", index.searchQueries.last().search, "the extension itself never becomes a term")
+                assertEquals("ali", asked().search, "the extension itself never becomes a term")
 
                 session.receive("""["REQ","x3",{"search":"ali sort:rank filter:rank:gte:7","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x3"]""") }
-                assertEquals(EventYql.RANK_DESC, index.searchQueries.last().ranking, "sort:rank picks the profile")
-                assertEquals(7.0, index.searchQueries.last().minRank, "filter:rank:gte sets the floor")
+                assertEquals(EventYql.RANK_DESC, asked().ranking, "sort:rank picks the profile")
+                assertEquals(7.0, asked().minRank, "filter:rank:gte sets the floor")
 
                 // The sort menu's "Newest" (index.html). Chronological is the
                 // one order this path can get wrong in SILENCE: quartz strips
@@ -260,8 +283,8 @@ class RelayProtocolTest {
                 // profiles to run).
                 session.receive("""["REQ","x4",{"search":"ali sort:recent","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x4"]""") }
-                assertEquals(EventYql.RANK_RECENCY_GATED, index.searchQueries.last().ranking, "sort:recent picks the gated recency profile")
-                assertEquals("ali", index.searchQueries.last().search, "and the words still recall — only the ORDER changed")
+                assertEquals(EventYql.RANK_RECENCY_GATED, asked().ranking, "sort:recent picks the gated recency profile")
+                assertEquals("ali", asked().search, "and the words still recall — only the ORDER changed")
             } finally {
                 session.close()
             }
