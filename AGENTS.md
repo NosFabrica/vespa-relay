@@ -4074,6 +4074,27 @@ Reach for it first.
   runs no other writers, so it does not measure that; `lock.gate.wait` during a
   burst is the number nobody has.
 
+  ### What staging said when it ran, and what the bench could not have known
+
+  Deployed at `concurrency=2, batch=8192` against the real store (~200M docs, 67
+  concurrent visits, negentropy reads on the same engine), ingest **oscillates
+  between ~11,400 ev/s and 136** with the queue pinned at its ceiling. Two
+  numbers matter and neither survives a 500k-document bench:
+
+  - **Absolute throughput does not transfer.** A 98/2 batch of 8192 takes ~0.16s
+    here and tens of seconds there. Dedup cost scales with the INDEX, and the
+    bench's corpus is ~400x smaller. Use the bench for ratios between shapes,
+    never for what a batch costs.
+  - **The accepted fraction is not a constant.** Lifetime it is 2.1%, but over
+    one two-minute window it was **21.5%** — and throughput fell with it,
+    because writes dominate the moment they stop being rare. "98/2" is an
+    average, not a workload.
+
+  That floor is what re-derived [WEDGE_AFTER_MS]: at 136 ev/s two workers on
+  8192-event batches take 120 seconds, which was the whole threshold. It is ten
+  minutes now, and the lesson generalises — **a threshold derived from a bench
+  corpus is a guess about production until production runs it.**
+
   The operator-level fix needs no code: `SYNC_INGEST_CONCURRENCY=2
   SYNC_INGEST_BATCH=8192`. **The formula was deliberately NOT changed**, because
   widening batches is not free in the other direction: every other writer - the
