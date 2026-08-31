@@ -4000,6 +4000,10 @@ Reach for it first.
   | `2 x 8192` | 8192 | 12 | ~164 | **17** | **60,492** |
   | `1 x 16384` | 16384 | 6 | ~328 | 18 | 56,439 |
 
+  Reproduced on an independent run against a fresh Vespa: 5,778 / 53,030 /
+  50,886 ev/s. Unlike the burst sweep above, this ordering does NOT flip — the
+  9x is the finding it looks like.
+
   **9x, on identical work, from shape alone.** The eight-worker row spent
   `lock.ingest.wait 99.1s` of aggregate thread time across a 15s wall - each
   worker queued ~12.4 of 15 seconds - to perform `write 0.2s` of writing.
@@ -4019,17 +4023,29 @@ Reach for it first.
   events is the opposite regime, and the same three shapes over 100k fresh
   events answer it flatly:
 
-  | `concurrency x batch` | us/event | ev/s | `lock.ingest.wait` | `hold` | `write` |
-  |---|---:|---:|---:|---:|---:|
-  | `8 x 1024` | 377 | 2,656 | **243.9s** | 37.6s | 36.2s |
-  | `2 x 8192` | 401 | 2,493 | 31.9s | 39.6s | 39.4s |
-  | `1 x 16384` | 420 | 2,378 | — | 36.7s | 36.6s |
+  | `concurrency x batch` | ev/s, order UP | ev/s, order DOWN |
+  |---|---:|---:|
+  | `8 x 1024` | 2,405 | **2,337** |
+  | `2 x 8192` | **2,858** | 2,307 |
+  | `1 x 16384` | 2,375 | 2,092 |
 
-  **Within 11%, and flat within the arm-order confound** — each arm writes
-  another 100k documents, so a later shape meets a bigger index, and the bias
-  runs the same way as any apparent decline with width. The sweep runs both
-  orders for that reason: agreement between them is what makes the flatness a
-  finding rather than a drift. In every row `write`
+  **The two orders disagree about which shape wins, and that IS the result.**
+  Every arm writes another 100k documents, so a later shape meets a bigger
+  index; run one order only and that drift is indistinguishable from an effect
+  of width — which is how a first pass produced an "if anything decreasing with
+  width" reading that does not survive. Ascending, `2 x 8192` wins; descending,
+  `8 x 1024` does. A rank order that flips when you reverse the arms is noise
+  and corpus growth, not shape. **On an all-fresh burst, pipeline shape does not
+  move throughput**: everything sits at 2.1-2.9k ev/s.
+
+  The one signal that does survive both passes is small and points the other
+  way: `1 x 16384` is last in each, including the descending pass where it ran
+  FIRST against the smallest corpus. A single worker cannot overlap anything —
+  its verify and `dedup.pre` sit in series with its own write — which is the
+  mechanism that predicts exactly that. It is 1-10%, and the reason to prefer
+  two workers over one.
+
+  In every row `write`
   is 96-99% of `hold`: the lock is held essentially the whole wall clock, and
   essentially all of that holding is the write itself. There is no non-write
   time inside the lock to reclaim, so **removing or striping the writer mutex
