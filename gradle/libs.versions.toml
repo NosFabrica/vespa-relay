@@ -92,16 +92,32 @@ quartz = "b10be95a6e"
 # named it, a doubted one lands about one rung below, and nothing reorders
 # inside the block.
 #
-# WHAT THIS RELAY SEES, measured on a local Vespa fed 15,090 real events pulled
-# from staging (5k profiles, 5k notes, 5k rank assertions from the observer's
-# own enrolled provider), with that observer's real Treasure Map and the real
-# 17-member `Verified Human` membership. Searching it BEFORE: the member the
-# list is 50% sure of sat at #20, below a kind-30000 mirror copy, while the one
-# it is 45% sure of sat at #11 — because the rung multiplies confidence by the
-# MEMBER's own trust, so trust drowns the publisher's ordering. AFTER: monotonic
-# in confidence across #3..#19, contiguous, directly behind the pointer at #2,
-# with the mirror page pushed below the block. That is the last mile of the
-# complaint the previous two bumps chased.
+# WHAT THIS RELAY SEES: the lookup half, and NOT the placement half. Measured
+# through the wire protocol against a real Vespa holding the production corpus
+# (`ProductionCorpusIT`, the `pointer floor does not bind` case) — the real
+# `Verified Human` list off the tapestry relay, its twelve held member profiles,
+# their real 65..100 confidences and their real trust ranks from the provider
+# that actually covers them. The floored page is IDENTICAL to the unfloored one,
+# and `event.sd`'s own numbers say why:
+#
+#   member_rung   = (550 + 3450 x confidence) x wot_mult(MEMBER)
+#   pointer_floor = 130,000 x wot_mult(SIGNER) x (0.1769..1)
+#
+# `wot_mult` is `1 + (score - min_rank)^2.7` clamped at 100, so it spans
+# 1..251,189 — and the two sides carry DIFFERENT people's trust. A Trusted List
+# is signed by a NIP-85 service key nobody follows, so wot_mult(signer) is 1 and
+# the floor tops out at 130,000, while a member ranked 98 gets wot_mult ~236,000
+# and a rung near 1e9. Off this Vespa's match-features for a real member:
+# confidence 0.65, member_rung 7.0e8, pointer_floor 9.3e4. Four orders of
+# magnitude, so `max()` takes the rung every time.
+#
+# So the floor only binds for a member the reader barely trusts — the opposite
+# of the case it was written for, and the same asymmetry the design note
+# rejected "clamp each member to its pointer" for, in reverse. THE PLACEMENT
+# COMPLAINT IS NOT CLOSED BY THIS BUMP. What IS delivered is the lookup half:
+# one round trip per list instead of one per quantized quarter, and the
+# publisher's confidence arriving unrounded, which is what orders the block
+# today (`(550 + 3450c) x wot`, so confidence and trust both count).
 #
 # THE COST, per query rather than per page: `dotProduct` against the `in` it
 # replaces, over 500 real pubkeys (the store's LOOKUP_CHUNK) on that corpus, 25
