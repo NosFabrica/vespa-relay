@@ -74,78 +74,82 @@ app = "0.1.0"
 quartz = "b10be95a6e"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 94be3000a1 = store main through PR #90. One PR, one commit over 83cdd0dea9,
-# and it stands ALONE: the store's quartz ask does not move across the range
+# b2be07e168 = store main through PR #92. Three commits over 94be3000a1, and
+# they stand ALONE: the store's quartz ask does not move across the range
 # (`git diff --name-only` names no libs.versions.toml), so the quartz line
 # above is untouched by this bump.
 #
-# WHAT MOVED: a search with no `kinds` now fetches the DECLARATION COMPANION —
-# the searching query re-aimed at the Trusted List and Assertion kinds, authors
-# narrowed to the reader's own enrolled signers, default trust floor waived.
-# The store built that companion for a kind-RESTRICTED search only, on the
-# reasoning that a read with no kinds "already recalls every pointer": true of
-# what such a read ADMITS, and not of what fits inside the caller's `limit`. A
-# declaration is signed by a NIP-85 service key — nobody follows it and no
-# reputation tensor ranks it — so it competes for one of those slots from the
-# bottom of the trust curve and loses to ordinary hits.
+# WHAT MOVED, in two halves. A Trusted List's per-member confidence used to be
+# a rank FEATURE, which is a property of the query — so members were grouped by
+# it, quantized to quarters, and each group cost a round trip. It now rides on
+# the KEY (`dotProduct(pubkey|id, {member: 0..100})`, read back as `rawScore`),
+# so one lookup carries a whole list at the publisher's own resolution. And a
+# spliced member used to sit on the affiliation rung whatever found it: a
+# ceiling of 4,000 x wot, which cannot reach a title match's 130,000 x wot from
+# below. `spliced_member` now takes max() of that rung and a FLOOR at a share
+# of the pointer's own relevance, spanning w_near_tier/w_name_tier..1 of it by
+# the same confidence — so a member the publisher is sure of ties the list that
+# named it, a doubted one lands about one rung below, and nothing reorders
+# inside the block.
 #
-# WHAT THIS RELAY SEES, and the bug that prompted it, measured on staging
-# BEFORE the fix: `?q="Verified Human"` under a lens whose 10040 delegates
-# 30392 to `8e901369…` put that list at organic rank 80, while the five
-# kind-30000 re-publications of it ranked 1..5. So the People chip (kinds:[0],
-# which does build a companion) unpacked all seventeen member profiles, and the
-# Everything chip (no kinds, a page of 40) showed neither the list nor one
-# member of it. Both chips now answer the same way. Recall is otherwise
-# unchanged and COUNT never counted the expansion's added rows, so it is
-# unmoved. The LABEL companion is deliberately NOT extended to unrestricted
-# reads: ungated and author-unconstrained, it would re-fetch rows the ranking
-# had already placed below the page, on every searching read this relay serves.
+# WHAT THIS RELAY SEES, measured on a local Vespa fed 15,090 real events pulled
+# from staging (5k profiles, 5k notes, 5k rank assertions from the observer's
+# own enrolled provider), with that observer's real Treasure Map and the real
+# 17-member `Verified Human` membership. Searching it BEFORE: the member the
+# list is 50% sure of sat at #20, below a kind-30000 mirror copy, while the one
+# it is 45% sure of sat at #11 — because the rung multiplies confidence by the
+# MEMBER's own trust, so trust drowns the publisher's ordering. AFTER: monotonic
+# in confidence across #3..#19, contiguous, directly behind the pointer at #2,
+# with the mirror page pushed below the block. That is the last mile of the
+# complaint the previous two bumps chased.
 #
-# THE COST, since a searching read is most of what this relay answers: an
-# unrestricted search carrying an `observer:` (or arriving on an authenticated
-# socket) now resolves the reader's enrolment — one small engine query, and
-# only uncached on a relay holding no 10040s, which this is not. A search with
-# no lens still resolves nothing: an anonymous read is `Enrolment.NONE` without
-# ever asking.
+# THE COST, per query rather than per page: `dotProduct` against the `in` it
+# replaces, over 500 real pubkeys (the store's LOOKUP_CHUNK) on that corpus, 25
+# reps after warmup — p50 50ms -> 57ms, p90 65ms -> 66ms. About one query's
+# worth of extra time at p50, against the three round trips per multi-confidence
+# list the weights remove. Round trips per PAGE are unchanged from 94be3000a1
+# for every shape this relay serves most: a page of twenty labels is one lookup
+# there and one lookup here (an early cut of the PR made it twenty, which its
+# own audit caught and pinned). Only a page of N differently-ranked Trusted
+# Lists costs N, because the pointer's relevance is the one number that stays
+# per-query.
 #
-# NO SCHEMA MOVES in the range (`git diff --name-only` names no .sd), so there
-# is nothing to deploy on the Vespa side. NO REINDEX either, unlike the bump
-# this replaces: what changed is which queries a searching read issues, not how
-# a document is extracted or which columns it derives on put.
+# A SCHEMA MOVES — and that is the difference from the last two bumps, which
+# both said there was nothing to deploy. `event.sd` gains three query inputs
+# (`doc_conf`, `pointer_rel`, `w_subject_floor_span`), three rank functions and
+# a match-features block. DEPLOY BEFORE THIS PIN GOES OUT, or the relay sends
+# inputs the running application does not declare. NO REINDEX, though: `git diff
+# 94be3000a1 b2be07e168 -- engine/app/schemas/event.sd` touches no `field`, no
+# `indexing`, no `attribute` — it is rank-profile only, so nothing about how a
+# document is extracted or stored changes. Rolling the schema FIRST is safe on
+# its own: the new inputs all default to the old behaviour, so a relay still on
+# 94be3000a1 keeps the placement it has today.
 #
-# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests
-# run on `InMemoryEventIndex`, and the companion's recall side (the enrolment
-# gate, the floor waiver) is executed only by a real Vespa:
+# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
+# on `InMemoryEventIndex`, and the half that matters here (`rawScore` from a
+# weighted recall, the floor's arithmetic) is executed only by a real Vespa:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 94be3000a1
+#   git checkout b2be07e168
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
-#   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
-# Run HERE against 94be3000a1 on a real Vespa in Docker: 10 suites, 11 tests,
-# 0 skipped, 0 failures, 13m08s (`skipped="0"` read off the result XML, not off
-# `BUILD SUCCESSFUL`, per AGENTS.md). ObserverGateIT is the one that matters for
-# this bump — it is the only test anywhere that exercises the trust gate
-# engine-side, which is exactly what the new companion path leans on. The
-# store's own CI is green on the same tree: `git diff 46e1feb 94be3000a1` is
-# empty, so its lint/build/integration jobs cover this commit byte for byte.
+#   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
+# Run HERE against the merge's head on a real Vespa in Docker: 43 suites, 482
+# tests, 0 skipped, 0 failures, 14m31s (`skipped="0"` read off the result XML,
+# not off `BUILD SUCCESSFUL`, per AGENTS.md). SplicedMemberWeightsIT is the one
+# that matters for this bump — it is the only test anywhere that proves a
+# weighted recall sets `rawScore` at all, for both keyed shapes, and that a
+# zero-weight member is still recalled rather than dropped. The store's own CI
+# is green on the same tree: `git diff 18619af b2be07e168` is empty, so its
+# lint/build/integration jobs cover this commit byte for byte.
 #
-# WHAT THIS BUMP COST HERE: one relay test. `RelayProtocolTest`'s NIP-50
-# extension case read `index.searchQueries.last()`, and every REQ in it is
-# kindless — so the row it read became the new companion, whose waived floor
-# then read as the relay having dropped its trust gate. The property it asserts
-# is unchanged and still holds of the query the REQ asked; only the way it
-# NAMED that query had to move. It now selects on kinds and pins the companion
-# beside it, so a store bump that widened either half of that fetch fails here
-# rather than passing quietly.
-#
-# DIRECTION: 83cdd0dea9 is a strict ancestor of this (`git merge-base
+# DIRECTION: 94be3000a1 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '83cd…' < '94be…' ('8' < '9'), so this sorts ABOVE the pin it
+# LEXICOGRAPHIC: '94be…' < 'b2be…' ('9' < 'b'), so this sorts ABOVE the pin it
 # replaces — the SAFE direction. That is this bump's dice roll and not a
 # property this line keeps; the resolved graph is the proof, and on this bump
-# every eventstore line in it reads 94be3000a1 with no `->`:
+# every eventstore line in it reads b2be07e168 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "94be3000a1"
+vespaEventStore = "b2be07e168"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
