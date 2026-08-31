@@ -183,41 +183,74 @@ export function constraintOf(health) {
   return { word, text, why, tone: word === "ingest" || word === "wedged" ? "warn" : null };
 }
 
-/** Stages drawn on the card. The tail of a long list is noise beside the head of it. */
-export const STAGES_SHOWN = 5;
+/** Stages drawn on the row. The tail of a long list is noise beside the head of it. */
+export const STAGES_SHOWN = 4;
 
 /**
- * WHERE THE INGEST TIME WENT SINCE THE LAST REFRESH — the document publishes
- * cumulative milliseconds per stage, and this differences two polls.
+ * WHERE THE INGEST TIME WENT SINCE THE LAST REFRESH, as SHARES of that
+ * interval — the document publishes cumulative milliseconds and this
+ * differences two polls.
  *
- * Cumulative is what the document can honestly serve (`IngestStats.statusLine`
- * is destructive to read, so the router must not be the only one allowed to
- * call it) and it is NOT what a reader wants: after an hour, `write 900s` is a
- * fact about the hour and says nothing about the minute the queue backed up in.
- * The subtraction belongs wherever the polling happens, which is here.
+ * Cumulative is what the document can honestly serve
+ * (`IngestStats.statusLine` is destructive to read, so the router must not be
+ * the only caller allowed) and it is NOT what a reader wants: after an hour,
+ * `write 900s` is a fact about the hour, not about the minute the queue backed
+ * up in. The subtraction belongs wherever the polling happens, which is here.
  *
- * Pure, taking both sides, so the caller owns the remembering — a module-level
- * previous would make this answer differently depending on who rendered last.
- * `before` null (a first load, or a router that has just restarted its
- * counters) yields nothing rather than the cumulative totals dressed up as a
- * rate: one honest blank refresh beats a number that means something else.
+ * **Shares rather than durations, and that is not cosmetic.** The poll is
+ * clamped to 30s-5min and the chain waits for the previous response, so the
+ * window is a different length every time: two readings of `write 45s` are not
+ * comparable, to each other or to somebody else's screenshot. A ratio does not
+ * care how long the window was. It is also the actual question — what ingest is
+ * spending itself ON — and it sidesteps `fmtDur` flooring a 400ms stage to the
+ * useless string "0s".
  *
- * A stage that went BACKWARDS is dropped, not clamped to zero. It means the
- * process restarted between polls, and every other row of that comparison is
- * measuring the new process against the old one's totals.
+ * Pure, taking both sides, so the caller owns the remembering. `before` null (a
+ * first load, or a router that just restarted its counters) yields nothing
+ * rather than the cumulative totals dressed as a rate: one blank refresh beats
+ * a number that means something else.
+ *
+ * A stage that went BACKWARDS is dropped, not clamped. It means the process
+ * restarted between polls, and every other row of that comparison is measuring
+ * a new process against the dead one's totals.
  */
 export function stageDeltas(now, before) {
   if (!Array.isArray(now) || !Array.isArray(before)) return [];
   const was = new Map(before.map((r) => [r.stage, r.ms]));
-  const rows = [];
+  const all = [];
   for (const r of now) {
     if (!r || typeof r.stage !== "string" || !Number.isFinite(r.ms)) continue;
     const had = was.get(r.stage);
     if (!Number.isFinite(had) || r.ms < had) continue;
     const ms = r.ms - had;
-    if (ms > 0) rows.push({ stage: r.stage, ms });
+    if (ms > 0) all.push({ stage: r.stage, ms });
   }
-  return rows.sort((a, b) => b.ms - a.ms).slice(0, STAGES_SHOWN);
+  // Of the WHOLE interval, not of the rows that survive the cut — a share that
+  // sums to 100% across a truncated list would overstate every one of them.
+  const total = all.reduce((sum, r) => sum + r.ms, 0);
+  if (!total) return [];
+  all.sort((a, b) => b.ms - a.ms);
+  const shown = all.slice(0, STAGES_SHOWN);
+  // **A LOCK WAIT IS MEANINGLESS ALONE, so it never appears alone.** The burst
+  // sweep in AGENTS.md is the whole argument: eight workers showed
+  // `lock.ingest.wait 243.9s` across a 37.6s wall and delivered exactly the
+  // throughput of one worker that waited for nothing — they were queueing for
+  // an engine already saturated, and the wait explained nothing. Ranking by
+  // magnitude alone can put that row on screen with `write` and the matching
+  // `hold` cut off below it, which is that misreading rendered as a feature. So
+  // whenever a wait is shown its companions are pulled up beside it, past the
+  // cut if need be.
+  const waiting = shown.filter((r) => r.stage.endsWith(".wait"));
+  for (const w of waiting) {
+    for (const name of [w.stage.replace(/\.wait$/, ".hold"), "write"]) {
+      if (shown.some((r) => r.stage === name)) continue;
+      const companion = all.find((r) => r.stage === name);
+      if (companion) shown.push(companion);
+    }
+  }
+  return shown
+    .sort((a, b) => b.ms - a.ms)
+    .map((r) => ({ ...r, share: r.ms / total }));
 }
 
 /** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */

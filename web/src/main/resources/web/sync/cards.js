@@ -7,8 +7,8 @@
 // that produces the numbers, and changed neither.
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
-import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, stageDeltas, streamSections } from "../shared/sync.js";
+import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, streamSections } from "../shared/sync.js";
 
 /**
  * A LIVE cursor, which is the one place a day is not enough precision.
@@ -94,44 +94,23 @@ function statusRow(progress) {
   // A count, not a list: the document publishes how many, and one is already
   // the whole message.
   if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));
-  // THE STORE'S OWN SENTENCE about its write path, quoted. It is the only thing
-  // on this card that can tell the engine pushing back from the client not
-  // pushing, and it was computed and thrown away for the life of this router.
-  if (health.feed) row.appendChild(chip(health.feed, null, term("feed")));
-  return row;
-}
-
-/**
- * WHERE THE INGEST TIME WENT since the last refresh — the row that says WHY
- * ingest is slow, where everything above it says only THAT it is.
- *
- * `bottleneck` reports a full queue and `oldestBatchSec` a worker inside a
- * batch; neither separates `dedup` (store reads) from `write` (the feed) from
- * `lock.ingest.wait` (queueing behind another writer), and those are three
- * faults with three remedies that look identical from outside. That split
- * reached a stderr line once a minute and nowhere else, which is most of why
- * #167 had to be diagnosed by inference.
- *
- * Drawn only from a DELTA, so the first refresh after opening the page shows
- * nothing: the document's totals are cumulative since boot, and an hour-old
- * total answers a question nobody asked. The previous poll is remembered here
- * rather than in the derivation, which stays pure — see [stageDeltas].
- */
-let lastStages = null;
-
-function stagesRow(progress) {
-  const now = progress.health?.stages;
-  const rows = stageDeltas(now, lastStages);
-  lastStages = Array.isArray(now) ? now : lastStages;
-  if (!rows.length) return null;
-  const row = el("div", "sy-status");
-  // Not a chip: chips are verdicts, and this is a measurement whose whole value
-  // is the comparison BETWEEN its entries.
-  row.append("time in ingest, since this page last refreshed:");
-  for (const r of rows) {
-    const part = el("span", null, ` · ${r.stage} ${fmtDur(Math.round(r.ms / 1000))}`);
-    part.title = `${term("stage")} ${term("ms")}`;
-    row.appendChild(part);
+  // THE STORE'S OWN SENTENCE about its write path — on HOVER, not on the row.
+  // It reads `feed ok 4211 inflight 32 lat 18ms`, which is machine output, and
+  // it sat here beside curated phrases like "ingest is the limit" as the
+  // longest and least readable thing on the line while answering nothing at a
+  // glance: a reader still has to know that a wide in-flight window with high
+  // latency is the ENGINE pushing back and a narrow one with low latency is the
+  // CLIENT not pushing. So the chip is a label and the sentence is the tooltip.
+  //
+  // The one tone is taken on a SUBSTRING, deliberately the weakest possible
+  // read of another repo's prose: `EXC` appears only when the feed client has
+  // seen transport exceptions, which is unambiguously a fault, and if that
+  // library ever rewords it this degrades to a neutral chip rather than to a
+  // wrong verdict. Every other judgement stays with the reader, beside the
+  // numbers it needs.
+  if (health.feed) {
+    const broken = health.feed.includes("EXC");
+    row.appendChild(chip(broken ? "feed errors" : "feed", broken ? "warn" : null, `${health.feed} — ${term("feed")}`));
   }
   return row;
 }
@@ -737,14 +716,12 @@ function syncCard(section) {
   // below draws. It is the document's own, so a chip cannot describe a member
   // in words the router would not use — see `term` and `SyncVocabularyTest`.
   setTerms(d.terms);
+  // The stage totals this document carries, handed to the module that draws the
+  // ingest row — the same shape as `setTerms` above, and for the same reason.
+  // That row shows the DELTA against the previous document, so the shift has to
+  // happen once per document rather than once per card.
+  setStages(progress?.health?.stages);
   if (progress) card.appendChild(statusRow(progress));
-  // Under the status row it explains: that one says WHICH constraint, this one
-  // says where the time inside it went. Absent on the first refresh by design —
-  // it is a delta, see [stagesRow].
-  if (progress) {
-    const stages = stagesRow(progress);
-    if (stages) card.appendChild(stages);
-  }
 
   // ONE SECTION PER STREAM, and everything about a stream inside it. The join
   // — held rows, budgets and schedule under the stream that owns them — is

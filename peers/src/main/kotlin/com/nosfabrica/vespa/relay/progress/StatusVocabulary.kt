@@ -764,13 +764,18 @@ object StatusVocabulary {
             )
             put(
                 "stages",
-                "WHERE THE INGEST TIME WENT, as cumulative milliseconds per named stage since boot, busiest first. " +
+                "WHERE THE INGEST TIME WENT, as cumulative milliseconds per named stage since boot, busiest first — " +
+                    "the page differences two polls and draws the SHARES, because the poll window varies and a ratio " +
+                    "does not care how long it was. " +
                     "The one split that answers why ingest is slow rather than that it is: `bottleneck` says the " +
                     "queue is full and `oldestBatchSec` says a worker is in a batch, and neither tells `dedup` " +
                     "(store reads) from `write` (the feed) from `lock.ingest.wait` (queueing behind another " +
                     "writer) — three faults with three different remedies that look identical from outside. " +
                     "CUMULATIVE on purpose: the per-minute form the log prints is destructive to read, so a second " +
-                    "reader would halve it. Difference two page loads to recover a rate.",
+                    "reader would halve it. Difference two page loads to recover a rate. A LOCK WAIT IS NEVER DRAWN " +
+                    "ALONE: its matching hold and `write` come with it past the cut, because a wait without them is " +
+                    "the reading that says eight workers queueing for a saturated engine are the reason for " +
+                    "something.",
             )
             put(
                 "stage",
