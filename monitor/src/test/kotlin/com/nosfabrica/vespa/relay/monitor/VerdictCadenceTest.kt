@@ -551,6 +551,101 @@ class VerdictCadenceTest {
             assertEquals(Verdict.PRIME.value, gradeOf(store, alias), "a verdict that CHANGED must be written whatever the record said")
         }
 
+    @Test
+    fun `a url that re-folds onto a different canonical is re-signed, grade unchanged`() =
+        runBlocking {
+            // THE GRADE ALONE DOES NOT IDENTIFY THE CLAIM. `alias` twice over is
+            // two different public statements when the url it folds onto has
+            // changed, and skipping on a matching grade would leave the record
+            // naming a canonical the fold no longer elects. Nothing parses the
+            // evidence, which is exactly why it has to be right: it is a
+            // sentence about somebody else's server.
+            val alias = RelayUrlNormalizer.normalize("wss://alias.example")
+            val first = RelayUrlNormalizer.normalize("wss://first-canonical.example")
+            val second = RelayUrlNormalizer.normalize("wss://second-canonical.example")
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+
+            fun passFolding(onto: NormalizedRelayUrl) =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { mapOf(alias to onto) },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+
+            withTimeout(30_000) {
+                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertTrue(first.url in (evidenceOf(store, alias) ?: ""), "the first fold has to name the first canonical")
+
+            // Same grade, different canonical — the record must move.
+            withTimeout(30_000) {
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
+            assertTrue(
+                second.url in (evidenceOf(store, alias) ?: ""),
+                "a re-fold onto a different canonical must be written even though the grade did not change; got ${evidenceOf(store, alias)}",
+            )
+
+            // …and folding onto the SAME one again still skips.
+            val stamp = stampOf(store, alias)
+            withTimeout(30_000) {
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertEquals(stamp, stampOf(store, alias), "an unchanged inherited verdict must still be left standing")
+        }
+
+    @Test
+    fun `a NEG-OPEN the clock cuts is counted and said out loud`() =
+        runBlocking {
+            // Publishing nothing about it is right — our clock is not the relay
+            // declining — but a bound that spends itself in SILENCE is the
+            // shape of the fault #172 turned out to be. Every other budget in
+            // this pass is named in the report; so is this one.
+            val slow = RelayUrlNormalizer.normalize("wss://slow.example")
+            val store = newStore()
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = answeringProbe(idleMs = 60_000L),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    nip77DeadlineMs = 100L,
+                    reconcile = parkingNegOpen(),
+                )
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            System.setErr(PrintStream(captured, true))
+            try {
+                withTimeout(30_000) {
+                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                }
+            } finally {
+                System.setErr(realErr)
+            }
+
+            val err = captured.toString()
+            assertTrue(
+                "NEG-OPEN(s) cut at the" in err,
+                "a spent NEG-OPEN budget must be reported, not swallowed as `no fact`; got: $err",
+            )
+            // …and the verdict it rides beside is still published, unchanged.
+            assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
+            assertNull(tagOf(store, slow, RelayVerdictRecord.NIP77_TAG), "a cut NEG-OPEN publishes no fact in either direction")
+        }
+
+    /** The sentence the fitness label publishes beside its grade — index 3. */
+    private suspend fun evidenceOf(
+        store: IEventStore,
+        url: NormalizedRelayUrl,
+    ): String? = tagOf(store, url, "l")?.getOrNull(RelayVerdictRecord.LABEL_EVIDENCE_INDEX)
+
     /** The `measured-at` the fitness label carries — index 4, per NIP-32's shape. */
     private suspend fun stampOf(
         store: IEventStore,

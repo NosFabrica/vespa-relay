@@ -198,6 +198,19 @@ class FitnessPass(
     private val writeCursors = ConcurrentHashMap<String, String>()
 
     /**
+     * What the NEG-OPEN came back with, boxed.
+     *
+     * `withTimeoutOrNull` collapses "the block returned null" and "the clock
+     * fired" into one null, and those are different facts about different
+     * things: the first is the relay's moment or ours, the second is THIS
+     * PASS's budget being spent. A box makes the outer null mean exactly one
+     * thing, so the budget can be counted and said out loud.
+     */
+    private class Reconciled(
+        val fact: Pair<Boolean, String>?,
+    )
+
+    /**
      * One url's outcome, for the pass's own funnel — carrying the measured
      * facts that ride the same record edit. Fields on the return value
      * rather than side maps keyed by url: a dial that throws after learning
@@ -295,6 +308,11 @@ class FitnessPass(
         // url the pass lost, but a job running past its budget is still a fact
         // about this instrument and the number is the only place it shows.
         val cutLate = AtomicInteger()
+        // …and the urls whose NEG-OPEN was cut by its own wall clock — see
+        // [NIP77_DEADLINE_MS]. Not a verdict and not a loss: the grade was
+        // already earned and is published. It is counted because a budget that
+        // spends itself in silence is exactly what made #172 hard.
+        val negOpenCut = AtomicInteger()
         // …and the urls this pass ASKED and got no answer of any kind about:
         // no EOSE, no CLOSED, no transport word, or a throw on our side of the
         // socket. Kept apart from [outcomes] because they are not verdicts and
@@ -347,7 +365,7 @@ class FitnessPass(
                             val ran =
                                 withTimeoutOrNull(probe.deadlineMs(url)) {
                                     try {
-                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, onEvent)
+                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, onEvent)
                                     } finally {
                                         // Whatever ended it — a verdict, a
                                         // throw, the deadline, a shutdown — the
@@ -441,6 +459,7 @@ class FitnessPass(
                     unmeasured.size,
                     downloaded.get(),
                     cutLate = cutLate.get(),
+                    negOpenCut = negOpenCut.get(),
                 )
                 return downloaded.get()
             }
@@ -571,7 +590,12 @@ class FitnessPass(
                 // NOT TESTED AND NOT CHANGED — see the block above. Counted, so
                 // the funnel still divides and a reader can see the loop got
                 // shorter rather than the corpus getting smaller.
-                if (!outcome.tested && standing[url] == outcome.verdict.value) {
+                // …and the EVIDENCE has to match too, not just the grade. A
+                // url that re-folds onto a different canonical is `alias` both
+                // times and is not the same statement: skipping on the grade
+                // alone would leave the record naming a url the fold no longer
+                // elects.
+                if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {
                     skipped++
                     continue
                 }
@@ -676,6 +700,7 @@ class FitnessPass(
                 resumeAt = writeCursors[label],
                 skippedWrites = skipped,
                 stoppedBy = stoppedBy,
+                negOpenCut = negOpenCut.get(),
             )
         } finally {
             progress.finish()
@@ -706,6 +731,7 @@ class FitnessPass(
         unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
+        negOpenCut: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_REACHABILITY)
@@ -735,7 +761,7 @@ class FitnessPass(
         sockets.claim(url)
         try {
             val outcome =
-                dialVerdict(url, anchor, settled = { outcomes[url] = it }) { event ->
+                dialVerdict(url, anchor, settled = { outcomes[url] = it }, negOpenCut = negOpenCut) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
                 }
@@ -790,6 +816,8 @@ class FitnessPass(
          * clock to cut.
          */
         settled: (Outcome) -> Unit,
+        /** Bumped when the NEG-OPEN's own wall clock fires — see [NIP77_DEADLINE_MS]. */
+        negOpenCut: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         // Events ABOVE the anchor are the relay answering a question it was not
@@ -929,20 +957,28 @@ class FitnessPass(
         // nothing, so a flaky moment cannot demote a reconciling relay.
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
         progress.holding(url.url, STAGE_NIP77)
-        val nip77 =
+        val reconciled =
             withTimeoutOrNull(nip77DeadlineMs) {
-                try {
-                    reconcile(url, sliver)
-                    true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: NegentropySyncException) {
-                    false to "declined the NEG-OPEN: ${e.reason}"
-                } catch (_: Exception) {
-                    // No fact: the failure was ours or the moment's, not the relay's.
-                    null
-                }
+                Reconciled(
+                    try {
+                        reconcile(url, sliver)
+                        true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: NegentropySyncException) {
+                        false to "declined the NEG-OPEN: ${e.reason}"
+                    } catch (_: Exception) {
+                        // No fact: the failure was ours or the moment's, not the relay's.
+                        null
+                    },
+                )
             }
+        // A BUDGET THAT FIRES SAYS SO. Publishing nothing is right — our clock
+        // is not the relay declining — but a bound that spends itself in
+        // silence is the shape of fault #172 took three diagnoses to find, and
+        // every other budget in this pass is already named in the report.
+        if (reconciled == null) negOpenCut.incrementAndGet()
+        val nip77 = reconciled?.fact
 
         return Outcome(
             Verdict.PRIME,
@@ -1086,6 +1122,16 @@ class FitnessPass(
          * SOME of them, slowly, which is load rather than an outage.
          */
         stoppedBy: String? = null,
+        /**
+         * How many urls had their NEG-OPEN cut by its own wall clock — see
+         * [NIP77_DEADLINE_MS].
+         *
+         * Never a verdict: the grade was earned before that step and is
+         * published either way. Reported because every other bound in this pass
+         * is, and one that spends itself in silence is the shape of the fault
+         * #172 turned out to be.
+         */
+        negOpenCut: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -1116,6 +1162,12 @@ class FitnessPass(
         // number is here because it is the only warning that the budget is
         // being spent, and the urls spending it are the slowest-answering ones
         // in the corpus (#172).
+        if (negOpenCut > 0) {
+            System.err.println(
+                "router: fitness [$label] — $negOpenCut NEG-OPEN(s) cut at the ${NIP77_DEADLINE_MS / 1000}s wall clock; " +
+                    "no nip77 fact published for them, which is our clock and NOT the relay declining",
+            )
+        }
         if (cutLate > 0) {
             System.err.println(
                 "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
@@ -1140,12 +1192,12 @@ class FitnessPass(
                 buildList {
                     if (wedgedWrites > 0) add("$wedgedWrites write(s) hit the per-write store deadline")
                     if (declinedWrites > 0) add("$declinedWrites write(s) failed outright with the store answering")
-                    if (dropped > 0) {
-                        add(
-                            "the remaining $dropped were dropped rather than paying the deadline each" +
-                                (stoppedBy?.let { " — the batch stopped because $it" } ?: " — the store, not the writes, is the fault"),
-                        )
-                    }
+                    if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each")
+                    // ON ITS OWN, never nested under `dropped`. A batch that
+                    // stops on its last few urls can have `dropped` come out
+                    // zero or negative, and "it stopped" with no "because"
+                    // is the half of the line an operator actually acts on.
+                    if (stoppedBy != null) add("the batch stopped because $stoppedBy")
                 }
             System.err.println(
                 "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
