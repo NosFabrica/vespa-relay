@@ -171,15 +171,25 @@ class FitnessPass(
     private val gate = DialGate.over(concurrency, tor)
 
     /**
-     * The url the last batch's write loop stopped ON, or null when it wrote
+     * The url each batch's write loop stopped ON, or no entry when it wrote
      * every verdict it earned — see the rotation in [measure].
      *
-     * Only the write loop reads or writes it, and passes never overlap
-     * ([AliasMonitor] holds a mutex over them), so this needs no more
-     * synchronisation than being visible to the next pass's thread.
+     * **KEYED BY LABEL, and that is the whole of it working at all.** One
+     * [FitnessPass] serves two callers on two clocks: the sweep, over the whole
+     * corpus every `monitor { interval }`, and the fast lane, over the handful
+     * of urls named since its last look every `fastLaneSeconds` (120 by
+     * default) — see [MonitorEngine]'s `fitnessEntry`, which is the SAME object
+     * in both lists. A single cursor is therefore written ~180 times between
+     * sweeps by batches of three urls, and a lane tick that writes its whole
+     * batch clears it: the sweep's resume point would be gone every time,
+     * every sweep, and the rotation would be dead code that looks alive.
+     *
+     * Two entries ever. Only the write loop reads or writes them, and passes
+     * never overlap ([AliasMonitor] holds a mutex over the sweep and the lane
+     * alike), so the map is for visibility across threads rather than for
+     * arbitrating a race.
      */
-    @Volatile
-    private var writeCursor: String? = null
+    private val writeCursors = ConcurrentHashMap<String, String>()
 
     /**
      * One url's outcome, for the pass's own funnel — carrying the measured
@@ -460,12 +470,14 @@ class FitnessPass(
             // and deliberately not persisted: a restart starts at the top,
             // which is the same guarantee from a different offset.
             val order = outcomes.keys.sortedBy { it.url }
-            val resumeFrom = writeCursor?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
+            val resumeFrom = writeCursors[label]?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
+            // -1 is a cursor sorting past everything this batch holds, which
+            // wraps to the top exactly as index 0 does.
             val rotated = if (resumeFrom <= 0) order else order.subList(resumeFrom, order.size) + order.subList(0, resumeFrom)
             // Cleared up front so a pass that throws between here and the loop's
             // end cannot leave the next one resuming at a url this batch never
             // reached.
-            writeCursor = null
+            writeCursors.remove(label)
             for (url in rotated) {
                 val outcome = outcomes[url] ?: continue
                 progress.holding(url.url, STAGE_PUBLISH)
@@ -527,7 +539,7 @@ class FitnessPass(
                             // tripped the limit is one of the ones that did not
                             // land, and the limit is a statement about the
                             // store rather than about the url it stopped on.
-                            writeCursor = url.url
+                            writeCursors[label] = url.url
                             break
                         }
                     }
@@ -547,7 +559,7 @@ class FitnessPass(
                 wedgedWrites = wedgedTotal,
                 declinedWrites = declined,
                 cutLate = cutLate.get(),
-                resumeAt = writeCursor,
+                resumeAt = writeCursors[label],
             )
         } finally {
             progress.finish()
@@ -622,7 +634,17 @@ class FitnessPass(
             // Same rule: a throw on our side of the socket is our instrument
             // giving up. [ConsistencyPass.Unmeasured.FAILED] has always read it
             // that way; this published `silent` about the relay instead.
-            unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
+            //
+            // …UNLESS THE LADDER HAD ALREADY SETTLED ONE. `settled` records the
+            // verdict mid-job now, so a throw in the steps after it would put
+            // this url in `outcomes` AND `unmeasured` at once — published, and
+            // simultaneously counted as a dial that came back with nothing.
+            // That is a contradiction in the report and, worse, a url added to
+            // the batch guard's blind share on a dial that answered, which
+            // pushes a healthy pass towards refusing to publish ANY of itself.
+            if (!outcomes.containsKey(url)) {
+                unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
+            }
         } finally {
             sockets.release(url)
         }

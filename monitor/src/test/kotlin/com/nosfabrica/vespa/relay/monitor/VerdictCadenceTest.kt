@@ -41,6 +41,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -319,10 +320,13 @@ class VerdictCadenceTest {
                     reconcile = { _, _ -> },
                 )
 
-            withTimeout(30_000) { pass.measure("first", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            // ONE LABEL for both, because the cursor is per label — two sweeps
+            // of the same corpus are one batch stream, and a lane tick is
+            // another. See [FitnessPass.writeCursors].
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
             val first = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
-            withTimeout(30_000) { pass.measure("second", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
             val second = synchronized(attempted) { attempted.toList() }
 
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
@@ -338,6 +342,83 @@ class VerdictCadenceTest {
             assertTrue(
                 first.dropLast(1).none { it in second },
                 "urls a wedged batch already wrote off must not be retried ahead of the ones it never reached: $first then $second",
+            )
+        }
+
+    @Test
+    fun `a fast lane tick does not clear the sweep's resume point`() =
+        runBlocking {
+            // ONE PASS OBJECT, TWO CALLERS ON TWO CLOCKS — which is how the
+            // router builds it: `MonitorEngine.fitnessEntry` is in both
+            // `passes` and `fastLanePasses`. The lane runs every 120s over the
+            // handful of urls named since its last look; the sweep runs every
+            // few hours over the whole corpus. A cursor shared between them is
+            // cleared by ~180 lane ticks before the next sweep ever reads it,
+            // so the rotation would be dead code that looks alive.
+            val corpusUrls = (0 until 12).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
+            val laneUrls = listOf(RelayUrlNormalizer.normalize("wss://fresh.example"))
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val attempted = mutableListOf<String>()
+
+            // An AtomicBoolean rather than a captured `var`: the write loop
+            // runs on whatever dispatcher the store's insert suspends onto, and
+            // a plain local carries no visibility guarantee across it.
+            val wedged = AtomicBoolean(true)
+            val recording =
+                object : IEventStore by store {
+                    override suspend fun insert(event: Event) {
+                        event.tags
+                            .firstOrNull { it.firstOrNull() == "d" }
+                            ?.getOrNull(1)
+                            ?.let { synchronized(attempted) { attempted += it } }
+                        if (wedged.get()) {
+                            CompletableDeferred<Unit>().await()
+                            error("unreachable")
+                        }
+                        store.insert(event)
+                    }
+                }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(recording, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                    reconcile = { _, _ -> },
+                )
+
+            // A sweep the store wedges, leaving most of the corpus unwritten…
+            withTimeout(30_000) {
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            val sweptFirst = synchronized(attempted) { attempted.toList() }
+            synchronized(attempted) { attempted.clear() }
+
+            // …then a healthy lane tick over one fresh url, which writes its
+            // whole batch and therefore has no resume point of its own.
+            wedged.set(false)
+            withTimeout(30_000) {
+                pass.measure(AliasMonitor.FAST_LANE, laneUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            synchronized(attempted) { attempted.clear() }
+
+            // The next sweep must still pick up where the wedge stopped it. On
+            // a shared cursor it starts at the top instead, and the corpus's
+            // tail is dropped again — the same tail, every sweep, which is the
+            // starvation this rotation exists to end.
+            wedged.set(true)
+            withTimeout(30_000) {
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            val sweptAgain = synchronized(attempted) { attempted.toList() }
+
+            assertEquals(
+                sweptFirst.last(),
+                sweptAgain.first(),
+                "a lane tick between two sweeps must not move the sweep's cursor: $sweptFirst then $sweptAgain",
             )
         }
 

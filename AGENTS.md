@@ -1393,9 +1393,16 @@ went in hash order — arbitrary, and STABLE across passes for a stable url set.
 Every cut batch therefore dropped the SAME tail, and a healthy relay whose url
 happened to hash late could never be re-graded however often the sweep ran. So
 the loop walks the urls in URL order and starts at the write the last batch's
-wedge stopped on (`FitnessPass.writeCursor`, in memory — a restart starts at the
-top, which is the same guarantee from a different offset). What a wedge costs
-this pass is the next pass's head.
+wedge stopped on (`FitnessPass.writeCursors`, in memory — a restart starts at
+the top, which is the same guarantee from a different offset). What a wedge
+costs this pass is the next pass's head.
+
+**The cursor is PER LABEL, and a single one would have been dead code that
+looks alive.** One `FitnessPass` object serves two callers on two clocks —
+`MonitorEngine.fitnessEntry` is in `passes` AND in `fastLanePasses` — so between
+two sweeps the lane runs it ~180 times over a handful of urls each. Every lane
+tick that writes its whole batch clears the cursor, so the sweep's resume point
+would never survive to be read.
 
 **Two things about #172 that are NOT the fix, recorded so they are not tried
 again.** Raising a stream's `gatedBy.maxAgeSeconds` is not: it had already gone
