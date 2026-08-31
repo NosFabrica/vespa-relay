@@ -360,6 +360,7 @@ class StatusVocabularyTest {
                     "lostToStore",
                     "inBatch",
                     "workers",
+                    "workersRunning",
                     "oldestBatchSec",
                     "health",
                     "bottleneck",

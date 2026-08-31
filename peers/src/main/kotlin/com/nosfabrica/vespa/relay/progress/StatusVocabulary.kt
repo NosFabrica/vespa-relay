@@ -656,7 +656,7 @@ object StatusVocabulary {
                     "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
                     "backpressured behind it, empty means the limit is upstream of ingest. Those are opposite " +
                     "findings and the depth alone tells them apart only against the ceiling — and FULL is itself two " +
-                    "findings, which `inFlight` and `oldestBatchSec` separate: ingest writing flat out, or ingest " +
+                    "findings, which `inBatch` and `oldestBatchSec` separate: ingest writing flat out, or ingest " +
                     "stopped with these events queued for a worker that never comes back. The healer's queue has " +
                     "no ceiling to publish: it coalesces and drops instead of growing, which is what `dropped` counts.",
             )
@@ -677,9 +677,18 @@ object StatusVocabulary {
             )
             put(
                 "workers",
-                "Ingest workers this router was CONFIGURED with (`ingestConcurrency`) — the denominator `inFlight` " +
-                    "means nothing without. A worker that has stopped still counts here, so the gap between this and " +
-                    "a pipeline that never reaches it is itself the finding.",
+                "Ingest workers this router was CONFIGURED with (`ingestConcurrency`) — the denominator `inBatch` " +
+                    "means nothing without. Read the pair as an instant, not a verdict: `inBatch` below this is the " +
+                    "ordinary shape of a mirror whose workers are waiting on the channel, and only `inBatch` at this " +
+                    "number WITH `oldestBatchSec` in the minutes says nothing is draining. `workersRunning` is the " +
+                    "one that reports a worker which exited.",
+            )
+            put(
+                "workersRunning",
+                "Ingest worker loops still looping. Equal to `workers` on a healthy router; BELOW it means one threw " +
+                    "and exited, and its share of the queue now has nothing draining it — a partial version of the " +
+                    "same stall `wedged` names, and the only one that a restart is the whole remedy for. Zero with a " +
+                    "non-empty `queued` is ingest gone entirely.",
             )
             put(
                 "oldestBatchSec",
@@ -745,11 +754,13 @@ object StatusVocabulary {
             )
             put(
                 "bottleneck",
-                "WHERE THE CONSTRAINT IS, decided by the router itself: `ingest` (the queue is full, so every " +
-                    "download is backpressured behind it — the mirror is as fast as the store), `downloads` (the " +
-                    "queue drains as fast as it fills, so the relays are the limit), `upstream` (nothing is arriving " +
-                    "at all) or `mixed`. A full queue and an empty one are opposite diagnoses that look identical " +
-                    "from every other number here, which is why this is one word rather than something to infer.",
+                "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
+                    "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
+                    "full, so every download is backpressured behind it — the mirror is as fast as the store), " +
+                    "`downloads` (the queue drains as fast as it fills, so the relays are the limit), `upstream` " +
+                    "(nothing is arriving at all) or `mixed`. A full queue and an empty one are opposite diagnoses " +
+                    "that look identical from every other number here — and so are the two FULL ones, `ingest` and " +
+                    "`wedged`, which is why this is one word rather than something to infer.",
             )
             put(
                 "eventsPerSec",

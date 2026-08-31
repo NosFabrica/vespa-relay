@@ -4025,7 +4025,11 @@ Reach for it first.
   | `2 x 8192` | 401 | 2,493 | 31.9s | 39.6s | 39.4s |
   | `1 x 16384` | 420 | 2,378 | — | 36.7s | 36.6s |
 
-  **Within 11%, and if anything DECREASING with width.** In every row `write`
+  **Within 11%, and flat within the arm-order confound** — each arm writes
+  another 100k documents, so a later shape meets a bigger index, and the bias
+  runs the same way as any apparent decline with width. The sweep runs both
+  orders for that reason: agreement between them is what makes the flatness a
+  finding rather than a drift. In every row `write`
   is 96-99% of `hold`: the lock is held essentially the whole wall clock, and
   essentially all of that holding is the write itself. There is no non-write
   time inside the lock to reclaim, so **removing or striping the writer mutex

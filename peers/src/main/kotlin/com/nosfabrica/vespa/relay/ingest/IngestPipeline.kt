@@ -965,9 +965,27 @@ class IngestPipeline(
     fun workersRunning(): Int = loopsRunning.get()
 
     /**
-     * Whether ingest has stopped rather than merely filled up: the queue is at
-     * its ceiling AND some worker has been in one batch pass longer than any
-     * batch can honestly take.
+     * Whether ingest has STOPPED: no worker is waiting on the channel, and none
+     * has started a batch within [wedgeAfterMs]. That is the definition of
+     * nothing draining, stated directly.
+     *
+     * **It deliberately says nothing about the queue depth.** This asked for
+     * the queue to be at its ceiling as well, which is how the wedge PRESENTED
+     * in #167 — but presentation is not definition. A wedge behind a slow
+     * upstream holds every worker with the queue only part full, and the depth
+     * test sent that case to `mixed`, which the card renders as "keeping up —
+     * nothing here is the constraint" for a pipeline writing nothing. Dropping
+     * the depth also removes a second reading of `queued` from a caller that
+     * had already read it once, which is exactly the drift `SyncEngine`'s
+     * health loop comments say it fixed.
+     *
+     * The false positive it has to avoid is an honestly slow batch, and the
+     * margin is wide: the widest batch this can take is `MAX_INBOUND_QUEUE`,
+     * and the slowest measured write is ~2,400 ev/s (`IngestCostBench`'s
+     * all-fresh burst), so a real batch lands in about seven seconds against a
+     * two-minute threshold. Requiring EVERY worker to be held, and none of them
+     * recently, is the other half: one worker back on the channel means ingest
+     * is moving, however long a sibling has been away.
      *
      * **This REPORTS the wedge; nothing here ends it.** Deliberately so: the
      * only way to end one from this side is to cut the pass, and cutting a
@@ -977,7 +995,20 @@ class IngestPipeline(
      * that stops and says which store call it stopped in. So the worker stays
      * where it is, the health line names it, and the operator decides.
      */
-    fun wedged(): Boolean = queued.get() >= capacity && oldestBatchMs() >= wedgeAfterMs
+    fun wedged(): Boolean {
+        // An empty pool cannot be wedged, and must not read as one: the loop
+        // below is vacuously true over no workers. Unreachable today —
+        // `newFixedThreadPool(0)` throws first — and left because a predicate
+        // that answers "stopped" for a pipeline that does not exist is the kind
+        // of landmine this file's comments exist to defuse.
+        if (workers == 0) return false
+        val now = System.currentTimeMillis()
+        for (i in 0 until workers) {
+            val since = busySince.get(i)
+            if (since == 0L || now - since < wedgeAfterMs) return false
+        }
+        return true
+    }
 
     /**
      * WHY events were rejected, as counts rather than as the log line's prose.

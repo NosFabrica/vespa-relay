@@ -69,8 +69,9 @@ function statusRow(progress) {
   // Spelled with its own spaces: consecutive text nodes collapse into ONE
   // anonymous flex item, so the row's `gap` never lands between them.
   if (health.eventsPerSec != null) row.append(` · ${fmt(health.eventsPerSec)} events/s into the store`);
-  // The four verdicts are different faults with different fixes, and only the
-  // ingest one is a fault at all — see BOTTLENECK.
+  // The five verdicts are different faults with different fixes, and only two
+  // are a fault at all: `ingest` (full and keeping up badly) and `wedged` (full
+  // and not draining) — see BOTTLENECK.
   const constraint = constraintOf(health);
   if (constraint) row.appendChild(chip(constraint.text, constraint.tone, constraint.why));
   // THE SOCKET BUDGET, and it was published to `/stats.json` for a long time

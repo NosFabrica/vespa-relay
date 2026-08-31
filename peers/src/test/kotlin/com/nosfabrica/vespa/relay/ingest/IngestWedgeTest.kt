@@ -31,7 +31,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -76,7 +75,7 @@ class IngestWedgeTest {
     }
 
     @Test
-    fun `a full queue whose worker is held in one pass reads as wedged, not as backpressure`() =
+    fun `every worker held past the threshold is a wedge, whatever the queue depth`() =
         runBlocking {
             val scope = CoroutineScope(Job())
             val pipeline =
@@ -88,52 +87,45 @@ class IngestWedgeTest {
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
+            // TEN EVENTS, on a queue that holds thousands. This asserted the
+            // opposite once — that an unfull queue is never a wedge — and it was
+            // encoding how #167 PRESENTED rather than what a wedge is. Behind a
+            // slow upstream every worker can be held with the queue nearly
+            // empty, and the depth test rendered that as "keeping up".
+            (0 until 10).map { note(it) }.forEach { pipeline.submit(it, skipVerify = true) }
             pipeline.start()
-            // One batch for the worker to be held in, and the CEILING behind
-            // it: the queue depth is what made #167 read as a busy mirror, and
-            // the verdict has to be taken with the queue in that state.
-            //
-            // Off to the side, because `submit` SUSPENDS on a full queue by
-            // design and the worker draining it is the one that is wedged —
-            // submitting inline would park this test in the backpressure it is
-            // trying to observe.
-            val filling = scope.launch { repeat(pipeline.capacity + 2_000) { pipeline.submit(note(it), skipVerify = true) } }
             settle("the worker to enter the wedged pass") { pipeline.inBatch() == 1 }
-            settle("the queue to reach its ceiling") { pipeline.queued.get() >= pipeline.capacity }
-            settle("the held pass to age past the wedge threshold") { pipeline.wedged() }
+            settle("the held pass to age past the threshold") { pipeline.wedged() }
 
-            assertEquals(1, pipeline.workerCount)
-            assertEquals(1, pipeline.workersRunning())
-            assertTrue(
-                pipeline.oldestBatchMs() >= 50,
-                "a held pass must report its age, got ${pipeline.oldestBatchMs()}ms",
-            )
-            filling.cancel()
+            assertTrue(pipeline.queued.get() < pipeline.capacity, "the queue must NOT be full for this to mean anything")
+            assertEquals(1, pipeline.workersRunning(), "a wedge is workers held, not workers gone")
             scope.cancel()
             pipeline.close()
         }
 
     @Test
-    fun `a queue that is not full is never wedged, however long the pass runs`() =
+    fun `a worker still waiting on the channel means ingest is moving`() =
         runBlocking {
             val scope = CoroutineScope(Job())
             val pipeline =
                 IngestPipeline(
                     WedgedStore(),
-                    IngestTuning(concurrency = 1, batch = 1000),
+                    IngestTuning(concurrency = 2, batch = 1000),
                     audit = null,
                     servingPressure = null,
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
-            (0 until 10).map { note(it) }.forEach { pipeline.submit(it, skipVerify = true) }
+            // ONE event for TWO workers: the first takes it and never returns,
+            // the second sits on the channel. That is a pipeline at half
+            // capacity, not a stopped one, and the age of the held pass alone
+            // must never say otherwise.
+            pipeline.submit(note(0), skipVerify = true)
             pipeline.start()
-            settle("the worker to enter the wedged pass") { pipeline.inBatch() == 1 }
-            settle("the pass to age past the wedge threshold") { pipeline.oldestBatchMs() >= 100 }
+            settle("one worker to enter the wedged pass") { pipeline.inBatch() == 1 }
+            settle("the held pass to age well past the threshold") { pipeline.oldestBatchMs() >= 200 }
 
-            // The age ALONE must never raise the alarm, or every honest long
-            // write on an idle mirror would. The wedge is the pair.
-            assertEquals(false, pipeline.wedged())
+            assertEquals(false, pipeline.wedged(), "one worker on the channel is ingest still moving")
             scope.cancel()
             pipeline.close()
         }

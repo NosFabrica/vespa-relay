@@ -465,6 +465,11 @@ class SyncEngine(
                     Processors.Count("inBatch", ingest.inBatch().toLong()),
                     Processors.Count("workers", ingest.workerCount.toLong()),
                     Processors.Count("oldestBatchSec", ingest.oldestBatchMs() / 1000),
+                    // The OTHER way ingest stops, and the one no age can show:
+                    // a worker loop that threw and exited. Below `workers` its
+                    // share of the queue has no drain at all. It reached a
+                    // stderr line and nothing else.
+                    Processors.Count("workersRunning", ingest.workersRunning().toLong()),
                 )
             }
         }

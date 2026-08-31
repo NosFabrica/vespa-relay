@@ -221,7 +221,7 @@ class IngestCostBench {
             //    means the batching does.
             sweepFreshShapes(store)
 
-            // 8. What a SUPERSESSION pre-filter would cost: the batched read
+            // 9. What a SUPERSESSION pre-filter would cost: the batched read
             //    that answers "do we hold a newer version of this address", in
             //    the shape stage C uses for its guards — chunked by author,
             //    bounded fan-out. Priced against arm 3's per-event cost, this
@@ -232,8 +232,16 @@ class IngestCostBench {
     }
 
     /**
-     * A 100%-fresh burst through the same three shapes — the regime the 98/2
-     * sweep cannot speak for.
+     * A 100%-fresh burst through the same three shapes, FORWARDS THEN
+     * BACKWARDS — the regime the 98/2 sweep cannot speak for.
+     *
+     * Both orders because every arm here writes [CORPUS] new documents, so each
+     * one meets a bigger index than the last and a single pass confounds width
+     * with corpus growth. Run ascending only, the drift pushes the widest shape
+     * to look slowest — which is the direction of the answer, so it cannot be
+     * read as evidence for it. Descending puts the drift against the width
+     * instead: if the two passes disagree about which shape wins, the ordering
+     * is corpus growth; if both are flat, the flatness is real.
      *
      * Every event here is written, so `lock.ingest.hold` covers a real write
      * rather than a near-empty commit, and the feed client's own pipelining is
@@ -244,12 +252,14 @@ class IngestCostBench {
      * says whether the engine or the pipeline is the ceiling.
      */
     private fun sweepFreshShapes(store: VespaEventStore) {
-        listOf(
-            IngestTuning(concurrency = 8, batch = 1024),
-            IngestTuning(concurrency = 2, batch = 8192),
-            IngestTuning(concurrency = 1, batch = 16384),
-        ).forEachIndexed { i, tuning ->
-            run(store, Arm("fresh burst sweep", notes(CORPUS, gen = 20 + i), probe = true, tuning = tuning))
+        val shapes =
+            listOf(
+                IngestTuning(concurrency = 8, batch = 1024),
+                IngestTuning(concurrency = 2, batch = 8192),
+                IngestTuning(concurrency = 1, batch = 16384),
+            )
+        (shapes.map { "up" to it } + shapes.reversed().map { "down" to it }).forEachIndexed { i, (order, tuning) ->
+            run(store, Arm("fresh burst sweep $order", notes(CORPUS, gen = 20 + i), probe = true, tuning = tuning))
         }
     }
 
