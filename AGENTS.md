@@ -1436,6 +1436,22 @@ in the issue is what binning by the rtt ITSELF surfaces out of 74 records.
 `rtt-open` does not show it because it is measured by the NIP-11 read on a
 different client, so it does not move with whatever inflates a read.
 
+**A PASS RE-SIGNS WHAT IT TESTED, AND ONLY THAT.** A measured verdict is always
+written — the point of dialling is to put down what the relay did, and the
+`measured-at` riding with it is true. An INHERITED one is not: the fold's alias
+and the stability gate's refusal reach the fitness write loop having cost it no
+socket, and stamping `measured-at = now` on those claims a measurement this pass
+did not make. That stamp is the whole mechanism by which a verdict ages
+(`RelayVerdictRecord.current`), so refreshing what was not tested is how an
+untested verdict becomes immortal — the trap that header already describes for
+the event clock, one field over. So an inherited verdict is written only when it
+would CHANGE something: the record carries no such grade, carries a different
+one, or carries it under a superseded epoch or aged past the TTL.
+`RelayVerdictRecord.fitnessGrades` is the one chunked read that answers it, and
+a read that FAILS falls back to writing everything — skipping a write the record
+needs is the worse of the two mistakes. It is also most of a third of the loop:
+6,192 of the 20,075 graded records on staging are `alias` or `inconsistent`.
+
 **Two things about #172 that are NOT the fix, recorded so they are not tried
 again.** Raising a stream's `gatedBy.maxAgeSeconds` is not: it had already gone
 14h -> 48h for the same class of problem, the affected relays were past 48h too,

@@ -157,6 +157,56 @@ class RelayVerdictRecord(
     }
 
     /**
+     * THE FITNESS GRADE THIS MONITOR CURRENTLY STANDS BEHIND, for a set of urls
+     * in one chunked read — the question "would writing this change anything?"
+     * asked before paying for the write.
+     *
+     * Exists because a verdict may reach [publishFitness] having been MEASURED
+     * this pass or merely INHERITED from another pass's standing verdict — the
+     * fold's alias and the stability gate's refusal cost the fitness pass no
+     * dial at all. Re-signing an inherited one stamps `measured-at = now` on a
+     * relay nothing dialled, which is not a cheap lie: the stamp is the whole
+     * mechanism by which a verdict ages, so a pass that refreshes what it did
+     * not test makes that verdict immortal — the exact trap [current]'s own
+     * header describes for the event clock, one field over. See the write loop
+     * in [FitnessPass].
+     *
+     * Same shape and the same trust boundary as [load]: `#d` in [QUERY_CHUNK]
+     * chunks, scoped to our own key, and the label read under
+     * [FITNESS_NAMESPACE] only. A grade that is absent, unreadable, taken under
+     * a superseded [FITNESS_EPOCH], or aged past [ttlSeconds] does NOT appear —
+     * so a caller comparing against this re-writes exactly the records that
+     * would otherwise decay out from under a reader, and skips the rest.
+     *
+     * **THROWS when the store cannot answer**, for [load]'s reason: a partial
+     * answer read as "no grade" would say every url needs writing, which is
+     * merely the old behaviour, and read as "grade unchanged" would skip writes
+     * the record needs. The caller decides which mistake it can afford.
+     */
+    suspend fun fitnessGrades(candidates: Collection<NormalizedRelayUrl>): Map<NormalizedRelayUrl, String> {
+        val self = signer?.pubKey ?: return emptyMap()
+        if (candidates.isEmpty()) return emptyMap()
+        val floor = nowSeconds() - ttlSeconds
+        val grades = HashMap<NormalizedRelayUrl, String>()
+        for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
+            val held = store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
+            for (event in held) {
+                val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
+                val url = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
+                val label =
+                    event.tags.firstOrNull {
+                        it.size > LABEL_NAMESPACE_INDEX && it[0] == LABEL_TAG && it[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+                    } ?: continue
+                if (label.getOrNull(LABEL_EPOCH_INDEX) != FITNESS_EPOCH) continue
+                val measuredAt = label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: continue
+                if (measuredAt < floor) continue
+                grades[url] = label[1]
+            }
+        }
+        return grades
+    }
+
+    /**
      * Read back EVERY verdict this monitor still stands behind, whatever any one
      * cycle happens to have discovered.
      *

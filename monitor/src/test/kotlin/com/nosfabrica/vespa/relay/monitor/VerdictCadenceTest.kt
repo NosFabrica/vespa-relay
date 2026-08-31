@@ -475,6 +475,88 @@ class VerdictCadenceTest {
             )
         }
 
+    @Test
+    fun `an inherited verdict is re-signed only when it would change the record`() =
+        runBlocking {
+            // A MEASURED verdict is always written; an INHERITED one only when
+            // it says something the record does not. The two free refusals cost
+            // this pass no socket — the fold proved the alias, the stability
+            // gate proved the inconsistency — so stamping `measured-at = now`
+            // on them claims a measurement nothing took, and the stamp is the
+            // whole mechanism by which a verdict ages.
+            val alias = RelayUrlNormalizer.normalize("wss://alias.example")
+            val canonical = RelayUrlNormalizer.normalize("wss://canonical.example")
+            val dialled = RelayUrlNormalizer.normalize("wss://dialled.example")
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val inserts = AtomicInteger()
+            val counting =
+                object : IEventStore by store {
+                    override suspend fun insert(event: Event) {
+                        inserts.incrementAndGet()
+                        store.insert(event)
+                    }
+                }
+
+            fun pass() =
+                FitnessPass(
+                    record = RelayVerdictRecord(counting, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { mapOf(alias to canonical) },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+
+            // PASS ONE writes both: the record carries no grade for the alias
+            // yet, so the inherited verdict changes something.
+            withTimeout(30_000) {
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
+            assertEquals(Verdict.PRIME.value, gradeOf(store, dialled))
+            val afterFirst = inserts.get()
+            assertEquals(2, afterFirst, "a first pass has to put both verdicts down")
+            val aliasStamp = stampOf(store, alias)
+
+            // PASS TWO writes only the one it dialled. The alias verdict is
+            // unchanged and untested, so it is left exactly as it was — same
+            // stamp, not merely the same grade.
+            inserts.set(0)
+            withTimeout(30_000) {
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertEquals(1, inserts.get(), "a pass must re-sign what it dialled and only that")
+            assertEquals(Verdict.PRIME.value, gradeOf(store, dialled), "the dialled url is still re-graded every pass")
+            assertEquals(
+                aliasStamp,
+                stampOf(store, alias),
+                "an untested verdict must keep the stamp of the pass that actually took it",
+            )
+
+            // …AND A CHANGE STILL LANDS. The same url now folds nowhere and is
+            // dialled instead, so the record has to move off `alias`.
+            inserts.set(0)
+            withTimeout(30_000) {
+                FitnessPass(
+                    record = RelayVerdictRecord(counting, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+            assertEquals(Verdict.PRIME.value, gradeOf(store, alias), "a verdict that CHANGED must be written whatever the record said")
+        }
+
+    /** The `measured-at` the fitness label carries — index 4, per NIP-32's shape. */
+    private suspend fun stampOf(
+        store: IEventStore,
+        url: NormalizedRelayUrl,
+    ): String? = tagOf(store, url, "l")?.getOrNull(RelayVerdictRecord.LABEL_MEASURED_AT_INDEX)
+
     private suspend fun gradeOf(
         store: IEventStore,
         url: NormalizedRelayUrl,

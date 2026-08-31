@@ -237,6 +237,21 @@ class FitnessPass(
          * change here.
          */
         val authRequired: Boolean? = null,
+        /**
+         * Did THIS pass dial for this outcome, or did it inherit one?
+         *
+         * True for everything [measureOne] produces — including the `dead` a
+         * refused pre-probe earns, which is a measurement like any other. False
+         * only for the two free refusals, which reach the write loop having
+         * cost no socket: the fold already proved the alias and the stability
+         * gate already proved the inconsistency, and this pass is only
+         * restating them in the one value a stream filters on.
+         *
+         * The write loop is what reads it — see the skip there, and
+         * [RelayVerdictRecord.fitnessGrades] for why re-stamping an inherited
+         * verdict is a claim we did not earn.
+         */
+        val tested: Boolean = true,
     )
 
     /**
@@ -287,12 +302,12 @@ class FitnessPass(
             // read and a record edit, never a socket.
             val folded = foldedAway(candidates)
             for ((alias, canonical) in folded) {
-                outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}")
+                outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}", tested = false)
             }
             val remaining = candidates.filter { it !in folded }
             val shaky = inconsistent(remaining)
             for (url in shaky) {
-                outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag")
+                outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
             }
 
             val toDial = remaining.filter { it !in shaky }
@@ -453,8 +468,44 @@ class FitnessPass(
             // invisible hours become one nameable url on one nameable stage.
             var published = 0
             var declined = 0
+            var skipped = 0
             var wedgedRun = 0
             var wedgedTotal = 0
+            // WHAT THIS PASS DID NOT TEST, AND THEREFORE MAY NOT RE-SIGN.
+            //
+            // A measured verdict is always written: the point of dialling is to
+            // put down what the relay did, and the stamp that rides with it is
+            // true. An INHERITED one is different — the two free refusals reach
+            // here having cost no socket, and stamping `measured-at = now` on
+            // them claims a measurement this pass did not make. The stamp is
+            // the whole mechanism by which a verdict ages
+            // ([RelayVerdictRecord.current]), so refreshing what we did not
+            // test is how an untested verdict becomes immortal.
+            //
+            // So an inherited verdict is written only when it would CHANGE
+            // something: the record does not carry that grade, carries a
+            // different one, or carries it under a superseded epoch or aged
+            // past the TTL. Skipping the rest costs one chunked read in place
+            // of thousands of read-modify-writes — measured on staging, 6,192
+            // of 20,075 records (31%) are `alias` or `inconsistent`, so this is
+            // also most of a third of the loop that gets cut.
+            //
+            // A read that FAILS is not "nothing is on the record": that would
+            // skip writes the record needs. It falls back to writing
+            // everything, which is exactly the behaviour this replaces.
+            val untested = outcomes.entries.filterNot { it.value.tested }.map { it.key }
+            val standing =
+                try {
+                    record.fitnessGrades(untested)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println(
+                        "router: fitness [$label] — could not read the standing grades (${e.javaClass.simpleName}); " +
+                            "re-signing every inherited verdict this pass rather than skipping one the record needs",
+                    )
+                    emptyMap()
+                }
             // WHERE THIS BATCH PICKS UP, AND WHY THE ORDER IS NOT THE MAP'S.
             // THIS IS #172.
             //
@@ -502,6 +553,13 @@ class FitnessPass(
             writeCursors.remove(label)
             for (url in rotated) {
                 val outcome = outcomes[url] ?: continue
+                // NOT TESTED AND NOT CHANGED — see the block above. Counted, so
+                // the funnel still divides and a reader can see the loop got
+                // shorter rather than the corpus getting smaller.
+                if (!outcome.tested && standing[url] == outcome.verdict.value) {
+                    skipped++
+                    continue
+                }
                 progress.holding(url.url, STAGE_PUBLISH)
                 // Three-valued on purpose: `true` is a stored record, `false`
                 // is the store ANSWERING and the write still failing (a throw
@@ -588,11 +646,12 @@ class FitnessPass(
                 abandoned,
                 unmeasured.size,
                 downloaded.get(),
-                unwrittenCount = outcomes.size - published,
+                unwrittenCount = outcomes.size - published - skipped,
                 wedgedWrites = wedgedTotal,
                 declinedWrites = declined,
                 cutLate = cutLate.get(),
                 resumeAt = writeCursors[label],
+                skippedWrites = skipped,
             )
         } finally {
             progress.finish()
@@ -983,6 +1042,16 @@ class FitnessPass(
          * earned verdict was written.
          */
         resumeAt: String? = null,
+        /**
+         * Inherited verdicts the loop did NOT re-sign because the record
+         * already carries them — see the skip in [measure].
+         *
+         * Reported because it is a large number that looks like a loss and is
+         * not one: on a discovered corpus roughly a third of the batch is a
+         * standing alias or refusal, and a reader watching `published` drop by
+         * that much has to be able to see where it went.
+         */
+        skippedWrites: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -1017,6 +1086,15 @@ class FitnessPass(
             System.err.println(
                 "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
                     "the verdict stands and was written, but the dial did not finish",
+            )
+        }
+        // NOT A LOSS. The record already says this, and this pass did not dial
+        // to find out — so re-signing would have stamped a measurement it did
+        // not make. See [RelayVerdictRecord.fitnessGrades].
+        if (skippedWrites > 0) {
+            System.err.println(
+                "router: fitness [$label] — $skippedWrites inherited verdict(s) left standing: the record already carries " +
+                    "them and this pass dialled nothing for them, so re-signing would refresh a measurement it did not take",
             )
         }
         // THE PASS ENDED ABNORMALLY, and this line is the difference between a
