@@ -7,7 +7,7 @@
 // that produces the numbers, and changed neither.
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
-import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
+import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
 import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, streamSections } from "../shared/sync.js";
 
 /**
@@ -94,6 +94,24 @@ function statusRow(progress) {
   // A count, not a list: the document publishes how many, and one is already
   // the whole message.
   if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));
+  // THE STORE'S OWN SENTENCE about its write path — on HOVER, not on the row.
+  // It reads `feed ok 4211 inflight 32 lat 18ms`, which is machine output, and
+  // it sat here beside curated phrases like "ingest is the limit" as the
+  // longest and least readable thing on the line while answering nothing at a
+  // glance: a reader still has to know that a wide in-flight window with high
+  // latency is the ENGINE pushing back and a narrow one with low latency is the
+  // CLIENT not pushing. So the chip is a label and the sentence is the tooltip.
+  //
+  // The one tone is taken on a SUBSTRING, deliberately the weakest possible
+  // read of another repo's prose: `EXC` appears only when the feed client has
+  // seen transport exceptions, which is unambiguously a fault, and if that
+  // library ever rewords it this degrades to a neutral chip rather than to a
+  // wrong verdict. Every other judgement stays with the reader, beside the
+  // numbers it needs.
+  if (health.feed) {
+    const broken = health.feed.includes("EXC");
+    row.appendChild(chip(broken ? "feed errors" : "feed", broken ? "warn" : null, `${health.feed} — ${term("feed")}`));
+  }
   return row;
 }
 
@@ -698,6 +716,11 @@ function syncCard(section) {
   // below draws. It is the document's own, so a chip cannot describe a member
   // in words the router would not use — see `term` and `SyncVocabularyTest`.
   setTerms(d.terms);
+  // The stage totals this document carries, handed to the module that draws the
+  // ingest row — the same shape as `setTerms` above, and for the same reason.
+  // That row shows the DELTA against the previous document, so the shift has to
+  // happen once per document rather than once per card.
+  setStages(progress?.health?.stages);
   if (progress) card.appendChild(statusRow(progress));
 
   // ONE SECTION PER STREAM, and everything about a stream inside it. The join

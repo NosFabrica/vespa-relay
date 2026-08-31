@@ -1123,11 +1123,26 @@ class IngestPipeline(
          * How long a batch pass has to have been running before a full queue
          * is reported as WEDGED rather than as backpressure — see [wedged].
          *
-         * Two minutes, against the arithmetic of an honest batch: a
-         * 20k-event batch writes in ~12s at the measured ~600µs/event, and
-         * eight workers queued on the store's shared ingest mutex have been
-         * seen several deep at ~10s a hold. So a pass still running at two
-         * minutes is not slow, it is stopped — and NOTHING here stops it. The
+         * TEN MINUTES, and the first number was wrong. This was two minutes,
+         * derived from `IngestCostBench` against a ~500k-document corpus where
+         * the slowest measured throughput was ~2,400 ev/s — a 17x margin over
+         * any honest batch. Staging then ran it: on a ~200M-document store,
+         * with 67 concurrent visits and negentropy reads against the same
+         * engine, ingest oscillates between ~11,400 ev/s and **136**. At that
+         * floor, two workers on 8192-event batches take `8192 / 68` = **120
+         * seconds** — the threshold exactly, on a pipeline that is merely slow.
+         * `oldestBatchSec` was observed at 43 in a healthy sample.
+         *
+         * The bench could not have found this: dedup cost scales with the
+         * index, and its corpus is ~400x smaller than production's. Ten minutes
+         * restores a ~5x margin over the observed floor and still catches a
+         * wedge long before anyone notices — #167's pod was stopped for hours.
+         * **A false `wedged` is worse than a late one**: this word exists
+         * because the router cried "keeping up" through a real outage, and it
+         * would retire itself just as fast by crying wedge through a slow hour.
+         *
+         * So a pass still running at ten minutes is not slow, it is stopped —
+         * and NOTHING here stops it. The
          * store's query client sets `readTimeout(0)`/`callTimeout(0)` on
          * purpose (an unlimited query may run as long as it takes, and it
          * cannot tell "engine still matching" from "connection dead"), so a
@@ -1135,7 +1150,7 @@ class IngestPipeline(
          * process. This number does not bound that; it only makes the router
          * say so, which is the whole of what #167 could not do.
          */
-        const val WEDGE_AFTER_MS = 120_000L
+        const val WEDGE_AFTER_MS = 600_000L
     }
 }
 

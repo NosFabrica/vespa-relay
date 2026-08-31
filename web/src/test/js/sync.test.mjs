@@ -15,7 +15,8 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  STARTING, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf, streamSections,
+  STARTING, STAGES_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
+  stageDeltas, streamSections,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1171,4 +1172,59 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(stuck.backedUp, true);
   assert.deepEqual(scheduleOf(null), []);
   ok("the schedule publishes the whole distribution, a first pass is told from an elapsed one, and only backed-up work is marked");
+}
+
+{
+  // WHERE THE INGEST TIME WENT, and the document can only serve TOTALS: the
+  // per-minute form is destructive to read, so the router must not be the only
+  // caller allowed. The subtraction is the page's job.
+  //
+  // SHARES, not durations. The poll window is clamped 30s-5min and the chain
+  // waits on the previous response, so two readings of "write 45s" are not
+  // comparable to each other; a ratio does not care how long the window was.
+  const before = [{ stage: "write", ms: 10_000 }, { stage: "dedup", ms: 4_000 }];
+  const now = [{ stage: "write", ms: 22_000 }, { stage: "dedup", ms: 4_500 }, { stage: "verify", ms: 300 }];
+  const rows = stageDeltas(now, before);
+  assert.deepEqual(rows.map((r) => [r.stage, r.ms]), [["write", 12_000], ["dedup", 500]],
+    "busiest first, and a stage with no previous total is not a delta");
+  assert.equal(Math.round(rows[0].share * 100), 96, "share is of the interval, not of the row");
+
+  // A FIRST LOAD DERIVES NOTHING. Falling back to the cumulative totals would
+  // put an hour of history under a label that says "since the last refresh",
+  // which is a wrong number rather than a missing one — the row says
+  // "measuring…" instead.
+  assert.deepEqual(stageDeltas(now, null), []);
+  assert.deepEqual(stageDeltas(null, before), []);
+
+  // A COUNTER THAT WENT BACKWARDS is a restarted process, so that row is
+  // dropped rather than clamped: every other stage in the comparison is
+  // measuring a fresh process against the dead one's totals.
+  assert.deepEqual(stageDeltas([{ stage: "write", ms: 5 }], [{ stage: "write", ms: 10_000 }]), []);
+  assert.deepEqual(stageDeltas(before, before), []);
+
+  // Junk rows are skipped rather than drawn as NaN.
+  assert.deepEqual(stageDeltas([{ stage: "w", ms: "x" }, null], [{ stage: "w", ms: 0 }]), []);
+
+  // **A LOCK WAIT NEVER APPEARS ALONE**, which is the whole reason this is not
+  // a plain top-N. AGENTS.md's burst sweep measured `lock.ingest.wait 243.9s`
+  // across a 37.6s wall delivering the same throughput as one worker that
+  // waited for nothing — the wait explained nothing, and ranking by magnitude
+  // would put it on screen with its `hold` and `write` cut off below. Both are
+  // pulled up past the cut whenever a wait is shown.
+  const zeros = (names) => names.map((stage) => ({ stage, ms: 0 }));
+  const names = ["lock.ingest.wait", "a", "b", "c", "d", "lock.ingest.hold", "write"];
+  const busy = [900, 800, 700, 600, 500, 400, 300].map((ms, i) => ({ stage: names[i], ms }));
+  const shown = stageDeltas(busy, zeros(names)).map((r) => r.stage);
+  assert.ok(shown.includes("lock.ingest.hold"), `the matching hold must come with the wait, got ${shown}`);
+  assert.ok(shown.includes("write"), `write must come with the wait, got ${shown}`);
+  assert.ok(!shown.includes("d"), "the companions come past the cut, they do not widen it for everyone");
+
+  // …and with no wait on screen, it is a plain ranked cut.
+  const plain = stageDeltas(busy.slice(1), zeros(names.slice(1))).map((r) => r.stage);
+  assert.deepEqual(plain, ["a", "b", "c", "d"], `no wait shown means no companions pulled up, got ${plain}`);
+
+  // Shares are of the WHOLE interval, so a truncated list sums to less than
+  // 100% rather than overstating every row it kept.
+  assert.ok(stageDeltas(busy, zeros(names)).reduce((n, r) => n + r.share, 0) < 1);
+  ok("the ingest stage split is a share between polls, empty on a first load, and never shows a lock wait alone");
 }

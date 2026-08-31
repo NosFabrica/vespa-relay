@@ -11,7 +11,7 @@
 // member in words the service would not use — see `StatusVocabulary`.
 
 import { el, fmt, fmtDur, short, shownOf } from "./page.js";
-import { HELD_SHOWN, STUCK_PASS_SEC, funnelOf, heldOf, measuringOf, probeProgress } from "./sync.js";
+import { HELD_SHOWN, STUCK_PASS_SEC, funnelOf, heldOf, measuringOf, probeProgress, stageDeltas } from "./sync.js";
 
 /**
  * The glossary the document ships, for the current card's `title` attributes.
@@ -22,6 +22,28 @@ import { HELD_SHOWN, STUCK_PASS_SEC, funnelOf, heldOf, measuringOf, probeProgres
  * so a mark that explains itself here cannot drift from the member it explains.
  */
 let TERMS = {};
+
+/**
+ * The last two documents' `health.stages`, so the ingest row can show what
+ * moved rather than what has accumulated since boot.
+ *
+ * Module state on the same terms `TERMS` is, and set the same way — by the card
+ * before it draws, never inherited from whichever drew first. The DERIVATION
+ * stays pure in `stageDeltas`; only the remembering is here, because only this
+ * module knows when a render pass begins.
+ */
+let stagesNow = null;
+let stagesBefore = null;
+
+/** Hand this document's stage totals in, shifting the previous ones back. */
+export function setStages(stages) {
+  // Guarded on identity, not contents: one document is drawn by more than one
+  // card, and shifting per CARD would compare a document against itself and
+  // report an idle router.
+  if (stages === stagesNow) return;
+  stagesBefore = stagesNow;
+  stagesNow = stages;
+}
 
 /**
  * Point the glossary at THIS document's `terms`.
@@ -385,6 +407,23 @@ function processorFact(p) {
     // its share of the queue with nothing draining it, and no age can show that.
     if (p.workersRunning != null && p.workers != null && p.workersRunning < p.workers) {
       add(`${p.workers - p.workersRunning} of ${p.workers} worker(s) STOPPED`, "workersRunning", true);
+    }
+    // WHERE THE TIME WENT, under the queue and workers it explains. Everything
+    // above says WHICH constraint; only this says what ingest is spending
+    // itself on — `dedup` (store reads), `write` (the feed) and
+    // `lock.ingest.wait` (queueing behind another writer) are three faults with
+    // three remedies and one appearance from outside. It lives on this row and
+    // not up on the status line because a reader diagnosing ingest should not
+    // have to look in two places for it.
+    const stages = stageDeltas(stagesNow, stagesBefore);
+    if (stages.length) {
+      add(`time in ingest ${stages.map((r) => `${r.stage} ${Math.round(r.share * 100)}%`).join(" ")}`, "stages");
+    } else if (Array.isArray(stagesNow) && stagesNow.length) {
+      // Said rather than silently omitted: the totals are cumulative, so the
+      // first refresh after opening the page genuinely has nothing to
+      // difference — and a row that is simply absent reads as a router that is
+      // doing nothing rather than a measurement that has not started.
+      add("time in ingest measuring…", "stages");
     }
     if (p.accepted != null) add(`${short(p.accepted)} stored`, "accepted");
     // Mostly the same event offered once per relay holding it, which is why it
