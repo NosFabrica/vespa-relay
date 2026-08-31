@@ -156,6 +156,12 @@ class FitnessPass(
      */
     private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
     /**
+     * How much wall time one batch may lose to a store that is not answering —
+     * see [PUBLISH_WEDGE_BUDGET_MS], and [publishDeadlineMs] for why a
+     * production-sized constant needs a parameter beside it.
+     */
+    private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
+    /**
      * The NEG-OPEN itself, which is the ONLY thing this pass asks [client] for.
      *
      * A seam for the same reason [AliasProbe] takes its `fetch` as one: the
@@ -471,6 +477,15 @@ class FitnessPass(
             var skipped = 0
             var wedgedRun = 0
             var wedgedTotal = 0
+            // …AND WHAT THEY ACTUALLY COST, which is the thing being bounded —
+            // see [PUBLISH_WEDGE_BUDGET_MS]. Measured rather than assumed from
+            // [publishDeadlineMs]: a write can be cut by a deadline that later
+            // becomes adaptive, and a budget computed from a constant would
+            // then be counting something other than the time it spent.
+            var wedgedMs = 0L
+            // Which limit ended the batch, for the report — the two say
+            // different things about the store and want different answers.
+            var stoppedBy: String? = null
             // WHAT THIS PASS DID NOT TEST, AND THEREFORE MAY NOT RE-SIGN.
             //
             // A measured verdict is always written: the point of dialling is to
@@ -569,6 +584,7 @@ class FitnessPass(
                 // store failing every write PROMPTLY reported a clean pass:
                 // the fast-fail shape of the very outage this loop exists to
                 // make loud.
+                val writeStartedMs = System.currentTimeMillis()
                 val wrote =
                     try {
                         withTimeoutOrNull(publishDeadlineMs) {
@@ -608,7 +624,7 @@ class FitnessPass(
                         // Without this a store alternating timeout/decline
                         // reached "three consecutive timeouts" having never
                         // timed out twice in a row, and the counter did not
-                        // mean what its name says. [PUBLISH_WEDGE_TOTAL_LIMIT]
+                        // mean what its name says. [PUBLISH_WEDGE_BUDGET_MS]
                         // is what bounds the alternating case, and it still
                         // does.
                         wedgedRun = 0
@@ -625,7 +641,14 @@ class FitnessPass(
                         // line instead of a phase that never moves.
                         wedgedTotal++
                         wedgedRun++
-                        if (wedgedRun >= PUBLISH_WEDGE_LIMIT || wedgedTotal >= PUBLISH_WEDGE_TOTAL_LIMIT) {
+                        wedgedMs += System.currentTimeMillis() - writeStartedMs
+                        stoppedBy =
+                            when {
+                                wedgedRun >= PUBLISH_WEDGE_LIMIT -> "$wedgedRun write(s) in a row went unanswered"
+                                wedgedMs >= publishWedgeBudgetMs -> "${wedgedMs / 1000}s of this batch was spent waiting on writes that never came back"
+                                else -> null
+                            }
+                        if (stoppedBy != null) {
                             // AT this url and not after it: the write that
                             // tripped the limit is one of the ones that did not
                             // land, and the limit is a statement about the
@@ -652,6 +675,7 @@ class FitnessPass(
                 cutLate = cutLate.get(),
                 resumeAt = writeCursors[label],
                 skippedWrites = skipped,
+                stoppedBy = stoppedBy,
             )
         } finally {
             progress.finish()
@@ -1052,6 +1076,16 @@ class FitnessPass(
          * that much has to be able to see where it went.
          */
         skippedWrites: Int = 0,
+        /**
+         * Which limit ended the batch, in words, or null when it ran to its
+         * end — see the write loop in [measure].
+         *
+         * The two say different things about the store and want different
+         * answers from an operator: a run of unanswered writes is a store that
+         * has stopped, where a spent time budget is one that is answering
+         * SOME of them, slowly, which is load rather than an outage.
+         */
+        stoppedBy: String? = null,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -1106,7 +1140,12 @@ class FitnessPass(
                 buildList {
                     if (wedgedWrites > 0) add("$wedgedWrites write(s) hit the per-write store deadline")
                     if (declinedWrites > 0) add("$declinedWrites write(s) failed outright with the store answering")
-                    if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each — the store, not the writes, is the fault")
+                    if (dropped > 0) {
+                        add(
+                            "the remaining $dropped were dropped rather than paying the deadline each" +
+                                (stoppedBy?.let { " — the batch stopped because $it" } ?: " — the store, not the writes, is the fault"),
+                        )
+                    }
                 }
             System.err.println(
                 "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
@@ -1456,20 +1495,36 @@ class FitnessPass(
         const val PUBLISH_WEDGE_LIMIT = 3
 
         /**
-         * …and the ceiling the consecutive rule cannot provide: how many
-         * timed-out writes IN TOTAL a batch may absorb before the pass stops
-         * publishing regardless of what succeeded in between.
+         * …and the ceiling the consecutive rule cannot provide: how much WALL
+         * TIME one batch may lose to writes that never came back, before the
+         * pass stops publishing regardless of what succeeded in between.
          *
          * The consecutive limit bounds the wedge; it does not bound a store
          * that alternates — timing out every other write clears the run
          * counter each time and would let a 13,560-verdict batch spend up to
-         * four and a half days in deadlines while technically making
-         * progress. Twenty deadlines is twenty minutes lost to a store that
-         * is failing one write in two; a batch losing more than that is not
-         * worth finishing, and the urls it drops are measured again next
-         * pass either way.
+         * four and a half days in deadlines while technically making progress.
+         *
+         * **A DURATION AND NOT A COUNT, because the thing worth bounding is
+         * the time and the batch is not a fixed size.** This was twenty
+         * timed-out writes, justified in its own words as "twenty minutes
+         * lost" — which is the right quantity named through the wrong
+         * variable. A count says something different on every corpus: the
+         * cost of tripping it is every verdict after the trip, so on the 500
+         * urls a fast lane tick carries it is a generous allowance, and on a
+         * 20,000-url sweep it lets 0.1% of writes straggling forfeit the other
+         * 40% — which is how a limit written for a wedged store came to fire
+         * on a merely busy one, every sweep (#172). Twenty minutes is twenty
+         * minutes at any batch size, and the arithmetic that used to derive it
+         * is now just the default's derivation rather than its definition.
+         *
+         * Measured, not assumed from [PUBLISH_DEADLINE_MS]: what is being
+         * spent is wall time, and it should be counted as wall time.
+         *
+         * The urls a tripped budget drops are the next pass's HEAD, not its
+         * tail — see the rotation in [measure] — so the cost of stopping is
+         * bounded in a way it was not when this was written.
          */
-        const val PUBLISH_WEDGE_TOTAL_LIMIT = 20
+        const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
 
         /**
          * How many abandoned urls a pass names in its log line.

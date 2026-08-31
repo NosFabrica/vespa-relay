@@ -557,6 +557,78 @@ class VerdictCadenceTest {
         url: NormalizedRelayUrl,
     ): String? = tagOf(store, url, "l")?.getOrNull(RelayVerdictRecord.LABEL_MEASURED_AT_INDEX)
 
+    @Test
+    fun `the batch's ceiling on a store that alternates is a time budget, not a count`() =
+        runBlocking {
+            // A store that times out every other write never trips the
+            // consecutive limit — a success clears the run each time — so
+            // something else has to stop it, and what is worth bounding is the
+            // TIME. A count said something different on every corpus: its cost
+            // is every verdict after the trip, so at twenty it let a fraction
+            // of a percent of a 20,000-url batch forfeit the rest.
+            val urls = (0 until 60).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val attempts = AtomicInteger()
+            val alternating =
+                object : IEventStore by store {
+                    override suspend fun insert(event: Event) {
+                        if (attempts.getAndIncrement() % 2 == 0) {
+                            CompletableDeferred<Unit>().await()
+                            error("unreachable")
+                        }
+                        store.insert(event)
+                    }
+                }
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(alternating, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                    // Five deadlines' worth: enough that the alternating store
+                    // makes real progress first, little enough to spend inside
+                    // a test. The production number is twenty minutes and this
+                    // line is the same code.
+                    publishWedgeBudgetMs = 500L,
+                    reconcile = { _, _ -> },
+                )
+            System.setErr(PrintStream(captured, true))
+            try {
+                withTimeout(60_000) {
+                    pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                }
+            } finally {
+                System.setErr(realErr)
+            }
+
+            // It stopped, and it stopped on the BUDGET rather than on a run —
+            // the store answered every other write throughout, so a run never
+            // reached three.
+            val err = captured.toString()
+            assertTrue(
+                "spent waiting on writes that never came back" in err,
+                "an alternating store must end the batch on the time budget, not on the consecutive limit; got: $err",
+            )
+            // …and it made real progress before stopping: roughly the budget
+            // divided by the deadline, which is the whole point of pricing this
+            // in time. A count of three would have stopped at the sixth write.
+            assertTrue(
+                attempts.get() > 6,
+                "the budget must buy more than the consecutive limit would; only ${attempts.get()} write(s) attempted",
+            )
+            // The urls it did not reach are the next batch's head, not a tail
+            // dropped again — the rotation is what makes stopping affordable.
+            assertTrue(
+                "the next batch's writes START at" in err,
+                "a batch the budget stopped must name where the next one resumes; got: $err",
+            )
+        }
+
     private suspend fun gradeOf(
         store: IEventStore,
         url: NormalizedRelayUrl,

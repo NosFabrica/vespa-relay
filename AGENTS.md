@@ -1392,6 +1392,22 @@ nine days of a pass that should end in three minutes. A cut write publishes
 nothing and the url re-earns its verdict next sweep, the same bargain an
 abandoned dial gets.
 
+**The ceiling beside it is a DURATION, not a count.** The consecutive limit
+catches a wedged store; it cannot catch one that ALTERNATES, because a success
+clears the run each time — so a second bound is needed, and the thing worth
+bounding is wall time. `PUBLISH_WEDGE_BUDGET_MS` is twenty minutes of writes
+that never came back, measured rather than derived from the deadline. It was
+twenty timed-out WRITES, justified in its own words as "twenty minutes lost",
+which is the right quantity named through the wrong variable: the cost of
+tripping it is every verdict after the trip, so a count says something
+different on every corpus — generous on the handful a fast-lane tick carries,
+and on a 20,000-url sweep letting 0.1% of writes straggling forfeit the other
+40%. That is how a limit written for a wedged store came to fire on a merely
+busy one, every sweep. Twenty minutes is twenty minutes at any batch size. The
+report now names which of the two stopped the batch, because they want
+different answers: a run of unanswered writes is a store that has stopped, a
+spent budget is one answering some of them slowly, which is load.
+
 **AND THE WRITE LOOP RESUMES WHERE THE WEDGE STOPPED IT. THIS IS #172.**
 "Re-earns it next sweep" was true of the urls at the front of that loop and
 false forever of the ones at the back: the loop walked `outcomes`, a
