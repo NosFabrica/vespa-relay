@@ -763,8 +763,43 @@ object StatusVocabulary {
                     "`wedged`, which is why this is one word rather than something to infer.",
             )
             put(
+                "stages",
+                "WHERE THE INGEST TIME WENT, as cumulative milliseconds per named stage since boot, busiest first. " +
+                    "The one split that answers why ingest is slow rather than that it is: `bottleneck` says the " +
+                    "queue is full and `oldestBatchSec` says a worker is in a batch, and neither tells `dedup` " +
+                    "(store reads) from `write` (the feed) from `lock.ingest.wait` (queueing behind another " +
+                    "writer) — three faults with three different remedies that look identical from outside. " +
+                    "CUMULATIVE on purpose: the per-minute form the log prints is destructive to read, so a second " +
+                    "reader would halve it. Difference two page loads to recover a rate.",
+            )
+            put(
+                "stage",
+                "One named stage inside ingest, as the STORE names it. The router's own are `verify` and " +
+                    "`dedup.pre`/`versions.pre` (its two drop probes); the rest are the store's — `dedup`, " +
+                    "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's `proj.fetch`/" +
+                    "`proj.write`, and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
+                    "mutex versus holding it. Read `wait` against `hold` and `write`, never alone: workers queueing " +
+                    "for a saturated engine show a huge `wait` and are not the reason for anything.",
+            )
+            put(
+                "ms",
+                "Milliseconds, summed across every worker rather than wall clock — so a stage CAN exceed the time " +
+                    "the router has been running, and two of them can each exceed it. That is concurrency, not a " +
+                    "fault: the number to compare is one stage against another, not against the clock.",
+            )
+            put(
+                "feed",
+                "The STORE's own line about its write path, quoted rather than parsed: cumulative acks, the live " +
+                    "in-flight window, per-request latency, and transport exceptions. It separates the two readings " +
+                    "no other number here can — a big in-flight window with high latency is the ENGINE pushing " +
+                    "back, a tiny window with low latency is the CLIENT not pushing — and every question about " +
+                    "absorbing a burst faster forks on exactly that.",
+            )
+            put(
                 "eventsPerSec",
-                "Events reaching ingest per second, averaged over the last minute, across every stream. NOT a " +
+                "Events reaching ingest per second, averaged over the last minute, across every stream. ALL of " +
+                    "them: accepted plus rejected, so duplicates and superseded versions count — this is the drain " +
+                    "rate, not the rate of NEW events, and on a wide fan-out the two differ by fifty times. NOT a " +
                     "stream's `received`, which is counted at the socket before dedup — the two are counted at " +
                     "different points on purpose and disagreeing is not a fault in either.",
             )

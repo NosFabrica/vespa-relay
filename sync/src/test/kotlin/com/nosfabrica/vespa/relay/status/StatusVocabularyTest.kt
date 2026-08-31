@@ -123,9 +123,10 @@ class StatusVocabularyTest {
                 .parseToJsonElement(
                     """
                     {"fatals": 0,
-                     "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
+                     "health": {"bottleneck": "wedged", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
                                 "sockets": 412, "socketCeiling": 1024, "socketsRunning": 418, "socketsQueued": 0,
-                                "servingMs": 18},
+                                "servingMs": 18, "feed": "feed ok 4211 inflight 32 lat 18ms",
+                                "stages": [{"stage": "write", "ms": 33300}, {"stage": "lock.ingest.wait", "ms": 21900}]},
                      "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
                      "roster": 412, "liveHeld": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
@@ -364,6 +365,10 @@ class StatusVocabularyTest {
                     "oldestBatchSec",
                     "health",
                     "bottleneck",
+                    "stages",
+                    "stage",
+                    "ms",
+                    "feed",
                     "eventsPerSec",
                     "heapUsedMb",
                     "heapMaxMb",

@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, streamSections } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, stageDeltas, streamSections } from "../shared/sync.js";
 
 /**
  * A LIVE cursor, which is the one place a day is not enough precision.
@@ -94,6 +94,45 @@ function statusRow(progress) {
   // A count, not a list: the document publishes how many, and one is already
   // the whole message.
   if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));
+  // THE STORE'S OWN SENTENCE about its write path, quoted. It is the only thing
+  // on this card that can tell the engine pushing back from the client not
+  // pushing, and it was computed and thrown away for the life of this router.
+  if (health.feed) row.appendChild(chip(health.feed, null, term("feed")));
+  return row;
+}
+
+/**
+ * WHERE THE INGEST TIME WENT since the last refresh — the row that says WHY
+ * ingest is slow, where everything above it says only THAT it is.
+ *
+ * `bottleneck` reports a full queue and `oldestBatchSec` a worker inside a
+ * batch; neither separates `dedup` (store reads) from `write` (the feed) from
+ * `lock.ingest.wait` (queueing behind another writer), and those are three
+ * faults with three remedies that look identical from outside. That split
+ * reached a stderr line once a minute and nowhere else, which is most of why
+ * #167 had to be diagnosed by inference.
+ *
+ * Drawn only from a DELTA, so the first refresh after opening the page shows
+ * nothing: the document's totals are cumulative since boot, and an hour-old
+ * total answers a question nobody asked. The previous poll is remembered here
+ * rather than in the derivation, which stays pure — see [stageDeltas].
+ */
+let lastStages = null;
+
+function stagesRow(progress) {
+  const now = progress.health?.stages;
+  const rows = stageDeltas(now, lastStages);
+  lastStages = Array.isArray(now) ? now : lastStages;
+  if (!rows.length) return null;
+  const row = el("div", "sy-status");
+  // Not a chip: chips are verdicts, and this is a measurement whose whole value
+  // is the comparison BETWEEN its entries.
+  row.append("time in ingest, since this page last refreshed:");
+  for (const r of rows) {
+    const part = el("span", null, ` · ${r.stage} ${fmtDur(Math.round(r.ms / 1000))}`);
+    part.title = `${term("stage")} ${term("ms")}`;
+    row.appendChild(part);
+  }
   return row;
 }
 
@@ -699,6 +738,13 @@ function syncCard(section) {
   // in words the router would not use — see `term` and `SyncVocabularyTest`.
   setTerms(d.terms);
   if (progress) card.appendChild(statusRow(progress));
+  // Under the status row it explains: that one says WHICH constraint, this one
+  // says where the time inside it went. Absent on the first refresh by design —
+  // it is a delta, see [stagesRow].
+  if (progress) {
+    const stages = stagesRow(progress);
+    if (stages) card.appendChild(stages);
+  }
 
   // ONE SECTION PER STREAM, and everything about a stream inside it. The join
   // — held rows, budgets and schedule under the stream that owns them — is

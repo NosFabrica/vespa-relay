@@ -192,6 +192,42 @@ class SyncProgress {
         val bottleneck: String,
         /** Events reaching ingest per second, averaged over the last minute. */
         val eventsPerSec: Int,
+        /**
+         * WHERE THE INGEST TIME WENT, cumulative milliseconds per named stage
+         * since boot, busiest first — `IngestStats`, which until now reached a
+         * stderr line once a minute and nothing else.
+         *
+         * The one split that answers "why is ingest slow RIGHT NOW", and the
+         * absence of it is why #167 was diagnosed by inference: `bottleneck`
+         * says the queue is full, `oldestBatchSec` says a worker is in a batch,
+         * and neither says whether the batch is in `dedup` (store reads),
+         * `write` (the feed) or `lock.ingest.wait` (queueing behind another
+         * writer). Those have different remedies and look identical from
+         * outside.
+         *
+         * CUMULATIVE, not the stderr line's per-minute delta, and deliberately:
+         * `IngestStats.statusLine` is DESTRUCTIVE — it stores a per-stage
+         * high-water mark and returns the delta since the last call — so a
+         * second caller would silently halve the operator's log line. Totals
+         * can be read by anyone, any number of times, and the page differences
+         * consecutive polls to recover a rate.
+         */
+        val stageMs: List<Pair<String, Long>> = emptyList(),
+        /**
+         * The store's own feed-health line, verbatim: acks, the live in-flight
+         * window, per-request latency, and transport exceptions.
+         *
+         * Verbatim rather than parsed into members, because it is the STORE's
+         * sentence about itself and the only honest thing to do with a
+         * sentence from another repo is quote it — a parser here would answer
+         * zeroes, silently, the first time that library reworded its output.
+         *
+         * It is the one instrument that tells "the engine is pushing back"
+         * from "the client is not pushing": a big in-flight window with high
+         * latency is the first, a tiny window with low latency the second, and
+         * every burst question in this router's history forks on exactly that.
+         */
+        val feed: String? = null,
         val heapUsedMb: Long,
         val heapMaxMb: Long,
         /** Websockets open, against the dispatcher budget that is the real concurrency ceiling. */
@@ -305,6 +341,24 @@ class SyncProgress {
                             put("socketsRunning", h.socketsRunning)
                             put("socketsQueued", h.socketsQueued)
                             h.servingMs?.let { put("servingMs", it) }
+                            h.feed?.takeIf { it.isNotBlank() }?.let { put("feed", it) }
+                            // A LIST of rows, not a member per stage: the stage
+                            // names are the store's and grow with it, and a
+                            // dynamic member name is one the glossary can never
+                            // define. Here the name is a VALUE, exactly as
+                            // `reason` is inside `rejections`.
+                            if (h.stageMs.isNotEmpty()) {
+                                putJsonArray("stages") {
+                                    for ((stage, ms) in h.stageMs) {
+                                        add(
+                                            buildJsonObject {
+                                                put("stage", stage)
+                                                put("ms", ms)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         },
                     )
                 }

@@ -15,7 +15,8 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  STARTING, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf, streamSections,
+  STARTING, STAGES_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
+  stageDeltas, streamSections,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1171,4 +1172,40 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(stuck.backedUp, true);
   assert.deepEqual(scheduleOf(null), []);
   ok("the schedule publishes the whole distribution, a first pass is told from an elapsed one, and only backed-up work is marked");
+}
+
+{
+  // WHERE THE INGEST TIME WENT, and the document can only serve totals: the
+  // per-minute form is destructive to read, so the router must not be the only
+  // caller allowed. The subtraction is the page's job.
+  const before = [{ stage: "write", ms: 10_000 }, { stage: "dedup", ms: 4_000 }];
+  const now = [{ stage: "write", ms: 22_000 }, { stage: "dedup", ms: 4_500 }, { stage: "verify", ms: 300 }];
+  const rows = stageDeltas(now, before);
+  assert.deepEqual(rows, [
+    { stage: "write", ms: 12_000 },
+    { stage: "dedup", ms: 500 },
+  ], "busiest first, and a stage with no previous total is not a delta");
+
+  // A FIRST LOAD DRAWS NOTHING. The alternative — falling back to the
+  // cumulative totals — puts an hour of history on a row labelled "since this
+  // page last refreshed", which is a wrong number rather than a missing one.
+  assert.deepEqual(stageDeltas(now, null), []);
+  assert.deepEqual(stageDeltas(null, before), []);
+
+  // A COUNTER THAT WENT BACKWARDS is a restarted process, so that row is
+  // dropped rather than clamped: every other stage in the same comparison is
+  // measuring a fresh process against the dead one's totals, and a clamp would
+  // publish those as real work.
+  assert.deepEqual(stageDeltas([{ stage: "write", ms: 5 }], [{ stage: "write", ms: 10_000 }]), []);
+
+  // Unchanged stages carry no information on a row about what moved.
+  assert.deepEqual(stageDeltas(before, before), []);
+
+  // Bounded, because the store's stage list grows with the store.
+  const many = Array.from({ length: 20 }, (_, i) => ({ stage: `s${i}`, ms: (i + 1) * 1000 }));
+  assert.equal(stageDeltas(many, many.map((r) => ({ ...r, ms: 0 }))).length, STAGES_SHOWN);
+
+  // Junk rows are skipped rather than drawn as NaN.
+  assert.deepEqual(stageDeltas([{ stage: "w", ms: "x" }, null], [{ stage: "w", ms: 0 }]), []);
+  ok("the ingest stage split is a delta between polls, empty on a first load, and drops a restarted counter");
 }

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay
 
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
@@ -542,6 +543,43 @@ class SyncEngine(
             else -> "mixed"
         }
 
+    /**
+     * `IngestStats.dump()`, turned back into numbers.
+     *
+     * **Parsing our own library's formatted output is the wrong shape, and it
+     * is the only one available.** `IngestStats` keeps its map private and
+     * offers exactly two readers: `statusLine`, which is DESTRUCTIVE (it
+     * returns per-stage deltas and moves the high-water mark, so a second
+     * caller halves the operator's log line), and `dump`, which is cumulative,
+     * repeatable — and a String. The stage split is the one number that says
+     * whether a slow batch is in `dedup`, `write` or `lock.ingest.wait`, so it
+     * is worth a parser until the store grows a structured accessor.
+     *
+     * The coupling is made loud rather than hidden: `IngestStageParseTest`
+     * books a stage through the REAL `IngestStats` and asserts this reads it
+     * back, so a store bump that rewords `dump` fails a test here instead of
+     * quietly publishing an empty panel.
+     *
+     * The format is `stages <name> <n>.<nn>s <name> <n>.<nn>s …`, busiest
+     * first, and `stages (none)` when nothing has been booked.
+     */
+    private fun stageMs(dump: String): List<Pair<String, Long>> {
+        val parts =
+            dump
+                .removePrefix("stages ")
+                .trim()
+                .split(' ')
+                .filter { it.isNotEmpty() }
+        if (parts.size < 2) return emptyList()
+        return parts
+            .chunked(2)
+            .mapNotNull { pair ->
+                if (pair.size != 2) return@mapNotNull null
+                val seconds = pair[1].removeSuffix("s").toDoubleOrNull() ?: return@mapNotNull null
+                pair[0] to (seconds * 1000).toLong()
+            }
+    }
+
     /** The latest health, for the progress tick to publish — see [bottleneckOf]. */
     @Volatile
     private var health: SyncProgress.Health? = null
@@ -626,6 +664,17 @@ class SyncEngine(
                     socketsRunning = load.running,
                     socketsQueued = load.queued,
                     servingMs = pressure?.meanMs(),
+                    // Read HERE, on the health loop's own clock, rather than in
+                    // the progress tick: `dump` is cheap but the pair below it
+                    // has to describe one instant, and the stage split is the
+                    // explanation for the `bottleneck` decided three lines up.
+                    stageMs = stageMs(IngestStats.dump()),
+                    // The store's sentence about its own feed. Only a
+                    // `VespaEventStore` has one — every test double and the
+                    // in-memory store do not — so the cast is the feature
+                    // detection, the same shape `RelayDiscovery` uses to ask
+                    // for search semantics.
+                    feed = (store as? VespaEventStore)?.runCatching { feedStatus() }?.getOrNull(),
                 )
             System.err.println(
                 "router: health heap $usedMb/${maxMb}MB ($heapPct%)" +

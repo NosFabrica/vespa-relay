@@ -183,6 +183,43 @@ export function constraintOf(health) {
   return { word, text, why, tone: word === "ingest" || word === "wedged" ? "warn" : null };
 }
 
+/** Stages drawn on the card. The tail of a long list is noise beside the head of it. */
+export const STAGES_SHOWN = 5;
+
+/**
+ * WHERE THE INGEST TIME WENT SINCE THE LAST REFRESH — the document publishes
+ * cumulative milliseconds per stage, and this differences two polls.
+ *
+ * Cumulative is what the document can honestly serve (`IngestStats.statusLine`
+ * is destructive to read, so the router must not be the only one allowed to
+ * call it) and it is NOT what a reader wants: after an hour, `write 900s` is a
+ * fact about the hour and says nothing about the minute the queue backed up in.
+ * The subtraction belongs wherever the polling happens, which is here.
+ *
+ * Pure, taking both sides, so the caller owns the remembering — a module-level
+ * previous would make this answer differently depending on who rendered last.
+ * `before` null (a first load, or a router that has just restarted its
+ * counters) yields nothing rather than the cumulative totals dressed up as a
+ * rate: one honest blank refresh beats a number that means something else.
+ *
+ * A stage that went BACKWARDS is dropped, not clamped to zero. It means the
+ * process restarted between polls, and every other row of that comparison is
+ * measuring the new process against the old one's totals.
+ */
+export function stageDeltas(now, before) {
+  if (!Array.isArray(now) || !Array.isArray(before)) return [];
+  const was = new Map(before.map((r) => [r.stage, r.ms]));
+  const rows = [];
+  for (const r of now) {
+    if (!r || typeof r.stage !== "string" || !Number.isFinite(r.ms)) continue;
+    const had = was.get(r.stage);
+    if (!Number.isFinite(had) || r.ms < had) continue;
+    const ms = r.ms - had;
+    if (ms > 0) rows.push({ stage: r.stage, ms });
+  }
+  return rows.sort((a, b) => b.ms - a.ms).slice(0, STAGES_SHOWN);
+}
+
 /** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */
 export const MEASURING = "measuring";
 
