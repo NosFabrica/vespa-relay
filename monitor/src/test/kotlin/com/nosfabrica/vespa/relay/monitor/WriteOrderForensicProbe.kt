@@ -90,6 +90,10 @@ class WriteOrderForensicProbe {
                 val url = RelayUrlNormalizer.normalizeOrNull(u.trim()) ?: return@mapNotNull null
                 url to (at.trim().toLongOrNull() ?: return@mapNotNull null)
             }
+        if (parsed.isEmpty()) {
+            println("[skip] WriteOrderForensicProbe — $path parsed to no usable rows (want `url<TAB>epoch-seconds`)")
+            return
+        }
         // THE PASS'S OWN MAP, rebuilt. Keys inserted in no particular order for
         // the same reason the pass inserts in none: the dials complete
         // concurrently. Bucket order does not depend on insertion order, which
@@ -204,6 +208,10 @@ class WriteOrderForensicProbe {
                 // pass two begin where pass one stopped. The cut below is held
                 // at production's own three-fifths.
                 .let { all -> all.take(System.getProperty("writeOrderReplayUrls")?.toIntOrNull() ?: 4_000) }
+        if (urls.isEmpty()) {
+            println("[skip] WriteOrderForensicProbe — $path named no usable urls")
+            return
+        }
         val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
         val events = NostrSignerSync()
         val signer = NostrSignerInternal(KeyPair())

@@ -426,6 +426,55 @@ class VerdictCadenceTest {
             )
         }
 
+    @Test
+    fun `a store that alternates timeout and decline is not a wedged store`() =
+        runBlocking {
+            // The consecutive limit looks for a store that has STOPPED
+            // ANSWERING. A decline is the store answering — promptly, and
+            // refusing — so it ends a run exactly as a success does. Before
+            // that, an alternating store reached "three consecutive timeouts"
+            // having never timed out twice in a row, and ended the batch at the
+            // third write of a store that was demonstrably alive.
+            val urls = (0 until 30).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val n = AtomicInteger()
+            val alternating =
+                object : IEventStore by store {
+                    override suspend fun insert(event: Event) {
+                        if (n.getAndIncrement() % 2 == 0) {
+                            CompletableDeferred<Unit>().await()
+                            error("unreachable")
+                        }
+                        error("store declines this one")
+                    }
+                }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(alternating, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 100L,
+                    reconcile = { _, _ -> },
+                )
+            withTimeout(60_000) {
+                pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            }
+
+            // Every write was ATTEMPTED: the consecutive limit never trips, so
+            // the batch runs to its end rather than stopping at the third url.
+            // What still bounds an alternating store is the total limit, and 30
+            // urls is under it — the point here is that the run counter no
+            // longer fires on a store that keeps answering.
+            assertEquals(
+                urls.size,
+                n.get(),
+                "a store answering every other write is not wedged; the batch must not end on the consecutive limit",
+            )
+        }
+
     private suspend fun gradeOf(
         store: IEventStore,
         url: NormalizedRelayUrl,

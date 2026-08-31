@@ -543,6 +543,17 @@ class FitnessPass(
                     // write fine.
                     false -> {
                         declined++
+                        // …AND IT ENDS A RUN, for the same reason a success
+                        // does. The run counter is looking for a store that has
+                        // stopped ANSWERING, and a decline is the store
+                        // answering — it came back, promptly, and refused.
+                        // Without this a store alternating timeout/decline
+                        // reached "three consecutive timeouts" having never
+                        // timed out twice in a row, and the counter did not
+                        // mean what its name says. [PUBLISH_WEDGE_TOTAL_LIMIT]
+                        // is what bounds the alternating case, and it still
+                        // does.
+                        wedgedRun = 0
                     }
 
                     null -> {
@@ -1353,7 +1364,9 @@ class FitnessPass(
          * and not the writes — the same population logic as [GUARD_SHARE], at
          * the other end of the pass.
          *
-         * CONSECUTIVE, resetting on every write that goes through, because
+         * CONSECUTIVE, resetting on every write the store ANSWERS — one that
+         * goes through and one it declines alike, since either proves the wall
+         * is not there — because
          * that is what the wedge looks like and what ordinary load does not:
          * [PUBLISH_DEADLINE_MS]'s own note says tens of seconds behind the
          * mirror's bulk commits is legitimate, so on a long batch under a
