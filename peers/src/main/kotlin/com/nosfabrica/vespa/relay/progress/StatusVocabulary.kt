@@ -655,7 +655,9 @@ object StatusVocabulary {
                 "Items waiting in a processor's queue right now — a DEPTH, on both of the queues that publish it. For " +
                     "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
                     "backpressured behind it, empty means the limit is upstream of ingest. Those are opposite " +
-                    "findings and the depth alone tells them apart only against the ceiling. The healer's queue has " +
+                    "findings and the depth alone tells them apart only against the ceiling — and FULL is itself two " +
+                    "findings, which `inBatch` and `oldestBatchSec` separate: ingest writing flat out, or ingest " +
+                    "stopped with these events queued for a worker that never comes back. The healer's queue has " +
                     "no ceiling to publish: it coalesces and drops instead of growing, which is what `dropped` counts.",
             )
             put(
@@ -663,6 +665,37 @@ object StatusVocabulary {
                 "Repairs the healer's queue threw away rather than backpressure the sweep that found them — it " +
                     "coalesces and drops on purpose, because a dropped heal is a retry and a stalled sweep is not. " +
                     "Published because a silent drop is the one thing a bounded queue must never do.",
+            )
+            put(
+                "inBatch",
+                "Ingest workers inside a batch pass this instant, against `workers`. The number that tells a FULL " +
+                    "queue apart from a STOPPED one, which `queued` alone cannot: full with the workers cycling is " +
+                    "backpressure, full with the same workers held in one pass is a pipeline that has stopped and a " +
+                    "`queued` that will never reach anybody. `oldestBatchSec` is how long the longest-held one has " +
+                    "been in there. NOT `inFlight`, which is a stream's relays — one word for two quantities is how " +
+                    "a reader looks up the wrong one.",
+            )
+            put(
+                "workers",
+                "Ingest workers this router was CONFIGURED with (`ingestConcurrency`) — the denominator `inBatch` " +
+                    "means nothing without. Read the pair as an instant, not a verdict: `inBatch` below this is the " +
+                    "ordinary shape of a mirror whose workers are waiting on the channel, and only `inBatch` at this " +
+                    "number WITH `oldestBatchSec` in the minutes says nothing is draining. `workersRunning` is the " +
+                    "one that reports a worker which exited.",
+            )
+            put(
+                "workersRunning",
+                "Ingest worker loops still looping. Equal to `workers` on a healthy router; BELOW it means one threw " +
+                    "and exited, and its share of the queue now has nothing draining it — a partial version of the " +
+                    "same stall `wedged` names, and the only one that a restart is the whole remedy for. Zero with a " +
+                    "non-empty `queued` is ingest gone entirely.",
+            )
+            put(
+                "oldestBatchSec",
+                "How long the longest-running ingest batch has been in its pass. Seconds is the healthy shape; " +
+                    "minutes means a store round trip that is not coming back, and the events counted in `queued` " +
+                    "are waiting on a worker that will not return for them. Nothing cuts that round trip — this " +
+                    "number is how the router says so, and the remedy is at the store.",
             )
             put(
                 "capacity",
@@ -721,11 +754,13 @@ object StatusVocabulary {
             )
             put(
                 "bottleneck",
-                "WHERE THE CONSTRAINT IS, decided by the router itself: `ingest` (the queue is full, so every " +
-                    "download is backpressured behind it — the mirror is as fast as the store), `downloads` (the " +
-                    "queue drains as fast as it fills, so the relays are the limit), `upstream` (nothing is arriving " +
-                    "at all) or `mixed`. A full queue and an empty one are opposite diagnoses that look identical " +
-                    "from every other number here, which is why this is one word rather than something to infer.",
+                "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
+                    "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
+                    "full, so every download is backpressured behind it — the mirror is as fast as the store), " +
+                    "`downloads` (the queue drains as fast as it fills, so the relays are the limit), `upstream` " +
+                    "(nothing is arriving at all) or `mixed`. A full queue and an empty one are opposite diagnoses " +
+                    "that look identical from every other number here — and so are the two FULL ones, `ingest` and " +
+                    "`wedged`, which is why this is one word rather than something to infer.",
             )
             put(
                 "eventsPerSec",

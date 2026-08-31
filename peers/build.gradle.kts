@@ -45,4 +45,10 @@ tasks.test {
     // itself with its own "[skip]" line and reads exactly like one nobody asked
     // for. `ProbeSwitchesAreForwardedTest` in :sync pins that across every
     // module, so this comment is a note rather than the guard.
+    //
+    // The benches here DO need a bigger heap than the 512m default — a
+    // six-figure corpus of signed events, plus a signer per author, is a few
+    // GB — and unit tests must not pay for that on every CI box. So it is
+    // opt-in and unset by default: `-PtestHeap=6g` alongside BENCH_VESPA_URL.
+    providers.gradleProperty("testHeap").orNull?.let { maxHeapSize = it }
 }

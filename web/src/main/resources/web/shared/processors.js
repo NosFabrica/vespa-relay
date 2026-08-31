@@ -364,8 +364,28 @@ function processorFact(p) {
   };
   if (p.capacity) {
     const full = (p.queued || 0) >= p.capacity;
-    add(`queue ${fmt(p.queued || 0)} of ${fmt(p.capacity)}${full ? " — FULL, downloads are backpressured behind it" : ""}`,
-        "queued", full);
+    // THE DEPTH IS A FACT; WHICH KIND OF FULL IT IS, IS A VERDICT. This used to
+    // append "downloads are backpressured behind it" to every full queue — the
+    // busy-mirror reading — so on a wedge the row carried that beside the
+    // health chip saying ingest had stopped. The two FULLs are opposite
+    // diagnoses, and `bottleneck` already decides between them ONCE, for the
+    // log and this page together. So the row states what it measured and the
+    // chip says what it means; re-deciding here would need this file to carry
+    // its own copy of the router's threshold, which is precisely how the two
+    // drift. `queued`'s glossary entry carries the explanation either way.
+    add(`queue ${fmt(p.queued || 0)} of ${fmt(p.capacity)}${full ? " — FULL" : ""}`, "queued", full);
+    // The pair that says which full, drawn whenever a worker is in a batch —
+    // plainly, because workers working is the healthy state and only their AGE
+    // is the finding. It is the number no thread dump can give: a worker
+    // suspended in a store call has no frame and its pool thread reads idle.
+    if (p.inBatch) {
+      add(`${p.inBatch} of ${p.workers} worker(s) in a batch, oldest ${fmt(p.oldestBatchSec || 0)}s`, "inBatch");
+    }
+    // Loud, and needing no threshold to be sure of: a loop that exited leaves
+    // its share of the queue with nothing draining it, and no age can show that.
+    if (p.workersRunning != null && p.workers != null && p.workersRunning < p.workers) {
+      add(`${p.workers - p.workersRunning} of ${p.workers} worker(s) STOPPED`, "workersRunning", true);
+    }
     if (p.accepted != null) add(`${short(p.accepted)} stored`, "accepted");
     // Mostly the same event offered once per relay holding it, which is why it
     // is drawn beside `accepted` and never as a failure on its own.

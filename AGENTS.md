@@ -1372,6 +1372,40 @@ nine days of a pass that should end in three minutes. A cut write publishes
 nothing and the url re-earns its verdict next sweep, the same bargain an
 abandoned dial gets.
 
+**THE MIRROR'S READS HAVE THE SAME HOLE AND ARE DELIBERATELY LEFT WITH IT
+(#167).** Same deadline-less client, same failure — a response that never comes
+suspends its caller for the life of the process — but on the read side the
+caller is one of eight `IngestPipeline` workers, and eight is the whole of
+ingest. On staging the queue sat at 8206/8192 backpressuring every download
+while three events were accepted in nine minutes. The write side's answer does
+not port: a verdict write that is cut publishes nothing and the url re-earns it
+next sweep, whereas an ingest pass that is cut DISCARDS twenty thousand
+mirrored events that nothing re-offers before the next full resync. A router
+quietly bleeding a batch every few minutes while the store is sick is a worse
+failure than one that stops. **So nothing bounds these reads, and the wedge is
+reported instead — the remedy is at the store.** Read that as a decision, not
+an omission; the deadlines were written and removed.
+
+**The thread dump for it reads as the exact opposite of the truth, and that is
+what the reporting is for.** All eight ingest threads were parked in
+`LinkedBlockingQueue.take` on an empty pool queue, having burned 1-5ms of CPU in
+398s — which reads as workers STARVING while the queue is reported full, a
+contradiction with no explanation. There isn't one: the workers were suspended
+inside a store round trip, and a suspended coroutine has no frame, so its pool
+thread goes back to `take()` looking idle. The queue depth cannot tell that
+apart from honest backpressure either, which is why `bottleneckOf` said `ingest`
+— "downloads are backpressured", the busy-mirror reading — for a pipeline that
+had stopped. So `IngestPipeline` marks `busySince` around the whole batch pass:
+`inBatch`/`oldestBatchMs` settle it from outside the process, a full queue whose
+oldest pass is past `WEDGE_AFTER_MS` gets its own bottleneck word (`wedged`) on
+the health line and the card, and a worker loop that exits says so rather than
+silently taking its share of the queue with it. Also worth knowing before
+theorising off that dump: `router: ingest probes id 99% dropped` is the probe
+WORKING — `dropped` is duplicates it caught, so 99% is a converged fan-out —
+not the probe being dropped. And the store's VISIT path is not the hole: it has
+carried a 120s read deadline and a cancellation guard since before that pin, so
+threads in `VespaVisits.streamOnce` are a streaming walk, not a wedge.
+
 **NOTHING IN THE SYNC PLANE KNOWS THAT `l` IS THE TAG OR THAT `prime` IS THE
 VALUE.** That is the whole point of a gate being a filter: another monitor
 spelling its opinion `["l", "online", "monitor.example"]` — or on a tag of its
@@ -1668,7 +1702,7 @@ still pins them; `processorFact` is where the choice lives:
 | `aliasSource` | `StreamWorld.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
-| `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
+| `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected`, and `inBatch` of `workers` with `oldestBatchSec` — what tells a full queue apart from a stopped one |
 | `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
 | `upstreamPush` | `UpstreamPush` | `pushed` |
 
@@ -3863,7 +3897,8 @@ Reach for it first.
 - **health line** (once a minute) — heap, ingest queue depth vs capacity, ev/s,
   relays transferring, connected, fatal count, events lost to store errors. A
   full queue and an empty queue are opposite diagnoses that look identical
-  everywhere else.
+  everywhere else — and so are the two FULL ones, which is why the line names
+  the workers in a batch and the age of the oldest when it says `wedged`.
 - **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because
@@ -3881,11 +3916,35 @@ Reach for it first.
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
-  Vespa. Skipped unless `BENCH_VESPA_URL` names a live engine:
-  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :sync:test
-  --tests '*IngestCostBench*' --rerun-tasks -i` (Gradle treats env vars as
-  invisible, so without `--rerun-tasks` a second run is silently UP-TO-DATE and
-  prints the FIRST run's numbers).
+  Vespa. It lives in `:peers` with the pipeline it measures — this said
+  `:sync:test` for a while, which matches no test and reports BUILD SUCCESSFUL
+  having run nothing. Skipped unless `BENCH_VESPA_URL` names a live engine:
+  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test
+  --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i` (Gradle treats env
+  vars as invisible, so without `--rerun-tasks` a second run is silently
+  UP-TO-DATE and prints the FIRST run's numbers).
+
+  **`-PtestHeap` is not optional at six figures.** The test task takes Gradle's
+  512m default, and a `BENCH_N=100000` corpus — the events, plus a `NostrSignerSync`
+  per author — is several GB. It is opt-in rather than the default because no
+  unit test needs it and every CI box would pay for it.
+
+  **Standing a Vespa up for it, on a machine that is not the deployment.** The
+  compose service is enough (`VESPA_MEM_LIMIT=9g docker compose up -d vespa`;
+  the committed 34g default is a limit sized for the real host and a small box
+  will not honour it). Do NOT wait on its healthcheck first: that check requires
+  a search returning a content node, a content node requires a deployed
+  application package, and nothing deploys one until the relay boots or the
+  store's `autoDeploy` runs — so a bare `up vespa` sits at `health: starting`
+  forever while the container logs `No response / error from config server. This
+  is normal before an application package is deployed.` The bench bootstraps
+  itself (`VespaEventStore.open(autoDeploy = true)` → `deployIfAbsent`, which
+  deploys AND waits for serving), so just run it and let it deploy — but WAIT FOR
+  THE CONFIG SERVER FIRST. `deployIfAbsent` gives up after two minutes, and a
+  container still booting eats that whole budget, so the bench throws before
+  printing a single line (and a grep for `COST-BENCH` shows an empty file and a
+  clean exit code, which reads like a bench that ran and found nothing):
+  `until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done`
 
   Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
   20k-event batches — the ratios are what travel, not the absolute times:
@@ -3910,6 +3969,118 @@ Reach for it first.
   declaring it. The break-evens its thresholds come from: ~35% duplicates for
   the id probe (10-23µs/id against the ~44µs a drop saves), ~20% stale for the
   version probe (21-29µs against ~110).
+
+  **EVERY ROW ABOVE IS A PURE BATCH, AND A MIRROR NEVER SEES ONE.** They price
+  one verdict at a time, and the omission matters more than the numbers do: a
+  100%-duplicate batch is dropped whole by the probe, so it never reaches the
+  write and never takes the writer lock. A real batch carries a couple of
+  percent that must be written, and that is where the lock is. At
+  `BENCH_N=100000` on the same 4-core box, the `98% dup / 2% fresh` arm:
+
+  | batch | us/event, probe off -> on |
+  |---|---:|
+  | 100% duplicate | 37 -> 11 (**3.3x**) |
+  | 98% duplicate / 2% fresh | 48 -> 46 (**1.04x**) |
+
+  **At a mirror's real mix the id probe is worth a few percent, not 3.3x**, and
+  the mix costs 2.4x what its parts predict (0.98 x 11 + 0.02 x 349 = 19us
+  against 46 measured). Neither is a slow stage. Both are batch COMPOSITION.
+
+  ### Survivors per lock hold is what decides ingest throughput
+
+  The store takes ONE writer mutex for the whole of `commit`, so commits never
+  run in parallel however many ingest workers exist - more workers only lengthen
+  the queue for it. What a lock hold is worth is how many surviving events it
+  writes, and that is `batchSize x (1 - dropRate)`. At 98% dropped, a 512-event
+  batch carries **ten**. The `98/2 shape sweep` arm - same work, three shapes:
+
+  | `concurrency x batch` | real batchSize | commits for 100k | survivors each | us/event | ev/s |
+  |---|---:|---:|---:|---:|---:|
+  | `8 x 1024` | **512** | 195 | ~10 | 150 | 6,685 |
+  | `2 x 8192` | 8192 | 12 | ~164 | **17** | **60,492** |
+  | `1 x 16384` | 16384 | 6 | ~328 | 18 | 56,439 |
+
+  Reproduced on an independent run against a fresh Vespa: 5,778 / 53,030 /
+  50,886 ev/s. Unlike the burst sweep above, this ordering does NOT flip — the
+  9x is the finding it looks like.
+
+  **9x, on identical work, from shape alone.** The eight-worker row spent
+  `lock.ingest.wait 99.1s` of aggregate thread time across a 15s wall - each
+  worker queued ~12.4 of 15 seconds - to perform `write 0.2s` of writing.
+  Concurrency past 1-2 buys nothing once batches are wide, exactly as a
+  serializing mutex predicts; width is the whole lever.
+
+  **And the configured batch is not the batch.** `capacity = (batch * 4)
+  .coerceIn(4096, MAX_INBOUND_QUEUE)`, then `batchSize = min(batch, capacity /
+  workers)` - so at eight workers `SYNC_INGEST_BATCH=1024` yields 512, and no
+  setting can exceed 2048. `MAX_INBOUND_QUEUE` was sized for MEMORY ("16k events
+  is a few hundred MB") and now binds write efficiency too: one constant, two
+  unrelated concerns.
+
+  ### …and on an all-fresh burst, shape does not matter at all
+
+  The row above is a mirror's steady state. A sudden burst of genuinely NEW
+  events is the opposite regime, and the same three shapes over 100k fresh
+  events answer it flatly:
+
+  | `concurrency x batch` | ev/s, order UP | ev/s, order DOWN |
+  |---|---:|---:|
+  | `8 x 1024` | 2,405 | **2,337** |
+  | `2 x 8192` | **2,858** | 2,307 |
+  | `1 x 16384` | 2,375 | 2,092 |
+
+  **The two orders disagree about which shape wins, and that IS the result.**
+  Every arm writes another 100k documents, so a later shape meets a bigger
+  index; run one order only and that drift is indistinguishable from an effect
+  of width — which is how a first pass produced an "if anything decreasing with
+  width" reading that does not survive. Ascending, `2 x 8192` wins; descending,
+  `8 x 1024` does. A rank order that flips when you reverse the arms is noise
+  and corpus growth, not shape. **On an all-fresh burst, pipeline shape does not
+  move throughput**: everything sits at 2.1-2.9k ev/s.
+
+  The one signal that does survive both passes is small and points the other
+  way: `1 x 16384` is last in each, including the descending pass where it ran
+  FIRST against the smallest corpus. A single worker cannot overlap anything —
+  its verify and `dedup.pre` sit in series with its own write — which is the
+  mechanism that predicts exactly that. It is 1-10%, and the reason to prefer
+  two workers over one.
+
+  In every row `write`
+  is 96-99% of `hold`: the lock is held essentially the whole wall clock, and
+  essentially all of that holding is the write itself. There is no non-write
+  time inside the lock to reclaim, so **removing or striping the writer mutex
+  cannot make a burst faster** — a burst is engine-bound, and the feed client
+  already pipelines 32 connections inside a single `putAll`.
+
+  The eight-worker row is the cleanest proof: `lock.ingest.wait 243.9s` across a
+  37.6s wall — each worker queued ~30 of 37.6 seconds — for the SAME throughput
+  as one worker that waits for nothing. **Contention here is a symptom, not a
+  cause**; the workers are queueing for a resource that is already saturated.
+  Read `lock.*.wait` against `write`/`hold` before concluding a lock is a
+  bottleneck, or the 98/2 and burst rows look identical and are opposites.
+
+  Two things follow. Wider batches are safe for bursts as well as 9x better for
+  the steady state — the 6% here is inside the noise of a shared box. And if a
+  burst must be absorbed FASTER, the lever is the feed client or Vespa, not the
+  router's pipeline: `VESPA_FEED_CONNECTIONS` / `VESPA_FEED_STREAMS` /
+  `VESPA_FEED_INFLIGHT_FACTOR`, and `VespaFeed.statusLine()` — acks, inflight
+  window, latency, exceptions, already computed and never printed by the router
+  — is the instrument that says whether the client is throttling itself or the
+  engine is pushing back. Nothing here can tell those apart today.
+
+  What a burst still costs is not throughput but STARVATION: for its ~40s every
+  other writer in the process (verdict edits, the healer, the sweep) queues on
+  that same mutex, which is what `EDIT_DEADLINE_MS` was written for. This bench
+  runs no other writers, so it does not measure that; `lock.gate.wait` during a
+  burst is the number nobody has.
+
+  The operator-level fix needs no code: `SYNC_INGEST_CONCURRENCY=2
+  SYNC_INGEST_BATCH=8192`. **The formula was deliberately NOT changed**, because
+  widening batches is not free in the other direction: every other writer - the
+  monitor's verdict edits, the healer, the sweep - queues on that same mutex,
+  and `RelayVerdictRecord.EDIT_DEADLINE_MS` exists because they already wait
+  "~10s per 20k-event batch, several deep under load". Wider batches make ingest
+  faster and that tail longer. Measure both before moving the default.
 
 ## Conventions
 

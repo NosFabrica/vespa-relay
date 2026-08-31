@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlin.random.Random
 import kotlin.test.Test
 
 /**
@@ -83,6 +84,17 @@ class IngestCostBench {
         val label: String,
         val events: List<Event>,
         val probe: Boolean,
+        /**
+         * The pipeline shape to price this arm at. Default is the historical
+         * one, so every existing arm reads exactly as it did.
+         *
+         * A parameter at all because at a mirror's real duplicate rate the
+         * shape is the finding: the store serializes every commit on one
+         * writer mutex, so what a batch is worth is how many SURVIVORS it
+         * carries into that one lock hold — and survivors per commit is
+         * `batch x (1 - dropRate)`. See [sweepShapes].
+         */
+        val tuning: IngestTuning = IngestTuning(concurrency = 2, batch = 1000),
     )
 
     private fun run(
@@ -93,7 +105,7 @@ class IngestCostBench {
         val pipeline =
             IngestPipeline(
                 store,
-                IngestTuning(concurrency = 2, batch = 1000),
+                arm.tuning,
                 audit = null,
                 servingPressure = null,
                 scope = scope,
@@ -121,6 +133,7 @@ class IngestCostBench {
         val n = arm.events.size
         println(
             "COST-BENCH ${arm.label.padEnd(34)} probe=${if (arm.probe) "on " else "off"} " +
+                "w=${arm.tuning.concurrency}x${arm.tuning.batch} " +
                 "n=$n  ${"%.1f".format(dt / 1e6)}ms  ${"%.0f".format(n * 1e9 / dt)} ev/s  " +
                 "${"%.0f".format(dt / 1e3 / n)}us/ev  accepted=${pipeline.accepted.get()} rejected=${pipeline.rejected.get()}" +
                 pipeline.rejectionBreakdown(),
@@ -171,13 +184,119 @@ class IngestCostBench {
             run(store, Arm("duplicate notes (repeat)", base, probe = false))
             run(store, Arm("duplicate notes (repeat)", base, probe = true))
 
-            // 6. What a SUPERSESSION pre-filter would cost: the batched read
+            // 6. THE PRODUCTION SHAPE, which none of the pure arms above can
+            //    show: 98% already held, 2% new. A 100%-duplicate batch is
+            //    dropped entirely by the probe — it never reaches verify, never
+            //    reaches the write, and never takes the writer lock — so it
+            //    prices the rejection path and nothing else. A mirror's real
+            //    batch carries a couple of percent that must be WRITTEN, and
+            //    the write is where the lock is held. The pair of arms above
+            //    brackets this one; only this one says which side dominates.
+            //
+            //    Shuffled with a fixed seed so the new events are spread
+            //    through the batch rather than sitting in one tail, and so two
+            //    runs compare. Distinct generations per arm: the first arm
+            //    STORES its 2%, and reusing them would make the second arm
+            //    100% duplicate without saying so.
+            val keep = CORPUS * 98 / 100
+            val add = CORPUS - keep
+            run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 5)).shuffled(Random(7)), probe = false))
+            run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 6)).shuffled(Random(7)), probe = true))
+            run(store, Arm("98% dup / 2% fresh (repeat)", (base.take(keep) + notes(add, gen = 7)).shuffled(Random(7)), probe = true))
+
+            // 7. THE SHAPE SWEEP, and at a mirror's duplicate rate it is the
+            //    one that decides throughput. Same 98/2 work, three pipeline
+            //    shapes. See [sweepShapes].
+            sweepShapes(store, base.take(keep))
+
+            // 8. THE SAME SWEEP ON A BURST OF ALL-FRESH EVENTS, which is the
+            //    OTHER regime and the one the 98/2 answer says nothing about.
+            //    A mirror's steady state rejects almost everything and barely
+            //    touches the writer lock; a burst of genuinely new events is
+            //    100% write, and there the lock is held for essentially the
+            //    whole wall clock. Whether that is the LOCK or the ENGINE is
+            //    the question, and the shapes answer it: throughput that is
+            //    flat across them means the engine is saturated and no amount
+            //    of lock work helps, while throughput that climbs with width
+            //    means the batching does.
+            sweepFreshShapes(store)
+
+            // 9. What a SUPERSESSION pre-filter would cost: the batched read
             //    that answers "do we hold a newer version of this address", in
             //    the shape stage C uses for its guards — chunked by author,
             //    bounded fan-out. Priced against arm 3's per-event cost, this
             //    is the whole business case for building it.
             priceVersionLookup(store, genZero)
             priceIdProbe(store, base)
+        }
+    }
+
+    /**
+     * A 100%-fresh burst through the same three shapes, FORWARDS THEN
+     * BACKWARDS — the regime the 98/2 sweep cannot speak for.
+     *
+     * Both orders because every arm here writes [CORPUS] new documents, so each
+     * one meets a bigger index than the last and a single pass confounds width
+     * with corpus growth. Run ascending only, the drift pushes the widest shape
+     * to look slowest — which is the direction of the answer, so it cannot be
+     * read as evidence for it. Descending puts the drift against the width
+     * instead: if the two passes disagree about which shape wins, the ordering
+     * is corpus growth; if both are flat, the flatness is real.
+     *
+     * Every event here is written, so `lock.ingest.hold` covers a real write
+     * rather than a near-empty commit, and the feed client's own pipelining is
+     * in play: a wider batch is both fewer lock acquisitions AND a bigger
+     * `putAll`. The two move together on purpose — the question this answers is
+     * "what shape absorbs a burst fastest", not "which of the two is
+     * responsible", and the flat-versus-climbing shape of the answer is what
+     * says whether the engine or the pipeline is the ceiling.
+     */
+    private fun sweepFreshShapes(store: VespaEventStore) {
+        val shapes =
+            listOf(
+                IngestTuning(concurrency = 8, batch = 1024),
+                IngestTuning(concurrency = 2, batch = 8192),
+                IngestTuning(concurrency = 1, batch = 16384),
+            )
+        (shapes.map { "up" to it } + shapes.reversed().map { "down" to it }).forEachIndexed { i, (order, tuning) ->
+            run(store, Arm("fresh burst sweep $order", notes(CORPUS, gen = 20 + i), probe = true, tuning = tuning))
+        }
+    }
+
+    /**
+     * The same 98/2 batch through three pipeline shapes — because at this
+     * duplicate rate the shape, not the probe, is what moves the number.
+     *
+     * The store takes ONE writer mutex for the whole of `commit`, so writes
+     * never run in parallel however many ingest workers there are: more
+     * workers only lengthens the queue for it. What a lock hold is WORTH is
+     * how many surviving events it writes, and that is `batch x (1 - dropRate)`
+     * — at 98% dropped, a 1024-event batch carries about twenty. So the
+     * hypothesis this prices is that FEWER, WIDER workers beat more, narrower
+     * ones: same survivors, far fewer lock acquisitions.
+     *
+     * The production shape is first. Note `IngestPipeline` caps a batch at its
+     * share of the queue (`capacity / workers`, and capacity itself at
+     * MAX_INBOUND_QUEUE), so at eight workers a batch cannot exceed 2048
+     * however high SYNC_INGEST_BATCH is set — the cap is derived from a queue
+     * sized for MEMORY, and it lands on the number that decides write
+     * efficiency. That interaction is the reason for the third row.
+     */
+    private fun sweepShapes(
+        store: VespaEventStore,
+        dupes: List<Event>,
+    ) {
+        val add = CORPUS - dupes.size
+        listOf(
+            IngestTuning(concurrency = 8, batch = 1024),
+            IngestTuning(concurrency = 2, batch = 8192),
+            IngestTuning(concurrency = 1, batch = 16384),
+        ).forEachIndexed { i, tuning ->
+            // A distinct generation per shape: each one STORES its 2%, and
+            // reusing them would quietly make the next shape 100% duplicate
+            // and time a batch that never writes.
+            val mix = (dupes + notes(add, gen = 10 + i)).shuffled(Random(7))
+            run(store, Arm("98/2 shape sweep", mix, probe = true, tuning = tuning))
         }
     }
 
