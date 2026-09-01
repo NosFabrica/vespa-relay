@@ -17,7 +17,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 globalThis.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const { targetsOf, pointerFilters, BATCH, LABEL_LIMIT } =
+const { targetsOf, pointerFilters, BATCH, LABEL_LIMIT, trustedSigners } =
   await import(new URL("../../main/resources/web/shared/pointers.js", import.meta.url));
 const { delegationsOf } = await import(new URL("../../main/resources/web/shared/providers.js", import.meta.url));
 const { provenanceOf } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
@@ -115,12 +115,13 @@ const byKind = (filters) => {
 // page — and one that arrives twice must still be one pill with a count of 1.
 {
   const page = [profile("1", ALICE), profile("2", BOB)];
-  assert.strictEqual(provenanceOf(page).size, 0, "profiles alone carry no reason for being here");
+  const TRUSTED = trustedSigners(MAP);
+  assert.strictEqual(provenanceOf(page, TRUSTED).size, 0, "profiles alone carry no reason for being here");
 
   const list = ev("9", LISTER, 30392, [["d", "vh"], ["title", "Verified Human"], ["p", ALICE], ["p", BOB]]);
   const label = ev("8", BOT, 1985, [["L", "ugc"], ["l", "spammer", "ugc"], ["p", BOB]]);
 
-  const rows = provenanceOf([...page, list, label]);
+  const rows = provenanceOf([...page, list, label], TRUSTED);
   assert.deepStrictEqual(rows.get(hex("1")).map((p) => p.text), ["Verified Human"]);
   assert.deepStrictEqual(rows.get(hex("2")).map((p) => p.text), ["Verified Human", "spammer"],
     "delegated first, then the open one — the tone is the whole distinction");
@@ -128,7 +129,7 @@ const byKind = (filters) => {
   assert.strictEqual(rows.get(hex("2"))[1].gated, false);
 
   // The relay spliced the list AND the fetch returned it: still one pill.
-  const both = provenanceOf([...page, list, list, label]);
+  const both = provenanceOf([...page, list, list, label], TRUSTED);
   assert.strictEqual(both.get(hex("1")).length, 1);
   assert.strictEqual(both.get(hex("1"))[0].count, 1,
     "an event that arrives both ways is one record — the count is what claims corroboration");
@@ -136,3 +137,20 @@ const byKind = (filters) => {
 
 console.log("pointers: the gate moves to the client as `authors`, labels stay open and bounded, and the folded answer draws the row");
 process.exit(0);
+
+// ---- and the render gate is built from the same Map ------------------------
+//
+// One rule for the ask and for what is drawn: the key a Map names for 30392
+// speaks for 30392, and for nothing else. A publisher the reader delegated for
+// LISTS does not thereby get to score them.
+{
+  const t = trustedSigners(MAP);
+  assert.deepStrictEqual([...t.get(30392)], [LISTER]);
+  assert.deepStrictEqual([...t.get(30382)], [SCORER], "per kind — the list publisher does not speak for assertions");
+  assert.deepStrictEqual([...t.get(30393)], [], "a kind the Map never names trusts nobody");
+  // Dimensions of ONE kind do collapse: both are 30382 assertions the reader
+  // asked one key for, which is the grouping the store's own gate does.
+  const twoDims = delegationsOf({ tags: [["30382:rank", SCORER, ""], ["30382:followers", SCORER, ""]] });
+  assert.deepStrictEqual([...trustedSigners(twoDims).get(30382)], [SCORER]);
+  assert.strictEqual(trustedSigners(new Map()).get(30392).size, 0, "no Map delegates nobody");
+}

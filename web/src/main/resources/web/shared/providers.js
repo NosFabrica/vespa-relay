@@ -157,6 +157,19 @@ export async function providersFor(observer) {
 }
 
 /**
+ * The delegations already in hand for [observer], or null when none are.
+ *
+ * SYNCHRONOUS, and the null is the point: a caller that must decide RIGHT NOW
+ * whether a signer is one this reader delegated cannot await, and must be able
+ * to tell "delegates nobody" from "not known yet". provenance.js's first seed
+ * is that caller — it runs before the render, and after the readiness panel has
+ * usually already filed the Map (see [seedProviders]).
+ */
+export function knownProviders(observer) {
+  return cache.get(observer) || null;
+}
+
+/**
  * File a Map somebody else already read, so this module never asks for it.
  *
  * THE PRELOAD, and it costs nothing because the read exists either way: the

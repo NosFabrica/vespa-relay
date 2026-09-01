@@ -42,6 +42,7 @@
 import { refConn } from "./conn.js";
 import { addrOf } from "./nip19.js";
 import { providersFor, publishersOf } from "./providers.js";
+import { DECLARATION_KINDS } from "../provenance.js";
 
 /**
  * Which tag a declaration names its SUBJECT with, by kind — and which of the
@@ -179,4 +180,50 @@ export async function fetchPointers(events, observer, opts) {
   } catch (e) {
     return [];
   }
+}
+
+/**
+ * WHO MAY SPEAK, per declaration kind — the same gate, in the shape the pill
+ * reader needs it.
+ *
+ * [pointerFilters] applies this to the ASK, which covers what this page
+ * fetches and nothing else. A declaration also reaches the page a second way:
+ * plain recall. The store is explicit that it does — "an explicit
+ * `kinds:[30392]` is a NIP-01 ask and serves strangers' lists as plain hits,
+ * gate or no gate" — and a search that names no kinds recalls every kind by
+ * definition, so a stranger's list whose TITLE matches the search text lands
+ * in the answer beside the delegated publisher's.
+ *
+ * provenance.js drew those as `gated`, because "it arrived" used to mean the
+ * expansion admitted it. Two lists titled "Verified Human" then collapsed by
+ * value into one pill with a count of 2 — so any stranger could inflate a
+ * delegated publisher's corroboration number by signing a list with the same
+ * title. That is the count making the exact false claim it exists to avoid.
+ *
+ * SERVICE KEYS ONLY, AND PER KIND. The key a Map names for 30392 speaks for
+ * 30392 and not for 30382; a reader who delegated a list publisher has not
+ * thereby asked for that publisher's assertions. Dimensions of ONE kind do
+ * collapse — `30382:rank` and `30382:followers` are two things the reader
+ * asked one key for, and both are 30382 assertions they wanted — which is
+ * `publishersOf`'s union and the same grouping the store's own gate does
+ * (`declarations.groupBy(gate::signersOf)`).
+ *
+ * NOT THE READER'S OWN KEY, and this is the one place the page is deliberately
+ * stricter than the relay. The store fetches declarations "from their enrolled
+ * signers only, plus the reader", so a reader's own self-signed Trusted List
+ * DOES unpack for them and its members are spliced onto the page — and this
+ * row will not say so. That is the rule as asked for: the only authors that
+ * count are the observer's own service keys. If a reader's own lists should
+ * speak for themselves after all, adding the observer to each set here is the
+ * whole change.
+ *
+ * A reader with no Map delegates nobody and gets no declaration pill at all —
+ * which is right, and is what the relay serves an anonymous read too (it "gets
+ * the label companion alone"). Labels are unaffected either way: NIP-32 is
+ * open by construction, and provenance.js draws it in the tone that says so.
+ */
+export function trustedSigners(delegations) {
+  const out = new Map();
+  for (const kind of DECLARATION_KINDS) out.set(kind, new Set(publishersOf(delegations, kind)));
+  return out;
 }

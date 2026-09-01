@@ -20,12 +20,19 @@
 // answer, and again once shared/pointers.js has fetched what the answer left
 // out. Both seeds go through here unchanged.
 //
-// What that costs is the trust gate. "It arrived, so the reader asked for it"
-// was a fact about the relay's expansion and is NOT a fact about a client
-// fetch: the reference socket narrows nothing. [DECLARATION_KINDS] and the
-// `gated` tone still mean what they say only because pointers.js re-imposes
-// the rule as an `authors` filter off the reader's own kind 10040. If a third
-// filler ever appears, it owes the row the same.
+// What that costs is the trust gate, and it costs more than the fetch. "It
+// arrived, so the reader asked for it" was never quite a fact even about the
+// relay: the expansion's COMPANION is gated, but plain recall is not, and the
+// store says so outright — "an explicit `kinds:[30392]` is a NIP-01 ask and
+// serves strangers' lists as plain hits, gate or no gate". A search that names
+// no kinds recalls every kind, so a stranger's list whose TITLE matches lands
+// in the answer beside the delegated publisher's. Read as gated, the two
+// collapsed by value into one pill with a count of 2 — anyone could inflate a
+// publisher's corroboration number by signing a list with the same title.
+//
+// So the gate is applied HERE, over whatever filled the array, from the
+// `trusted` map [provenanceOf] takes. That is one rule for both fillers and
+// for any third.
 //
 // NOT BY ADJACENCY, and that distinction is now load-bearing. A subject used to
 // arrive directly behind its pointer, and reading the pair off neighbouring
@@ -102,8 +109,23 @@ const tagOf = (ev, name) => (tagsOf(ev, name)[0] || [])[1] || "";
  * One pass to index what the page holds, one to read the pointers. A pointer
  * whose target is NOT in this page contributes nothing: the row is about the
  * cards on screen, and a pill over an absent card is a claim about nothing.
+ *
+ * [trusted] is `kind -> Set(signer)` — who this reader delegated for each
+ * declaration kind, plus the reader themselves, built by pointers.js's
+ * trustedSigners off their kind 10040. A declaration from anyone else
+ * contributes NOTHING: not a quieter pill, nothing. The row says why a card is
+ * in this page, and a stranger's list did not put it there — the relay would
+ * not unpack it for this reader, so whatever brought the card, it was not
+ * that. Labels are unaffected; NIP-32 is open by construction and its tone
+ * already says so.
+ *
+ * ABSENT MEANS NOBODY, deliberately. An anonymous reader delegates no one and
+ * gets label pills only, which is exactly what the relay serves them. A
+ * signed-in reader whose Map has not landed yet is in that state for one paint
+ * and gains the pills on the next — the row understating itself for a moment
+ * is the right way round for a claim about who vouched for whom.
  */
-export function provenanceOf(events) {
+export function provenanceOf(events, trusted) {
   const byId = new Map();
   const byAddr = new Map();
   const profileOf = new Map(); // pubkey -> the kind 0 in THIS page
@@ -160,7 +182,7 @@ export function provenanceOf(events) {
       walked.add(ev.id);
     }
     seenHere.clear();
-    contributionsOf(ev, { byId, byAddr, profileOf }, add);
+    contributionsOf(ev, { byId, byAddr, profileOf, trusted }, add);
   }
 
   const out = new Map();
@@ -181,9 +203,18 @@ export function provenanceOf(events) {
 function contributionsOf(ev, page, emit) {
   if (ev.kind === LABEL_KIND) return labelContributions(ev, page, emit);
   if (!DECLARATION_KINDS.has(ev.kind)) return;
+  // WHOSE WORD, not just which kind — and this is the check that used to be
+  // the relay's. See [provenanceOf]'s `trusted`.
+  if (!delegated(page.trusted, ev.kind, ev.pubkey)) return;
   if (MEMBER_TAG[ev.kind]) return listContributions(ev, page, emit);
   return assertionContributions(ev, page, emit);
 }
+
+/** Did this reader name [pubkey] for [kind]? Nothing is delegated by an absent map. */
+const delegated = (trusted, kind, pubkey) => {
+  const keys = trusted && trusted.get(kind);
+  return !!keys && keys.has(pubkey);
+};
 
 /**
  * NIP-32: one pill per LABEL VALUE, on every record the label names.
@@ -327,9 +358,9 @@ export function forgetProvenance() {
 }
 
 /** Replace what the page knows with this page's answer. Returns how many cards gained a row. */
-export function seedProvenance(events) {
+export function seedProvenance(events, trusted) {
   provenance.clear();
-  const built = provenanceOf(events);
+  const built = provenanceOf(events, trusted);
   for (const [id, pills] of built) provenance.set(id, pills);
   attribution.faces = facesNeeded(built);
   return built.size;

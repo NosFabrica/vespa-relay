@@ -17,8 +17,8 @@ import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
 import { seedProvenance, provenance } from "./provenance.js";
-import { fetchPointers } from "./shared/pointers.js";
-import { providersFor } from "./shared/providers.js";
+import { fetchPointers, trustedSigners } from "./shared/pointers.js";
+import { providersFor, knownProviders } from "./shared/providers.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
@@ -546,7 +546,7 @@ function hydrate(events, deep, { pointers = true } = {}) {
   // indexes the page rather than reading neighbours. Before the render,
   // because the row is part of the card rather than something painted onto it
   // after.
-  seedProvenance(events);
+  seedProvenance(events, trustedNow());
   // …and then ASK for the pointers this page was not sent. The relay answers a
   // `kinds:[0]` search with the profiles its expansion found through lists,
   // labels and assertions and no longer with the pointers themselves, so the
@@ -749,11 +749,28 @@ function setViewingAs(pubkey, name) {
  */
 let provSeq = 0;
 
-/** How many pills the page is currently drawing — the "did we learn anything" signal. */
-function pillCount() {
-  let n = 0;
-  for (const pills of provenance.values()) n += pills.length;
-  return n;
+/**
+ * WHOSE WORD THIS LENS TOOK, from the Map already in hand.
+ *
+ * Synchronous, because the first seed runs before the render and a pill is a
+ * claim about who vouched — there is no honest way to draw one while the
+ * answer to "did you delegate them" is still in flight. It is usually there:
+ * the readiness panel files the Map at sign-in, well before a search.
+ */
+const trustedNow = () => trustedSigners(knownProviders(viewingAs || me));
+
+/**
+ * What the row currently says, as one string — the "did anything change" signal.
+ *
+ * A COUNT IS NOT ENOUGH, and it stopped being enough the moment the second
+ * seed could REMOVE a pill as well as add one: a stranger's list dropped and a
+ * delegated one fetched nets to zero, and `run` would skip the repaint and
+ * leave the stale row on screen. This compares what is drawn, not how much.
+ */
+function pillPrint() {
+  const out = [];
+  for (const [id, pills] of provenance) out.push(id, ...pills.map((p) => `${p.key}:${p.count}`));
+  return out.join("|");
 }
 
 /**
@@ -768,16 +785,18 @@ function pillCount() {
  * provenance.js dedupes per pointer and collapses by value, so an event
  * arriving both ways is one pill with one count, not two.
  */
-function enrichProvenance(events) {
+async function enrichProvenance(events) {
   const seq = ++provSeq;
-  const before = pillCount();
-  return fetchPointers(events, viewingAs || me)
-    .then((pointers) => {
-      if (!pointers.length || seq !== provSeq) return 0;
-      seedProvenance([...events, ...pointers]);
-      return Math.max(0, pillCount() - before);
-    })
-    .catch(() => 0);
+  const lens = viewingAs || me;
+  const before = pillPrint();
+  const pointers = await fetchPointers(events, lens).catch(() => []);
+  if (seq !== provSeq) return 0;
+  // RE-SEEDED EVEN WITH NOTHING FETCHED. The Map may have landed on this very
+  // read, and the first seed is gated on what was known THEN — so a cold cache
+  // draws no declaration pill and this is where the page stops understating
+  // itself. providersFor is cached and deduped, so asking again is free.
+  seedProvenance([...events, ...pointers], trustedSigners(await providersFor(lens)));
+  return pillPrint() === before ? 0 : 1;
 }
 
 // ---- trust scores, as the ACTIVE LENS sees them -------------------------
