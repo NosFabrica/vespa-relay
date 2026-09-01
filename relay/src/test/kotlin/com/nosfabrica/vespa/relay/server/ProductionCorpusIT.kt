@@ -547,43 +547,53 @@ class ProductionCorpusIT {
         } ?: Unit
 
     /**
-     * WHERE A MEMBER ACTUALLY LANDS, AND WHY — and a NEGATIVE result about the
-     * pointer floor, measured rather than argued.
+     * WHERE A MEMBER ACTUALLY LANDS, on somebody else's data — and the whole
+     * point of the two store bumps behind it.
      *
-     * The floor was added so a member could not be stranded below the list that
-     * names it: `spliced_member` takes `max(member_rung(), pointer_floor())`.
-     * On this corpus it never fires, and `event.sd`'s own numbers say why.
+     * `spliced_member` places a member at `max(member_rung(), pointer_floor())`.
+     * The floor arrived first and was INERT, and this case is what measured
+     * that: the two sides were in different units, because the rung was
+     * multiplied by `wot_mult(MEMBER)` while `query(pointer_rel)` is the
+     * pointer's finished relevance and carries `wot_mult(SIGNER)` — and a
+     * Trusted List is signed by a NIP-85 service key nobody follows. One side
+     * times 1, the other times up to 251 189. The rung won every time, so
+     * members were placed four orders of magnitude above the page, ordered by
+     * the READER's trust rather than by what the publisher said, and identically
+     * whether the list matched on its title or barely at all.
      *
-     *   member_rung   = (550 + 3450 x confidence) x wot_mult(MEMBER)
-     *   pointer_floor = pointer_relevance x (span..1)
-     *                 = 130 000 x wot_mult(SIGNER) x (0.1769..1)
+     * Store PR #93 dropped the trust term from the rung. Both sides are now in
+     * the POINTER's units, so the floor binds and is bounded above by the
+     * pointer itself. What this case pins, against real confidences and real
+     * trust ranks:
      *
-     * `wot_mult` is `1 + (score - min_rank)^2.7` clamped at 100, so it spans
-     * 1 .. 251 189. The two sides carry DIFFERENT people's trust: the rung
-     * carries the member's, the floor carries the LIST SIGNER's. A Trusted List
-     * is signed by a NIP-85 service key that nobody follows — unranked here,
-     * so wot_mult(signer) = 1 and the floor tops out at 130 000 — while a
-     * member ranked 98 gets wot_mult ~ 236 000 and a rung around 10^9. Read off
-     * this Vespa's own match-features for a real member:
+     *  - the block is ordered by what the PUBLISHER said, not by what the
+     *    reader thinks of each member;
+     *  - no member passes the list that names it;
+     *  - and turning the floor off (`subjectFloorSpan = null`) visibly changes
+     *    the answer — without that the first two could both hold for the wrong
+     *    reason, which is exactly how the inert floor hid.
      *
-     *   member_confidence 0.65  member_rung 7.0e8  pointer_floor 9.3e4
+     * That control is NOT the old placement and must not be read as one: with
+     * the trust term gone from the rung, `subjectFloorSpan = null` leaves a
+     * member on the bare 550..4000 band, which is neither what b2be07e168
+     * served nor anything this relay ships. It is here to show the floor is
+     * carrying the placement, nothing more.
      *
-     * Four orders of magnitude apart, so `max()` takes the rung every time and
-     * the two placements below are identical. The floor can only bind for a
-     * member the reader barely trusts, which is the opposite of the case it was
-     * written for. That is a real gap in the design, not a property of this
-     * corpus, and it is recorded here rather than asserted away.
-     *
-     * What this case DOES pin is the placement the relay actually serves, and
-     * the invariant that survives either way: every held member rides in behind
-     * the list that names it.
+     * HOW BIG THE MOVE LOOKS depends entirely on what else is on the page, and
+     * on this corpus it is one row: the reader\'s enrolled service publishes
+     * FIVE near-identical copies of the same list, all at the name tier, so the
+     * top of the page is lists and a member can at best tie them. The
+     * confidence-100 member moves from #5 to #2 and the rest keep their
+     * positions under the copies. The scale change underneath is the real
+     * result and it is measured store-side, not here: 2.19e8..1.00e9 before,
+     * 1.70e5..2.39e5 after, against a page spanning 610..2.39e5.
      *
      * Everything is production: the list, its title, its members, their scores,
      * their profiles and their trust ranks. Only the enrolment is synthesized,
      * for the reason the case above gives.
      */
     @Test
-    fun `a member rides behind its list, and the pointer floor does not bind against real trust`() =
+    fun `a member is placed by its publisher's confidence and never passes its list`() =
         withRelay { _, store ->
             val scored = scoredList() ?: return@withRelay println("PRODUCTION-IT no scored list with enough held member profiles")
             println(
@@ -593,11 +603,12 @@ class ProductionCorpusIT {
 
             // THE RANK PROVIDER IS PART OF THE SETUP, not a detail. Without one
             // every member is unranked, `wot_mult()` is the same constant for
-            // all of them, and the rung degenerates to ordering by confidence —
-            // so this would report no difference and mean nothing by it. Pick
-            // the signer whose assertions actually COVER these members: one
-            // that ranks 400 strangers and none of this list leaves trust flat
-            // exactly as if nobody were enrolled.
+            // all of them, and the trust term this case is about would be flat —
+            // so the old placement would look correct and the case would report
+            // a pass while meaning nothing by it. Pick the signer whose
+            // assertions actually COVER these members: one that ranks 400
+            // strangers and none of this list leaves trust flat exactly as if
+            // nobody were enrolled.
             val wanted = scored.held.mapTo(HashSet()) { it.first.pubKey }
             val rankProvider =
                 corpus
@@ -627,7 +638,8 @@ class ProductionCorpusIT {
 
             val filter = """{"kinds":[0,30392],"search":"${scored.title} include:spam observer:${reader.pubKey}"}"""
             val floored = NostrRelayServer(store, relayUrl)
-            // The rung alone, which is what a relay pinned to 94be3000a1 serves.
+            // The placement before the floor existed, on the same engine and the
+            // same documents — the control that says the floor is doing the work.
             val rungOnly =
                 VespaEventStore.open(
                     vespa!!,
@@ -638,7 +650,7 @@ class ProductionCorpusIT {
             val rungRelay = NostrRelayServer(rungOnly, relayUrl)
             try {
                 val pages =
-                    listOf("rung only (94be3000a1)" to rungRelay, "floored (this pin)" to floored).map { (label, relay) ->
+                    listOf("rung only (no floor)" to rungRelay, "floored" to floored).map { (label, relay) ->
                         val ids = page(relay, "cmp-${label.take(4)}", filter)
                         val seen =
                             scored.held
@@ -649,19 +661,32 @@ class ProductionCorpusIT {
                         ids
                     }
 
-                assertEquals(
-                    pages[0].filter { it in pages[1] },
-                    pages[1].filter { it in pages[0] },
-                    "the floor changes no placement against real trust — see this case's KDoc for the arithmetic",
-                )
-
                 val ids = pages[1]
                 val pointerAt = ids.indexOf(scored.list.id)
                 assertTrue(pointerAt >= 0, "the list is a hit of its own title")
+
+                val placed = scored.held.map { (event, conf) -> ids.indexOf(event.id) to conf }.filter { it.first >= 0 }
+                assertTrue(placed.size >= 4, "need several held members to say anything about their order: $placed")
+
+                // READ DOWN THE PAGE AND THE CONFIDENCES NEVER RISE. This is the
+                // claim the trust term used to break.
+                assertEquals(
+                    placed.sortedBy { it.first }.map { it.second },
+                    placed.map { it.second }.sortedDescending(),
+                    "down the page, a member's confidence never rises: $placed",
+                )
+
                 assertEquals(
                     emptyList(),
-                    scored.held.map { it.first.id }.filter { it in ids && ids.indexOf(it) < pointerAt },
-                    "a member never precedes the list that names it: $ids",
+                    placed.filter { it.first < pointerAt },
+                    "no member passes the list that names it (pointer at #$pointerAt): $placed",
+                )
+
+                // And the floor is what did it — the same query without it puts
+                // the members somewhere else.
+                assertTrue(
+                    pages[0] != pages[1],
+                    "turning the floor off must change the answer, or these assertions hold for some other reason: ${pages[0]}",
                 )
             } finally {
                 rungRelay.close()

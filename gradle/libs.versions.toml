@@ -74,98 +74,81 @@ app = "0.1.0"
 quartz = "b10be95a6e"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# b2be07e168 = store main through PR #92. Three commits over 94be3000a1, and
-# they stand ALONE: the store's quartz ask does not move across the range
-# (`git diff --name-only` names no libs.versions.toml), so the quartz line
-# above is untouched by this bump.
+# 3ecdfae6ee = store main through PR #93, one commit over b2be07e168, and it
+# stands ALONE: the store's quartz ask does not move across the range (`git
+# diff --name-only` names no libs.versions.toml), so the quartz line above is
+# untouched by this bump.
 #
-# WHAT MOVED, in two halves. A Trusted List's per-member confidence used to be
-# a rank FEATURE, which is a property of the query — so members were grouped by
-# it, quantized to quarters, and each group cost a round trip. It now rides on
-# the KEY (`dotProduct(pubkey|id, {member: 0..100})`, read back as `rawScore`),
-# so one lookup carries a whole list at the publisher's own resolution. And a
-# spliced member used to sit on the affiliation rung whatever found it: a
-# ceiling of 4,000 x wot, which cannot reach a title match's 130,000 x wot from
-# below. `spliced_member` now takes max() of that rung and a FLOOR at a share
-# of the pointer's own relevance, spanning w_near_tier/w_name_tier..1 of it by
-# the same confidence — so a member the publisher is sure of ties the list that
-# named it, a doubted one lands about one rung below, and nothing reorders
-# inside the block.
+# WHAT MOVED: one line of `event.sd` §13. `member_rung()` no longer multiplies
+# by `wot_mult()`.
 #
-# WHAT THIS RELAY SEES: the lookup half, and NOT the placement half. Measured
-# through the wire protocol against a real Vespa holding the production corpus
-# (`ProductionCorpusIT`, the `pointer floor does not bind` case) — the real
-# `Verified Human` list off the tapestry relay, its twelve held member profiles,
-# their real 65..100 confidences and their real trust ranks from the provider
-# that actually covers them. The floored page is IDENTICAL to the unfloored one,
-# and `event.sd`'s own numbers say why:
+# WHY THAT IS THE FIX. `spliced_member` places a member at
+# `max(member_rung(), pointer_floor())`, and the two sides were in different
+# units. The rung carried the MEMBER's trust; `query(pointer_rel)` is the
+# pointer's FINISHED relevance and so carries the SIGNER's — and a Trusted List
+# is signed by a NIP-85 service key nobody follows. So the floor's side was
+# multiplied by 1 and the rung's by up to 251,189 (`wot_mult` is
+# `1 + (score - min_rank)^2.7`, clamped at 100), and the max() took the rung
+# every time. The floor added in b2be07e168 never fired once.
 #
-#   member_rung   = (550 + 3450 x confidence) x wot_mult(MEMBER)
-#   pointer_floor = 130,000 x wot_mult(SIGNER) x (0.1769..1)
+# WHAT THIS RELAY SEES, measured through the wire protocol against a real Vespa
+# holding the production corpus — the real `Verified Human` list off the
+# tapestry relay, its held scored members, their real confidences and their real
+# trust ranks — with the page itself spanning 610..2.39e5:
 #
-# `wot_mult` is `1 + (score - min_rank)^2.7` clamped at 100, so it spans
-# 1..251,189 — and the two sides carry DIFFERENT people's trust. A Trusted List
-# is signed by a NIP-85 service key nobody follows, so wot_mult(signer) is 1 and
-# the floor tops out at 130,000, while a member ranked 98 gets wot_mult ~236,000
-# and a rung near 1e9. Off this Vespa's match-features for a real member:
-# confidence 0.65, member_rung 7.0e8, pointer_floor 9.3e4. Four orders of
-# magnitude, so `max()` takes the rung every time.
+#                       ordered by     passes its   member scores
+#                       confidence     pointer
+#   b2be07e168, title   no             16/16        2.19e8 .. 1.00e9
+#   b2be07e168, weak    no             16/16        2.19e8 .. 1.00e9
+#   3ecdfae6ee, title   YES            0/16         1.70e5 .. 2.39e5
+#   3ecdfae6ee, weak    YES            0/16         2.85e3 .. 4.00e3
 #
-# So the floor only binds for a member the reader barely trusts — the opposite
-# of the case it was written for, and the same asymmetry the design note
-# rejected "clamp each member to its pointer" for, in reverse. THE PLACEMENT
-# COMPLAINT IS NOT CLOSED BY THIS BUMP. What IS delivered is the lookup half:
-# one round trip per list instead of one per quantized quarter, and the
-# publisher's confidence arriving unrounded, which is what orders the block
-# today (`(550 + 3450c) x wot`, so confidence and trust both count).
+# So the defect was worse than an inert floor. Members were placed four orders
+# of magnitude above the page they belong on, ordered by the READER's trust
+# rather than by what the publisher said, and identically whether the list
+# matched on its title or barely at all — and the store's LIFT then dragged the
+# pointer up after them, so any list naming a well-trusted person hijacked every
+# page that mentioned its title. Both halves go away together, and THIS is the
+# bump that closes the placement complaint the last two chased.
 #
-# THE COST, per query rather than per page: `dotProduct` against the `in` it
-# replaces, over 500 real pubkeys (the store's LOOKUP_CHUNK) on that corpus, 25
-# reps after warmup — p50 50ms -> 57ms, p90 65ms -> 66ms. About one query's
-# worth of extra time at p50, against the three round trips per multi-confidence
-# list the weights remove. Round trips per PAGE are unchanged from 94be3000a1
-# for every shape this relay serves most: a page of twenty labels is one lookup
-# there and one lookup here (an early cut of the PR made it twenty, which its
-# own audit caught and pinned). Only a page of N differently-ranked Trusted
-# Lists costs N, because the pointer's relevance is the one number that stays
-# per-query.
+# WHAT IT GIVES UP: a member's own reputation no longer decides WHERE it sits.
+# It still decides whether it is ADMITTED — the observer gate runs on the
+# subject lookup like any other read — and a list only unpacks for a reader who
+# enrolled its signer, so a publisher vouching for a spammer is a bad service
+# rather than a ranking hole.
 #
-# A SCHEMA MOVES — and that is the difference from the last two bumps, which
-# both said there was nothing to deploy. `event.sd` gains three query inputs
-# (`doc_conf`, `pointer_rel`, `w_subject_floor_span`), three rank functions and
-# a match-features block. DEPLOY BEFORE THIS PIN GOES OUT, or the relay sends
-# inputs the running application does not declare. NO REINDEX, though: `git diff
-# 94be3000a1 b2be07e168 -- engine/app/schemas/event.sd` touches no `field`, no
-# `indexing`, no `attribute` — it is rank-profile only, so nothing about how a
-# document is extracted or stored changes. Rolling the schema FIRST is safe on
-# its own: the new inputs all default to the old behaviour, so a relay still on
-# 94be3000a1 keeps the placement it has today.
+# A SCHEMA MOVES, as in the bump this replaces. DEPLOY BEFORE THIS PIN GOES OUT.
+# NO REINDEX: `git diff b2be07e168 3ecdfae6ee -- engine/app/schemas/event.sd`
+# touches no `field`, no `indexing`, no `attribute` — `first-phase` is the only
+# behavioural line. Unlike the last bump the schema is NOT safe to roll early on
+# its own: it changes placement for a relay still pinned to b2be07e168, which
+# sends `pointer_rel` already. Roll them together, schema first.
 #
-# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule — the relay's tests run
-# on `InMemoryEventIndex`, and the half that matters here (`rawScore` from a
-# weighted recall, the floor's arithmetic) is executed only by a real Vespa:
+# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout b2be07e168
+#   git checkout 3ecdfae6ee
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
-# Run HERE against the merge's head on a real Vespa in Docker: 43 suites, 482
-# tests, 0 skipped, 0 failures, 14m31s (`skipped="0"` read off the result XML,
-# not off `BUILD SUCCESSFUL`, per AGENTS.md). SplicedMemberWeightsIT is the one
-# that matters for this bump — it is the only test anywhere that proves a
-# weighted recall sets `rawScore` at all, for both keyed shapes, and that a
-# zero-weight member is still recalled rather than dropped. The store's own CI
-# is green on the same tree: `git diff 18619af b2be07e168` is empty, so its
-# lint/build/integration jobs cover this commit byte for byte.
+# Run HERE: 43 suites, 482 tests, 0 skipped, 0 failures, 11m56s (`skipped="0"`
+# read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md).
+# SplicedMemberWeightsIT is the one that matters: it gives a member a reputation
+# of 90 the gate can see and asserts it lands on the same rung as one the reader
+# has never heard of, which is the property that would go back silently. The
+# store's own CI is green on the same tree: `git diff b19755b 3ecdfae6ee` is
+# empty.
 #
-# DIRECTION: 94be3000a1 is a strict ancestor of this (`git merge-base
+# DIRECTION: b2be07e168 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '94be…' < 'b2be…' ('9' < 'b'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction. That is this bump's dice roll and not a
-# property this line keeps; the resolved graph is the proof, and on this bump
-# every eventstore line in it reads b2be07e168 with no `->`:
+# LEXICOGRAPHIC: '3ecd…' < 'b2be…' ('3' < 'b'), so this sorts BELOW the pin it
+# replaces — the UNSAFE direction, and the first bump in this file to land that
+# way. Nothing is wrong: ordering only decides who wins a CONFLICT, and the
+# resolved graph below shows there is none. But it is exactly the case the note
+# at the top of this file exists for, so if a second asker for this module ever
+# appears, Gradle would keep b2be07e168 over this and say nothing. The proof
+# stays what it always is — every eventstore line reads 3ecdfae6ee with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "b2be07e168"
+vespaEventStore = "3ecdfae6ee"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
