@@ -16,7 +16,7 @@ import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNa
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
-import { seedProvenance, provenance } from "./provenance.js";
+import { seedProvenance, provenance, provenanceEpoch } from "./provenance.js";
 import { fetchPointers, trustedSigners } from "./shared/pointers.js";
 import { providersFor, knownProviders } from "./shared/providers.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
@@ -505,10 +505,21 @@ function uniqueById(events) {
   return out;
 }
 
+/**
+ * [deep] is the FULL RESULTS view, and it decides two lookups rather than one.
+ *
+ * The reply lines are the obvious one. The provenance row is the other, and it
+ * matters more per keystroke than per search: the type-ahead popup draws
+ * `popupRow`, which is a face, two lines and a badge — `provHtml` is reached
+ * only from `shell()`, so a popup row cannot render a pill however many are
+ * computed for it. Fetching them there was a REQ of up to six filters, one of
+ * them an ungated label read, on every debounced keystroke, for a row that
+ * does not exist. The cards view asks; the popup does not.
+ */
 async function search(text, limit, deep) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  return { ...hydrate(uniqueById(await relay.req(filters)), deep), text };
+  return { ...hydrate(uniqueById(await relay.req(filters)), deep, { pointers: deep }), text };
 }
 
 /**
@@ -737,19 +748,6 @@ function setViewingAs(pubkey, name) {
 // relay used to apply for us.
 
 /**
- * Which page the provenance map currently belongs to.
- *
- * seedProvenance REPLACES rather than merges, so an in-flight lookup that
- * resolves after the next search has already seeded would file one page's
- * pills over another's — the same stale-answer bug `run`'s requestId guards on
- * the render side and paintScores' `scoreLensKey` guards on the lens side.
- * A counter rather than the events, because the guard has to hold for a rerun
- * over the SAME array (picking a new observer does exactly that, and the
- * delegations it reads through are then a different reader's).
- */
-let provSeq = 0;
-
-/**
  * WHOSE WORD THIS LENS TOOK, from the Map already in hand.
  *
  * Synchronous, because the first seed runs before the render and a pill is a
@@ -789,16 +787,21 @@ function pillPrint() {
  * arriving both ways is one pill with one count, not two.
  */
 async function enrichProvenance(events) {
-  const seq = ++provSeq;
+  const seq = provenanceEpoch();
   const lens = viewingAs || me;
   const before = pillPrint();
   const pointers = await fetchPointers(events, lens).catch(() => []);
-  if (seq !== provSeq) return 0;
+  // BOTH AWAITS BEFORE THE GUARD. providersFor is cached and deduped so this
+  // is free, but it is still an await, and having it AFTER the check reopened
+  // the window the check exists to close: a search landing in it would seed
+  // its own row and then have this one write over it.
+  const trusted = trustedSigners(await providersFor(lens).catch(() => new Map()), lens);
+  if (seq !== provenanceEpoch()) return 0;
   // RE-SEEDED EVEN WITH NOTHING FETCHED. The Map may have landed on this very
   // read, and the first seed is gated on what was known THEN — so a cold cache
   // draws no declaration pill and this is where the page stops understating
-  // itself. providersFor is cached and deduped, so asking again is free.
-  seedProvenance([...events, ...pointers], trustedSigners(await providersFor(lens), lens));
+  // itself.
+  seedProvenance([...events, ...pointers], trusted);
   return pillPrint() === before ? 0 : 1;
 }
 
@@ -873,14 +876,27 @@ async function paintScores() {
   // worse: they are cached as "this lens gives them no score", which nothing
   // re-asks. The answers are simply stale; drop them.
   if (scoreLensKey !== lens) return;
+  // BY SERVICE PRIORITY, NOT BY ARRIVAL. `authors` is an OR, so a reader who
+  // names two rank services gets both services' cards interleaved in one
+  // answer — and writing each as it comes made the number on a face depend on
+  // which card the relay happened to send last, so the same reader could see
+  // two different scores on two renders of the same page. The Map's own order
+  // is the reader's stated order of preference, and `publishersOf` preserves
+  // it; first service wins, and a service that scored nobody simply never
+  // shadows the next.
+  const priority = new Map(svc.map((pk, i) => [pk, i]));
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i], evs = reads[i];
     const seen = new Set();
+    const from = new Map();                       // d -> the rank of the service that supplied it
     for (const ev of evs) {
       const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
       const rank = (ev.tags || []).find(t => t?.[0] === "rank")?.[1];
       if (!d) continue;
       seen.add(d);
+      const pri = priority.has(ev.pubkey) ? priority.get(ev.pubkey) : Number.MAX_SAFE_INTEGER;
+      if (from.has(d) && from.get(d) <= pri) continue;
+      from.set(d, pri);
       scores.set(d, rank == null ? null : Number(rank));
     }
     // "The service returned no card for this pubkey" is only a fact once the

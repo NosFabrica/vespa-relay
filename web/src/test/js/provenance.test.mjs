@@ -305,7 +305,7 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
 // seedProvenance REPLACES rather than merges: a second search must not leave
 // the first one's pills on a card that survived into both.
 {
-  const { seedProvenance, forgetProvenance, provenance, attribution } = P;
+  const { seedProvenance, forgetProvenance, provenance, attribution, provenanceEpoch } = P;
   const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];
   assert.strictEqual(seedProvenance(page, TRUSTED), 1, "one card gained a row");
   assert.strictEqual(provenance.size, 1);
@@ -319,6 +319,23 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   forgetProvenance();
   assert.strictEqual(provenance.size, 0, "cleared");
   assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
+}
+
+// EVERY WRITE MOVES THE EPOCH, a clear included — which is the half a counter
+// living in the caller could not do. The row is filled in two passes now, and
+// between them the reader can start another search OR open a permalink;
+// entity.js clears the row on the way into one, and a late second pass that
+// only watched for re-SEEDS would write it straight back, restoring exactly
+// the "how you got here" reading the clear exists to prevent.
+{
+  const { seedProvenance, forgetProvenance, provenanceEpoch } = P;
+  const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];
+  const before = provenanceEpoch();
+  seedProvenance(page, TRUSTED);
+  const seeded = provenanceEpoch();
+  assert.notStrictEqual(seeded, before, "a seed moves the epoch");
+  forgetProvenance();
+  assert.notStrictEqual(provenanceEpoch(), seeded, "and so does a clear — the case a caller-side counter missed");
 }
 
 console.log("provenance: collapse, demotion, tones, order, order-independence, destinations, targets and attribution — all assertions passed");

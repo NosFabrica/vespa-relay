@@ -337,6 +337,29 @@ export function facesNeeded(pillsByTarget) {
 
 /** The page's own answer, filled by app.js before it renders and read by cards/base.js. */
 export const provenance = new Map();
+
+/**
+ * WHICH PAGE THIS ANSWER BELONGS TO — bumped by every write, including a clear.
+ *
+ * The row is now filled in two passes (see the header), and the second lands
+ * after an await. Between them the reader can start another search, or click a
+ * result and leave the results view entirely — and both of those replace what
+ * this map is about. The late pass therefore has to check that it is still
+ * writing into the page it read for, and it needs a counter to check against
+ * because the events alone cannot tell it: re-running the SAME search under a
+ * new observer is a different answer over an identical array.
+ *
+ * It lives here, with the two writers, rather than in the caller that happens
+ * to await. It was a counter in app.js first, and [forgetProvenance] — which
+ * is called from entity.js, not from app.js — could not reach it. A permalink
+ * opened while a search's second pass was in flight cleared the row on the way
+ * in and then had it written straight back, which is precisely the "how you
+ * got here" reading forgetProvenance exists to prevent.
+ */
+let epoch = 0;
+
+/** The current [epoch]. Capture before an await, compare after, drop if it moved. */
+export const provenanceEpoch = () => epoch;
 /** True when a gated pill should be attributed — see [facesNeeded]. */
 export const attribution = { faces: false };
 
@@ -353,12 +376,14 @@ export const attribution = { faces: false };
  * own there, on a bounded ask, the way related.js already does it.
  */
 export function forgetProvenance() {
+  epoch++;
   provenance.clear();
   attribution.faces = false;
 }
 
 /** Replace what the page knows with this page's answer. Returns how many cards gained a row. */
 export function seedProvenance(events, trusted) {
+  epoch++;
   provenance.clear();
   const built = provenanceOf(events, trusted);
   for (const [id, pills] of built) provenance.set(id, pills);
