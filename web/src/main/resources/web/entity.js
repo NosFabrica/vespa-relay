@@ -217,16 +217,60 @@ async function paintRelated(ev, my, { paintScores, setHits }) {
 }
 
 /**
+ * The card, in a slot that can be redrawn without touching what came after it.
+ *
+ * `paintRelated` APPENDS to #results and guards on having already done so, so
+ * rewriting the whole container would delete its section and then decline to
+ * rebuild it. The row arrives on its own schedule and has to land in the card;
+ * a slot is what lets it.
+ */
+const cardSlot = (ev) => `<div id="entity-card">${card(ev, FULL)}</div>`;
+
+/**
+ * Ask for this entity's provenance row and redraw the card if it learned any.
+ *
+ * [seedRow] is app.js's, for the reason paintScores is: the lens the ask is
+ * made through is app state, and this module owns everything else about the
+ * view. Absent — a caller that does not want a row here — is simply nothing.
+ */
+function fillRow(ev, my, { seedRow, paintScores }) {
+  if (!seedRow) return;
+  // ONE PER HALF. The gated read and the open one are separate asks now (the
+  // open one is 6x the bytes and would hold the other back), so each lands on
+  // its own and redraws only if it learned something.
+  let asks = [];
+  try { asks = seedRow([ev]) || []; } catch (e) { return; }
+  for (const ask of asks) {
+    Promise.resolve(ask).then((learned) => {
+      const slot = document.getElementById("entity-card");
+      if (!learned || my !== token || !slot) return;
+      slot.innerHTML = card(ev, FULL);
+      paintScores();
+      watchNip05();
+    }).catch(() => {});
+  }
+}
+
+/**
  * Render the entity named by [seg] (the URL path segment) into #results.
  * paintScores and ensureLogin arrive as hooks because the lens they involve
  * is app state; everything else here owns itself.
  */
-export async function showEntity(seg, { paintScores, ensureLogin, setHits }) {
+export async function showEntity(seg, { paintScores, ensureLogin, setHits, seedRow }) {
   const my = ++token;
-  // A permalink is not a page of results, and the provenance row answers a
-  // question only a results page has. Cleared on the way in so the row cannot
-  // arrive here as a leftover of the search that was on screen a moment ago —
-  // which would make its presence mean "how you got to this page".
+  // Cleared on the way IN, and then asked for again once the entity is known.
+  //
+  // The clear is the old rule and it still holds: whatever the last search
+  // left behind is about that search, and letting it survive here would make
+  // the row's presence mean "how you got to this page".
+  //
+  // What changed is that the row now has an answer of its own here. It used to
+  // be computable only from a page of results — the relay spliced a pointer in
+  // beside the members it named, and a permalink is one event with nothing
+  // spliced around it. Now the page ASKS by target (shared/pointers.js), and
+  // "which of your providers vouch for this person" is a question a permalink
+  // has more sharply than a results list does. So [seedRow] runs on the entity
+  // once it is drawn, and the card is redrawn if it learned anything.
   forgetProvenance();
   const $results = document.getElementById("results");
   const parsed = nip19Parse(seg);
@@ -313,11 +357,12 @@ export async function showEntity(seg, { paintScores, ensureLogin, setHits }) {
       if (my !== token) return;
       $results.innerHTML = headHtml(parsed.raw) +
         `<div class="prov warn">⚠ shown from outside your web of trust — the author has no score under your lens</div>` +
-        card(gated, FULL);
+        cardSlot(gated);
       document.title = titleFor(gated, parsed);
       setHits && setHits([gated]);
       paintScores();
       watchNip05();
+      fillRow(gated, my, { seedRow, paintScores });
       paintRelated(gated, my, { paintScores, setHits });
     };
     return;
@@ -339,9 +384,10 @@ export async function showEntity(seg, { paintScores, ensureLogin, setHits }) {
     const prov = hint
       ? `<div class="prov" id="prov">not in this relay's index — fetched from its hint <span class="mono">${esc(host)}</span>, submitting here for indexing…</div>`
       : "";
-    $results.innerHTML = headHtml(parsed.raw) + prov + card(ev, FULL);
+    $results.innerHTML = headHtml(parsed.raw) + prov + cardSlot(ev);
     setHits && setHits([ev]);
     if (hint) submitForIndexing(ev, host, my);
+    fillRow(ev, my, { seedRow, paintScores });
     paintRelated(ev, my, { paintScores, setHits });
   }
   document.title = titleFor(ev, parsed);

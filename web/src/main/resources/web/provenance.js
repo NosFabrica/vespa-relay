@@ -76,9 +76,26 @@
 // card is furniture, and it would crowd out the one pill that says something.
 // A named constant rather than a scatter of conditions, because this is a
 // judgement about the corpus and the next reader is entitled to argue with it.
+//
+// `pub.ditto.trends` is the same judgement about the other half of the corpus,
+// and it is the one that shows up on PEOPLE. Ditto publishes a trending feed
+// as NIP-32: `["L","pub.ditto.trends"]`, `["l","#p","pub.ditto.trends"]`, and
+// forty `p` tags carrying a pubkey, a relay and two counts. Two things make it
+// furniture. The value is `#p` — a NIP-01 TAG NAME, saying "this trend list is
+// about pubkeys" rather than anything about any of them — so the pill reads
+// `#p` and means nothing to a reader. And one event names forty people, so a
+// single trends post puts that pill on forty cards at once.
+//
+// Measured against staging on 2026-09-01, asking for the labels on one page of
+// 40 profiles: 500 events (the whole budget), 2.4 MB of JSON, 100% this one
+// namespace from this one publisher, and exactly one distinct pill out of it,
+// reading `#p`. A general sample of the relay's 1985s is 100% `ISO-639-1`, and
+// the same 40 people have ZERO labels in any other namespace. So both entries
+// here are the same finding twice: the label half of this row is, on this
+// corpus, entirely furniture, and what it costs is in [LABEL_LIMIT].
 import { addrOf } from "./shared/nip19.js";
 
-export const QUIET_NAMESPACES = new Set(["ISO-639-1", "ISO-639-2", "ISO-3166-1", "ISO-3166-2"]);
+export const QUIET_NAMESPACES = new Set(["ISO-639-1", "ISO-639-2", "ISO-3166-1", "ISO-3166-2", "pub.ditto.trends"]);
 
 /** NIP-32. Anyone may publish one about anything, so a label pill is never gated. */
 export const LABEL_KIND = 1985;
@@ -364,16 +381,22 @@ export const provenanceEpoch = () => epoch;
 export const attribution = { faces: false };
 
 /**
- * Drop what the page knows, for a view that is not a page of results.
+ * Drop what the page knows, so the next view starts from nothing.
  *
- * The entity page is the one that needs it: it renders a card without going
- * through hydrate(), so it would otherwise inherit whatever the last SEARCH
- * left behind — a row appearing on a permalink reached by clicking a result
- * and not on the same permalink typed into the bar. Worse than either
- * behaviour is the two of them together, since it makes the row's presence
- * mean "how you got here". "Why is this in this page" is not a question a
- * permalink has, and what IS said about an event belongs in a section of its
- * own there, on a bounded ask, the way related.js already does it.
+ * Two callers, for two different reasons. The FEED clears and stops: it draws
+ * full cards, so a row left over from the last search would sit under them
+ * explaining a list nobody searched, and a plain NIP-01 read expands nothing,
+ * so it has no row of its own to put there.
+ *
+ * The ENTITY PAGE clears on the way in and then asks again. The clear is the
+ * old reason and it still holds — a row inherited from the last SEARCH would
+ * appear on a permalink reached by clicking a result and not on the same
+ * permalink typed into the bar, which makes its presence mean "how you got
+ * here". What has changed is that a permalink now HAS an answer: since the
+ * page asks by target rather than reading what the relay happened to splice,
+ * "which of the providers you named vouch for this person" is a question a
+ * permalink asks more sharply than a results list does. entity.js seeds it
+ * from the entity itself once that is known.
  */
 export function forgetProvenance() {
   epoch++;

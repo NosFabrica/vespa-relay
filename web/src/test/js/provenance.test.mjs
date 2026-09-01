@@ -321,6 +321,21 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
 }
 
+// A TRENDING FEED IS NOT PROVENANCE, and it is the shape that reaches PEOPLE.
+// Ditto publishes one as NIP-32: the value is `#p` — a NIP-01 tag name saying
+// "this list is about pubkeys" — and one event names forty of them, so a
+// single post would put a pill reading `#p` on forty cards. Measured on
+// staging, it was 100% of the labels about one page of profiles.
+{
+  const trend = ev("7", BOT, 1985, [
+    ["L", "pub.ditto.trends"], ["l", "#p", "pub.ditto.trends"],
+    ["p", READER, "wss://relay.ditto.pub/", "432", "1103"],
+  ]);
+  const real = ev("6", BOT2, 1985, [["L", "ugc"], ["l", "spammer", "ugc"], ["p", READER]]);
+  assert.deepStrictEqual(texts(provenanceOf([profile("1", READER), trend, real], TRUSTED).get(hex("1"))), ["spammer"],
+    "the trend label is furniture; the one beside it that says something is not");
+}
+
 // EVERY WRITE MOVES THE EPOCH, a clear included — which is the half a counter
 // living in the caller could not do. The row is filled in two passes now, and
 // between them the reader can start another search OR open a permalink;

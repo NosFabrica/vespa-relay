@@ -89,12 +89,28 @@ const LABEL_ASKS = [
 export const BATCH = 100;
 
 /**
- * The ceiling on an UNGATED read. A label filter has no `authors` to narrow
- * it, and a popular pubkey carries thousands; the probe above returned a full
- * page of 20 for two members before it had finished looking. Without this the
- * row's cost is set by the corpus rather than by the page.
+ * The ceiling on an UNGATED read, and it is the whole of the row's cost.
+ *
+ * A label filter has no `authors` to narrow it, so what comes back is set by
+ * whoever publishes the most, not by what the page needs. Measured against
+ * staging on 2026-09-01 over one page of 40 profiles, at the 500 this used to
+ * be: 500 events, 2.4 MB of JSON, 100% `pub.ditto.trends`, one distinct pill,
+ * reading `#p`. Those events are ~5 KB each because each carries forty `p`
+ * tags — a bulk feed, not a statement about a subject.
+ *
+ * 100 because the row cannot spend more than that anyway: pills COLLAPSE BY
+ * VALUE, and cards/base.js draws 4 of them in a preview and 40 on a permalink,
+ * so what this budget buys is distinct VALUES and never volume. Five hundred
+ * of one namespace and a hundred of it are the same row and a fifth of the
+ * bytes.
+ *
+ * What it does not fix: NIP-01 has no negative tag filter, so a namespace
+ * QUIET_NAMESPACES will discard on sight cannot be left out of the ask, and on
+ * this corpus the ask is still ~480 KB for nothing. The fix for THAT is to
+ * split the ungated read out of the gated one so it carries its own repaint
+ * and cannot delay the pills that matter — worth doing, not done here.
  */
-export const LABEL_LIMIT = 500;
+export const LABEL_LIMIT = 100;
 
 /**
  * What this page could have a pill drawn ON — the three shapes provenance.js
@@ -140,7 +156,16 @@ const chunk = (xs, n) => {
  * would answer with every scorer on the relay and draw them all as though the
  * reader had asked for them.
  *
- * TWO LENSES, ONE REQ, and the split is the relay's own. A declaration filter
+ * TWO LENSES, AND NOW TWO REQS — `declarations` and `labels` select which half
+ * is being built. They used to go out together, and the open half is 6x the
+ * bytes and 2x the latency of the gated one it was travelling with: measured
+ * against staging over a page of 42 profiles, 49 events / 76 KB / 67 ms for the
+ * declarations against 100 events / 470 KB / 152 ms for the labels, and one
+ * REQ waits for one EOSE. So the pills a reader actually asked for — the ones
+ * from publishers they named — were painting 3.7x later than they needed to,
+ * behind a read that on this corpus draws nothing at all.
+ *
+ * The lens split below is the relay's own. A declaration filter
  * carries NO lens: it is already narrowed to keys this reader named, and a
  * service key is signed by somebody nobody follows, so the reader's own trust
  * floor would drop their provider's lists on the way in. The store's companion
@@ -158,9 +183,9 @@ const chunk = (xs, n) => {
  * touch a filter that already declares one, precisely so a lensed read cannot
  * be silently widened to `include:spam`.
  */
-export function pointerFilters(targets, trusted, { labels = true, observer = null } = {}) {
+export function pointerFilters(targets, trusted, { labels = true, declarations = true, observer = null } = {}) {
   const out = [];
-  for (const ask of ASKS) {
+  for (const ask of declarations ? ASKS : []) {
     const authors = [...((trusted && trusted.get(ask.kind)) || [])];
     const values = targets[ask.from] || [];
     if (!authors.length || !values.length) continue;
