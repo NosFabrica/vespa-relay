@@ -579,14 +579,22 @@ class ProductionCorpusIT {
      * served nor anything this relay ships. It is here to show the floor is
      * carrying the placement, nothing more.
      *
-     * HOW BIG THE MOVE LOOKS depends entirely on what else is on the page, and
-     * on this corpus it is one row: the reader\'s enrolled service publishes
-     * FIVE near-identical copies of the same list, all at the name tier, so the
-     * top of the page is lists and a member can at best tie them. The
-     * confidence-100 member moves from #5 to #2 and the rest keep their
-     * positions under the copies. The scale change underneath is the real
-     * result and it is measured store-side, not here: 2.19e8..1.00e9 before,
-     * 1.70e5..2.39e5 after, against a page spanning 610..2.39e5.
+     * HOW BIG THE MOVE LOOKS DEPENDS ON WHAT ELSE IS ON THE PAGE, so run this
+     * against a corpus that HAS one. On the thin fetch (~3.5k events) the top of
+     * the page is five near-identical copies of the same list and the visible
+     * move is one row, which says almost nothing. Fold in the rows the staging
+     * relay actually returns for the query and the answer is the whole point:
+     *
+     *   18 610 events, floor OFF   members at #43..#58
+     *   18 610 events, floor ON    members at #2..#21, list at #0-#1
+     *
+     * The block lands immediately behind the list that names it, ordered by the
+     * publisher\'s confidence — the gaps in that range are more copies of the
+     * same list plus members this method drops as duplicate confidences, not
+     * strangers. Buried at #43 is the shape of the complaint that started all
+     * this. The scale change underneath is measured store-side:
+     * 2.19e8..1.00e9 before, 1.70e5..2.39e5 after, against a page spanning
+     * 610..2.39e5.
      *
      * Everything is production: the list, its title, its members, their scores,
      * their profiles and their trust ranks. Only the enrolment is synthesized,
