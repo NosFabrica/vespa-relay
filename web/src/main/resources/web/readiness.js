@@ -32,6 +32,7 @@ import { esc } from "./shared/format.js";
 import { readMirrorScope, scopedTo } from "./shared/mirrors.js";
 import { assess, counted, worthShowing, TIMED_OUT } from "./shared/readiness.js";
 import { normalizeRelay, whyNotDialable } from "./shared/relayurl.js";
+import { seedProviders } from "./shared/providers.js";
 
 const $panel = document.getElementById("readiness");
 
@@ -217,6 +218,14 @@ async function readLists(anon, me, facts) {
   facts.relayList = { seen: !!relayList, declared: declared.length, writeRelays };
 
   const scoreList = newest(10040);
+  // The same event shared/providers.js would otherwise fetch again for the
+  // score chips and the provenance row — the reader's own Map, off the same
+  // socket, a few hundred milliseconds later. This read is the earliest one a
+  // signed-in page makes and it is already complete-gated above, which is the
+  // one condition seeding a cache has. Handing it over rather than calling in
+  // the other direction keeps this file's job unchanged: it diagnoses, and it
+  // does not become the page's Map loader.
+  seedProviders(me, scoreList, true);
   facts.scoreListSeen = !!scoreList;
   const rank = scoreList ? (scoreList.tags || []).find((t) => t?.[0] === "30382:rank") : null;
   facts.rankService = rank?.[1] ? { service: rank[1], relay: normalizeRelay(rank[2]) } : null;

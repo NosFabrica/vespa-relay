@@ -16,7 +16,9 @@ import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNa
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
-import { seedProvenance } from "./provenance.js";
+import { seedProvenance, provenance, provenanceEpoch } from "./provenance.js";
+import { fetchPointers, trustedSigners } from "./shared/pointers.js";
+import { providersFor, knownProviders } from "./shared/providers.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
@@ -503,10 +505,21 @@ function uniqueById(events) {
   return out;
 }
 
+/**
+ * [deep] is the FULL RESULTS view, and it decides two lookups rather than one.
+ *
+ * The reply lines are the obvious one. The provenance row is the other, and it
+ * matters more per keystroke than per search: the type-ahead popup draws
+ * `popupRow`, which is a face, two lines and a badge — `provHtml` is reached
+ * only from `shell()`, so a popup row cannot render a pill however many are
+ * computed for it. Fetching them there was a REQ of up to six filters, one of
+ * them an ungated label read, on every debounced keystroke, for a row that
+ * does not exist. The cards view asks; the popup does not.
+ */
 async function search(text, limit, deep) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  return { ...hydrate(uniqueById(await relay.req(filters)), deep), text };
+  return { ...hydrate(uniqueById(await relay.req(filters)), deep, { pointers: deep }), text };
 }
 
 /**
@@ -522,7 +535,7 @@ async function fetchFeed(want) {
   await ensureLogin();
   // No uniqueById on the way in: pickFeed dedupes by id itself, in the same
   // pass that drops the replies and the future dates.
-  return hydrate(pickFeed(await relay.req(feedFilters(askFor(want))), want), false);
+  return hydrate(pickFeed(await relay.req(feedFilters(askFor(want))), want), false, { pointers: false });
 }
 
 /**
@@ -534,16 +547,33 @@ async function fetchFeed(want) {
  * exactly the same names, faces and reply lines afterwards. Two copies of this
  * would drift the first time a renderer started naming somebody new.
  */
-function hydrate(events, deep) {
+function hydrate(events, deep, { pointers = true } = {}) {
   seedProfiles(events);
-  // WHY each of these is here, computed from the page itself — the relay sends
-  // a pointer and everything it names on one subscription, so the answer is
-  // already in this array and costs no round trip. NOT by position: a spliced
-  // member is placed by the confidence its list expressed about it and can sit
-  // far from the pointer that named it, so provenance.js indexes the page
-  // rather than reading neighbours. Before the render, because the row is part
-  // of the card rather than something painted onto it after.
-  seedProvenance(events);
+  // WHAT THE PAGE CAN ANSWER ON ITS OWN. A read that named no kinds is still
+  // expanded into a mixed page, so a pointer the search matched is in this
+  // array beside the members it names and costs no round trip. NOT by
+  // position: a spliced member is placed by the confidence its list expressed
+  // about it and can sit far from the pointer that named it, so provenance.js
+  // indexes the page rather than reading neighbours. Before the render,
+  // because the row is part of the card rather than something painted onto it
+  // after.
+  seedProvenance(events, trustedNow());
+  // …and then ASK for the pointers this page was not sent. The relay answers a
+  // `kinds:[0]` search with the profiles its expansion found through lists,
+  // labels and assertions and no longer with the pointers themselves, so the
+  // seed above now covers only what a wider ask happened to include. Not
+  // awaited and not blocking, on exactly the terms the names and the score
+  // chips take: the row is drawn from what the page holds, and redrawn when
+  // the rest lands. shared/pointers.js carries the gate that moves with it.
+  //
+  // A SEARCH ONLY, which is why this is a parameter. The row answers "why is
+  // this in this page", and the feed's answer is "it is recent" — a plain
+  // NIP-01 read expands nothing, so the feed has never drawn a pill, and
+  // asking here would not be filling the row back in but putting a new one on
+  // a surface that never had one, at a round trip per paint. Whether a feed
+  // card should say "Verified Human" is a real question and a separate one;
+  // it is the feed's call site that decides it.
+  const pills = pointers ? enrichProvenance(events) : null;
   // The same for the search box's `group:` pill, and it is nearly free: a
   // `group:` query already asks for the group's own kind 39000 beside its
   // posts (query.js's buildFilters sends the `#d` with the `#h`), so the name
@@ -585,7 +615,7 @@ function hydrate(events, deep) {
   // Free, and it removes most of the asks below: a thread in the results
   // carries its own parents, and an event is ground truth about who wrote it.
   seedParentAuthors(events);
-  return { events, names, groups, parents: deep ? replyParents(events) : null };
+  return { events, names, groups, pills, parents: deep ? replyParents(events) : null };
 }
 
 /**
@@ -701,6 +731,80 @@ function setViewingAs(pubkey, name) {
   rerun();
 }
 
+// ---- the provenance row's own lookup ------------------------------------
+//
+// WHY THIS IS A LOOKUP NOW. The row used to be free: the relay's expansion
+// spliced a Trusted List in beside the members it named, so one answer carried
+// both the card and its reason and provenance.js only had to index the array.
+// A search that asks for `kinds:[0]` is now answered with kind 0 and nothing
+// else — the profiles are still FOUND through those lists, labels and
+// assertions, they simply do not ride along any more — so the reasons have to
+// be asked for.
+//
+// Everything about the shape is the score chip's, because the score chip had
+// the same problem first: paint what the page supports, ask anonymously for
+// the rest, repaint when it lands, and never block a card on the row under its
+// byline. shared/pointers.js builds the ask and re-imposes the trust gate the
+// relay used to apply for us.
+
+/**
+ * WHOSE WORD THIS LENS TOOK, from the Map already in hand.
+ *
+ * Synchronous, because the first seed runs before the render and a pill is a
+ * claim about who vouched — there is no honest way to draw one while the
+ * answer to "did you delegate them" is still in flight. It is usually there:
+ * the readiness panel files the Map at sign-in, well before a search.
+ */
+const trustedNow = () => {
+  const lens = viewingAs || me;
+  return trustedSigners(knownProviders(lens), lens);
+};
+
+/**
+ * What the row currently says, as one string — the "did anything change" signal.
+ *
+ * A COUNT IS NOT ENOUGH, and it stopped being enough the moment the second
+ * seed could REMOVE a pill as well as add one: a stranger's list dropped and a
+ * delegated one fetched nets to zero, and `run` would skip the repaint and
+ * leave the stale row on screen. This compares what is drawn, not how much.
+ */
+function pillPrint() {
+  const out = [];
+  for (const [id, pills] of provenance) out.push(id, ...pills.map((p) => `${p.key}:${p.count}`));
+  return out.join("|");
+}
+
+/**
+ * Fetch the pointers this page was not sent and fold them into the row.
+ *
+ * Returns how many pills the page GAINED, because that is what `run` repaints
+ * on: a lookup that learned nothing must not cost a re-render, and re-seeding
+ * with the same events would otherwise report a full row every time.
+ *
+ * Seeded from `[...events, ...pointers]` and never from the pointers alone —
+ * a pointer the relay did splice is still in the page and still contributes.
+ * provenance.js dedupes per pointer and collapses by value, so an event
+ * arriving both ways is one pill with one count, not two.
+ */
+async function enrichProvenance(events) {
+  const seq = provenanceEpoch();
+  const lens = viewingAs || me;
+  const before = pillPrint();
+  const pointers = await fetchPointers(events, lens).catch(() => []);
+  // BOTH AWAITS BEFORE THE GUARD. providersFor is cached and deduped so this
+  // is free, but it is still an await, and having it AFTER the check reopened
+  // the window the check exists to close: a search landing in it would seed
+  // its own row and then have this one write over it.
+  const trusted = trustedSigners(await providersFor(lens).catch(() => new Map()), lens);
+  if (seq !== provenanceEpoch()) return 0;
+  // RE-SEEDED EVEN WITH NOTHING FETCHED. The Map may have landed on this very
+  // read, and the first seed is gated on what was known THEN — so a cold cache
+  // draws no declaration pill and this is where the page stops understating
+  // itself.
+  seedProvenance([...events, ...pointers], trusted);
+  return pillPrint() === before ? 0 : 1;
+}
+
 // ---- trust scores, as the ACTIVE LENS sees them -------------------------
 //
 // The chip on a face answers "what does this ranking think of them", which is
@@ -715,28 +819,24 @@ function setViewingAs(pubkey, name) {
 // people you had already scored.
 const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
-const rankServices = new Map();    // observer pubkey -> rank service pubkey | null
 
 /**
- * The `30382:rank` service an observer trusts, from their kind 10040.
+ * The `30382:rank` services an observer trusts, from their kind 10040.
  *
- * Cached only when the relay ANSWERED. A dropped or timed-out lookup used to
- * be cached as "this lens ranks nothing", and since that is the early return
- * below, one slow read meant no score chip anywhere for the rest of the
- * session — with nothing on screen to say the chips were missing rather than
- * empty. Same mistake profiles.js documents at length; it lived here too.
+ * The read, and the rule that a dropped one must not be cached as "this lens
+ * ranks nothing", now live in shared/providers.js — the provenance row needs
+ * the same Map, and two reads of one replaceable event with two chances to get
+ * that rule wrong is what this used to be half of.
+ *
+ * ALL of them, and specifically the `rank` dimension. Both halves are fixes.
+ * Reading only the first told a reader whose SECOND provider is mirrored that
+ * their scores were missing, on every login (TrustNotice.kt measured it); and
+ * a Map's `30382:followers` entry names a service that orders a set and cannot
+ * rank one, so the dimension is not a label on the delegation, it IS the
+ * delegation. `authors` is an OR, so all of them cost the one round trip.
  */
-async function rankServiceOf(observer) {
-  if (rankServices.has(observer)) return rankServices.get(observer);
-  let svc = null, answered = false;
-  try {
-    const conn = await refConn();
-    const evs = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
-    answered = evs.complete === true;
-    svc = (evs[0]?.tags || []).find(t => t?.[0] === "30382:rank")?.[1] || null;
-  } catch (e) { answered = false; }
-  if (answered) rankServices.set(observer, svc);
-  return svc;
+async function rankServicesOf(observer) {
+  return (await providersFor(observer)).get("30382:rank") || [];
 }
 
 /**
@@ -753,10 +853,10 @@ async function paintScores() {
   if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
-  const svc = lens ? await rankServiceOf(lens) : null;
+  const svc = lens ? await rankServicesOf(lens) : [];
   // Nobody to rank by, or a lens that ranks nothing: the chips are not stale,
   // they are ANSWERED — with no number.
-  if (!svc) { paintChips(chips); return; }
+  if (!svc.length) { paintChips(chips); return; }
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
@@ -767,7 +867,7 @@ async function paintScores() {
   const reads = await Promise.all(batches.map((batch) =>
     // A failed read leaves this batch unknown rather than wrong — an empty
     // array is NOT marked complete, so nothing gets cached as "no score".
-    (conn ? conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length }) : Promise.resolve([]))
+    (conn ? conn.req({ kinds: [30382], authors: svc, "#d": batch, limit: batch.length * svc.length }) : Promise.resolve([]))
       .catch(() => [])));
   // The lens can change WHILE these are in flight — the reader picks another
   // observer, or signs out — and `scores` was cleared and re-keyed to the new
@@ -776,14 +876,27 @@ async function paintScores() {
   // worse: they are cached as "this lens gives them no score", which nothing
   // re-asks. The answers are simply stale; drop them.
   if (scoreLensKey !== lens) return;
+  // BY SERVICE PRIORITY, NOT BY ARRIVAL. `authors` is an OR, so a reader who
+  // names two rank services gets both services' cards interleaved in one
+  // answer — and writing each as it comes made the number on a face depend on
+  // which card the relay happened to send last, so the same reader could see
+  // two different scores on two renders of the same page. The Map's own order
+  // is the reader's stated order of preference, and `publishersOf` preserves
+  // it; first service wins, and a service that scored nobody simply never
+  // shadows the next.
+  const priority = new Map(svc.map((pk, i) => [pk, i]));
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i], evs = reads[i];
     const seen = new Set();
+    const from = new Map();                       // d -> the rank of the service that supplied it
     for (const ev of evs) {
       const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
       const rank = (ev.tags || []).find(t => t?.[0] === "rank")?.[1];
       if (!d) continue;
       seen.add(d);
+      const pri = priority.has(ev.pubkey) ? priority.get(ev.pubkey) : Number.MAX_SAFE_INTEGER;
+      if (from.has(d) && from.get(d) <= pri) continue;
+      from.set(d, pri);
       scores.set(d, rank == null ? null : Number(rank));
     }
     // "The service returned no card for this pubkey" is only a fact once the
@@ -1277,10 +1390,11 @@ async function lookupAuthors(partial) {
 // which groups exist and are worth showing first IS a ranked question, exactly
 // as the people picker's is.
 //
-// Cached only when the relay ANSWERED, the rule rankServiceOf() and profiles.js
-// both state at length: a dropped read cached as "you have no groups" would
-// leave `group:` opening on an empty list for the rest of the session, with
-// nothing on screen to say the list was missing rather than empty.
+// Cached only when the relay ANSWERED, the rule shared/providers.js and
+// profiles.js both state at length: a dropped read cached as "you have no
+// groups" would leave `group:` opening on an empty list for the rest of the
+// session, with nothing on screen to say the list was missing rather than
+// empty.
 let ownGroupList = null;   // the parsed candidates, from the PUBLIC tags
 let ownGroupsFor = null;   // whose they are, so signing out drops them
 let ownGroupLock = null;   // sealed(): the encrypted half, or null if there is none
@@ -1827,7 +1941,7 @@ async function run(st, fetch, keep, render) {
     // `hitsFor` is what the SEARCH BOX would have to say for these hits to be
     // about it, and the feed's answer is "nothing does" — null, so reopening
     // the popup on focus can never show the feed under a typed query.
-    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.groups, found.parents].filter(Boolean);
+    st.hits = found.events; st.hitsFor = found.text ?? null; late = [found.names, found.groups, found.pills, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== st.requestId) return;
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;

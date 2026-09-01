@@ -10,7 +10,14 @@ const hex = (c) => String(c).repeat(64).slice(0, 64);
 const READER = hex("a"), LISTER = hex("b"), SCORER = hex("c"), BOT = hex("d"), BOT2 = hex("e");
 const ev = (id, pubkey, kind, tags = []) => ({ id: hex(id), pubkey, kind, created_at: 1, tags, content: "" });
 const profile = (id, pubkey) => ({ ...ev(id, pubkey, 0), content: "{}" });
-const pillsOn = (page, id) => provenanceOf(page).get(hex(id)) || [];
+// WHOM THIS FIXTURE'S READER DELEGATED. Every declaration kind maps to the two
+// publishers these cases sign with, so the signer gate is satisfied by default
+// and each case still tests the rule it was written for. The gate has its own
+// section at the end.
+const DECLARED = [30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395];
+const trusting = (...signers) => new Map(DECLARED.map((k) => [k, new Set(signers)]));
+const TRUSTED = trusting(LISTER, SCORER);
+const pillsOn = (page, id) => provenanceOf(page, TRUSTED).get(hex(id)) || [];
 const texts = (pills) => pills.map((p) => p.text);
 
 // ---- the collapse, which is the rule the whole design turns on -------------
@@ -144,7 +151,7 @@ const texts = (pills) => pills.map((p) => p.text);
 // over an absent card is a claim about nothing.
 {
   const page = [ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER]])];
-  assert.strictEqual(provenanceOf(page).size, 0, "a list whose members are not on screen pills nothing");
+  assert.strictEqual(provenanceOf(page, TRUSTED).size, 0, "a list whose members are not on screen pills nothing");
 }
 // And a pointer never pills ITSELF — a list that is also a hit is the source.
 {
@@ -168,9 +175,9 @@ const texts = (pills) => pills.map((p) => p.text);
   const list = ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER], ["p", BOT]]);
   const label = ev("3", SCORER, 1985, [["L", "ugc"], ["l", "medical", "ugc"], ["e", hex("6")]]);
   const page = [list, profile("1", READER), profile("5", BOT), ev("6", BOT2, 1), label];
-  const forward = provenanceOf(page);
-  const reversed = provenanceOf([...page].reverse());
-  const shuffled = provenanceOf([page[3], page[1], page[4], page[0], page[2]]);
+  const forward = provenanceOf(page, TRUSTED);
+  const reversed = provenanceOf([...page].reverse(), TRUSTED);
+  const shuffled = provenanceOf([page[3], page[1], page[4], page[0], page[2]], TRUSTED);
   for (const [id, label_] of [["1", "a member ahead of its list"], ["5", "a member far from its list"], ["6", "a labelled note"]]) {
     const want = texts(forward.get(hex(id)) || []);
     assert.ok(want.length, `${label_} must pill at all`);
@@ -186,7 +193,7 @@ const texts = (pills) => pills.map((p) => p.text);
     ev("2", LISTER, 30395, [["d", "x"], ["title", "Known Books"], ["i", "isbn:9780316769488"]]),
     ev("3", SCORER, 30385, [["d", "isbn:9780316769488"], ["rank", "5"]]),
   ];
-  assert.strictEqual(provenanceOf(page).size, 0, "an external identifier is not an event this page can draw");
+  assert.strictEqual(provenanceOf(page, TRUSTED).size, 0, "an external identifier is not an event this page can draw");
 }
 
 // ---- attribution: the face is drawn where it disambiguates -----------------
@@ -195,20 +202,20 @@ const texts = (pills) => pills.map((p) => p.text);
     profile("1", READER),
     ev("2", LISTER, 30392, [["d", "x"], ["title", "A"], ["p", READER]]),
     ev("3", LISTER, 30392, [["d", "y"], ["title", "B"], ["p", READER]]),
-  ]);
+  ], TRUSTED);
   assert.strictEqual(facesNeeded(one), false,
     "one delegated publisher: a face on every gated pill would be the same face, forty times");
   const two = provenanceOf([
     profile("1", READER),
     ev("2", LISTER, 30392, [["d", "x"], ["title", "A"], ["p", READER]]),
     ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]]),
-  ]);
+  ], TRUSTED);
   assert.strictEqual(facesNeeded(two), true, "two publishers on one page: now the face says something");
   // Labels never enter the question — an ungated pill is attributed always,
   // and a page of nothing but labels must not switch the gated ones on.
   const labelsOnly = provenanceOf([profile("1", READER),
     ev("2", BOT, 1985, [["L", "ugc"], ["l", "a", "ugc"], ["p", READER]]),
-    ev("3", BOT2, 1985, [["L", "ugc"], ["l", "b", "ugc"], ["p", READER]])]);
+    ev("3", BOT2, 1985, [["L", "ugc"], ["l", "b", "ugc"], ["p", READER]])], TRUSTED);
   assert.strictEqual(facesNeeded(labelsOnly), false, "label authors do not decide whether a GATED pill is attributed");
 }
 
@@ -227,35 +234,108 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(texts(pillsOn(page, "2")).sort(), ["Long Reads", "on-addr"], "a targets resolve");
   // An `r`/`t` label target names a url and a topic — neither is an event this
   // page draws, and reading them would invent a card that does not exist.
-  const urlLabel = provenanceOf([note, ev("8", BOT, 1985, [["L", "ugc"], ["l", "x", "ugc"], ["r", "https://example.com"]])]);
+  const urlLabel = provenanceOf([note, ev("8", BOT, 1985, [["L", "ugc"], ["l", "x", "ugc"], ["r", "https://example.com"]])], TRUSTED);
   assert.strictEqual(urlLabel.size, 0, "a url target is not a record");
 }
 
 // ---- a page with nothing to say says nothing -------------------------------
-assert.strictEqual(provenanceOf([]).size, 0, "an empty page");
-assert.strictEqual(provenanceOf(null).size, 0, "no page at all");
-assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, tags: [] }]).size, 0,
+assert.strictEqual(provenanceOf([], TRUSTED).size, 0, "an empty page");
+assert.strictEqual(provenanceOf(null, TRUSTED).size, 0, "no page at all");
+assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, tags: [] }], TRUSTED).size, 0,
   "a malformed event is skipped rather than thrown over");
 
 // ---- the page's own state -------------------------------------------------
 //
+// ---- WHOSE WORD, not just which kind ---------------------------------------
+//
+// The gate the relay used to be trusted for, and it was never quite true even
+// of the relay: its expansion COMPANION is gated, but plain recall is not —
+// "an explicit `kinds:[30392]` is a NIP-01 ask and serves strangers' lists as
+// plain hits, gate or no gate" — and a search naming no kinds recalls every
+// kind. So a stranger's list whose TITLE matches the search text lands in the
+// answer beside the delegated publisher's, and it used to be drawn as vouched.
+//
+// Worse than a wrong tone: it collapsed by value into the delegated pill and
+// took the COUNT to 2. Anyone could inflate a publisher's corroboration
+// number by signing a list with the same title.
+{
+  const STRANGER = hex("9");
+  const page = [
+    profile("1", READER),
+    ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER]]),
+    ev("3", STRANGER, 30392, [["d", "y"], ["title", "Verified Human"], ["p", READER]]),
+  ];
+  const pills = provenanceOf(page, trusting(LISTER)).get(hex("1"));
+  assert.strictEqual(pills.length, 1);
+  assert.strictEqual(pills[0].count, 1, "a stranger's list must not inflate a delegated publisher's count");
+  assert.deepStrictEqual(pills[0].authors, [LISTER], "…nor ride along as one of its authors");
+
+  // Not a quieter pill — nothing. The row says why a card is in this page, and
+  // the relay would not unpack a stranger's list for this reader, so whatever
+  // put the profile here, it was not that.
+  const alone = provenanceOf([profile("1", READER),
+    ev("3", STRANGER, 30392, [["d", "y"], ["title", "Verified Human"], ["p", READER]])], trusting(LISTER));
+  assert.strictEqual(alone.size, 0, "an undelegated list contributes nothing at all");
+}
+
+// THE SERVICE KEY FOR THE KIND, PLUS THE OBSERVER. The store fetches
+// declarations "from their enrolled signers only, plus the reader", so a
+// reader's own Trusted List unpacks and splices its members — and the row has
+// to be able to say so, or the relay put a profile on the page for a reason
+// the row then declined to give.
+{
+  const mine = provenanceOf([profile("1", READER),
+    ev("2", READER, 30392, [["d", "x"], ["title", "Mine"], ["p", READER]])], trusting(LISTER, READER));
+  assert.deepStrictEqual(texts(mine.get(hex("1"))), ["Mine"], "a reader's own list speaks for itself");
+}
+
+// ABSENT MEANS NOBODY. An anonymous reader delegates no one and gets label
+// pills only — exactly what the relay serves them.
+{
+  const page = [
+    profile("1", READER),
+    ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER]]),
+    ev("3", BOT, 1985, [["L", "ugc"], ["l", "zapped", "ugc"], ["p", READER]]),
+  ];
+  assert.deepStrictEqual(texts(provenanceOf(page, undefined).get(hex("1"))), ["zapped"],
+    "no Map: the declaration is dropped and NIP-32, which is open by construction, is not");
+  assert.deepStrictEqual(texts(provenanceOf(page, new Map()).get(hex("1"))), ["zapped"]);
+}
+
 // seedProvenance REPLACES rather than merges: a second search must not leave
 // the first one's pills on a card that survived into both.
 {
-  const { seedProvenance, forgetProvenance, provenance, attribution } = P;
+  const { seedProvenance, forgetProvenance, provenance, attribution, provenanceEpoch } = P;
   const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];
-  assert.strictEqual(seedProvenance(page), 1, "one card gained a row");
+  assert.strictEqual(seedProvenance(page, TRUSTED), 1, "one card gained a row");
   assert.strictEqual(provenance.size, 1);
-  assert.strictEqual(seedProvenance([profile("1", READER)]), 0, "a page with no pointers clears the last page's");
+  assert.strictEqual(seedProvenance([profile("1", READER)], TRUSTED), 0, "a page with no pointers clears the last page's");
   assert.strictEqual(provenance.size, 0, "and leaves nothing behind");
 
   // A permalink is not a page of results — forgetProvenance is what keeps the
   // row from arriving there as a leftover of the search behind it.
-  seedProvenance([...page, ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]])]);
+  seedProvenance([...page, ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]])], TRUSTED);
   assert.strictEqual(attribution.faces, true, "two publishers, so gated pills are attributed");
   forgetProvenance();
   assert.strictEqual(provenance.size, 0, "cleared");
   assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
+}
+
+// EVERY WRITE MOVES THE EPOCH, a clear included — which is the half a counter
+// living in the caller could not do. The row is filled in two passes now, and
+// between them the reader can start another search OR open a permalink;
+// entity.js clears the row on the way into one, and a late second pass that
+// only watched for re-SEEDS would write it straight back, restoring exactly
+// the "how you got here" reading the clear exists to prevent.
+{
+  const { seedProvenance, forgetProvenance, provenanceEpoch } = P;
+  const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];
+  const before = provenanceEpoch();
+  seedProvenance(page, TRUSTED);
+  const seeded = provenanceEpoch();
+  assert.notStrictEqual(seeded, before, "a seed moves the epoch");
+  forgetProvenance();
+  assert.notStrictEqual(provenanceEpoch(), seeded, "and so does a clear — the case a caller-side counter missed");
 }
 
 console.log("provenance: collapse, demotion, tones, order, order-independence, destinations, targets and attribution — all assertions passed");

@@ -74,81 +74,90 @@ app = "0.1.0"
 quartz = "b10be95a6e"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 3ecdfae6ee = store main through PR #93, one commit over b2be07e168, and it
-# stands ALONE: the store's quartz ask does not move across the range (`git
-# diff --name-only` names no libs.versions.toml), so the quartz line above is
-# untouched by this bump.
+# 8f8dfb0c18 = store main through PR #94, two commits over 3ecdfae6ee. It moves
+# NO SCHEMA (`git diff --name-only` names nothing under engine/app) and does not
+# touch the store's own libs.versions.toml, so the quartz line above is
+# untouched and there is NOTHING TO DEPLOY — unlike the last two bumps, this one
+# is a jar swap and a relay restart.
 #
-# WHAT MOVED: one line of `event.sd` §13. `member_rung()` no longer multiplies
-# by `wot_mult()`.
+# WHAT MOVED: `NostrSemanticsStore.servedKinds`, applied on both read paths
+# (`query` and the raw path a relay serves REQs from), plus an audit pass over
+# the expansion's lookup (dead bucket sets, a boxed TreeSet per row, and an
+# `associateBy` that kept the LAST duplicate lens where `lenses` keeps the
+# first).
 #
-# WHY THAT IS THE FIX. `spliced_member` places a member at
-# `max(member_rung(), pointer_floor())`, and the two sides were in different
-# units. The rung carried the MEMBER's trust; `query(pointer_rel)` is the
-# pointer's FINISHED relevance and so carries the SIGNER's — and a Trusted List
-# is signed by a NIP-85 service key nobody follows. So the floor's side was
-# multiplied by 1 and the rung's by up to 251,189 (`wot_mult` is
-# `1 + (score - min_rank)^2.7`, clamped at 100), and the max() took the rung
-# every time. The floor added in b2be07e168 never fired once.
+# WHAT IT MEANS FOR A CLIENT: a searching read is still EXPANDED — a label,
+# assertion or Trusted List is the only route to the subjects it names, so the
+# companion queries still fetch it and its subjects still ride in at the
+# position its relevance earned — but the pointer itself no longer rides in
+# with them. A REQ that asked `kinds:[0]` now gets kind 0. The narrowing is the
+# UNION across a REQ's filters and a read that names NO kinds narrows nothing,
+# which is what keeps the page's "Everything" tab exactly as it was.
 #
-# WHAT THIS RELAY SEES, measured through the wire protocol against a real Vespa
-# holding the production corpus — the real `Verified Human` list off the
-# tapestry relay, its held scored members, their real confidences and their real
-# trust ranks — with the page itself spanning 610..2.39e5:
+# WHAT IT COSTS THIS REPO, because it is not nothing and it is not in the store:
+# `KIND_TABS` in web/app.js sends literal `kinds` for every chip but Everything,
+# and People is `kinds:[0]` — the commit's own worked example. Before this pin
+# a People search carried the Trusted Lists, assertions and labels that found
+# each profile, and web/provenance.js drew the "why is this here" row off them
+# with no round trip. From here that page holds the members and none of the
+# reasons. The row is not lost: shared/pointers.js now ASKS for the pointers a
+# kind-restricted answer no longer carries, and re-imposes as an `authors`
+# filter the trust gate the relay used to apply by only ever splicing a
+# delegated signer's. That client work lands on the same commit as this pin,
+# and a bump without it is a page whose pills silently stop appearing.
 #
-#                       ordered by     passes its   member scores
-#                       confidence     pointer
-#   b2be07e168, title   no             16/16        2.19e8 .. 1.00e9
-#   b2be07e168, weak    no             16/16        2.19e8 .. 1.00e9
-#   3ecdfae6ee, title   YES            0/16         1.70e5 .. 2.39e5
-#   3ecdfae6ee, weak    YES            0/16         2.85e3 .. 4.00e3
-#
-# So the defect was worse than an inert floor. Members were placed four orders
-# of magnitude above the page they belong on, ordered by the READER's trust
-# rather than by what the publisher said, and identically whether the list
-# matched on its title or barely at all — and the store's LIFT then dragged the
-# pointer up after them, so any list naming a well-trusted person hijacked every
-# page that mentioned its title. Both halves go away together, and THIS is the
-# bump that closes the placement complaint the last two chased.
-#
-# WHAT IT GIVES UP: a member's own reputation no longer decides WHERE it sits.
-# It still decides whether it is ADMITTED — the observer gate runs on the
-# subject lookup like any other read — and a list only unpacks for a reader who
-# enrolled its signer, so a publisher vouching for a spammer is a bad service
-# rather than a ranking hole.
-#
-# A SCHEMA MOVES, as in the bump this replaces. DEPLOY BEFORE THIS PIN GOES OUT.
-# NO REINDEX: `git diff b2be07e168 3ecdfae6ee -- engine/app/schemas/event.sd`
-# touches no `field`, no `indexing`, no `attribute` — `first-phase` is the only
-# behavioural line. Unlike the last bump the schema is NOT safe to roll early on
-# its own: it changes placement for a relay still pinned to b2be07e168, which
-# sends `pointer_rel` already. Roll them together, schema first.
-#
-# THE GATE IS GREEN AT THIS COMMIT, per AGENTS.md's rule:
+# THE GATE AT THIS COMMIT, per AGENTS.md's rule — the relay's own tests run on
+# InMemoryEventIndex and cannot see a Vespa-only regression:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 3ecdfae6ee
+#   git checkout 8f8dfb0c18
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
-# Run HERE: 43 suites, 482 tests, 0 skipped, 0 failures, 11m56s (`skipped="0"`
-# read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md).
-# SplicedMemberWeightsIT is the one that matters: it gives a member a reputation
-# of 90 the gate can see and asserts it lands on the same rung as one the reader
-# has never heard of, which is the property that would go back silently. The
-# store's own CI is green on the same tree: `git diff b19755b 3ecdfae6ee` is
-# empty.
+# Run HERE: 43 suites, 487 tests, 0 skipped, 0 failures, 14m41s (`skipped="0"`
+# read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md — a run
+# whose ITs all abort on `assumeTrue(dockerAvailable())` prints the same line).
+# SearchExpansionTest is the suite that carries this change: 50 cases, up from
+# 45 at 3ecdfae6ee. SplicedMemberWeightsIT still runs against a real Vespa
+# (51s of the total), which is what says the placement the last bump bought is
+# unmoved by this one.
 #
-# DIRECTION: b2be07e168 is a strict ancestor of this (`git merge-base
+# AND END TO END, because the store's own gate cannot see the client half.
+# Dr Edo Paz's real trust chain pulled off staging with
+# `relay/tools/fetch-observer-corpus.mjs` (555 events: his Map, the 12 Trusted
+# Lists and 200 assertions his two delegated publishers signed, and the 342
+# member profiles), loaded into a local Vespa, served by the relay built from
+# this branch, and driven through the page's OWN modules over the wire:
+#
+#   search                             events  declarations
+#   {search:"AOS 2026 Participant"}         91             2   ← unchanged
+#   {kinds:[0], search: same}                89             0   ← the narrowing
+#
+# The members still ride in (89 of them); only the lists that carried them
+# step out. provenanceOf over that page alone draws 0 pills, and 89 cards
+# with 98 pills once shared/pointers.js has fetched what it no longer carries
+# — a strict SUPERSET of what the un-narrowed answer produced natively: 80
+# cards identical, 9 gained a pill, NONE lost one. The 9 are the shift this
+# trades for, and they are real reasons a text search could not surface —
+# `Verified Human` on 6, `rank 14` on 2, `Bitcoin Vendor` on 1 — found because
+# the client asks by TARGET where the relay matched by TITLE.
+#
+# Cost, counted on the wire: two REQs cold (the Map, then all six pointer
+# filters ORed into one), and ONE once readiness.js has handed the Map over at
+# sign-in. Every declaration filter went out author-narrowed to his delegated
+# keys and lensless; every label filter carried `observer:` and was ANSWERED
+# rather than refused, which is the check that matters there — LensRequiredPolicy
+# refuses a whole REQ if one filter declares nothing. A stranger's 30392 forged
+# with a real list's title changed not one pill or count.
+#
+# DIRECTION: 3ecdfae6ee is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '3ecd…' < 'b2be…' ('3' < 'b'), so this sorts BELOW the pin it
-# replaces — the UNSAFE direction, and the first bump in this file to land that
-# way. Nothing is wrong: ordering only decides who wins a CONFLICT, and the
-# resolved graph below shows there is none. But it is exactly the case the note
-# at the top of this file exists for, so if a second asker for this module ever
-# appears, Gradle would keep b2be07e168 over this and say nothing. The proof
-# stays what it always is — every eventstore line reads 3ecdfae6ee with no `->`:
+# LEXICOGRAPHIC: '3ecd…' < '8f8d…' ('3' < '8'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, and back the right way up after 3ecdfae6ee
+# landed the other. Ordering only decides who wins a CONFLICT and there is
+# none; the proof stays what it always is — every eventstore line reads
+# 8f8dfb0c18 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "3ecdfae6ee"
+vespaEventStore = "8f8dfb0c18"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

@@ -51,6 +51,17 @@
 //                  that the whole row is independent of the page's ORDER — a
 //                  member is placed by the confidence its list expressed, so it
 //                  no longer arrives behind the pointer that named it
+// providers.test.mjs whose word a reader took — the kind-10040 parse, and
+//                  specifically the BARE `30392` shape that NIP-85's own tag
+//                  parser has never matched, so a reader delegating lists that
+//                  way resolves to nobody and draws no list pill at all
+// pointers.test.mjs the follow-up read behind that row, now that a `kinds:[0]`
+//                  search answers with the profiles and not the lists, labels
+//                  and assertions that found them: that every declaration
+//                  filter carries `authors` — the trust gate, moved off the
+//                  relay and onto the client that lost it — that a kind
+//                  delegated to nobody is not asked for openly, and that a
+//                  pointer arriving BOTH ways is still one record
 // preload.test.mjs the modulepreload hints match the real import graph, so the
 //                  module waterfall stays one round trip instead of three
 // filters.test.mjs every control in the filters panel is counted on the button
@@ -102,7 +113,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "provenance.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "provenance.test.mjs", "providers.test.mjs", "pointers.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

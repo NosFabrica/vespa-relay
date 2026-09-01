@@ -6,10 +6,33 @@
 // results that do not contain what was searched for, which reads as the relay
 // being wrong. The pills are that word.
 //
-// FROM THE STREAM AND NOTHING ELSE. The relay sends a pointer and everything it
-// names on the same subscription, so one `relay.req(filters)` already holds
-// both. Everything here is computed over the array the page was going to render
-// anyway: no second REQ, no per-card fetch, no new relay field.
+// PURE, OVER WHATEVER ARRAY IT IS HANDED. This file makes no ask of its own and
+// holds no socket; it indexes an array and reads pointers out of it. Who fills
+// that array has changed once and may change again, which is exactly why the
+// rules live behind that seam.
+//
+// It used to be filled by the relay alone: the search expansion sent a pointer
+// and everything it named on one subscription, so the answer the page was
+// going to render anyway already held both, and the row cost no round trip. It
+// no longer does — a search that asks for `kinds:[0]` is answered with the
+// profiles the expansion found THROUGH those lists, labels and assertions and
+// not with the pointers themselves — so app.js now seeds twice: once off the
+// answer, and again once shared/pointers.js has fetched what the answer left
+// out. Both seeds go through here unchanged.
+//
+// What that costs is the trust gate, and it costs more than the fetch. "It
+// arrived, so the reader asked for it" was never quite a fact even about the
+// relay: the expansion's COMPANION is gated, but plain recall is not, and the
+// store says so outright — "an explicit `kinds:[30392]` is a NIP-01 ask and
+// serves strangers' lists as plain hits, gate or no gate". A search that names
+// no kinds recalls every kind, so a stranger's list whose TITLE matches lands
+// in the answer beside the delegated publisher's. Read as gated, the two
+// collapsed by value into one pill with a count of 2 — anyone could inflate a
+// publisher's corroboration number by signing a list with the same title.
+//
+// So the gate is applied HERE, over whatever filled the array, from the
+// `trusted` map [provenanceOf] takes. That is one rule for both fillers and
+// for any third.
 //
 // NOT BY ADJACENCY, and that distinction is now load-bearing. A subject used to
 // arrive directly behind its pointer, and reading the pair off neighbouring
@@ -22,16 +45,22 @@
 // That makes the row deliberately PARTIAL, in three ways worth knowing before
 // reading a pill as a complete account:
 //
-//   - a label that exists in the index but did not match the SEARCH never
-//     arrives, so it never pills;
-//   - the expansion's budgets (100 per event, 1,000 per request) cap the
-//     splice, so a truncated page draws fewer pills than a whole one would;
-//   - the trust gate drops pointers from signers this reader never delegated,
-//     so the row is observer-relative by design.
+//   - the expansion's budgets (100 per event, 1,000 per request) cap what the
+//     ANSWER carries, so a truncated page draws fewer pills than a whole one;
+//   - the follow-up read is bounded too — one batch of 100 targets per filter,
+//     and an ungated label read stops at pointers.js's LABEL_LIMIT;
+//   - the trust gate drops declarations from signers this reader never
+//     delegated, so the row is observer-relative by design.
 //
-// All three are correct for "why is this here" and wrong for "what has been
-// said about this". The second question belongs on the entity page, where
-// related.js already makes bounded follow-up asks; it is not this row.
+// A fourth used to head that list and no longer holds, and the change is worth
+// knowing before reading a row: a label that did not match the SEARCH never
+// arrived, so the row could only ever say why a card was HERE. Asked by target
+// instead, every label the relay holds about it comes back — which is nearer
+// to "what has been said about this", the question that belongs on the entity
+// page. That drift is not a decision this file made; it is what is left when
+// the relay stops telling the client which labels matched, and the client
+// cannot re-derive it. Bounding it is pointers.js's LABEL_LIMIT and the
+// collapse below, and neither restores the old meaning.
 //
 // No DOM and one import — nip19's addrOf, because the address a pill links to
 // must be the same string the card's own permalink uses, and a second spelling
@@ -80,8 +109,23 @@ const tagOf = (ev, name) => (tagsOf(ev, name)[0] || [])[1] || "";
  * One pass to index what the page holds, one to read the pointers. A pointer
  * whose target is NOT in this page contributes nothing: the row is about the
  * cards on screen, and a pill over an absent card is a claim about nothing.
+ *
+ * [trusted] is `kind -> Set(signer)` — who this reader delegated for each
+ * declaration kind, plus the reader themselves, built by pointers.js's
+ * trustedSigners off their kind 10040. A declaration from anyone else
+ * contributes NOTHING: not a quieter pill, nothing. The row says why a card is
+ * in this page, and a stranger's list did not put it there — the relay would
+ * not unpack it for this reader, so whatever brought the card, it was not
+ * that. Labels are unaffected; NIP-32 is open by construction and its tone
+ * already says so.
+ *
+ * ABSENT MEANS NOBODY, deliberately. An anonymous reader delegates no one and
+ * gets label pills only, which is exactly what the relay serves them. A
+ * signed-in reader whose Map has not landed yet is in that state for one paint
+ * and gains the pills on the next — the row understating itself for a moment
+ * is the right way round for a claim about who vouched for whom.
  */
-export function provenanceOf(events) {
+export function provenanceOf(events, trusted) {
   const byId = new Map();
   const byAddr = new Map();
   const profileOf = new Map(); // pubkey -> the kind 0 in THIS page
@@ -121,10 +165,24 @@ export function provenanceOf(events) {
     if (!seen.authors.includes(pill.author)) seen.authors.push(pill.author);
   };
 
+  // ONE EVENT WALKED ONCE, however many times the array holds it — and the
+  // array does hold it twice now. The page's own answer and the follow-up read
+  // that fetches what the answer no longer splices (shared/pointers.js) are
+  // seeded TOGETHER, on purpose: a pointer that arrives both ways must not
+  // vanish because the caller guessed wrong about which read carried it. But
+  // `seenHere` dedupes WITHIN a pointer and is cleared between them, so the
+  // second copy walked as a second pointer — and it landed on `count`, which
+  // is the number a reader reads as corroboration. "Verified Human 2" over one
+  // list is the exact false claim the count exists to avoid making.
+  const walked = new Set();
   for (const ev of events || []) {
     if (!ev) continue;
+    if (ev.id) {
+      if (walked.has(ev.id)) continue;
+      walked.add(ev.id);
+    }
     seenHere.clear();
-    contributionsOf(ev, { byId, byAddr, profileOf }, add);
+    contributionsOf(ev, { byId, byAddr, profileOf, trusted }, add);
   }
 
   const out = new Map();
@@ -145,9 +203,18 @@ export function provenanceOf(events) {
 function contributionsOf(ev, page, emit) {
   if (ev.kind === LABEL_KIND) return labelContributions(ev, page, emit);
   if (!DECLARATION_KINDS.has(ev.kind)) return;
+  // WHOSE WORD, not just which kind — and this is the check that used to be
+  // the relay's. See [provenanceOf]'s `trusted`.
+  if (!delegated(page.trusted, ev.kind, ev.pubkey)) return;
   if (MEMBER_TAG[ev.kind]) return listContributions(ev, page, emit);
   return assertionContributions(ev, page, emit);
 }
+
+/** Did this reader name [pubkey] for [kind]? Nothing is delegated by an absent map. */
+const delegated = (trusted, kind, pubkey) => {
+  const keys = trusted && trusted.get(kind);
+  return !!keys && keys.has(pubkey);
+};
 
 /**
  * NIP-32: one pill per LABEL VALUE, on every record the label names.
@@ -270,6 +337,29 @@ export function facesNeeded(pillsByTarget) {
 
 /** The page's own answer, filled by app.js before it renders and read by cards/base.js. */
 export const provenance = new Map();
+
+/**
+ * WHICH PAGE THIS ANSWER BELONGS TO — bumped by every write, including a clear.
+ *
+ * The row is now filled in two passes (see the header), and the second lands
+ * after an await. Between them the reader can start another search, or click a
+ * result and leave the results view entirely — and both of those replace what
+ * this map is about. The late pass therefore has to check that it is still
+ * writing into the page it read for, and it needs a counter to check against
+ * because the events alone cannot tell it: re-running the SAME search under a
+ * new observer is a different answer over an identical array.
+ *
+ * It lives here, with the two writers, rather than in the caller that happens
+ * to await. It was a counter in app.js first, and [forgetProvenance] — which
+ * is called from entity.js, not from app.js — could not reach it. A permalink
+ * opened while a search's second pass was in flight cleared the row on the way
+ * in and then had it written straight back, which is precisely the "how you
+ * got here" reading forgetProvenance exists to prevent.
+ */
+let epoch = 0;
+
+/** The current [epoch]. Capture before an await, compare after, drop if it moved. */
+export const provenanceEpoch = () => epoch;
 /** True when a gated pill should be attributed — see [facesNeeded]. */
 export const attribution = { faces: false };
 
@@ -286,14 +376,16 @@ export const attribution = { faces: false };
  * own there, on a bounded ask, the way related.js already does it.
  */
 export function forgetProvenance() {
+  epoch++;
   provenance.clear();
   attribution.faces = false;
 }
 
 /** Replace what the page knows with this page's answer. Returns how many cards gained a row. */
-export function seedProvenance(events) {
+export function seedProvenance(events, trusted) {
+  epoch++;
   provenance.clear();
-  const built = provenanceOf(events);
+  const built = provenanceOf(events, trusted);
   for (const [id, pills] of built) provenance.set(id, pills);
   attribution.faces = facesNeeded(built);
   return built.size;

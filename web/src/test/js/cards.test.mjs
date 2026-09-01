@@ -783,6 +783,10 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
 {
   const { seedProvenance } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
   const lister = "b".repeat(64), bot = "d".repeat(64);
+  // The reader delegated `lister` for every declaration kind — the gate
+  // provenance.js now applies over whatever filled the page. Labels take no
+  // delegation and are unaffected.
+  const trusted = new Map([30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395].map((k) => [k, new Set([lister])]));
   const target = { id: eid, pubkey: pk, kind: 0, created_at: now, tags: [], content: "{}" };
   const page = [
     target,
@@ -790,7 +794,7 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
     { id: "3".repeat(64), pubkey: lister, kind: 30392, created_at: now, tags: [["d", "y"], ["title", "Verified Human"], ["p", pk]], content: "" },
     { id: "4".repeat(64), pubkey: bot, kind: 1985, created_at: now, tags: [["L", "ugc"], ["l", "zapped", "ugc"], ["p", pk]], content: "" },
   ];
-  seedProvenance(page);
+  seedProvenance(page, trusted);
   const html = card(target);
   assert(html.includes('class="prov pills"'), "a spliced card draws its provenance row");
   assert(!/prov-why|>why</.test(html), "the row carries no standing label — the pills are the row");
@@ -828,16 +832,16 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
         tags: [["L", "ugc"], ["l", "spliced", "ugc"], ["e", fixture.id], ["p", fixture.pubkey],
                ["a", `${fixture.kind}:${fixture.pubkey}:${(fixture.tags.find((t) => t[0] === "d") || [])[1] || ""}`]],
         content: "" },
-    ]);
+    ], trusted);
     assert(card(fixture).includes('class="prov pills"'),
       `kind ${kind}: a spliced card draws no provenance row — a hand-rolled frame that forgot it`);
   }
 
   // A card nothing points at draws no row at all — its presence is the signal.
-  seedProvenance(page);
+  seedProvenance(page, trusted);
   assert(!card({ id: "9".repeat(64), pubkey: pk, kind: 1, created_at: now, tags: [], content: "hi" }).includes("prov pills"),
     "an ordinary hit gets no row");
-  seedProvenance([]);
+  seedProvenance([], trusted);
   assert(!card(target).includes("prov pills"), "and the row clears with the page");
 }
 
