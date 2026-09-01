@@ -837,6 +837,16 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
       `kind ${kind}: a spliced card draws no provenance row — a hand-rolled frame that forgot it`);
   }
 
+  // THE TYPE-AHEAD ROW HAS NO PROVENANCE, and app.js leans on that hard: the
+  // popup is drawn OVER the results list, both on screen at once, so its
+  // hydrate is the one that must not touch the shared provenance map at all
+  // (`row: "keep"`). That is only safe while this holds. It held silently
+  // until a debounced keystroke was found taking a search's whole row down
+  // with it, so it is checked now rather than assumed.
+  seedProvenance(page, trusted);
+  assert(!popupRow(target, 0).includes("prov"),
+    "a type-ahead row draws no provenance — if it ever should, app.js's `keep` mode is wrong");
+
   // A card nothing points at draws no row at all — its presence is the signal.
   seedProvenance(page, trusted);
   assert(!card({ id: "9".repeat(64), pubkey: pk, kind: 1, created_at: now, tags: [], content: "hi" }).includes("prov pills"),
