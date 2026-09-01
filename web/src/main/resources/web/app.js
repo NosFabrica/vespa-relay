@@ -757,7 +757,10 @@ let provSeq = 0;
  * answer to "did you delegate them" is still in flight. It is usually there:
  * the readiness panel files the Map at sign-in, well before a search.
  */
-const trustedNow = () => trustedSigners(knownProviders(viewingAs || me));
+const trustedNow = () => {
+  const lens = viewingAs || me;
+  return trustedSigners(knownProviders(lens), lens);
+};
 
 /**
  * What the row currently says, as one string — the "did anything change" signal.
@@ -795,7 +798,7 @@ async function enrichProvenance(events) {
   // read, and the first seed is gated on what was known THEN — so a cold cache
   // draws no declaration pill and this is where the page stops understating
   // itself. providersFor is cached and deduped, so asking again is free.
-  seedProvenance([...events, ...pointers], trustedSigners(await providersFor(lens)));
+  seedProvenance([...events, ...pointers], trustedSigners(await providersFor(lens), lens));
   return pillPrint() === before ? 0 : 1;
 }
 

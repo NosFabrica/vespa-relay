@@ -30,6 +30,8 @@ const profile = (id, pubkey) => ({ ...ev(id, pubkey, 0), content: "{}" });
 
 // The Map's two real shapes — a NIP-85 dimension and a bare kind.
 const MAP = delegationsOf({ tags: [["30382:rank", SCORER, ""], ["30392", LISTER, ""]] });
+const READER = hex("7");
+const TRUST = trustedSigners(MAP, READER);
 
 const byKind = (filters) => {
   const m = new Map();
@@ -50,23 +52,31 @@ const byKind = (filters) => {
   assert.deepStrictEqual(t.ids, [hex("1"), hex("2"), hex("3")]);
   assert.deepStrictEqual(t.addrs, [`30023:${BOB}:post`], "only an addressable event has an address");
   const empty = targetsOf([]);
-  assert.deepStrictEqual(pointerFilters(empty, MAP), [], "a page with nothing on it asks nothing");
+  assert.deepStrictEqual(pointerFilters(empty, TRUST, { observer: READER }), [], "a page with nothing on it asks nothing");
 }
 
 // ---- THE GATE ------------------------------------------------------------
 {
   const page = [profile("1", ALICE), ev("2", BOB, 1), ev("3", BOB, 30023, [["d", "post"]])];
-  const filters = pointerFilters(targetsOf(page), MAP);
+  const filters = pointerFilters(targetsOf(page), TRUST, { observer: READER });
   const f = byKind(filters);
 
-  assert.deepStrictEqual(f.get("30392#p").authors, [LISTER], "a Trusted List is asked for BY ITS DELEGATED SIGNER");
+  assert.deepStrictEqual(f.get("30392#p").authors, [LISTER, READER],
+    "a Trusted List is asked for by its DELEGATED SIGNER — plus the reader, whose own lists the relay unpacks too");
   assert.deepStrictEqual(f.get("30392#p")["#p"], [ALICE], "…and by the members this page could draw");
-  assert.deepStrictEqual(f.get("30382#d").authors, [SCORER], "an assertion likewise — its subject is its `d`");
+  assert.deepStrictEqual(f.get("30382#d").authors, [SCORER, READER], "an assertion likewise — its subject is its `d`");
   assert.deepStrictEqual(f.get("30382#d")["#d"], [ALICE]);
 
+  // A kind the Map names nobody for is still asked on the READER's own behalf
+  // — their own lists unpack — and never openly.
   for (const kind of [30393, 30394, 30383, 30384]) {
-    assert.strictEqual(filters.some((x) => x.kinds[0] === kind), false,
-      `kind ${kind} is delegated to nobody, so it is not asked for — an ungated ask would answer with every publisher on the relay`);
+    const f2 = filters.find((x) => x.kinds[0] === kind);
+    if (f2) assert.deepStrictEqual(f2.authors, [READER], `kind ${kind}: nobody is delegated, so only the reader speaks`);
+  }
+  const anon = pointerFilters(targetsOf(page), trustedSigners(new Map(), null), {});
+  for (const x of anon) {
+    assert.strictEqual(x.kinds[0], 1985,
+      "an anonymous reader delegates nobody, so no declaration is asked for at all — an ungated ask would answer with every publisher on the relay");
   }
   assert.strictEqual(filters.some((x) => x.kinds[0] === 30395), false,
     "30395's members are NIP-73 identifiers, which are not events this page can draw");
@@ -80,7 +90,7 @@ const byKind = (filters) => {
 // A reader with no Map at all asks for no declaration — only the open half.
 {
   const page = [profile("1", ALICE)];
-  const filters = pointerFilters(targetsOf(page), new Map());
+  const filters = pointerFilters(targetsOf(page), trustedSigners(new Map(), null));
   assert.deepStrictEqual([...new Set(filters.map((f) => f.kinds[0]))], [1985],
     "no delegation is not a reason to ask openly");
 }
@@ -88,20 +98,38 @@ const byKind = (filters) => {
 // ---- labels are ungated, and bounded by the only thing left --------------
 {
   const page = [profile("1", ALICE), ev("2", BOB, 1)];
-  const labels = pointerFilters(targetsOf(page), MAP).filter((f) => f.kinds[0] === 1985);
+  const labels = pointerFilters(targetsOf(page), TRUST, { observer: READER }).filter((f) => f.kinds[0] === 1985);
   assert.strictEqual(labels.length, 2, "asked by every tag that can name something on screen and has one");
   for (const f of labels) {
     assert.strictEqual("authors" in f, false, "NIP-32 is open by construction — there is no author list to narrow one");
-    assert.strictEqual(f.limit, LABEL_LIMIT, "…so a limit is the only bound there is");
+    assert.strictEqual(f.limit, LABEL_LIMIT, "…so a limit is one of the two bounds there are");
+    // AND THE OTHER IS THE LENS. With no `authors` to narrow it, the reader's
+    // own trust floor is what stands between this row and every label anyone
+    // ever published about these targets — which is why the relay's own label
+    // companion is `q.copy(kinds = labels)`, keeping the query's observer,
+    // where the DECLARATION companion rewrites the floor away.
+    assert.strictEqual(f.search, `observer:${READER}`, "a label read is made through the observer's eyes");
   }
-  assert.strictEqual(pointerFilters(targetsOf(page), MAP, { labels: false }).some((f) => f.kinds[0] === 1985), false);
+  // The declaration filters are the other half of that split: already narrowed
+  // to keys this reader named, and read with NO lens, because a service key is
+  // signed by somebody nobody follows and the reader's floor would drop their
+  // own provider's lists on the way in. Left undeclared here, the reference
+  // socket stamps `include:spam` (shared/lens.js).
+  for (const f of pointerFilters(targetsOf(page), TRUST, { observer: READER })) {
+    if (f.kinds[0] === 1985) continue;
+    assert.strictEqual("search" in f, false, "a declaration filter declares no lens — the socket waives it");
+  }
+  // An anonymous reader has no lens to read through, and says so.
+  const anonLabels = pointerFilters(targetsOf(page), trustedSigners(new Map(), null), {});
+  for (const f of anonLabels) assert.strictEqual("search" in f, false, "nobody's eyes: the socket's own include:spam is the honest declaration");
+  assert.strictEqual(pointerFilters(targetsOf(page), TRUST, { labels: false }).some((f) => f.kinds[0] === 1985), false);
 }
 
 // ---- batching ------------------------------------------------------------
 {
   const many = [];
   for (let i = 0; i < BATCH + 5; i++) many.push(profile(`${i}`.padStart(2, "0") + "a", hex(`${i}`.padStart(2, "0") + "f")));
-  const lists = pointerFilters(targetsOf(many), MAP).filter((f) => f.kinds[0] === 30392);
+  const lists = pointerFilters(targetsOf(many), TRUST, { observer: READER }).filter((f) => f.kinds[0] === 30392);
   assert.strictEqual(lists.length, 2, "over a batch is two filters, and NIP-01 ORs them inside one REQ");
   assert.strictEqual(lists[0]["#p"].length, BATCH);
   assert.strictEqual(lists[1]["#p"].length, 5);
@@ -115,7 +143,7 @@ const byKind = (filters) => {
 // page — and one that arrives twice must still be one pill with a count of 1.
 {
   const page = [profile("1", ALICE), profile("2", BOB)];
-  const TRUSTED = trustedSigners(MAP);
+  const TRUSTED = TRUST;
   assert.strictEqual(provenanceOf(page, TRUSTED).size, 0, "profiles alone carry no reason for being here");
 
   const list = ev("9", LISTER, 30392, [["d", "vh"], ["title", "Verified Human"], ["p", ALICE], ["p", BOB]]);
@@ -144,13 +172,15 @@ process.exit(0);
 // speaks for 30392, and for nothing else. A publisher the reader delegated for
 // LISTS does not thereby get to score them.
 {
-  const t = trustedSigners(MAP);
-  assert.deepStrictEqual([...t.get(30392)], [LISTER]);
-  assert.deepStrictEqual([...t.get(30382)], [SCORER], "per kind — the list publisher does not speak for assertions");
-  assert.deepStrictEqual([...t.get(30393)], [], "a kind the Map never names trusts nobody");
+  const t = trustedSigners(MAP, READER);
+  assert.deepStrictEqual([...t.get(30392)], [LISTER, READER], "the service key for the kind, plus the reader themselves");
+  assert.deepStrictEqual([...t.get(30382)], [SCORER, READER], "per kind — the list publisher does not speak for assertions");
+  assert.deepStrictEqual([...t.get(30393)], [READER],
+    "a kind the Map never names trusts only the reader — the relay unpacks a list you signed yourself");
+  assert.deepStrictEqual([...trustedSigners(new Map(), null).get(30392)], [],
+    "and an anonymous reader, who is nobody, trusts nobody");
   // Dimensions of ONE kind do collapse: both are 30382 assertions the reader
   // asked one key for, which is the grouping the store's own gate does.
   const twoDims = delegationsOf({ tags: [["30382:rank", SCORER, ""], ["30382:followers", SCORER, ""]] });
-  assert.deepStrictEqual([...trustedSigners(twoDims).get(30382)], [SCORER]);
-  assert.strictEqual(trustedSigners(new Map()).get(30392).size, 0, "no Map delegates nobody");
+  assert.deepStrictEqual([...trustedSigners(twoDims, null).get(30382)], [SCORER]);
 }

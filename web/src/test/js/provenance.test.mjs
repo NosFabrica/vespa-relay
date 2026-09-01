@@ -278,15 +278,15 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(alone.size, 0, "an undelegated list contributes nothing at all");
 }
 
-// SERVICE KEYS ONLY, which makes the page deliberately stricter than the
-// relay: the store fetches declarations "from their enrolled signers only,
-// plus the reader", so a reader's own Trusted List DOES unpack and splice its
-// members — and this row will not say so. Asserted in the direction it was
-// asked for, so that flipping it is a visible decision rather than a drift.
+// THE SERVICE KEY FOR THE KIND, PLUS THE OBSERVER. The store fetches
+// declarations "from their enrolled signers only, plus the reader", so a
+// reader's own Trusted List unpacks and splices its members — and the row has
+// to be able to say so, or the relay put a profile on the page for a reason
+// the row then declined to give.
 {
   const mine = provenanceOf([profile("1", READER),
-    ev("2", READER, 30392, [["d", "x"], ["title", "Mine"], ["p", READER]])], trusting(LISTER));
-  assert.strictEqual(mine.size, 0, "a reader's own list is not one of their service keys");
+    ev("2", READER, 30392, [["d", "x"], ["title", "Mine"], ["p", READER]])], trusting(LISTER, READER));
+  assert.deepStrictEqual(texts(mine.get(hex("1"))), ["Mine"], "a reader's own list speaks for itself");
 }
 
 // ABSENT MEANS NOBODY. An anonymous reader delegates no one and gets label

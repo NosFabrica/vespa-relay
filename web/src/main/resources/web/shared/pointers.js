@@ -27,8 +27,11 @@
 //
 // LABELS ARE NOT GATED AND MUST NOT BE. NIP-32 is open by construction —
 // provenance.js draws a label with a different tone for exactly that reason —
-// so there is no author list to narrow one, only a `limit`. Worth knowing what
-// that costs: the row's question shifts. It used to be "why is this in this
+// so there is no author list to narrow one, only a `limit` and the reader's
+// own LENS: a label filter carries `observer:<lens>`, where a declaration
+// filter deliberately carries none. That split is the relay's, not an
+// invention here (see [pointerFilters]). Worth knowing what the rest of it
+// costs: the row's question shifts. It used to be "why is this in this
 // page", and a label that never matched the SEARCH never arrived to answer it;
 // asked by target, every label the relay holds comes back, including the ones
 // that have nothing to do with what was typed. That is the entity page's
@@ -57,6 +60,9 @@ import { DECLARATION_KINDS } from "../provenance.js";
  * 30395 IS ABSENT ON PURPOSE. Its members are NIP-73 external identifiers,
  * which are not events this page can draw, so there is no target to ask about.
  */
+/** The only thing an `authors` filter or an `observer:` token takes. */
+const HEX64 = /^[0-9a-f]{64}$/;
+
 const ASKS = [
   { kind: 30392, tag: "#p", from: "pubkeys" },
   { kind: 30393, tag: "#e", from: "ids" },
@@ -128,16 +134,34 @@ const chunk = (xs, n) => {
  * many kinds the reader delegates. Sending them separately would mean one
  * timeout per kind to reconcile before anything could repaint.
  *
- * [delegations] is shared/providers.js's Map, read through `publishersOf` so
- * a kind delegated under any dimension counts. A kind it names nobody for is
- * SKIPPED — not asked openly. That is the whole gate: an ungated
- * assertion filter would answer with every scorer on the relay and draw them
- * all as though the reader had asked for them.
+ * [trusted] is [trustedSigners]' `kind -> Set(signer)` — the same object
+ * provenance.js reads to decide whether a declaration speaks at all. A kind it
+ * has nobody for is SKIPPED, not asked openly: an ungated assertion filter
+ * would answer with every scorer on the relay and draw them all as though the
+ * reader had asked for them.
+ *
+ * TWO LENSES, ONE REQ, and the split is the relay's own. A declaration filter
+ * carries NO lens: it is already narrowed to keys this reader named, and a
+ * service key is signed by somebody nobody follows, so the reader's own trust
+ * floor would drop their provider's lists on the way in. The store's companion
+ * says the same thing in Kotlin — `minRank = INCLUDE_SPAM_MIN_RANK`, "its
+ * floor is waived on purpose: a service key nobody follows signs the lists it
+ * looks for". Leaving `search` off does it here, since the reference socket
+ * stamps `include:spam` on anything that declares nothing (shared/lens.js).
+ *
+ * A LABEL FILTER CARRIES THE OBSERVER, because it has no `authors` to narrow
+ * it and the floor is the only thing standing between this row and every
+ * label anyone ever published about these targets. That is also what the relay
+ * does with the label half — `q.copy(kinds = labels)` keeps the query's own
+ * observer and floor, where the declaration half rewrites the floor. Written
+ * as a NIP-50 token rather than left to the socket: `withoutLens` refuses to
+ * touch a filter that already declares one, precisely so a lensed read cannot
+ * be silently widened to `include:spam`.
  */
-export function pointerFilters(targets, delegations, { labels = true } = {}) {
+export function pointerFilters(targets, trusted, { labels = true, observer = null } = {}) {
   const out = [];
   for (const ask of ASKS) {
-    const authors = publishersOf(delegations, ask.kind);
+    const authors = [...((trusted && trusted.get(ask.kind)) || [])];
     const values = targets[ask.from] || [];
     if (!authors.length || !values.length) continue;
     for (const batch of chunk(values, BATCH)) {
@@ -145,11 +169,14 @@ export function pointerFilters(targets, delegations, { labels = true } = {}) {
     }
   }
   if (!labels) return out;
+  // An anonymous reader has no lens to read through; the socket's own
+  // `include:spam` is then the honest declaration, and the only one available.
+  const lens = observer && HEX64.test(observer) ? { search: `observer:${observer}` } : {};
   for (const ask of LABEL_ASKS) {
     const values = targets[ask.from] || [];
     if (!values.length) continue;
     for (const batch of chunk(values, BATCH)) {
-      out.push({ kinds: [ask.kind], [ask.tag]: batch, limit: LABEL_LIMIT });
+      out.push({ kinds: [ask.kind], [ask.tag]: batch, limit: LABEL_LIMIT, ...lens });
     }
   }
   return out;
@@ -171,8 +198,8 @@ export function pointerFilters(targets, delegations, { labels = true } = {}) {
 export async function fetchPointers(events, observer, opts) {
   const targets = targetsOf(events);
   if (!targets.pubkeys.length && !targets.ids.length && !targets.addrs.length) return [];
-  const delegations = await providersFor(observer);
-  const filters = pointerFilters(targets, delegations, opts);
+  const trusted = trustedSigners(await providersFor(observer), observer);
+  const filters = pointerFilters(targets, trusted, { ...opts, observer });
   if (!filters.length) return [];
   try {
     const conn = await refConn();
@@ -208,22 +235,32 @@ export async function fetchPointers(events, observer, opts) {
  * `publishersOf`'s union and the same grouping the store's own gate does
  * (`declarations.groupBy(gate::signersOf)`).
  *
- * NOT THE READER'S OWN KEY, and this is the one place the page is deliberately
- * stricter than the relay. The store fetches declarations "from their enrolled
- * signers only, plus the reader", so a reader's own self-signed Trusted List
- * DOES unpack for them and its members are spliced onto the page — and this
- * row will not say so. That is the rule as asked for: the only authors that
- * count are the observer's own service keys. If a reader's own lists should
- * speak for themselves after all, adding the observer to each set here is the
- * whole change.
+ * PLUS THE OBSERVER THEMSELVES, which keeps the page level with the relay
+ * rather than a step stricter than it: the store fetches declarations "from
+ * their enrolled signers only, PLUS THE READER", so a reader's own self-signed
+ * Trusted List unpacks and its members are spliced onto the page. Leaving them
+ * out meant the relay put a profile there for a reason the row then declined
+ * to give, and a reader's own lists never spoke for themselves.
  *
- * A reader with no Map delegates nobody and gets no declaration pill at all —
- * which is right, and is what the relay serves an anonymous read too (it "gets
- * the label companion alone"). Labels are unaffected either way: NIP-32 is
- * open by construction, and provenance.js draws it in the tone that says so.
+ * A reader with no Map gets no declaration pill but their own, and an
+ * ANONYMOUS reader — who is nobody — gets none at all, which is exactly what
+ * the relay serves them ("the label companion alone"). Labels are unaffected
+ * either way: NIP-32 is open by construction, and provenance.js draws it in
+ * the tone that says so.
+ *
+ * ONE OBJECT FOR THE ASK AND FOR THE RENDER. [pointerFilters] turns these sets
+ * into `authors`, and provenance.js reads the same sets to decide whether a
+ * declaration speaks at all — so the fetch and the row cannot come to
+ * different views of whom this reader trusts. They briefly did, and it showed
+ * as a reader's own list drawing a pill when the relay happened to splice it
+ * and none when the page had to fetch it.
  */
-export function trustedSigners(delegations) {
+export function trustedSigners(delegations, observer) {
   const out = new Map();
-  for (const kind of DECLARATION_KINDS) out.set(kind, new Set(publishersOf(delegations, kind)));
+  for (const kind of DECLARATION_KINDS) {
+    const keys = new Set(publishersOf(delegations, kind));
+    if (observer && HEX64.test(observer)) keys.add(observer);
+    out.set(kind, keys);
+  }
   return out;
 }
