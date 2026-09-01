@@ -22,8 +22,12 @@ class FakeWS {
 }
 globalThis.WebSocket = FakeWS;
 
-const { delegationsOf, publishersOf, providersFor, forgetProviders } =
+const { delegationsOf, publishersOf, providersFor, seedProviders, forgetProviders } =
   await import(new URL("../../main/resources/web/shared/providers.js", import.meta.url));
+
+let reqs = 0;
+const origSend = FakeWS.prototype.send;
+FakeWS.prototype.send = function (raw) { if (JSON.parse(raw)[0] === "REQ") reqs++; return origSend.call(this, raw); };
 
 const RANKER = "d6e47f060bed6fd8c3ec272edc56aacb9eef853d024cd5087cfbd30c329a9cb1";
 const LISTER = "8e901369d45081cf05fe17ba802441dd731f73e000149c333daf4880a58e5fb1";
@@ -118,6 +122,79 @@ forgetProviders();
   const d = await providersFor(READER);
   assert.deepStrictEqual(publishersOf(d, 30392), [LISTER],
     "…so the next attempt still asks — caching the gap is the poisoning bug");
+}
+
+// ---- ONE READ, NOT ONE PER CALLER ---------------------------------------
+//
+// The same distinction refConn() draws about the socket: dedupe the READ, not
+// just the answer. Both callers fire off one render — `hydrate` starts the
+// provenance lookup and the render after it paints the score chips — so the
+// second arrives while the first is still on the wire and, caching the value
+// alone, found nothing and asked again. Two REQs for one replaceable event, on
+// every search.
+forgetProviders();
+{
+  let deliver = null;
+  answer = ([type, id], ws) => { if (type === "REQ") deliver = () => { ws.deliver(["EVENT", id, MAP]); ws.deliver(["EOSE", id]); }; };
+  reqs = 0;
+  const both = Promise.all([providersFor(READER), providersFor(READER)]);
+  await new Promise((r) => setTimeout(r, 5));   // both callers are now in
+  deliver();
+  const [a, b] = await both;
+  assert.strictEqual(reqs, 1, "two callers racing on one Map is ONE read");
+  assert.deepStrictEqual(publishersOf(a, 30392), [LISTER]);
+  assert.strictEqual(a, b, "…and they are handed the same answer");
+}
+
+// An in-flight entry must not outlive the read, or it would stand in for the
+// cache a dropped read was deliberately kept out of.
+forgetProviders();
+{
+  answer = () => {};
+  reqs = 0;
+  assert.strictEqual((await providersFor(READER)).size, 0, "a dropped read still has nothing to say");
+  answer = ([type, id], ws) => {
+    if (type !== "REQ") return;
+    ws.deliver(["EVENT", id, MAP]);
+    ws.deliver(["EOSE", id]);
+  };
+  assert.deepStrictEqual(publishersOf(await providersFor(READER), 30392), [LISTER],
+    "and the next caller asks again rather than being handed the dropped read");
+  assert.strictEqual(reqs, 2, "which is two reads, on purpose");
+}
+
+// ---- the preload: a Map somebody else already read ------------------------
+//
+// readiness.js asks this reader's kind 0, 10002 and 10040 in one REQ the
+// moment a sign-in lands, long before the first search. Shared, this module
+// never asks at all.
+forgetProviders();
+{
+  reqs = 0;
+  answer = () => { throw new Error("providersFor must not ask for a Map it was handed"); };
+  seedProviders(READER, MAP, true);
+  assert.deepStrictEqual(publishersOf(await providersFor(READER), 30392), [LISTER]);
+  assert.strictEqual(reqs, 0, "a seeded Map costs no round trip");
+}
+// An absence off a FINISHED read is the relay stating it, and is cacheable.
+forgetProviders();
+{
+  reqs = 0;
+  seedProviders(READER, null, true);
+  assert.strictEqual((await providersFor(READER)).size, 0);
+  assert.strictEqual(reqs, 0, "…and 'you delegate nobody' is an answer, not a gap");
+}
+// A read the caller cannot vouch for is not an answer, and must not seed.
+forgetProviders();
+{
+  answer = ([type, id], ws) => {
+    if (type !== "REQ") return;
+    ws.deliver(["EVENT", id, MAP]);
+    ws.deliver(["EOSE", id]);
+  };
+  seedProviders(READER, null, false);
+  assert.deepStrictEqual(publishersOf(await providersFor(READER), 30392), [LISTER],
+    "an unvouched seed is ignored — it is the poisoning bug in a different hat");
 }
 
 // A reader who is not a key is answered without a round trip: `authors`

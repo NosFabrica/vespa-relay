@@ -99,6 +99,17 @@ export function publishersOf(delegations, kind) {
 // incomplete read: see [providersFor].
 const cache = new Map();
 
+// observer pubkey -> the read that will settle it, while one is in flight.
+//
+// DEDUPE THE READ, NOT JUST THE ANSWER — the same distinction refConn() draws
+// about the socket, for the same reason, and it bites here on every search
+// rather than only on page load. Both callers fire off one render:
+// `hydrate` starts the provenance lookup and the render that follows it paints
+// the score chips, so the second arrives while the first is still on the wire,
+// finds an empty cache, and asks for the same replaceable event again. Two
+// REQs for one 10040, measured, on every search.
+const inFlight = new Map();
+
 /**
  * The delegations [observer] states, from their Map — cached, one read.
  *
@@ -120,21 +131,54 @@ const cache = new Map();
 export async function providersFor(observer) {
   if (!observer || !HEX64.test(observer)) return new Map();
   if (cache.has(observer)) return cache.get(observer);
-  let answered = false, map = null;
-  try {
-    const conn = await refConn();
-    // 10040 is replaceable, so the store holds one per author and `limit: 1`
-    // cannot hand back a superseded Map.
-    const evs = await conn.req({ kinds: [MAP_KIND], authors: [observer], limit: 1 });
-    answered = evs.complete === true;
-    map = evs[0] || null;
-  } catch (e) { answered = false; }
-  const found = delegationsOf(map);
-  if (answered) cache.set(observer, found);
-  return found;
+  const running = inFlight.get(observer);
+  if (running) return running;
+  const read = (async () => {
+    let answered = false, map = null;
+    try {
+      const conn = await refConn();
+      // 10040 is replaceable, so the store holds one per author and `limit: 1`
+      // cannot hand back a superseded Map.
+      const evs = await conn.req({ kinds: [MAP_KIND], authors: [observer], limit: 1 });
+      answered = evs.complete === true;
+      map = evs[0] || null;
+    } catch (e) { answered = false; }
+    const found = delegationsOf(map);
+    if (answered) cache.set(observer, found);
+    return found;
+  })();
+  // Cleared whatever happened, and that is what keeps the completeness rule
+  // intact: an incomplete read is not cached, so the entry must go too or it
+  // would stand in for the cache it was deliberately kept out of — a dropped
+  // read made permanent by the back door.
+  inFlight.set(observer, read);
+  read.then(() => inFlight.delete(observer), () => inFlight.delete(observer));
+  return read;
+}
+
+/**
+ * File a Map somebody else already read, so this module never asks for it.
+ *
+ * THE PRELOAD, and it costs nothing because the read exists either way: the
+ * readiness panel asks the reader's own kind 0, 10002 and 10040 in one
+ * anonymous REQ the moment a sign-in lands, well before the first search. Left
+ * unshared, that event was fetched a second time here a few hundred
+ * milliseconds later for the same reader — the same replaceable event, off the
+ * same socket, parsed for the same tags.
+ *
+ * [complete] is the caller's `evs.complete`, and it is required rather than
+ * assumed: a `null` map off a FINISHED read is the relay stating this reader
+ * delegates nobody, and off a timed-out one it is a gap. Seeding the second as
+ * the first is the poisoning bug wearing a different hat, so a caller that
+ * cannot vouch for its read must not seed.
+ */
+export function seedProviders(observer, map, complete) {
+  if (!observer || !HEX64.test(observer) || complete !== true) return;
+  cache.set(observer, delegationsOf(map));
 }
 
 /** Forget every Map read. For tests, and for a sign-out that must not leave one reader's delegations behind. */
 export function forgetProviders() {
   cache.clear();
+  inFlight.clear();
 }
