@@ -546,6 +546,193 @@ class ProductionCorpusIT {
             }
         } ?: Unit
 
+    /**
+     * WHERE A MEMBER ACTUALLY LANDS, on somebody else's data — and the whole
+     * point of the two store bumps behind it.
+     *
+     * `spliced_member` places a member at `max(member_rung(), pointer_floor())`.
+     * The floor arrived first and was INERT, and this case is what measured
+     * that: the two sides were in different units, because the rung was
+     * multiplied by `wot_mult(MEMBER)` while `query(pointer_rel)` is the
+     * pointer's finished relevance and carries `wot_mult(SIGNER)` — and a
+     * Trusted List is signed by a NIP-85 service key nobody follows. One side
+     * times 1, the other times up to 251 189. The rung won every time, so
+     * members were placed four orders of magnitude above the page, ordered by
+     * the READER's trust rather than by what the publisher said, and identically
+     * whether the list matched on its title or barely at all.
+     *
+     * Store PR #93 dropped the trust term from the rung. Both sides are now in
+     * the POINTER's units, so the floor binds and is bounded above by the
+     * pointer itself. What this case pins, against real confidences and real
+     * trust ranks:
+     *
+     *  - the block is ordered by what the PUBLISHER said, not by what the
+     *    reader thinks of each member;
+     *  - no member passes the list that names it;
+     *  - and turning the floor off (`subjectFloorSpan = null`) visibly changes
+     *    the answer — without that the first two could both hold for the wrong
+     *    reason, which is exactly how the inert floor hid.
+     *
+     * That control is NOT the old placement and must not be read as one: with
+     * the trust term gone from the rung, `subjectFloorSpan = null` leaves a
+     * member on the bare 550..4000 band, which is neither what b2be07e168
+     * served nor anything this relay ships. It is here to show the floor is
+     * carrying the placement, nothing more.
+     *
+     * HOW BIG THE MOVE LOOKS DEPENDS ON WHAT ELSE IS ON THE PAGE, so run this
+     * against a corpus that HAS one. On the thin fetch (~3.5k events) the top of
+     * the page is five near-identical copies of the same list and the visible
+     * move is one row, which says almost nothing. Fold in the rows the staging
+     * relay actually returns for the query and the answer is the whole point:
+     *
+     *   18 610 events, floor OFF   members at #43..#58
+     *   18 610 events, floor ON    members at #2..#21, list at #0-#1
+     *
+     * The block lands immediately behind the list that names it, ordered by the
+     * publisher\'s confidence — the gaps in that range are more copies of the
+     * same list plus members this method drops as duplicate confidences, not
+     * strangers. Buried at #43 is the shape of the complaint that started all
+     * this. The scale change underneath is measured store-side:
+     * 2.19e8..1.00e9 before, 1.70e5..2.39e5 after, against a page spanning
+     * 610..2.39e5.
+     *
+     * Everything is production: the list, its title, its members, their scores,
+     * their profiles and their trust ranks. Only the enrolment is synthesized,
+     * for the reason the case above gives.
+     */
+    @Test
+    fun `a member is placed by its publisher's confidence and never passes its list`() =
+        withRelay { _, store ->
+            val scored = scoredList() ?: return@withRelay println("PRODUCTION-IT no scored list with enough held member profiles")
+            println(
+                "PRODUCTION-IT scored list ${scored.list.id.take(12)} \"${scored.title}\" by ${scored.list.pubKey.take(8)}, " +
+                    "${scored.held.size} held profiles, confidences ${scored.held.map { it.second }}",
+            )
+
+            // THE RANK PROVIDER IS PART OF THE SETUP, not a detail. Without one
+            // every member is unranked, `wot_mult()` is the same constant for
+            // all of them, and the trust term this case is about would be flat —
+            // so the old placement would look correct and the case would report
+            // a pass while meaning nothing by it. Pick the signer whose
+            // assertions actually COVER these members: one that ranks 400
+            // strangers and none of this list leaves trust flat exactly as if
+            // nobody were enrolled.
+            val wanted = scored.held.mapTo(HashSet()) { it.first.pubKey }
+            val rankProvider =
+                corpus
+                    .filter { it.kind == 30382 }
+                    .groupBy { it.pubKey }
+                    .mapValues { (_, rows) -> rows.count { row -> row.tags.any { it.size > 1 && it[0] == "d" && it[1] in wanted } } }
+                    .maxByOrNull { it.value }
+                    ?.takeIf { it.value > 0 }
+                    ?.key
+                    ?: return@withRelay println("PRODUCTION-IT no 30382 signer ranks these members — trust would be flat, and the comparison would mean nothing")
+            val reader = NostrSignerSync()
+            store.batchInsert(
+                listOf(
+                    reader.sign<Event>(
+                        1_700_000_000L,
+                        10040,
+                        arrayOf(
+                            arrayOf("30392", scored.list.pubKey, "wss://tapestry.brainstorm.world/relay"),
+                            arrayOf("30382:rank", rankProvider, "wss://nip85-staging.nosfabrica.com"),
+                        ),
+                        "",
+                    ),
+                ),
+            )
+            val covered = corpus.count { e -> e.kind == 30382 && e.pubKey == rankProvider && e.tags.any { it.size > 1 && it[0] == "d" && it[1] in wanted } }
+            println("PRODUCTION-IT rank provider ${rankProvider.take(8)} ranks $covered of ${wanted.size} held members")
+
+            val filter = """{"kinds":[0,30392],"search":"${scored.title} include:spam observer:${reader.pubKey}"}"""
+            val floored = NostrRelayServer(store, relayUrl)
+            // The placement before the floor existed, on the same engine and the
+            // same documents — the control that says the floor is doing the work.
+            val rungOnly =
+                VespaEventStore.open(
+                    vespa!!,
+                    relay = relayUrl,
+                    autoDeploy = false,
+                    searchExpansion = SearchExpansionLimits(subjectFloorSpan = null),
+                )
+            val rungRelay = NostrRelayServer(rungOnly, relayUrl)
+            try {
+                val pages =
+                    listOf("rung only (no floor)" to rungRelay, "floored" to floored).map { (label, relay) ->
+                        val ids = page(relay, "cmp-${label.take(4)}", filter)
+                        val seen =
+                            scored.held
+                                .map { (event, conf) -> conf to ids.indexOf(event.id) }
+                                .filter { it.second >= 0 }
+                                .sortedBy { it.second }
+                        println("PRODUCTION-IT   $label: pointer #${ids.indexOf(scored.list.id)}, members (confidence -> position) $seen")
+                        ids
+                    }
+
+                val ids = pages[1]
+                val pointerAt = ids.indexOf(scored.list.id)
+                assertTrue(pointerAt >= 0, "the list is a hit of its own title")
+
+                val placed = scored.held.map { (event, conf) -> ids.indexOf(event.id) to conf }.filter { it.first >= 0 }
+                assertTrue(placed.size >= 4, "need several held members to say anything about their order: $placed")
+
+                // READ DOWN THE PAGE AND THE CONFIDENCES NEVER RISE. This is the
+                // claim the trust term used to break.
+                assertEquals(
+                    placed.sortedBy { it.first }.map { it.second },
+                    placed.map { it.second }.sortedDescending(),
+                    "down the page, a member's confidence never rises: $placed",
+                )
+
+                assertEquals(
+                    emptyList(),
+                    placed.filter { it.first < pointerAt },
+                    "no member passes the list that names it (pointer at #$pointerAt): $placed",
+                )
+
+                // And the floor is what did it — the same query without it puts
+                // the members somewhere else.
+                assertTrue(
+                    pages[0] != pages[1],
+                    "turning the floor off must change the answer, or these assertions hold for some other reason: ${pages[0]}",
+                )
+            } finally {
+                rungRelay.close()
+                rungOnly.close()
+                floored.close()
+            }
+        } ?: Unit
+
+    /** The titled list whose members this corpus holds the most PROFILES for, with the score each carries. */
+    private fun scoredList(): Scored? {
+        val profiles = corpus.filter { it.kind == 0 }.associateBy { it.pubKey }
+        return corpus
+            .filter { it.kind == 30392 }
+            .mapNotNull { list ->
+                val title = list.tags.firstOrNull { it.size > 1 && it[0] == "title" && it[1].isNotBlank() }?.get(1) ?: return@mapNotNull null
+                val words = title.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 }
+                if (words.isEmpty()) return@mapNotNull null
+                val held =
+                    list.tags
+                        .filter { it.size > 3 && it[0] == "p" && it[3].toIntOrNull() != null }
+                        .mapNotNull { tag -> profiles[tag[1]]?.let { it to tag[3].toInt() } }
+                        // A member whose own bio carries the title is a TEXT
+                        // hit in its own right, so its placement says nothing
+                        // about the splice.
+                        .filter { (profile, _) -> words.none { it in profile.content.lowercase() } }
+                        .distinctBy { it.second }
+                Scored(list, title, held)
+            }.filter { it.held.size >= 4 }
+            .maxByOrNull { it.held.size }
+    }
+
+    /** A titled list, and the members it scored whose profiles this corpus holds. */
+    private class Scored(
+        val list: Event,
+        val title: String,
+        val held: List<Pair<Event, Int>>,
+    )
+
     @Test
     fun `no page of the production corpus sends an event twice`() =
         withRelay { relay, _ ->
