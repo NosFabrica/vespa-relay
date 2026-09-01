@@ -191,6 +191,14 @@ D=$(mktemp -d)
 ./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
 node web/src/test/js/run.mjs       # …the same suite, run directly
 
+# THE ROW IN A REAL BROWSER. web/src/test/js covers the RULES and covered them
+# happily while the page drew no pills at all — twice, and neither bug was in a
+# rule: one was hydrate() seeding one global map from three views, the other was
+# the entity page clearing it and never asking again. Wiring needs the wiring.
+# Needs a Vespa, a corpus that is not in the repo, and Chromium; see the file's
+# own header for the full sequence.
+node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
+
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
 docker compose --profile onion up -d          # …with the relay's own .onion

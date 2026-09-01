@@ -2474,7 +2474,16 @@ function entitySeg() {
 // this and calls it, and a const would only be safe there by the accident of
 // nothing calling rerun during module evaluation.
 function openEntity(seg) {
-  return showEntity(seg, { paintScores, ensureLogin, setHits: (evs) => { s.hits = evs; } });
+  // seedRow for the same reason paintScores is a hook: the lens the ask reads
+  // through is this module's state. It is the SAME thunk the results list runs
+  // (rowSeed's `own`), so a permalink and a card in a list cannot come to
+  // different views of who vouched for the thing they are both drawing.
+  return showEntity(seg, {
+    paintScores,
+    ensureLogin,
+    setHits: (evs) => { s.hits = evs; },
+    seedRow: (events) => rowSeed(events, "own")(),
+  });
 }
 
 /**
@@ -2491,6 +2500,17 @@ function applyUrl() {
       clearTimeout(debounceTimer);
       s.requestId++; // cancel any in-flight search render
       s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
+      // THE LENS IS PART OF A PERMALINK TOO, and this branch used to return
+      // before reading it — so `/npub1…?as=npub1…` pasted cold ranked as
+      // nobody. It cost the score chips their numbers even before this row
+      // existed (paintScores reads the same `viewingAs || me`), and it is the
+      // whole answer here: with no lens there are no delegations, so no
+      // declaration is asked for and the row is empty. Only when the URL
+      // CARRIES one: arriving by a click keeps whatever the session already
+      // had, and clearing it here would drop the reader's chosen observer on
+      // the way into a permalink.
+      const asHere = pubkeyParam(new URLSearchParams(location.search).get("as"));
+      if (asHere) applyViewingAs(asHere, null);
       $q.value = "";
       hideFeedPreview();
       document.body.classList.remove("has-query", "feed");
