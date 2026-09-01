@@ -69,7 +69,7 @@ const byKind = (filters) => {
 
   // A kind the Map names nobody for is still asked on the READER's own behalf
   // — their own lists unpack — and never openly.
-  for (const kind of [30393, 30394, 30383, 30384]) {
+  for (const kind of [30393, 30394, 30383, 30384, 30000, 39089]) {
     const f2 = filters.find((x) => x.kinds[0] === kind);
     if (f2) assert.deepStrictEqual(f2.authors, [READER], `kind ${kind}: nobody is delegated, so only the reader speaks`);
   }
@@ -93,6 +93,43 @@ const byKind = (filters) => {
   const filters = pointerFilters(targetsOf(page), trustedSigners(new Map(), null));
   assert.deepStrictEqual([...new Set(filters.map((f) => f.kinds[0]))], [1985],
     "no delegation is not a reason to ask openly");
+}
+
+// ---- THE READER'S OWN CURATION IS ASKED FOR TOO ---------------------------
+//
+// Since store `2bc79f5f40` a NIP-51 people list (30000) and a follow pack
+// (39089) splice their members, so a People page can hold somebody who is
+// there because the READER put them on a list. Without an ask for those two
+// kinds the answer carries the member and never the reason — the pill goes
+// quiet on exactly the case the store added.
+//
+// They are asked for like any other declaration, which is the point: `#p` by
+// member, narrowed to `authors`. What is different is WHO that narrows to.
+{
+  const page = [profile("1", ALICE), ev("2", BOB, 1)];
+  const f = byKind(pointerFilters(targetsOf(page), TRUST, { observer: READER }));
+
+  assert.deepStrictEqual(f.get("30000#p").authors, [READER],
+    "a people list is asked for on the reader's OWN behalf — a Map that names no publisher for it leaves only them");
+  assert.deepStrictEqual(f.get("30000#p")["#p"], [ALICE], "…by member, the same tag a 30392 is asked by");
+  assert.deepStrictEqual(f.get("39089#p").authors, [READER], "and a follow pack the same way");
+  assert.strictEqual("search" in f.get("30000#p"), false,
+    "no lens on a declaration filter: it is already narrowed to keys this reader named");
+
+  // A reader MAY delegate the kind deliberately — the store honours a 10040
+  // entry for it like any other — and then the publisher is asked for beside
+  // them.
+  const withList = trustedSigners(delegationsOf({ tags: [["30000", LISTER, ""]] }), READER);
+  assert.deepStrictEqual(byKind(pointerFilters(targetsOf(page), withList, {})).get("30000#p").authors, [LISTER, READER],
+    "a Map that names a curator for 30000 asks that curator too");
+
+  // AND AN ANONYMOUS READER ASKS FOR NEITHER. There is no reader to be their
+  // own signer, so these two kinds resolve to nobody — the same skip every
+  // undelegated kind takes, which is what keeps the new asks free for the
+  // reads that are most of this relay's traffic.
+  const anon = pointerFilters(targetsOf(page), trustedSigners(new Map(), null), {});
+  assert.strictEqual(anon.some((x) => x.kinds[0] === 30000 || x.kinds[0] === 39089), false,
+    "nobody signed in means nobody's curation to ask about");
 }
 
 // ---- labels are ungated, and bounded by the only thing left --------------

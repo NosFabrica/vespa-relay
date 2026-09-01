@@ -14,7 +14,7 @@ const profile = (id, pubkey) => ({ ...ev(id, pubkey, 0), content: "{}" });
 // publishers these cases sign with, so the signer gate is satisfied by default
 // and each case still tests the rule it was written for. The gate has its own
 // section at the end.
-const DECLARED = [30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395];
+const DECLARED = [30000, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 39089];
 const trusting = (...signers) => new Map(DECLARED.map((k) => [k, new Set(signers)]));
 const TRUSTED = trusting(LISTER, SCORER);
 const pillsOn = (page, id) => provenanceOf(page, TRUSTED).get(hex(id)) || [];
@@ -224,6 +224,90 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.strictEqual(provenanceOf(page, TRUSTED).size, 0, "an external identifier is not an event this page can draw");
 }
 
+// ---- THE READER'S OWN CURATION SPEAKS -------------------------------------
+//
+// Since store `2bc79f5f40` a NIP-51 people list (30000) and a follow pack
+// (39089) splice their members like a Trusted List does, so the row has to be
+// able to name them. Before this the members arrived — the relay put them
+// there — and the pill was silent, which is the row declining to give a reason
+// the relay had.
+//
+// The staging report this came from is the shape: four lists titled exactly
+// `Verified Human`, signed by humans the reader trusts, contributing nobody
+// while a service-signed 30392 did all the splicing.
+{
+  // MINE, not a service's: these two kinds are gated on their signer like every
+  // other declaration, and the signer that matters is the reader themselves.
+  const mine = trusting(READER);
+  const page = [
+    profile("1", READER),
+    ev("2", READER, 30000, [["d", "vh"], ["title", "Verified Human"], ["p", READER]]),
+    ev("3", READER, 39089, [["d", "pack"], ["title", "Soil People"], ["p", READER]]),
+  ];
+  const pills = provenanceOf(page, mine).get(hex("1"));
+  assert.deepStrictEqual(texts(pills).sort(), ["Soil People", "Verified Human"],
+    "a people list and a follow pack each name their members");
+  assert.strictEqual(pills[0].to, "addr", "and a pill points at the list itself");
+  assert.deepStrictEqual(pills.map((x) => x.value).sort(), [`30000:${READER}:vh`, `39089:${READER}:pack`],
+    "…at its address, the same string the card's own permalink uses");
+  assert.strictEqual(pills[0].gated, true,
+    "gated: the relay would not have unpacked this list for anyone but its own reader");
+}
+
+// THE WORDS IT IS FINDABLE BY, which is not the same as any tag that looks
+// like a name. A people list indexes `titleOrName()`, so an untitled one is
+// reachable by its `name` and the pill has to draw that. A Trusted List
+// indexes the title ALONE — reading `name` off one would put a word on a card
+// that the relay never indexed and no reader could have searched for.
+{
+  // Signed by LISTER throughout, so one fixture's gate covers all three and
+  // each case is only about which TAG the pill is read from. (A reader may
+  // delegate these kinds deliberately; TRUSTED is what that looks like.)
+  const named = [profile("1", READER), ev("2", LISTER, 30000, [["d", "x"], ["name", "Soil Nerds"], ["p", READER]])];
+  assert.deepStrictEqual(texts(pillsOn(named, "1")), ["Soil Nerds"], "a 30000's `name` is indexed, so it is a pill");
+
+  const list = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["name", "Soil Nerds"], ["p", READER]])];
+  assert.deepStrictEqual(texts(pillsOn(list, "1")), ["x"],
+    "a 30392's `name` is not indexed: the pill falls back to `d` rather than claiming a word the relay never matched");
+
+  const pack = [profile("1", READER), ev("2", LISTER, 39089, [["d", "y"], ["name", "Soil Nerds"], ["p", READER]])];
+  assert.deepStrictEqual(texts(pillsOn(pack, "1")), ["y"], "…and a follow pack indexes the title alone, like a Trusted List");
+
+  // The title still wins wherever there is one.
+  const both = [profile("1", READER), ev("2", LISTER, 30000, [["d", "x"], ["title", "Titled"], ["name", "Named"], ["p", READER]])];
+  assert.deepStrictEqual(texts(pillsOn(both, "1")), ["Titled"]);
+}
+
+// A STRANGER'S LIST IS THE WHOLE SAFETY ARGUMENT. Anyone may title a list
+// `bitcoin` and name a thousand accounts in it; what stops that is the same
+// gate every other declaration passes — the reader is their own signer, and
+// nobody else's list unpacks unless they deliberately delegated the kind.
+{
+  const STRANGER = hex("9");
+  const page = [
+    profile("1", READER),
+    ev("2", READER, 30000, [["d", "x"], ["title", "Verified Human"], ["p", READER]]),
+    ev("3", STRANGER, 30000, [["d", "y"], ["title", "Verified Human"], ["p", READER]]),
+  ];
+  const pills = provenanceOf(page, trusting(READER)).get(hex("1"));
+  assert.strictEqual(pills.length, 1);
+  assert.strictEqual(pills[0].count, 1, "a stranger's people list must not inflate the reader's own count");
+  assert.deepStrictEqual(pills[0].authors, [READER]);
+}
+
+// ONLY THE PUBLIC HALF, and there is nothing to do about it here. NIP-51's
+// private members are NIP-44 encrypted to the owner; the relay holds no signer
+// either, so a member it could not read is a member it never spliced. What
+// this pins is that the encrypted blob in `content` draws nothing — a pill off
+// a member this page could not have been sent would be a claim about nothing.
+{
+  const secret = { ...ev("2", READER, 30000, [["d", "x"], ["title", "Private"], ["p", READER]]), content: "AAAA?iv=BBBB" };
+  const page = [profile("1", READER), profile("4", LISTER), secret];
+  const built = provenanceOf(page, trusting(READER));
+  assert.deepStrictEqual(texts(built.get(hex("1"))), ["Private"], "the public member draws its pill");
+  assert.strictEqual(built.has(hex("4")), false, "and nothing is invented for whoever the ciphertext names");
+}
+
 // ---- attribution: the face is drawn where it disambiguates -----------------
 {
   const one = provenanceOf([
@@ -383,4 +467,4 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.notStrictEqual(provenanceEpoch(), seeded, "and so does a clear — the case a caller-side counter missed");
 }
 
-console.log("provenance: collapse, demotion, tones, order, order-independence, destinations, targets and attribution — all assertions passed");
+console.log("provenance: collapse, demotion, tones, order, order-independence, destinations, targets, the reader's own lists and attribution — all assertions passed");

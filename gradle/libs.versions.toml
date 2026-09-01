@@ -221,14 +221,18 @@ quartz = "cecc3287b2"
 #   git checkout 2bc79f5f40
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
-# Run HERE and IN FLIGHT as this pin lands: the suites stand up a real Vespa
-# per IT and the walk is long. The numbers go in their own follow-up commit,
-# the way 69dd24c and 4047fa3 recorded the runs behind earlier bumps — read
-# `skipped="0"` off the result XML rather than off `BUILD SUCCESSFUL`, per
-# AGENTS.md, since a run whose ITs all abort on `assumeTrue(dockerAvailable())`
-# prints the same line. Until that commit lands, this pin's Vespa-only
-# behaviour is UNVERIFIED here; the relay's own suite (which passes on this
-# branch) runs on InMemoryEventIndex and cannot stand in for it.
+# Run HERE: 46 suites, 510 tests, 0 skipped, 0 failures, 22m19s (`skipped="0"`
+# read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md — a run
+# whose ITs all abort on `assumeTrue(dockerAvailable())` prints the same line).
+# Thirteen ITs stood up a real Vespa, and THREE of them are this bump's own:
+# FieldCoverageRankIT pins §12.2's ladder and the trust crossing, MemberTrustIT
+# pins all three of §13.1's rungs (including the property that motivates them —
+# a tenfold change in query(pointer_rel), the only number carrying the signer's
+# trust, leaves a scored member exactly where it was), and BadgeTermIT pins the
+# NIP-30 term on the only engine that can tell it from a substring match.
+# SplicedMemberWeightsIT still runs, which is what says the placement the
+# earlier bumps bought is unmoved by this one. Up from 43 suites / 487 tests at
+# 8f8dfb0c18 — the three new suites and 23 tests are exactly this range's.
 #
 # DIRECTION: 8f8dfb0c18 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).

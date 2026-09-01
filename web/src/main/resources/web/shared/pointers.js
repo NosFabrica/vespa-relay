@@ -59,6 +59,13 @@ import { DECLARATION_KINDS } from "../provenance.js";
  *
  * 30395 IS ABSENT ON PURPOSE. Its members are NIP-73 external identifiers,
  * which are not events this page can draw, so there is no target to ask about.
+ *
+ * The two NIP-51 kinds are here for the reason provenance.js's
+ * [PEOPLE_LIST_KINDS] gives, and they need no rule of their own: they hold
+ * members in `p`, they are gated on their signer like every other declaration,
+ * and a reader is their own signer. What they DO change is who this read is
+ * worth making for. Every other ask needs a Map naming a service; these two
+ * pay off for a reader who has never enrolled anybody and merely keeps a list.
  */
 /** The only thing an `authors` filter or an `observer:` token takes. */
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -77,6 +84,15 @@ const ASKS = [
   { kind: 30382, tag: "#d", from: "pubkeys" },
   { kind: 30383, tag: "#d", from: "ids" },
   { kind: 30384, tag: "#d", from: "addrs" },
+  // THE READER'S OWN CURATION, since store 2bc79f5f40 — a people list (30000)
+  // and a follow pack (39089), both naming their members in `p` exactly as a
+  // 30392 does. They cost a signed-in reader two more filters on a REQ that is
+  // already going out, and an anonymous one NOTHING: the loop below skips a
+  // kind the Map trusts nobody for, and on these two kinds a Map that names no
+  // publisher leaves only the reader themselves — who is nobody when nobody is
+  // signed in.
+  { kind: 30000, tag: "#p", from: "pubkeys" },
+  { kind: 39089, tag: "#p", from: "pubkeys" },
 ];
 
 /** NIP-32, asked by every tag that can name something on screen. */

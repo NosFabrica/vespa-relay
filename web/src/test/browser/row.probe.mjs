@@ -30,6 +30,19 @@
 //
 // The observer is passed as `as=` rather than signed in: the lens is public,
 // so `viewingAs` reaches the same code without a NIP-07 extension.
+//
+// THE READER'S OWN NIP-51 LISTS ARE NOT COVERED BY A RUN AGAINST STAGING, and
+// it is worth knowing why before reading a green probe as covering them. Since
+// store `2bc79f5f40` a people list (30000) or follow pack (39089) splices its
+// members, and provenance.js draws the pill — but only for the reader who
+// SIGNED the list, so `as=` alone cannot reach it: the lens says whom to rank
+// through, and the gate asks who signed. Exercising it needs a corpus holding
+// one of that observer's OWN lists naming somebody whose profile is also in
+// the page, on a relay built from a branch carrying that store. Staging is not
+// that relay until this pin deploys, and `fetch-observer-corpus.mjs` will
+// happily hand back a corpus with no such list in it — in which case the case
+// is silently untested rather than failing. Check the corpus for a 30000 the
+// observer signed before concluding anything about this half.
 // Playwright is not a dependency of this repo and never should be — the rest
 // of the web suite is plain node on purpose. Resolved from wherever it happens
 // to be installed, global included, rather than pinned to one machine's path.
