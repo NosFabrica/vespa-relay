@@ -6,10 +6,26 @@
 // results that do not contain what was searched for, which reads as the relay
 // being wrong. The pills are that word.
 //
-// FROM THE STREAM AND NOTHING ELSE. The relay sends a pointer and everything it
-// names on the same subscription, so one `relay.req(filters)` already holds
-// both. Everything here is computed over the array the page was going to render
-// anyway: no second REQ, no per-card fetch, no new relay field.
+// PURE, OVER WHATEVER ARRAY IT IS HANDED. This file makes no ask of its own and
+// holds no socket; it indexes an array and reads pointers out of it. Who fills
+// that array has changed once and may change again, which is exactly why the
+// rules live behind that seam.
+//
+// It used to be filled by the relay alone: the search expansion sent a pointer
+// and everything it named on one subscription, so the answer the page was
+// going to render anyway already held both, and the row cost no round trip. It
+// no longer does — a search that asks for `kinds:[0]` is answered with the
+// profiles the expansion found THROUGH those lists, labels and assertions and
+// not with the pointers themselves — so app.js now seeds twice: once off the
+// answer, and again once shared/pointers.js has fetched what the answer left
+// out. Both seeds go through here unchanged.
+//
+// What that costs is the trust gate. "It arrived, so the reader asked for it"
+// was a fact about the relay's expansion and is NOT a fact about a client
+// fetch: the reference socket narrows nothing. [DECLARATION_KINDS] and the
+// `gated` tone still mean what they say only because pointers.js re-imposes
+// the rule as an `authors` filter off the reader's own kind 10040. If a third
+// filler ever appears, it owes the row the same.
 //
 // NOT BY ADJACENCY, and that distinction is now load-bearing. A subject used to
 // arrive directly behind its pointer, and reading the pair off neighbouring
@@ -22,16 +38,22 @@
 // That makes the row deliberately PARTIAL, in three ways worth knowing before
 // reading a pill as a complete account:
 //
-//   - a label that exists in the index but did not match the SEARCH never
-//     arrives, so it never pills;
-//   - the expansion's budgets (100 per event, 1,000 per request) cap the
-//     splice, so a truncated page draws fewer pills than a whole one would;
-//   - the trust gate drops pointers from signers this reader never delegated,
-//     so the row is observer-relative by design.
+//   - the expansion's budgets (100 per event, 1,000 per request) cap what the
+//     ANSWER carries, so a truncated page draws fewer pills than a whole one;
+//   - the follow-up read is bounded too — one batch of 100 targets per filter,
+//     and an ungated label read stops at pointers.js's LABEL_LIMIT;
+//   - the trust gate drops declarations from signers this reader never
+//     delegated, so the row is observer-relative by design.
 //
-// All three are correct for "why is this here" and wrong for "what has been
-// said about this". The second question belongs on the entity page, where
-// related.js already makes bounded follow-up asks; it is not this row.
+// A fourth used to head that list and no longer holds, and the change is worth
+// knowing before reading a row: a label that did not match the SEARCH never
+// arrived, so the row could only ever say why a card was HERE. Asked by target
+// instead, every label the relay holds about it comes back — which is nearer
+// to "what has been said about this", the question that belongs on the entity
+// page. That drift is not a decision this file made; it is what is left when
+// the relay stops telling the client which labels matched, and the client
+// cannot re-derive it. Bounding it is pointers.js's LABEL_LIMIT and the
+// collapse below, and neither restores the old meaning.
 //
 // No DOM and one import — nip19's addrOf, because the address a pill links to
 // must be the same string the card's own permalink uses, and a second spelling
@@ -121,8 +143,22 @@ export function provenanceOf(events) {
     if (!seen.authors.includes(pill.author)) seen.authors.push(pill.author);
   };
 
+  // ONE EVENT WALKED ONCE, however many times the array holds it — and the
+  // array does hold it twice now. The page's own answer and the follow-up read
+  // that fetches what the answer no longer splices (shared/pointers.js) are
+  // seeded TOGETHER, on purpose: a pointer that arrives both ways must not
+  // vanish because the caller guessed wrong about which read carried it. But
+  // `seenHere` dedupes WITHIN a pointer and is cleared between them, so the
+  // second copy walked as a second pointer — and it landed on `count`, which
+  // is the number a reader reads as corroboration. "Verified Human 2" over one
+  // list is the exact false claim the count exists to avoid making.
+  const walked = new Set();
   for (const ev of events || []) {
     if (!ev) continue;
+    if (ev.id) {
+      if (walked.has(ev.id)) continue;
+      walked.add(ev.id);
+    }
     seenHere.clear();
     contributionsOf(ev, { byId, byAddr, profileOf }, add);
   }
