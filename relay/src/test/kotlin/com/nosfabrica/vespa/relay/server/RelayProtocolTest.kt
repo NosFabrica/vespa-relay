@@ -259,13 +259,31 @@ class RelayProtocolTest {
                 // NIP-51 people kinds. 30385 and 30395 are absent because their
                 // members are NIP-73 external identifiers, which name no event.
                 val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089)
-                val companion = index.searchQueries.last()
-                assertTrue(
-                    companion.kinds.isNotEmpty() && companion.kinds.all { it in declarationKinds },
-                    "the extra read a kindless search now makes is for declaration kinds only: ${companion.kinds}",
-                )
-                assertEquals(listOf(signer.pubKey), companion.authors, "and only from signers this reader enrolled — here, themselves")
-                assertEquals(INCLUDE_SPAM_MIN_RANK, companion.minRank, "its floor is waived on purpose: a service key nobody follows signs the lists it looks for")
+
+                // BY WHAT IT IS, NOT BY WHERE IT LANDED. `last()` here was a
+                // COIN FLIP, and it failed about one run in three with
+                // `kinds: []` — having read back the caller's own kindless
+                // query. The companion goes out WITH that query, which is the
+                // entire point of it (the pointers arrive as rows of one
+                // page), so which of the two the index records last is a
+                // scheduling detail and never was a fact about the store.
+                // `asked()` above already selects by identity for the same
+                // reason. Asserted over EVERY kinded query rather than one, so
+                // no ordering can hide a companion this does not look at: a
+                // kindless read issues exactly one (companions() skips the
+                // label half outright when the caller named no kinds, and
+                // groups the declarations by signer set — one signer here, so
+                // one query).
+                val companions = index.searchQueries.filter { it.kinds.isNotEmpty() }
+                assertTrue(companions.isNotEmpty(), "a kindless searching read still issues its declaration companion")
+                for (companion in companions) {
+                    assertTrue(
+                        companion.kinds.all { it in declarationKinds },
+                        "the extra read a kindless search now makes is for declaration kinds only: ${companion.kinds}",
+                    )
+                    assertEquals(listOf(signer.pubKey), companion.authors, "and only from signers this reader enrolled — here, themselves")
+                    assertEquals(INCLUDE_SPAM_MIN_RANK, companion.minRank, "its floor is waived on purpose: a service key nobody follows signs the lists it looks for")
+                }
 
                 session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
