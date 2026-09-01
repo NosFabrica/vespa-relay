@@ -200,7 +200,23 @@ class IngestAttributionTest {
                 pipeline.submit(newer, skipVerify = true, IngestOrigin.Local)
                 var spins = 0
                 while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
-                delay(300)
+                // WAIT FOR THE FACT, NOT FOR A DURATION. The queue draining
+                // says the pipeline took both events; the refusal reaches the
+                // sink from the fast path a moment after that, and a fixed
+                // sleep only asks whether this runner was quick enough today.
+                // It was not, once, on CI. The two tests either side of this
+                // one keep their fixed settle deliberately: they assert an
+                // ABSENCE, and there is no fact to wait for.
+                //
+                // Under the list's own monitor because that is how a
+                // `synchronizedList` may be iterated — the pipeline is still
+                // running here, where the assertion below reads it after close.
+                var settling = 0
+                while (settling++ < 200 &&
+                    synchronized(sink.refusals) { sink.refusals.none { it.first == older.id } }
+                ) {
+                    delay(25)
+                }
             } finally {
                 pipeline.close()
                 scope.cancel()
