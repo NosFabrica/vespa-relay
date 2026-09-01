@@ -134,15 +134,43 @@ const texts = (pills) => pills.map((p) => p.text);
   const by = Object.fromEntries(pillsOn(page, "1").map((p) => [p.text, p]));
   assert.deepStrictEqual([by["Verified Human"].to, by["Verified Human"].value], ["addr", `30392:${LISTER}:x`],
     "a list pill opens the list — the same address its own card opens");
-  assert.strictEqual(by["rank 92"].to, "addr", "a score with no topic opens the card that made it");
+  assert.strictEqual(by["rank 92"], undefined, "a score is not a reason — see below");
   assert.deepStrictEqual([by["permaculture"].to, by["permaculture"].value], ["topic", "permaculture"],
-    "a contact card that carries topics pills the topic, and opens the topic");
+    "an assertion that carries topics pills the topic, and opens the topic");
   assert.deepStrictEqual([by["zapped"].to, by["zapped"].value], ["search", "zapped"],
     "a label runs a search for itself — the useful answer is the other events under it");
-  // The two shapes of a contact card are exclusive: a card with topics says
-  // the topics, not the metric, because the topic is why it matched.
-  const topicOnly = pillsOn([profile("1", READER), ev("4", SCORER, 30382, [["d", READER], ["rank", "92"], ["t", "soil"]])], "1");
-  assert.deepStrictEqual(texts(topicOnly), ["soil"], "a topic beats the metric on the same card");
+}
+
+// ---- AN ASSERTION SPEAKS ONLY THROUGH ITS TOPICS ---------------------------
+//
+// It used to fall back to `rank 92`, or the word "scored" where there was no
+// rank. A number out of its scale says nothing a reader can act on — `rank 2`
+// beside `rank 98` invites a comparison the pill cannot support, since the
+// scale is the service's and is nowhere on the card — and the page answers
+// that question properly elsewhere, with the score chip on the face, which
+// carries its lens with it. Measured on staging, the fallback was most of
+// what this row drew about people.
+{
+  const scoreOnly = [profile("1", READER), ev("3", SCORER, 30382, [["d", READER], ["rank", "92"]])];
+  assert.strictEqual(provenanceOf(scoreOnly, TRUSTED).size, 0, "a ranked assertion with no topic draws nothing at all");
+
+  const bare = [profile("1", READER), ev("3", SCORER, 30382, [["d", READER]])];
+  assert.strictEqual(provenanceOf(bare, TRUSTED).size, 0, "…and neither does one with no rank either");
+
+  // EVERY `t`, not the first, and not only on the contact card: a topic means
+  // the same thing whether the subject is a person, an event or an article.
+  const many = pillsOn([profile("1", READER),
+    ev("4", SCORER, 30382, [["d", READER], ["rank", "92"], ["t", "soil"], ["t", "permaculture"], ["t", "bitcoin"]])], "1");
+  assert.deepStrictEqual(texts(many), ["bitcoin", "permaculture", "soil"],
+    "all three topics, and the metric beside them still says nothing");
+
+  const note = ev("1", READER, 1);
+  assert.deepStrictEqual(texts(pillsOn([note, ev("5", SCORER, 30383, [["d", hex("1")], ["t", "howto"]])], "1")), ["howto"],
+    "a 30383 about an event pills its topic too");
+  const article = ev("1", READER, 30023, [["d", "post"]]);
+  assert.deepStrictEqual(
+    texts(provenanceOf([article, ev("6", SCORER, 30384, [["d", `30023:${READER}:post`], ["t", "essay"]])], TRUSTED).get(hex("1"))),
+    ["essay"], "and so does a 30384 about an article");
 }
 
 // ---- the row is about the page, not the index -----------------------------
@@ -208,7 +236,9 @@ const texts = (pills) => pills.map((p) => p.text);
   const two = provenanceOf([
     profile("1", READER),
     ev("2", LISTER, 30392, [["d", "x"], ["title", "A"], ["p", READER]]),
-    ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]]),
+    // A topic, because an assertion speaks only through those now — a bare
+    // rank contributes nothing and so cannot be a second publisher.
+    ev("3", SCORER, 30382, [["d", READER], ["t", "soil"]]),
   ], TRUSTED);
   assert.strictEqual(facesNeeded(two), true, "two publishers on one page: now the face says something");
   // Labels never enter the question — an ungated pill is attributed always,
@@ -312,9 +342,9 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(seedProvenance([profile("1", READER)], TRUSTED), 0, "a page with no pointers clears the last page's");
   assert.strictEqual(provenance.size, 0, "and leaves nothing behind");
 
-  // A permalink is not a page of results — forgetProvenance is what keeps the
-  // row from arriving there as a leftover of the search behind it.
-  seedProvenance([...page, ev("3", SCORER, 30382, [["d", READER], ["rank", "9"]])], TRUSTED);
+  // A permalink clears on the way in — forgetProvenance is what keeps the row
+  // from arriving there as a leftover of the search behind it.
+  seedProvenance([...page, ev("3", SCORER, 30382, [["d", READER], ["t", "soil"]])], TRUSTED);
   assert.strictEqual(attribution.faces, true, "two publishers, so gated pills are attributed");
   forgetProvenance();
   assert.strictEqual(provenance.size, 0, "cleared");

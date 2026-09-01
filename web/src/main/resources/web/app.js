@@ -866,6 +866,28 @@ async function rankServicesOf(observer) {
 /**
  * Fill in any score chips currently on the page.
  *
+ * A KNOWN DUPLICATE READ LIVES HERE, measured and deliberately left. The
+ * provenance row asks the delegated publishers for kind 30382 about the
+ * page's authors; this asks the rank service for kind 30382 about the same
+ * people. Against staging over a page of 42 profiles the two came back with
+ * the SAME 42 events, 20 KB each way — a 100% overlap, on every search — and
+ * in a browser the page sends `kinds:[30382] #d:89` twice.
+ *
+ * The obvious fix is for this to join the read already in flight instead of
+ * repeating it. It was tried and it made things WORSE: 4 asks where there had
+ * been 2. The reason is worth keeping, because it is a trap for the next
+ * attempt. This function has no in-flight dedupe, so `need` is computed after
+ * every await it contains — and the callers are plural (paintList on each
+ * render, entity.js, the late repaints). Today the only await before `need`
+ * is `rankServicesOf`, which resolves out of a cache, so the window is a tick
+ * and no two calls collide. Add a NETWORK await there and the window becomes
+ * a round trip: two concurrent calls both see the same unknowns and both ask.
+ *
+ * So the order is: make this coalesce concurrent runs FIRST, then join. One
+ * round trip of ~39ms and 20 KB is not worth a coalescing bug in the code
+ * that fills every avatar's number, which is why it is written down rather
+ * than done.
+ *
  * Every exit paints, including the ones that have nothing to say. Most chips
  * live inside HTML that is rebuilt per search, so a lens with no scores used
  * to clear itself simply by being re-rendered — but the SEARCH FIELD's chips

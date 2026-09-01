@@ -289,16 +289,31 @@ function listContributions(ev, page, emit) {
  * A NIP-85 assertion, whose subject is its `d` — read BY KIND, since only the
  * kind can say whether that string is a pubkey, an event id or an address.
  *
- * TWO SHAPES, and a contact card can be either. Matched on a `t` tag, the
- * interesting fact is the topic, and the pill goes to that topic's own screen:
- * the reader searched a subject and the answer is the other people under it.
- * With no topic, the card is here because a service the reader delegated
- * scored this person, and the metric is the fact.
+ * ITS TOPICS, AND NOTHING ELSE. Every `t` tag becomes a pill pointing at that
+ * topic's own screen: the reader searched a subject, and the answer worth
+ * giving is the other people under it. An assertion with no `t` contributes
+ * NOTHING — not a quieter pill, nothing.
+ *
+ * WHY A SCORE IS NOT A REASON. This used to fall back to `rank 92`, or the
+ * word "scored" where there was no rank, on the grounds that a delegated
+ * service having scored somebody is why their card is here. Two things are
+ * wrong with that. A number out of its scale says nothing a reader can act on
+ * — `rank 2` beside `rank 98` invites a comparison the pill cannot support,
+ * since the scale is the service's and is nowhere on the card. And the page
+ * already answers it properly: shared/avatar.js puts a score chip on every
+ * face and app.js fills it from the reader's own `30382:rank` service, so the
+ * ranking has a place that carries its lens with it. A second, worse spelling
+ * of the same fact was crowding the row that explains the OTHER reason a card
+ * is here — the list that vouched for it.
+ *
+ * ALL THREE KINDS, not just the contact card. A topic is a topic whether the
+ * subject is a person, an event or an article, and the `t` tag means the same
+ * thing in each; reading it only off 30382 was the old shape's assumption, not
+ * a rule about the data.
  */
 function assertionContributions(ev, page, emit) {
-  const addr = addrOf(ev);
   const subject = tagOf(ev, "d");
-  if (!addr || !subject) return;
+  if (!subject) return;
   const target =
     ev.kind === 30382 ? page.profileOf.get(subject)
     : ev.kind === 30383 ? page.byId.get(subject)
@@ -306,18 +321,13 @@ function assertionContributions(ev, page, emit) {
     : null; // 30385's subject is a NIP-73 identifier — not an event this page draws.
   if (!target) return;
 
-  let topics = 0;
-  if (ev.kind === 30382) {
-    for (const t of (ev.tags || [])) {
-      if (!Array.isArray(t) || t[0] !== "t" || !t[1]) continue;
-      topics++;
-      emit(target, { key: `topic:${t[1]}`, text: t[1], to: "topic", value: t[1], gated: true, author: ev.pubkey, from: ev.id });
-    }
+  // EVERY `t`, not the first. A service that files somebody under three topics
+  // has said three things, and the collapse below folds a repeat into a count
+  // rather than a second chip, so there is nothing to protect against here.
+  for (const t of (ev.tags || [])) {
+    if (!Array.isArray(t) || t[0] !== "t" || !t[1]) continue;
+    emit(target, { key: `topic:${t[1]}`, text: t[1], to: "topic", value: t[1], gated: true, author: ev.pubkey, from: ev.id });
   }
-  if (topics) return;
-  const rank = tagOf(ev, "rank");
-  const text = rank ? `rank ${rank}` : "scored";
-  emit(target, { key: `score:${text}`, text, to: "addr", value: addr, gated: true, author: ev.pubkey, from: ev.id });
 }
 
 /**
