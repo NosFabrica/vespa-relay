@@ -776,7 +776,7 @@ function pillPrint() {
  */
 function rowSeed(events, mode) {
   if (mode === "keep") return null;
-  if (mode === "clear") return () => { forgetProvenance(); return null; };
+  if (mode === "clear") return () => { forgetProvenance(); return []; };
   return () => {
     seedProvenance(events, trustedNow());
     return enrichProvenance(events);
@@ -795,23 +795,38 @@ function rowSeed(events, mode) {
  * provenance.js dedupes per pointer and collapses by value, so an event
  * arriving both ways is one pill with one count, not two.
  */
-async function enrichProvenance(events) {
-  const seq = provenanceEpoch();
+function enrichProvenance(events) {
   const lens = viewingAs || me;
-  const before = pillPrint();
-  const pointers = await fetchPointers(events, lens).catch(() => []);
-  // BOTH AWAITS BEFORE THE GUARD. providersFor is cached and deduped so this
-  // is free, but it is still an await, and having it AFTER the check reopened
-  // the window the check exists to close: a search landing in it would seed
-  // its own row and then have this one write over it.
-  const trusted = trustedSigners(await providersFor(lens).catch(() => new Map()), lens);
-  if (seq !== provenanceEpoch()) return 0;
-  // RE-SEEDED EVEN WITH NOTHING FETCHED. The Map may have landed on this very
-  // read, and the first seed is gated on what was known THEN — so a cold cache
-  // draws no declaration pill and this is where the page stops understating
-  // itself.
-  seedProvenance([...events, ...pointers], trusted);
-  return pillPrint() === before ? 0 : 1;
+  // The epoch this row owns. It MOVES as we seed — each half's own write makes
+  // it the current owner again — which is what lets the second half fold in on
+  // top of the first instead of reading its write as somebody else's.
+  let mine = provenanceEpoch();
+  const carried = [];   // every pointer folded so far, both halves
+
+  const fold = async (opts) => {
+    const got = await fetchPointers(events, lens, opts).catch(() => []);
+    // BOTH AWAITS BEFORE THE GUARD. providersFor is cached and deduped so this
+    // is free, but it is still an await, and having it after the check
+    // reopened the window the check exists to close.
+    const trusted = trustedSigners(await providersFor(lens).catch(() => new Map()), lens);
+    if (mine !== provenanceEpoch()) return 0;
+    const before = pillPrint();
+    carried.push(...got);
+    // RE-SEEDED FROM EVERYTHING, EVEN WITH NOTHING FETCHED. The Map may have
+    // landed on this very read, and the first seed is gated on what was known
+    // THEN — so a cold cache draws no declaration pill and this is where the
+    // page stops understating itself. And from `carried` rather than this
+    // half's own answer, so the second write does not drop the first's.
+    seedProvenance([...events, ...carried], trusted);
+    mine = provenanceEpoch();
+    return pillPrint() === before ? 0 : 1;
+  };
+
+  // TWO ASKS, TWO REPAINTS. The gated half is small and author-narrowed; the
+  // open half is 6x its bytes and cannot be narrowed at all. Sent as one REQ
+  // they shared one EOSE, so the pills a reader asked for waited on the ones
+  // nobody did — 252ms against 67ms, measured over a page of 42 profiles.
+  return [fold({ labels: false }), fold({ declarations: false })];
 }
 
 // ---- trust scores, as the ACTIVE LENS sees them -------------------------
@@ -1954,7 +1969,7 @@ async function run(st, fetch, keep, render) {
     // AFTER the guard above, never before: this is the one lookup in hydrate
     // that REPLACES rather than adds, so a superseded answer must not get to
     // run it. See rowSeed.
-    late = [found.names, found.groups, found.row && found.row(), found.parents].filter(Boolean);
+    late = [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== st.requestId) return;
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;
@@ -2510,7 +2525,18 @@ function applyUrl() {
       // had, and clearing it here would drop the reader's chosen observer on
       // the way into a permalink.
       const asHere = pubkeyParam(new URLSearchParams(location.search).get("as"));
-      if (asHere) applyViewingAs(asHere, null);
+      if (asHere) {
+        applyViewingAs(asHere, null);
+        // The URL carries the key and the control wants the name — the same
+        // fill the search branch does below, and for the same reason: the
+        // restore itself must not wait on a profile lookup, and "ranking as
+        // npub1abc…" beside a page that names everyone else properly reads as
+        // a different kind of thing.
+        enrichProfiles([asHere]).then(() => {
+          const nm = displayName(profiles.get(asHere));
+          if (nm && viewingAs === asHere) { $obsCurrent.textContent = nm; renderAdvCount(); }
+        }).catch(() => {});
+      }
       $q.value = "";
       hideFeedPreview();
       document.body.classList.remove("has-query", "feed");

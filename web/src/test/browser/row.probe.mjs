@@ -30,7 +30,14 @@
 //
 // The observer is passed as `as=` rather than signed in: the lens is public,
 // so `viewingAs` reaches the same code without a NIP-07 extension.
-import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
+// Playwright is not a dependency of this repo and never should be — the rest
+// of the web suite is plain node on purpose. Resolved from wherever it happens
+// to be installed, global included, rather than pinned to one machine's path.
+const { chromium } = await import("playwright").catch(async () => {
+  const { execSync } = await import("node:child_process");
+  const root = execSync("npm root -g", { encoding: "utf8" }).trim();
+  return import(`${root}/playwright/index.mjs`);
+});
 
 const BASE = process.argv[2] || "http://localhost:7777";
 const AS = process.argv[3];

@@ -235,13 +235,20 @@ const cardSlot = (ev) => `<div id="entity-card">${card(ev, FULL)}</div>`;
  */
 function fillRow(ev, my, { seedRow, paintScores }) {
   if (!seedRow) return;
-  Promise.resolve(seedRow([ev])).then((learned) => {
-    const slot = document.getElementById("entity-card");
-    if (!learned || my !== token || !slot) return;
-    slot.innerHTML = card(ev, FULL);
-    paintScores();
-    watchNip05();
-  }).catch(() => {});
+  // ONE PER HALF. The gated read and the open one are separate asks now (the
+  // open one is 6x the bytes and would hold the other back), so each lands on
+  // its own and redraws only if it learned something.
+  let asks = [];
+  try { asks = seedRow([ev]) || []; } catch (e) { return; }
+  for (const ask of asks) {
+    Promise.resolve(ask).then((learned) => {
+      const slot = document.getElementById("entity-card");
+      if (!learned || my !== token || !slot) return;
+      slot.innerHTML = card(ev, FULL);
+      paintScores();
+      watchNip05();
+    }).catch(() => {});
+  }
 }
 
 /**

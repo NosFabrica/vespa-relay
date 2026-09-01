@@ -123,6 +123,22 @@ const byKind = (filters) => {
   const anonLabels = pointerFilters(targetsOf(page), trustedSigners(new Map(), null), {});
   for (const f of anonLabels) assert.strictEqual("search" in f, false, "nobody's eyes: the socket's own include:spam is the honest declaration");
   assert.strictEqual(pointerFilters(targetsOf(page), TRUST, { labels: false }).some((f) => f.kinds[0] === 1985), false);
+
+  // TWO HALVES, TWO ASKS. They used to travel as one REQ and share one EOSE,
+  // so the gated pills — small, author-narrowed, the ones a reader asked for —
+  // waited on an open read 6x their size that on the measured corpus drew
+  // nothing: 252ms against 67ms over a page of 42. Each half must therefore be
+  // buildable alone, and the two must partition the whole.
+  const gated = pointerFilters(targetsOf(page), TRUST, { labels: false, observer: READER });
+  const open = pointerFilters(targetsOf(page), TRUST, { declarations: false, observer: READER });
+  assert.ok(gated.length && open.length, "each half is an ask of its own");
+  assert.ok(gated.every((f) => f.kinds[0] !== 1985), "the gated half carries no label filter");
+  assert.ok(open.every((f) => f.kinds[0] === 1985), "and the open half carries nothing else");
+  assert.strictEqual(gated.length + open.length,
+    pointerFilters(targetsOf(page), TRUST, { observer: READER }).length,
+    "…and together they are exactly what one ask would have been");
+  assert.deepStrictEqual(pointerFilters(targetsOf(page), TRUST, { labels: false, declarations: false }), [],
+    "neither half is no ask at all");
 }
 
 // ---- batching ------------------------------------------------------------
