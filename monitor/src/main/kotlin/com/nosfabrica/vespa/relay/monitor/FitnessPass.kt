@@ -148,9 +148,67 @@ class FitnessPass(
      * assert that the deadline compiles.
      */
     private val publishDeadlineMs: Long = PUBLISH_DEADLINE_MS,
+    /**
+     * The wall clock on the NEG-OPEN — see [NIP77_DEADLINE_MS], and
+     * [publishDeadlineMs] for why a production-sized constant needs a
+     * parameter beside it: a test that cannot shrink this can only assert that
+     * the bound compiles.
+     */
+    private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
+    /**
+     * How much wall time one batch may lose to a store that is not answering —
+     * see [PUBLISH_WEDGE_BUDGET_MS], and [publishDeadlineMs] for why a
+     * production-sized constant needs a parameter beside it.
+     */
+    private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
+    /**
+     * The NEG-OPEN itself, which is the ONLY thing this pass asks [client] for.
+     *
+     * A seam for the same reason [AliasProbe] takes its `fetch` as one: the
+     * behaviour that matters here is a reconciliation that does not come back,
+     * and there is no way to ask a real client for one. The default is the real
+     * call and nothing the router builds passes anything else.
+     */
+    private val reconcile: suspend (NormalizedRelayUrl, Filter) -> Unit = { url, sliver ->
+        client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
+    },
 ) {
     /** One gate object for every pass this component runs — see [DialGate], and [AliasFolding]. */
     private val gate = DialGate.over(concurrency, tor)
+
+    /**
+     * The url each batch's write loop stopped ON, or no entry when it wrote
+     * every verdict it earned — see the rotation in [measure].
+     *
+     * **KEYED BY LABEL, and that is the whole of it working at all.** One
+     * [FitnessPass] serves two callers on two clocks: the sweep, over the whole
+     * corpus every `monitor { interval }`, and the fast lane, over the handful
+     * of urls named since its last look every `fastLaneSeconds` (120 by
+     * default) — see [MonitorEngine]'s `fitnessEntry`, which is the SAME object
+     * in both lists. A single cursor is therefore written ~180 times between
+     * sweeps by batches of three urls, and a lane tick that writes its whole
+     * batch clears it: the sweep's resume point would be gone every time,
+     * every sweep, and the rotation would be dead code that looks alive.
+     *
+     * Two entries ever. Only the write loop reads or writes them, and passes
+     * never overlap ([AliasMonitor] holds a mutex over the sweep and the lane
+     * alike), so the map is for visibility across threads rather than for
+     * arbitrating a race.
+     */
+    private val writeCursors = ConcurrentHashMap<String, String>()
+
+    /**
+     * What the NEG-OPEN came back with, boxed.
+     *
+     * `withTimeoutOrNull` collapses "the block returned null" and "the clock
+     * fired" into one null, and those are different facts about different
+     * things: the first is the relay's moment or ours, the second is THIS
+     * PASS's budget being spent. A box makes the outer null mean exactly one
+     * thing, so the budget can be counted and said out loud.
+     */
+    private class Reconciled(
+        val fact: Pair<Boolean, String>?,
+    )
 
     /**
      * One url's outcome, for the pass's own funnel — carrying the measured
@@ -198,6 +256,21 @@ class FitnessPass(
          * change here.
          */
         val authRequired: Boolean? = null,
+        /**
+         * Did THIS pass dial for this outcome, or did it inherit one?
+         *
+         * True for everything [measureOne] produces — including the `dead` a
+         * refused pre-probe earns, which is a measurement like any other. False
+         * only for the two free refusals, which reach the write loop having
+         * cost no socket: the fold already proved the alias and the stability
+         * gate already proved the inconsistency, and this pass is only
+         * restating them in the one value a stream filters on.
+         *
+         * The write loop is what reads it — see the skip there, and
+         * [RelayVerdictRecord.fitnessGrades] for why re-stamping an inherited
+         * verdict is a claim we did not earn.
+         */
+        val tested: Boolean = true,
     )
 
     /**
@@ -229,6 +302,17 @@ class FitnessPass(
         // fault into 12,374 log lines.
         val abandonedCount = AtomicInteger()
         val abandoned = ConcurrentHashMap.newKeySet<String>()
+        // …and the urls the same clock cut AFTER the dial had already earned a
+        // verdict — see the cut-late branch below. Counted apart from both
+        // [abandoned] and the verdicts: these DO publish, so they are not a
+        // url the pass lost, but a job running past its budget is still a fact
+        // about this instrument and the number is the only place it shows.
+        val cutLate = AtomicInteger()
+        // …and the urls whose NEG-OPEN was cut by its own wall clock — see
+        // [NIP77_DEADLINE_MS]. Not a verdict and not a loss: the grade was
+        // already earned and is published. It is counted because a budget that
+        // spends itself in silence is exactly what made #172 hard.
+        val negOpenCut = AtomicInteger()
         // …and the urls this pass ASKED and got no answer of any kind about:
         // no EOSE, no CLOSED, no transport word, or a throw on our side of the
         // socket. Kept apart from [outcomes] because they are not verdicts and
@@ -242,12 +326,12 @@ class FitnessPass(
             // read and a record edit, never a socket.
             val folded = foldedAway(candidates)
             for ((alias, canonical) in folded) {
-                outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}")
+                outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}", tested = false)
             }
             val remaining = candidates.filter { it !in folded }
             val shaky = inconsistent(remaining)
             for (url in shaky) {
-                outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag")
+                outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
             }
 
             val toDial = remaining.filter { it !in shaky }
@@ -281,7 +365,7 @@ class FitnessPass(
                             val ran =
                                 withTimeoutOrNull(probe.deadlineMs(url)) {
                                     try {
-                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, onEvent)
+                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, onEvent)
                                     } finally {
                                         // Whatever ended it — a verdict, a
                                         // throw, the deadline, a shutdown — the
@@ -290,14 +374,42 @@ class FitnessPass(
                                     }
                                 }
                             if (ran == null) {
-                                // NO VERDICT IS WRITTEN. Our instrument gave up;
-                                // that is not a fact about the relay, and
-                                // publishing one would sign our own timeout as
-                                // its grade — see [AliasProbe.deadlineMs]. It
-                                // arrives at the next pass exactly as it arrived
-                                // at this one.
-                                if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
-                                abandonedCount.incrementAndGet()
+                                if (outcomes.containsKey(url)) {
+                                    // CUT LATE, AND THE VERDICT STANDS.
+                                    //
+                                    // The deadline's rule is that OUR timeout is
+                                    // not a fact about somebody's relay — and the
+                                    // converse has to hold too: a relay that
+                                    // answered the ladder has told us what it is,
+                                    // and our clock firing one step later does not
+                                    // un-tell us. This branch used to throw that
+                                    // verdict away with everything else, and the
+                                    // url then aged a whole sweep on a measurement
+                                    // the pass had already taken.
+                                    //
+                                    // **NOT #172, and the measurement that says so
+                                    // is worth keeping.** This was the first theory
+                                    // for it — the NEG-OPEN is the last step and
+                                    // had no wall clock, so a slow relay would lose
+                                    // its verdict to the budget every sweep — and
+                                    // [FitnessBudgetLiveProbe] refuted it against
+                                    // the real relays: the whole job runs 1.1-11.9s
+                                    // against a 240s budget, the NEG-OPEN's own
+                                    // share never exceeding the 10s idle window it
+                                    // already had. #172 was the write loop below.
+                                    // This branch is the hole that theory found on
+                                    // the way, which is real and is now shut.
+                                    cutLate.incrementAndGet()
+                                } else {
+                                    // NO VERDICT IS WRITTEN. Our instrument gave up
+                                    // before the dial proved anything; that is not a
+                                    // fact about the relay, and publishing one would
+                                    // sign our own timeout as its grade — see
+                                    // [AliasProbe.deadlineMs]. It arrives at the next
+                                    // pass exactly as it arrived at this one.
+                                    if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
+                                    abandonedCount.incrementAndGet()
+                                }
                             }
                         }
                         // FROM THE JOB'S COMPLETION, for the reason the other
@@ -337,7 +449,18 @@ class FitnessPass(
                         "guard). A network does not go dark in one pass — this router could not dial. " +
                         "${outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
                 )
-                report(label, candidates.size, emptyMap(), startedMs, abandonedCount.get(), abandoned, unmeasured.size, downloaded.get())
+                report(
+                    label,
+                    candidates.size,
+                    emptyMap(),
+                    startedMs,
+                    abandonedCount.get(),
+                    abandoned,
+                    unmeasured.size,
+                    downloaded.get(),
+                    cutLate = cutLate.get(),
+                    negOpenCut = negOpenCut.get(),
+                )
                 return downloaded.get()
             }
 
@@ -370,9 +493,112 @@ class FitnessPass(
             // invisible hours become one nameable url on one nameable stage.
             var published = 0
             var declined = 0
+            var skipped = 0
             var wedgedRun = 0
             var wedgedTotal = 0
-            for ((url, outcome) in outcomes) {
+            // …AND WHAT THEY ACTUALLY COST, which is the thing being bounded —
+            // see [PUBLISH_WEDGE_BUDGET_MS]. Measured rather than assumed from
+            // [publishDeadlineMs]: a write can be cut by a deadline that later
+            // becomes adaptive, and a budget computed from a constant would
+            // then be counting something other than the time it spent.
+            var wedgedMs = 0L
+            // Which limit ended the batch, for the report — the two say
+            // different things about the store and want different answers.
+            var stoppedBy: String? = null
+            // WHAT THIS PASS DID NOT TEST, AND THEREFORE MAY NOT RE-SIGN.
+            //
+            // A measured verdict is always written: the point of dialling is to
+            // put down what the relay did, and the stamp that rides with it is
+            // true. An INHERITED one is different — the two free refusals reach
+            // here having cost no socket, and stamping `measured-at = now` on
+            // them claims a measurement this pass did not make. The stamp is
+            // the whole mechanism by which a verdict ages
+            // ([RelayVerdictRecord.current]), so refreshing what we did not
+            // test is how an untested verdict becomes immortal.
+            //
+            // So an inherited verdict is written only when it would CHANGE
+            // something: the record does not carry that grade, carries a
+            // different one, or carries it under a superseded epoch or aged
+            // past the TTL. Skipping the rest costs one chunked read in place
+            // of thousands of read-modify-writes — measured on staging, 6,192
+            // of 20,075 records (31%) are `alias` or `inconsistent`, so this is
+            // also most of a third of the loop that gets cut.
+            //
+            // A read that FAILS is not "nothing is on the record": that would
+            // skip writes the record needs. It falls back to writing
+            // everything, which is exactly the behaviour this replaces.
+            val untested = outcomes.entries.filterNot { it.value.tested }.map { it.key }
+            val standing =
+                try {
+                    record.fitnessGrades(untested)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println(
+                        "router: fitness [$label] — could not read the standing grades (${e.javaClass.simpleName}); " +
+                            "re-signing every inherited verdict this pass rather than skipping one the record needs",
+                    )
+                    emptyMap()
+                }
+            // WHERE THIS BATCH PICKS UP, AND WHY THE ORDER IS NOT THE MAP'S.
+            // THIS IS #172.
+            //
+            // Both wedge limits below END the loop, and the verdicts after the
+            // break are dropped. `outcomes` is a [ConcurrentHashMap], so
+            // iterating it walks hash order — arbitrary, and STABLE across
+            // passes for a stable set of urls. Every cut batch therefore
+            // dropped the SAME tail, pass after pass, and "measured again next
+            // pass" was true of the urls at the front and false forever of the
+            // ones at the back: a healthy relay whose url happened to hash
+            // late could never be re-graded, however often the pass ran.
+            //
+            // MEASURED, on the 20,075 graded records
+            // `search-staging.brainstorm.world` was serving — see
+            // [WriteOrderForensicProbe], which rebuilds this very map from them
+            // and walks it. Replayed in bucket order the verdict ages are a
+            // staircase, not a spread: positions 0-12,043 stamped 1.2-1.5h ago,
+            // 12,043-15,555 stamped 29.1-29.9h ago, 15,555-20,072 stamped
+            // 72.3h ago — each cohort a CONTIGUOUS slice, ages decreasing
+            // across it exactly as a loop stamping `now` as it walks would
+            // leave them. 735 crossings between written and not where a
+            // per-url cause predicts ~9,700. Three sweeps, each starting at
+            // position zero, each reaching less far than the last (20,072 ->
+            // 15,555 -> 12,191), and the 7,881 urls past the newest cut had
+            // gone un-regraded for three days.
+            //
+            // The share was the same in every grade — `prime` 55.8% fresh,
+            // `dead` 57.7%, `alias` 61.8%, `silent` 57.7% — which is what
+            // rules out the relay having anything to do with it.
+            //
+            // So the order is the url, and the batch resumes where the last one
+            // stopped. A wedge that costs this pass the tail costs the NEXT
+            // pass nothing — those urls are its head — and every url is reached
+            // within a bounded number of passes rather than never. In-memory
+            // and deliberately not persisted: a restart starts at the top,
+            // which is the same guarantee from a different offset.
+            val order = outcomes.keys.sortedBy { it.url }
+            val resumeFrom = writeCursors[label]?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
+            // -1 is a cursor sorting past everything this batch holds, which
+            // wraps to the top exactly as index 0 does.
+            val rotated = if (resumeFrom <= 0) order else order.subList(resumeFrom, order.size) + order.subList(0, resumeFrom)
+            // Cleared up front so a pass that throws between here and the loop's
+            // end cannot leave the next one resuming at a url this batch never
+            // reached.
+            writeCursors.remove(label)
+            for (url in rotated) {
+                val outcome = outcomes[url] ?: continue
+                // NOT TESTED AND NOT CHANGED — see the block above. Counted, so
+                // the funnel still divides and a reader can see the loop got
+                // shorter rather than the corpus getting smaller.
+                // …and the EVIDENCE has to match too, not just the grade. A
+                // url that re-folds onto a different canonical is `alias` both
+                // times and is not the same statement: skipping on the grade
+                // alone would leave the record naming a url the fold no longer
+                // elects.
+                if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {
+                    skipped++
+                    continue
+                }
                 progress.holding(url.url, STAGE_PUBLISH)
                 // Three-valued on purpose: `true` is a stored record, `false`
                 // is the store ANSWERING and the write still failing (a throw
@@ -382,6 +608,7 @@ class FitnessPass(
                 // store failing every write PROMPTLY reported a clean pass:
                 // the fast-fail shape of the very outage this loop exists to
                 // make loud.
+                val writeStartedMs = System.currentTimeMillis()
                 val wrote =
                     try {
                         withTimeoutOrNull(publishDeadlineMs) {
@@ -414,6 +641,17 @@ class FitnessPass(
                     // write fine.
                     false -> {
                         declined++
+                        // …AND IT ENDS A RUN, for the same reason a success
+                        // does. The run counter is looking for a store that has
+                        // stopped ANSWERING, and a decline is the store
+                        // answering — it came back, promptly, and refused.
+                        // Without this a store alternating timeout/decline
+                        // reached "three consecutive timeouts" having never
+                        // timed out twice in a row, and the counter did not
+                        // mean what its name says. [PUBLISH_WEDGE_BUDGET_MS]
+                        // is what bounds the alternating case, and it still
+                        // does.
+                        wedgedRun = 0
                     }
 
                     null -> {
@@ -427,7 +665,21 @@ class FitnessPass(
                         // line instead of a phase that never moves.
                         wedgedTotal++
                         wedgedRun++
-                        if (wedgedRun >= PUBLISH_WEDGE_LIMIT || wedgedTotal >= PUBLISH_WEDGE_TOTAL_LIMIT) break
+                        wedgedMs += System.currentTimeMillis() - writeStartedMs
+                        stoppedBy =
+                            when {
+                                wedgedRun >= PUBLISH_WEDGE_LIMIT -> "$wedgedRun write(s) in a row went unanswered"
+                                wedgedMs >= publishWedgeBudgetMs -> "${wedgedMs / 1000}s of this batch was spent waiting on writes that never came back"
+                                else -> null
+                            }
+                        if (stoppedBy != null) {
+                            // AT this url and not after it: the write that
+                            // tripped the limit is one of the ones that did not
+                            // land, and the limit is a statement about the
+                            // store rather than about the url it stopped on.
+                            writeCursors[label] = url.url
+                            break
+                        }
                     }
                 }
             }
@@ -441,9 +693,14 @@ class FitnessPass(
                 abandoned,
                 unmeasured.size,
                 downloaded.get(),
-                unwrittenCount = outcomes.size - published,
+                unwrittenCount = outcomes.size - published - skipped,
                 wedgedWrites = wedgedTotal,
                 declinedWrites = declined,
+                cutLate = cutLate.get(),
+                resumeAt = writeCursors[label],
+                skippedWrites = skipped,
+                stoppedBy = stoppedBy,
+                negOpenCut = negOpenCut.get(),
             )
         } finally {
             progress.finish()
@@ -474,6 +731,7 @@ class FitnessPass(
         unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
+        negOpenCut: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_REACHABILITY)
@@ -503,7 +761,7 @@ class FitnessPass(
         sockets.claim(url)
         try {
             val outcome =
-                dialVerdict(url, anchor) { event ->
+                dialVerdict(url, anchor, settled = { outcomes[url] = it }, negOpenCut = negOpenCut) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
                 }
@@ -518,7 +776,17 @@ class FitnessPass(
             // Same rule: a throw on our side of the socket is our instrument
             // giving up. [ConsistencyPass.Unmeasured.FAILED] has always read it
             // that way; this published `silent` about the relay instead.
-            unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
+            //
+            // …UNLESS THE LADDER HAD ALREADY SETTLED ONE. `settled` records the
+            // verdict mid-job now, so a throw in the steps after it would put
+            // this url in `outcomes` AND `unmeasured` at once — published, and
+            // simultaneously counted as a dial that came back with nothing.
+            // That is a contradiction in the report and, worse, a url added to
+            // the batch guard's blind share on a dial that answered, which
+            // pushes a healthy pass towards refusing to publish ANY of itself.
+            if (!outcomes.containsKey(url)) {
+                unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
+            }
         } finally {
             sockets.release(url)
         }
@@ -534,6 +802,22 @@ class FitnessPass(
     private suspend fun dialVerdict(
         url: NormalizedRelayUrl,
         anchor: Long,
+        /**
+         * The verdict, HANDED OVER THE MOMENT THE LADDER HAS EARNED IT and
+         * before the one step of this job that has no wall clock of its own.
+         *
+         * See [measure]'s cut-late branch for what it buys. The caller records
+         * it exactly as it would record the return value; a job that runs to
+         * completion then hands the same verdict back with the NIP-77 fact on
+         * it, and the second write replaces the first.
+         *
+         * Only the `prime` path calls this. Every other outcome is returned
+         * from a line with no dial after it, so there is nothing left for a
+         * clock to cut.
+         */
+        settled: (Outcome) -> Unit,
+        /** Bumped when the NEG-OPEN's own wall clock fires — see [NIP77_DEADLINE_MS]. */
+        negOpenCut: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         // Events ABOVE the anchor are the relay answering a question it was not
@@ -658,6 +942,14 @@ class FitnessPass(
             )
         }
         val pageable = true to (if (seen == 0) "empty anchored page, honestly EOSEd" else "$seen events, all at or below the anchor")
+        val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
+
+        // THE VERDICT IS EARNED HERE, AND IT IS HANDED OVER HERE — one line
+        // before the only step of this job that can outlive the url's wall
+        // clock. Everything `prime` asserts has been measured by now; what
+        // follows is one more FACT beside it, and a fact must never be able to
+        // cost the verdict it rides on. See [measure]'s cut-late branch.
+        settled(Outcome(Verdict.PRIME, evidence, pageable = pageable, rttReadMs = readMs))
 
         // One NEG-OPEN against a sliver of the window. A normal return —
         // however empty — is the relay speaking NIP-77; the dedicated
@@ -665,22 +957,32 @@ class FitnessPass(
         // nothing, so a flaky moment cannot demote a reconciling relay.
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
         progress.holding(url.url, STAGE_NIP77)
-        val nip77 =
-            try {
-                client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
-                true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: NegentropySyncException) {
-                false to "declined the NEG-OPEN: ${e.reason}"
-            } catch (_: Exception) {
-                // No fact: the failure was ours or the moment's, not the relay's.
-                null
+        val reconciled =
+            withTimeoutOrNull(nip77DeadlineMs) {
+                Reconciled(
+                    try {
+                        reconcile(url, sliver)
+                        true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: NegentropySyncException) {
+                        false to "declined the NEG-OPEN: ${e.reason}"
+                    } catch (_: Exception) {
+                        // No fact: the failure was ours or the moment's, not the relay's.
+                        null
+                    },
+                )
             }
+        // A BUDGET THAT FIRES SAYS SO. Publishing nothing is right — our clock
+        // is not the relay declining — but a bound that spends itself in
+        // silence is the shape of fault #172 took three diagnoses to find, and
+        // every other budget in this pass is already named in the report.
+        if (reconciled == null) negOpenCut.incrementAndGet()
+        val nip77 = reconciled?.fact
 
         return Outcome(
             Verdict.PRIME,
-            "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor",
+            evidence,
             pageable = pageable,
             nip77 = nip77,
             rttReadMs = readMs,
@@ -783,6 +1085,53 @@ class FitnessPass(
          * not answering, a decline says it is answering and refusing.
          */
         declinedWrites: Int = 0,
+        /**
+         * How many urls the per-url deadline cut AFTER the dial had earned a
+         * verdict — see the cut-late branch in [measure].
+         *
+         * Apart from [abandonedCount] because the two end differently: an
+         * abandoned url is one this pass lost, a cut-late one publishes. It is
+         * still worth a number, and a rising one is the shape of #172 coming
+         * back: the budget is being spent, and the urls spending it are the
+         * slow relays the mirror depends on most.
+         */
+        cutLate: Int = 0,
+        /**
+         * The url the next batch's write loop will resume at, when this one
+         * stopped early — see the rotation in [measure]. Null when every
+         * earned verdict was written.
+         */
+        resumeAt: String? = null,
+        /**
+         * Inherited verdicts the loop did NOT re-sign because the record
+         * already carries them — see the skip in [measure].
+         *
+         * Reported because it is a large number that looks like a loss and is
+         * not one: on a discovered corpus roughly a third of the batch is a
+         * standing alias or refusal, and a reader watching `published` drop by
+         * that much has to be able to see where it went.
+         */
+        skippedWrites: Int = 0,
+        /**
+         * Which limit ended the batch, in words, or null when it ran to its
+         * end — see the write loop in [measure].
+         *
+         * The two say different things about the store and want different
+         * answers from an operator: a run of unanswered writes is a store that
+         * has stopped, where a spent time budget is one that is answering
+         * SOME of them, slowly, which is load rather than an outage.
+         */
+        stoppedBy: String? = null,
+        /**
+         * How many urls had their NEG-OPEN cut by its own wall clock — see
+         * [NIP77_DEADLINE_MS].
+         *
+         * Never a verdict: the grade was earned before that step and is
+         * published either way. Reported because every other bound in this pass
+         * is, and one that spends itself in silence is the shape of the fault
+         * #172 turned out to be.
+         */
+        negOpenCut: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -808,6 +1157,32 @@ class FitnessPass(
                 "router: fitness [$label] — gave up on $abandonedCount url(s) at the per-url deadline, no verdict written: $named$more",
             )
         }
+        // NOT A LOSS, AND STILL A FACT. These urls ran past the per-url budget
+        // with a verdict already in hand, so the verdict was published — the
+        // number is here because it is the only warning that the budget is
+        // being spent, and the urls spending it are the slowest-answering ones
+        // in the corpus (#172).
+        if (negOpenCut > 0) {
+            System.err.println(
+                "router: fitness [$label] — $negOpenCut NEG-OPEN(s) cut at the ${NIP77_DEADLINE_MS / 1000}s wall clock; " +
+                    "no nip77 fact published for them, which is our clock and NOT the relay declining",
+            )
+        }
+        if (cutLate > 0) {
+            System.err.println(
+                "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
+                    "the verdict stands and was written, but the dial did not finish",
+            )
+        }
+        // NOT A LOSS. The record already says this, and this pass did not dial
+        // to find out — so re-signing would have stamped a measurement it did
+        // not make. See [RelayVerdictRecord.fitnessGrades].
+        if (skippedWrites > 0) {
+            System.err.println(
+                "router: fitness [$label] — $skippedWrites inherited verdict(s) left standing: the record already carries " +
+                    "them and this pass dialled nothing for them, so re-signing would refresh a measurement it did not take",
+            )
+        }
         // THE PASS ENDED ABNORMALLY, and this line is the difference between a
         // fault an operator can read and the ten silent hours of #165. The
         // verdicts were earned; the store would not take them.
@@ -817,11 +1192,17 @@ class FitnessPass(
                 buildList {
                     if (wedgedWrites > 0) add("$wedgedWrites write(s) hit the per-write store deadline")
                     if (declinedWrites > 0) add("$declinedWrites write(s) failed outright with the store answering")
-                    if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each — the store, not the writes, is the fault")
+                    if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each")
+                    // ON ITS OWN, never nested under `dropped`. A batch that
+                    // stops on its last few urls can have `dropped` come out
+                    // zero or negative, and "it stopped" with no "because"
+                    // is the half of the line an operator actually acts on.
+                    if (stoppedBy != null) add("the batch stopped because $stoppedBy")
                 }
             System.err.println(
                 "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
-                    "every url is measured again next pass",
+                    "every url is measured again next pass" +
+                    (resumeAt?.let { ", and the next batch's writes START at $it so the same tail is not dropped twice" }.orEmpty()),
             )
         }
         progress.counts {
@@ -1064,6 +1445,29 @@ class FitnessPass(
         const val NIP77_IDLE_MS = 10_000L
 
         /**
+         * …AND THE WALL CLOCK OVER IT, because the window above is not one.
+         *
+         * A negentropy reconciliation is ROUNDS — NEG-MSG in, NEG-MSG back,
+         * until both sides agree — and an idle window is re-armed by every one
+         * of them. A relay that keeps answering, slowly, therefore never trips
+         * [NIP77_IDLE_MS] and the step has no bound of its own: the same
+         * property quartz states for its fetch loop, one verb over, and the
+         * reason [AliasProbe.deadlineMs] exists at all.
+         *
+         * That makes this the one step of a url's job able to spend the WHOLE
+         * per-url budget, and it sits last — after the ladder has settled the
+         * verdict, so what it spends is taken from a measurement already in
+         * hand. Measured against real relays ([FitnessBudgetLiveProbe]) it does
+         * not currently come close: 59ms to 10.1s across nine, the ceiling
+         * being [NIP77_IDLE_MS] firing on a relay that declines. That is a
+         * reading of one afternoon, not a bound — the window is re-armed by
+         * traffic, so nothing in it says a busier relay cannot stream for
+         * minutes. Three windows: a yes/no about a protocol that has already
+         * been answered by the first NEG-MSG, with room for a slow one.
+         */
+        const val NIP77_DEADLINE_MS = 3 * NIP77_IDLE_MS
+
+        /**
          * Records per page when the boot retractions walk our own corpus.
          *
          * Neither of them can ask its question in a filter — the epoch and the
@@ -1129,7 +1533,9 @@ class FitnessPass(
          * and not the writes — the same population logic as [GUARD_SHARE], at
          * the other end of the pass.
          *
-         * CONSECUTIVE, resetting on every write that goes through, because
+         * CONSECUTIVE, resetting on every write the store ANSWERS — one that
+         * goes through and one it declines alike, since either proves the wall
+         * is not there — because
          * that is what the wedge looks like and what ordinary load does not:
          * [PUBLISH_DEADLINE_MS]'s own note says tens of seconds behind the
          * mirror's bulk commits is legitimate, so on a long batch under a
@@ -1141,20 +1547,36 @@ class FitnessPass(
         const val PUBLISH_WEDGE_LIMIT = 3
 
         /**
-         * …and the ceiling the consecutive rule cannot provide: how many
-         * timed-out writes IN TOTAL a batch may absorb before the pass stops
-         * publishing regardless of what succeeded in between.
+         * …and the ceiling the consecutive rule cannot provide: how much WALL
+         * TIME one batch may lose to writes that never came back, before the
+         * pass stops publishing regardless of what succeeded in between.
          *
          * The consecutive limit bounds the wedge; it does not bound a store
          * that alternates — timing out every other write clears the run
          * counter each time and would let a 13,560-verdict batch spend up to
-         * four and a half days in deadlines while technically making
-         * progress. Twenty deadlines is twenty minutes lost to a store that
-         * is failing one write in two; a batch losing more than that is not
-         * worth finishing, and the urls it drops are measured again next
-         * pass either way.
+         * four and a half days in deadlines while technically making progress.
+         *
+         * **A DURATION AND NOT A COUNT, because the thing worth bounding is
+         * the time and the batch is not a fixed size.** This was twenty
+         * timed-out writes, justified in its own words as "twenty minutes
+         * lost" — which is the right quantity named through the wrong
+         * variable. A count says something different on every corpus: the
+         * cost of tripping it is every verdict after the trip, so on the 500
+         * urls a fast lane tick carries it is a generous allowance, and on a
+         * 20,000-url sweep it lets 0.1% of writes straggling forfeit the other
+         * 40% — which is how a limit written for a wedged store came to fire
+         * on a merely busy one, every sweep (#172). Twenty minutes is twenty
+         * minutes at any batch size, and the arithmetic that used to derive it
+         * is now just the default's derivation rather than its definition.
+         *
+         * Measured, not assumed from [PUBLISH_DEADLINE_MS]: what is being
+         * spent is wall time, and it should be counted as wall time.
+         *
+         * The urls a tripped budget drops are the next pass's HEAD, not its
+         * tail — see the rotation in [measure] — so the cost of stopping is
+         * bounded in a way it was not when this was written.
          */
-        const val PUBLISH_WEDGE_TOTAL_LIMIT = 20
+        const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
 
         /**
          * How many abandoned urls a pass names in its log line.

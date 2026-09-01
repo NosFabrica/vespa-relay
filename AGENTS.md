@@ -1288,7 +1288,11 @@ same pass had cleared the first 11,879 urls in 37 minutes.
 
 Every outbound call the job makes was already bounded — a 5s TCP pre-probe, a
 10s NIP-11 document, an idle window per rung of the ask ladder, a 10s NEG-OPEN —
-and that is exactly the trap: **an idle window is not a wall clock.** Quartz says
+and that is exactly the trap: **an idle window is not a wall clock.** (The
+NEG-OPEN's 10s was one too, and it was the LAST step of the job: a
+reconciliation is rounds, and every round re-arms the window. It carries its own
+`FitnessPass.NIP77_DEADLINE_MS` now — see #172 below for what it cost while it
+did not.) Quartz says
 so in its own header for the call these walks are made of — *"there is no
 wall-clock ceiling parameter … a hard deadline composes at the call site"* — and
 two paths inside that fetch loop are outside the window by construction. A relay
@@ -1309,12 +1313,28 @@ things about it are load-bearing:
   would be timing the wait for one of `dialConcurrency` permits, which on 12,374
   urls is most of a job's life, is the pass's own shape rather than any relay's,
   and would cut the urls at the back of the queue first.
-- **NOTHING IS PUBLISHED about a url it cuts.** A deadline is our instrument
-  giving up, not a fact about the relay — the same rule
+- **NOTHING THE CUT DECIDED is published about a url.** A deadline is our
+  instrument giving up, not a fact about the relay — the same rule
   `ConsistencyPass.Unmeasured.FAILED` already carried for a probe that threw. The
   url is counted, named in the pass's log line, and measured again next pass.
   That is what makes the number safe to set close: cutting a relay that would
   have answered costs one more pass, and not cutting one costs the mirror.
+- **…AND A VERDICT THE DIAL ALREADY EARNED SURVIVES IT.** The converse of the
+  rule above, and the half that was missing. The relay answered the ladder; our
+  clock firing one step later does not un-answer it, and a pass that threw those
+  away would re-grade the corpus at a cadence set by how long each url's JOB ran
+  — the slowest relays last and, past a point, never. So the `prime` path hands
+  its outcome over the moment the ladder settles it (`FitnessPass.dialVerdict`'s
+  `settled`), one line before the NEG-OPEN, and `measure`'s cut-late branch
+  publishes it and counts the url apart from the abandoned ones. Same rule the
+  walk itself already follows a level down: keep what was proved, publish
+  nothing that was not.
+  **This was the first theory for #172 and it was wrong** — see the write-loop
+  section below for what #172 actually was. `FitnessBudgetLiveProbe` is what
+  separated them: against the nine relays the issue names, a whole url job runs
+  1.1-11.9s against a 240s budget, the NEG-OPEN's own share never exceeding the
+  10s idle window it already had. The hole is real and is shut; it was not the
+  cause.
 - **The held urls are published** (`processors[].inFlight`), because the wedged
   url was not nameable from anywhere: not from the position, not from the log
   (420 router lines over twenty minutes, none about fitness), and not from a
@@ -1371,6 +1391,91 @@ fails every write the same way, and a minute apiece over 13,560 verdicts is
 nine days of a pass that should end in three minutes. A cut write publishes
 nothing and the url re-earns its verdict next sweep, the same bargain an
 abandoned dial gets.
+
+**The ceiling beside it is a DURATION, not a count.** The consecutive limit
+catches a wedged store; it cannot catch one that ALTERNATES, because a success
+clears the run each time — so a second bound is needed, and the thing worth
+bounding is wall time. `PUBLISH_WEDGE_BUDGET_MS` is twenty minutes of writes
+that never came back, measured rather than derived from the deadline. It was
+twenty timed-out WRITES, justified in its own words as "twenty minutes lost",
+which is the right quantity named through the wrong variable: the cost of
+tripping it is every verdict after the trip, so a count says something
+different on every corpus — generous on the handful a fast-lane tick carries,
+and on a 20,000-url sweep letting 0.1% of writes straggling forfeit the other
+40%. That is how a limit written for a wedged store came to fire on a merely
+busy one, every sweep. Twenty minutes is twenty minutes at any batch size. The
+report now names which of the two stopped the batch, because they want
+different answers: a run of unanswered writes is a store that has stopped, a
+spent budget is one answering some of them slowly, which is load.
+
+**AND THE WRITE LOOP RESUMES WHERE THE WEDGE STOPPED IT. THIS IS #172.**
+"Re-earns it next sweep" was true of the urls at the front of that loop and
+false forever of the ones at the back: the loop walked `outcomes`, a
+`ConcurrentHashMap`, so it went in hash order — arbitrary, and STABLE across
+passes for a stable url set. Every cut batch therefore dropped the SAME tail,
+and a healthy relay whose url happened to hash late could never be re-graded
+however often the sweep ran. So
+the loop walks the urls in URL order and starts at the write the last batch's
+wedge stopped on (`FitnessPass.writeCursors`, in memory — a restart starts at
+the top, which is the same guarantee from a different offset). What a wedge
+costs this pass is the next pass's head.
+
+**The cursor is PER LABEL, and a single one would have been dead code that
+looks alive.** One `FitnessPass` object serves two callers on two clocks —
+`MonitorEngine.fitnessEntry` is in `passes` AND in `fastLanePasses` — so between
+two sweeps the lane runs it ~180 times over a handful of urls each. Every lane
+tick that writes its whole batch clears the cursor, so the sweep's resume point
+would never survive to be read.
+
+**The evidence, because #172 was diagnosed twice and only the second one was
+right.** `WriteOrderForensicProbe` rebuilds that very `ConcurrentHashMap` from
+the 20,075 graded records `search-staging.brainstorm.world` was serving and
+walks it in bucket order. The verdict ages come out as a STAIRCASE, not a
+spread: positions 0-12,043 stamped 1.2-1.5h ago, 12,043-15,555 stamped
+29.1-29.9h, 15,555-20,072 stamped 72.3h — each cohort contiguous, and ages
+decreasing across each one exactly as a loop stamping `now` as it walks would
+leave them. 735 crossings between written and not, where a per-url cause
+predicts ~9,700. Three sweeps, each starting at position zero, each reaching
+less far than the last (20,072 -> 15,555 -> 12,191); the 7,881 urls past the
+newest cut had gone un-regraded for three days. And the fresh share was the same
+in every grade — `prime` 55.8%, `dead` 57.7%, `alias` 61.8%, `silent` 57.7% —
+which is what rules the relay out of it entirely. Replayed through the real pass
+on the real url set with the same cut, coverage goes 60.7% -> 100% by the second
+pass where production sat at 58.8% forever.
+
+**The reported `rtt-read` correlation is a confound, and reading it as a cause
+cost a whole diagnosis.** The rtt and the verdict stamp are written by the same
+edit, so a record that has not been re-taken carries the rtt from whenever it
+last was. Binned by verdict AGE — which is the actual symptom — the median read
+is flat: 664ms fresh, 675ms at 11h, 680ms at 29h, 937ms at 48-96h. The 20x tail
+in the issue is what binning by the rtt ITSELF surfaces out of 74 records.
+`rtt-open` does not show it because it is measured by the NIP-11 read on a
+different client, so it does not move with whatever inflates a read.
+
+**A PASS RE-SIGNS WHAT IT TESTED, AND ONLY THAT.** A measured verdict is always
+written — the point of dialling is to put down what the relay did, and the
+`measured-at` riding with it is true. An INHERITED one is not: the fold's alias
+and the stability gate's refusal reach the fitness write loop having cost it no
+socket, and stamping `measured-at = now` on those claims a measurement this pass
+did not make. That stamp is the whole mechanism by which a verdict ages
+(`RelayVerdictRecord.current`), so refreshing what was not tested is how an
+untested verdict becomes immortal — the trap that header already describes for
+the event clock, one field over. So an inherited verdict is written only when it
+would CHANGE something: the record carries no such grade, carries a different
+one, or carries it under a superseded epoch or aged past the TTL.
+`RelayVerdictRecord.fitnessGrades` is the one chunked read that answers it, and
+a read that FAILS falls back to writing everything — skipping a write the record
+needs is the worse of the two mistakes. It is also most of a third of the loop:
+6,192 of the 20,075 graded records on staging are `alias` or `inconsistent`.
+
+**Two things about #172 that are NOT the fix, recorded so they are not tried
+again.** Raising a stream's `gatedBy.maxAgeSeconds` is not: it had already gone
+14h -> 48h for the same class of problem, the affected relays were past 48h too,
+and at their latency band's 22-day median verdict age no bound short of "never
+expire" holds one — while each bump weakens the gate for every relay that
+genuinely went bad. Raising `WINDOWS_PER_URL` is not either, for the same shape
+of reason one level down: the budget is a backstop against a hang, and a cadence
+that depends on it at all is the bug.
 
 **THE MIRROR'S READS HAVE THE SAME HOLE AND ARE DELIBERATELY LEFT WITH IT
 (#167).** Same deadline-less client, same failure — a response that never comes
