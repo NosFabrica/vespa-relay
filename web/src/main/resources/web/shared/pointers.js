@@ -63,6 +63,13 @@ import { DECLARATION_KINDS } from "../provenance.js";
 /** The only thing an `authors` filter or an `observer:` token takes. */
 const HEX64 = /^[0-9a-f]{64}$/;
 
+// WHAT THE ASSERTION ROWS COST TODAY, since it is not visible from here: an
+// assertion pills only through its `t` tags (provenance.js says why), and of
+// the 42 a People page fetches on staging, ZERO carry one. So three of these
+// six asks currently draw nothing. They stay — a service that files people
+// under topics is the case the rule exists for, and NIP-01 cannot ask "has a
+// `t`" — but it is most of the gated read's events, and worth re-measuring
+// when a topic publisher appears.
 const ASKS = [
   { kind: 30392, tag: "#p", from: "pubkeys" },
   { kind: 30393, tag: "#e", from: "ids" },
