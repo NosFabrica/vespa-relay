@@ -403,6 +403,48 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.deepStrictEqual(texts(mine.get(hex("1"))), ["Mine"], "a reader's own list speaks for itself");
 }
 
+// NO DECLARATION KIND HAS AN UNGATED PATH — the invariant, walked rather than
+// argued, because the gate is one line in `contributionsOf` and a kind added
+// past it would be a silent hole. Every kind in DECLARATION_KINDS, a stranger
+// signing it, every member and subject tag it could use aimed at things this
+// page holds: nothing, on all of them. And the stranger never rides in as an
+// AUTHOR of the pill a delegated signer earned, which is the subtler half —
+// pills collapse by value, so a stranger titling a list like yours would
+// otherwise be attributed behind your own.
+{
+  const { DECLARATION_KINDS } = P;
+  const STRANGER = hex("9");
+  const SUBJ = hex("1");
+  const MEMBER_TAGS = { 30000: "p", 30392: "p", 30393: "e", 30394: "a", 39089: "p" };
+  const article = ev("2", SUBJ, 30023, [["d", "x"]]);
+  const page = [profile("1", SUBJ), article];
+  const addr = `30023:${SUBJ}:x`;
+  assert.ok(DECLARATION_KINDS.size >= 10, "the walk is over the real set, not a stale copy of it");
+  for (const kind of DECLARATION_KINDS) {
+    const member = MEMBER_TAGS[kind];
+    // A declaration carrying EVERY shape at once: a list's member tag, an
+    // assertion's `d` subject, and a topic — so no kind escapes for want of
+    // the tag it happens to read.
+    const tags = [
+      ["d", kind >= 30382 && kind <= 30385 ? (kind === 30383 ? hex("1") : kind === 30384 ? addr : SUBJ) : "x"],
+      ["title", "Verified Human"], ["name", "Verified Human"], ["t", "vh"],
+      ...(member ? [[member, member === "p" ? SUBJ : member === "e" ? hex("1") : addr]] : []),
+    ];
+    const stranger = ev("3", STRANGER, kind, tags);
+    assert.strictEqual(provenanceOf([...page, stranger], TRUSTED).size, 0,
+      `kind ${kind}: a signer this reader never delegated contributes nothing`);
+
+    const mine = ev("4", LISTER, kind, tags);
+    const both = provenanceOf([...page, stranger, mine], TRUSTED);
+    for (const pills of both.values()) {
+      for (const pill of pills) {
+        assert.ok(!pill.authors.includes(STRANGER), `kind ${kind}: a stranger must not be attributed behind a delegated pill`);
+        assert.strictEqual(pill.count, 1, `kind ${kind}: …nor inflate its count`);
+      }
+    }
+  }
+}
+
 // ABSENT MEANS NOBODY. An anonymous reader delegates no one and gets label
 // pills only — exactly what the relay serves them.
 {
