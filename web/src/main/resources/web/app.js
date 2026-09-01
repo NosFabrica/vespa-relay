@@ -22,11 +22,11 @@ import { providersFor, knownProviders } from "./shared/providers.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
+import { PAGE_SIZE, MAX_ASK, MAX_PAGES, firstAsk, askLimit, pageOf, pageCount, covered, canGrow, lastPage, mergePages, drained } from "./paging.js";
 import { mountSearchField, softKeyboard } from "./searchfield.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
 
 const POPUP_LIMIT = 8;
-const FULL_LIMIT = 40;
 const DEBOUNCE_MS = 150;
 
 // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
@@ -519,7 +519,20 @@ function uniqueById(events) {
 async function search(text, limit, deep) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  return { ...hydrate(uniqueById(await relay.req(filters)), deep, { row: deep ? "own" : "keep" }), text };
+  const answer = await relay.req(filters);
+  // `complete` is EOSE rather than the ten-second timeout, and it rides out of
+  // here because the PAGER reasons about it: an answer shorter than the prefix
+  // it asked for means the corpus ends there — but only if the relay said so.
+  // A read we stopped listening to is short for our own reasons, and reading
+  // that as the end of the results puts a full stop after page three of a
+  // search over a slow connection. shared/relay.js marks the array; uniqueById
+  // returns a new one, so it is read before the copy loses it.
+  return {
+    ...hydrate(uniqueById(answer), deep, { row: deep ? "own" : "keep" }),
+    text,
+    complete: answer.complete !== false,
+    asked: limit,
+  };
 }
 
 /**
@@ -989,7 +1002,7 @@ function exportText() {
   L.push("");
   const typed = $q.value.trim();
   const q = parseQuery(typed);
-  const full = buildFilters(typed, FULL_LIMIT);
+  const full = buildFilters(typed, s.asked || PAGE_SIZE);
   // The order the STORE will apply, which is not always the one the menu shows:
   // a `sort:` typed into the box rides through parseQuery untouched, so
   // `/?q=cats sort:recent` is a chronological search with the menu on "Best
@@ -1060,8 +1073,17 @@ function exportText() {
     }
     L.push("");
   }
-  L.push(`RESULTS  ${s.hits.length} event(s) in ${s.lastMs ?? "?"} ms, in the order the relay returned them.`);
-  L.push("Verbatim, unmodified — this is the array the page is rendering.");
+  // Every page FETCHED, not the forty on screen: the ORDER is what this file
+  // exists to let somebody argue with, and an order cannot be judged one page
+  // at a time. The cut on screen is a reader's screen; a text file has no such
+  // reason to make one.
+  L.push(`RESULTS  ${s.hits.length} event(s) over ${Math.max(1, pageCount(s.hits))} page(s) of ${PAGE_SIZE}, in the order the relay returned them.`);
+  L.push(`On screen: page ${s.page + 1}.  ${s.exhausted ? "This is the whole answer — the relay had nothing past it." : "There may be more behind it; the pager had not reached the end."}`);
+  // The timing is the FIRST ask's and says so. The pages behind it were
+  // fetched by later asks the reader never waited on, and quoting one number
+  // over all of them would price a search that was never made.
+  L.push(`The first ${Math.min(PAGE_SIZE, s.hits.length)} came back in ${s.lastMs ?? "?"} ms; the pages after them were fetched separately.`);
+  L.push("Verbatim, unmodified — these are the events the page is drawing from.");
   L.push("");
   L.push(JSON.stringify(s.hits, null, 2));
   L.push("");
@@ -1684,7 +1706,35 @@ const field = mountSearchField($q, $mentions, {
 // abandoned before it ever runs — so "there are hits" is not "these hits are
 // about what the box says", and reopening the popup on that assumption showed
 // one query's answers under another query's words.
-const s = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null };
+const s = {
+  requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
+  // ---- the pager, which is five more facts about that same array ----------
+  page: 0,           // the slice of it on screen, 0-based like everything else here
+  asked: 0,          // the prefix the last ask named — what canGrow() is measured against
+  exhausted: false,  // the relay PROVED there is nothing past what we hold (paging.js's drained)
+  more: null,        // this view's query, re-askable at a longer limit; null on a view that cannot page
+  preloading: false, // one widening ask at a time
+};
+
+/**
+ * The type-ahead's answers, which are NOT the results view's.
+ *
+ * One object used to serve both. A keystroke over a page of results replaced
+ * `hits` with the popup's eight rows underneath it, and since nothing
+ * repainted the list it stayed invisible until something read the array back:
+ * the json toggle answered "no longer in the current results" about a card
+ * that was on screen. A pager reads it back constantly — Next would have cut
+ * page two out of the eight rows of a query nobody submitted — so the two
+ * answers get two states, which is what they always were.
+ */
+const pop = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true };
+
+/** Forget an answer without drawing anything: a view that is being left. */
+function forget(st) {
+  st.requestId++;
+  st.hits = []; st.hitsFor = null; st.error = null; st.loading = false;
+}
+
 let debounceTimer = null;
 let activeKey = null;
 
@@ -1746,12 +1796,12 @@ function emptyWindow(text) {
 // asked no question: both sentences below answer "no results" by talking about
 // the QUERY, and the feed has none — telling a reader of an empty feed that the
 // window is inverted, or to try a different term, names things they never typed.
-function statusBody(placeholder, empty) {
-  if (s.error) return `<div class="error">${esc(s.error)}</div>`;
-  if (s.loading && !s.hits.length) return placeholder;
-  if (!s.hits.length) {
+function statusBody(st, placeholder, empty) {
+  if (st.error) return `<div class="error">${esc(st.error)}</div>`;
+  if (st.loading && !st.hits.length) return placeholder;
+  if (!st.hits.length) {
     if (empty) return empty;
-    const why = emptyWindow(s.hitsFor)
+    const why = emptyWindow(st.hitsFor)
       ? "The window is empty — until: is before since:, so nothing can fall inside it."
       : "Try a different term, or widen the filter above.";
     return `<div class="empty"><b>No results</b>${esc(why)}</div>`;
@@ -1760,10 +1810,10 @@ function statusBody(placeholder, empty) {
 }
 
 function renderPopup() {
-  const busy = s.loading || s.error;
-  const meta = busy ? "" : [`${s.hits.length}`, s.lastMs != null ? `${s.lastMs} ms` : ""].filter(Boolean).join(" · ");
+  const busy = pop.loading || pop.error;
+  const meta = busy ? "" : [`${pop.hits.length}`, pop.lastMs != null ? `${pop.lastMs} ms` : ""].filter(Boolean).join(" · ");
   const head = `<div class="popup-head"><span>Results</span><span class="timing">${meta}</span></div>`;
-  const body = statusBody(skelRows(3)) ?? s.hits.slice(0, POPUP_LIMIT).map(popupRow).join("");
+  const body = statusBody(pop, skelRows(3)) ?? pop.hits.slice(0, POPUP_LIMIT).map(popupRow).join("");
   $popup.innerHTML = head + body;
   paintScores();
 }
@@ -1837,7 +1887,7 @@ function renderFeed() {
   // No Export button, unlike a search: that download exists to let somebody
   // argue with a RANKING — the query, the lens, the scores behind the order.
   // A time-ordered list has no order to defend.
-  const body = statusBody(skelCards(4), empty) ?? s.hits.map((ev) => card(ev)).join("");
+  const body = statusBody(s, skelCards(4), empty) ?? s.hits.map((ev) => card(ev)).join("");
   paintList($results, listHead(feedTitle(), `<span class="list-stats">${stats}</span>`) + lensNote() + body);
 }
 
@@ -1953,14 +2003,213 @@ async function showFeedPreview() {
   run(feedPreview, () => fetchFeed(PREVIEW_CARDS), KEEP, renderFeedPreview);
 }
 
+/**
+ * Where the page on screen sits in the answer, in the head's own voice.
+ *
+ * The denominator is the delicate half. `s.hits` is how far we have ASKED, not
+ * how much there is — it grows every time a page is turned — so "80 of 160"
+ * would be a claim about the size of the answer that the next click falsifies.
+ * It appears only once `exhausted` says the relay proved there is nothing
+ * past what we hold, which is the one moment the buffer IS the answer.
+ */
+function rangeLabel(shown) {
+  const total = s.hits.length;
+  // The reader outran the preload: the page they asked for is still in flight,
+  // and a range over cards that are not on the screen would be counting them.
+  if (!shown.length) return `page ${s.page + 1}`;
+  if (!s.page && total <= PAGE_SIZE) return `${total} result${total === 1 ? "" : "s"}`;
+  const from = s.page * PAGE_SIZE + 1;
+  return `${from}–${from + shown.length - 1}${s.exhausted ? ` of ${total}` : ""}`;
+}
+
+/**
+ * The pager under the cards: back, the pages held, and forward.
+ *
+ * Numbers rather than an infinite scroll, because the reader has to be able to
+ * come BACK to where they were — a card opens a page of its own, and Back onto
+ * a list that has to re-scroll itself to a position it guessed is the thing
+ * infinite scroll never gets right. `?page=` carries it instead.
+ *
+ * The page past the buffer is offered as "…" rather than as a number: it is a
+ * page we know can be ASKED for, not one we hold, and numbering it would
+ * promise a count of results nobody has yet. Nothing is offered past THAT,
+ * which is the difference between the two ways this list ends — the corpus
+ * running out (`exhausted`, and the head's "of N" says so) and this page
+ * declining to follow a ranking any deeper (canGrow, and the note below says
+ * that instead). Silence about which is how a pager lies.
+ */
+function pagerHtml() {
+  const loaded = pageCount(s.hits);
+  const last = lastPage(s.hits, s);
+  const btn = (page, label, cls, on, extra = "") =>
+    `<button type="button" class="pg${cls}"${on ? ` data-page="${page}"` : " disabled"}${extra}>${label}</button>`;
+  const note = !s.exhausted && !canGrow(s.asked)
+    ? `<div class="pg-note">${MAX_ASK} results deep is as far as this page follows a ranking. ` +
+      `Narrow the search — a word, a <code>from:</code>, a date — to see past it.</div>`
+    : "";
+  // One page and nothing behind it is not a pager, it is furniture. The note
+  // cannot be up yet either: reaching the ceiling takes ten pages.
+  if (last <= 0) return "";
+  const cells = [];
+  for (let i = 0; i <= last; i++) {
+    const here = i === s.page;
+    cells.push(btn(i, i < loaded ? String(i + 1) : "…", here ? " on" : "",
+                   true, here ? ' aria-current="page"' : ""));
+  }
+  return `<nav class="pager" aria-label="Result pages">` +
+    btn(s.page - 1, "‹ Prev", " pg-nav", s.page > 0) +
+    `<div class="pg-nums">${cells.join("")}</div>` +
+    btn(s.page + 1, "Next ›", " pg-nav", s.page < last) +
+    `</nav>` + note;
+}
+
+/**
+ * ONE PAGE of the results, and the pager that says where it sits.
+ *
+ * `s.hits` is the whole buffer — every page fetched so far, including the
+ * three ahead of this one — and the cut happens here rather than in the ask
+ * because the ask cannot make it: a NIP-01 filter has a `limit` and no offset,
+ * so what a longer ask buys is a longer PREFIX (paging.js opens with why).
+ */
 function renderResults() {
-  const stats = s.error ? "" : `${s.hits.length} result${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
+  const shown = pageOf(s.hits, s.page);
+  const stats = s.error ? "" : `${rangeLabel(shown)} · ${s.lastMs ?? "?"} ms`;
   const right = `<span class="list-stats">${stats}</span>` +
     `<button type="button" id="export" class="export" title="Download this search and its results as text">Export</button>`;
   // Not `.map(card)`: map hands the index as card's second argument, where a
   // renderer would read it as the opts object.
-  const body = statusBody(skelCards(4)) ?? s.hits.map((ev) => card(ev)).join("");
+  //
+  // A page with no cards under a buffer that has some is the reader having
+  // outrun the preload — four pages turned inside one round trip — so it draws
+  // the skeleton rather than the "No results" statusBody() would give an empty
+  // answer. The pager stays up through it: the way back is the control they
+  // are most likely to want.
+  const body = statusBody(s, skelCards(4)) ??
+    (shown.length ? shown.map((ev) => card(ev)).join("") : skelCards(3)) + pagerHtml();
   paintList($results, listHead(esc(tab.label), right) + body);
+}
+
+/**
+ * Turn to page [n]: the pager's clicks and nothing else — a restore from the
+ * URL comes in through runFull(), which has a search to run as well.
+ */
+function goPage(n) {
+  if (!Number.isInteger(n)) return;   // a disabled button carries no data-page
+  const want = Math.max(0, Math.min(n, lastPage(s.hits, s)));
+  if (want === s.page) return;
+  s.page = want;
+  // A page turn is a PLACE. It goes in the url for the same reason the query,
+  // the chip and the lens do: Back undoes it, and a link to page four of a
+  // search is a link to what the sender was reading.
+  syncUrl();
+  renderResults();
+  // Back to the top of the list. A page turned from the bottom of forty cards
+  // otherwise lands the reader in the middle of the next forty, which reads as
+  // the list having grown rather than turned. `scrollMarginTop` because the
+  // toolbar is sticky over the top of the page once results are up — measured
+  // rather than guessed, exactly as moveCursor measures it, since that bar is
+  // a different height on a phone and grows again when the chip row wraps.
+  $results.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
+  $results.scrollIntoView({ block: "start" });
+  preload();
+}
+
+/**
+ * Where the buffer leaves the reader once an answer has landed.
+ *
+ * A page can stop existing between the click and the answer — `?page=9` pasted
+ * over a two-page search, or Next into a "…" the relay then had nothing for —
+ * and a skeleton over nothing is a page that never finishes loading. So the
+ * reader lands on the last page there is.
+ *
+ * replaceState rather than the pushState syncUrl() would do: this corrects a
+ * place that turned out not to exist, and pushing it would leave a phantom
+ * entry in the backstack pointing at the same page under a different number.
+ */
+function settlePage() {
+  const end = lastPage(s.hits, s);
+  if (s.page <= end) return;
+  s.page = end;
+  // Named from `hitsFor` — the text these hits actually answer — rather than
+  // from the box, which the reader may have started editing while the answer
+  // was in flight. This correction must not rewrite the url to a query nobody
+  // has submitted.
+  history.replaceState(null, "", currentUrl(s.hitsFor || $q.value.trim(), true, s.page));
+}
+
+/**
+ * The three pages ahead of the one on screen, fetched before anybody asks.
+ *
+ * This is the whole point of the pager being a prefix rather than a cursor:
+ * the ask that reaches page four is the same ask that reached page one, only
+ * longer, so it can be made while the reader is still on page one and the only
+ * thing they ever see is a Next button that answers instantly.
+ *
+ * Four guards, and each one is a round trip not taken: no query to re-ask
+ * (the feed, the hero, an entity page), one already in flight, the relay has
+ * proved there is nothing more, or the buffer is already three pages ahead —
+ * that last asked in PAGES rather than in events, because a hashtag search is
+ * four filters in one REQ and NIP-01's `limit` is per filter, so an ask of
+ * forty can come back with a hundred and sixty already paged.
+ *
+ * It does NOT bump requestId. This is the same answer asked for at greater
+ * length, not a new one: bumping would cancel the first ask's own late
+ * lookups, and the reader would watch the names fall out of the page they are
+ * reading.
+ */
+async function preload() {
+  if (!s.more || s.preloading || s.exhausted || s.error) return;
+  if (covered(s.hits, s.page) || !canGrow(s.asked)) return;
+  const want = askLimit(s.page);
+  if (want <= s.asked) return;
+  const myId = s.requestId;
+  const ask = s.more;
+  // Only the SUCCESS path asks again (below): an error that re-kicked would
+  // be a retry loop against a relay that has just failed to answer.
+  let again = false;
+  s.preloading = true;
+  try {
+    const found = await ask(want);
+    if (myId !== s.requestId) return;
+    const grown = mergePages(s.hits, found.events);
+    // Did the reader outrun us? Asked of the OLD buffer, because this answer
+    // is about to become the new one.
+    const waiting = !pageOf(s.hits, s.page).length;
+    s.exhausted = drained({
+      complete: found.complete, got: found.events.length, asked: want, added: grown.length - s.hits.length,
+    });
+    s.asked = want;
+    s.hits = grown;
+    settlePage();
+    // A preload lands UNDER the reader: mergePages keeps the pages already
+    // drawn in the order they were drawn, so the only visible change here is
+    // the pager growing a button — not worth collapsing an expanded json panel
+    // for, which is the same repaint run() declines for the same reason.
+    // Unless the page on screen is EMPTY, in which case this answer is the one
+    // the reader is waiting on and it is drawn whatever else is open.
+    if (waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
+    paintLate(s, myId, [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean), renderResults);
+    again = true;
+  } catch (e) {
+    // A failed widening is not a failed search. The pages already on screen
+    // are still the relay's answer, and blanking them over a round trip the
+    // reader never asked for would be the page punishing them for reading on.
+    // Nothing is marked exhausted either, so Next tries again.
+  } finally {
+    s.preloading = false;
+  }
+  // And once more, because the reader may have moved while that was in
+  // flight: a page turned during the round trip leaves the buffer short of
+  // three ahead again, and the turn's own preload() call found this one
+  // already running and stood down. The guards at the top are what makes this
+  // terminate — each pass asks for strictly more than the last, up to the
+  // ceiling, and an answer that brings nothing new is the end of the corpus.
+  if (again && myId === s.requestId) preload();
+}
+
+/** The pager, back to a view that has no pages: the hero, the feed, an entity. */
+function resetPages() {
+  s.page = 0; s.asked = 0; s.exhausted = false; s.more = null; s.preloading = false;
 }
 
 /** Whether the list already on screen survives the wait for the next answer. */
@@ -1988,6 +2237,18 @@ async function run(st, fetch, keep, render) {
     // about it, and the feed's answer is "nothing does" — null, so reopening
     // the popup on focus can never show the feed under a typed query.
     st.hits = found.events; st.hitsFor = found.text ?? null;
+    // What the PAGER needs from an answer, recorded where the answer is
+    // rather than in the caller's `.then`, so the render below already knows
+    // it: how far this ask reached, and whether the relay ran out before it
+    // did. `complete` is EOSE — a read WE stopped listening to is short for
+    // our own reasons and proves nothing about the corpus. Only an ask that
+    // named its limit gets the second half, which is what leaves the feed
+    // (fetchFeed names none) and the popup out of it.
+    st.complete = found.complete !== false;
+    if (found.asked != null) {
+      st.asked = found.asked;
+      st.exhausted = drained({ complete: st.complete, got: found.events.length, asked: found.asked, added: found.events.length });
+    }
     // AFTER the guard above, never before: this is the one lookup in hydrate
     // that REPLACES rather than adds, so a superseded answer must not get to
     // run it. See rowSeed.
@@ -1998,13 +2259,28 @@ async function run(st, fetch, keep, render) {
   }
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
   render();
-  // The names land after the list does, the group names beside them and the
-  // reply parents after both, so paint each when it arrives — and only if that
-  // lookup actually learned something. Independently, because they are:
-  // chaining them meant the names could not repaint until the parents had also
-  // answered. Skipped while a raw event is expanded: a re-render would collapse
-  // a panel the reader opened, and a name appearing is not worth taking that
-  // away.
+  paintLate(st, myId, late, render);
+  // Whether the answer this call drove is the one on screen. The pager's
+  // bookkeeping hangs off it: a superseded search must not settle the page
+  // count, and must not start preloading pages of a query nobody is reading.
+  return myId === st.requestId;
+}
+
+/**
+ * The lookups that land AFTER the list — names, group names, the provenance
+ * row, reply parents — each painting when it arrives.
+ *
+ * Independently, because they are: chaining them meant the names could not
+ * repaint until the parents had also answered. And only if that lookup
+ * actually learned something. Skipped while a raw event is expanded: a
+ * re-render would collapse a panel the reader opened, and a name appearing is
+ * not worth taking that away.
+ *
+ * Its own function since the pager: a widening ask hydrates its new pages
+ * exactly like a first one, and the second copy of this loop is where the two
+ * would drift.
+ */
+function paintLate(st, myId, late, render) {
   for (const lookup of late) {
     lookup.then((learned) => {
       if (!learned || myId !== st.requestId) return;
@@ -2049,10 +2325,19 @@ function setActive(idx) {
 
 // Never over the people picker: a debounced type-ahead from before the `from:`
 // was started can still land after it, and the two popups occupy the same box.
-function runPopup(text) { if (field.picking) return; openPopup(); run(s, () => search(text, POPUP_LIMIT, false), KEEP, renderPopup); }
+function runPopup(text) { if (field.picking) return; openPopup(); run(pop, () => search(text, POPUP_LIMIT, false), KEEP, renderPopup); }
 
-function runFull(text) {
+/**
+ * The full results view, opening on [page] — 0 for every way in but a restore.
+ *
+ * A deep-linked `?q=cats&page=4` is the one caller that passes anything else,
+ * and it is why the first ask is firstAsk(page) rather than one page: the page
+ * being restored has to be drawable the moment the answer lands, or the
+ * restore is a skeleton over a page that arrives a round trip later.
+ */
+function runFull(text, page = 0) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
+  pop.requestId++;             // …and its answer must not repaint a popup this view has closed
   cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
   hideFeedPreview();   // …and the hero's preview is not part of a results page
   document.title = "SearchOverTrust";
@@ -2068,13 +2353,32 @@ function runFull(text) {
   $results.hidden = false;
   document.body.classList.add("searching");
   document.body.classList.remove("feed"); // searching FROM the feed leaves it
+  // Every one of those ways in is a NEW answer, so the pager starts over: page
+  // one of nothing fetched yet. Before syncUrl(), which now writes the page
+  // number and would otherwise carry the previous search's over to this one.
+  resetPages();
+  s.page = page;
+  const ask = firstAsk(page);
+  // The same query, re-askable at greater length — the pager's only handle on
+  // this view. A thunk rather than the text, for the reason run() takes one:
+  // what an ask carries is this page's state at the moment it was made (the
+  // sort menu, the spam switch, the lens), every one of which re-runs the
+  // search from page one when it changes, so the closure and the live controls
+  // cannot come apart.
+  s.more = (limit) => search(text, limit, true);
   // Every way into the full view converges here — Enter, a chip/sort/spam/
   // lens change via rerun() — so this is the one place the URL learns about
   // it. Pushed, not replaced: each of those is a state the user chose and
   // Back should be able to undo. A restore FROM history is the exception,
   // and syncUrl() itself knows to stand down there.
   syncUrl();
-  run(s, () => search(text, FULL_LIMIT, true), REPLACE, renderResults);
+  run(s, () => search(text, ask, true), REPLACE, renderResults).then((live) => {
+    // Not this answer's page any more, or no answer at all: either way there
+    // is nothing to page through and nothing to fetch ahead of.
+    if (!live || s.error) return;
+    settlePage();
+    preload();
+  });
 }
 
 /**
@@ -2090,6 +2394,13 @@ function runFull(text) {
  */
 function runFeed() {
   clearTimeout(debounceTimer);
+  pop.requestId++;
+  // The feed is one ask of a hundred and no pager: its answer is a plain
+  // NIP-01 read, whose only cursor is `until` — a real one, and a different
+  // mechanism from the ranked prefix this page's pager grows. Until that is
+  // built, resetPages() is what makes sure the previous search's pager state
+  // cannot be read against the feed's hits.
+  resetPages();
   cancelEntity();
   hideFeedPreview();   // the preview and the page are the same feed; one at a time
   // The chip belongs in the title for the same reason it belongs in the
@@ -2167,7 +2478,9 @@ function showHero() {
   clearTimeout(debounceTimer);
   cancelEntity(); // same for "← Search" out of an entity page mid-fetch
   document.title = "SearchOverTrust";
-  s.requestId++; s.hits = []; s.hitsFor = null; s.error = null; s.loading = false; s.lastMs = null;
+  forget(s); forget(pop);
+  s.lastMs = null;
+  resetPages();
   $q.value = "";
   $results.hidden = true;
   $results.innerHTML = "";
@@ -2199,7 +2512,7 @@ function submitField() {
   // An arrowed-to row is a selection, same as a click on it: Enter opens
   // that record. A plain Enter with nothing highlighted stays the full
   // search — the popup is a preview of it, not a gate in front of it.
-  if ($popup.classList.contains("open") && activeKey != null) { openPicked(s.hits[activeKey]); return; }
+  if ($popup.classList.contains("open") && activeKey != null) { openPicked(pop.hits[activeKey]); return; }
   const text = $q.value.trim();
   if (text) runFull(text);
 }
@@ -2323,7 +2636,7 @@ $popup.addEventListener("mousedown", (e) => {
   const item = e.target.closest(".popup-item");
   if (!item) return;
   e.preventDefault();
-  openPicked(s.hits[Number(item.dataset.idx)]);
+  openPicked(pop.hits[Number(item.dataset.idx)]);
 });
 
 document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
@@ -2332,7 +2645,7 @@ $q.addEventListener("focus", () => {
   // it may be shut simply because the blur that took focus away closed it.
   if (field.picking) return;
   const text = $q.value.trim();
-  if (s.hits.length && s.hitsFor === text && text && $results.hidden) openPopup();
+  if (pop.hits.length && pop.hitsFor === text && text && $results.hidden) openPopup();
 });
 
 // Clicks inside a LIST OF CARDS. Two lists exist now — the results view and
@@ -2345,6 +2658,14 @@ $q.addEventListener("focus", () => {
 // over the array itself would keep serving the first answer's events to the
 // json panel forever.
 const cardClicks = (hitsOf) => (e) => {
+  // The pager, which lives in the same list and could not be delegated
+  // anywhere else: the buttons are re-rendered with the cards, so a listener
+  // bound to one of them dies with the page it turned. Before the `button`
+  // bail-out further down, which exists to keep real controls from being read
+  // as a click on the card behind them — this IS the control. (Like #export,
+  // the results view is the only list that draws one; the preview never does.)
+  const pg = e.target.closest(".pg");
+  if (pg) { goPage(Number(pg.dataset.page)); return; }
   if (e.target.closest("#export")) {
     const blob = new Blob([exportText()], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
@@ -2443,6 +2764,20 @@ $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 let navRestoring = false;
 
 /**
+ * `?page=4` as this page counts pages: 0-based, and 0 for anything that is not
+ * one — absent, junk, a fraction, or the 1 that is already the default.
+ *
+ * Clamped at the ceiling the ask itself stops at, so a hand-made `?page=900`
+ * opens the deepest page this view can fetch rather than a skeleton the
+ * relay will never fill. Anything past THAT the answer settles (settlePage),
+ * which is the same clamp against a corpus that turns out to be shorter.
+ */
+function pageParam(p) {
+  const n = Number(p.get("page"));
+  return Number.isInteger(n) && n > 1 ? Math.min(n - 1, MAX_PAGES - 1) : 0;
+}
+
+/**
  * The url for the page as it stands — optionally with a DIFFERENT query, which
  * is what a hashtag chip navigates to. applyUrl() reads the url as the whole
  * of the page's state, so anything a chip's url omits is a setting the chip
@@ -2456,9 +2791,16 @@ let navRestoring = false;
  * here would answer a question nobody asked. "Where am I now" is syncUrl's
  * question, and that is where the feed is answered.
  */
-function currentUrl(text = $q.value.trim(), showing = !$results.hidden) {
+function currentUrl(text = $q.value.trim(), showing = !$results.hidden, page = s.page) {
   const p = new URLSearchParams();
   if (showing && text) p.set("q", text);
+  // Page four of a search is a place, and a link to it is a link to what the
+  // sender was reading. Written ONE-BASED because a person reads it: the
+  // pager's buttons say 1, 2, 3, and `?page=2` had better be the one labelled
+  // 2. Absent on the first page, which is what a url with no `page` means —
+  // and absent with the query, since a page number over no results names
+  // nothing.
+  if (showing && text && page > 0) p.set("page", String(page + 1));
   if (tab.slug !== KIND_TABS[0].slug) p.set("tab", tab.slug);
   if ($sort.value) p.set("sort", $sort.value);
   if ($spam.checked) p.set("spam", "1");
@@ -2535,8 +2877,8 @@ function applyUrl() {
     const seg = entitySeg();
     if (seg) {
       clearTimeout(debounceTimer);
-      s.requestId++; // cancel any in-flight search render
-      s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
+      forget(s); forget(pop); // cancel any in-flight search or type-ahead render
+      resetPages();
       // THE LENS IS PART OF A PERMALINK TOO, and this branch used to return
       // before reading it — so `/npub1…?as=npub1…` pasted cold ranked as
       // nobody. It cost the score chips their numbers even before this row
@@ -2621,7 +2963,7 @@ function applyUrl() {
     }
     $q.value = text;
     document.body.classList.toggle("has-query", !!text);
-    if (text) runFull(text); else showHero();
+    if (text) runFull(text, pageParam(p)); else showHero();
     return !!text;
   } finally {
     navRestoring = false;
@@ -2666,7 +3008,11 @@ document.addEventListener("click", (e) => {
   // follows inside a search.
   if (/^\/\?q=/.test(href)) {
     e.preventDefault();
-    navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true));
+    // Page ONE, explicitly: a hashtag clicked on page four of one search is a
+    // different search, and page four of it is a page nobody has looked at —
+    // the reader would land on a "…" over an answer they have not seen the
+    // start of.
+    navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true, 0));
     return;
   }
   if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
