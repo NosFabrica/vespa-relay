@@ -59,6 +59,13 @@ import { DECLARATION_KINDS } from "../provenance.js";
  *
  * 30395 IS ABSENT ON PURPOSE. Its members are NIP-73 external identifiers,
  * which are not events this page can draw, so there is no target to ask about.
+ *
+ * The two NIP-51 kinds are here for the reason provenance.js's
+ * [PEOPLE_LIST_KINDS] gives, and they need no rule of their own: they hold
+ * members in `p`, they are gated on their signer like every other declaration,
+ * and a reader is their own signer. What they DO change is who this read is
+ * worth making for. Every other ask needs a Map naming a service; these two
+ * pay off for a reader who has never enrolled anybody and merely keeps a list.
  */
 /** The only thing an `authors` filter or an `observer:` token takes. */
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -77,6 +84,32 @@ const ASKS = [
   { kind: 30382, tag: "#d", from: "pubkeys" },
   { kind: 30383, tag: "#d", from: "ids" },
   { kind: 30384, tag: "#d", from: "addrs" },
+  // THE READER'S OWN CURATION, since store 2bc79f5f40 — a people list (30000)
+  // and a follow pack (39089), both naming their members in `p` exactly as a
+  // 30392 does. They cost a signed-in reader two more filters on a REQ that is
+  // already going out, and an anonymous one NOTHING: the loop below skips a
+  // kind the Map trusts nobody for, and on these two kinds a Map that names no
+  // publisher leaves only the reader themselves — who is nobody when nobody is
+  // signed in.
+  //
+  // WHAT THEY CAN COST WHEN THEY DO MATCH, measured on staging (2026-09-01)
+  // and recorded rather than fixed, because NIP-01 has no filter that would
+  // avoid it. A people list is asked for BY MEMBER and comes back WHOLE, and
+  // this kind is where the reader's block list lives: the largest one sampled
+  // is 662 KB of `p` tags naming 3,980 people — 1.4x the label read that was
+  // split into its own REQ for being heavy — and it arrives whenever any one
+  // of those 3,980 is on the page. provenance.js then draws NOTHING from it
+  // (a mute list is the opposite of a vouch; see its BLOCK_LIST_D).
+  //
+  // There is no ask that excludes it: NIP-01 cannot filter on `d`, cannot
+  // negate, and a `limit` bounds the number of events rather than the size of
+  // one. What removes it is upstream — a store that does not treat a block
+  // list as a declaration would end both the fetch and the question — so this
+  // stays a known cost with a known owner, not a silent one. It is bounded in
+  // practice: one event, on a read that already carries the gated half, and
+  // only for a reader who has muted somebody the page is showing them.
+  { kind: 30000, tag: "#p", from: "pubkeys" },
+  { kind: 39089, tag: "#p", from: "pubkeys" },
 ];
 
 /** NIP-32, asked by every tag that can name something on screen. */

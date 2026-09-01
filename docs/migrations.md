@@ -147,6 +147,56 @@ One boot with `REINDEX_FTS_ON_START=true`, then turn it back off — it walks th
 whole corpus, and the walk is resumable but not free. New writes need nothing;
 they are indexed as they arrive.
 
+## Migration: tiers, badges and a rank profile (store `2bc79f5f40`)
+
+The first bump this file carries that needs BOTH a deploy and a repair, and the
+repair is not a Vespa reindex. Read it as two independent migrations that happen
+to share a commit: they fail independently, and neither failure looks like one.
+
+**The schema half is a plain deploy.** `event.sd` moves — §12.2's split rung,
+§12.3's perfect rung, §13.1's delegated member placement — but every changed
+line is a rank function, a rank expression or a rank input. Not one `field`,
+`indexing`, `attribute` or `match-features` declaration changes, so there should
+be no column to add and nothing in `configChangeActions` to act on, and
+`AUTO_DEPLOY` on boot is the whole procedure. Read the response object anyway
+and confirm it, per the top of this file — the deploy reports success either
+way.
+
+What to watch for here is the *reverse* of the usual trap: a NEW store jar
+against an OLD serving schema is not an error and does not log one. The store's
+own note on §13.1 is that it stays inert until both halves arrive — an older
+serving schema, an unranked finding query and the in-memory reference all place
+a member exactly as before — so the page quietly serves the order this bump
+exists to change, and the only way to tell is to look at the schema Vespa is
+actually serving.
+
+**The extraction half is a re-feed**, the same class as the Trusted List titles
+above and for the same reason: `search_primary` / `search_secondary` /
+`search_text` are fields we WRITE on `put`, so only a re-put re-derives them.
+Two changes land in it at once, and both are in derived data:
+
+- the quartz bump that rides with this pin (`cecc3287b2`) gives nineteen kinds
+  their own `SearchFieldExtractor` branch, so seventeen of them stop putting a
+  title in the body role — the words do not change, the column does;
+- a declared NIP-30 shortcode run (`:verified:`) is rewritten to one synthetic
+  term in the secondary tier instead of being tokenized as the name word
+  `verified`.
+
+Every event stored before the bump keeps its old columns until it is re-put.
+Nothing errors, nothing is missing from a page, and the ranking is simply the
+old one for the back catalogue while new writes get the new one — a corpus
+ranked two ways, which is harder to notice than an outage.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true`, then turn it back off. The store's
+drift check re-puts exactly the documents whose extracted columns differ from
+the stored ones, which after this bump is every event of an affected kind and
+every event wearing a declared badge. New writes need nothing.
+
+A Vespa reindex is the WRONG tool here and will report success having done
+nothing to these columns — see "Which repair applies" above.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

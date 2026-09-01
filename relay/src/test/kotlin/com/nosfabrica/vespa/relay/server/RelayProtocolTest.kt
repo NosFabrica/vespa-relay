@@ -242,10 +242,26 @@ class RelayProtocolTest {
                 // The companion itself, pinned rather than merely tolerated:
                 // what makes its waived floor safe is that it can only name
                 // declaration kinds signed by someone this reader enrolled, so
-                // a bump that widened either half would land here.
+                // a bump that widened either half would land here. IT HAS: at
+                // store 2bc79f5f40 the reader's own NIP-51 lists of people
+                // joined the set, which is a different family reached by the
+                // SAME gate — a reader is always their own signer, so their own
+                // list unpacks and a stranger's titled `bitcoin` does not. The
+                // two halves are asserted separately below for that reason, and
+                // it is the AUTHORS line, not this one, that holds the gate.
+                //
+                // Spelled out rather than left as the 30382..30395 range it
+                // used to be: the kinds no longer form one, and the property
+                // this asserts was never "in that range" but "is a kind the
+                // store expands a declaration from".
+                // NIP-85 assertions (subject: a pubkey / an event / an address),
+                // the Trusted Lists (by what their members are), and the two
+                // NIP-51 people kinds. 30385 and 30395 are absent because their
+                // members are NIP-73 external identifiers, which name no event.
+                val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089)
                 val companion = index.searchQueries.last()
                 assertTrue(
-                    companion.kinds.isNotEmpty() && companion.kinds.all { it in 30382..30395 },
+                    companion.kinds.isNotEmpty() && companion.kinds.all { it in declarationKinds },
                     "the extra read a kindless search now makes is for declaration kinds only: ${companion.kinds}",
                 )
                 assertEquals(listOf(signer.pubKey), companion.authors, "and only from signers this reader enrolled — here, themselves")

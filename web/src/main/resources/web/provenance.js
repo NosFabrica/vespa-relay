@@ -108,10 +108,38 @@ export const LABEL_KIND = 1985;
  * gate and cannot disagree with it: if one of these arrived as a pointer, the
  * reader asked for it, and that is what the gated tone says.
  */
-export const DECLARATION_KINDS = new Set([30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395]);
+export const DECLARATION_KINDS = new Set([30000, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 39089]);
 
-/** Which tag holds a Trusted List's membership, by kind — 30395's `i` names no event. */
-const MEMBER_TAG = { 30392: "p", 30393: "e", 30394: "a" };
+/**
+ * THE TWO NIP-51 KINDS ARE THE ODD ONES HERE, and it is worth saying why they
+ * belong beside a trust service's output.
+ *
+ * A people list (30000) and a follow pack (39089) are not computed by anybody:
+ * they are a person's own curation, with no per-member score anywhere in them
+ * — NIP-51 has nowhere to put one. Since store `2bc79f5f40` the relay splices
+ * them anyway, because a reader who keeps a list called `Verified Human` IS
+ * answering the query "verified human" with the people on it, and until then
+ * that list could lead the page and contribute nobody.
+ *
+ * What makes them safe is the SAME gate, not a weaker one: anyone may title a
+ * list `bitcoin` and name a thousand accounts in it, so a list unpacks only
+ * for a reader who delegated its signer — and a reader is always their own
+ * signer. That is why they need no special case below. `trustedSigners` maps
+ * every kind here to the publishers the reader named PLUS the reader, so on a
+ * normal Map these two resolve to the reader alone, which is exactly the set
+ * the relay unpacks them for.
+ */
+export const PEOPLE_LIST_KINDS = new Set([30000, 39089]);
+
+/**
+ * Which tag holds a list's membership, by kind — 30395's `i` names no event.
+ *
+ * A NIP-51 list holds its members in `p` like a 30392 does, so it reads with
+ * the same walk. Only its PUBLIC members: the private half is NIP-44 encrypted
+ * to the owner, the relay cannot read it either, and a pill drawn off a member
+ * this page could not have been sent would be a claim about nothing.
+ */
+const MEMBER_TAG = { 30000: "p", 30392: "p", 30393: "e", 30394: "a", 39089: "p" };
 
 /** How many pills a preview draws before the rest go behind a count. */
 export const PILL_BUDGET = { preview: 4, full: 40 };
@@ -265,16 +293,87 @@ function labelContributions(ev, page, emit) {
 }
 
 /**
- * A Trusted List: one pill, named by the list, on every member this page holds.
+ * A NIP-51 list that is the reader saying the OPPOSITE of a vouch.
  *
- * The TITLE is the pill, because it is the only part of a list this relay
- * indexes and so the only part a reader can have arrived by. An untitled list
- * falls back to its `d` rather than drawing a blank chip.
+ * Quartz names this shape itself — `PeopleListEvent.BLOCK_LIST_D_TAG = "mute"`
+ * — and `SearchReferences` reads every public `p` off one, having no way to
+ * tell a curation from a rejection. The row does: its whole claim is why a
+ * card is HERE and who vouched for it, and "you muted this person" is not
+ * that. Drawn, it would be a positive-looking chip on somebody the reader
+ * threw out.
+ *
+ * IT REACHES THE PAGE THROUGH THE FETCH, not through the splice, and the
+ * distinction is why this check belongs here rather than being left to the
+ * relay. An untitled mute list has no indexed text at all — quartz indexes
+ * `titleOrName()` and the description, and it has neither — so it can never
+ * match a search and the expansion never splices it. shared/pointers.js asks
+ * by MEMBER, with no terms, so it comes back regardless. Every untitled block
+ * list on that corpus is reachable this way and by no other.
+ *
+ * MEASURED on staging (2026-09-01), sampling 400 kind-30000s: 41 carry one of
+ * these `d` values, 9 of them name people in public `p` tags, and the largest
+ * single one names 3,980. Two are TITLED (`Mute`), which is why this is a
+ * check of its own rather than a side effect of the title rule below.
+ *
+ * `mute` is quartz's constant; the rest are what the same intent is spelled as
+ * beside it on that corpus. A list whose `d` is a storage key for the reader's
+ * block list is not a list they curated, whatever it is called.
+ */
+const BLOCK_LIST_D = new Set(["mute", "block", "blocked", "mutelist", "mutelists", "blocklist"]);
+
+/**
+ * The words a list is FINDABLE by, in the order quartz indexes them, or "" for
+ * a list that has none and so draws no pill at all.
+ *
+ * The pill has to name the thing the reader could have ARRIVED BY, so this
+ * tracks `SearchFieldExtractor` rather than picking a sensible-looking tag: a
+ * Trusted List and a follow pack index `title()`, and a people list indexes
+ * `titleOrName()` — so a 30000 with only a `name` is reachable by those words
+ * and has to draw them, while reading `name` off a 30392 would put a word on a
+ * card that the relay never indexed and no reader could have searched.
+ *
+ * `d` IS THE FALLBACK FOR A TRUSTED LIST AND NOT FOR A NIP-51 ONE, and the
+ * difference is the corpus rather than the principle. A `d` is a program's
+ * storage key: it is never indexed, so it is never a word anybody searched.
+ * For a 30392 that is a rounding error — a delegated publisher titles what it
+ * computes — and the fallback beats a blank chip on the rare untitled one.
+ *
+ * For a 30000 it is most of the kind. Of 400 sampled on staging (2026-09-01),
+ * 183 name at least one person and only 53 of those — 29% — carry a title or a
+ * name. The other 130 would have drawn their storage keys as provenance, on up
+ * to 10,934 member cards: `intent-bloom-r0s63o3y-isPlaying`,
+ * `chats/null/lastOpened`, `nextblock.city/neighborhood`, `communities`. Those
+ * are applications keeping state in a list kind, not people curating anybody,
+ * and a chip reading `chats/null/lastOpened` under a byline explains nothing
+ * to anyone. So on these two kinds an untitled list says nothing, which is the
+ * row being partial — a property it already documents — rather than wrong.
+ */
+const NAME_INDEXED = new Set([30000]);
+const listText = (ev) => {
+  if (PEOPLE_LIST_KINDS.has(ev.kind)) {
+    if (BLOCK_LIST_D.has(tagOf(ev, "d").trim().toLowerCase())) return "";
+    return tagOf(ev, "title") || (NAME_INDEXED.has(ev.kind) ? tagOf(ev, "name") : "");
+  }
+  return tagOf(ev, "title") || tagOf(ev, "d");
+};
+
+/**
+ * A list — a Trusted List or one of the NIP-51 people kinds: one pill, named
+ * by the list, on every member this page holds.
+ *
+ * ONE TONE FOR BOTH, deliberately. A reader's own people list and a service
+ * they enrolled are different claims — "I put this person on a list" against
+ * "the publisher I named computed this" — but `gated` does not mean "a service
+ * said so", it means the relay would not have unpacked this for anyone else,
+ * and that is equally true of both. Where the difference matters the page
+ * already states it: [facesNeeded] draws the author's face as soon as a page
+ * holds more than one delegated publisher, and on a page mixing a service's
+ * list with the reader's own that is precisely the case it fires on.
  */
 function listContributions(ev, page, emit) {
   const addr = addrOf(ev);
   if (!addr) return;
-  const text = tagOf(ev, "title") || tagOf(ev, "d");
+  const text = listText(ev);
   if (!text) return;
   const name = MEMBER_TAG[ev.kind];
   const pill = { key: `list:${text}`, text, to: "addr", value: addr, gated: true, author: ev.pubkey, from: ev.id };

@@ -31,133 +31,224 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# b10be95a6e = amethyst main @ 2026-08-30 (PR #4020). MOVED BECAUSE THE STORE
-# ASKED, and this is the bump the note at the top of this file was written
-# about: the store below now asks for this exact string, and `force(libs.quartz)`
-# means THIS line — not the store's — decides which jar every module compiles
-# and runs against. Left at 029c40ebb4 while only the store pin moved, the
-# deploy would have shipped the store's new placement logic against a quartz
-# whose `SearchFieldExtractor` has neither branch, and half the fix would
-# silently not exist. That is not hypothetical: it is what staging was serving
-# when this was written.
+# cecc3287b2 = amethyst main @ 2026-09-01 (PR #4035). MOVED BECAUSE THE STORE
+# ASKED, exactly as b10be95a6e was: the store pinned below names this same
+# string in its own libs.versions.toml, and `force(libs.quartz)` means THIS
+# line — not the store's — decides which jar every module compiles and runs
+# against. Left at b10be95a6e while only the store pin moved, the deploy would
+# ship the store's new column expectations against a quartz whose
+# `SearchFieldExtractor` still drops seventeen kinds' titles into the body
+# role, and half the fix would silently not exist. That is the failure mode the
+# note at the top of this file was written about — the reason these two lines
+# move together, and the reason to read the store's own pin before touching
+# either.
 #
-# The range over 029c40ebb4 is 35 commits and 118 files, but only TWO quartz
-# sources. `IEventStore`, `SQLiteEventStore`, `Filter`, `EventFactory`,
-# `IndexableFields`, `SearchableEvent` and `SearchQuery` are byte-identical, so
-# the protocol surface this relay serves is unmoved and the searchable set stays
-# at 130 classes / 133 kind values.
+# The range over b10be95a6e is 46 commits and 142 files, but only THIRTEEN
+# quartz sources and only TWO this relay can reach, both under `nip50Search`.
+# `IEventStore`, `SQLiteEventStore`, `RelayServerBase`, `EventFactory`,
+# `Filter`, `SearchableEvent` and `SearchQuery` are byte-identical, so the
+# protocol surface this relay serves is unmoved and the searchable set stays at
+# 130 classes / 133 kind values (131 files naming `SearchableEvent` at both
+# ends of the range). Everything else is NIP-47 wallet-connect, its
+# Jackson/kotlinx serializers, and relay-pool tests.
 #
-#   SearchFieldExtractor gained `is TrustedListEvent ->` and
-#     `is ContactCardEvent ->`. Both families used to take the generic
-#     `is SearchableEvent ->` fallback, which puts the whole indexableContent()
-#     in the TERTIARY tier. A 30392's title() now fills `primary`, and a
-#     30382's petName()/summary() fill `primary`/`secondary`. A card's topics
-#     move to the hashtag role the tiers() funnel already filled — the fallback
-#     had been indexing them twice — and `SearchExtractors` folds hashtags into
-#     the secondary column, so no word leaves the index.
+#   SearchFieldExtractor gained NINETEEN branches, counted in the diff, and the
+#     store's own accounting of them is that SEVENTEEN had been falling through
+#     the generic `is SearchableEvent ->` fallback with a title trapped in the
+#     BODY role — where it can never reach the title band, the same 236x
+#     discount the Trusted List title carried before the previous pin. Those
+#     are the NIP-15 marketplace family (30017/30018/30019/30020), the
+#     Podcasting 2.0 pair (30054/30055), the group-metadata EDIT (9002, whose
+#     published twin 39000 already had a branch), plus 1010, 1065, 1068, 1163,
+#     1985, 2473, 6969, 12473, 38192 and 38383. The remaining two (1111, 1311)
+#     are body-only and branch for the opposite reason: their
+#     indexableContent() concatenates the `t` tags INTO the body, and the
+#     funnel already carries them in the hashtag role, so the words were being
+#     indexed twice.
 #
-#   ReplaceableSupersession.kt gained three CLIENT-side clock helpers
-#     (`nextCreatedAtToSupersede`, `awaitCreatedAtToSupersede`,
-#     `MAX_SUPERSEDE_WAIT_SECONDS`) that decide the created_at a PUBLISHER
-#     stamps to win an address it just replaced. A relay never stamps one.
-#     The file itself is not new and neither is its `supersedes()`.
+#   Four kinds with a public url now fill the AFFILIATION role — a git repo's
+#     clone urls beside its homepage, a meeting space's `streaming` endpoint,
+#     and both nSite kinds' `source`.
 #
-# DIRECTION: 029c40ebb4 is a strict ancestor of this (`git merge-base
+#   IndexableFields gained KDOC ONLY: the Profile-XOR-Tiered contract written
+#     down. A kind fills the profile roles or the content roles, never both,
+#     and `event.sd` composes the two column groups with a plain SUM on that
+#     premise — so a doc filling a naming column in each would claim the token
+#     band twice (~260 000 against the ~130 000 a whole-field match earns). The
+#     sealed type enforced it; nothing said it was load-bearing.
+#
+#   And write-path allocation, which changes no answer: the two `tiers`
+#     overloads end in one `build`, the role lists collect lazily, and the
+#     hashtag/location scans no longer allocate for the events — nearly all of
+#     them — that carry neither tag.
+#
+# RE-FEED REQUIRED, and it is the store pin below that carries the procedure:
+# extraction is data we WRITE on put, so every event of those kinds keeps its
+# old columns until `REINDEX_FTS_ON_START` re-derives them. Same words,
+# different rungs — a ranking backfill, not an outage.
+#
+# DIRECTION: b10be95a6e is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '029c…' < 'b10b…' ('0' < 'b'), so this sorts ABOVE the pin it
+# LEXICOGRAPHIC: 'b10b…' < 'cecc…' ('b' < 'c'), so this sorts ABOVE the pin it
 # replaces — the SAFE direction, and the store asks for this exact string
 # anyway, so there is no conflict for ordering to settle. The resolved graph is
-# still the proof, and on this bump every quartz line reads b10be95a6e with no
+# still the proof, and on this bump every quartz line reads cecc3287b2 with no
 # `->` left anywhere, in all five JVM modules:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "b10be95a6e"
+quartz = "cecc3287b2"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 8f8dfb0c18 = store main through PR #94, two commits over 3ecdfae6ee. It moves
-# NO SCHEMA (`git diff --name-only` names nothing under engine/app) and does not
-# touch the store's own libs.versions.toml, so the quartz line above is
-# untouched and there is NOTHING TO DEPLOY — unlike the last two bumps, this one
-# is a jar swap and a relay restart.
+# 2bc79f5f40 = store main through PR #95, eleven commits over 8f8dfb0c18 and
+# the largest RANKING move any pin here has carried. Unlike the last one this
+# is not a jar swap: it moves `event.sd` AND it asks for the quartz above, so
+# there is a schema to deploy and a corpus to re-derive. Both are silent if
+# skipped — see WHAT IT COSTS THIS REPO below.
 #
-# WHAT MOVED: `NostrSemanticsStore.servedKinds`, applied on both read paths
-# (`query` and the raw path a relay serves REQs from), plus an audit pass over
-# the expansion's lookup (dead bucket sets, a boxed TreeSet per row, and an
-# `associateBy` that kept the LAST duplicate lens where `lenses` keeps the
-# first).
+# WHAT MOVED, in the store's own sections:
 #
-# WHAT IT MEANS FOR A CLIENT: a searching read is still EXPANDED — a label,
-# assertion or Trusted List is the only route to the subjects it names, so the
-# companion queries still fetch it and its subjects still ride in at the
-# position its relevance earned — but the pointer itself no longer rides in
-# with them. A REQ that asked `kinds:[0]` now gets kind 0. The narrowing is the
-# UNION across a REQ's filters and a read that names NO kinds narrows nothing,
-# which is what keeps the page's "Everything" tab exactly as it was.
+#   §12.2 THE SPLIT RUNG. A multi-word search had ONE token band, so
+#     `matchCount(name) > 0` bought the whole 130 000 rung for a single word of
+#     the query: "Verified" in a display name plus "human" in a bio stood on
+#     the rung a profile NAMED `Verified Human` stands on, and everything
+#     separating them lived under 89 000 — inside a rung, where ~1.14x of trust
+#     delta decided the order. `naming_coverage()` now counts the words TYPED
+#     across name/display_name/search_primary, `offname_match()` asks whether
+#     some other kind of column answered the rest, and a scattered answer drops
+#     to `w_split_tier` (23 000). Crossing a whole-field answer now takes 1.93x
+#     of trust rather than 1.14x. Every calibrated pin is untouched BY
+#     CONSTRUCTION rather than by luck: coverage reads 1.0 whenever
+#     `query(n_words)` is 1, so no single-word query can reach the new rung.
 #
-# WHAT IT COSTS THIS REPO, because it is not nothing and it is not in the store:
-# `KIND_TABS` in web/app.js sends literal `kinds` for every chip but Everything,
-# and People is `kinds:[0]` — the commit's own worked example. Before this pin
-# a People search carried the Trusted Lists, assertions and labels that found
-# each profile, and web/provenance.js drew the "why is this here" row off them
-# with no round trip. From here that page holds the members and none of the
-# reasons. The row is not lost: shared/pointers.js now ASKS for the pointers a
-# kind-restricted answer no longer carries, and re-imposes as an `authors`
-# filter the trust gate the relay used to apply by only ever splicing a
-# delegated signer's. That client work lands on the same commit as this pin,
-# and a bump without it is a page whose pills silently stop appearing.
+#   §13.1 A MEMBER IS PLACED BY WHAT WAS SAID ABOUT IT. A Trusted List's
+#     spliced member used to carry the trust of the KEY THAT SIGNED THE LIST —
+#     a NIP-85 provider the reader APPOINTED in their own 10040 and that nobody
+#     follows, so it ranks 0 for a reader who has not enrolled it and 26 for
+#     one who has. Now, most specific answer first: (a) the list's own score
+#     for that member, (b) the member's own rank under this observer when the
+#     list scored nobody, (c) only then the signer, through the pointer floor.
+#     The pointer's TEXT band reaches the lookup separately from the signer's
+#     trust (`Ranked.textScore`, off a match-feature `search` already
+#     serialized per hit), so a member lands at the band the pointer's WORDS
+#     earned times what the list said about that member.
+#
+#   §12.3 THE PERFECT RUNG, shipped INERT (`w_perfect_tier` 0.0) — a band above
+#     the token rung for a field that IS the query, with §12.2 already leading
+#     the reported page with its exact titles.
+#
+#   THE READER'S OWN NIP-51 LISTS NOW SPLICE — `SearchReferences.PEOPLE_LISTS`,
+#     kinds 30000 (people list) and 39089 (follow pack). A reader who curates a
+#     list called `Verified Human` is answering the query "verified human" with
+#     the people on it, and that list could rank #1 and splice nobody: on a
+#     `kinds:[0]` read it was dropped on the way out. Gated exactly as every
+#     other declaration is — `Enrolment.admits`, so a reader's OWN lists unpack
+#     and a stranger's does not unless deliberately delegated in their 10040 —
+#     and members land on §13.1's rung (b), because NIP-51 has nowhere to put a
+#     per-member score.
+#
+#   A NIP-30 BADGE IS ONE TERM, on both ends of the store. The `:verified:` in
+#     `DotardTed :verified:` is a picture the event DECLARES in its emoji tags,
+#     and Vespa splits at `:` like any other non-alphanumeric — so it indexed
+#     as the NAME token `verified` and put bridged Mastodon accounts on the
+#     130 000 name rung for a bare `verified` search: six of the top six hits
+#     on staging (2026-09-01), one of them outranking a Trusted List titled
+#     exactly what was searched for. Both ends now rewrite a declared run to
+#     one synthetic term — feed side into the weak 4 000 secondary rung rather
+#     than inline, query side for a word that is ENTIRELY a shortcode — so
+#     `:verified:` finds the badges and `verified` finds the accounts that say
+#     the word. Declared-only on the feed side and whole-word-anchored on the
+#     query side, so a clock (`8:30:45`) survives either way.
+#
+#   THE EXPANSION GATE IS NO LONGER POOLED ACROSS OBSERVERS. `Delegations.of()`
+#     took a SET and unioned it, so a read carrying two `observer:` lenses
+#     unpacked any declaration EITHER had enrolled. It now resolves per
+#     observer, and a declaration unpacks only when EVERY lens that could have
+#     found it enrolled its signer. This relay's readers send one lens, so
+#     nothing here changes; it is a correctness fix for the two-lens read.
+#
+#   A PER-AUTHOR PAGE CAP (`maxHitsPerAuthor`), OFF BY DEFAULT AND LEFT OFF
+#     HERE. One mirror bot held 27 of the top 50 for `Verified Human`. It DROPS
+#     rows a filter matched, so a page can come back shorter than the limit the
+#     client asked for — an operator's editorial call, which would want an env
+#     knob and a line in configuration.md before it is worth turning on.
+#
+#   And write-path work that changes no answer: a single-pass shortcode rewrite
+#     (55/76/118us at 1/3/10 badges -> 24/25/28, nearly flat in the count) and
+#     `VespaText.firstIllegalCodePoint` reading a CHAR before a code point
+#     (2.5x over 64.5M characters of a staging slice), taking the whole
+#     derivation from 16 264 to 9 527 ns/event.
+#
+# WHAT IT COSTS THIS REPO. Nothing to compile: `Ranked.textScore` and
+# `maxHitsPerAuthor` are both defaulted, no store type this repo names changed
+# shape, and nothing here reads `searchScored`'s bands (the new `split` band
+# would read as `name` on an older schema anyway). But there are TWO deployment
+# steps, and each one reports success while doing nothing if it is the wrong
+# one — see docs/migrations.md, which now carries this bump as its own entry:
+#
+#   1. DEPLOY THE SCHEMA. `event.sd` changed, and it is rank-profile work ONLY
+#      — functions, expressions and rank inputs; not one `field`, `indexing`,
+#      `attribute` or `match-features` line moves — so `AUTO_DEPLOY` on boot
+#      should be the whole migration, with nothing in `configChangeActions` to
+#      act on. Read it and confirm anyway, per docs/migrations.md; the deploy
+#      reports success either way. What to watch for here is the REVERSE of
+#      that file's usual trap: a NEW store jar on an OLD serving schema is not
+#      an error and logs none. The store's own note is that §13.1 is inert
+#      until both halves arrive — an older serving schema, an unranked finding
+#      query and the in-memory reference all place exactly as before — so the
+#      page silently keeps the order this bump exists to change.
+#
+#   2. RE-FEED THE CORPUS — one boot with `REINDEX_FTS_ON_START=true`, then
+#      off. Extraction is data we WRITE on put, and BOTH halves of this bump
+#      change what a put would derive: the quartz line above moves nineteen
+#      kinds' words between columns, and the badge tokenization rewrites a
+#      declared shortcode run. Every event stored before this keeps its old
+#      columns until re-derived — same words, different rungs, so it is a
+#      ranking backfill and not an outage. A Vespa reindex cannot do this one:
+#      nothing re-derives data we never sent.
+#
+# AND ONE THING IT DOES NOT YET BUY THE PAGE. Kinds 30000/39089 are pointers
+# now, so a People-tab search can splice a member the reader's OWN people list
+# named — and `DECLARATION_KINDS` in web/provenance.js does not know those
+# kinds, so that member arrives with no pill saying which list put it there.
+# Nothing REGRESSES: before this pin the member was not on the page at all, and
+# shared/pointers.js asks only for the kinds provenance.js can draw, so there
+# is no wasted round trip either. It is a row the page could now draw and does
+# not, and the client half is its own change.
 #
 # THE GATE AT THIS COMMIT, per AGENTS.md's rule — the relay's own tests run on
 # InMemoryEventIndex and cannot see a Vespa-only regression:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 8f8dfb0c18
+#   git checkout 2bc79f5f40
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
-# Run HERE: 43 suites, 487 tests, 0 skipped, 0 failures, 14m41s (`skipped="0"`
+# Run HERE: 46 suites, 510 tests, 0 skipped, 0 failures, 22m19s (`skipped="0"`
 # read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md — a run
 # whose ITs all abort on `assumeTrue(dockerAvailable())` prints the same line).
-# SearchExpansionTest is the suite that carries this change: 50 cases, up from
-# 45 at 3ecdfae6ee. SplicedMemberWeightsIT still runs against a real Vespa
-# (51s of the total), which is what says the placement the last bump bought is
-# unmoved by this one.
+# Thirteen ITs stood up a real Vespa, and THREE of them are this bump's own:
+# FieldCoverageRankIT pins §12.2's ladder and the trust crossing, MemberTrustIT
+# pins all three of §13.1's rungs (including the property that motivates them —
+# a tenfold change in query(pointer_rel), the only number carrying the signer's
+# trust, leaves a scored member exactly where it was), and BadgeTermIT pins the
+# NIP-30 term on the only engine that can tell it from a substring match.
+# SplicedMemberWeightsIT still runs, which is what says the placement the
+# earlier bumps bought is unmoved by this one. Up from 43 suites / 487 tests at
+# 8f8dfb0c18 — the three new suites and 23 tests are exactly this range's.
 #
-# AND END TO END, because the store's own gate cannot see the client half.
-# Dr Edo Paz's real trust chain pulled off staging with
-# `relay/tools/fetch-observer-corpus.mjs` (555 events: his Map, the 12 Trusted
-# Lists and 200 assertions his two delegated publishers signed, and the 342
-# member profiles), loaded into a local Vespa, served by the relay built from
-# this branch, and driven through the page's OWN modules over the wire:
-#
-#   search                             events  declarations
-#   {search:"AOS 2026 Participant"}         91             2   ← unchanged
-#   {kinds:[0], search: same}                89             0   ← the narrowing
-#
-# The members still ride in (89 of them); only the lists that carried them
-# step out. provenanceOf over that page alone draws 0 pills, and 89 cards
-# with 98 pills once shared/pointers.js has fetched what it no longer carries
-# — a strict SUPERSET of what the un-narrowed answer produced natively: 80
-# cards identical, 9 gained a pill, NONE lost one. The 9 are the shift this
-# trades for, and they are real reasons a text search could not surface —
-# `Verified Human` on 6, `rank 14` on 2, `Bitcoin Vendor` on 1 — found because
-# the client asks by TARGET where the relay matched by TITLE.
-#
-# Cost, counted on the wire: two REQs cold (the Map, then all six pointer
-# filters ORed into one), and ONE once readiness.js has handed the Map over at
-# sign-in. Every declaration filter went out author-narrowed to his delegated
-# keys and lensless; every label filter carried `observer:` and was ANSWERED
-# rather than refused, which is the check that matters there — LensRequiredPolicy
-# refuses a whole REQ if one filter declares nothing. A stranger's 30392 forged
-# with a real list's title changed not one pill or count.
-#
-# DIRECTION: 3ecdfae6ee is a strict ancestor of this (`git merge-base
+# DIRECTION: 8f8dfb0c18 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '3ecd…' < '8f8d…' ('3' < '8'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction, and back the right way up after 3ecdfae6ee
-# landed the other. Ordering only decides who wins a CONFLICT and there is
-# none; the proof stays what it always is — every eventstore line reads
-# 8f8dfb0c18 with no `->`:
+# LEXICOGRAPHIC: '8f8d…' > '2bc7…' ('8' > '2'), so this sorts BELOW the pin it
+# replaces — the UNSAFE direction, the way 3ecdfae6ee went and the last one
+# came back from. Read it for exactly what the note at the top of this file
+# says it is: IF two parts of the graph asked for different store versions,
+# Gradle would keep the old one and say nothing. Nothing does — this pin is the
+# only thing in the graph that names vespa-eventstore, all four `api(...)`
+# declarations take this one version ref, and there is no
+# `force(libs.vespa.eventstore.store)` anywhere because no conflict has ever
+# been possible. The proof stays what it always is, and it is worth actually
+# reading on THIS bump: every eventstore line reads 2bc79f5f40 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "8f8dfb0c18"
+vespaEventStore = "2bc79f5f40"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
