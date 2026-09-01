@@ -254,17 +254,11 @@ class RelayProtocolTest {
                 // used to be: the kinds no longer form one, and the property
                 // this asserts was never "in that range" but "is a kind the
                 // store expands a declaration from".
-                val declarationKinds =
-                    setOf(
-                        30382,
-                        30383,
-                        30384, // NIP-85 assertions: pubkey / event / address
-                        30392,
-                        30393,
-                        30394, // Trusted Lists, by what their members are
-                        30000,
-                        39089, // NIP-51 people list and follow pack
-                    )
+                // NIP-85 assertions (subject: a pubkey / an event / an address),
+                // the Trusted Lists (by what their members are), and the two
+                // NIP-51 people kinds. 30385 and 30395 are absent because their
+                // members are NIP-73 external identifiers, which name no event.
+                val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089)
                 val companion = index.searchQueries.last()
                 assertTrue(
                     companion.kinds.isNotEmpty() && companion.kinds.all { it in declarationKinds },

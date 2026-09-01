@@ -268,14 +268,59 @@ const texts = (pills) => pills.map((p) => p.text);
 
   const list = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["name", "Soil Nerds"], ["p", READER]])];
   assert.deepStrictEqual(texts(pillsOn(list, "1")), ["x"],
-    "a 30392's `name` is not indexed: the pill falls back to `d` rather than claiming a word the relay never matched");
+    "a 30392's `name` is not indexed: the pill falls back to `d`, which on that kind is a rounding error");
 
   const pack = [profile("1", READER), ev("2", LISTER, 39089, [["d", "y"], ["name", "Soil Nerds"], ["p", READER]])];
-  assert.deepStrictEqual(texts(pillsOn(pack, "1")), ["y"], "…and a follow pack indexes the title alone, like a Trusted List");
+  assert.deepStrictEqual(texts(pillsOn(pack, "1")), [], "…and a follow pack indexes the title alone, so `name` alone says nothing");
 
   // The title still wins wherever there is one.
   const both = [profile("1", READER), ev("2", LISTER, 30000, [["d", "x"], ["title", "Titled"], ["name", "Named"], ["p", READER]])];
   assert.deepStrictEqual(texts(pillsOn(both, "1")), ["Titled"]);
+}
+
+// A STORAGE KEY IS NOT A REASON, and on the NIP-51 kinds it is most of the
+// corpus. `d` is never indexed, so it is never a word anybody searched; for a
+// 30392 the fallback is a rounding error because a delegated publisher titles
+// what it computes, and for a 30000 it is 71% of the lists that name people.
+//
+// Measured on staging (2026-09-01), 400 kind-30000s: 183 name at least one
+// person and only 53 carry a title or name. The other 130 would have put their
+// storage keys on up to 10,934 member cards.
+{
+  const junk = ["intent-bloom-r0s63o3y-isPlaying", "chats/null/lastOpened", "nextblock.city/neighborhood", "communities", "dm-contacts"];
+  for (const d of junk) {
+    const page = [profile("1", READER), ev("2", READER, 30000, [["d", d], ["p", READER]])];
+    assert.deepStrictEqual(texts(provenanceOf(page, trusting(READER)).get(hex("1")) || []), [],
+      `an untitled people list says nothing rather than drawing ${JSON.stringify(d)} under a byline`);
+  }
+  // The row being PARTIAL is a property it already documents; being wrong is not.
+  const titled = [profile("1", READER), ev("2", READER, 30000, [["d", "dm-contacts"], ["title", "DM Contacts"], ["p", READER]])];
+  assert.deepStrictEqual(texts(provenanceOf(titled, trusting(READER)).get(hex("1"))), ["DM Contacts"],
+    "…and the same list titled says its title");
+}
+
+// A MUTE LIST IS THE OPPOSITE OF A VOUCH. Quartz names the shape itself
+// (`PeopleListEvent.BLOCK_LIST_D_TAG = "mute"`) and the relay splices it like
+// any other people list — SearchReferences reads every public `p` and cannot
+// tell a curation from a rejection. The row can: drawn, it is a positive chip
+// on somebody the reader threw out.
+//
+// TITLED ONES ARE THE REASON THIS IS ITS OWN CHECK. Of 400 sampled, 41 are
+// block-shaped and 9 name people publicly — the largest 3,980 of them — and
+// two carry the title `Mute`, which the title rule above would happily draw.
+{
+  for (const d of ["mute", "block", "Blocked", "mutelists"]) {
+    const bare = [profile("1", READER), ev("2", READER, 30000, [["d", d], ["p", READER]])];
+    assert.deepStrictEqual(texts(provenanceOf(bare, trusting(READER)).get(hex("1")) || []), [],
+      `a ${JSON.stringify(d)} list draws nothing`);
+    const named = [profile("1", READER), ev("2", READER, 30000, [["d", d], ["title", "Mute"], ["p", READER]])];
+    assert.deepStrictEqual(texts(provenanceOf(named, trusting(READER)).get(hex("1")) || []), [],
+      `…and titling it does not turn it into provenance`);
+  }
+  // Not a substring rule: a genuine list is not silenced for containing the word.
+  const real = [profile("1", READER), ev("2", READER, 30000, [["d", "muted-topics-i-follow"], ["title", "Unmuted"], ["p", READER]])];
+  assert.deepStrictEqual(texts(provenanceOf(real, trusting(READER)).get(hex("1"))), ["Unmuted"],
+    "a `d` that merely contains the word is a different list");
 }
 
 // A STRANGER'S LIST IS THE WHOLE SAFETY ARGUMENT. Anyone may title a list
