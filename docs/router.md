@@ -586,11 +586,9 @@ groups somebody listed:
 ```
 
 That is one leg per *(relay, group)* rather than per relay, and each leg's band
-stays valid because a group id does not change. A bound select pages whole
-events rather than taking the tags projection (see [Binding filter fields to a
-relay](#binding-filter-fields-to-a-relay)) — which is the cheaper walk at this
-size, not a cost — and it will not find a public group that nobody has listed.
-The example leaves it unbound for that second reason —
+stays valid because a group id does not change. It will not find a public group
+that nobody has listed, though, and the example leaves it unbound for that
+reason —
 a search relay wants the groups nobody has told it about.
 
 Private groups are not mirrored either way. NIP-29 gates their reads behind
@@ -780,19 +778,15 @@ author's events from the relays their own 10002 marks write*:
 
 Two things to know before using one:
 
-- **A bound select cannot use the store's tag projection, and mostly should not
-  want to.** That projection answers with the distinct values at one index — a
-  set, with the tag each came from already discarded, which is exactly the
-  pairing a binding exists to keep. So a bound select pages the events instead.
-  Scanning kind 10040 is nothing; scanning millions of kind-10002s is the walk
-  the projection was introduced to replace. Both halves of that sentence are
-  still true, and the first half is the common case: the projection is a
-  document-API visit whose selection runs per document, so it walks the WHOLE
-  corpus once per tag name however few documents it wants — 75s per tag at 319M
-  events against 0.0058s through the search index (#182). The router sizes the
-  match set and picks per source (`RelayDiscovery.visitBeatsTheIndex`), so a
-  binding costs nothing at 10040 scale and the projection is still there for the
-  10002-scale walk it was built for. Narrow the small sources first.
+- **A binding costs the read nothing.** It used to: a bound select cannot use
+  the store's tag projection — that projection answers with the distinct values
+  at one index, a set, with the tag each came from already discarded, which is
+  exactly the pairing a binding exists to keep — so a bound select paged the
+  events while an unbound one took the projection. The projection turned out to
+  be the expensive path (a document-API visit whose selection runs per document,
+  so it walks the whole corpus once per tag name — 75s per tag at 319M events
+  against 0.0058s through the search index, #182), and every source now takes
+  the paged read. Bind or don't bind on what the stream needs from the pairing.
 - **`authorsPerLeg` decides how often a sync band survives.** A band is keyed
   on its filter, so a changing author set invalidates it and re-walks that
   relay's history. `authorsPerLeg = 1` gives one band per (relay, author), which
