@@ -4344,6 +4344,33 @@ statement about someone else's server.
 
 ## Traps that have cost real time
 
+- **`SCAN_PAGE` MUST STAY UNDER THE DEPLOYED `maxHits`, and multi-node is where
+  that bites.** Every relay-list read is `RelayDiscovery.scan`, which pages
+  `store.query(filter.copy(limit = SCAN_PAGE))` — 10,000 — until a short page.
+  Vespa's own `maxHits` default is 400 and a query asking for more is REJECTED
+  (`N hits requested, configured limit: 400`), not trimmed, so the store ships a
+  query profile setting it to `Int.MAX_VALUE`. Fine on one content node: the hit
+  collector sizes from what MATCHES, not from what was asked. **Multi-node
+  dispatch does not have that property** — its merge path allocates by the
+  REQUESTED hits, and the store's own profile records `Int.MAX_VALUE` killing a
+  2-node cluster's jdisc container with "Requested array size exceeds VM limit"
+  (2026-08-17), in a crash loop re-triggered by whichever fetch-all caller
+  retried first. The documented survival move is to cap `maxHits` in the
+  deployed profile and set `VESPA_UNBOUNDED_HITS` to the same value.
+  **Cap it below 10,000 and every discovery pass starts failing**: the engine
+  rejects the page, `StreamWorld.derive` catches it and prints "could not derive
+  <label>", and the roster is silently whatever the other sources named. The
+  read itself is not the exposure — `scan` always sends an explicit limit and
+  never the unbounded sentinel — the COUPLING is. Lower `SCAN_PAGE` with the
+  ceiling, or leave the ceiling above it.
+
+  What a short page CANNOT be is a quiet truncation, and both routes are closed
+  deliberately: an over-limit ask is rejected rather than trimmed (above), and
+  the bundled profile turns Vespa's soft timeout OFF — on by default, it returns
+  HTTP 200 with a partial result at 500ms — with `VespaEventIndex` checking
+  `coverage.full` on every response besides. So `page.size < ask` means the store
+  had nothing older, which is exactly what `scan` reads it as.
+
 - **A MALFORMED NIP-77 FRAME WEDGES THE WHOLE RELAY, and it is one frame from
   any client.** `negentropy-jvm`'s `ByteArrayReader.readByte()` returns `-1` at
   end of buffer instead of throwing, so `MessageConsumer.decodeVarInt`'s
