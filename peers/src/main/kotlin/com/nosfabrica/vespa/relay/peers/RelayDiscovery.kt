@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.CancellationException
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired
@@ -108,6 +109,14 @@ object RelayDiscovery {
         // rather than silently applied, because a cap set too low reads from
         // outside exactly like a store that holds nothing.
         var oversizedLists = 0
+        // How many documents the store holds, read AT MOST ONCE for the whole
+        // call and only if a source actually reaches the choice below. It is
+        // the denominator of [visitBeatsTheIndex] and it does not move during
+        // one walk, so re-reading it per source would be three grouping counts
+        // to answer one question.
+        var corpus: Int? = null
+
+        suspend fun corpusSize(): Int = corpus ?: store.count(Filter()).also { corpus = it }
         for (source in dynamic.sources) {
             // [RelaySource.maxAgeSeconds] applied, here and once: a config
             // cannot write an absolute `since` that keeps meaning what it said,
@@ -127,12 +136,15 @@ object RelayDiscovery {
             val floor = source.maxAgeSeconds?.let { now - it }
             val bounded =
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
-            // A named tag with no bindings goes to the store's tags-only
+            // A named tag with no bindings CAN go to the store's tags-only
             // projection, which streams one field instead of materializing
             // whole events (a 2.6M-event scan became the projection's walk).
-            // A binding select must page: the projection returns a SET of
-            // values, and the pairing a binding exists to keep is gone by the
-            // time it returns.
+            // Whether it SHOULD is decided per source below — the projection
+            // is a corpus walk, and that is a different bill.
+            //
+            // A binding select can never take it: the projection returns a SET
+            // of values, and the pairing a binding exists to keep is gone by
+            // the time it returns.
             val named = source.selects.filter { it.tag != null && it.bindings.isEmpty() }
             val anyTag = source.selects.filter { it.tag == null || it.bindings.isNotEmpty() }
             // [RelayDiscoveryConfig.maxRelaysPerList] is a per-EVENT limit, and
@@ -147,12 +159,36 @@ object RelayDiscovery {
             // projection claims, so without this the cap silently did nothing
             // on the one stream it exists for — a live run discovered 222 urls
             // from a seeded 200-entry bulk list with `maxRelaysPerList = 50`
-            // set. It is opt-in for that reason: leaving it unset keeps the
-            // projection (a 2.6M-event scan became its walk), and setting it
-            // buys the cap at that cost, knowingly.
+            // set. It is opt-in for that reason: leaving it unset leaves the
+            // projection AVAILABLE (a 2.6M-event scan became its walk, on a
+            // store where it was the cheaper walk), and setting it buys the cap
+            // at that cost, knowingly.
             val semantics = (store as? VespaEventStore)?.store?.takeIf { dynamic.maxRelaysPerList == null }
+            // WHICH SELECTS TAKE THE PROJECTION, decided from the corpus rather
+            // than from the select's shape — see [visitBeatsTheIndex]. The
+            // projection is a document-API visit carrying a selection
+            // expression: the predicate runs per document and never touches the
+            // search index, so it walks EVERYTHING whatever it is looking for.
+            // Measured on the staging store (#182), where 364 kind-10040
+            // declarations sat in a 319,426,563-event corpus:
+            //
+            //   /search/  yql=select id from sources * where kind=10040   0.0058s
+            //   /document/v1 …?selection=(event.kind==10040)             75.0260s
+            //
+            // 12,800x, and the loser is the path this took for every one of the
+            // 38 delegation tags a 10040 source names — 38 corpus walks per
+            // pass, monopolizing the document API the ingest dedup probe shares
+            // and starving the mirror (#167). The scan below costs ONE walk for
+            // every select of the source together, so the fix is both a change
+            // of path and a collapse of 38 passes into one.
+            val projected =
+                when {
+                    semantics == null || named.isEmpty() -> emptyList()
+                    takesTheProjection(store, bounded, ::corpusSize) -> named
+                    else -> emptyList()
+                }
             if (semantics != null) {
-                for (select in named) {
+                for (select in projected) {
                     // A select naming a kind narrows the scan to it; the
                     // source filter already carries the rest.
                     val filter = select.kind?.let { bounded.copy(kinds = listOf(it)) } ?: bounded
@@ -168,9 +204,12 @@ object RelayDiscovery {
                     for (v in raw) normalize(v, allowOnion)?.let(found::add)
                 }
             }
-            // A select with no tag name can match anything in an event, which
-            // the projection cannot express. Those keep the paging scan.
-            val stillPaged = if (semantics == null) source.selects else anyTag
+            // Everything the projection did not take. A select with no tag name
+            // can match anything in an event, which the projection cannot
+            // express, so those are always here; the named ones join them
+            // whenever the index is the cheaper walk, and one scan then answers
+            // the whole source.
+            val stillPaged = if (projected.isEmpty()) source.selects else anyTag
             if (stillPaged.isNotEmpty()) {
                 scan(store, bounded, pageSize) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
@@ -323,10 +362,12 @@ object RelayDiscovery {
      * Null [self] is a router with no signer: it holds no records, and the
      * honest count of what it knows beyond today's relay lists is none.
      *
-     * Reads the `d` values through the store's TAGS-ONLY PROJECTION where there
-     * is one — this asks a question about a whole kind, and materializing five
-     * figures of records to read one field off each is the cost that projection
-     * exists to remove. A store without it pages instead.
+     * Reads the `d` values through the store's TAGS-ONLY PROJECTION only when
+     * [visitBeatsTheIndex] says so. Materializing five figures of records to
+     * read one field off each is the cost that projection exists to remove —
+     * but the projection is a corpus visit, and this filter is `authors = [us]`
+     * plus a `since`, which is exactly the shape the search index answers
+     * cheaply. A store without the projection pages either way.
      */
     suspend fun recorded(
         store: IEventStore,
@@ -339,7 +380,7 @@ object RelayDiscovery {
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = now - maxAgeSeconds)
         val found = HashSet<NormalizedRelayUrl>()
         val semantics = (store as? VespaEventStore)?.store
-        if (semantics != null) {
+        if (semantics != null && takesTheProjection(store, filter) { store.count(Filter()) }) {
             // Through the same [normalize] every discovered url goes through, so
             // one url cannot be two entries here and one there — a `d` value is
             // a string somebody else wrote, and the onion rule is this
@@ -524,6 +565,78 @@ object RelayDiscovery {
      * and a bounded allocation.
      */
     private const val SCAN_PAGE = 10_000
+
+    /**
+     * How many documents a selection visit walks past in the time the search
+     * index takes to hand back ONE whole event — the exchange rate between the
+     * two walks, and the only number [visitBeatsTheIndex] needs.
+     *
+     * Measured on the staging store (#182, #167): a `document/v1` visit
+     * carrying `selection=(event.kind==10040)` crossed 319,426,563 documents in
+     * 75.0s, or ~4.3M documents/second, and a whole-document recall runs
+     * ~0.7ms/event (the store's own NIP-45 measurement: 100,000 summaries for
+     * an integer, 2026-09-01), or ~1,400 events/second. 4.3M / 1,400 is ~3,000.
+     *
+     * SET TO A THIRD OF THAT, DELIBERATELY. The two walks do not cost the same
+     * KIND of time: the visit runs on the document API, which is also where the
+     * ingest dedup probe lives, and 24 concurrent visits re-arming every ~35s
+     * is what wedged the mirror while `/search/` stayed fast throughout — a
+     * failure that reads from outside as a healthy store. Paying up to 3x the
+     * store-seconds to keep a walk off that lane is the trade this number
+     * makes, and it is the direction to err in when the estimate is wrong.
+     */
+    private const val VISIT_DOCS_PER_SCANNED_EVENT = 1_000L
+
+    /**
+     * [visitBeatsTheIndex] over the two grouping counts it needs — the match
+     * set of [filter] and the whole [corpus] — read off the index, which is the
+     * cheap read on either path.
+     *
+     * A COUNT THAT WILL NOT ANSWER KEEPS THE PROJECTION. Which walk is cheaper
+     * is an optimization, and the projection is what this did before there was
+     * a choice; failing the discovery would cost the caller its whole relay
+     * list to save it some store time. It says so on the way, because a
+     * fallback that is silently permanent is the shape of the bug this decision
+     * exists to end.
+     */
+    private suspend fun takesTheProjection(
+        store: IEventStore,
+        filter: Filter,
+        corpus: suspend () -> Int,
+    ): Boolean =
+        try {
+            visitBeatsTheIndex(store.count(filter), corpus())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println(
+                "router: discovery could not size ${filter.kinds ?: "every kind"} against the corpus " +
+                    "(${e.message}) — keeping the tags projection, which walks the whole store per tag",
+            )
+            true
+        }
+
+    /**
+     * Is the tags-only projection the cheaper walk for a filter matching
+     * [matches] events in a [corpus] of this size?
+     *
+     * THE COST OF A VISIT IS THE CORPUS, NOT THE ANSWER. A `document/v1` visit
+     * evaluates its selection per document with no index behind it, so reading
+     * 364 declarations costs the same walk as reading 364 million; the cost of
+     * the paged scan is the match set, which the `kind` attribute
+     * (`fast-search` in the schema) selects. So the two curves cross, and where
+     * they cross moves with the corpus — a fixed "matches under N" threshold
+     * would be right once and then drift as the store grows, in the direction
+     * that keeps the visit.
+     *
+     * Decided from the corpus rather than from the query's shape, which is what
+     * the shape rule this replaces got wrong: "a named tag with no bindings" is
+     * a fact about the config and says nothing about what the read will cost.
+     */
+    internal fun visitBeatsTheIndex(
+        matches: Int,
+        corpus: Int,
+    ): Boolean = matches.toLong() * VISIT_DOCS_PER_SCANNED_EVENT > corpus.toLong()
 
     /**
      * Is this event too long to be a relay list?

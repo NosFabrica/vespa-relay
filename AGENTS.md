@@ -184,6 +184,18 @@ D=$(mktemp -d)
 ./gradlew :sync:test --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 ./gradlew :sync:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 
+# THE TWO WAYS TO READ A RELAY LIST, priced against a real store: the tags
+# projection (a document/v1 visit whose selection runs per document, so it walks
+# the whole corpus, once per tag name) against the paged scan the `kind`
+# attribute selects. Prints both clocks, whether the two answers AGREE, and
+# which way `RelayDiscovery.visitBeatsTheIndex` calls it on the corpus in front
+# of it — the exchange rate behind that decision is the one thing only a real
+# store can check. Read-only, deploys nothing, safe against a live deployment.
+BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test \
+  --tests '*RelayListReadCostBench*' --rerun -i
+#   …another list kind, its tag and where that tag puts the url:
+#   BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
+
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -4030,9 +4042,40 @@ flattened across every event it matched. That is not a corner case — the NIP-6
 select is exactly the shape the projection claims, so before this was wired the
 cap silently did nothing on the one stream it exists for (a live run discovered
 222 urls from a seeded 200-entry list with the cap set). It is opt-in for that
-reason; unset keeps the projection. Redundant default ports (`:443` on `wss`,
-`:80` on `ws`) are folded by string in `RelayDiscovery.normalize` rather than by
-probe — that one needs no evidence.
+reason; unset leaves the projection available. Redundant default ports (`:443`
+on `wss`, `:80` on `ws`) are folded by string in `RelayDiscovery.normalize`
+rather than by probe — that one needs no evidence.
+
+**THE TAG PROJECTION IS A CORPUS WALK, and whether it is the cheaper one is a
+question about the STORE, not about the select.** `distinctTagValues` rides the
+store's `document/v1` visit carrying a selection expression: the predicate runs
+per document with no index behind it, so it costs the same whether the answer is
+364 events or 364 million — and it costs that ONCE PER TAG NAME, because the
+projection answers about one tag. Measured on `vespa-eventstore-staging`
+(2026-09-02, #182), reading the 364 kind-10040 declarations in a 319,426,563
+event corpus:
+
+```
+/search/         yql=select id from sources * where kind=10040     0.0058s
+/document/v1/event/event/docid?selection=(event.kind==10040)      75.0260s
+```
+
+12,800x, and the monitor's 10040 source names 38 delegation tags, so the read
+was ~2,850s of store time — on the DOCUMENT API, which is where the ingest dedup
+probe queues. `/search/` stayed fast throughout, which is why a health-check
+query issued by hand answered instantly while the mirror was dead: the shape
+that made #167 unreadable from outside.
+
+`RelayDiscovery` now decides per source from the corpus rather than from the
+select's shape (`visitBeatsTheIndex`, an exchange rate of one whole-event recall
+to ~1,000 walked documents, a third of the measured ~3,000 because the two walks
+cost different LANES). A source that takes the index takes it for every one of
+its selects together, so 38 tags are one walk and not 38. A fixed "matches under
+N" threshold would have been right once and then drifted as the corpus grew —
+always toward keeping the visit, which is the walk that gets worse.
+`RelayListReadCostBench` prices both paths against a real store and prints which
+way the constant calls it, so the exchange rate can be re-checked where it will
+actually be applied.
 
 ## Instrumentation — use it before theorising
 

@@ -813,4 +813,48 @@ class RelayDiscoveryTest {
             // decide nothing is exactly the cost the bound exists to remove.
             assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = emptyList()).isEmpty())
         }
+
+    // ---- which walk reads a relay list -------------------------------------
+
+    /**
+     * The tags projection is a `document/v1` visit carrying a selection
+     * expression: the predicate runs per document with no index behind it, so
+     * its cost is the CORPUS and not the answer. The paged scan's cost is the
+     * match set, which the `kind` attribute selects. These are the numbers off
+     * the staging store that made the difference visible (#182).
+     */
+    @Test
+    fun `a needle in a corpus is read through the index, not walked for`() {
+        val corpus = 319_426_563
+        // 364 kind-10040 declarations: 0.0058s through `/search/`, 75.0260s
+        // through the visit that used to read them, once per delegation tag.
+        assertFalse(RelayDiscovery.visitBeatsTheIndex(matches = 364, corpus = corpus))
+        // A router's own kind-30166 records — five figures, and still nowhere
+        // near a walk of the whole store.
+        assertFalse(RelayDiscovery.visitBeatsTheIndex(matches = 19_844, corpus = corpus))
+        // A relay-list kind that IS a sizable share of the corpus keeps the
+        // projection: materializing millions of whole events to read one tag
+        // off each is the cost that projection exists to remove.
+        assertTrue(RelayDiscovery.visitBeatsTheIndex(matches = 2_000_000, corpus = corpus))
+    }
+
+    /**
+     * The crossover is a RATIO, so it travels with the store. A fixed "matches
+     * under N" threshold would be right at one corpus size and then drift as
+     * the store grows — always toward keeping the visit, which is the walk that
+     * gets worse.
+     */
+    @Test
+    fun `the crossover moves with the corpus, not with the query`() {
+        // The same match set, three stores. On a small one it is most of what
+        // is there and the visit is the cheaper walk; on a large one it is a
+        // needle and the index wins — with no change to the ask.
+        assertTrue(RelayDiscovery.visitBeatsTheIndex(matches = 100_000, corpus = 1_000_000))
+        assertFalse(RelayDiscovery.visitBeatsTheIndex(matches = 100_000, corpus = 1_000_000_000))
+        // An empty store has nothing to walk and nothing to match: the index,
+        // which costs one query rather than spinning up a visit.
+        assertFalse(RelayDiscovery.visitBeatsTheIndex(matches = 0, corpus = 0))
+        // And the arithmetic does not wrap on a corpus a 32-bit count can hold.
+        assertTrue(RelayDiscovery.visitBeatsTheIndex(matches = Int.MAX_VALUE, corpus = Int.MAX_VALUE))
+    }
 }
