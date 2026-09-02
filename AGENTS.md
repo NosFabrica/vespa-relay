@@ -199,6 +199,12 @@ node web/src/test/js/run.mjs       # …the same suite, run directly
 # own header for the full sequence.
 node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
 
+# THE PAGER, IN A REAL BROWSER, AND THIS ONE NEEDS NOTHING BUT CHROMIUM: it
+# serves the page itself and answers its REQs from a fake WebSocket, so "page
+# two starts at result 40", "Back undoes a page turn" and "a keystroke does not
+# repage the list under the popup" are assertions rather than a click-through.
+node web/src/test/browser/pager.probe.mjs
+
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
 docker compose --profile onion up -d          # …with the relay's own .onion
@@ -949,7 +955,33 @@ relay/src/main/resources/
                         the seven narrowing chips share no kind with it); what
                         is
                         feed.js's own is the shaping — replies, future dates and
-                        duplicates never reach a card; cards/ is the
+                        duplicates never reach a card;
+                        paging.js is the results view's PAGER — forty to a page,
+                        three pages fetched ahead of the one on screen. A page
+                        is a longer ask CUT LOCALLY, because NIP-50 has no
+                        offset and a ranked answer has no `until` cursor
+                        either: the only way to reach page two is to ask for a
+                        longer prefix of the same ranking. So the ask in front
+                        of the reader stays ONE page (firstAsk) and the three
+                        behind it are a second, wider ask made after that
+                        answer is already drawn (app.js's `preload`, which does
+                        NOT bump requestId — it is the same answer asked for at
+                        greater length, and bumping would drop the names and
+                        pills out of the page being read). The widened answer
+                        is APPENDED, never taken whole (mergePages): an event
+                        published between the two asks can rank onto page one,
+                        and adopting the new order would renumber the list
+                        under the reader. `?page=4` is state like the query and
+                        the chip, so Back undoes a page turn and a link is what
+                        the sender was reading. Two ways the pages end and the
+                        page says which: the corpus running out (`drained`,
+                        which needs EOSE — a read WE stopped listening to came
+                        back short for our own reasons) and this page declining
+                        to follow a ranking past MAX_ASK, which is a note under
+                        the pager rather than a silently missing button. The
+                        FEED does not page: its answer is a plain NIP-01 read
+                        whose cursor is `until`, a real one and a different
+                        mechanism; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
                         FAILS if a kind registers without a fixture, a badge

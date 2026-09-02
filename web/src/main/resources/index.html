@@ -365,6 +365,7 @@
 <link rel="modulepreload" href="./web/cards/social.js" />
 <link rel="modulepreload" href="./web/entity.js" />
 <link rel="modulepreload" href="./web/feed.js" />
+<link rel="modulepreload" href="./web/paging.js" />
 <link rel="modulepreload" href="./web/readiness.js" />
 <link rel="modulepreload" href="./web/related.js" />
 <link rel="modulepreload" href="./web/searchfield.js" />
@@ -1395,6 +1396,42 @@
      is on this page too — every prefix in the sheet works from here, they just
      leave the feed for the results the moment one is submitted. */
   body.feed #adv { display: none; }
+
+  /* ---- the pager ---------------------------------------------------------
+     Under the cards, because that is where a reader who has finished a page
+     is looking. Numbers rather than an endless scroll: a card opens a page of
+     its own, and coming BACK to result 63 is the thing infinite scroll cannot
+     do — `?page=2` can. It wraps on a phone rather than scrolling sideways;
+     ten pages of two digits fit a narrow screen in two rows. */
+  .pager {
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
+    gap: 6px; margin: 22px 0 4px;
+  }
+  .pg-nums { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .pg {
+    min-width: 32px; padding: 5px 9px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--muted);
+    font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .pg:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  /* The page you are on is a label, not an offer. It keeps the button's shape
+     so the row does not reflow as it moves along, and stops being a target. */
+  .pg.on {
+    background: var(--accent-soft); border-color: var(--accent);
+    color: var(--accent); font-weight: 650; cursor: default;
+  }
+  /* Prev at the start and Next at the end are the two presses that cannot be
+     made, and they stay ON THE PAGE rather than disappearing: a row whose
+     ends come and go moves every number under the pointer. */
+  .pg:disabled { opacity: .4; cursor: default; }
+  .pg-nav { font-weight: 550; }
+  .pg-note {
+    margin: 10px auto 0; max-width: 46em;
+    text-align: center; font-size: 12.5px; color: var(--faint);
+  }
+  .pg-note code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 
   .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
   .error { color: var(--danger); }

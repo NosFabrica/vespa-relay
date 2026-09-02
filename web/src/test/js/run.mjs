@@ -30,6 +30,14 @@
 //                  kind chip picks the kinds it names and survives the URL,
 //                  and that replies, future dates and duplicates never reach
 //                  a card
+// paging.test.mjs  the results view's pager — which prefix each page asks the
+//                  relay for (there is no offset in NIP-50, so a page is a
+//                  longer ask cut locally), that the ask in front of the reader
+//                  is still ONE page with the three ahead fetched behind it,
+//                  that a widened answer never renumbers the page on screen,
+//                  and that the two ways a list ends — the corpus running out
+//                  and this page declining to follow a ranking deeper — are
+//                  told apart
 // related.test.mjs what a git permalink shows UNDER its card — which filters
 //                  answer "what else belongs to this", and the shape they come
 //                  back as: a repository's lists newest-first, a thread's
@@ -113,7 +121,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "provenance.test.mjs", "providers.test.mjs", "pointers.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "groupnames.test.mjs", "calendar.test.mjs", "feed.test.mjs", "paging.test.mjs", "cards.test.mjs", "provenance.test.mjs", "providers.test.mjs", "pointers.test.mjs", "related.test.mjs", "relay.test.mjs", "lens.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "help.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "processors.test.mjs", "paths.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }
