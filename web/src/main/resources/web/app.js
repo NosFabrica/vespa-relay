@@ -2117,10 +2117,17 @@ function goPage(n) {
 /**
  * Where the buffer leaves the reader once an answer has landed.
  *
- * A page can stop existing between the click and the answer — `?page=9` pasted
- * over a two-page search, or Next into a "…" the relay then had nothing for —
- * and a skeleton over nothing is a page that never finishes loading. So the
- * reader lands on the last page there is.
+ * A page can stop existing between the click and the answer — `?page=99`
+ * pasted over a two-page search, or Next into a "…" the relay then had nothing
+ * for — and a skeleton over nothing is a page that never finishes loading. So
+ * the reader lands on the last page there is.
+ *
+ * Says whether it MOVED, because moving is a repaint. It did not, and
+ * `?q=…&page=99` drew the skeleton for the page it had been asked for and
+ * then sat there forever: this function had corrected the state behind it and
+ * nothing on either path (here or in preload) drew the correction. Caught
+ * against a real relay, by pasting exactly that url; both of the callers below
+ * now paint what it decides.
  *
  * replaceState rather than the pushState syncUrl() would do: this corrects a
  * place that turned out not to exist, and pushing it would leave a phantom
@@ -2128,13 +2135,14 @@ function goPage(n) {
  */
 function settlePage() {
   const end = lastPage(s.hits, s);
-  if (s.page <= end) return;
+  if (s.page <= end) return false;
   s.page = end;
   // Named from `hitsFor` — the text these hits actually answer — rather than
   // from the box, which the reader may have started editing while the answer
   // was in flight. This correction must not rewrite the url to a query nobody
   // has submitted.
   history.replaceState(null, "", currentUrl(s.hitsFor || $q.value.trim(), true, s.page));
+  return true;
 }
 
 /**
@@ -2175,19 +2183,20 @@ async function preload() {
     // Did the reader outrun us? Asked of the OLD buffer, because this answer
     // is about to become the new one.
     const waiting = !pageOf(s.hits, s.page).length;
+    let moved = false;
     s.exhausted = drained({
       complete: found.complete, got: found.events.length, asked: want, added: grown.length - s.hits.length,
     });
     s.asked = want;
     s.hits = grown;
-    settlePage();
+    moved = settlePage();
     // A preload lands UNDER the reader: mergePages keeps the pages already
     // drawn in the order they were drawn, so the only visible change here is
     // the pager growing a button — not worth collapsing an expanded json panel
     // for, which is the same repaint run() declines for the same reason.
     // Unless the page on screen is EMPTY, in which case this answer is the one
     // the reader is waiting on and it is drawn whatever else is open.
-    if (waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
+    if (moved || waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
     paintLate(s, myId, [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean), renderResults);
     again = true;
   } catch (e) {
@@ -2376,7 +2385,10 @@ function runFull(text, page = 0) {
     // Not this answer's page any more, or no answer at all: either way there
     // is nothing to page through and nothing to fetch ahead of.
     if (!live || s.error) return;
-    settlePage();
+    // The repaint is the point: run() has just drawn the page it was ASKED
+    // for, and if that page does not exist this is the only thing that draws
+    // the one that does.
+    if (settlePage()) renderResults();
     preload();
   });
 }

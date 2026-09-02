@@ -85,6 +85,9 @@ await page.addInitScript(`
 `);
 
 const t = async (name, fn) => { try { await fn(); console.log("  ok  " + name); } catch (e) { console.log("  FAIL " + name + ": " + e.message); process.exitCode = 1; } };
+// Bounded waits and `.catch(() => {})` wherever a page might NOT render: the
+// probe's job is to report which assertion failed, and an unhandled timeout
+// takes the whole run down with the state it was about to describe.
 const cards = () => page.$$eval(".result", (els) => els.map((e) => e.querySelector(".result-body")?.textContent.trim() || ""));
 const pager = () => page.$$eval(".pager .pg", (els) => els.map((e) => `${e.textContent.trim()}${e.disabled ? "(off)" : ""}${e.classList.contains("on") ? "*" : ""}`));
 const stats = () => page.$eval(".list-stats", (e) => e.textContent.trim());
@@ -174,6 +177,27 @@ await t("the deepest page this view follows a ranking to", async () => {
   if (p[p.length - 1] !== "Next ›(off)" || p.includes("…")) throw new Error(JSON.stringify(p));
   const note = await page.$eval(".pg-note", (e) => e.textContent.trim()).catch(() => "");
   if (!/400 results deep/.test(note)) throw new Error("no note saying WHY it stopped: " + note);
+});
+
+// ---- a page that does not exist ------------------------------------------
+//
+// The regression this file was written too late for: `?page=99` drew the
+// skeleton for page 99 and then sat on it forever. settlePage() had corrected
+// the state behind it and nothing repainted — caught by pasting exactly this
+// url at a real relay, and held here.
+await page.goto("http://localhost:7799/?q=test&page=99");
+await page.waitForSelector(".result", { timeout: 8000 }).catch(() => {});
+await t("a url past the end of the answer lands on the last page there is", async () => {
+  const c = await cards();
+  if (c[0] !== "result 240" || c.length !== 10) throw new Error(`${c.length} cards from ${c[0]}`);
+  if (!/^241–250 of 250 ·/.test(await stats())) throw new Error(await stats());
+  if (new URL(page.url()).searchParams.get("page") !== "7") throw new Error("the url still names a page that is not there: " + page.url());
+});
+await page.goto("http://localhost:7799/?q=thin&page=9");
+await page.waitForSelector(".result", { timeout: 8000 }).catch(() => {});
+await t("…and one page back is page one, which the url stops naming", async () => {
+  if ((await cards()).length !== 7) throw new Error("did not settle onto the only page there is");
+  if (new URL(page.url()).searchParams.has("page")) throw new Error(page.url());
 });
 
 // ---- an answer that fits on one page has no pager -------------------------

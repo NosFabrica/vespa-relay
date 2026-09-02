@@ -117,6 +117,14 @@ export const lastPage = (events, { exhausted, asked }) => {
  * under the reader: the card they were about to click moves down one, and the
  * page they came back from has different cards on it than when they left.
  *
+ * That the longer ask agrees with the shorter one about the part they share is
+ * the assumption under all of this, and it is the store's to keep, not ours —
+ * so it was measured rather than assumed. Against a real Vespa-backed relay
+ * over a 305-event corpus, asks of 40 / 160 / 200 / 400 for one search each
+ * returned the previous ask as an exact ordered PREFIX, in 183 / 70 / 89 / 65
+ * ms: a widened ask is neither a reshuffle nor slower than the first one. This
+ * fold is what protects the reader on the day that stops being true.
+ *
  * So the pages already held keep their order and their positions, and anything
  * genuinely new is appended in the order the relay ranked it. The cost is that
  * a late arrival deserving position 5 sits at the end of the buffer until the
@@ -149,6 +157,12 @@ export function mergePages(have, arrived) {
  * - [added] nothing: a longer ask that brought no event the buffer did not
  *   already hold. This is the one that fires on a hashtag search, where the
  *   union can be several times the limit and the first test never trips.
+ *
+ * That second test is not theoretical: `#pagetag` over a real relay holding
+ * 100 tagged notes and 40 NIP-73 comments came back with all 140 on an ask of
+ * 40 — the four filters of a hashtag REQ each carry their own limit (query.js's
+ * sideLimit) — so `got < asked` was false on every ask, and the pager reached
+ * the end of that corpus on `added === 0` alone.
  */
 export const drained = ({ complete, got, asked, added }) =>
   !!complete && (added === 0 || got < asked);
