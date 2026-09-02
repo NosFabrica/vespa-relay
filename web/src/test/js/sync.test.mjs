@@ -1252,7 +1252,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(storeOf("store"), null);
 
   const s = storeOf({
-    outstanding: 3, issued: 918_233, returned: 918_230, failed: 2, cancelled: 1,
+    outstanding: 3, slowAfterSec: 60, issued: 918_233, returned: 918_230, failed: 2, cancelled: 1,
     calls: [call(), call({ caller: "heal.resolve", op: "query", elapsedSec: 45 }), call({ elapsedSec: 0, asked: "" })],
     omitted: 0,
     callers: [{ caller: "ingest.dedup", issued: 41_022, returned: 41_020, failed: 0, cancelled: 0, outstanding: 2, oldestOutstandingSec: 794 }],
@@ -1264,7 +1264,23 @@ const leg = (n, quiet, over = {}) => ({
   // Only calls past the bound the LOG warns at are coloured. The page and the
   // router must not carry two definitions of the same word.
   assert.deepEqual(s.rows.map((r) => r.hot), [true, false, false]);
-  assert.equal(STUCK_CALL_SEC, 60, "the page's stuck bound is the router's SYNC_STORE_SLOW_SEC default");
+
+  // THE ROUTER'S OWN BOUND MARKS THE ROW, not this file's copy of the default.
+  // `SYNC_STORE_SLOW_SEC` is an operator's to change, and a page marking rows
+  // at 60 under a router set to five minutes would have the log and the colour
+  // meaning two different things by the same word — the drift this page avoids
+  // everywhere else by never re-deciding a threshold the router decided.
+  const tuned = { outstanding: 1, slowAfterSec: 300, calls: [call({ elapsedSec: 120 })], ages: [{ fromSec: 60, calls: 1 }] };
+  assert.equal(storeOf(tuned).rows[0].hot, false, "120s is ordinary under a 300s bound");
+  assert.equal(storeOf(tuned).ages[0].hot, false, "…and so is the band it falls in");
+  assert.equal(storeOf(tuned).stuckSec, 300);
+  assert.equal(storeOf({ ...tuned, slowAfterSec: 60 }).rows[0].hot, true, "…and marked once the bound is back under it");
+  // Two ways a document says nothing: a router too old to publish the bound,
+  // and one whose operator set it to 0 — which turns the LOG off and says
+  // nothing about what a page should mark. Both fall back to the default.
+  assert.equal(storeOf({ calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
+  assert.equal(storeOf({ slowAfterSec: 0, calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
+  assert.equal(STUCK_CALL_SEC, 60, "the fallback is the router's own default");
   // An empty `asked` is not a filter summary: the card draws "no filter" rather
   // than an empty cell, and only a null can tell it to.
   assert.equal(s.rows[2].asked, null);

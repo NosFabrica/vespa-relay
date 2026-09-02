@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
@@ -1260,6 +1261,12 @@ class FitnessPass(
                     tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
                 ),
                 SCAN_PAGE,
+                // The MONITOR's own records, not the url round-up's sources —
+                // `scan`'s default is the round-up because that is what pages
+                // through it most, and this walk of the whole graded corpus
+                // filed under it would send an operator to the wrong pass. See
+                // [StoreCalls] and `RelayDiscovery.scan`.
+                caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             ) { event ->
                 val record = event as? RelayDiscoveryEvent ?: return@scan
                 // A record with NO grade of ours is not a stale grade, it is
@@ -1324,6 +1331,8 @@ class FitnessPass(
                     tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
                 ),
                 SCAN_PAGE,
+                // The monitor's own, for [retireStaleEpochs]'s reason.
+                caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             ) { event -> (event as? RelayDiscoveryEvent)?.relay()?.let(legacy::add) }
             retire(record, legacy)
             if (legacy.isNotEmpty()) {

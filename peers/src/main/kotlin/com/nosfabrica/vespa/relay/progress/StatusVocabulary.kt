@@ -821,11 +821,25 @@ object StatusVocabulary {
                     "the wait at the engine. Same inference an operator was making by hand, now from a measurement.",
             )
             put(
+                "slowAfterSec",
+                "How long a store call may run before the router names it in the log — `SYNC_STORE_SLOW_SEC`, and the " +
+                    "bound the status page marks a row at. Published rather than left for a reader to know, because " +
+                    "it is an operator's to change: a page carrying its own copy of the default would go on marking " +
+                    "rows a router set to five minutes considers ordinary, which is the drift the page avoids " +
+                    "everywhere else by never re-deciding a threshold the router already decided. Zero means the " +
+                    "operator turned the LOG off; it says nothing about the report, which costs nothing to keep.",
+            )
+            put(
                 "callers",
                 "One row per subsystem, whoever is holding the most first — the answer to \"whose requests are " +
                     "filling the queue\", which no number in this document could give while every plane hit one " +
-                    "anonymous store. Each row closes: `issued = returned + failed + cancelled + outstanding`, and " +
-                    "every member is published including its zeroes so a reader can check that rather than trust it.",
+                    "anonymous store. TWO KINDS OF NUMBER share the row and only one of them is addable: `issued`, " +
+                    "`returned`, `failed` and `cancelled` are LIFETIME counters, while `outstanding` and " +
+                    "`oldestOutstandingSec` are LIVE and come off the same instant `calls` and `ages` do — so " +
+                    "the callers' `outstanding` sums to the section's, exactly, always. " +
+                    "`issued - returned - failed - cancelled` is that same quantity a moment earlier and need NOT " +
+                    "equal it on a busy router, because a call that finished mid-read lands on one side and not the " +
+                    "other; it settles when the router goes quiet. Every member is published including its zeroes.",
             )
             put(
                 "outstanding",

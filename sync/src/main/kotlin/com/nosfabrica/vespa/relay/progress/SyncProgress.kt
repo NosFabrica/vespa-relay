@@ -120,7 +120,8 @@ import kotlinx.serialization.json.putJsonArray
  *      "accepted": 3910233, "rejected": 41002}
  *   ],
  *   "store": {
- *     "outstanding": 3, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
+ *     "outstanding": 3, "slowAfterSec": 60,
+ *     "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
  *     "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
  *                "issuedAt": 1769998206, "elapsedSec": 794, "outstandingAtIssue": 2}],
  *     "omitted": 0,
@@ -521,6 +522,16 @@ class SyncProgress {
                 // whole process rather than about any subsystem: calls out to
                 // the store right now.
                 put("outstanding", s.outstanding)
+                // …and the bound the ROUTER calls a call slow at, so the page
+                // marks a row by the operator's threshold instead of a copy of
+                // the default. `SYNC_STORE_SLOW_SEC` is theirs to change, and a
+                // page carrying its own 60 would go on marking rows a router
+                // set to five minutes considers ordinary — the drift
+                // `processors.js` refuses when it declines to re-decide
+                // `bottleneck` for itself. Published at zero too, which is the
+                // operator having turned the LOG off and says nothing about
+                // what the page should mark.
+                put("slowAfterSec", s.slowAfterSec)
                 put("issued", s.issued)
                 put("returned", s.returned)
                 // A store that has drifted under the schema FAILS these rather

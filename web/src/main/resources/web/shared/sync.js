@@ -254,13 +254,17 @@ export function stageDeltas(now, before) {
 }
 
 /**
- * Past this, an outstanding store call is not slow, it has stopped.
+ * Past this, an outstanding store call is not slow, it has stopped — WHERE THE
+ * ROUTER DOES NOT SAY.
  *
- * SIXTY SECONDS, matched to the router's own `SYNC_STORE_SLOW_SEC` default
- * rather than picked here: the log warns at that bound, and a page whose colour
- * disagreed with the log's threshold would have an operator reading two
- * different definitions of the same word. A healthy `oldestBatchSec` was
- * measured at 43 on production, so this clears the ordinary shape.
+ * The router publishes its own bound as `slowAfterSec`, and that is what a row
+ * is marked against: `SYNC_STORE_SLOW_SEC` is an operator's to change, and a
+ * page marking rows at its own 60 under a router set to five minutes would have
+ * the log and the colour meaning two different things by the same word. This is
+ * the fallback for a router too old to publish it, and for one that set the
+ * bound to 0 — which turns the LOG off and says nothing about what a page
+ * should mark. Sixty because that is the router's default, and because a
+ * healthy `oldestBatchSec` was measured at 43 on production.
  */
 export const STUCK_CALL_SEC = 60;
 
@@ -291,6 +295,9 @@ export const CALLS_SHOWN = 6;
  */
 export function storeOf(store) {
   if (!store || typeof store !== "object") return null;
+  // THE ROUTER'S OWN BOUND, not this file's — see `STUCK_CALL_SEC`, which is
+  // only what stands in when the document does not carry one.
+  const stuckSec = store.slowAfterSec > 0 ? store.slowAfterSec : STUCK_CALL_SEC;
   const all = Array.isArray(store.calls) ? store.calls.filter((c) => c && typeof c.caller === "string") : [];
   const rows = all.slice(0, CALLS_SHOWN).map((c) => ({
     caller: c.caller,
@@ -303,7 +310,7 @@ export function storeOf(store) {
     // that is the reading — it did not queue behind us — rather than a router
     // that declined to say.
     outstandingAtIssue: c.outstandingAtIssue ?? null,
-    hot: (c.elapsedSec || 0) >= STUCK_CALL_SEC,
+    hot: (c.elapsedSec || 0) >= stuckSec,
   }));
   const callers = (Array.isArray(store.callers) ? store.callers : [])
     .filter((c) => c && typeof c.caller === "string")
@@ -318,7 +325,7 @@ export function storeOf(store) {
       // A caller whose calls THREW is the one row worth colouring: a store the
       // schema has drifted under fails in milliseconds, where one that has
       // stopped answering shows up as an age and nothing failing at all.
-      hot: (c.failed || 0) > 0 || (c.oldestOutstandingSec ?? 0) >= STUCK_CALL_SEC,
+      hot: (c.failed || 0) > 0 || (c.oldestOutstandingSec ?? 0) >= stuckSec,
     }));
   // The bands as SHARES of the outstanding set, which is what makes them a
   // shape. Of the whole set rather than of the drawn bands: the router publishes
@@ -332,10 +339,13 @@ export function storeOf(store) {
       fromSec: a.fromSec,
       calls: a.calls || 0,
       share: inBands ? (a.calls || 0) / inBands : 0,
-      hot: a.fromSec >= STUCK_CALL_SEC,
+      hot: a.fromSec >= stuckSec,
     }));
   return {
     outstanding: store.outstanding || 0,
+    // What a row was marked against, so the card can say so rather than leave a
+    // reader to guess which threshold coloured it.
+    stuckSec,
     issued: store.issued || 0,
     returned: store.returned || 0,
     failed: store.failed || 0,

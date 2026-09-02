@@ -158,9 +158,14 @@ class StoreCallsTest {
             assertEquals(1, caller.failed)
             assertEquals(1, caller.cancelled)
             assertEquals(0, snapshot.outstanding, "a call that threw has stopped being outstanding either way")
-            // THE IDENTITY THE SECTION IS READ BY, checked here so a reader can
-            // trust it out there.
-            assertEquals(caller.issued, caller.returned + caller.failed + caller.cancelled + caller.outstanding)
+            // WITH NOTHING IN FLIGHT the lifetime counters account for every
+            // call, which is the only moment that identity is exact — see
+            // [StoreCalls.Caller]. On a busy router `issued` and the terminal
+            // counters are stamped either side of the row's own insertion and
+            // removal, so a call that finished mid-snapshot lands on one side
+            // and not the other; what holds ALWAYS is the live half, asserted
+            // in the partition test below.
+            assertEquals(caller.issued, caller.returned + caller.failed + caller.cancelled)
         }
 
     @Test
@@ -247,9 +252,14 @@ class StoreCallsTest {
             // client-side half of "slow store, or waiting in line".
             assertEquals(listOf(0, 1, 2), snapshot.calls.map { it.outstandingAtIssue }.sorted())
 
-            // THE BANDS CLOSE. A histogram that does not is the one failure a
-            // reader cannot see, because every row of it looks reasonable alone.
+            // THE LIVE HALF IS ONE PARTITION, THREE WAYS — and it closes
+            // whatever the router is doing, because all three come off one read
+            // of the row set. A histogram that does not sum is the one failure
+            // a reader cannot see, since every row of it looks reasonable
+            // alone; `accountedFor` on the card reports it, so a raced read
+            // here would have the router accusing itself.
             assertEquals(snapshot.outstanding, snapshot.ages.sumOf { it.calls })
+            assertEquals(snapshot.outstanding, snapshot.callers.sumOf { it.outstanding })
             assertEquals(StoreCalls.AGE_BANDS, snapshot.ages.map { it.fromSec }, "every band is published, the empty ones included")
             assertEquals(1, snapshot.ages.single { it.fromSec == 0L }.calls, "the 200ms call is under a second")
             assertEquals(1, snapshot.ages.single { it.fromSec == 10L }.calls, "…the 45s one is in 10s-60s")
@@ -350,6 +360,11 @@ class StoreCallsTest {
         val parsed = StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "90"))
         assertTrue(!parsed.namesAt(80_000), "a 90-second bound must not fire at 80 — the value was read as something other than seconds")
         assertTrue(parsed.namesAt(100_000), "…and must fire at 100")
+        // …AND THE PAGE IS TOLD, so a row is marked at the operator's bound
+        // rather than at the page's copy of the default. Without this the log
+        // and the colour mean two different things by the same word.
+        assertEquals(90L, parsed.snapshot().slowAfterSec)
+        assertEquals(0L, StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "0")).snapshot().slowAfterSec, "off is published as off")
         // …and it is in effect, checked through the only thing that reveals a
         // threshold: whether a call of a known age is due to be named.
         val tuned = StoreCalls(slowAfterMs = 90_000, now = clock)

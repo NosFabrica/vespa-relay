@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
+import { STUCK_CALL_SEC, STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
 
 /**
  * A LIVE cursor, which is the one place a day is not enough precision.
@@ -526,6 +526,12 @@ function storePanel(progress) {
   fact(`${short(s.returned)} answered`, "returned");
   if (s.failed) fact(`${fmt(s.failed)} FAILED`, "failed", true);
   if (s.cancelled) fact(`${fmt(s.cancelled)} cancelled at shutdown`, "cancelled");
+  // WHERE THE LINE IS, and only when it is not where a reader would assume.
+  // The rows below are marked at the ROUTER's `SYNC_STORE_SLOW_SEC`, so a
+  // deployment that moved it would otherwise have a card marking rows by a
+  // rule nothing on it states — while saying so on every poll of every
+  // default deployment is a line to read past forever.
+  if (s.stuckSec !== STUCK_CALL_SEC) fact(`marked past ${fmtDur(s.stuckSec)}`, "slowAfterSec");
   box.appendChild(line);
 
   if (!s.outstanding) {

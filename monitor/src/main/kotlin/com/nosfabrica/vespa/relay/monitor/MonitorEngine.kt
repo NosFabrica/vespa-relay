@@ -30,12 +30,15 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * THE MONITOR PLANE: what is out there, and how much of it can we use.
@@ -532,16 +535,37 @@ class MonitorEngine(
     private fun retireOwnStaleVerdicts() {
         signer?.let { s ->
             val record = RelayVerdictRecord(store, s)
-            runCatching { runBlocking { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
+            runCatching { runBlocking(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
                 .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
             // …and the grades written before the move off `s`, which are not
             // stale readings but readings in a tag that now means something
             // else entirely. Same boot, same reason it cannot be left to the
             // readers, and now its own failure to report.
-            runCatching { runBlocking { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+            runCatching { runBlocking(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
                 .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
         }
     }
+
+    /**
+     * The store-call registry, lifted off [scope] for the two `runBlocking`s
+     * above — see [StoreCalls].
+     *
+     * `runBlocking` with no context starts a FRESH one: it is called from a
+     * plain function, so there is no coroutine to inherit from and the element
+     * this engine's scope carries does not reach the block. These two are the
+     * worst possible pair to lose. They run at BOOT, they walk the whole
+     * 30166 corpus a page at a time, and they re-sign what they find — so a
+     * router that looks hung on startup is quite likely inside one of them, and
+     * without this they are the two long store passes the `store` section would
+     * swear were not happening.
+     *
+     * Only the element, never the whole context: taking `scope.coroutineContext`
+     * would bring its `Job` (a `runBlocking` under a cancelled parent would
+     * refuse to run) and its dispatcher (which decides which thread blocks).
+     * Neither belongs to what this fixes.
+     */
+    private val booked: CoroutineContext
+        get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
         /**

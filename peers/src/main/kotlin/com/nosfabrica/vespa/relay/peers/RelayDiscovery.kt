@@ -158,15 +158,28 @@ object RelayDiscovery {
                     // A select naming a kind narrows the scan to it; the
                     // source filter already carries the rest.
                     val filter = select.kind?.let { bounded.copy(kinds = listOf(it)) } ?: bounded
+                    // THE ROUND-UP'S MOST EXPENSIVE READ, and the one worth
+                    // naming above every other in this file: it walks a whole
+                    // kind through the projection — the walk that replaced a
+                    // 2.6M-event scan — once per select per source, at the head
+                    // of every sweep. `aliasSource` reports `collecting` for
+                    // the minutes it takes and nothing about what it is inside;
+                    // this is what says so. See [StoreCalls].
                     val raw =
-                        semantics.distinctTagValues(
-                            filter = filter,
-                            tagName = select.tag!!,
-                            valueIndex = select.urlIndex,
-                            // The whole tag, so a positional condition on
-                            // another element still applies (NIP-65's marker).
-                            where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
-                        )
+                        storeCall(
+                            StoreCalls.CALLER_SOURCE_RELAY_LISTS,
+                            StoreCalls.OP_DISTINCT_TAG_VALUES,
+                            "#${select.tag}, ${StoreCalls.summarise(filter)}",
+                        ) {
+                            semantics.distinctTagValues(
+                                filter = filter,
+                                tagName = select.tag!!,
+                                valueIndex = select.urlIndex,
+                                // The whole tag, so a positional condition on
+                                // another element still applies (NIP-65's marker).
+                                where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
+                            )
+                        }
                     for (v in raw) normalize(v, allowOnion)?.let(found::add)
                 }
             }

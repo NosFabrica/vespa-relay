@@ -195,11 +195,27 @@ class StoreCalls(
      * One subsystem's traffic through the store — the counters that answer
      * "whose requests are these".
      *
-     * `issued = returned + failed + cancelled + outstanding`, and every member
-     * is published including the zeroes, so a reader can check that identity
-     * rather than take the row on trust. It is the same rule the candidate
-     * partition follows in [Processors.Work]: a member that appears only on
-     * damage cannot be told from a router too old to say.
+     * **TWO KINDS OF NUMBER ON ONE ROW, and the difference decides what a
+     * reader may add up.** [issued], [returned], [failed] and [cancelled] are
+     * LIFETIME counters, monotone since boot. [outstanding] and
+     * [oldestOutstandingSec] are LIVE, and they are read off the same row
+     * snapshot [Snapshot.calls] and [Snapshot.ages] are built from — so
+     * `sum(callers.outstanding) == Snapshot.outstanding == sum(ages.calls)`
+     * holds exactly, whatever the router is doing while the snapshot is taken.
+     *
+     * `issued - returned - failed - cancelled` is the same quantity a moment
+     * earlier and **does not have to equal [outstanding]** on a busy router:
+     * the lifetime counters are stamped inside `track` at slightly different
+     * instants from the row's own insertion and removal, so a call that
+     * finished mid-snapshot lands on one side and not the other. It settles the
+     * moment the router goes quiet. Publishing it as a partition would be the
+     * lie the heal row used to tell in reverse — a lifetime counter under a
+     * live count's name, which is what the `queued` glossary entry exists to
+     * complain about.
+     *
+     * Every member is published including its zeroes, on this document's usual
+     * rule: a member that appears only on damage cannot be told from a router
+     * too old to say.
      */
     class Caller(
         val caller: String,
@@ -238,6 +254,19 @@ class StoreCalls(
 
     /** Everything above, as of one instant. */
     class Snapshot(
+        /**
+         * The bound [warnSlow] names a call at, in seconds — 0 when the
+         * warning is off.
+         *
+         * Published so the PAGE colours a row at the router's own threshold
+         * rather than at a copy of the default. `SYNC_STORE_SLOW_SEC` is an
+         * operator's to change, and a page carrying its own 60 would go on
+         * marking rows a router set to five minutes considers ordinary — the
+         * exact drift `processors.js` refuses when it declines to re-decide
+         * `bottleneck` on the page. Same reason `capacity` is published beside
+         * `queued`: a threshold without its denominator is not a reading.
+         */
+        val slowAfterSec: Long,
         val outstanding: Int,
         val issued: Long,
         val returned: Long,
@@ -264,19 +293,42 @@ class StoreCalls(
         var warnedAtMs: Long = 0
     }
 
-    /** One caller's lifetime tally. */
-    private class Tally {
+    /**
+     * One caller's lifetime tally.
+     *
+     * It carries [name] — the name it is actually FILED under, which is the
+     * caller's own unless the map was full and it folded into
+     * [OVERFLOW_CALLER]. Held here rather than re-derived, so booking a call
+     * costs one map lookup instead of two and a row can never disagree with the
+     * tally it was counted into.
+     *
+     * There is deliberately no `outstanding` counter: how many of this caller's
+     * calls are out is counted off the row snapshot in [snapshot], which is
+     * what makes the callers, the age bands and the total agree by construction
+     * rather than by three atomics staying in step across a read. See [Caller].
+     */
+    private class Tally(
+        val name: String,
+    ) {
         val issued = AtomicLong()
         val returned = AtomicLong()
         val failed = AtomicLong()
         val cancelled = AtomicLong()
-        val outstanding = AtomicInteger()
     }
 
-    private val open = ConcurrentHashMap<Long, Open>()
+    /**
+     * The calls that are out, keyed by IDENTITY.
+     *
+     * A set of the rows themselves rather than a map under a ticket number:
+     * [Open] overrides neither `equals` nor `hashCode`, so the backing map keys
+     * on identity, and booking a call costs one insertion instead of an atomic
+     * ticket, a boxed `Long` on the way in and another on the way out. Nothing
+     * needs to name a row from outside — the only reader is [snapshot], which
+     * takes all of them.
+     */
+    private val open = ConcurrentHashMap.newKeySet<Open>()
     private val tallies = ConcurrentHashMap<String, Tally>()
     private val outstanding = AtomicInteger()
-    private val nextTicket = AtomicLong()
 
     /**
      * Run [block] as one store call by [caller], booked from the moment it is
@@ -294,14 +346,16 @@ class StoreCalls(
         block: suspend () -> T,
     ): T {
         val tally = tallyFor(caller)
-        val ticket = nextTicket.incrementAndGet()
-        // Read BEFORE this call is counted into it, so the number is what this
-        // call found rather than what it made.
-        val found = outstanding.get()
-        outstanding.incrementAndGet()
-        tally.outstanding.incrementAndGet()
         tally.issued.incrementAndGet()
-        open[ticket] = Open(tally.name(caller), op, filter, now(), found)
+        // ONE atomic for the admission and the reading both — the count with
+        // this call in it, less this call, which is exactly how many were out
+        // when it went. Taken as a `get` and then an `increment` this was two
+        // operations with a gap, so two calls issued together could each report
+        // having found the other absent; the number an operator reads to decide
+        // whether a slow call queued behind us is not one to leave racy.
+        val found = outstanding.incrementAndGet() - 1
+        val row = Open(tally.name, op, filter, now(), found)
+        open.add(row)
         try {
             val answer = block()
             tally.returned.incrementAndGet()
@@ -313,9 +367,8 @@ class StoreCalls(
             tally.failed.incrementAndGet()
             throw e
         } finally {
-            open.remove(ticket)
+            open.remove(row)
             outstanding.decrementAndGet()
-            tally.outstanding.decrementAndGet()
         }
     }
 
@@ -334,19 +387,20 @@ class StoreCalls(
         tallies[caller]?.let { return it }
         // Racy by a caller or two at the boundary: the point is a bound, not an
         // exact size.
-        if (tallies.size >= MAX_CALLERS) return tallies.computeIfAbsent(OVERFLOW_CALLER) { Tally() }
-        return tallies.computeIfAbsent(caller) { Tally() }
+        if (tallies.size >= MAX_CALLERS) return tallies.computeIfAbsent(OVERFLOW_CALLER) { Tally(it) }
+        return tallies.computeIfAbsent(caller) { Tally(it) }
     }
-
-    /** Which name a tally is actually filed under, so a row and its counters cannot disagree. */
-    private fun Tally.name(asked: String): String = if (tallies[asked] === this) asked else OVERFLOW_CALLER
 
     /** Everything outstanding and every caller's tally, as of [nowMs]. */
     fun snapshot(nowMs: Long = now()): Snapshot {
-        // Snapshotted before it is sorted: the map moves under a busy router on
-        // every call, and a comparator reading a value that changes mid-sort is
-        // the one way this could throw into a report.
-        val rows = open.values.toList()
+        // ONE READ OF THE SET, and everything live below is derived from it:
+        // the rows, the per-caller counts, the age bands and the total. Read
+        // twice, the total could disagree with the bands it is supposed to sum
+        // — which is precisely the arithmetic `accountedFor` reports as a fault
+        // on the card, so a raced read would have the router accusing itself.
+        // It is also the reason a comparator cannot throw into a report here:
+        // the set moves on every store call, and nothing below re-reads it.
+        val rows = open.toList()
         val named =
             rows
                 // Longest-running FIRST, which is the opposite of a stream's
@@ -368,8 +422,17 @@ class StoreCalls(
                         outstandingAtIssue = it.outstandingAtIssue,
                     )
                 }
+        // Both live members off the ONE row snapshot, in one pass: how many
+        // this caller has out, and when its oldest went. Counted here rather
+        // than kept as a third atomic per caller — see [Tally] — so a row
+        // cannot report `outstanding: 1` beside no age, which two counters read
+        // either side of a removal would do.
+        val outPerCaller = HashMap<String, Int>()
         val oldestPerCaller = HashMap<String, Long>()
-        for (row in rows) oldestPerCaller.merge(row.caller, row.issuedMs, ::minOf)
+        for (row in rows) {
+            outPerCaller.merge(row.caller, 1, Int::plus)
+            oldestPerCaller.merge(row.caller, row.issuedMs, ::minOf)
+        }
         val callers =
             tallies
                 .map { (name, t) ->
@@ -379,7 +442,7 @@ class StoreCalls(
                         returned = t.returned.get(),
                         failed = t.failed.get(),
                         cancelled = t.cancelled.get(),
-                        outstanding = t.outstanding.get().coerceAtLeast(0),
+                        outstanding = outPerCaller[name] ?: 0,
                         oldestOutstandingSec = oldestPerCaller[name]?.let { ((nowMs - it) / 1000).coerceAtLeast(0) },
                     )
                 }
@@ -388,12 +451,26 @@ class StoreCalls(
                 // back to lifetime traffic and then to the name, so one state
                 // rolls up one way twice.
                 .sortedWith(compareByDescending<Caller> { it.outstanding }.thenByDescending { it.issued }.thenBy { it.caller })
+        // The four lifetime totals in ONE pass over the tallies rather than
+        // four — the same state, and a reader that saw `issued` from one walk
+        // against `returned` from the next would be comparing two instants.
+        var issued = 0L
+        var returned = 0L
+        var failed = 0L
+        var cancelled = 0L
+        for (t in tallies.values) {
+            issued += t.issued.get()
+            returned += t.returned.get()
+            failed += t.failed.get()
+            cancelled += t.cancelled.get()
+        }
         return Snapshot(
+            slowAfterSec = slowAfterMs / 1_000,
             outstanding = rows.size,
-            issued = tallies.values.sumOf { it.issued.get() },
-            returned = tallies.values.sumOf { it.returned.get() },
-            failed = tallies.values.sumOf { it.failed.get() },
-            cancelled = tallies.values.sumOf { it.cancelled.get() },
+            issued = issued,
+            returned = returned,
+            failed = failed,
+            cancelled = cancelled,
             calls = named,
             // Never silent, for [InFlight.omitted]'s reason: a list that does
             // not disclose its truncation reads as the whole answer.
@@ -437,7 +514,7 @@ class StoreCalls(
     fun warnSlow(nowMs: Long = now()): List<String> {
         if (slowAfterMs <= 0) return emptyList()
         val due =
-            open.values
+            open
                 .filter { nowMs - it.issuedMs >= slowAfterMs && nowMs - it.warnedAtMs >= rewarnAfterMs }
                 .sortedBy { it.issuedMs }
         if (due.isEmpty()) return emptyList()
@@ -478,7 +555,7 @@ class StoreCalls(
      * report.
      */
     fun describeOldest(nowMs: Long = now()): String? {
-        val oldest = open.values.minByOrNull { it.issuedMs } ?: return null
+        val oldest = open.minByOrNull { it.issuedMs } ?: return null
         return "${oldest.caller} ${oldest.op}" +
             (oldest.asked?.let { " ($it)" } ?: "") +
             ", ${fmtDuration(nowMs - oldest.issuedMs)} in"

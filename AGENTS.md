@@ -4074,6 +4074,13 @@ Reach for it first.
   is the client half of *slow store or long queue* — the store's own request
   dispatcher is 1,024 wide, far above anything this router runs, so a slow call
   issued with a handful outstanding did not wait on our side of the wire.
+  `slowAfterSec` is the router's own slow bound, published so the page marks a
+  row where the log names one. **The live half is one partition three ways** —
+  `outstanding`, the callers' shares of it, and the age bands all come off ONE
+  read of the outstanding set, so they close exactly and the card reports it
+  when they do not; the lifetime counters beside them (`issued`, `returned`,
+  `failed`, `cancelled`) are a rate and agree with the live count only once the
+  router goes quiet.
   See `StoreCalls`. **Two halves of it are NOT ours to publish and want a store
   change**: an `X-Caller` header on the wire, and a server-side service-start
   timestamp — `VespaHttp` builds its own OkHttp client with no header or

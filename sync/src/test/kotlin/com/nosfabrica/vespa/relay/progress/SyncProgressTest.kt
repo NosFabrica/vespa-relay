@@ -412,6 +412,7 @@ class SyncProgressTest {
                 emptyList(),
                 store =
                     StoreCalls.Snapshot(
+                        slowAfterSec = 60,
                         outstanding = 2,
                         issued = 918_233,
                         returned = 918_230,
@@ -464,20 +465,33 @@ class SyncProgressTest {
         assertNull((store["calls"] as JsonArray)[1].jsonObject["asked"])
         assertEquals(0, store["omitted"]!!.jsonPrimitive.int, "a truncation must never be silent, even at zero")
 
-        // THE IDENTITY A READER CHECKS A CALLER ROW BY, which needs every
-        // member present including the zeroes.
-        val row = (store["callers"] as JsonArray).first().jsonObject
+        // THE ROUTER'S OWN BOUND, so the page marks a row at the operator's
+        // threshold rather than at a copy of the default — the drift the page
+        // avoids everywhere else by never re-deciding what the router decided.
+        assertEquals(60L, store["slowAfterSec"]!!.jsonPrimitive.long)
+
+        // THE LIVE PARTITION, WHICH CLOSES THREE WAYS — the callers' share, the
+        // age bands, and the total, all off one read of the row set. It is the
+        // check a reader would otherwise do by hand, and `accountedFor` on the
+        // card reports it when it fails.
+        val callers = store["callers"] as JsonArray
         assertEquals(
-            row["issued"]!!.jsonPrimitive.long,
-            row["returned"]!!.jsonPrimitive.long + row["failed"]!!.jsonPrimitive.long +
-                row["cancelled"]!!.jsonPrimitive.long + row["outstanding"]!!.jsonPrimitive.long,
+            store["outstanding"]!!.jsonPrimitive.int,
+            callers.sumOf { it.jsonObject["outstanding"]!!.jsonPrimitive.int },
         )
+        // …and every lifetime member is present including its zeroes, so a
+        // reader can see what a caller has spent as well as what it holds. NOT
+        // a partition with `outstanding`: those are lifetime counters beside a
+        // live count, and they agree only once the router is quiet — see
+        // [StoreCalls.Caller].
+        val row = callers.first().jsonObject
+        for (member in listOf("issued", "returned", "failed", "cancelled")) {
+            assertNotNull(row[member], "`$member` must be published even at zero, or a reader cannot tell it from a router too old to say")
+        }
         // …and a caller holding nothing has no age, where a zero would read as
         // a call that had just started.
         assertNull((store["callers"] as JsonArray)[1].jsonObject["oldestOutstandingSec"])
 
-        // THE BANDS CLOSE against the count above them — the check the section
-        // is read by, and the one failure a reader cannot see row by row.
         assertEquals(
             store["outstanding"]!!.jsonPrimitive.int,
             (store["ages"] as JsonArray).sumOf { it.jsonObject["calls"]!!.jsonPrimitive.int },
