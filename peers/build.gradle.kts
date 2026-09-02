@@ -39,12 +39,17 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
-    // No probe forwards here: nothing in this module reads a system property.
-    // Add one the day a probe does — a property that is not forwarded reaches
-    // the Gradle DAEMON and never the forked test JVM, so the probe skips
-    // itself with its own "[skip]" line and reads exactly like one nobody asked
-    // for. `ProbeSwitchesAreForwardedTest` in :sync pins that across every
-    // module, so this comment is a note rather than the guard.
+    // Forwarded, not inherited: a system property on the Gradle command line
+    // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
+    // A missing forward does not fail — the probe skips itself with its own
+    // "[skip]" line, which reads exactly like a probe nobody asked for, and the
+    // build goes green over a measurement that never ran. That happened here on
+    // the first run of `RelayListLiveProbe`, with this file's own comment
+    // predicting it. `ProbeSwitchesAreForwardedTest` in :sync is the guard.
+    System.getProperty("liveListKind")?.let { systemProperty("liveListKind", it) }
+    System.getProperty("liveListProbe")?.let { systemProperty("liveListProbe", it) }
+    System.getProperty("liveListRelay")?.let { systemProperty("liveListRelay", it) }
+    System.getProperty("liveListVespa")?.let { systemProperty("liveListVespa", it) }
     //
     // The benches here DO need a bigger heap than the 512m default — a
     // six-figure corpus of signed events, plus a signer per author, is a few

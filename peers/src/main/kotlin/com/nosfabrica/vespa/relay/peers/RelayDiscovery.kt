@@ -20,17 +20,14 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
-import com.nosfabrica.vespa.relay.config.withoutDefaultPort
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
@@ -127,50 +124,45 @@ object RelayDiscovery {
             val floor = source.maxAgeSeconds?.let { now - it }
             val bounded =
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
-            // A named tag with no bindings goes to the store's tags-only
-            // projection, which streams one field instead of materializing
-            // whole events (a 2.6M-event scan became the projection's walk).
-            // A binding select must page: the projection returns a SET of
-            // values, and the pairing a binding exists to keep is gone by the
-            // time it returns.
-            val named = source.selects.filter { it.tag != null && it.bindings.isEmpty() }
-            val anyTag = source.selects.filter { it.tag == null || it.bindings.isNotEmpty() }
-            // [RelayDiscoveryConfig.maxRelaysPerList] is a per-EVENT limit, and
-            // `distinctTagValues` hands `where` one tag at a time out of a set
-            // already flattened across every matching event — by the time a
-            // value arrives, the list it came from no longer exists. So a
-            // configured cap gives up the projection and pages, which is the
-            // only place the event is still whole.
+            // ONE INDEXED WALK PER SOURCE, ANSWERING EVERY SELECT IT CARRIES,
+            // and never the store's tags projection — which reads ONE tag name
+            // per call off a `document/v1` visit whose selection is evaluated
+            // per document, with no index behind it.
             //
-            // Measured, and not a corner case: on a real store the NIP-65
-            // select (`tag = "r"`, no bindings) is exactly the shape the
-            // projection claims, so without this the cap silently did nothing
-            // on the one stream it exists for — a live run discovered 222 urls
-            // from a seeded 200-entry bulk list with `maxRelaysPerList = 50`
-            // set. It is opt-in for that reason: leaving it unset keeps the
-            // projection (a 2.6M-event scan became its walk), and setting it
-            // buys the cap at that cost, knowingly.
-            val semantics = (store as? VespaEventStore)?.store?.takeIf { dynamic.maxRelaysPerList == null }
-            if (semantics != null) {
-                for (select in named) {
-                    // A select naming a kind narrows the scan to it; the
-                    // source filter already carries the rest.
-                    val filter = select.kind?.let { bounded.copy(kinds = listOf(it)) } ?: bounded
-                    val raw =
-                        semantics.distinctTagValues(
-                            filter = filter,
-                            tagName = select.tag!!,
-                            valueIndex = select.urlIndex,
-                            // The whole tag, so a positional condition on
-                            // another element still applies (NIP-65's marker).
-                            where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
-                        )
-                    for (v in raw) normalize(v, allowOnion)?.let(found::add)
-                }
-            }
-            // A select with no tag name can match anything in an event, which
-            // the projection cannot express. Those keep the paging scan.
-            val stillPaged = if (semantics == null) source.selects else anyTag
+            // That visit's cost is the CORPUS, not the answer, so it is the one
+            // read here that gets worse for free. Measured on the staging store
+            // (#182), reading the 364 kind-10040 declarations in a 319,426,563
+            // event corpus:
+            //
+            //   /search/  yql=select id from sources * where kind=10040   0.0058s
+            //   /document/v1 …?selection=(event.kind==10040)             75.0260s
+            //
+            // 12,800x, once per tag name, and the monitor's 10040 source names
+            // 38 of them — 38 corpus walks per pass, on the document API the
+            // ingest dedup probe shares, which is the mechanism behind the
+            // wedges in #167.
+            //
+            // NO SIZE RULE DECIDES THIS, because at the scale this relay is
+            // built for there is nothing left to decide. The two costs scale
+            // differently — paging is a function of the MATCH SET, the visit of
+            // the CORPUS — so the match count at which the visit would win
+            // rises with the store: ~100k events at 319M, ~33M at 10^11.
+            // Reaching it means parking the document API for the ~6.5 hours a
+            // walk of 10^11 documents takes, which is not a price any relay
+            // list is worth. A relay-list kind is measured in millions; the
+            // corpus is heading for hundreds of billions, and the gap only
+            // widens. A rule that can only ever answer one way is not a rule.
+            //
+            // So the fork is gone, and with it the reason a BOUND select was
+            // the odd one out: a binding could never take the projection (it
+            // hands back a SET of values, and the pairing a binding exists to
+            // keep is gone by the time it returns), which quietly made
+            // `authors = 1` the fast path for reasons no operator could see.
+            // Every select of a source now rides the same walk, and
+            // [RelayDiscoveryConfig.maxRelaysPerList] always applies — it is a
+            // per-EVENT cap and this is the only path where the event is still
+            // whole, so setting it no longer costs a source its read.
+            val stillPaged = source.selects
             if (stillPaged.isNotEmpty()) {
                 scan(store, bounded, pageSize) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
@@ -323,10 +315,12 @@ object RelayDiscovery {
      * Null [self] is a router with no signer: it holds no records, and the
      * honest count of what it knows beyond today's relay lists is none.
      *
-     * Reads the `d` values through the store's TAGS-ONLY PROJECTION where there
-     * is one — this asks a question about a whole kind, and materializing five
-     * figures of records to read one field off each is the cost that projection
-     * exists to remove. A store without it pages instead.
+     * Paged off the search index like every other read here, and NOT through
+     * the store's tags projection it used to prefer. Materializing five figures
+     * of records to read one `d` off each looks like the cost that projection
+     * exists to remove, right up until you price the projection: it is a corpus
+     * visit, and this filter — `authors = [us]` plus a `since` — is the
+     * narrowest shape the index answers. See [discover] for the measurement.
      */
     suspend fun recorded(
         store: IEventStore,
@@ -338,17 +332,6 @@ object RelayDiscovery {
         if (self == null) return emptySet()
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = now - maxAgeSeconds)
         val found = HashSet<NormalizedRelayUrl>()
-        val semantics = (store as? VespaEventStore)?.store
-        if (semantics != null) {
-            // Through the same [normalize] every discovered url goes through, so
-            // one url cannot be two entries here and one there — a `d` value is
-            // a string somebody else wrote, and the onion rule is this
-            // deployment's transport rather than the tag's business.
-            for (value in semantics.distinctTagValues(filter = filter, tagName = "d", valueIndex = 1, where = { true })) {
-                normalize(value, allowOnion)?.let(found::add)
-            }
-            return found
-        }
         scan(store, filter, SCAN_PAGE) { event -> urlOf(event, allowOnion)?.let(found::add) }
         return found
     }
@@ -489,7 +472,12 @@ object RelayDiscovery {
             // `created_at` is entirely one timestamp and the cursor has
             // nowhere to go. Grow the page until it spans two.
             while (page.size == ask && ask < budget && page.first().createdAt == page.last().createdAt) {
-                ask = minOf(ask.toLong() * 2, budget).toInt()
+                // `budget` is a Long and an unbounded scan makes it
+                // Int.MAX_VALUE + boundaryIds.size, so the doubling must be
+                // clamped to Int range BEFORE narrowing: the wrap lands on a
+                // negative `ask`, which the store reads as its matches-nothing
+                // sentinel, and the walk then restarts from the top forever.
+                ask = minOf(ask.toLong() * 2, budget).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 page = store.query(filter.copy(until = until, limit = ask))
             }
 
@@ -551,13 +539,23 @@ object RelayDiscovery {
         if (cap == null) return false
         var seen = 0
         for (tag in event.tags) {
-            for (select in selects) {
-                if (select.kind != null && select.kind != event.kind) continue
-                if (tag.size <= select.urlIndex) continue
-                if (select.tag != null && tag[0] != select.tag) continue
+            // Counted once however many selects claim it — and only if one of
+            // them would actually EXTRACT it. `where` is part of that test,
+            // which it was not: a NIP-65 select carrying `marker = "write"`
+            // counted the read-only `r` tags it then discards, so a 10002
+            // listing 200 read relays and three write ones tripped a cap of 50
+            // and lost all three. The cap exists to refuse a pool somebody is
+            // handing us to dial; a tag we never dial is not part of one.
+            val extracted =
+                selects.any { select ->
+                    (select.kind == null || select.kind == event.kind) &&
+                        tag.size > select.urlIndex &&
+                        (select.tag == null || tag[0] == select.tag) &&
+                        (select.where.isEmpty() || select.where.any { it.matches(tag) })
+                }
+            if (extracted) {
                 seen++
                 if (seen > cap) return true
-                break
             }
         }
         return false
@@ -670,43 +668,35 @@ object RelayDiscovery {
      * and `.onion` unless [allowOnion] — a deployment with no Tor transport
      * has nothing that can resolve one, so every dial is a guaranteed
      * failure AND a hidden service name handed to the local resolver.
+     *
+     * MEMOIZED PER SPELLING in [RelayUrlCache], because a relay-list scan asks
+     * this the same few thousand strings once per author. The rules and the
+     * measurements that produced them moved there with it; this is the name
+     * the extraction path calls them by.
+     *
+     * The rules, for the record, and each one bought with a live run:
+     *  - `ws://` or `wss://`, ALWAYS. This used to be demanded only when a
+     *    select named no tag, on the reasoning that a named tag makes a bare
+     *    host safe to coerce. It does not: the normalizer is forgiving by
+     *    design, so anything a relay-list author typed becomes a url and a
+     *    dynamic stream then dials it every cycle. Measured on this store's
+     *    kind-10002s — 1,749 wss, 103 ws, 2 with no scheme, 0 http/https — so
+     *    demanding it costs 2 urls in 1,854 and buys out every http:// entry
+     *    riding in on OTHER sources, which the 10040s do carry (a live one
+     *    names http://localhost:7778).
+     *  - The scheme checked AGAIN on what we will actually dial. The
+     *    normalizer repairs as well as canonicalises: 143 urls in this corpus
+     *    carry a NESTED scheme — `wss://https//nostr.watch/relay/x` — which
+     *    passes the first test and comes out as an `https://` web page ABOUT a
+     *    relay, dialled once a cycle forever, answering nothing. A diagnostic
+     *    run caught us doing exactly that to `https://kbin.social/`,
+     *    `https://nostr.watch/relays/find` and `//nos.lol/` — 116 live
+     *    "relays" returning 0 events between them.
+     *  - A redundant `:443` on `wss` / `:80` on `ws` stripped, shared with the
+     *    exclude list's plain entries so the two meet on one spelling.
      */
     private fun normalize(
         raw: String,
         allowOnion: Boolean,
-    ): NormalizedRelayUrl? {
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
-        // ws:// or wss://, ALWAYS. This used to be required only when the select
-        // did not name a tag, on the reasoning that a named tag makes a bare host
-        // safe to coerce. It does not: the normalizer is forgiving by design, so
-        // anything a relay-list author typed becomes a url, and a dynamic stream
-        // then dials it every cycle.
-        //
-        // Measured on this store's kind-10002s: 1,749 wss, 103 ws, 2 with no
-        // scheme, 0 http/https — so demanding it costs 2 urls in 1,854 and buys
-        // out every http:// entry riding in on OTHER sources, which the 10040s
-        // do carry (a live one names http://localhost:7778).
-        if (!trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
-        val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return null
-        // ...and check the scheme AGAIN, on what we will actually dial.
-        //
-        // Checking only the raw string is not enough, because the normalizer
-        // repairs as well as canonicalises. 143 urls in this corpus carry a
-        // NESTED scheme — `wss://https//nostr.watch/relay/nostr.21crypto.ch` —
-        // which passes a startsWith("wss://") test and comes out the other side
-        // as `https://nostr.watch/relay/...`: a web page ABOUT a relay, dialled
-        // once a cycle forever, answering nothing.
-        //
-        // That is what a diagnostic run caught us doing — `https://kbin.social/`,
-        // `https://nostr.watch/relays/find`, `//nos.lol/` — 116 live "relays"
-        // returning 0 events between them.
-        if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
-        if (!allowOnion && RelayUrlNormalizer.isOnion(url.url)) return null
-        if (RelayUrlNormalizer.isLocalHost(url.url)) return null
-        // Strip a redundant :443/:80 — shared with the exclude list's plain
-        // entries, so the two meet on one spelling. See its KDoc for the
-        // measured duplication it prevents.
-        return withoutDefaultPort(url)
-    }
+    ): NormalizedRelayUrl? = RelayUrlCache.Default.normalize(raw, allowOnion)
 }
