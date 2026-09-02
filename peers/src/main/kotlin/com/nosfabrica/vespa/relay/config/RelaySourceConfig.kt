@@ -72,12 +72,14 @@ data class RelayDiscoveryConfig(
      * A real NIP-65 outbox is single digits; the ones this exists for run to
      * five.
      *
-     * SETTING THIS GIVES UP THE TAG PROJECTION for the whole source: a
-     * per-event limit needs the event, and the projection hands back values
-     * already flattened across every event it matched. That is a real cost on
-     * a large store — see
-     * [com.nosfabrica.vespa.relay.peers.RelayDiscovery.discover] —
-     * which is why it is opt-in and null by default. Duplicate urls are
+     * IT USED TO COST THE SOURCE ITS TAG PROJECTION: a per-event limit needs
+     * the event, and the projection hands back values already flattened across
+     * every event it matched. It costs nothing now — every source pages off the
+     * search index, which is the only path where the event is still whole, and
+     * it is the only path (see
+     * [com.nosfabrica.vespa.relay.peers.RelayDiscovery.discover]). Still null
+     * by default, because a cap set too low reads from outside exactly like a
+     * store that holds nothing. Duplicate urls are
      * handled downstream by
      * `RelayAliases` either way;
      * this is only about refusing to read an implausible list at all.

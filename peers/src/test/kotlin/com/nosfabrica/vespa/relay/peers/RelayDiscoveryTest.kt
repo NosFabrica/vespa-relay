@@ -377,6 +377,37 @@ class RelayDiscoveryTest {
         }
 
     @Test
+    fun `the cap does not count relays the select's where rejects`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // A NIP-65 outbox: 200 read-only relays and three write ones. The
+            // write select reads three urls off it, so by the rule the cap
+            // states — judge a list on the relays it names TO US — it is an
+            // ordinary list and stays.
+            store.insert(
+                event(
+                    10002,
+                    *Array(200) { arrayOf("r", "wss://read$it.example", "read") },
+                    arrayOf("r", "wss://w1.example", "write"),
+                    arrayOf("r", "wss://w2.example", "write"),
+                    arrayOf("r", "wss://w3.example", "write"),
+                ),
+            )
+
+            val found =
+                RelayDiscovery
+                    .discover(
+                        store,
+                        dynamic(
+                            source(10002, selects = listOf(select(tag = "r", where = marker("write")))),
+                            maxRelaysPerList = 50,
+                        ),
+                    ).map { it.url.url }
+
+            assertEquals(listOf("wss://w1.example/", "wss://w2.example/", "wss://w3.example/"), found.sorted())
+        }
+
+    @Test
     fun `no cap configured reads every list however long`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)

@@ -719,8 +719,6 @@ class StoreCalls(
 
         const val OP_DELETE = "delete"
 
-        const val OP_DISTINCT_TAG_VALUES = "distinctTagValues"
-
         /**
          * How many outstanding calls the document names.
          *

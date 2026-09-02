@@ -184,6 +184,33 @@ D=$(mktemp -d)
 ./gradlew :sync:test --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 ./gradlew :sync:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 
+# WHAT A RELAY-LIST READ COSTS, against a real store: the paged scan every
+# source now takes (the `kind` attribute selects the match set, one walk answers
+# every tag) against the tags projection it used to take (a document/v1 visit
+# whose selection runs per document, so it walks the whole corpus, once per tag
+# name). Prints both clocks, the scan's ms/event — the number to watch as a
+# relay-list kind grows — and whether the two answers AGREE. Read-only, deploys
+# nothing. `BENCH_LIST_VISIT=0` skips the projection arm; do that against a busy
+# production store, where that arm is a real corpus walk on the document API.
+BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test \
+  --tests '*RelayListReadCostBench*' --rerun -i
+#   …another list kind, its tag and where that tag puts the url:
+#   BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
+
+# THE WHOLE READ AGAINST REAL DATA: pulls real kind-10040 declarations off a
+# live relay, feeds them to a real Vespa, and reads them back through
+# router.conf.example's OWN monitor block — then re-answers the same question
+# through the tags projection the fix removed, and compares the two sets. The
+# only test here that can show the difference #182 is about: an in-memory index
+# has no document API, so it cannot have the bug. Handles the relay's NIP-42 and
+# its web-of-trust lens — it re-asks with the NIP-50 `include:spam` token, which
+# is what the relay's own refusal notice tells you to do. Asserts nothing.
+DOCKER_MIN_API_VERSION=1.24 dockerd &                    # no daemon by default
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa
+./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i
+#   …another relay, engine or list kind:
+#   -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
+
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -4036,15 +4063,118 @@ on `/stats.html` draws exactly that as `expired`.
 
 `maxRelaysPerList` (config, per stream) drops an event naming more relays than a
 relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of
-100–10,591 entries. **Setting it gives up the tag projection for that source**: a
+100–10,591 entries. It **used to cost the source its tag projection**: a
 per-event limit needs the event, and `distinctTagValues` returns values already
-flattened across every event it matched. That is not a corner case — the NIP-65
-select is exactly the shape the projection claims, so before this was wired the
+flattened across every event it matched. That was not a corner case — the NIP-65
+select is exactly the shape the projection claimed, so before this was wired the
 cap silently did nothing on the one stream it exists for (a live run discovered
-222 urls from a seeded 200-entry list with the cap set). It is opt-in for that
-reason; unset keeps the projection. Redundant default ports (`:443` on `wss`,
-`:80` on `ws`) are folded by string in `RelayDiscovery.normalize` rather than by
-probe — that one needs no evidence.
+222 urls from a seeded 200-entry list with the cap set). Now that every source
+pages off the index it costs nothing at all: the paged walk is the only path
+where the event is still whole, and it is the only path. Redundant default ports
+(`:443` on `wss`, `:80` on `ws`) are folded by string in
+`RelayDiscovery.normalize` rather than by probe — that one needs no evidence.
+
+**THE TAG PROJECTION IS A CORPUS WALK, AND `RelayDiscovery` NEVER TAKES IT.**
+`distinctTagValues` rides the store's `document/v1` visit carrying a selection
+expression: the predicate runs per document with no index behind it, so it costs
+the same whether the answer is 364 events or 364 million — and it costs that
+ONCE PER TAG NAME, because the projection answers about one tag. Measured on
+`vespa-eventstore-staging` (2026-09-02, #182), reading the 364 kind-10040
+declarations in a 319,426,563-event corpus:
+
+```
+/search/         yql=select id from sources * where kind=10040     0.0058s
+/document/v1/event/event/docid?selection=(event.kind==10040)      75.0260s
+```
+
+12,800x, and the monitor's 10040 source names 38 delegation tags, so one
+derivation pass was 40 corpus walks — on the DOCUMENT API, which is where the
+ingest dedup probe queues. `/search/` stayed fast throughout, which is why a
+health-check query issued by hand answered instantly while the mirror was dead:
+the shape that made #167 unreadable from outside.
+
+Every source now takes one paged read off the search index, answering all of its
+selects in that single walk. **There is no size rule and deliberately so.** The
+two costs scale differently — paging is a function of the MATCH SET, the visit
+of the CORPUS — so the match count at which the visit would win rises with the
+store: ~100k events at 319M, ~33M at 10^11. Reaching it means parking the
+document API for the ~6.5 hours a walk of 10^11 documents takes, which is not a
+price any relay list is worth. A relay-list kind is measured in millions and
+this corpus is heading for hundreds of billions; the gap only widens, so a rule
+here could only ever answer one way. An earlier cut of this fix did carry one,
+priced in a corpus-wide `count(Filter())` per pass — machinery to decide a case
+that does not arise.
+
+It also ended a trap nobody could see from the config: a BOUND select could
+never take the projection (it hands back a set of values, and the pairing a
+binding exists to keep is gone by then), so `authors = 1` was quietly the fast
+path. The same 38 delegation tags appear twice in `router.conf.example` — bound
+on the `assertions` stream, unbound under `monitor { sources }` — and only the
+unbound copy was expensive.
+
+**THE URL NORMALIZER IS MEMOIZED PER SPELLING** (`RelayUrlCache`). A relay-list
+scan asks it the same few thousand strings once per author — a corpus with
+19,844 known relay urls hands it those over millions of events — and each ask
+was a trim, a whitespace scan, two prefix tests, a full parse through quartz's
+`RelayUrlNormalizer`, an onion test, a loopback test and a port strip. **Quartz
+has no cache of its own here**: `RelayUrlNormalizer` is a stateless companion of
+pure functions, and the only interning it ships is `EventInterner`
+(`ConcurrentHashMap<String, WeakReference<Event>>`, keyed by event id, for whole
+events). This is that pattern pointed at urls. `allowOnion` is deliberately NOT
+part of the key — it is a property of the deployment, not of the string, so the
+entry carries whether the url is an onion and the gate is applied on the way
+out; `RelayUrlCacheTest` pins that both orders of asking give different answers
+from one cache. Bounded and dropped whole at the cap, because the keys come from
+strangers: anyone's kind 10002 can name urls nobody has seen.
+
+**WHAT A RELAY-LIST SCAN STILL OVER-READS, and what it is actually worth.** The
+store's `EventYql.SUMMARY_FIELDS` is `id, pubkey, created_at, kind, tags,
+content, sig, owner` on every recall. Discovery needs `id` and `created_at` (the
+scan's cursor), `kind` (a select may name one), `pubkey` (the `EventPubkey`
+binding slot) and `tags`. So `content`, `sig` and `owner` are dead on arrival —
+about 200 bytes of a ~700-byte relay list, or **~30%** of the transfer and the
+JSON decode. Not the several-fold win it looks like at first, because the cursor
+and the binding slots need most of the rest.
+
+Fixing it is a STORE change and cannot be done from here: a fourth
+`document-summary` in `event.sd` beside `dedup` / `idtime` / `idtimetag`, plus a
+recall path passing `presentation.summary`. The schema's own note says adding a
+summary class is "a deploy-only change: no re-feed, no reindex" — but unlike
+those three this one could not be attribute-only, since `tags` is summary-only
+and still reads the disk summary store. Worth doing when the store is next
+touched; not worth a pin on its own.
+
+**RUN AGAINST REAL DATA, END TO END** (`RelayListLiveProbe`, 2026-09-02): the
+364 kind-10040 declarations pulled off `wss://search-staging.brainstorm.world`
+— the same 364 #182 counted — fed into a real Vespa in Docker and read back
+through `router.conf.example`'s own `monitor { sources }` block, all 38
+delegation tags:
+
+```
+discover    19 relay(s)      0.2242s   one indexed walk
+projection  31 raw value(s)  4.9009s   38 corpus walks
+```
+
+**21.9x on a corpus of 364 events**, which is the size at which the visit looks
+its BEST — its cost is the corpus, so a laptop-sized store is the one place it
+is nearly free. The same comparison on the staging corpus was 12,800x. The two
+paths named the same relays: nothing the scan found was missing from the
+projection, and the 8 raw values the scan dropped are all loopback or `http://`
+— `ws://127.0.0.1:7777`, `wss://localhost/relay`, and the `http://localhost:7778`
+that `RelayDiscovery.normalize`'s KDoc already cited from a live 10040.
+
+Pulling that data needs two things worth knowing. The relay speaks NIP-42 and
+answers a plain REQ with `restricted: no kind 10040 for you here` — it serves
+through a web of trust and a throwaway key has no provider list — so the probe
+signs an auth event and then re-asks with the escape the relay's own notice
+names, the NIP-50 `include:spam` token, which is what returns the corpus
+unranked.
+
+`RelayListReadCostBench` prices both walks against a real store and prints the
+scan's ms/event, which is the number to watch as a relay-list kind grows: the
+corpus walk is settled, but paging millions of whole events to read one tag off
+each is the next thing that would want a store-side answer (a search that
+projects `tags`, rather than a visit).
 
 ## Instrumentation — use it before theorising
 
@@ -4334,6 +4464,33 @@ failure stays quiet, because silence costs a retry and being wrong costs a false
 statement about someone else's server.
 
 ## Traps that have cost real time
+
+- **`SCAN_PAGE` MUST STAY UNDER THE DEPLOYED `maxHits`, and multi-node is where
+  that bites.** Every relay-list read is `RelayDiscovery.scan`, which pages
+  `store.query(filter.copy(limit = SCAN_PAGE))` — 10,000 — until a short page.
+  Vespa's own `maxHits` default is 400 and a query asking for more is REJECTED
+  (`N hits requested, configured limit: 400`), not trimmed, so the store ships a
+  query profile setting it to `Int.MAX_VALUE`. Fine on one content node: the hit
+  collector sizes from what MATCHES, not from what was asked. **Multi-node
+  dispatch does not have that property** — its merge path allocates by the
+  REQUESTED hits, and the store's own profile records `Int.MAX_VALUE` killing a
+  2-node cluster's jdisc container with "Requested array size exceeds VM limit"
+  (2026-08-17), in a crash loop re-triggered by whichever fetch-all caller
+  retried first. The documented survival move is to cap `maxHits` in the
+  deployed profile and set `VESPA_UNBOUNDED_HITS` to the same value.
+  **Cap it below 10,000 and every discovery pass starts failing**: the engine
+  rejects the page, `StreamWorld.derive` catches it and prints "could not derive
+  <label>", and the roster is silently whatever the other sources named. The
+  read itself is not the exposure — `scan` always sends an explicit limit and
+  never the unbounded sentinel — the COUPLING is. Lower `SCAN_PAGE` with the
+  ceiling, or leave the ceiling above it.
+
+  What a short page CANNOT be is a quiet truncation, and both routes are closed
+  deliberately: an over-limit ask is rejected rather than trimmed (above), and
+  the bundled profile turns Vespa's soft timeout OFF — on by default, it returns
+  HTTP 200 with a partial result at 500ms — with `VespaEventIndex` checking
+  `coverage.full` on every response besides. So `page.size < ask` means the store
+  had nothing older, which is exactly what `scan` reads it as.
 
 - **A MALFORMED NIP-77 FRAME WEDGES THE WHOLE RELAY, and it is one frame from
   any client.** `negentropy-jvm`'s `ByteArrayReader.readByte()` returns `-1` at

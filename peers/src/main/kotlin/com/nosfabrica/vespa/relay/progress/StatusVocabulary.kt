@@ -783,8 +783,8 @@ object StatusVocabulary {
             put(
                 "op",
                 "WHAT WAS ASKED, named for the store method verbatim: `existingIds`, `newestVersions`, " +
-                    "`batchInsert`, `query`, `count`, `snapshotIdsForNegentropy`, `insert`, `delete`, " +
-                    "`distinctTagValues`. Verbatim rather than bucketed, because telling `count` from " +
+                    "`batchInsert`, `query`, `count`, `snapshotIdsForNegentropy`, `insert` and `delete`. " +
+                    "Verbatim rather than bucketed, because telling `count` from " +
                     "`snapshotIdsForNegentropy` is the whole difference between a cheap sizing query and a read of " +
                     "gigabytes of ids — and because a bucket is a word nobody can grep their way back from.",
             )
