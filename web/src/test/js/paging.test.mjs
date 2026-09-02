@@ -141,6 +141,16 @@ assert.ok(
   "the restore must hand the page to runFull(), or a deep link opens at page one",
 );
 
+// Exhaustion is decided on what the RELAY sent, not on what survived the
+// page's own de-duplication. This store dedupes across the filters of one REQ
+// so the two agree today; against a relay that does not, the deduped count
+// falls short of the ask on a full page and ends the pager early.
+const drainedCalls = [...app.matchAll(/drained\(\{[^}]*\}/gs)];
+assert.strictEqual(drainedCalls.length, 2, "app.js decides exhaustion in two places: the first answer and each widening");
+for (const c of drainedCalls) {
+  assert.ok(/got: found\.got/.test(c[0]), `drained() must be given the relay's own count: ${c[0].replace(/\s+/g, " ").slice(0, 90)}`);
+}
+
 // The preload is the same answer asked for at greater length, so it must NOT
 // bump requestId: that is the counter every in-flight lookup of the FIRST ask
 // checks itself against, and bumping it drops the names and pills out of the

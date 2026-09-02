@@ -103,7 +103,7 @@ await t("the first ask is one page, not four", async () => {
   const asks = await page.evaluate(() => window.__asks.map((a) => a.limit));
   if (asks[0] !== 40) throw new Error(JSON.stringify(asks));
 });
-await page.waitForFunction(() => document.querySelectorAll(".pager .pg").length > 3, null, { timeout: 5000 });
+await page.waitForSelector(".pager .pg[data-page='3']", { timeout: 5000 });
 await t("the preload asks for three pages more", async () => {
   const asks = await page.evaluate(() => window.__asks.map((a) => a.limit));
   if (!asks.includes(160)) throw new Error(JSON.stringify(asks));
@@ -235,6 +235,47 @@ await t("…and the buffer goes back to being three pages ahead of where they no
   );
   const asks = await page.evaluate(() => window.__asks.map((a) => a.limit));
   if (!asks.includes(200)) throw new Error(JSON.stringify(asks));
+});
+
+// ---- a page turn names the query the CARDS answer -------------------------
+//
+// The url is written from `hitsFor`, never from the box, and the difference is
+// invisible until somebody starts typing a new search without submitting it —
+// at which point a page turn used to write `?q=<what they were typing>&page=2`
+// over the results still on screen, and a link to it came back empty.
+await page.goto("http://localhost:7799/?q=test");
+await page.waitForSelector(".result");
+await page.waitForSelector(".pager .pg[data-page='3']", { timeout: 5000 });
+await page.click("#q");
+await page.keyboard.press("Control+A");
+await page.keyboard.type("something else entirely");
+await new Promise((r) => setTimeout(r, 400));
+await page.click(".pager .pg[data-page='1']");
+await t("the url a page turn writes is about the answer, not about the box", async () => {
+  const u = new URL(page.url());
+  if (u.searchParams.get("q") !== "test") throw new Error(page.url());
+  if (u.searchParams.get("page") !== "2") throw new Error(page.url());
+  const c = await cards();
+  if (c[0] !== "result 40") throw new Error("and the cards are page two of the search that was run: " + c[0]);
+});
+
+// ---- a preload that changes nothing but the pager repaints only the pager --
+//
+// A full re-render destroys and rebuilds every card, which re-arms the lazy
+// media observers and drops whatever a browser had started loading in them.
+// The marker rides on a card ELEMENT — it cannot survive the list being
+// rewritten, which is exactly what makes it the test.
+await page.goto("http://localhost:7799/?q=slow");
+await page.waitForSelector(".result");
+await page.evaluate(() => document.querySelectorAll(".result").forEach((el, i) => (el.dataset.mark = "m" + i)));
+await t("the head does not count a page as if it were the whole answer", async () => {
+  const s = await stats();
+  if (!/^1–40 ·/.test(s)) throw new Error(`"${s}" — a plain count beside a live Next button`);
+});
+await page.waitForSelector(".pager .pg[data-page='3']", { timeout: 6000 });
+await t("…and the cards under the reader are not rebuilt for it", async () => {
+  const marks = await page.$$eval(".result[data-mark]", (e) => e.length);
+  if (marks !== 40) throw new Error(`${marks} of 40 cards survived the widening ask`);
 });
 
 // ---- the type-ahead does not own the results' array -----------------------

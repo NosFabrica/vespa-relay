@@ -532,6 +532,13 @@ async function search(text, limit, deep) {
     text,
     complete: answer.complete !== false,
     asked: limit,
+    // The RAW count, before uniqueById — "the relay had less than the prefix I
+    // asked for" is a claim about what the relay sent. This store dedupes
+    // across the filters of one REQ, so the two numbers agree today; NIP-01
+    // does not require that of a relay, and against one that repeats an event
+    // the deduped count would fall short of the ask and end the pager early,
+    // on a page that has plenty more.
+    got: answer.length,
   };
 }
 
@@ -2017,7 +2024,13 @@ function rangeLabel(shown) {
   // The reader outran the preload: the page they asked for is still in flight,
   // and a range over cards that are not on the screen would be counting them.
   if (!shown.length) return `page ${s.page + 1}`;
-  if (!s.page && total <= PAGE_SIZE) return `${total} result${total === 1 ? "" : "s"}`;
+  // A count only where the count is the whole answer. "40 results" is a plain
+  // number, and a plain number beside a live Next button is a page saying it
+  // holds forty results and offering a forty-first — which is what the first
+  // paint of every search did, for the second between its own answer and the
+  // preload behind it: the ask had been for exactly a page, so the buffer WAS
+  // one page, and this branch could not tell that from an answer that ended.
+  if (!lastPage(s.hits, s)) return `${total} result${total === 1 ? "" : "s"}`;
   const from = s.page * PAGE_SIZE + 1;
   return `${from}–${from + shown.length - 1}${s.exhausted ? ` of ${total}` : ""}`;
 }
@@ -2038,6 +2051,26 @@ function rangeLabel(shown) {
  * declining to follow a ranking any deeper (canGrow, and the note below says
  * that instead). Silence about which is how a pager lies.
  */
+/**
+ * The pager, redrawn WITHOUT touching the cards.
+ *
+ * A widening ask usually changes nothing on screen but which buttons exist,
+ * and re-rendering the list for that is not free in the way an innerHTML
+ * rewrite is cheap (measured at 1–2ms for forty cards): it destroys and
+ * rebuilds every card element, which re-arms the lazy-media observers, drops
+ * whatever a browser had begun loading inside them, and takes any selection
+ * the reader was making with it. So the foot has its own container and the
+ * preload repaints THAT when the page's own cards are unchanged.
+ *
+ * Falls back to the whole list when there is no foot to replace — a list that
+ * was drawn without one is a list whose shape has changed.
+ */
+function repaintPager() {
+  const foot = $results.querySelector(".pager-foot");
+  if (!foot) { renderResults(); return; }
+  foot.innerHTML = pagerHtml();
+}
+
 function pagerHtml() {
   const loaded = pageCount(s.hits);
   const last = lastPage(s.hits, s);
@@ -2085,7 +2118,8 @@ function renderResults() {
   // answer. The pager stays up through it: the way back is the control they
   // are most likely to want.
   const body = statusBody(s, skelCards(4)) ??
-    (shown.length ? shown.map((ev) => card(ev)).join("") : skelCards(3)) + pagerHtml();
+    (shown.length ? shown.map((ev) => card(ev)).join("") : skelCards(3)) +
+    `<div class="pager-foot">${pagerHtml()}</div>`;
   paintList($results, listHead(esc(tab.label), right) + body);
 }
 
@@ -2100,8 +2134,10 @@ function goPage(n) {
   s.page = want;
   // A page turn is a PLACE. It goes in the url for the same reason the query,
   // the chip and the lens do: Back undoes it, and a link to page four of a
-  // search is a link to what the sender was reading.
-  syncUrl();
+  // search is a link to what the sender was reading. Pushed here rather than
+  // through syncUrl(), which reads the search BOX — see pageUrl().
+  const url = pageUrl();
+  if (url !== location.pathname + location.search) history.pushState(null, "", url);
   renderResults();
   // Back to the top of the list. A page turned from the bottom of forty cards
   // otherwise lands the reader in the middle of the next forty, which reads as
@@ -2137,13 +2173,26 @@ function settlePage() {
   const end = lastPage(s.hits, s);
   if (s.page <= end) return false;
   s.page = end;
-  // Named from `hitsFor` — the text these hits actually answer — rather than
-  // from the box, which the reader may have started editing while the answer
-  // was in flight. This correction must not rewrite the url to a query nobody
-  // has submitted.
-  history.replaceState(null, "", currentUrl(s.hitsFor || $q.value.trim(), true, s.page));
+  history.replaceState(null, "", pageUrl());
   return true;
 }
+
+/**
+ * Where THIS page of THESE results lives — named from `hitsFor`, the text the
+ * hits actually answer, and never from the search box.
+ *
+ * The box is not the query while a page is being read: it holds whatever the
+ * reader has typed since, and they may be halfway through the next search when
+ * they click Next on this one. Measured, because it is invisible from the
+ * page — type a new query without submitting it, turn the page, and the url
+ * read `?q=something+else+entirely&page=2` over page two of the search still
+ * on screen. Shared, so a link to it came back with no results at all.
+ *
+ * syncUrl() is right to read the box — every one of its callers has just
+ * submitted what is in it — and that is exactly why a page turn cannot use it:
+ * it is the one url this page writes without a search behind it.
+ */
+const pageUrl = () => currentUrl(s.hitsFor || $q.value.trim(), true, s.page);
 
 /**
  * The three pages ahead of the one on screen, fetched before anybody asks.
@@ -2164,6 +2213,27 @@ function settlePage() {
  * length, not a new one: bumping would cancel the first ask's own late
  * lookups, and the reader would watch the names fall out of the page they are
  * reading.
+ *
+ * WHAT IT COSTS, counted on the wire against a real relay over a 305-event
+ * corpus, signed out: landing on page one is 4 REQs — the search, this
+ * preload, and the provenance row's two pointer reads — and three page turns
+ * cost 6 more, a widened search plus one or two pointer reads each. Two of
+ * those are known waste and are left alone deliberately:
+ *
+ * - Each widened ask RE-SENDS the pages already held. That is the missing
+ *   offset, and it is paid here rather than in front of the reader.
+ * - hydrate() re-asks the POINTERS of the whole buffer, not just of the events
+ *   this answer brought. Narrowing that means caching pointers across asks,
+ *   because the row seeds by REPLACING — so the fix is a change to what the
+ *   provenance row means, not to what the pager does, and it belongs to
+ *   whoever next has a reason to touch that row. The re-seed also has a window
+ *   where a pill fetched by the first ask is out of the map and the second's
+ *   fetch has not landed; sampled at every repaint over a corpus with 120
+ *   NIP-32 labels on it, the count went 0 -> 35 -> 35 -> 35 and never dropped,
+ *   because the render runs before the re-seed and the fold re-seeds from
+ *   everything it has carried. The window is real, the flicker was not
+ *   reproducible, and this note is here so the next person to see one knows
+ *   where to look.
  */
 async function preload() {
   if (!s.more || s.preloading || s.exhausted || s.error) return;
@@ -2183,9 +2253,13 @@ async function preload() {
     // Did the reader outrun us? Asked of the OLD buffer, because this answer
     // is about to become the new one.
     const waiting = !pageOf(s.hits, s.page).length;
+    // What the reader is looking at, before and after the fold. Usually
+    // identical — the widened answer's prefix is the pages already drawn — but
+    // not always: a part page fills up when the rest of it arrives.
+    const wasOnScreen = pageOf(s.hits, s.page).map((e) => e.id).join();
     let moved = false;
     s.exhausted = drained({
-      complete: found.complete, got: found.events.length, asked: want, added: grown.length - s.hits.length,
+      complete: found.complete, got: found.got ?? found.events.length, asked: want, added: grown.length - s.hits.length,
     });
     s.asked = want;
     s.hits = grown;
@@ -2196,7 +2270,15 @@ async function preload() {
     // for, which is the same repaint run() declines for the same reason.
     // Unless the page on screen is EMPTY, in which case this answer is the one
     // the reader is waiting on and it is drawn whatever else is open.
-    if (moved || waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
+    const sameCards = wasOnScreen === pageOf(s.hits, s.page).map((e) => e.id).join();
+    // The cards under the reader are the same cards: the only thing this
+    // answer changed is how many pages there are, so only the pager is drawn.
+    // That also sidesteps the json-panel question entirely — nothing the
+    // reader has open is inside the foot.
+    if (moved || waiting || !sameCards) {
+      if (moved || waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
+      else repaintPager();
+    } else repaintPager();
     paintLate(s, myId, [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean), renderResults);
     again = true;
   } catch (e) {
@@ -2256,7 +2338,7 @@ async function run(st, fetch, keep, render) {
     st.complete = found.complete !== false;
     if (found.asked != null) {
       st.asked = found.asked;
-      st.exhausted = drained({ complete: st.complete, got: found.events.length, asked: found.asked, added: found.events.length });
+      st.exhausted = drained({ complete: st.complete, got: found.got ?? found.events.length, asked: found.asked, added: found.events.length });
     }
     // AFTER the guard above, never before: this is the one lookup in hydrate
     // that REPLACES rather than adds, so a superseded answer must not get to
