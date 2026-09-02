@@ -197,6 +197,20 @@ BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test \
 #   …another list kind, its tag and where that tag puts the url:
 #   BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
 
+# THE WHOLE READ AGAINST REAL DATA: pulls real kind-10040 declarations off a
+# live relay, feeds them to a real Vespa, and reads them back through
+# router.conf.example's OWN monitor block — then re-answers the same question
+# through the tags projection the fix removed, and compares the two sets. The
+# only test here that can show the difference #182 is about: an in-memory index
+# has no document API, so it cannot have the bug. Handles the relay's NIP-42 and
+# its web-of-trust lens — it re-asks with the NIP-50 `include:spam` token, which
+# is what the relay's own refusal notice tells you to do. Asserts nothing.
+DOCKER_MIN_API_VERSION=1.24 dockerd &                    # no daemon by default
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa
+./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i
+#   …another relay, engine or list kind:
+#   -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
+
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -4117,6 +4131,32 @@ summary class is "a deploy-only change: no re-feed, no reindex" — but unlike
 those three this one could not be attribute-only, since `tags` is summary-only
 and still reads the disk summary store. Worth doing when the store is next
 touched; not worth a pin on its own.
+
+**RUN AGAINST REAL DATA, END TO END** (`RelayListLiveProbe`, 2026-09-02): the
+364 kind-10040 declarations pulled off `wss://search-staging.brainstorm.world`
+— the same 364 #182 counted — fed into a real Vespa in Docker and read back
+through `router.conf.example`'s own `monitor { sources }` block, all 38
+delegation tags:
+
+```
+discover    19 relay(s)      0.2242s   one indexed walk
+projection  31 raw value(s)  4.9009s   38 corpus walks
+```
+
+**21.9x on a corpus of 364 events**, which is the size at which the visit looks
+its BEST — its cost is the corpus, so a laptop-sized store is the one place it
+is nearly free. The same comparison on the staging corpus was 12,800x. The two
+paths named the same relays: nothing the scan found was missing from the
+projection, and the 8 raw values the scan dropped are all loopback or `http://`
+— `ws://127.0.0.1:7777`, `wss://localhost/relay`, and the `http://localhost:7778`
+that `RelayDiscovery.normalize`'s KDoc already cited from a live 10040.
+
+Pulling that data needs two things worth knowing. The relay speaks NIP-42 and
+answers a plain REQ with `restricted: no kind 10040 for you here` — it serves
+through a web of trust and a throwaway key has no provider list — so the probe
+signs an auth event and then re-asks with the escape the relay's own notice
+names, the NIP-50 `include:spam` token, which is what returns the corpus
+unranked.
 
 `RelayListReadCostBench` prices both walks against a real store and prints the
 scan's ms/event, which is the number to watch as a relay-list kind grows: the
