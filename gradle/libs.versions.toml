@@ -99,156 +99,217 @@ app = "0.1.0"
 quartz = "cecc3287b2"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 2bc79f5f40 = store main through PR #95, eleven commits over 8f8dfb0c18 and
-# the largest RANKING move any pin here has carried. Unlike the last one this
-# is not a jar swap: it moves `event.sd` AND it asks for the quartz above, so
-# there is a schema to deploy and a corpus to re-derive. Both are silent if
-# skipped — see WHAT IT COSTS THIS REPO below.
+# e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
+# INVERSE of the last one. That bump moved where rows land and left the cluster
+# alone until the corpus was re-derived; this one moves no row and re-derives
+# nothing, and its one deployment step is a RESTART that the deploy reports
+# success without doing. What it changes is what a read COSTS — a NIP-45 COUNT
+# that was recalling the page it summarizes, and a NIP-50 search that was
+# matching on one core — plus one gate that a search operator this relay
+# documents had stopped reaching.
 #
-# WHAT MOVED, in the store's own sections:
+# IT ASKS FOR NO NEW QUARTZ. e1ecd7f23e's own libs.versions.toml still names
+# cecc3287b2, the string pinned above, so the store line moves alone this time
+# and the note over the quartz line stands exactly as written.
 #
-#   §12.2 THE SPLIT RUNG. A multi-word search had ONE token band, so
-#     `matchCount(name) > 0` bought the whole 130 000 rung for a single word of
-#     the query: "Verified" in a display name plus "human" in a bio stood on
-#     the rung a profile NAMED `Verified Human` stands on, and everything
-#     separating them lived under 89 000 — inside a rung, where ~1.14x of trust
-#     delta decided the order. `naming_coverage()` now counts the words TYPED
-#     across name/display_name/search_primary, `offname_match()` asks whether
-#     some other kind of column answered the rest, and a scattered answer drops
-#     to `w_split_tier` (23 000). Crossing a whole-field answer now takes 1.93x
-#     of trust rather than 1.14x. Every calibrated pin is untouched BY
-#     CONSTRUCTION rather than by luck: coverage reads 1.0 whenever
-#     `query(n_words)` is 1, so no single-word query can reach the new rung.
+# WHAT MOVED, in the store's own commits — the first two are what this relay
+# pays for:
 #
-#   §13.1 A MEMBER IS PLACED BY WHAT WAS SAID ABOUT IT. A Trusted List's
-#     spliced member used to carry the trust of the KEY THAT SIGNED THE LIST —
-#     a NIP-85 provider the reader APPOINTED in their own 10040 and that nobody
-#     follows, so it ranks 0 for a reader who has not enrolled it and 26 for
-#     one who has. Now, most specific answer first: (a) the list's own score
-#     for that member, (b) the member's own rank under this observer when the
-#     list scored nobody, (c) only then the signer, through the pointer floor.
-#     The pointer's TEXT band reaches the lookup separately from the signer's
-#     trust (`Ranked.textScore`, off a match-feature `search` already
-#     serialized per hit), so a member lands at the band the pointer's WORDS
-#     earned times what the list said about that member.
+#   A SEARCHING COUNT NO LONGER RECALLS THE PAGE IT SUMMARIZES. A ranked or
+#     searching NIP-45 COUNT answered with `index.rawSearch(q).size` — a full
+#     document summary per counted event (id, pubkey, created_at, kind, tags,
+#     content, sig, owner) over the wire and through the JSON decoder, to
+#     produce an integer — and a COUNT reaches the store carrying
+#     `limit: 100000`, so that is 100 000 documents at ~0.7ms each. Measured on
+#     the production relay (2026-09-01): `bitcoin` cost 76.0s to COUNT against
+#     4.9s to SEARCH the same thing, `nostr` 84.7s against 19.2s. The tell that
+#     the excess was DOCUMENTS and not matching is that nostr's match set is
+#     three times bitcoin's while the excess on both rows is the same minute.
 #
-#   §12.3 THE PERFECT RUNG, shipped INERT (`w_perfect_tier` 0.0) — a band above
-#     the token rung for a field that IS the query, with §12.2 already leading
-#     the reported page with its exact titles.
+#     `EventIndex.count` now asks the engine for hits=0 and reads the response's
+#     own `totalCount`, which already has the trust gate's subtraction applied
+#     — the property that makes this legal at all, since a lensed REQ serves
+#     less than it matches and the plain grouping counts the UNGATED set.
+#     Measured against a real Vespa on 360k staging events under a real
+#     65k-pubkey web of trust, totalCount equalled the documents actually served
+#     at every floor from 0 to 95 (12 215 ungated, 4 950 at floor 20, 530 at
+#     floor 95) — 39ms against 4 559ms, with zero documents crossing the wire.
+#     Two profiles stay off that path for OPPOSITE reasons, and
+#     `EventYql.countProfileOf` is that decision: `recency` gates nothing, so
+#     the grouping already counts it exactly; `recency_gated` does gate, so it
+#     counts on its full-scan twin — a match phase CAPS totalCount. The
+#     STORE-C01 clamp to the filter's limit is unchanged, so every answer is the
+#     number it already was.
 #
-#   THE READER'S OWN NIP-51 LISTS NOW SPLICE — `SearchReferences.PEOPLE_LISTS`,
-#     kinds 30000 (people list) and 39089 (follow pack). A reader who curates a
-#     list called `Verified Human` is answering the query "verified human" with
-#     the people on it, and that list could rank #1 and splice nobody: on a
-#     `kinds:[0]` read it was dropped on the way out. Gated exactly as every
-#     other declaration is — `Enrolment.admits`, so a reader's OWN lists unpack
-#     and a stranger's does not unless deliberately delegated in their 10040 —
-#     and members land on §13.1's rung (b), because NIP-51 has nowhere to put a
-#     per-member score.
+#     WHAT IS NOT AFFECTED, because it is easy to read this as a stats change:
+#     /stats.json's rows are StatsYql groupings and never were NIP-45 counts,
+#     and readiness.js and the monitor page count plain `kinds`/`authors`
+#     filters, which took the grouping path before this bump and take it after.
+#     The 76-second row is a SEARCHING count — something a client sends us.
 #
-#   A NIP-30 BADGE IS ONE TERM, on both ends of the store. The `:verified:` in
-#     `DotardTed :verified:` is a picture the event DECLARES in its emoji tags,
-#     and Vespa splits at `:` like any other non-alphanumeric — so it indexed
-#     as the NAME token `verified` and put bridged Mastodon accounts on the
-#     130 000 name rung for a bare `verified` search: six of the top six hits
-#     on staging (2026-09-01), one of them outranking a Trusted List titled
-#     exactly what was searched for. Both ends now rewrite a declared run to
-#     one synthetic term — feed side into the weak 4 000 secondary rung rather
-#     than inline, query side for a word that is ENTIRELY a shortcode — so
-#     `:verified:` finds the badges and `verified` finds the accounts that say
-#     the word. Declared-only on the feed side and whole-word-anchored on the
-#     query side, so a clock (`8:30:45`) survives either way.
+#   THE MATCH THREADS GO TO THE ONE QUERY THAT CANNOT BE MADE SMALL, and this
+#     is the half that does NOT arrive by deploying — see step 2 below.
+#     `services.xml` moves `numthreadspersearch` from 1 to 4, but as a CEILING
+#     rather than as the setting every query gets: it is a per-query parameter a
+#     query may only lower, and `EventYql.MATCH_THREADS` asks for a single
+#     thread on every shape that is not a relevance search over an unbounded
+#     match set — plain recall, both match-phase profiles, counts, groupings,
+#     the snapshot walk, and the expansion's keyed lookups.
 #
-#   THE EXPANSION GATE IS NO LONGER POOLED ACROSS OBSERVERS. `Delegations.of()`
-#     took a SET and unioned it, so a read carrying two `observer:` lenses
-#     unpacked any declaration EITHER had enrolled. It now resolves per
-#     observer, and a declaration unpacks only when EVERY lens that could have
-#     found it enrolled its signer. This relay's readers send one lens, so
-#     nothing here changes; it is a correctness fix for the two-lens read.
+#     The shape that keeps the headroom is the one no request can shrink: a
+#     NIP-50 search for a common word matches millions of postings and SCORES
+#     every one of them, and measured read-only against staging the same `nostr`
+#     costs 19.4s at limit 1, 19.2s at limit 50 and 23.0s at limit 500.
+#     `searchTrace`, new in this range, is the harness that says which half is
+#     the cost: it ablates one clause family at a time off EventYql's own
+#     assembled query and prints totalCount beside every row, so a variant that
+#     got fast by matching LESS cannot pass for a speedup. Its answer is that
+#     every loose matcher is load-bearing recall — the body's trigram phrase net
+#     is 12% of the plan for `nostr`, the near-attribute prefix/fuzzy clauses
+#     32% for `bitcoin` — so what is left to take is parallelism, which changes
+#     no answer.
 #
-#   A PER-AUTHOR PAGE CAP (`maxHitsPerAuthor`), OFF BY DEFAULT AND LEFT OFF
-#     HERE. One mirror bot held 27 of the top 50 for `Verified Human`. It DROPS
-#     rows a filter matched, so a page can come back shorter than the limit the
-#     client asked for — an operator's editorial call, which would want an env
-#     knob and a line in configuration.md before it is worth turning on.
+#     MEASURED (4-core container, 360k staging events, query instant pinned):
+#     bitcoin 44.6ms -> 25.1ms, nostr 84.3ms -> 44.1ms, lightning 23.9 -> 17.0,
+#     zap 12.8 -> 10.1. The served page is byte-identical at every thread count
+#     across 20 terms at both page depths, which MatchThreadPageIT pins against
+#     a real Vespa. The price is 3.8% of throughput — 85.0 q/s at one thread
+#     against 81.8 at four, eight concurrent clients.
 #
-#   And write-path work that changes no answer: a single-pass shortcode rewrite
-#     (55/76/118us at 1/3/10 badges -> 24/25/28, nearly flat in the count) and
-#     `VespaText.firstIllegalCodePoint` reading a CHAR before a code point
-#     (2.5x over 64.5M characters of a staging slice), taking the whole
-#     derivation from 16 264 to 9 527 ns/event.
+#   `filter:rank:gte:N` NOW DELETES A SPLICED ROW. README.md documents that
+#     operator, and it was being honoured for every row on a page except the
+#     ones a Trusted List spliced in — the one place a reader cannot see it
+#     failing. It is fallout from the pin this replaces: §13.1 deliberately
+#     stopped multiplying a member's placement by `wot_mult()`, and that
+#     multiply was the only thing suppressing a member below the floor.
+#     `spliced_member` declares no rank-score-drop-limit, so `wot_mult()=0`
+#     never DELETED a hit even then — it pinned the score to 0, which was at
+#     least the bottom of the page, and `max(member_rung(), …)` now floors that
+#     straight back up into the affiliation band.
 #
-# WHAT IT COSTS THIS REPO. Nothing to compile: `Ranked.textScore` and
-# `maxHitsPerAuthor` are both defaulted, no store type this repo names changed
-# shape, and nothing here reads `searchScored`'s bands (the new `split` band
-# would read as `name` on an older schema anyway). But there are TWO deployment
-# steps, and each one reports success while doing nothing if it is the wrong
-# one — see docs/migrations.md, which now carries this bump as its own entry:
+#     The gate returns as its own number rather than by restoring the multiply,
+#     because `query(min_rank)` has the other job on that profile: it anchors
+#     the trust curve inside `delegated_place()`, so raising it to gate would
+#     MOVE every member it did not drop. `query(member_floor)` gates and does
+#     nothing else, defaults fail-open below every real user_score, and pairs
+#     with a drop-limit only that sentinel can reach. It travels only when the
+#     reader ASKED for a floor: the default one this relay stamps on every
+#     lensed read deliberately does not, since a member is on the page because a
+#     provider the reader enrolled vouched for it, and gating that on the
+#     reader's own opinion of a stranger would leave the delegation serving
+#     nothing — the same reading, and the same DEFAULT_MIN_RANK line,
+#     RelayProtocolTest already pins for the declaration companion.
 #
-#   1. DEPLOY THE SCHEMA. `event.sd` changed, and it is rank-profile work ONLY
-#      — functions, expressions and rank inputs; not one `field`, `indexing`,
-#      `attribute` or `match-features` line moves — so `AUTO_DEPLOY` on boot
-#      should be the whole migration, with nothing in `configChangeActions` to
-#      act on. Read it and confirm anyway, per docs/migrations.md; the deploy
-#      reports success either way. What to watch for here is the REVERSE of
-#      that file's usual trap: a NEW store jar on an OLD serving schema is not
-#      an error and logs none. The store's own note is that §13.1 is inert
-#      until both halves arrive — an older serving schema, an unranked finding
-#      query and the in-memory reference all place exactly as before — so the
-#      page silently keeps the order this bump exists to change.
+#   THE EXPANSION'S LOOKUPS ARE PLANNED BEFORE THEY ARE SENT. A pointer's own
+#     relevance is a query-level rank feature, so two Trusted Lists that ranked
+#     differently cannot share a subject lookup — on a ranked page that is one
+#     lookup per list, and they went out INLINE, one after another: up to 64
+#     SEQUENTIAL engine queries on a single searching REQ. Every lookup a lens
+#     needs is now planned first, sent at QUERY_FANOUT, and folded back IN PLAN
+#     ORDER (`mapBounded`, not `forEachBounded`, precisely because it preserves
+#     list order — `putIfAbsent` still files a subject two pointers name under
+#     the better-ranked one, so the answer is identical). The budget moves from
+#     a private `MAX_LOOKUPS` to `SearchExpansionLimits.maxLookups`, still 64,
+#     and now cuts a DEFINED place: plan order is page order, which on any page
+#     that can be sorted is relevance order, so a page too wide for the budget
+#     loses the subjects of its worst-ranked pointers rather than of whichever
+#     family the loop nesting happened to reach last.
 #
-#   2. RE-FEED THE CORPUS — one boot with `REINDEX_FTS_ON_START=true`, then
-#      off. Extraction is data we WRITE on put, and BOTH halves of this bump
-#      change what a put would derive: the quartz line above moves nineteen
-#      kinds' words between columns, and the badge tokenization rewrites a
-#      declared shortcode run. Every event stored before this keeps its old
-#      columns until re-derived — same words, different rungs, so it is a
-#      ranking backfill and not an outage. A Vespa reindex cannot do this one:
-#      nothing re-derives data we never sent.
+#   AND TWO GUARDS ON PATHS NOTHING REACHES YET. `EventSelection.build` returns
+#     null for a query carrying `idWeights`/`authorWeights`: a dotProduct is a
+#     RECALL constraint a selection has no form for, so omitting it handed back
+#     a selection that streams the whole corpus while looking like it named a
+#     few hundred keys — the silent-superset failure that builder returns null
+#     to avoid. And `isPureIdLookup` no longer sends a weighted id set down the
+#     document-API get path, which sees neither the dotProduct nor the rawScore
+#     the member rung ranks on. Neither is reachable from the store today (the
+#     expansion's weighted lookups go to searchRanked), which is the argument
+#     for guarding them now rather than after something wires them up.
 #
-# AND ONE THING IT DOES NOT YET BUY THE PAGE. Kinds 30000/39089 are pointers
-# now, so a People-tab search can splice a member the reader's OWN people list
-# named — and `DECLARATION_KINDS` in web/provenance.js does not know those
-# kinds, so that member arrives with no pill saying which list put it there.
-# Nothing REGRESSES: before this pin the member was not on the page at all, and
-# shared/pointers.js asks only for the kinds provenance.js can draw, so there
-# is no wasted round trip either. It is a row the page could now draw and does
-# not, and the client half is its own change.
+# WHAT IT COSTS THIS REPO.
+#
+# NOTHING TO COMPILE. `EventQuery.memberFloor` is defaulted and the store fills
+# it in itself, off the `minRank` this relay already sends;
+# `SearchExpansionLimits.maxLookups` is defaulted; and `EventIndex.count` gained
+# KDOC ONLY, no new abstract member — which is worth checking rather than
+# assuming, because RelayProtocolTest implements `EventIndex` by hand.
+#
+# TWO DEPLOYMENT STEPS, AND THE SECOND IS THE ONE `AUTO_DEPLOY` CANNOT DO.
+# Both report success while doing nothing if skipped — docs/migrations.md
+# carries this bump as its own entry:
+#
+#   1. THE SCHEMA DEPLOYS ITSELF. `event.sd` changed, and it is rank-profile
+#      work only — one rank input (`query(member_floor)`), one first-phase
+#      expression and one `rank-score-drop-limit`, all inside `spliced_member`;
+#      not one `field`, `indexing`, `attribute` or `match-features` line moves.
+#      `AUTO_DEPLOY` on boot is the whole migration and `configChangeActions`
+#      should carry nothing to act on. Read it anyway, per docs/migrations.md.
+#
+#   2. RESTART VESPA. THIS IS THE STEP. `numthreadspersearch` is
+#      `restart`-flagged in Vespa's own proton.def (`numthreadspersearch int
+#      default=1 restart`), so the deploy NAMES the change and does not make
+#      it. Measured by deploying the store's package at 2bc79f5f40 and then at
+#      e1ecd7f23e onto one Vespa (2026-09-02): the second answers
+#      `activated: true` carrying
+#      `configChangeActions.restart[0].serviceType = "searchnode"` with the
+#      message `proton.numthreadspersearch has changed from 1 to 4`, and 95
+#      seconds later the `vespa-proton-bin` process still carried its original
+#      start time. (`refeed` and `reindex` came back EMPTY on that same
+#      response, which is step 1 confirmed rather than assumed.) That is
+#      exactly the trap AGENTS.md records for `<jvm options>`, one store bump
+#      later and on the CONTENT side rather than the container — and here
+#      skipping it is a silent NO-OP rather than an outage:
+#      `ranking.matching.numThreadsPerSearch` may only LOWER the configured
+#      ceiling, so EventYql's ask for four threads is clamped back to one, the
+#      search keeps the latency this bump exists to halve, and every log line
+#      and every answer stays correct. `docker compose restart vespa`,
+#      deliberately, after the deploy — and confirm it by the searchnode's
+#      START TIME, since `vespa-get-config` and proton's own `/state/v1/config`
+#      both report the new value on a node that never restarted
+#      (docs/migrations.md has all three).
+#
+#   AND NO RE-FEED, unlike the two pins before it. Nothing changes what a put
+#   derives: quartz is unmoved, no feed-side tokenization moved, and no column
+#   here is written differently. `REINDEX_FTS_ON_START` stays off.
 #
 # THE GATE AT THIS COMMIT, per AGENTS.md's rule — the relay's own tests run on
 # InMemoryEventIndex and cannot see a Vespa-only regression:
 #   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
-#   git checkout 2bc79f5f40
+#   git checkout e1ecd7f23e
 #   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
 #   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
-# Run HERE: 46 suites, 510 tests, 0 skipped, 0 failures, 22m19s (`skipped="0"`
+# Run HERE: 48 suites, 520 tests, 0 skipped, 0 failures, 24m27s (`skipped="0"`
 # read off the result XML, not off `BUILD SUCCESSFUL`, per AGENTS.md — a run
 # whose ITs all abort on `assumeTrue(dockerAvailable())` prints the same line).
-# Thirteen ITs stood up a real Vespa, and THREE of them are this bump's own:
-# FieldCoverageRankIT pins §12.2's ladder and the trust crossing, MemberTrustIT
-# pins all three of §13.1's rungs (including the property that motivates them —
-# a tenfold change in query(pointer_rel), the only number carrying the signer's
-# trust, leaves a scored member exactly where it was), and BadgeTermIT pins the
-# NIP-30 term on the only engine that can tell it from a substring match.
-# SplicedMemberWeightsIT still runs, which is what says the placement the
-# earlier bumps bought is unmoved by this one. Up from 43 suites / 487 tests at
-# 8f8dfb0c18 — the three new suites and 23 tests are exactly this range's.
+# FIFTEEN ITs stood up a real Vespa, and TWO of them are this bump's own.
+# MatchThreadPageIT reads the page back at one, two and four match threads and
+# requires the same ids in the same positions, with the query instant PINNED on
+# every arm — without that the recency multiplier moves under the runs and a
+# difference proves nothing about threads, which is the trap that test was
+# written after walking into. SearchCountIT pins the count in PAIRS: it must
+# equal the page the same query serves AND be strictly smaller than the raw
+# match set wherever the floor bites — a grouping count passes the first half
+# and fails the second, which is the whole anti-regression. SplicedMemberWeightsIT
+# grew the case the gate above exists for: at a floor of 20 exactly the member
+# this observer trusts at 90 survives, placed exactly where it was (the gate
+# admits, it does not rank), and the floorless read still returns all four. Up
+# from 46 suites / 510 tests at 2bc79f5f40 — the two new suites and ten tests
+# are exactly this range's.
 #
-# DIRECTION: 8f8dfb0c18 is a strict ancestor of this (`git merge-base
+# DIRECTION: 2bc79f5f40 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
 #
-# LEXICOGRAPHIC: '8f8d…' > '2bc7…' ('8' > '2'), so this sorts BELOW the pin it
-# replaces — the UNSAFE direction, the way 3ecdfae6ee went and the last one
-# came back from. Read it for exactly what the note at the top of this file
-# says it is: IF two parts of the graph asked for different store versions,
-# Gradle would keep the old one and say nothing. Nothing does — this pin is the
-# only thing in the graph that names vespa-eventstore, all four `api(...)`
-# declarations take this one version ref, and there is no
+# LEXICOGRAPHIC: '2bc7…' < 'e1ec…' ('2' < 'e'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, the way the last one did not go. Read it for
+# exactly what the note at the top of this file says it is and no further: it
+# records that THIS bump would survive a conflict, not that one happened and
+# not that the pin took. Nothing else in the graph names vespa-eventstore, all
+# four `api(...)` declarations take this one version ref, and there is no
 # `force(libs.vespa.eventstore.store)` anywhere because no conflict has ever
-# been possible. The proof stays what it always is, and it is worth actually
-# reading on THIS bump: every eventstore line reads 2bc79f5f40 with no `->`:
+# been possible. The proof stays the resolved graph — every eventstore line
+# reads e1ecd7f23e with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "2bc79f5f40"
+vespaEventStore = "e1ecd7f23e"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

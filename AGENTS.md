@@ -4398,6 +4398,29 @@ statement about someone else's server.
   an application is live, not whether the live one is the activated one. Read the
   deploy's response body, not its status code, and apply the change with a
   deliberate `docker compose restart vespa`.
+
+  It is not only the container. Store `e1ecd7f23e` moved `numthreadspersearch`
+  from 1 to 4, and that is a `restart`-flagged field in Vespa's own `proton.def`
+  (`numthreadspersearch int default=1 restart`) — so the restart entry names the
+  CONTENT node and proton keeps the old value. That one is quieter still,
+  because skipping it is a NO-OP rather than a stale setting doing the wrong
+  thing: the store asks per query with `ranking.matching.numThreadsPerSearch`,
+  which may only LOWER the configured ceiling, so the ask is clamped back to
+  one, every answer stays correct, and the only symptom is a common-word NIP-50
+  search that kept the latency the bump halves. Measured the same way as the
+  container case — the store's own package deployed at `2bc79f5f40` then at
+  `e1ecd7f23e` onto one Vespa: `activated: true` with
+  `restart[0].serviceType = "searchnode"` and the message
+  `proton.numthreadspersearch has changed from 1 to 4`, and 95s later
+  `vespa-proton-bin` still carried its original start time. And THREE things
+  that look like confirmation on that un-restarted node are not: the
+  `activated: true`, `vespa-get-config -n vespa.config.search.core.proton`
+  answering `numthreadspersearch 4` (it reads what the config server serves),
+  and proton's own `/state/v1/config` reporting the new generation (it
+  subscribes either way and ignores a restart-flagged field until it starts
+  again). The process's start time is the only witness. When a store bump
+  touches `services.xml`, look up the field in `proton.def` before assuming the
+  deploy was the migration.
 - **A deploy adds a derived column; it does not populate it — and
   `REINDEX_FTS_ON_START` does not either.** The sibling of the trap above, one
   store bump later, and the reason to check which KIND of field a store release
