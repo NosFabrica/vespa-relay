@@ -40,6 +40,14 @@ column is not among the fields it compares, so every document looks current and
 the walk logs `reindex complete` having re-put nothing. Both tools report
 success while doing nothing. Match the tool to the field class.
 
+The table is about *fields*, and it does not cover the third class the
+`configChangeActions` object names. A **restart**-class change is not a field at
+all — it is a config value proton reads once at startup, from `services.xml` as
+often as from the schema — and neither tool above touches it: the repair is a
+deliberate process restart. It is the easiest of the three to skip, because the
+symptom is not a wrong answer or a missing column but a setting that simply did
+not take. See the `numthreadspersearch` entry below.
+
 ## Migration: `search_text_gram` (store `e3be81564d`)
 
 The body's partial-word reach, and a **reindex-class** change. Derived by Vespa
@@ -197,6 +205,93 @@ every event wearing a declared badge. New writes need nothing.
 A Vespa reindex is the WRONG tool here and will report success having done
 nothing to these columns — see "Which repair applies" above.
 
+## Migration: match threads (store `e1ecd7f23e`)
+
+The first **restart-class** entry in this file, and the one where the deploy is
+not the repair at all. Read the schema half first, because it is the half that
+behaves:
+
+**`event.sd` moves and deploys itself.** One rank input (`query(member_floor)`),
+one first-phase expression and one `rank-score-drop-limit`, all inside
+`spliced_member` — the gate that finally makes `filter:rank:gte:N` *delete* a
+spliced row the reader does not trust, rather than merely sink it. Every changed
+line is rank work: no `field`, `indexing`, `attribute` or `match-features`
+declaration moves, so `AUTO_DEPLOY` on boot is the whole procedure and
+`configChangeActions` should carry nothing to act on for the schema. Read the response object anyway and confirm it, per the top of this
+file.
+
+**There is no re-feed this time**, unlike the two entries above. Nothing in this
+bump changes what a `put` derives — the quartz pin does not move with it, and no
+feed-side extraction or tokenization changes — so `REINDEX_FTS_ON_START` stays
+off and the back catalogue is already correct.
+
+**The migration is in the bundled `services.xml`**, which moves
+`numthreadspersearch` from 1 to 4 so that a common-word NIP-50 search can use
+more than one core. That is a `restart`-flagged field in Vespa's own
+`proton.def`:
+
+```
+numthreadspersearch int default=1 restart
+```
+
+so the deploy names it and then does not do it. Measured by deploying the
+store's own package at `2bc79f5f40` and then at `e1ecd7f23e` onto one Vespa
+(2026-09-02) — the second response:
+
+```json
+"activated": true,
+"configChangeActions": {
+  "restart": [{
+    "clusterName": "content", "clusterType": "search", "serviceType": "searchnode",
+    "messages": ["# Number of threads used per search\nproton.numthreadspersearch has changed from 1 to 4"],
+    "services": [{"serviceName": "searchnode", "configId": "content/search/cluster.content/0"}]
+  }],
+  "refeed": [], "reindex": []
+}
+```
+
+`refeed` and `reindex` came back empty on the same response, which is the
+schema half above confirmed rather than assumed. And 95 seconds after that
+activation the `vespa-proton-bin` process still carried its original start time
+— it was never restarted. It is the same shape as the `<jvm options>` trap on
+the container side that AGENTS.md records, one store bump later and on the
+content side.
+
+**Three things that look like confirmation and are not**, all measured on that
+un-restarted node: the deploy answered `activated: true`; `vespa-get-config -n
+vespa.config.search.core.proton` answered `numthreadspersearch 4`, because it
+reads what the config server serves and not what proton is running; and
+proton's own `/state/v1/config` reported the new generation, because it
+subscribes to the config either way and simply ignores a restart-flagged field
+until it starts again. The process is the only witness.
+
+What makes this one easy to miss is that skipping it is a silent **no-op**, not
+a failure and not a wrong answer. The store asks per query with
+`ranking.matching.numThreadsPerSearch`, and that parameter may only *lower* the
+configured ceiling — never raise it. So on an un-restarted node the store's ask
+for four threads is clamped back to one, every answer is still correct, every
+log line is still clean, and the search simply keeps the latency the bump exists
+to halve (the store measured `bitcoin` 44.6ms → 25.1ms and `nostr` 84.3ms →
+44.1ms on a 4-core node over 360k events). There is no query you can run that
+*errors*; the only symptom is the latency that did not change.
+
+### The procedure
+
+1. Deploy the new package — `AUTO_DEPLOY` does it on boot. Read
+   `configChangeActions` in the response body and expect a `restart` entry
+   naming the content node.
+2. Apply it, deliberately: `docker compose restart vespa`.
+3. Confirm the process actually came back — the searchnode's start time must
+   postdate the restart. Not the deploy's status, not `vespa-get-config`, not
+   `/state/v1/config`: see the three false witnesses above.
+
+```bash
+docker compose exec vespa sh -c 'ps -eo pid,lstart,comm | grep proton'
+```
+
+Lowering it again is always safe: a smaller ceiling makes the ranked search
+slower, never wrong, and every other query shape already asks for one thread.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus
@@ -207,5 +302,6 @@ package rather than forcing it, and read what the override protects first.
 
 - `AUTO_DEPLOY` and `REINDEX_FTS_ON_START` in [configuration.md](configuration.md)
 - `FtsReindex.kt` — the re-feed walk, and what it does not cover
-- AGENTS.md, "Traps that have cost real time" — the restart-class sibling of
-  this trap (`<jvm options>` changes, which a deploy also will not apply)
+- AGENTS.md, "Traps that have cost real time" — the container-side sibling of
+  the restart class (`<jvm options>` changes, measured with the old JVM still
+  serving 90s after a successful activation)
