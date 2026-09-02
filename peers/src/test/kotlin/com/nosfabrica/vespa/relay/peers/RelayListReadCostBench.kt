@@ -42,13 +42,21 @@ import kotlin.test.Test
  *    source asks about in ONE walk.
  *
  * Both numbers matter and they multiply. On `vespa-eventstore-staging`
- * (2026-09-02, #182) the projection cost 75.0s per tag against 0.0058s for the
- * same predicate through `/search/`, and the monitor's 10040 source names 38
- * tags — so the read this bench prices was ~2,850s of store time on the
- * document API, which is the lane the ingest dedup probe queues in. That is the
- * mechanism behind the wedges in #167: `/search/` stayed fast throughout, so a
- * health-check query issued by hand answered instantly while the mirror was
- * dead.
+ * (2026-09-02, #182) one SERIAL visit over `(event.kind==10040)` cost 75.0s
+ * against 0.0058s for the same predicate through `/search/`, and the monitor's
+ * 10040 source names 38 tags — 40 corpus walks per derivation pass counting the
+ * 10002 and 10009 sources beside it, all on the document API, which is the lane
+ * the ingest dedup probe queues in. That is the mechanism behind the wedges in
+ * #167: `/search/` stayed fast throughout, so a health-check query issued by
+ * hand answered instantly while the mirror was dead.
+ *
+ * THE PER-VISIT CLOCK IS THE THING TO MEASURE HERE rather than to take from
+ * that ticket. The router's visit splits into `VespaEventIndex.visitSlices`
+ * concurrent streamed slices (2 x host cores, 4..32), so it beats the serial
+ * 75.0s by whatever the content node's cores allow, and the access log cannot
+ * tell one sliced visit from N separate ones — every slice carries the same
+ * selection string, built from one `nowSecs()`. This runs the router's own
+ * call, so the clock it prints is the router's.
  *
  * ASSERTS NOTHING, like every bench here. It prints what the two paths cost and
  * what they each found, and — because the constant behind the decision is an

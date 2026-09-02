@@ -577,13 +577,20 @@ object RelayDiscovery {
      * ~0.7ms/event (the store's own NIP-45 measurement: 100,000 summaries for
      * an integer, 2026-09-01), or ~1,400 events/second. 4.3M / 1,400 is ~3,000.
      *
-     * SET TO A THIRD OF THAT, DELIBERATELY. The two walks do not cost the same
-     * KIND of time: the visit runs on the document API, which is also where the
-     * ingest dedup probe lives, and 24 concurrent visits re-arming every ~35s
-     * is what wedged the mirror while `/search/` stayed fast throughout — a
-     * failure that reads from outside as a healthy store. Paying up to 3x the
-     * store-seconds to keep a walk off that lane is the trade this number
-     * makes, and it is the direction to err in when the estimate is wrong.
+     * SET TO A THIRD OF THAT, DELIBERATELY, and the estimate above is soft at
+     * both ends. The 75.0s is a SERIAL hand-run request; the router's own visit
+     * splits into `VespaEventIndex.visitSlices` streamed slices (2 x host
+     * cores, 4..32), so the rate it actually achieves is higher and the true
+     * exchange rate is likely nearer 6,000 — `RelayListReadCostBench` prints
+     * both clocks against a real store, which is the only way to settle it.
+     *
+     * The bias is toward the index anyway, because the two walks do not cost
+     * the same KIND of time: the visit runs on the document API, which is also
+     * where the ingest dedup probe lives, so a walk parked there starves ingest
+     * while `/search/` stays fast throughout — a failure that reads from
+     * outside as a healthy store (#167). Paying up to 3x the store-seconds to
+     * keep a walk off that lane is the trade this number makes, and it is the
+     * direction to err in when the estimate is wrong.
      */
     private const val VISIT_DOCS_PER_SCANNED_EVENT = 1_000L
 

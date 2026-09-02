@@ -135,9 +135,17 @@ monitor {
             # `["e", <id>, <relay>]` relay hints that fit exactly that shape.
             # What a stranger puts in their Treasure Map is not ours to
             # predict, so the scan SAYS which tags are delegations rather than
-            # inferring it from where a url happens to sit. Naming them also
-            # keeps the indexed tag projection, which a tagless select gives up
-            # for a paged scan over whole events.
+            # inferring it from where a url happens to sit.
+            #
+            # NAMING THEM IS NOT A PERFORMANCE CHOICE, and it used to read like
+            # one. Each named tag is a separate ask of the store, and the tags
+            # projection those asks took is a document-API visit whose
+            # selection is evaluated per document — a walk of the WHOLE corpus
+            # per tag, 75s each at 319M events against 0.0058s for the same
+            # predicate through the search index (#182). The router now sizes
+            # the match set first and reads a small one through the index, all
+            # 38 tags in ONE walk; name the tags for the reason above and let
+            # it choose.
             #
             # The list is held to quartz by `the 10040 scans name every
             # delegation quartz defines`, so a metric added upstream fails the
