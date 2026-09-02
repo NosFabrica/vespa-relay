@@ -4086,6 +4086,38 @@ path. The same 38 delegation tags appear twice in `router.conf.example` — boun
 on the `assertions` stream, unbound under `monitor { sources }` — and only the
 unbound copy was expensive.
 
+**THE URL NORMALIZER IS MEMOIZED PER SPELLING** (`RelayUrlCache`). A relay-list
+scan asks it the same few thousand strings once per author — a corpus with
+19,844 known relay urls hands it those over millions of events — and each ask
+was a trim, a whitespace scan, two prefix tests, a full parse through quartz's
+`RelayUrlNormalizer`, an onion test, a loopback test and a port strip. **Quartz
+has no cache of its own here**: `RelayUrlNormalizer` is a stateless companion of
+pure functions, and the only interning it ships is `EventInterner`
+(`ConcurrentHashMap<String, WeakReference<Event>>`, keyed by event id, for whole
+events). This is that pattern pointed at urls. `allowOnion` is deliberately NOT
+part of the key — it is a property of the deployment, not of the string, so the
+entry carries whether the url is an onion and the gate is applied on the way
+out; `RelayUrlCacheTest` pins that both orders of asking give different answers
+from one cache. Bounded and dropped whole at the cap, because the keys come from
+strangers: anyone's kind 10002 can name urls nobody has seen.
+
+**WHAT A RELAY-LIST SCAN STILL OVER-READS, and what it is actually worth.** The
+store's `EventYql.SUMMARY_FIELDS` is `id, pubkey, created_at, kind, tags,
+content, sig, owner` on every recall. Discovery needs `id` and `created_at` (the
+scan's cursor), `kind` (a select may name one), `pubkey` (the `EventPubkey`
+binding slot) and `tags`. So `content`, `sig` and `owner` are dead on arrival —
+about 200 bytes of a ~700-byte relay list, or **~30%** of the transfer and the
+JSON decode. Not the several-fold win it looks like at first, because the cursor
+and the binding slots need most of the rest.
+
+Fixing it is a STORE change and cannot be done from here: a fourth
+`document-summary` in `event.sd` beside `dedup` / `idtime` / `idtimetag`, plus a
+recall path passing `presentation.summary`. The schema's own note says adding a
+summary class is "a deploy-only change: no re-feed, no reindex" — but unlike
+those three this one could not be attribute-only, since `tags` is summary-only
+and still reads the disk summary store. Worth doing when the store is next
+touched; not worth a pin on its own.
+
 `RelayListReadCostBench` prices both walks against a real store and prints the
 scan's ms/event, which is the number to watch as a relay-list kind grows: the
 corpus walk is settled, but paging millions of whole events to read one tag off

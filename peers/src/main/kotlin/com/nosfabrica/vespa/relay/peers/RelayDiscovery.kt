@@ -24,12 +24,10 @@ import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
-import com.nosfabrica.vespa.relay.config.withoutDefaultPort
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
@@ -670,43 +668,35 @@ object RelayDiscovery {
      * and `.onion` unless [allowOnion] — a deployment with no Tor transport
      * has nothing that can resolve one, so every dial is a guaranteed
      * failure AND a hidden service name handed to the local resolver.
+     *
+     * MEMOIZED PER SPELLING in [RelayUrlCache], because a relay-list scan asks
+     * this the same few thousand strings once per author. The rules and the
+     * measurements that produced them moved there with it; this is the name
+     * the extraction path calls them by.
+     *
+     * The rules, for the record, and each one bought with a live run:
+     *  - `ws://` or `wss://`, ALWAYS. This used to be demanded only when a
+     *    select named no tag, on the reasoning that a named tag makes a bare
+     *    host safe to coerce. It does not: the normalizer is forgiving by
+     *    design, so anything a relay-list author typed becomes a url and a
+     *    dynamic stream then dials it every cycle. Measured on this store's
+     *    kind-10002s — 1,749 wss, 103 ws, 2 with no scheme, 0 http/https — so
+     *    demanding it costs 2 urls in 1,854 and buys out every http:// entry
+     *    riding in on OTHER sources, which the 10040s do carry (a live one
+     *    names http://localhost:7778).
+     *  - The scheme checked AGAIN on what we will actually dial. The
+     *    normalizer repairs as well as canonicalises: 143 urls in this corpus
+     *    carry a NESTED scheme — `wss://https//nostr.watch/relay/x` — which
+     *    passes the first test and comes out as an `https://` web page ABOUT a
+     *    relay, dialled once a cycle forever, answering nothing. A diagnostic
+     *    run caught us doing exactly that to `https://kbin.social/`,
+     *    `https://nostr.watch/relays/find` and `//nos.lol/` — 116 live
+     *    "relays" returning 0 events between them.
+     *  - A redundant `:443` on `wss` / `:80` on `ws` stripped, shared with the
+     *    exclude list's plain entries so the two meet on one spelling.
      */
     private fun normalize(
         raw: String,
         allowOnion: Boolean,
-    ): NormalizedRelayUrl? {
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
-        // ws:// or wss://, ALWAYS. This used to be required only when the select
-        // did not name a tag, on the reasoning that a named tag makes a bare host
-        // safe to coerce. It does not: the normalizer is forgiving by design, so
-        // anything a relay-list author typed becomes a url, and a dynamic stream
-        // then dials it every cycle.
-        //
-        // Measured on this store's kind-10002s: 1,749 wss, 103 ws, 2 with no
-        // scheme, 0 http/https — so demanding it costs 2 urls in 1,854 and buys
-        // out every http:// entry riding in on OTHER sources, which the 10040s
-        // do carry (a live one names http://localhost:7778).
-        if (!trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
-        val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return null
-        // ...and check the scheme AGAIN, on what we will actually dial.
-        //
-        // Checking only the raw string is not enough, because the normalizer
-        // repairs as well as canonicalises. 143 urls in this corpus carry a
-        // NESTED scheme — `wss://https//nostr.watch/relay/nostr.21crypto.ch` —
-        // which passes a startsWith("wss://") test and comes out the other side
-        // as `https://nostr.watch/relay/...`: a web page ABOUT a relay, dialled
-        // once a cycle forever, answering nothing.
-        //
-        // That is what a diagnostic run caught us doing — `https://kbin.social/`,
-        // `https://nostr.watch/relays/find`, `//nos.lol/` — 116 live "relays"
-        // returning 0 events between them.
-        if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
-        if (!allowOnion && RelayUrlNormalizer.isOnion(url.url)) return null
-        if (RelayUrlNormalizer.isLocalHost(url.url)) return null
-        // Strip a redundant :443/:80 — shared with the exclude list's plain
-        // entries, so the two meet on one spelling. See its KDoc for the
-        // measured duplication it prevents.
-        return withoutDefaultPort(url)
-    }
+    ): NormalizedRelayUrl? = RelayUrlCache.Default.normalize(raw, allowOnion)
 }
