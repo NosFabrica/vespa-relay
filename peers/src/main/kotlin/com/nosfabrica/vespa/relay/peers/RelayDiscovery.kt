@@ -612,7 +612,7 @@ object RelayDiscovery {
         corpus: suspend () -> Int,
     ): Boolean =
         try {
-            visitBeatsTheIndex(store.count(filter), corpus())
+            visitBeatsTheIndex(store.count(filter), corpus)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -622,6 +622,23 @@ object RelayDiscovery {
             )
             true
         }
+
+    /**
+     * Match sets at or under this take the index without pricing the corpus.
+     *
+     * The corpus count is the expensive half of the decision — see
+     * [takesTheProjection] — and below this it cannot change the answer by
+     * more than the bias [VISIT_DOCS_PER_SCANNED_EVENT] already accepts: the
+     * visit only wins under 100k matches on a store SMALLER than 100M
+     * documents, where the walk it wins by is under a quarter of the 75s that
+     * made this worth fixing. Paying up to that to keep a corpus-wide count off
+     * every discovery pass is the same trade, made in the same direction.
+     *
+     * Above it the two walks are genuinely close and the corpus decides — that
+     * is the 10002-scale read the projection exists for, and one count there is
+     * dwarfed by whichever walk follows it.
+     */
+    private const val INDEX_WITHOUT_ASKING = 100_000
 
     /**
      * Is the tags-only projection the cheaper walk for a filter matching
@@ -639,11 +656,18 @@ object RelayDiscovery {
      * Decided from the corpus rather than from the query's shape, which is what
      * the shape rule this replaces got wrong: "a named tag with no bindings" is
      * a fact about the config and says nothing about what the read will cost.
+     *
+     * [corpus] IS A LAZY READ AND THE `&&` IS LOAD-BEARING. Sizing the corpus
+     * costs a `where expires_at > now` grouping count — every unexpired
+     * document, on the single match thread [EventYql.grouping] pins — and
+     * spending that to decide a 364-event read would be the decision costing
+     * more than what it decides. Below [INDEX_WITHOUT_ASKING] the match set
+     * settles it alone and the denominator is never asked for.
      */
-    internal fun visitBeatsTheIndex(
+    internal suspend fun visitBeatsTheIndex(
         matches: Int,
-        corpus: Int,
-    ): Boolean = matches.toLong() * VISIT_DOCS_PER_SCANNED_EVENT > corpus.toLong()
+        corpus: suspend () -> Int,
+    ): Boolean = matches > INDEX_WITHOUT_ASKING && matches.toLong() * VISIT_DOCS_PER_SCANNED_EVENT > corpus().toLong()
 
     /**
      * Is this event too long to be a relay list?

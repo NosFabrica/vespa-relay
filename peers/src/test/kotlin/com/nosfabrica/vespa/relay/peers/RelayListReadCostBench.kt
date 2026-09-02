@@ -132,7 +132,7 @@ class RelayListReadCostBench {
                 println("  TOTAL  index ${secs(indexTotal)} over 1 walk of $events event(s)")
                 println("  ratio  ${"%.1f".format(visitTotal.toDouble() / indexTotal.coerceAtLeast(1))}x")
                 println(
-                    "  decision: RelayDiscovery takes the ${if (RelayDiscovery.visitBeatsTheIndex(matches, corpus)) "VISIT" else "INDEX"}",
+                    "  decision: RelayDiscovery takes the ${if (RelayDiscovery.visitBeatsTheIndex(matches) { corpus }) "VISIT" else "INDEX"}",
                 )
 
                 // Same question, so the same answer — a path that is faster
