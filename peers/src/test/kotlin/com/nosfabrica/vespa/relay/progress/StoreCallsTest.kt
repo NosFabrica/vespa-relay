@@ -303,6 +303,34 @@ class StoreCallsTest {
     }
 
     @Test
+    fun `the wedge line names the longest call, and says so when there is none`() {
+        val clock = Clock()
+        val calls = StoreCalls(now = clock)
+
+        // A WEDGE IS TEN MINUTES OF EVERY WORKER HELD, which is why this is a
+        // unit test: a live run against a frozen store proves the SLOW lines in
+        // a minute and cannot reach `IngestPipeline.WEDGE_AFTER_MS` without
+        // waiting out the threshold that exists to stop the router crying wolf.
+        assertNull(calls.describeOldest(), "no store call out is not a fault — it says the workers are held elsewhere")
+
+        calls.whileOut(
+            Triple(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(2_000)),
+            Triple(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_COUNT, "kinds 1985"),
+        ) {
+            clock.ms += 794_000
+            val line = calls.describeOldest()!!
+            // The LONGEST one, and enough of it to act on: the health line has
+            // already decided something is wrong, so what it needs from here is
+            // which call — a batch pass makes three, against three engine
+            // paths, with three remedies.
+            assertTrue(StoreCalls.OP_BATCH_INSERT in line || StoreCalls.OP_COUNT in line, "the line must name the call: $line")
+            assertTrue("13:14" in line, "…and how long it has been in it: $line")
+        }
+
+        assertNull(calls.describeOldest(), "and nothing outstanding once they return")
+    }
+
+    @Test
     fun `the warning can be turned off without turning off the report`() {
         val clock = Clock()
         val calls = StoreCalls(slowAfterMs = 0, now = clock)

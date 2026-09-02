@@ -365,11 +365,23 @@ speaks NIP-77, so a narrow filter reconciles rather than downloads.
 ```hocon
 streams { staging {
     dir = "down"
-    sync = "negentropy"
-    filter = { "kinds": [10040, 30382] }   # a lens, not a corpus
+    # A LENS IN BOTH SENSES. `kinds` keeps it off the corpus; the `search`
+    # token is what staging's own read gate wants — without it every REQ comes
+    # back `CLOSED … auth-required:` and the stream mirrors nothing while
+    # looking perfectly healthy (measured: 125k events in the window, 0
+    # recovered, `0 ev/s`, and the only sign of it a NOTICE in the wire log).
+    filter = { "kinds": [1985], "search": "include:spam" }
+    # Neither has a default, and a visit stream needs both.
+    negentropySyncThePastSeconds = 604800
+    refetchThePastSeconds = 2592000
     urls = [ "wss://search-staging.brainstorm.world" ]
 } }
 ```
+
+**There is no `sync = "negentropy"` any more** — this block carried one for a
+while and it is REFUSED at parse time now, with the reason (`gone with the
+legacy backfill`). Every stream is visited the same way: page from the band's
+edge, live-tail, and re-check the past on the two clocks above.
 
 Two cautions. It is **shared and live**: read it, don't publish test events to
 it — anything written is written to a relay other people are reading, and
@@ -4081,7 +4093,15 @@ Reach for it first.
   when they do not; the lifetime counters beside them (`issued`, `returned`,
   `failed`, `cancelled`) are a rate and agree with the live count only once the
   router goes quiet.
-  See `StoreCalls`. **Two halves of it are NOT ours to publish and want a store
+  See `StoreCalls`. **Do not wait for `bottleneck` to agree with it**: measured
+  against a deliberately frozen store (`docker pause vespa` under a live
+  mirror), three store calls had been hung for 74 seconds while `bottleneck`
+  still read `mixed` — which the card draws as "keeping up — nothing here is
+  the constraint". That is honest as far as it goes, since the queue was not
+  full and `wedged` needs ten minutes of every worker held; it is also the
+  whole blind spot this section fills, and the `store call SLOW` lines were
+  already naming the calls a minute in.
+  **Two halves of it are NOT ours to publish and want a store
   change**: an `X-Caller` header on the wire, and a server-side service-start
   timestamp — `VespaHttp` builds its own OkHttp client with no header or
   interceptor seam, so neither is reachable from this repository.
