@@ -15,8 +15,8 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  STARTING, STAGES_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
-  stageDeltas, streamSections,
+  STARTING, STAGES_SHOWN, STUCK_CALL_SEC, CALLS_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
+  stageDeltas, storeOf, streamSections,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1227,4 +1227,102 @@ const leg = (n, quiet, over = {}) => ({
   // 100% rather than overstating every row it kept.
   assert.ok(stageDeltas(busy, zeros(names)).reduce((n, r) => n + r.share, 0) < 1);
   ok("the ingest stage split is a share between polls, empty on a first load, and never shows a lock wait alone");
+}
+
+// ── which store calls are out, and whose ────────────────────────────────────
+{
+  // THE HALF OF A WEDGE THE PIPELINE ROW NEVER CARRIED. `2 of 2 worker(s) in a
+  // batch, oldest 794s` is where every investigation of a stalled mirror got
+  // to and stopped — a batch pass makes three different store calls and the row
+  // reports all three as one number. Every decision below can be wrong
+  // silently, which is why it is here rather than in the card: `hot` is a
+  // colour off a threshold, `more` closes a truncation the router already
+  // partly made, and the bands are a partition whose failure is a row that does
+  // not add up.
+  const call = (over = {}) => ({
+    caller: "ingest.dedup", op: "existingIds", asked: "2048 id(s)",
+    issuedAt: 1_769_998_206, elapsedSec: 794, outstandingAtIssue: 2, ...over,
+  });
+
+  // A router too old to book its calls publishes no section, and the card must
+  // draw NOTHING — "this router does not say" and "nothing is outstanding" are
+  // opposite claims and only one of them is a reading.
+  assert.equal(storeOf(undefined), null);
+  assert.equal(storeOf(null), null);
+  assert.equal(storeOf("store"), null);
+
+  const s = storeOf({
+    outstanding: 3, slowAfterSec: 60, issued: 918_233, returned: 918_230, failed: 2, cancelled: 1,
+    calls: [call(), call({ caller: "heal.resolve", op: "query", elapsedSec: 45 }), call({ elapsedSec: 0, asked: "" })],
+    omitted: 0,
+    callers: [{ caller: "ingest.dedup", issued: 41_022, returned: 41_020, failed: 0, cancelled: 0, outstanding: 2, oldestOutstandingSec: 794 }],
+    ages: [{ fromSec: 0, calls: 1 }, { fromSec: 1, calls: 0 }, { fromSec: 10, calls: 1 },
+           { fromSec: 60, calls: 0 }, { fromSec: 300, calls: 1 }, { fromSec: 900, calls: 0 }],
+  });
+
+  assert.equal(s.outstanding, 3);
+  // Only calls past the bound the LOG warns at are coloured. The page and the
+  // router must not carry two definitions of the same word.
+  assert.deepEqual(s.rows.map((r) => r.hot), [true, false, false]);
+
+  // THE ROUTER'S OWN BOUND MARKS THE ROW, not this file's copy of the default.
+  // `SYNC_STORE_SLOW_SEC` is an operator's to change, and a page marking rows
+  // at 60 under a router set to five minutes would have the log and the colour
+  // meaning two different things by the same word — the drift this page avoids
+  // everywhere else by never re-deciding a threshold the router decided.
+  const tuned = { outstanding: 1, slowAfterSec: 300, calls: [call({ elapsedSec: 120 })], ages: [{ fromSec: 60, calls: 1 }] };
+  assert.equal(storeOf(tuned).rows[0].hot, false, "120s is ordinary under a 300s bound");
+  assert.equal(storeOf(tuned).ages[0].hot, false, "…and so is the band it falls in");
+  assert.equal(storeOf(tuned).stuckSec, 300);
+  assert.equal(storeOf({ ...tuned, slowAfterSec: 60 }).rows[0].hot, true, "…and marked once the bound is back under it");
+  // Two ways a document says nothing: a router too old to publish the bound,
+  // and one whose operator set it to 0 — which turns the LOG off and says
+  // nothing about what a page should mark. Both fall back to the default.
+  assert.equal(storeOf({ calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
+  assert.equal(storeOf({ slowAfterSec: 0, calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
+  assert.equal(STUCK_CALL_SEC, 60, "the fallback is the router's own default");
+  // An empty `asked` is not a filter summary: the card draws "no filter" rather
+  // than an empty cell, and only a null can tell it to.
+  assert.equal(s.rows[2].asked, null);
+  // A call issued with nothing else out reports ZERO, which is the reading —
+  // it did not queue behind us — where a router that declined to say is null.
+  assert.equal(storeOf({ calls: [call({ outstandingAtIssue: 0 })] }).rows[0].outstandingAtIssue, 0);
+  assert.equal(storeOf({ calls: [call({ outstandingAtIssue: undefined })] }).rows[0].outstandingAtIssue, null);
+
+  // EMPTY BANDS ARE DROPPED for the reader and counted for the check: the
+  // router publishes all six so the partition can be verified, and drawing five
+  // zeroes to reach the one band that matters is the noise the line avoids.
+  assert.deepEqual(s.ages.map((a) => [a.fromSec, a.calls]), [[0, 1], [10, 1], [300, 1]]);
+  assert.deepEqual(s.ages.map((a) => a.hot), [false, false, true]);
+  assert.equal(s.accountedFor, true);
+  // Shares are of the whole outstanding set, not of the bands that survive the
+  // filter — otherwise each survivor would be overstated.
+  assert.ok(Math.abs(s.ages.reduce((n, a) => n + a.share, 0) - 1) < 1e-9);
+
+  // A PARTITION THAT DOES NOT CLOSE is reported rather than smoothed: the card
+  // says so instead of letting a reader do the subtraction.
+  assert.equal(storeOf({ outstanding: 9, ages: [{ fromSec: 0, calls: 1 }] }).accountedFor, false);
+  // …and a router publishing no bands at all is not a router whose bands are
+  // wrong.
+  assert.equal(storeOf({ outstanding: 9 }).accountedFor, true);
+
+  // A caller row is coloured on the two shapes worth acting on — calls that
+  // THREW, and one held past the bound. A store the schema drifted under fails
+  // in milliseconds; one that stopped answering shows an age and no failures.
+  const callers = storeOf({ callers: [
+    { caller: "a", failed: 1 },
+    { caller: "b", oldestOutstandingSec: 794 },
+    { caller: "c", issued: 900, returned: 900 },
+  ] }).callers;
+  assert.deepEqual(callers.map((c) => c.hot), [true, true, false]);
+  // Junk rows never reach a table.
+  assert.deepEqual(storeOf({ calls: [null, { op: "query" }], callers: [null, {}] }), storeOf({}));
+
+  // THE CUT IS DISCLOSED TWICE — what the router left out plus what this cut
+  // did — so an operator can subtract. The router publishes up to two hundred
+  // rows; this is the editorial cut on top of that.
+  const many = storeOf({ outstanding: 40, calls: Array.from({ length: 20 }, () => call()), omitted: 7 });
+  assert.equal(many.rows.length, CALLS_SHOWN);
+  assert.equal(many.more, 7 + (20 - CALLS_SHOWN));
+  ok("the store's outstanding calls are named longest-first, coloured off the log's own bound, and every cut is disclosed");
 }

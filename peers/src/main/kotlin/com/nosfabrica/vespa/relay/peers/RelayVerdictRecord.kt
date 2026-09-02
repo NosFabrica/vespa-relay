@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -120,6 +122,20 @@ class RelayVerdictRecord(
     )
 
     /**
+     * One chunked record read, booked as the monitor's — see [StoreCalls].
+     *
+     * Shared by [load] and [fitnessGrades] because they ask the store the same
+     * question and differ only in what they read off the answer: two call sites
+     * naming themselves separately would put one subsystem's traffic under two
+     * rows, and "whose requests are filling the queue" is a question about the
+     * subsystem.
+     */
+    private suspend fun readRecords(filter: Filter): List<Event> =
+        storeCall(StoreCalls.CALLER_MONITOR_VERDICTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+            store.query<Event>(filter)
+        }
+
+    /**
      * Read back every verdict covering [candidates].
      *
      * Queried by `#d` rather than walked, because `d` is a single-letter tag
@@ -149,7 +165,7 @@ class RelayVerdictRecord(
         val held = Building()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             held.take(
-                store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk))),
+                readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk))),
                 floor,
             )
         }
@@ -195,7 +211,7 @@ class RelayVerdictRecord(
         // record and skip a write the current one needs.
         val newestAt = HashMap<NormalizedRelayUrl, Long>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
-            val held = store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
+            val held = readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
             for (event in held) {
                 val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
                 val url = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
@@ -276,6 +292,11 @@ class RelayVerdictRecord(
             store,
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = floor),
             RECORD_PAGE,
+            // Named as the MONITOR's read rather than left on `scan`'s default:
+            // the pager is shared with the url round-up, and this walk is the
+            // fold's own corpus. A row attributed to the round-up would send an
+            // operator to the wrong pass.
+            caller = StoreCalls.CALLER_MONITOR_VERDICTS,
         ) { event -> held.take(event, floor) }
         return held.verdicts()
     }
@@ -768,7 +789,9 @@ class RelayVerdictRecord(
             // its way out.
             try {
                 val event = signer.sign(template)
-                store.insert(event)
+                storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_INSERT, "kind ${template.kind}, 1 event") {
+                    store.insert(event)
+                }
                 event
             } catch (e: CancellationException) {
                 throw e

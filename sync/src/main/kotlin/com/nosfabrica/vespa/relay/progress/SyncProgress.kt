@@ -118,7 +118,18 @@ import kotlinx.serialization.json.putJsonArray
  *                                 "omitted": 0}}]},
  *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
  *      "accepted": 3910233, "rejected": 41002}
- *   ]
+ *   ],
+ *   "store": {
+ *     "outstanding": 3, "slowAfterSec": 60,
+ *     "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
+ *     "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
+ *                "issuedAt": 1769998206, "elapsedSec": 794, "outstandingAtIssue": 2}],
+ *     "omitted": 0,
+ *     "callers": [{"caller": "ingest.dedup", "issued": 41022, "returned": 41020,
+ *                  "failed": 0, "cancelled": 0, "outstanding": 2, "oldestOutstandingSec": 794}],
+ *     "ages": [{"fromSec": 0, "calls": 1}, {"fromSec": 1, "calls": 0}, {"fromSec": 10, "calls": 0},
+ *              {"fromSec": 60, "calls": 0}, {"fromSec": 300, "calls": 0}, {"fromSec": 900, "calls": 2}]
+ *   }
  * }
  * ```
  *
@@ -170,6 +181,14 @@ import kotlinx.serialization.json.putJsonArray
  * `urls` and `taken` are a PARTITION and the members are chosen to sum — see
  * the pass tallies for the two identities and for why `pending` was derived. `balanced`
  * is the writer's own check on them, published rather than asserted.
+ *
+ * `store` is the OTHER half of the wedge, and the half that was missing: the
+ * ingest row says two workers have been inside a batch pass for 794 seconds,
+ * and this says which store call each is in, who asked for it, and what it
+ * asked for. It sits at the root beside `health` because it is a fact about the
+ * PROCESS — one registry covers both planes, since the mirror and the monitor
+ * are one process against one store — and every subsystem's slowness is
+ * downstream of it. See [StoreCalls].
  */
 class SyncProgress {
     /**
@@ -301,9 +320,17 @@ class SyncProgress {
          * unnoticed. It reached a stderr line and stopped there.
          */
         fatals: Long = 0,
+        /**
+         * WHICH STORE CALLS ARE OUTSTANDING, and whose they are — see
+         * [StoreCalls]. Null on a process with no registry installed, which
+         * publishes no section rather than an empty one: "nothing is booked" and
+         * "nothing is outstanding" are different claims, and only the second is
+         * a reading.
+         */
+        store: StoreCalls.Snapshot? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
-        latest = document(streams, processors, fatals, health, live, nowSeconds)
+        latest = document(streams, processors, fatals, health, live, store, nowSeconds)
     }
 
     companion object {
@@ -319,6 +346,7 @@ class SyncProgress {
             fatals: Long = 0,
             health: Health? = null,
             live: InFlight? = null,
+            store: StoreCalls.Snapshot? = null,
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
@@ -469,6 +497,105 @@ class SyncProgress {
                 // such claim.
                 processors.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
+                }
+                // WHICH STORE CALLS ARE OUT, and whose. At the root beside
+                // `health` for the same reason: it is a fact about the process,
+                // one registry across both planes. Absent — not empty — on a
+                // process with no registry, so a reader can tell "nothing is
+                // booked here" from "nothing is outstanding".
+                store?.let { put("store", storeCalls(it)) }
+            }
+
+        /**
+         * The store section, whole — see [StoreCalls].
+         *
+         * Every count is written including its zeroes, so the two identities a
+         * reader checks the section by are always there to check: a caller's
+         * `issued = returned + failed + cancelled + outstanding`, and the age
+         * bands summing to `outstanding`. A member that appears only on damage
+         * cannot be told from a router too old to say — the rule the rest of
+         * this document follows.
+         */
+        private fun storeCalls(s: StoreCalls.Snapshot): JsonObject =
+            buildJsonObject {
+                // THE HEADLINE, and the one number that is a fact about the
+                // whole process rather than about any subsystem: calls out to
+                // the store right now.
+                put("outstanding", s.outstanding)
+                // …and the bound the ROUTER calls a call slow at, so the page
+                // marks a row by the operator's threshold instead of a copy of
+                // the default. `SYNC_STORE_SLOW_SEC` is theirs to change, and a
+                // page carrying its own 60 would go on marking rows a router
+                // set to five minutes considers ordinary — the drift
+                // `processors.js` refuses when it declines to re-decide
+                // `bottleneck` for itself. Published at zero too, which is the
+                // operator having turned the LOG off and says nothing about
+                // what the page should mark.
+                put("slowAfterSec", s.slowAfterSec)
+                put("issued", s.issued)
+                put("returned", s.returned)
+                // A store that has drifted under the schema FAILS these rather
+                // than hanging on them, and the two want opposite next moves —
+                // see [StoreCalls.Caller.failed].
+                put("failed", s.failed)
+                put("cancelled", s.cancelled)
+                s.calls.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("calls") {
+                        for (c in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("caller", c.caller)
+                                    put("op", c.op)
+                                    // A SUMMARY of the ask, never the ask: an
+                                    // `existingIds` probe carries two thousand
+                                    // ids and a negentropy window carries the
+                                    // corpus. `asked`, not `filter`, which the
+                                    // coverage report publishes as an OBJECT —
+                                    // see [StoreCalls.Call.asked].
+                                    c.asked?.let { put("asked", it) }
+                                    put("issuedAt", c.issuedAt)
+                                    put("elapsedSec", c.elapsedSec)
+                                    // The client-side half of "slow store or
+                                    // long queue" — what this process already
+                                    // had out when this call went. See
+                                    // [StoreCalls.Call.outstandingAtIssue].
+                                    put("outstandingAtIssue", c.outstandingAtIssue)
+                                },
+                            )
+                        }
+                    }
+                }
+                // Never silent, for [InFlight.omitted]'s reason — and here a
+                // silent cut would read as FEWER stuck calls than there are.
+                put("omitted", s.omitted)
+                s.callers.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("callers") {
+                        for (c in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("caller", c.caller)
+                                    put("issued", c.issued)
+                                    put("returned", c.returned)
+                                    put("failed", c.failed)
+                                    put("cancelled", c.cancelled)
+                                    put("outstanding", c.outstanding)
+                                    c.oldestOutstandingSec?.let { put("oldestOutstandingSec", it) }
+                                },
+                            )
+                        }
+                    }
+                }
+                s.ages.takeIf { rows -> rows.any { it.calls > 0 } }?.let { rows ->
+                    putJsonArray("ages") {
+                        for (a in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("fromSec", a.fromSec)
+                                    put("calls", a.calls)
+                                },
+                            )
+                        }
+                    }
                 }
             }
 

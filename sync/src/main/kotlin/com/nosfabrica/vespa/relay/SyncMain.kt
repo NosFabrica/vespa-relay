@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.onionUpstreams
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.status.StatusRollup
@@ -233,6 +234,13 @@ fun main() {
     SyncProgress.refuseRemovedEnv(env)
     val progress = SyncProgress()
 
+    // WHICH STORE CALLS ARE OUT, and whose — read here for the same reason
+    // every other knob is: `SYNC_STORE_SLOW_SEC` is refused rather than
+    // silently defaulted if it is not a number, and boot is where an operator
+    // finds that out. The registry itself is always on; the environment only
+    // decides the log threshold.
+    val storeCalls = StoreCalls.fromEnv(env)
+
     // One level finer than the bands: what each peer will reconcile in one
     // window, and how far down the timeline the running sweep already got.
     val sweepState = SweepState.fromEnv(env)
@@ -269,6 +277,7 @@ fun main() {
             servingPressure = servingPressure,
             torSettings = torSettings,
             progress = progress,
+            storeCalls = storeCalls,
             // The raw engine index, not the trust-projected store: the
             // projection's existingIds delegates straight through, and this is
             // a pure read that counts and never mutates — the use its own

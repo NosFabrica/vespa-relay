@@ -35,6 +35,7 @@ import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
@@ -127,8 +128,27 @@ class SyncEngine(
     // cycle took on — see [SyncProgress]. Republished on the progress tick and
     // read by this process's own status site off the same heap.
     private val progress: SyncProgress = SyncProgress(),
+    // WHICH STORE CALLS ARE OUTSTANDING, and who asked for each — see
+    // [StoreCalls]. Installed on this engine's scope below, so every subsystem
+    // that reads or writes the store through a coroutine of ours books itself
+    // without being handed anything. A default rather than a required argument
+    // because an embedded caller that has not wired one gets the behaviour it
+    // has always had: the calls simply are not booked.
+    private val storeCalls: StoreCalls = StoreCalls(),
 ) : AutoCloseable {
-    private val scope = CoroutineScope(Dispatchers.IO + parentContext)
+    /**
+     * THE SCOPE EVERY SUBSYSTEM HERE RUNS ON, and the one place [storeCalls] is
+     * installed.
+     *
+     * The registry is a `CoroutineContext.Element`, so putting it here puts it
+     * on every child of this scope — ingest's workers on their own dispatcher,
+     * the visit pool, the healer, the monitor plane (which takes this scope) —
+     * and a store call made from any of them finds it through
+     * `currentCoroutineContext`. See [StoreCalls] for why the reach is a context
+     * element rather than a constructor argument threaded through six
+     * signatures.
+     */
+    private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
     /**
      * HOW THIS PROCESS TALKS TO OTHER RELAYS — the websocket client, the socket
@@ -614,7 +634,17 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progress.publish(phases.snapshot(), processors.snapshot(), health, visitPool.livePool(), fatals.get())
+                progress.publish(
+                    phases.snapshot(),
+                    processors.snapshot(),
+                    health,
+                    visitPool.livePool(),
+                    fatals.get(),
+                    // Taken on the same tick as everything else, so the row that
+                    // says a worker is in a batch and the row that says which
+                    // call it is in describe one instant.
+                    store = storeCalls.snapshot(),
+                )
             }
         }
     }
@@ -690,7 +720,21 @@ class SyncEngine(
                                 " FULL and NOT DRAINING — ingest is wedged, not backpressured: " +
                                     "${ingest.inBatch()}/${ingest.workerCount} worker(s) in a batch, the oldest " +
                                     "for ${ingest.oldestBatchMs() / 1000}s. The store stopped answering; look " +
-                                    "there, not at the relays"
+                                    "there, not at the relays" +
+                                    // …AND WHICH CALL IT STOPPED ANSWERING, which
+                                    // is the fact this line could not carry: a
+                                    // batch pass makes three, against three
+                                    // engine paths, with three remedies. Named
+                                    // here rather than left to `warnSlow` below
+                                    // because that fires on its own re-warn
+                                    // clock, and THIS is the line an operator
+                                    // greps for. Absent means no store call is
+                                    // outstanding at all — a worker wedged
+                                    // somewhere else, which is a finding.
+                                    (
+                                        storeCalls.describeOldest()?.let { ". Longest store call: $it" }
+                                            ?: ". No store call is outstanding — the workers are held somewhere other than the store"
+                                    )
                             }
 
                             "ingest" -> {
@@ -735,6 +779,17 @@ class SyncEngine(
                         }
                     ),
             )
+            // WHICH STORE CALL, for every one that has been running too long —
+            // the fact `oldestBatchSec` could never give. On the health loop's
+            // clock rather than a clock of its own, because the two lines are
+            // read together: `wedged` above says nothing is draining, and these
+            // say what it is stuck in.
+            //
+            // In the LOG and not only on the page, and that is the whole point
+            // of them: a wedge happens while nobody is watching, so the page
+            // answers "what is stuck now" and only a repeated line answers
+            // "since when". See [StoreCalls.warnSlow].
+            storeCalls.warnSlow().forEach { System.err.println(it) }
             // Named, because "16,248 skipped" says nothing about which corner
             // of the network we stopped looking at.
             monitor.heldOutDead().takeIf { it > 0 }?.let { dead ->

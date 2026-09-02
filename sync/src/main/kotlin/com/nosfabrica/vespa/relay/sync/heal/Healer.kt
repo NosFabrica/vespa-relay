@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.sync.heal
 
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
@@ -229,35 +231,50 @@ class Healer(
     ): Event? =
         when (key.mode) {
             HealMode.CONTENT -> {
-                store
-                    .query<Event>(
-                        Filter(
-                            kinds = listOf(key.kind),
-                            authors = listOf(key.pubkey),
-                            tags = key.dTag?.takeIf { it.isNotEmpty() }?.let { mapOf("d" to listOf(it)) },
-                        ),
-                    ).maxByOrNull { it.createdAt }
+                read(
+                    Filter(
+                        kinds = listOf(key.kind),
+                        authors = listOf(key.pubkey),
+                        tags = key.dTag?.takeIf { it.isNotEmpty() }?.let { mapOf("d" to listOf(it)) },
+                    ),
+                ).maxByOrNull { it.createdAt }
             }
 
             HealMode.DELETION -> {
-                store
-                    .query<Event>(
-                        Filter(
-                            kinds = listOf(5),
-                            authors = listOf(key.pubkey),
-                            tags = key.victimId?.let { mapOf("e" to listOf(it)) },
-                        ),
-                    ).maxByOrNull { it.createdAt }
+                read(
+                    Filter(
+                        kinds = listOf(5),
+                        authors = listOf(key.pubkey),
+                        tags = key.victimId?.let { mapOf("e" to listOf(it)) },
+                    ),
+                ).maxByOrNull { it.createdAt }
             }
 
             HealMode.VANISH -> {
                 VanishTargets.pushableTo(
-                    store
-                        .query<Event>(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(key.pubkey)))
+                    read(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(key.pubkey)))
                         .filterIsInstance<RequestToVanishEvent>(),
                     url,
                 )
             }
+        }
+
+    /**
+     * One store read, booked as this subsystem's — see [StoreCalls].
+     *
+     * The four reads it serves are one shape asked four ways, and folding them
+     * into one call keeps the caller and the ask on the row rather than on four
+     * separate bookings of the same subsystem.
+     *
+     * These reads are per ADDRESS and cheap, so the reason they are worth
+     * naming is not their cost: they run at the end of every visit, on the
+     * pool's own worker, so a store that has stopped answering strands them
+     * where a reader would be looking at the relay instead. `heal.resolve` on
+     * an outstanding row is what says that is where the visit went.
+     */
+    private suspend fun read(filter: Filter): List<Event> =
+        storeCall(StoreCalls.CALLER_HEAL_RESOLVE, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+            store.query<Event>(filter)
         }
 
     private suspend fun vanishedFrom(
@@ -266,8 +283,7 @@ class Healer(
         cache: MutableMap<String, Boolean>,
     ): Boolean =
         cache.getOrPut(pubkey) {
-            store
-                .query<Event>(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(pubkey)))
+            read(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(pubkey)))
                 .filterIsInstance<RequestToVanishEvent>()
                 .any { it.shouldVanishFrom(url) }
         }

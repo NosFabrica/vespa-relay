@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -97,14 +99,24 @@ internal class StoreWindowIndex(
     // from — the trap [IngestPipeline.dropDuplicates] names.
     override suspend fun count(window: Filter): Int? =
         try {
-            store.count(window)
+            storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_COUNT, StoreCalls.summarise(window)) {
+                store.count(window)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             null
         }
 
-    override suspend fun entriesFor(window: Filter): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+    // THE EXPENSIVE ONE, and the reason the two are booked apart: the count is
+    // a sizing query and this materializes every id in the window — the largest
+    // allocation this router makes. `visit.negentropy` holding a call for
+    // minutes means one of these; holding one on a `count` means the engine
+    // cannot answer a cardinality, which is a different fault.
+    override suspend fun entriesFor(window: Filter): List<IdAndTime> =
+        storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(window)) {
+            store.snapshotIdsForNegentropy(listOf(window))
+        }
 }
 
 /**

@@ -253,6 +253,117 @@ export function stageDeltas(now, before) {
     .map((r) => ({ ...r, share: r.ms / total }));
 }
 
+/**
+ * Past this, an outstanding store call is not slow, it has stopped — WHERE THE
+ * ROUTER DOES NOT SAY.
+ *
+ * The router publishes its own bound as `slowAfterSec`, and that is what a row
+ * is marked against: `SYNC_STORE_SLOW_SEC` is an operator's to change, and a
+ * page marking rows at its own 60 under a router set to five minutes would have
+ * the log and the colour meaning two different things by the same word. This is
+ * the fallback for a router too old to publish it, and for one that set the
+ * bound to 0 — which turns the LOG off and says nothing about what a page
+ * should mark. Sixty because that is the router's default, and because a
+ * healthy `oldestBatchSec` was measured at 43 on production.
+ */
+export const STUCK_CALL_SEC = 60;
+
+/**
+ * How many outstanding store calls the row names.
+ *
+ * The router publishes up to two hundred, longest-running first, and this is
+ * an EDITORIAL cut on top of that — the same division of labour `HELD_SHOWN`
+ * describes. A busy router legitimately has dozens of calls a millisecond old,
+ * and the answer to "which call is my wedged worker in" is at the front of the
+ * list; `more` discloses the rest, and `/stats.json` carries all of it.
+ */
+export const CALLS_SHOWN = 6;
+
+/**
+ * WHICH STORE CALLS ARE OUT, and whose — the document's `store` section, turned
+ * into what the card draws.
+ *
+ * The derivation is here rather than in the card for this file's usual reason:
+ * every decision below can be wrong silently. `hot` decides a colour off a
+ * threshold, `more` closes a truncation the router already partly made, and the
+ * age bands are a partition whose failure mode is a row that does not add up —
+ * three of the four shapes this suite exists to catch.
+ *
+ * Null for a document with no section at all, which is a router too old to book
+ * its calls: the card draws NOTHING there rather than "0 outstanding", because
+ * those are opposite claims and only one of them is a reading.
+ */
+export function storeOf(store) {
+  if (!store || typeof store !== "object") return null;
+  // THE ROUTER'S OWN BOUND, not this file's — see `STUCK_CALL_SEC`, which is
+  // only what stands in when the document does not carry one.
+  const stuckSec = store.slowAfterSec > 0 ? store.slowAfterSec : STUCK_CALL_SEC;
+  const all = Array.isArray(store.calls) ? store.calls.filter((c) => c && typeof c.caller === "string") : [];
+  const rows = all.slice(0, CALLS_SHOWN).map((c) => ({
+    caller: c.caller,
+    op: typeof c.op === "string" ? c.op : "—",
+    // Absent is "this call carries no filter", which several ops genuinely do
+    // not — never a gap in the report.
+    asked: typeof c.asked === "string" && c.asked ? c.asked : null,
+    elapsedSec: c.elapsedSec || 0,
+    // `??`, not `||`: a call issued when nothing else was out reports 0, and
+    // that is the reading — it did not queue behind us — rather than a router
+    // that declined to say.
+    outstandingAtIssue: c.outstandingAtIssue ?? null,
+    hot: (c.elapsedSec || 0) >= stuckSec,
+  }));
+  const callers = (Array.isArray(store.callers) ? store.callers : [])
+    .filter((c) => c && typeof c.caller === "string")
+    .map((c) => ({
+      caller: c.caller,
+      issued: c.issued || 0,
+      returned: c.returned || 0,
+      failed: c.failed || 0,
+      cancelled: c.cancelled || 0,
+      outstanding: c.outstanding || 0,
+      oldestOutstandingSec: c.oldestOutstandingSec ?? null,
+      // A caller whose calls THREW is the one row worth colouring: a store the
+      // schema has drifted under fails in milliseconds, where one that has
+      // stopped answering shows up as an age and nothing failing at all.
+      hot: (c.failed || 0) > 0 || (c.oldestOutstandingSec ?? 0) >= stuckSec,
+    }));
+  // The bands as SHARES of the outstanding set, which is what makes them a
+  // shape. Of the whole set rather than of the drawn bands: the router publishes
+  // every band including its empty ones, and a share taken over a filtered list
+  // would overstate each survivor.
+  const banded = (Array.isArray(store.ages) ? store.ages : []).filter((a) => a && Number.isFinite(a.fromSec));
+  const inBands = banded.reduce((sum, a) => sum + (a.calls || 0), 0);
+  const ages = banded
+    .filter((a) => (a.calls || 0) > 0)
+    .map((a) => ({
+      fromSec: a.fromSec,
+      calls: a.calls || 0,
+      share: inBands ? (a.calls || 0) / inBands : 0,
+      hot: a.fromSec >= stuckSec,
+    }));
+  return {
+    outstanding: store.outstanding || 0,
+    // What a row was marked against, so the card can say so rather than leave a
+    // reader to guess which threshold coloured it.
+    stuckSec,
+    issued: store.issued || 0,
+    returned: store.returned || 0,
+    failed: store.failed || 0,
+    cancelled: store.cancelled || 0,
+    rows,
+    // Whatever the ROUTER left out, plus whatever this cut did — a truncation
+    // disclosed twice is a truncation an operator can subtract.
+    more: (store.omitted || 0) + (all.length - rows.length),
+    callers,
+    ages,
+    // The bands are the router's own partition of the outstanding set, and it
+    // closing is the check a reader would otherwise have to do by hand. Drawn
+    // as a note when it does not, on `accountedFor`'s terms: a card that adds
+    // up to less than the counts on it must say so.
+    accountedFor: !banded.length || inBands === (store.outstanding || 0),
+  };
+}
+
 /** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */
 export const MEASURING = "measuring";
 

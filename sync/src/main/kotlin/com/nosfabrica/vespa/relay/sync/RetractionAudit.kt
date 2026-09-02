@@ -25,6 +25,8 @@ import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -195,7 +197,10 @@ internal class RetractionAudit(
         // catch-up keeps mirroring it, this decides nothing from it.
         if (bound.any { it in sharedAuthors }) return
 
-        val mine = store.snapshotIdsForNegentropy(listOf(ownedAsk))
+        val mine =
+            storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(ownedAsk)) {
+                store.snapshotIdsForNegentropy(listOf(ownedAsk))
+            }
         // NOT an early return when we hold nothing: an ask we have no records
         // for is exactly a service we have never fetched, and reconciling
         // against an empty local set is precisely "give me everything"; the
@@ -336,7 +341,9 @@ internal class RetractionAudit(
         // filter that removes them, so a delete can never reach past the
         // records this reconcile actually compared.
         for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
-            store.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))
+            storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_DELETE, StoreCalls.ids(chunk.size)) {
+                store.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))
+            }
         }
         deleted.addAndGet(diff.haveIds.size.toLong())
         System.err.println(

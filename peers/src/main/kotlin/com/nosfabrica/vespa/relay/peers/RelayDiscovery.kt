@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -376,7 +378,8 @@ object RelayDiscovery {
                     .map { it.url }
                     .chunked(RelayVerdictRecord.QUERY_CHUNK)
                     .flatMap { chunk ->
-                        store.query<Event>(
+                        read(
+                            store,
                             Filter(
                                 kinds = listOf(RelayDiscoveryEvent.KIND),
                                 authors = monitorAuthors.takeIf { it.isNotEmpty() },
@@ -386,7 +389,8 @@ object RelayDiscovery {
                         )
                     }
             } else {
-                store.query<Event>(
+                read(
+                    store,
                     Filter(
                         kinds = listOf(RelayDiscoveryEvent.KIND),
                         // Absent, not empty: a NIP-01 filter with no `authors` key
@@ -424,6 +428,43 @@ object RelayDiscovery {
         }
     }
 
+    /**
+     * One page of a [scan], booked as [caller]'s — see [StoreCalls].
+     *
+     * A function rather than two inline calls because [scan] asks for the same
+     * page twice when a page turns out to be entirely one `created_at`, and the
+     * cursor and the width have to be applied identically both times. Each ASK
+     * is booked, which is right: the second one is a second round trip and the
+     * one a widened page is actually waiting on.
+     */
+    private suspend fun queryPage(
+        store: IEventStore,
+        caller: String,
+        filter: Filter,
+        until: Long?,
+        ask: Int,
+    ): List<Event> {
+        val asked = filter.copy(until = until, limit = ask)
+        return storeCall(caller, StoreCalls.OP_QUERY, StoreCalls.summarise(asked)) { store.query(asked) }
+    }
+
+    /**
+     * …and one verdict read, booked as the ROUND-UP's.
+     *
+     * Named for that pass and not for the monitor, though the records are the
+     * monitor's: what [verdicts] serves is [undialable] and [recorded], and both
+     * are the url round-up deriving what the three passes may dial — see
+     * `StreamWorld.ownDead`. The monitor's own reads of the same records are
+     * `RelayVerdictRecord`'s and book themselves there.
+     */
+    private suspend fun read(
+        store: IEventStore,
+        filter: Filter,
+    ): List<Event> =
+        storeCall(StoreCalls.CALLER_SOURCE_RELAY_LISTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+            store.query<Event>(filter)
+        }
+
     /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
     private fun urlOf(
         event: Event,
@@ -455,6 +496,18 @@ object RelayDiscovery {
         store: IEventStore,
         filter: Filter,
         pageSize: Int,
+        /**
+         * WHO the pages are booked to — see [StoreCalls].
+         *
+         * A parameter, and defaulted to the round-up, because this pager is
+         * shared: the url round-up walks every relay-list source through it and
+         * [RelayVerdictRecord.loadAll] walks the monitor's own corpus. Those are
+         * different subsystems on different clocks, and a walk of minutes filed
+         * under the wrong one sends an operator to the wrong pass. Defaulted
+         * rather than required so a caller that has not thought about it lands
+         * on the reading this function has always had.
+         */
+        caller: String = StoreCalls.CALLER_SOURCE_RELAY_LISTS,
         onEach: (Event) -> Unit,
     ) {
         // An explicit `limit` is the caller's budget for the whole scan, and
@@ -465,7 +518,7 @@ object RelayDiscovery {
         while (remaining > 0) {
             val budget = remaining.toLong() + boundaryIds.size
             var ask = minOf(pageSize.toLong(), budget).toInt()
-            var page: List<Event> = store.query(filter.copy(until = until, limit = ask))
+            var page: List<Event> = queryPage(store, caller, filter, until, ask)
             if (page.isEmpty()) return
 
             // Results are newest-first, so a page whose ends share a
@@ -478,7 +531,7 @@ object RelayDiscovery {
                 // negative `ask`, which the store reads as its matches-nothing
                 // sentinel, and the walk then restarts from the top forever.
                 ask = minOf(ask.toLong() * 2, budget).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                page = store.query(filter.copy(until = until, limit = ask))
+                page = queryPage(store, caller, filter, until, ask)
             }
 
             var oldest = Long.MAX_VALUE
