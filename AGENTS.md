@@ -4056,6 +4056,28 @@ Reach for it first.
   verification was NOT on this line for as long as it existed, so "is verify
   the limit?" was a question no instrument here could answer; anything else
   added to the ingest path belongs on it for the same reason.
+- **`store` on `/stats.json`, and the `store call SLOW` lines beside the health
+  line** — WHICH store calls this process has outstanding right now, WHO asked
+  for each, and WHAT it asked for. Reach for it the moment `oldestBatchSec`,
+  `wedged` or a full ingest queue is on screen: those say a worker has been
+  inside a batch pass for 794 seconds and cannot say which of the pass's three
+  store calls it is in — the id probe, the version probe and the write go to
+  three different engine paths with three different remedies. `caller` is this
+  router's own subsystem names (`ingest.dedup`, `ingest.versions`,
+  `ingest.write`, `visit.negentropy`, `heal.resolve`, `audit.retraction`,
+  `push.upstream`, `monitor.verdicts`, `monitor.publish`, `source.relayLists`),
+  each greppable straight back to the line that makes the call; `callers` rolls
+  the same names up into issued/answered/failed/cancelled/outstanding, which is
+  the only thing in this repository that can answer *whose requests are filling
+  the engine's queue*; `ages` bands the outstanding set so a busy router and a
+  wedged one are different shapes rather than one number. `outstandingAtIssue`
+  is the client half of *slow store or long queue* — the store's own request
+  dispatcher is 1,024 wide, far above anything this router runs, so a slow call
+  issued with a handful outstanding did not wait on our side of the wire.
+  See `StoreCalls`. **Two halves of it are NOT ours to publish and want a store
+  change**: an `X-Caller` header on the wire, and a server-side service-start
+  timestamp — `VespaHttp` builds its own OkHttp client with no header or
+  interceptor seam, so neither is reachable from this repository.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
@@ -4314,6 +4336,22 @@ statement about someone else's server.
   belongs there rather than in a guard here: any pre-validation short of
   re-implementing the parser misses it — `6100` ends in a byte whose
   continuation bit is CLEAR and still loops.
+
+- **A backticked test name with a NON-ASCII character in it can crash the
+  Kotlin compiler, in a phase that reports no source line.** A test named
+  `` `a dispatcher hop keeps the registry — ingest's own pool books its calls` ``
+  compiled fine until it gained a lambda inside it: the lambda's class FILE is
+  named after the method, and writing
+  `StoreCallsTest$a dispatcher hop keeps the registry — …$1.class` threw
+  `java.nio.file.InvalidPathException: Malformed input or input contains
+  unmappable characters` out of `JvmWriteOutputsPhase` — an `Internal compiler
+  error. See log for more details` with no file and no line, which reads as a
+  broken toolchain rather than as a name. Em dashes in test names are all over
+  this repo and all of them are fine; what makes one fatal is a nested class
+  being emitted for it, so the same name passes for a year and breaks the day
+  somebody adds a `runCatching` to it. Keep test names ASCII where the body
+  builds a lambda, an object, or a local class, and read an unexplained
+  internal compiler error as a filename before assuming anything worse.
 
 - **A JitPack version is a commit hash. Hashes have no order.** This is the
   root of the trap below, and it is worth stating on its own because the

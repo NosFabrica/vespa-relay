@@ -26,6 +26,8 @@ import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
@@ -519,12 +521,21 @@ class IngestPipeline(
                 emptySet()
             } else {
                 try {
-                    IngestStats.timed("dedup.pre") {
-                        once
-                            .map { it.event.id }
-                            .chunked(DEDUP_CHUNK)
-                            .mapBounded(QUERY_FANOUT) { probe!!(it) }
-                            .flatMapTo(HashSet()) { it }
+                    // Booked as ONE store call round the whole probe rather than
+                    // per chunk, and the boundary is the point: what an operator
+                    // needs from `oldestBatchSec` at 794 is the call this worker
+                    // is suspended in, and the worker is suspended here — inside
+                    // a fan-out the store owns — not in any one chunk. The row
+                    // says `2,048 ids` because that is what this pass is waiting
+                    // on. See [StoreCalls].
+                    storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(once.size)) {
+                        IngestStats.timed("dedup.pre") {
+                            once
+                                .map { it.event.id }
+                                .chunked(DEDUP_CHUNK)
+                                .mapBounded(QUERY_FANOUT) { probe!!(it) }
+                                .flatMapTo(HashSet()) { it }
+                        }
                     }
                 } catch (e: CancellationException) {
                     // NOT runCatching: it swallows this too, and shutdown
@@ -568,7 +579,13 @@ class IngestPipeline(
         origins: Map<String, IngestOrigin>,
     ) = insertBisecting(
         events = events,
-        write = { store.batchInsert(it) },
+        // THE WRITE, named apart from the two probes above it. All three are
+        // one `oldestBatchSec`, and they fail for unrelated reasons: a probe
+        // waits on the query path, this waits on the single writer mutex and
+        // the feed behind it. Booked per bisection attempt, so an isolation
+        // pass reports the batch it is actually writing rather than the one it
+        // started with.
+        write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { store.batchInsert(batch) } },
         onOutcomes = { written, outcomes ->
             // Positional alignment between the batch and its outcomes is the
             // store's contract, and this is the one place where being wrong
@@ -809,12 +826,20 @@ class IngestPipeline(
         addresses: Set<Pair<Int, String>>,
     ): Map<Pair<Int, String>, AddressVersion> =
         try {
-            IngestStats.timed("versions.pre") {
-                addresses
-                    .groupBy({ it.first }, { it.second })
-                    .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
-                    .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
-                    .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+            // One call round the whole fan-out, for [dropDuplicates]'s reason —
+            // the summary is the ask this pass is waiting on, not one chunk of it.
+            storeCall(
+                StoreCalls.CALLER_INGEST_VERSIONS,
+                StoreCalls.OP_NEWEST_VERSIONS,
+                "${addresses.map { it.first }.distinct().size} kind(s), ${addresses.size} address(es)",
+            ) {
+                IngestStats.timed("versions.pre") {
+                    addresses
+                        .groupBy({ it.first }, { it.second })
+                        .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
+                        .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
+                        .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+                }
             }
         } catch (e: CancellationException) {
             throw e

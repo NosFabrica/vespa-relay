@@ -174,7 +174,15 @@ class StatusVocabularyTest {
                        {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                         "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
                         "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "retracted": 2, "abortedVisits": 2, "liveEvicted": 1, "poolReceived": 4000},
-                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
+                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
+                     "store": {"outstanding": 3, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
+                               "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
+                                          "issuedAt": 1769998206, "elapsedSec": 794, "outstandingAtIssue": 2}],
+                               "omitted": 0,
+                               "callers": [{"caller": "ingest.dedup", "issued": 41022, "returned": 41020,
+                                            "failed": 0, "cancelled": 0, "outstanding": 2,
+                                            "oldestOutstandingSec": 794}],
+                               "ages": [{"fromSec": 0, "calls": 1}, {"fromSec": 900, "calls": 2}]}}
                     """.trimIndent(),
                 ).jsonObject
 
@@ -380,6 +388,27 @@ class StatusVocabularyTest {
                     "series",
                     "at",
                     "heapPct",
+                ) +
+                // WHICH STORE CALLS ARE OUT and whose — the half of a wedge
+                // `oldestBatchSec` never carried. See [StoreCalls].
+                setOf(
+                    "store",
+                    "calls",
+                    "caller",
+                    "op",
+                    "asked",
+                    "issuedAt",
+                    "elapsedSec",
+                    "outstandingAtIssue",
+                    "callers",
+                    "issued",
+                    "returned",
+                    "failed",
+                    "cancelled",
+                    "outstanding",
+                    "oldestOutstandingSec",
+                    "ages",
+                    "fromSec",
                 )
 
         assertEquals(emptySet(), StatusVocabulary.TERMS.keys - known, "a term for nothing")

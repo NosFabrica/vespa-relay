@@ -402,6 +402,94 @@ class SyncProgressTest {
     }
 
     @Test
+    fun `the store calls are named at the root, and absent when nothing books them`() {
+        // THE HALF OF A WEDGE THE INGEST ROW COULD NOT CARRY. `oldestBatchSec`
+        // says a worker has been inside a batch pass for 794 seconds; a batch
+        // makes three different store calls against three different engine
+        // paths, and until this section existed nothing said which.
+        val doc =
+            SyncProgress.document(
+                emptyList(),
+                store =
+                    StoreCalls.Snapshot(
+                        outstanding = 2,
+                        issued = 918_233,
+                        returned = 918_230,
+                        failed = 1,
+                        cancelled = 0,
+                        calls =
+                            listOf(
+                                StoreCalls.Call(
+                                    caller = StoreCalls.CALLER_INGEST_DEDUP,
+                                    op = StoreCalls.OP_EXISTING_IDS,
+                                    asked = "2048 id(s)",
+                                    issuedAt = 1_769_999_206,
+                                    elapsedSec = 794,
+                                    outstandingAtIssue = 1,
+                                ),
+                                StoreCalls.Call(
+                                    caller = StoreCalls.CALLER_VISIT_NEGENTROPY,
+                                    op = StoreCalls.OP_SNAPSHOT_IDS,
+                                    asked = null,
+                                    issuedAt = 1_770_000_000,
+                                    elapsedSec = 0,
+                                    outstandingAtIssue = 2,
+                                ),
+                            ),
+                        omitted = 0,
+                        callers =
+                            listOf(
+                                StoreCalls.Caller(StoreCalls.CALLER_INGEST_DEDUP, 41_022, 41_020, 1, 0, 1, 794),
+                                StoreCalls.Caller(StoreCalls.CALLER_VISIT_NEGENTROPY, 12, 11, 0, 0, 1, null),
+                            ),
+                        ages = listOf(StoreCalls.Age(0, 1), StoreCalls.Age(300, 1)),
+                    ),
+                nowSeconds = 1_770_000_000,
+            )
+
+        val store = doc["store"]!!.jsonObject
+        assertEquals(2, store["outstanding"]!!.jsonPrimitive.int)
+        val stuck = (store["calls"] as JsonArray).first().jsonObject
+        // The three facts the incident report asked for, on the row.
+        assertEquals(StoreCalls.CALLER_INGEST_DEDUP, stuck["caller"]!!.jsonPrimitive.content)
+        assertEquals(StoreCalls.OP_EXISTING_IDS, stuck["op"]!!.jsonPrimitive.content)
+        assertEquals("2048 id(s)", stuck["asked"]!!.jsonPrimitive.content)
+        assertEquals(794L, stuck["elapsedSec"]!!.jsonPrimitive.long)
+        // ZERO IS PUBLISHED. A call issued with nothing else out did not queue
+        // behind us, which is a reading; a member that appears only when it is
+        // non-zero cannot be told from a router too old to say.
+        assertEquals(1, stuck["outstandingAtIssue"]!!.jsonPrimitive.int)
+        // A call with no filter publishes no `asked` rather than an empty
+        // string, so the page can draw "no filter" and mean it.
+        assertNull((store["calls"] as JsonArray)[1].jsonObject["asked"])
+        assertEquals(0, store["omitted"]!!.jsonPrimitive.int, "a truncation must never be silent, even at zero")
+
+        // THE IDENTITY A READER CHECKS A CALLER ROW BY, which needs every
+        // member present including the zeroes.
+        val row = (store["callers"] as JsonArray).first().jsonObject
+        assertEquals(
+            row["issued"]!!.jsonPrimitive.long,
+            row["returned"]!!.jsonPrimitive.long + row["failed"]!!.jsonPrimitive.long +
+                row["cancelled"]!!.jsonPrimitive.long + row["outstanding"]!!.jsonPrimitive.long,
+        )
+        // …and a caller holding nothing has no age, where a zero would read as
+        // a call that had just started.
+        assertNull((store["callers"] as JsonArray)[1].jsonObject["oldestOutstandingSec"])
+
+        // THE BANDS CLOSE against the count above them — the check the section
+        // is read by, and the one failure a reader cannot see row by row.
+        assertEquals(
+            store["outstanding"]!!.jsonPrimitive.int,
+            (store["ages"] as JsonArray).sumOf { it.jsonObject["calls"]!!.jsonPrimitive.int },
+        )
+
+        // NO SECTION AT ALL where nothing books its calls. "This router does
+        // not say" and "nothing is outstanding" are opposite claims, and an
+        // empty section would make the first read as the second.
+        assertNull(SyncProgress.document(emptyList(), nowSeconds = 1_770_000_000)["store"])
+    }
+
+    @Test
     fun `a router that registered no processors publishes none, rather than an empty list`() {
         // An empty array is a claim that this router runs none of them; a router
         // with no signer genuinely has no fold and no NIP-66 monitor, and one

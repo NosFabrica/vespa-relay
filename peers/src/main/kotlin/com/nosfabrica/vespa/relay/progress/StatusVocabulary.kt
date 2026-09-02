@@ -753,6 +753,134 @@ object StatusVocabulary {
                     "(most often a schema the events no longer fit), not a mirror one.",
             )
             put(
+                "store",
+                "WHICH STORE CALLS THIS PROCESS HAS OUTSTANDING, and whose they are — the half of a wedge every " +
+                    "other number here was missing. `oldestBatchSec` says two ingest workers have been inside a " +
+                    "batch pass for 794 seconds and cannot say WHAT CALL they are in, and a batch makes three " +
+                    "different ones against three different engine paths with three different remedies. At the root " +
+                    "beside `health` because it is a fact about the PROCESS: one registry covers the mirror and the " +
+                    "monitor, since they are one process against one store. Absent — rather than empty — on a " +
+                    "router too old to book its calls, which is not the same claim as \"nothing is outstanding\".",
+            )
+            put(
+                "calls",
+                "The store calls that are out right now, LONGEST-RUNNING FIRST — the opposite of a stream's " +
+                    "`inFlight` order and the same as a probe pass's `inFlight`, for the same reason: holding a " +
+                    "relay for an hour is how this mirror works, while a store call that has not come back is by " +
+                    "construction the anomaly. Nothing in this router ends one — the store's query client sets no " +
+                    "read timeout on purpose, because it cannot tell \"engine still matching\" from \"connection " +
+                    "dead\" — so these rows are the router saying so rather than something it is about to fix.",
+            )
+            put(
+                "caller",
+                "WHO ASKED, in this router's own subsystem names: `ingest.dedup` / `ingest.versions` / " +
+                    "`ingest.write` (a batch pass's three calls, told apart at last), `visit.negentropy`, " +
+                    "`heal.resolve`, `audit.retraction`, `push.upstream`, `monitor.verdicts`, `monitor.publish`, " +
+                    "`source.relayLists`. Every one is greppable straight back to the code that makes the call, " +
+                    "which a category word like \"probe\" would not be. `other callers` is the overflow bucket — a " +
+                    "folded tally, never a subsystem.",
+            )
+            put(
+                "op",
+                "WHAT WAS ASKED, named for the store method verbatim: `existingIds`, `newestVersions`, " +
+                    "`batchInsert`, `query`, `count`, `snapshotIdsForNegentropy`, `insert`, `delete`, " +
+                    "`distinctTagValues`. Verbatim rather than bucketed, because telling `count` from " +
+                    "`snapshotIdsForNegentropy` is the whole difference between a cheap sizing query and a read of " +
+                    "gigabytes of ids — and because a bucket is a word nobody can grep their way back from.",
+            )
+            put(
+                "asked",
+                "A SUMMARY of the filter the call carries — kinds, how many authors, how many ids, the window's " +
+                    "width — never the filter itself. The two asks that matter most here are the two that cannot be " +
+                    "published whole: an `existingIds` probe carries two thousand ids and a negentropy window " +
+                    "carries the corpus. `asked` and not `filter` on purpose: the coverage card publishes `filter` " +
+                    "as the filter OBJECT, echoed verbatim, and one word over two shapes is how a reader looks up " +
+                    "the wrong one.",
+            )
+            put(
+                "issuedAt",
+                "When the call was issued, in epoch seconds — so a row here can be lined up against the " +
+                    "`store call SLOW` lines in the log, which is where a wedge that happened while nobody was " +
+                    "watching leaves its only timeline.",
+            )
+            put(
+                "elapsedSec",
+                "How long this store call has been running. THE NUMBER on the row: seconds is the ordinary shape, " +
+                    "minutes means a round trip that is not coming back and the events counted in ingest's " +
+                    "`queued` are waiting on a worker that will not return for them. There is no partial-progress " +
+                    "number beside it and there cannot be — a store call delivers nothing until it delivers " +
+                    "everything, so a leg's `quietForSec` has no counterpart here.",
+            )
+            put(
+                "outstandingAtIssue",
+                "How many store calls this process already had out when this one was issued — the client-side half " +
+                    "of \"is the store slow, or is my request waiting in line\". The other half is a service-start " +
+                    "timestamp only the store can stamp, and it is not published anywhere. What this one settles: " +
+                    "the store's own request dispatcher is 1,024 wide, far above anything this router runs, so a " +
+                    "slow call issued with a handful outstanding did NOT queue on our side of the wire — which puts " +
+                    "the wait at the engine. Same inference an operator was making by hand, now from a measurement.",
+            )
+            put(
+                "callers",
+                "One row per subsystem, whoever is holding the most first — the answer to \"whose requests are " +
+                    "filling the queue\", which no number in this document could give while every plane hit one " +
+                    "anonymous store. Each row closes: `issued = returned + failed + cancelled + outstanding`, and " +
+                    "every member is published including its zeroes so a reader can check that rather than trust it.",
+            )
+            put(
+                "outstanding",
+                "Store calls out right now — for the whole process at the top of the section, and for one " +
+                    "subsystem on a `callers` row. Read the pair: a large total with one caller holding all of it " +
+                    "names the subsystem to look at, and a large total spread evenly is a router asking the engine " +
+                    "for more than it can answer.",
+            )
+            put(
+                "oldestOutstandingSec",
+                "How long this caller's longest-running call has been out. Absent when the caller has nothing " +
+                    "outstanding, which is most of them most of the time — a zero would read as a call that just " +
+                    "started.",
+            )
+            put(
+                "issued",
+                "Store calls this router has made since it started — the whole process at the top of the section, " +
+                    "one subsystem on a `callers` row. A rate rather than a level: difference two page loads to " +
+                    "see how hard this router is leaning on the engine, and compare the callers' shares to see " +
+                    "which part of it is doing the leaning.",
+            )
+            put(
+                "returned",
+                "Store calls that came back WITH AN ANSWER since this router started. Against `issued` it is the " +
+                    "throughput of the whole store seam; the gap is `failed`, `cancelled` and whatever is still out.",
+            )
+            put(
+                "failed",
+                "Store calls that THREW. A different fault from a call that hangs, and it wants the opposite next " +
+                    "move: a store whose schema the events no longer fit fails here in milliseconds, where a store " +
+                    "that has stopped answering shows up as `elapsedSec` climbing with nothing failing at all. " +
+                    "Anything above zero on a healthy-looking router is worth chasing — most of ingest's own " +
+                    "failures are caught and retried at a lower level, so a count here is one that got past them.",
+            )
+            put(
+                "cancelled",
+                "Store calls the process STOPPED — shutdown, and a per-write deadline the monitor sets on its own " +
+                    "verdict edits. Counted apart from `failed` because a clean stop reported as a failure reads as " +
+                    "a store refusing work; it is the same reason the ingest probes rethrow cancellation rather " +
+                    "than swallowing it.",
+            )
+            put(
+                "ages",
+                "The outstanding calls BANDED BY AGE, in bands that partition them and sum back to `outstanding` " +
+                    "— which is what makes them a shape rather than six numbers. A thousand calls all under a " +
+                    "second is a busy router; eight hundred under a second with two past fifteen minutes is the " +
+                    "finding, and the total alone cannot tell those apart. Logarithmic on purpose: the question is " +
+                    "which ORDER OF MAGNITUDE a call is in, and even bands would put every healthy call in one row.",
+            )
+            put(
+                "fromSec",
+                "The floor of one age band — calls at least this old and younger than the next band's floor. The " +
+                    "last band is open-ended, which is where a wedged call lives.",
+            )
+            put(
                 "bottleneck",
                 "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
                     "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +

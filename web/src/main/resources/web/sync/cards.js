@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
-import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, streamSections } from "../shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
 
 /**
  * A LIVE cursor, which is the one place a day is not enough precision.
@@ -466,6 +466,195 @@ function streamSection(section) {
   return box;
 }
 
+/**
+ * WHICH STORE CALLS ARE OUT, AND WHOSE — the half of a wedge the pipeline row
+ * could never say.
+ *
+ * ## Why it is its own part of the card
+ *
+ * The pipeline row above it says `2 of 2 worker(s) in a batch, oldest 794s`.
+ * That is where every investigation of a stalled mirror got to and stopped: a
+ * batch pass makes three different store calls, against three different engine
+ * paths, with three different remedies, and the row reports all three as one
+ * number. This names the call.
+ *
+ * It is beside the pipeline rather than inside it because its subject is the
+ * STORE and not ingest: the negentropy pager, the healer, the retraction audit
+ * and the monitor's verdict reads are all on it, and a section folded under
+ * "the pipeline" would read as ingest's own traffic.
+ *
+ * ## Three tables' worth of question, in one part
+ *
+ *  1. **which calls** — longest-running first, which is the router's order and
+ *     the opposite of a stream's legs: holding a relay for an hour is how this
+ *     mirror works, while a store call that has not come back is the anomaly.
+ *  2. **whose** — one row per subsystem, whoever holds the most first. This is
+ *     the answer to "what is filling the engine's queue", which no number on
+ *     this page could give while every plane hit one anonymous store.
+ *  3. **the shape** — the outstanding set banded by age. A thousand calls all
+ *     under a second is a busy router; eight hundred under a second with two
+ *     past fifteen minutes is the finding, and the total cannot tell them apart.
+ *
+ * Drawn only where the document carries the section: a router too old to book
+ * its calls publishes none, and "this router does not say" is not the same
+ * claim as "nothing is outstanding".
+ */
+function storePanel(progress) {
+  const s = storeOf(progress && progress.store);
+  if (!s) return null;
+  const box = el("div", "sy-stream");
+  const top = el("div", "sy-top");
+  top.appendChild(el("span", "sy-name", "store calls"));
+  const meta = el("span", "sy-meta", `${fmt(s.outstanding)} outstanding`);
+  meta.title = term("outstanding");
+  top.appendChild(meta);
+  box.appendChild(top);
+
+  // THE LIFETIME LINE, and the reason `failed` is on it at all: a store the
+  // schema has drifted under fails calls in milliseconds, where one that has
+  // stopped answering shows up as an age with nothing failing. Those are
+  // opposite faults and the second is the one the tables below describe, so the
+  // first needs somewhere to be seen.
+  const line = el("div", "sy-sub");
+  const fact = (text, key, loud) => {
+    const part = el(loud ? "s" : "span", null, `${line.children.length ? " · " : ""}${text}`);
+    const why = term(key);
+    if (why) part.title = why;
+    line.appendChild(part);
+  };
+  fact(`${short(s.issued)} call(s) since boot`, "issued");
+  fact(`${short(s.returned)} answered`, "returned");
+  if (s.failed) fact(`${fmt(s.failed)} FAILED`, "failed", true);
+  if (s.cancelled) fact(`${fmt(s.cancelled)} cancelled at shutdown`, "cancelled");
+  box.appendChild(line);
+
+  if (!s.outstanding) {
+    // EMPTY IS AN ANSWER here, exactly as it is for a pool: a router between
+    // batches genuinely has nothing out, and a part that vanished when it
+    // emptied would look like a build without it.
+    box.appendChild(el("div", "sy-sub sy-quiet", "nothing outstanding right now — no call is waiting on the store"));
+    return box;
+  }
+
+  const part = el("div", "sy-part");
+  part.appendChild(el("p", "sy-sub-h", "what is out right now"));
+  part.appendChild(callsTable(s.rows));
+  if (s.more) {
+    part.appendChild(el("p", "sy-sub",
+      `${fmt(s.more)} more outstanding call(s) not named here — the whole list is in \`/stats.json\``));
+  }
+  if (s.callers.length) {
+    part.appendChild(el("p", "sy-sub-h", "whose calls they are"));
+    part.appendChild(callersTable(s.callers));
+  }
+  if (s.ages.length) {
+    part.appendChild(el("p", "sy-sub-h", "how old they are"));
+    part.appendChild(agesLine(s.ages));
+    // The router's own partition failing to close. Reported rather than
+    // silently smoothed, on `accountedFor`'s terms — a card that does not add
+    // up to the counts on it must say so instead of letting a reader subtract.
+    if (!s.accountedFor) {
+      const bad = el("div", "sy-tr-note warn", "these bands do not sum to `outstanding` — see `ages` in the JSON");
+      bad.title = term("ages");
+      part.appendChild(bad);
+    }
+  }
+  box.appendChild(part);
+  return box;
+}
+
+/**
+ * The outstanding calls themselves.
+ *
+ * `caller` and `op` lead because together they are the identification — which
+ * subsystem, and which store method — and `asked` is next because it is what
+ * makes the row actionable: "2048 id(s)" beside `ingest.dedup existingIds` is
+ * the whole sentence three investigations had to guess at.
+ *
+ * `waiting` is last and is the one column that is not about this call: it is
+ * how many calls this process already had out when this one went, which is the
+ * only part of "slow store or long queue" our side of the wire can measure.
+ */
+function callsTable(rows) {
+  const { scroll, table } = headedTable([
+    ["caller", "caller", false],
+    ["op", "op", false],
+    ["asked for", "asked", false],
+    ["running", "elapsedSec", true],
+    ["others out", "outstandingAtIssue", true],
+  ]);
+  for (const r of rows) {
+    // Past the threshold the log warns at, and off nothing else — the page and
+    // the log must not carry two definitions of the same word.
+    const tr = el("tr", r.hot ? "hot" : null);
+    tr.appendChild(el("td", null, r.caller));
+    tr.appendChild(el("td", null, r.op));
+    // A call that carries no filter says so rather than leaving the cell
+    // blank: several ops genuinely have none, and an empty cell reads as a
+    // report that declined to say.
+    tr.appendChild(el("td", null, r.asked || "no filter"));
+    tr.appendChild(el("td", "n", fmtDur(r.elapsedSec)));
+    tr.appendChild(el("td", "n", r.outstandingAtIssue != null ? fmt(r.outstandingAtIssue) : "—"));
+    table.appendChild(tr);
+  }
+  return scroll;
+}
+
+/**
+ * One row per subsystem — the answer to "whose requests are these".
+ *
+ * The row CLOSES: `issued = answered + failed + cancelled + out`, which is why
+ * every column is drawn including its zeroes. A reader checking a row against
+ * itself is the point; a table that hid its zeroes would make the identity
+ * unverifiable and the arithmetic look wrong.
+ */
+function callersTable(rows) {
+  const { scroll, table } = headedTable([
+    ["caller", "caller", false],
+    ["out", "outstanding", true],
+    ["oldest", "oldestOutstandingSec", true],
+    ["issued", "issued", true],
+    ["answered", "returned", true],
+    ["failed", "failed", true],
+    ["cancelled", "cancelled", true],
+  ]);
+  for (const r of rows) {
+    const tr = el("tr", r.hot ? "hot" : null);
+    tr.appendChild(el("td", null, r.caller));
+    tr.appendChild(el("td", "n", fmt(r.outstanding)));
+    // Nothing out is no age — and a `0s` there would read as a call that had
+    // just started, which is the opposite of a caller sitting idle.
+    tr.appendChild(el("td", "n", r.oldestOutstandingSec != null ? fmtDur(r.oldestOutstandingSec) : "—"));
+    tr.appendChild(el("td", "n", short(r.issued)));
+    tr.appendChild(el("td", "n", short(r.returned)));
+    tr.appendChild(el("td", `n${r.failed ? " hot" : ""}`, fmt(r.failed)));
+    tr.appendChild(el("td", "n", fmt(r.cancelled)));
+    table.appendChild(tr);
+  }
+  return scroll;
+}
+
+/**
+ * The outstanding set by age, as one line rather than a table.
+ *
+ * A line because the bands are a SHAPE and the shape is legible in one glance:
+ * six numbers in a column invite reading each one, where `< 1s 812 · 15m+ 2` is
+ * the finding itself. Empty bands are dropped here — the router publishes them
+ * all so the partition can be checked, and drawing five zeroes to reach the one
+ * band that matters is the noise this line exists to avoid.
+ */
+function agesLine(ages) {
+  const line = el("div", "sy-sub");
+  for (const a of ages) {
+    const label = a.fromSec === 0 ? "under 1s" : `${fmtDur(a.fromSec)}+`;
+    const span = el(a.hot ? "s" : "span", null,
+      `${line.children.length ? " · " : ""}${label} ${fmt(a.calls)}`);
+    span.title = term("fromSec");
+    line.appendChild(span);
+  }
+  return line;
+}
+
 /** One pool: its heading, how many relays are in it, and which. */
 function poolBlock(group) {
   const box = el("div", "sy-pool");
@@ -761,6 +950,16 @@ function syncCard(section) {
   if (background) {
     card.appendChild(el("p", "sy-h", "the pipeline"));
     card.appendChild(background);
+  }
+
+  // …AND WHAT THE STORE IS DOING WITH THEM. Under the pipeline because it is
+  // what the pipeline is waiting on, and its own part because its subject is
+  // the store rather than ingest — the pager, the healer, the audit and the
+  // monitor's verdict reads are all on it too.
+  const store = storePanel(progress);
+  if (store) {
+    card.appendChild(el("p", "sy-h", "the store"));
+    card.appendChild(store);
   }
 
   const coverage = coveragePanel(d);

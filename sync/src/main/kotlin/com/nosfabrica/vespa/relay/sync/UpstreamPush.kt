@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.SyncUpstream
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
@@ -67,7 +69,10 @@ internal class UpstreamPush(
                     // round changes the UPSTREAM's set (it gains what we
                     // push), never ours — re-reading gigabytes of ids per
                     // round bought nothing.
-                    val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
+                    val local: List<IdAndTime> =
+                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(up.filter)) {
+                            store.snapshotIdsForNegentropy(listOf(up.filter))
+                        }
                     do {
                         pushedThisRound = 0
                         client.negentropyReconcile(
@@ -80,7 +85,10 @@ internal class UpstreamPush(
                                 // large, and the store should not have to
                                 // materialize it as one query.
                                 for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
-                                    val events: List<Event> = store.query(Filter(ids = chunk))
+                                    val events: List<Event> =
+                                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {
+                                            store.query(Filter(ids = chunk))
+                                        }
                                     for (event in events) {
                                         client.publish(event, setOf(up.url))
                                         pushed.incrementAndGet()
