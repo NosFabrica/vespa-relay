@@ -474,7 +474,12 @@ object RelayDiscovery {
             // `created_at` is entirely one timestamp and the cursor has
             // nowhere to go. Grow the page until it spans two.
             while (page.size == ask && ask < budget && page.first().createdAt == page.last().createdAt) {
-                ask = minOf(ask.toLong() * 2, budget).toInt()
+                // `budget` is a Long and an unbounded scan makes it
+                // Int.MAX_VALUE + boundaryIds.size, so the doubling must be
+                // clamped to Int range BEFORE narrowing: the wrap lands on a
+                // negative `ask`, which the store reads as its matches-nothing
+                // sentinel, and the walk then restarts from the top forever.
+                ask = minOf(ask.toLong() * 2, budget).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 page = store.query(filter.copy(until = until, limit = ask))
             }
 
@@ -536,13 +541,23 @@ object RelayDiscovery {
         if (cap == null) return false
         var seen = 0
         for (tag in event.tags) {
-            for (select in selects) {
-                if (select.kind != null && select.kind != event.kind) continue
-                if (tag.size <= select.urlIndex) continue
-                if (select.tag != null && tag[0] != select.tag) continue
+            // Counted once however many selects claim it — and only if one of
+            // them would actually EXTRACT it. `where` is part of that test,
+            // which it was not: a NIP-65 select carrying `marker = "write"`
+            // counted the read-only `r` tags it then discards, so a 10002
+            // listing 200 read relays and three write ones tripped a cap of 50
+            // and lost all three. The cap exists to refuse a pool somebody is
+            // handing us to dial; a tag we never dial is not part of one.
+            val extracted =
+                selects.any { select ->
+                    (select.kind == null || select.kind == event.kind) &&
+                        tag.size > select.urlIndex &&
+                        (select.tag == null || tag[0] == select.tag) &&
+                        (select.where.isEmpty() || select.where.any { it.matches(tag) })
+                }
+            if (extracted) {
                 seen++
                 if (seen > cap) return true
-                break
             }
         }
         return false
