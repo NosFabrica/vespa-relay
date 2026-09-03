@@ -246,6 +246,18 @@ internal class VisitPool(
         val subId: String,
         val wantsAtOpen: Set<String>,
         /**
+         * The filter width this subscription was opened at, or null for the
+         * ordinary relay that has never told us one — see [FilterWidths].
+         *
+         * Part of the tail's identity beside [wantsAtOpen], and it has to be:
+         * a cap is learned from a REFUSAL, which is the roster changing nothing
+         * at all, so without it a tail opened at full width and then taught a
+         * cap kept the very filter that relay refuses — on a subscription the
+         * relay had already closed — while the pair went on reporting `tailed`
+         * and was excluded from the staleness fault for it.
+         */
+        val capAtOpen: Int? = null,
+        /**
          * Since the subscription was opened — the live pool's own `held`
          * clock, and NOT the visit's: the worker that opened this tail moved
          * on seconds later, and dating the row from the visit would report
@@ -1048,6 +1060,12 @@ internal class VisitPool(
                     snapshot.speaksNegentropy[url],
                 )
             }
+            // EVERY ASK CAME BACK CLEAN, so whatever wall this unit last met is
+            // gone and the row must stop reporting it — see [VisitAborts.cleared].
+            // Here rather than after the tail: the heal drain and the tail open
+            // are not asks of the roster, and a tail budget turning one away is
+            // not a relay refusing us.
+            aborts.cleared(key.stream, url)
             ongoingVisit.stage = FINISHING
             // Per url rather than per stream, and safe from several at once:
             // the healer's queue REMOVES what it hands out, so two streams
@@ -1456,9 +1474,16 @@ internal class VisitPool(
         // `urlAsks` is non-empty; said as a return rather than carrying a
         // live-looking recompute path.
         val wantsNow = snapshot.asks[url]?.get(key.stream)?.identity ?: return
+        // …AND THE WIDTH IT WOULD BE OPENED AT. A tail is re-opened when the
+        // roster changes its mind about a relay, and a learned kind cap is the
+        // roster changing nothing — so a tail opened at full width before the
+        // relay taught us a cap kept the very filter that relay refuses, on a
+        // subscription it had already closed, and the pair went on reporting
+        // `tailed` (which excludes it from the staleness fault) forever.
+        val capNow = widths.capFor(url)
         val sitting = tails[key]
         if (sitting != null) {
-            if (sitting.wantsAtOpen == wantsNow) return
+            if (sitting.wantsAtOpen == wantsNow && sitting.capAtOpen == capNow) return
             // The live subscription upstream still carries the want list from
             // when it was opened; the roster has since changed its mind about
             // this relay. Re-opened below on the current asks — a tail that
@@ -1495,7 +1520,7 @@ internal class VisitPool(
         // and the `putIfAbsent` below — which on a busy relay is the whole
         // first burst, and the row would open reading `0 events` on a socket
         // that had already delivered thousands.
-        val tail = Tail(subId, wantsNow, hold = hold)
+        val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
 
         // EVERY WAY OUT BEFORE THE PUBLISH, in one place. A tail that never
         // reached `tails` is unwound by whoever built it — three paths reach

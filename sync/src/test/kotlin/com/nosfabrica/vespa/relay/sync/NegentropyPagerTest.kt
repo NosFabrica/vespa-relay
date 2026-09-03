@@ -24,7 +24,6 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -179,16 +178,26 @@ class NegentropyPagerTest {
          */
         var refusesPages = false
 
+        /**
+         * …and whether the page DELIVERED SOMETHING while still being refused.
+         *
+         * The case that reintroduced the bug the signature change was for:
+         * `page` may walk several kind-chunks, so a chunk that served events
+         * and a later one that was turned away is one call returning both. A
+         * refusal inferred from `downloaded == 0` cannot see it.
+         */
+        var refusedPagesStillDeliver = 0
+
         override suspend fun page(
             url: NormalizedRelayUrl,
             window: Filter,
             onEvent: suspend (Event) -> Unit,
-        ): PagedFetchResult {
+        ): PagedWindow {
             val range = window.since!!..window.until!!
             pagedRanges += range
             kindsAsked += window.kinds
-            if (refusesPages) return PagedFetchResult(0, PagedFetchResult.End.CLOSED)
-            return PagedFetchResult(density.count(range), PagedFetchResult.End.DRAINED)
+            if (refusesPages) return PagedWindow(refusedPagesStillDeliver, refused = true)
+            return PagedWindow(density.count(range), refused = false)
         }
     }
 
@@ -631,6 +640,29 @@ class NegentropyPagerTest {
                 held == null || held.downTo > peer.pagedRanges.first().first,
                 "the cursor claimed ${held?.downTo} but the window at ${peer.pagedRanges.first()} was refused",
             )
+        }
+
+    @Test
+    fun `a fallback page that delivered SOME events and was still refused is not claimed`() =
+        runBlocking {
+            // THE REGRESSION THE FIRST FIX SHIPPED WITH. `page` walks the
+            // window in kind-chunks against a width-capped relay, so one call
+            // can both deliver and be turned away — and the first version
+            // returned quartz's `PagedFetchResult`, whose `refusedOutright` is
+            // `downloaded == 0 && …`. A chunk that served events therefore
+            // masked the chunk that was refused, the window completed, and the
+            // over-claim came back through the fix for it.
+            val state = SweepState(null)
+            val peer =
+                FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply {
+                    refusesPages = true
+                    refusedPagesStillDeliver = 25
+                }
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(out.downloaded >= 25, "what the served chunk delivered is kept")
+            assertEquals(1, out.refusedWindows, "…and the refusal is still seen")
+            assertFalse(out.complete, "so the leg cannot claim its history was verified")
         }
 
     @Test

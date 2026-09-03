@@ -30,7 +30,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySync
@@ -85,20 +84,40 @@ internal interface WindowSync {
     /**
      * The terminal fallback: walk this window over a plain REQ.
      *
-     * **Returns quartz's whole answer, not the count.** It returned an `Int`,
-     * and a refusal — a relay that caps filter width, an auth wall, a policy
-     * `CLOSED` — delivers zero events exactly as an empty window does. The
-     * sweep could not tell them apart and marked the window complete either
-     * way, so the cursor claimed ground nothing had read: the same over-claim
-     * `refusedOutright` was written to stop on the catch-up side, one path
-     * over, and durable where an abort is not. See [NegentropyPager.sweep].
+     * **Says whether it was REFUSED, and does not leave that to be inferred
+     * from the count.** It returned an `Int`, and a refusal — a relay that caps
+     * filter width, an auth wall, a policy `CLOSED` — delivers zero events
+     * exactly as an empty window does. The sweep could not tell them apart and
+     * marked the window complete either way, so the cursor claimed ground
+     * nothing had read: the same over-claim `refusedOutright` was written to
+     * stop on the catch-up side, one path over, and durable where an abort is
+     * not.
+     *
+     * Returning quartz's `PagedFetchResult` instead was the first attempt and
+     * was wrong for a reason worth keeping: `refusedOutright` is
+     * `downloaded == 0 && …`, and this call may walk SEVERAL chunks — so one
+     * chunk that delivered masked a later one that was turned away, and the
+     * over-claim came back through the fix for it. A caller must not have to
+     * re-derive this, so it is a member.
      */
     suspend fun page(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): PagedFetchResult
+    ): PagedWindow
 }
+
+/**
+ * What one fallback walk did: what it delivered, and whether the relay turned
+ * any part of it away.
+ *
+ * TWO FACTS, not one, and the second is never inferred from the first — see
+ * [WindowSync.page].
+ */
+internal class PagedWindow(
+    val downloaded: Int,
+    val refused: Boolean,
+)
 
 /** [NegentropyLocalIndex] over this relay's store: counts and id reads by range. */
 internal class StoreWindowIndex(
@@ -250,20 +269,19 @@ internal class ClientWindowSync(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): PagedFetchResult {
+    ): PagedWindow {
         var downloaded = 0
-        var end = PagedFetchResult.End.DRAINED
         for (chunk in widths.chunk(url, window)) {
             val walked = client.fetchAllPages(url, listOf(chunk), idleTimeoutMs, onEvent = onEvent)
             downloaded += walked.downloaded
-            end = walked.end
-            // THE FIRST REFUSAL ENDS IT, and it is the ending that travels: the
-            // caller's one question is whether this window was read, and a
-            // later chunk answering DRAINED would paper over the one that was
-            // turned away. Everything already delivered is kept and reported.
-            if (VisitPool.refusedOutright(walked)) break
+            // THE FIRST REFUSAL ENDS IT, and it travels as its own fact.
+            // Everything already delivered is kept and reported — which is
+            // exactly why the refusal cannot ride on the count: a chunk that
+            // delivered would otherwise hide the one that was turned away, and
+            // the window would be claimed for kinds nothing was served for.
+            if (VisitPool.refusedOutright(walked)) return PagedWindow(downloaded, refused = true)
         }
-        return PagedFetchResult(downloaded, end)
+        return PagedWindow(downloaded, refused = false)
     }
 }
 
@@ -446,6 +464,9 @@ internal class NegentropyPager(
             // only advance over ground that was actually read, and a REQ this
             // relay refused read nothing — see [WindowSync.page].
             var refusedHere = false
+            // When this window's asks began — the floor for reading whatever
+            // the relay says about it. See [sayRefused].
+            val askedAtMs = System.currentTimeMillis()
             try {
                 // Offset by what the sweep already has: quartz counts from zero
                 // per NEG-OPEN, so passing its numbers straight through would
@@ -488,7 +509,7 @@ internal class NegentropyPager(
                     }
                 if (refusedHere) {
                     refusedWindows++
-                    sayRefused(url, sweepWindow, "a dense slice was refused")
+                    sayRefused(url, sweepWindow, "a dense slice was refused", askedAtMs)
                 } else {
                     complete(cursor, sweepWindow)
                 }
@@ -520,7 +541,7 @@ internal class NegentropyPager(
                         // below is guarded against.
                         if (drained.refused) {
                             refusedWindows++
-                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused")
+                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused", askedAtMs)
                         } else if (badTo >= sweepWindow.last) {
                             state.advance(cursor, badFrom, sweepWindow.last)
                         }
@@ -561,9 +582,9 @@ internal class NegentropyPager(
                         // cursor claimed ground nothing had ever looked at.
                         // Durably: the band recorded on top of it then told
                         // every later audit there was nothing to find.
-                        if (VisitPool.refusedOutright(walked)) {
+                        if (walked.refused) {
                             refusedWindows++
-                            sayRefused(url, sweepWindow, "the fallback page was refused too")
+                            sayRefused(url, sweepWindow, "the fallback page was refused too", askedAtMs)
                         } else {
                             complete(cursor, sweepWindow)
                         }
@@ -736,7 +757,7 @@ internal class NegentropyPager(
                     stillOver++
                     val walked = peer.page(url, perKind, onEvent)
                     downloaded += walked.downloaded
-                    if (VisitPool.refusedOutright(walked)) refused = true
+                    if (walked.refused) refused = true
                     continue
                 }
                 try {
@@ -759,7 +780,7 @@ internal class NegentropyPager(
                                 pagedSlices++
                                 val walked = peer.page(url, slice, onEvent)
                                 downloaded += walked.downloaded
-                                if (VisitPool.refusedOutright(walked)) refused = true
+                                if (walked.refused) refused = true
                             }, onEvent)
                             .downloaded
                     if (pagedSlices > 0) stillOver++
@@ -767,7 +788,7 @@ internal class NegentropyPager(
                     stillOver++
                     val walked = peer.page(url, perKind, onEvent)
                     downloaded += walked.downloaded
-                    if (VisitPool.refusedOutright(walked)) refused = true
+                    if (walked.refused) refused = true
                 }
             }
             System.err.println(
@@ -781,7 +802,7 @@ internal class NegentropyPager(
             )
             val walked = peer.page(url, dense, onEvent)
             downloaded += walked.downloaded
-            if (VisitPool.refusedOutright(walked)) refused = true
+            if (walked.refused) refused = true
         }
         return Paged(downloaded, refused)
     }
@@ -793,14 +814,22 @@ internal class NegentropyPager(
      * exists — the same argument [VisitAborts] makes for the visit side, which
      * is where the complaint that produced both of them started.
      */
-    private fun sayRefused(
+    private suspend fun sayRefused(
         url: NormalizedRelayUrl,
         sweepWindow: LongRange,
         why: String,
+        /**
+         * When this window's own asks went out. It was `0`, which reads ANY
+         * sentence the relay has ever said and prints an hours-old, unrelated
+         * refusal as this window's cause — defeating the freshness floor
+         * [RelayComplaints.since] exists for. And AWAITED, because the refusal
+         * reaches this caller before the sentence reaches the recorder.
+         */
+        askedAtMs: Long,
     ) {
         System.err.println(
             "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] NOT claimed — $why" +
-                (complaints.since(url, 0)?.let { "; the relay said: $it" } ?: "") +
+                (complaints.awaitSince(url, askedAtMs)?.let { "; the relay said: $it" } ?: "") +
                 " — the cursor holds and the next audit re-reads it",
         )
     }

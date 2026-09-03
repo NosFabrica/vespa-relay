@@ -128,6 +128,30 @@ class VisitAbortsTest {
     }
 
     @Test
+    fun `a clean visit forgets the wall the last one met`() {
+        // The row is about where a pair stands NOW. Without this it never
+        // stopped being about where it once stood: a pair that met a transient
+        // refusal at boot and has written no band since — a relay that is
+        // simply empty for this filter is the ordinary case — read `refused`
+        // with a stale sentence at the top of a worst-first table for the life
+        // of the process.
+        val a = VisitAborts()
+        a.record("content", url, VisitAborts.Reason.UNREACHABLE, "139 kinds", null)
+        assertNotNull(a.last("content", url))
+
+        a.cleared("content", url)
+        assertNull(a.last("content", url), "the visit came back clean, so there is no wall to report")
+        // THE COUNTERS ARE THE LIFETIME RECORD and are untouched: the abort
+        // happened, and a row going quiet must not un-count it.
+        assertEquals(1L, a.counts().first { it.name == "abortedVisits" }.value)
+        assertEquals(1L, a.counts().first { it.name == "abortedUnreachable" }.value)
+        // …and one stream clearing does not speak for another's.
+        a.record("indexers", url, VisitAborts.Reason.CLOSED, "kinds 30166", null)
+        a.cleared("content", url)
+        assertNotNull(a.last("indexers", url), "the unit is the pair; clearing one is not clearing the relay")
+    }
+
+    @Test
     fun `each walk ending quartz can refuse with maps to a reason of its own`() {
         // Distinct, because a lump is what `abortedVisits` already was: an auth
         // wall wants a key the relay accepts, a CLOSED wants its own sentence

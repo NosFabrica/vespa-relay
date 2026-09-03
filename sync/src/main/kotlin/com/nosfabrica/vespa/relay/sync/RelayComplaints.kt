@@ -193,6 +193,17 @@ internal class ClientRelayComplaints(
     ) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        // BOUNDED, because this listens on the client BOTH PLANES share. The
+        // pool's roster is hundreds of relays; the monitor's probe passes dial
+        // every url discovery has ever named — 20,340 on one measured cycle —
+        // and a refusal from any of them lands here. One entry per url that
+        // ever complained is a slow leak on a process that runs for weeks.
+        //
+        // Past the bound a relay ALREADY here keeps its entry fresh and a new
+        // one is dropped: the relays that complain repeatedly are the ones
+        // anything reads this for, and evicting them to make room for the tail
+        // of a discovery sweep would trade the answer for the noise.
+        if (said.size >= MAX_RELAYS && !said.containsKey(url)) return
         said[url] = Said(trimmed.take(MAX_SAID), now())
     }
 
@@ -214,5 +225,14 @@ internal class ClientRelayComplaints(
          * of prose cannot put it in the log line or in memory.
          */
         const val MAX_SAID = 200
+
+        /**
+         * …and how many relays are remembered at all — see [remember].
+         *
+         * Comfortably above any roster this router rides (678 on the
+         * deployment #185 was filed from) and far below the url count a
+         * discovery sweep touches, which is the population this bounds.
+         */
+        const val MAX_RELAYS = 4_096
     }
 }

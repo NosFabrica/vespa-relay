@@ -454,15 +454,26 @@ object RelayStatusReport {
     ): List<Folded> {
         val out = List(units.size) { Folded() }
         if (doc == null) return out
-        val at = HashMap<String, Int>(units.size * 2)
-        units.forEachIndexed { i, u -> at[key(u.stream, u.relay)] = i }
+        // NESTED, and keyed the way the file is walked: stream, then relay.
+        //
+        // It was one flat map under a `"$stream $relay"` key, which is a string
+        // concatenation PER BAND — ~10,000 of them per status tick on the
+        // deployment this was written for, to answer a question two map reads
+        // answer with none. The stream level also buys the early-out below,
+        // which is the larger half: a bands file holds streams a running config
+        // no longer names (an operator renamed one; the migration shim's own
+        // note describes the same shape), and walking their every filter and
+        // relay to discard each row is the whole cost of the fold for nothing.
+        val at = HashMap<String, HashMap<String, Int>>()
+        units.forEachIndexed { i, u -> at.getOrPut(u.stream) { HashMap() }[u.relay] = i }
         for ((stream, byFilter) in doc) {
+            val inStream = at[stream] ?: continue
             val filters = byFilter as? JsonObject ?: continue
             for ((filter, byRelay) in filters) {
                 val relays = byRelay as? JsonObject ?: continue
                 for ((relay, entry) in relays) {
                     val band = entry as? JsonObject ?: continue
-                    val i = at[key(stream, relay)] ?: continue
+                    val i = inStream[relay] ?: continue
                     // The ask gate. A band for a filter this unit no longer
                     // asks — a provider pairing a scan has since dropped — is
                     // another unit's history, and counting it here would move
@@ -498,11 +509,6 @@ object RelayStatusReport {
         }
         return out
     }
-
-    private fun key(
-        stream: String,
-        relay: String,
-    ) = "$stream $relay"
 
     /** A unit the pool has visited and could write no band for — see the class header. */
     const val REFUSED = "refused"

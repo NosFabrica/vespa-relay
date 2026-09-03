@@ -179,6 +179,24 @@ internal class VisitAborts(
         url: NormalizedRelayUrl,
     ): Last? = lastByUnit[unitKey(stream, url)]
 
+    /**
+     * …and FORGOTTEN, when this unit's visit comes back clean.
+     *
+     * The row is about where a pair stands NOW, and without this it never
+     * stopped being about where it once stood: a pair that met a transient
+     * `CANNOT_CONNECT` at boot and has written no band since — a relay that is
+     * simply empty for this filter is the ordinary case — read `refused`,
+     * `fault: true` and carried a stale sentence at the top of a worst-first
+     * table for the life of the process. The COUNTERS are the lifetime record
+     * and are untouched; this is the live one.
+     */
+    fun cleared(
+        stream: String,
+        url: NormalizedRelayUrl,
+    ) {
+        lastByUnit.remove(unitKey(stream, url))
+    }
+
     /** The last time each (stream, relay, reason) was spoken — see [MAX_SPOKEN]. */
     private val spokenAt = ConcurrentHashMap<String, Long>()
 

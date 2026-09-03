@@ -228,6 +228,18 @@ class VisitPoolWidthTest {
                 // to narrow to is a fact worth having on the card — and it is
                 // counted under the ending quartz reported rather than lumped
                 // into a total.
+                // THE TAIL IS AT THE WIDTH THE RELAY TAKES, and it has to be
+                // re-opened to get there: the cap is learned from a REFUSAL,
+                // which is the roster changing nothing, so a tail whose
+                // identity was the want set alone would keep the very filter
+                // this relay refuses — on a subscription it had already closed
+                // — while the pair went on reporting `tailed`.
+                assertEquals(
+                    1,
+                    relay.tails.size,
+                    "one live subscription, re-opened at the learned width rather than left at the refused one",
+                )
+
                 // AND THE VISIT DID NOT ABORT. `abortedVisits` counts visits
                 // that ENDED early, so a refusal the pool took down itself must
                 // not appear there: on this deployment that number is the
