@@ -145,7 +145,7 @@ class StatusVocabularyTest {
                      "relays": {"pairs": 44, "omitted": 2,
                                 "statuses": [{"syncStatus": "refused", "pairs": 4}, {"syncStatus": "complete", "pairs": 30}],
                                 "rows": [{"relay": "wss://nos.lol/", "stream": "content", "syncStatus": "paging",
-                                          "asks": 40, "bands": 3, "coveredFrom": 1689857148, "coveredTo": 1769998206,
+                                          "asks": 40, "bands": 3, "settled": 1, "coveredFrom": 1689857148, "coveredTo": 1769998206,
                                           "verifiedAgoSec": 41200, "visiting": true, "tailed": true,
                                           "refusedFor": "the relay closed the subscription",
                                           "relaySaid": "error: too many kinds in filter", "refusedAgoSec": 900}]},

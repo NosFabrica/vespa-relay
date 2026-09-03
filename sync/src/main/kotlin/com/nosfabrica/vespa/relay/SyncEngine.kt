@@ -882,7 +882,7 @@ class SyncEngine(
      * inside it. A method rather than a stored list because the roster is
      * rebuilt on its own clock — see the supplier note on [SyncStatus].
      */
-    fun primeUnits(): List<RelayStatusReport.Unit> = visitPool.primeUnits()
+    fun primeUnits(): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnits()
 
     /**
      * The monitor plane's status document — see [MonitorEngine.status].

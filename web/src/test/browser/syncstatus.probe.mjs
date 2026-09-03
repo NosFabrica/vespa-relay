@@ -61,7 +61,7 @@ const DOC = {
             relaySaid: "auth-required: you are not authorized to perform reqs", refusedAgoSec: 900 },
           { relay: "wss://fresh.example/", stream: "contentViaOutbox", syncStatus: "notStarted" },
           { relay: "wss://deep.example/", stream: "contentViaOutbox", syncStatus: "paging",
-            coveredFrom: now - 200 * 86400, coveredTo: now - 60, asks: 40, bands: 3, visiting: true },
+            coveredFrom: now - 200 * 86400, coveredTo: now - 60, asks: 40, bands: 12, settled: 3, visiting: true },
           { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete",
             coveredFrom: now - 900 * 86400, coveredTo: now - 5, verifiedAgoSec: 41200, tailed: true },
         ],
@@ -142,6 +142,11 @@ check(byRelay["walled.example/"]?.hot === true, "the refused row is coloured");
 check(byRelay["fresh.example/"]?.hot === true, "the never-started row is coloured");
 check(byRelay["deep.example/"]?.hot === false, "the paging row is NOT coloured — a mirror working is not a fault");
 check(byRelay["done.example/"]?.hot === false, "and neither is a finished one");
+
+// HOW MUCH OF WHAT IT OWES IS DONE — the number that makes `paging`
+// actionable, since a unit owes one ask per bound provider and the status
+// alone covers 39-of-40 and 1-of-40 the same way.
+check(/3\/40/.test(text), "a paging row shows the settled fraction");
 
 // AN ABSENT EDGE RENDERS AS A DASH, never as 1970 — the one failure a reader
 // would act on and be wrong about.

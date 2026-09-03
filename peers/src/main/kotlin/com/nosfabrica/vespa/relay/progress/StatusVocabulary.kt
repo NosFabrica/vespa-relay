@@ -82,7 +82,10 @@ object StatusVocabulary {
                 "settled",
                 "Nothing outstanding below the span this stream has walked on this relay — published as `complete` on a " +
                     "row and counted as `reconciled`. Earned two ways: a finished negentropy reconcile, or a paged walk " +
-                    "that drained (the relay EOSE'd an empty page, so there is nothing older). It says nothing about HOW.",
+                    "that drained (the relay EOSE'd an empty page, so there is nothing older). It says nothing about HOW. " +
+                    "On the prime-relays table it is a COUNT: how many of the `asks` this pair owes are settled, which is " +
+                    "the only thing `syncStatus: complete` may be claimed from. Read as a fraction of `asks` — a unit owes " +
+                    "one ask per bound provider, so `paging` covers 39 of 40 and 1 of 40 alike and only this tells them apart.",
             )
             put(
                 "open",

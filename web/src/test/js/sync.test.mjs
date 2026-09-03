@@ -1350,7 +1350,7 @@ const leg = (n, quiet, over = {}) => ({
         relaySaid: "auth-required: you are not authorized to perform reqs", refusedAgoSec: 900 },
       { relay: "wss://fresh.example/", stream: "content", syncStatus: "notStarted" },
       { relay: "wss://deep.example/", stream: "content", syncStatus: "paging",
-        coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true },
+        coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true, asks: 40, settled: 3 },
       { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete",
         coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true },
     ],
@@ -1397,6 +1397,14 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(t.rows[2].tailed, false);
   assert.equal(t.rows[3].tailed, true);
   ok("visiting and tailed ride beside the status rather than being values of it");
+
+  // HOW MUCH OF WHAT IT OWES IS DONE. `paging` covers 39-of-40 and 1-of-40
+  // alike, and a unit owes one ask per bound provider, so without this the
+  // status is true and unactionable.
+  assert.equal(t.rows[2].progress, "3/40");
+  assert.equal(t.rows[0].progress, null, "a unit with no asks reported says nothing rather than 0/0");
+  assert.equal(t.rows[3].progress, null, "and `complete` is by definition all of them");
+  ok("a paging row says how much of what it owes is settled");
 
   assert.equal(t.rows[0].short, "walled.example/", "the scheme is dropped and nothing else is");
   assert.equal(t.rows[3].label, "complete");

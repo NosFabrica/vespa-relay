@@ -807,7 +807,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           started, with the depth reached and the relay's own
                           sentence where it refused. Its subject is the ROSTER,
                           which is why it can report the two states the
-                          coverage fold structurally cannot
+                          coverage fold structurally cannot. The join is on the
+                          unit's OWED ASKS — see the trap below
     GaugeSeries.kt        the last hour of the four process gauges — the one
                           thing a single tick cannot state, and all that is
                           left of SyncProgressReport
@@ -4388,7 +4389,12 @@ Reach for it first.
   told apart before**: both are the same absence in the band file, they are
   opposite findings, and the coverage card can draw neither because its
   denominator is *relays this stream has touched*. Worst first, the status
-  counts published whole even when the row list is cut. See `RelayStatusReport`.
+  counts published whole even when the row list is cut, and `settled/asks` on a
+  `paging` row because a unit owes one ask per bound provider and the status
+  alone covers 39-of-40 and 1-of-40 the same way. **The page is not where ONE
+  relay is looked up** — that is `jq` over `/stats.json`, which carries the same
+  rows; the table's job is what is wrong on this mirror. See
+  `RelayStatusReport`.
 - **`RelayReachLiveProbe`** — the same question asked of a LIST of relays
   ahead of the deployment: dial each, send the real ask, print the ending, the
   relay's own sentence, whether our AUTH was accepted, and the width it will
@@ -4628,6 +4634,32 @@ failure stays quiet, because silence costs a retry and being wrong costs a false
 statement about someone else's server.
 
 ## Traps that have cost real time
+
+- **A "how complete is this" number needs the denominator the WORK uses, not the
+  one the state file happens to hold.** `RelayStatusReport`'s first version
+  counted the bands a (relay, stream) pair held and called the pair complete
+  when all of those were settled. A unit owes one ask PER BOUND AUTHOR, so a
+  `contentViaOutbox` unit on a many-provider relay owes dozens — and the moment
+  the first of them drained, the row read `complete`. Silently, on exactly the
+  relays the mirror cares most about, from a table whose entire job is to say
+  whether a relay is synced. The denominator has to be what the unit OWES, and
+  it was free the whole time: `RosterBuilder.UnitAsks.identity` is already each
+  ask's filter as JSON, computed for the roster's own change detection, and that
+  is the very string `SyncBands.snapshot` keys a band under — so `askKeys` joins
+  exactly, a band for an ask the roster has since dropped is ignored rather than
+  counted, and only `settled == askKeys.size` earns `complete`.
+
+  Two things follow, both worth copying. **Join on the string both sides already
+  produce, not on a canonical form you invent**: the first version canonicalised
+  the relay url on both sides, which was ~10,000 re-parses per status tick to
+  produce the strings it started with, and a canonical form that ever stopped
+  matching the file's key would have reported the whole roster as `hasn't
+  started` with nothing saying why. **And pin that seam against the real
+  classes**: `RelayStatusReportTest` drives a real `SyncBands` and a real quartz
+  `Filter` so the two keys are produced by the two things that produce them in
+  production. Fixture strings are a report's contract with itself and cannot
+  catch a divergence; that test is mutation-checked (strip the url's trailing
+  slash on one side and four tests fail).
 
 - **`SCAN_PAGE` MUST STAY UNDER THE DEPLOYED `maxHits`, and multi-node is where
   that bites.** Every relay-list read is `RelayDiscovery.scan`, which pages

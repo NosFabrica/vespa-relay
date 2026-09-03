@@ -93,7 +93,7 @@ class SyncStatus(
      * visit streams has no prime relays, and an empty table would read as one
      * that has lost them.
      */
-    private val primeUnits: () -> List<RelayStatusReport.Unit> = { emptyList() },
+    private val primeUnits: () -> List<RelayStatusReport.PrimeUnit> = { emptyList() },
 ) {
     /**
      * Build the document and hand it to [snapshot].

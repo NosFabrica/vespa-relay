@@ -32,7 +32,6 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.heal.Healer
-import com.nosfabrica.vespa.relay.util.canonicalRelay
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
@@ -468,18 +467,26 @@ internal class VisitPool(
      * instant, and one this pool would rather publish than lock a rebuild
      * behind a status poll.
      */
-    internal fun primeUnits(): List<RelayStatusReport.Unit> {
+    internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
         val snapshot = currentRoster
-        val out = ArrayList<RelayStatusReport.Unit>(snapshot.asks.size)
+        val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
                 val key = VisitKey(url, stream)
                 val abort = aborts.last(stream, url)
                 out +=
-                    RelayStatusReport.Unit(
-                        relay = canonicalRelay(url.url),
+                    RelayStatusReport.PrimeUnit(
+                        // VERBATIM, which is what makes the join to the band
+                        // file exact: `SyncBands` writes this very string as
+                        // its relay key, and every other relay row in this
+                        // document publishes it unaltered too.
+                        relay = url.url,
                         stream = stream,
-                        asks = unit.asks.size,
+                        // BY REFERENCE. `identity` is the roster's own memo —
+                        // each ask's filter as JSON, computed for its change
+                        // detection — and it is the exact key a band is written
+                        // under, so the report joins on it and pays nothing.
+                        askKeys = unit.identity,
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
                         abortReason = abort?.reason?.says,

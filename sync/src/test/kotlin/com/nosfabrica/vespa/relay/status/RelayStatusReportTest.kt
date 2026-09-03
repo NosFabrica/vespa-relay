@@ -21,6 +21,10 @@
 package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
+import com.nosfabrica.vespa.relay.sync.SyncBands
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
@@ -42,16 +46,25 @@ import kotlin.test.assertTrue
  * between two classes and a hand-built map would pin the wrong one.
  */
 class RelayStatusReportTest {
+    /**
+     * A unit owing [askKeys] — the filter JSON strings the roster hands over,
+     * which are the very keys the band file is written under. Spelled out at
+     * every call site rather than defaulted to a count, because the DENOMINATOR
+     * is what this report gets wrong when it gets anything wrong.
+     */
     private fun unit(
         relay: String,
         stream: String,
-        asks: Int = 1,
+        vararg askKeys: String,
         visiting: Boolean = false,
         live: Boolean = false,
         abort: String? = null,
         said: String? = null,
         abortAtSec: Long = 0,
-    ) = RelayStatusReport.Unit(relay, stream, asks, visiting, live, abort, said, abortAtSec)
+    ) = RelayStatusReport.PrimeUnit(relay, stream, askKeys.toSet(), visiting, live, abort, said, abortAtSec)
+
+    /** The one-kind ask every fixture below that does not care uses. */
+    private val plain = """{"kinds":[1]}"""
 
     private fun bands(json: String) = Json.parseToJsonElement(json).jsonObject
 
@@ -80,20 +93,20 @@ class RelayStatusReportTest {
         val out =
             RelayStatusReport.build(
                 doc,
-                listOf(unit("wss://done.example", "content"), unit("wss://paging.example", "content")),
+                listOf(unit("wss://done.example/", "content", plain), unit("wss://paging.example/", "content", plain)),
                 nowSeconds = 1_700_000_000,
             )!!
         val rows = rowsOf(out).associateBy { it["relay"]!!.jsonPrimitive.content }
-        assertEquals("complete", rows.getValue("wss://done.example")["syncStatus"]!!.jsonPrimitive.content)
-        assertEquals("paging", rows.getValue("wss://paging.example")["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals("complete", rows.getValue("wss://done.example/")["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals("paging", rows.getValue("wss://paging.example/")["syncStatus"]!!.jsonPrimitive.content)
         // The last completed reconcile, as an AGE — the closest thing this
         // router has to "last synced", and the only number here a reader can
         // judge without doing the subtraction themselves.
-        assertEquals(1_000L, rows.getValue("wss://done.example")["verifiedAgoSec"]!!.jsonPrimitive.long)
-        assertNull(rows.getValue("wss://paging.example")["verifiedAgoSec"], "no reconcile has ever finished for it")
+        assertEquals(1_000L, rows.getValue("wss://done.example/")["verifiedAgoSec"]!!.jsonPrimitive.long)
+        assertNull(rows.getValue("wss://paging.example/")["verifiedAgoSec"], "no reconcile has ever finished for it")
         // How far BACK each has reached, which is what "partial" means.
-        assertEquals(1_690_000_000L, rows.getValue("wss://paging.example")["coveredFrom"]!!.jsonPrimitive.long)
-        assertEquals(1_700_000_000L, rows.getValue("wss://paging.example")["coveredTo"]!!.jsonPrimitive.long)
+        assertEquals(1_690_000_000L, rows.getValue("wss://paging.example/")["coveredFrom"]!!.jsonPrimitive.long)
+        assertEquals(1_700_000_000L, rows.getValue("wss://paging.example/")["coveredTo"]!!.jsonPrimitive.long)
     }
 
     @Test
@@ -106,10 +119,11 @@ class RelayStatusReportTest {
             RelayStatusReport.build(
                 bands("{}"),
                 listOf(
-                    unit("wss://fresh.example", "content"),
+                    unit("wss://fresh.example/", "content", plain),
                     unit(
-                        "wss://walled.example",
+                        "wss://walled.example/",
                         "content",
+                        plain,
                         abort = "the relay would not accept our NIP-42 identity",
                         said = "auth-required: you are not authorized to perform reqs",
                         abortAtSec = 1_699_999_100,
@@ -118,8 +132,8 @@ class RelayStatusReportTest {
                 nowSeconds = 1_700_000_000,
             )!!
         val rows = rowsOf(out).associateBy { it["relay"]!!.jsonPrimitive.content }
-        assertEquals("notStarted", rows.getValue("wss://fresh.example")["syncStatus"]!!.jsonPrimitive.content)
-        val walled = rows.getValue("wss://walled.example")
+        assertEquals("notStarted", rows.getValue("wss://fresh.example/")["syncStatus"]!!.jsonPrimitive.content)
+        val walled = rows.getValue("wss://walled.example/")
         assertEquals("refused", walled["syncStatus"]!!.jsonPrimitive.content)
         // Both halves: the router's reading of WHICH wall, and the relay's own
         // sentence, which is the only thing that says what to do about it.
@@ -144,7 +158,7 @@ class RelayStatusReportTest {
             rowsOf(
                 RelayStatusReport.build(
                     doc,
-                    listOf(unit("wss://was.example", "content", abort = "the relay closed the subscription", said = "rate-limited: slow down", abortAtSec = 1_699_999_000)),
+                    listOf(unit("wss://was.example/", "content", plain, abort = "the relay closed the subscription", said = "rate-limited: slow down", abortAtSec = 1_699_999_000)),
                     nowSeconds = 1_700_000_000,
                 )!!,
             ).single()
@@ -167,12 +181,69 @@ class RelayStatusReportTest {
                    "{\"kinds\":[30382],\"authors\":[\"b\"]}": {"wss://p.example/": {"min": 1650000000, "max": 1700000000, "complete": false}}}}
                 """.trimIndent(),
             )
-        val row = rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://p.example", "content", asks = 2)), 1_700_000_000)!!).single()
+        val row = rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://p.example/", "content", """{"kinds":[30382],"authors":["a"]}""", """{"kinds":[30382],"authors":["b"]}""")), 1_700_000_000)!!).single()
         assertEquals("paging", row["syncStatus"]!!.jsonPrimitive.content)
         assertEquals(1_600_000_000L, row["coveredFrom"]!!.jsonPrimitive.long, "the deepest of them")
         assertEquals(1_700_000_000L, row["coveredTo"]!!.jsonPrimitive.long, "and the newest")
         assertEquals(2, row["bands"]!!.jsonPrimitive.int)
+        assertEquals(1, row["settled"]!!.jsonPrimitive.int, "one of the two is settled, which is not the unit")
         assertEquals(2, row["asks"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `one settled band out of forty owed asks is not a synced relay`() {
+        // THE BUG THIS JOIN EXISTS FOR, and the worst answer this table can
+        // give: the first version counted the bands a (relay, stream) pair
+        // HELD and called the pair complete when all of those were settled —
+        // so a `contentViaOutbox` unit owing one ask per bound provider read
+        // `complete` the moment the first of them drained. Silently, and on
+        // exactly the many-provider relays the mirror cares most about.
+        //
+        // The denominator is what the unit OWES, which the roster already
+        // knows: `settled == askKeys.size` and nothing less.
+        val owed = (1..40).map { """{"kinds":[30382],"authors":["a$it"]}""" }
+        val doc =
+            bands(
+                """
+                {"content": {"${owed.first().replace("\"", "\\\"")}": {"wss://p.example/": {"min": 1600000000, "max": 1700000000, "complete": true}}}}
+                """.trimIndent(),
+            )
+        val row = rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://p.example/", "content", *owed.toTypedArray())), 1_700_000_000)!!).single()
+        assertEquals("paging", row["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals(40, row["asks"]!!.jsonPrimitive.int)
+        assertEquals(1, row["settled"]!!.jsonPrimitive.int)
+
+        // …and the same unit with every ask settled IS complete, or the fix
+        // would have been "never say complete", which is not a fix.
+        val all =
+            bands(
+                "{\"content\": {" +
+                    owed.joinToString(",") { "${'"'}${it.replace("\"", "\\\"")}${'"'}: {\"wss://p.example/\": {\"min\": 1600000000, \"max\": 1700000000, \"complete\": true}}" } +
+                    "}}",
+            )
+        val done = rowsOf(RelayStatusReport.build(all, listOf(unit("wss://p.example/", "content", *owed.toTypedArray())), 1_700_000_000)!!).single()
+        assertEquals("complete", done["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals(40, done["settled"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `a band for an ask the roster no longer makes is not this unit's`() {
+        // A scan that drops a provider leaves its band behind. Counted, it
+        // would move the row's edges and inflate its denominator — a relay
+        // reading as deeper and busier than the asks it actually owes.
+        val doc =
+            bands(
+                """
+                {"content": {
+                   "{\"kinds\":[30382],\"authors\":[\"live\"]}":  {"wss://p.example/": {"min": 1690000000, "max": 1700000000, "complete": true}},
+                   "{\"kinds\":[30382],\"authors\":[\"dropped\"]}": {"wss://p.example/": {"min": 1500000000, "max": 1700000000, "complete": false}}}}
+                """.trimIndent(),
+            )
+        val row =
+            rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://p.example/", "content", """{"kinds":[30382],"authors":["live"]}""")), 1_700_000_000)!!).single()
+        assertEquals("complete", row["syncStatus"]!!.jsonPrimitive.content, "the dropped ask's unsettled band is not this unit's")
+        assertEquals(1_690_000_000L, row["coveredFrom"]!!.jsonPrimitive.long, "and it does not deepen the row either")
+        assertEquals(1, row["bands"]!!.jsonPrimitive.int)
     }
 
     @Test
@@ -186,7 +257,7 @@ class RelayStatusReportTest {
                 {"indexers": {"{\"kinds\":[10002]}": {"wss://both.example/": {"min": 1600000000, "max": 1700000000, "complete": true}}}}
                 """.trimIndent(),
             )
-        val out = RelayStatusReport.build(doc, listOf(unit("wss://both.example", "indexers"), unit("wss://both.example", "content")), 1_700_000_000)!!
+        val out = RelayStatusReport.build(doc, listOf(unit("wss://both.example/", "indexers", """{"kinds":[10002]}"""), unit("wss://both.example/", "content", plain)), 1_700_000_000)!!
         val byStream = rowsOf(out).associate { it["stream"]!!.jsonPrimitive.content to it["syncStatus"]!!.jsonPrimitive.content }
         assertEquals(mapOf("indexers" to "complete", "content" to "notStarted"), byStream)
         assertEquals(2, out["pairs"]!!.jsonPrimitive.int)
@@ -198,8 +269,8 @@ class RelayStatusReportTest {
         // and never off the published rows — a truncated list read as the whole
         // answer is the failure every list in this document discloses against.
         val units =
-            (1..RelayStatusReport.MAX_ROWS + 50).map { unit("wss://r$it.example", "content") } +
-                unit("wss://bad.example", "content", abort = "the relay closed the subscription")
+            (1..RelayStatusReport.MAX_ROWS + 50).map { unit("wss://r$it.example/", "content", plain) } +
+                unit("wss://bad.example/", "content", plain, abort = "the relay closed the subscription")
         val out = RelayStatusReport.build(bands("{}"), units, 1_700_000_000)!!
         val statuses = statusesOf(out)
         assertEquals(units.size, out["pairs"]!!.jsonPrimitive.int)
@@ -209,7 +280,7 @@ class RelayStatusReportTest {
         assertEquals(units.size - RelayStatusReport.MAX_ROWS, out["omitted"]!!.jsonPrimitive.int)
         // WORST FIRST, which is what makes the cut safe: the one row naming a
         // fault is above it, not on page nine.
-        assertEquals("wss://bad.example", rowsOf(out).first()["relay"]!!.jsonPrimitive.content)
+        assertEquals("wss://bad.example/", rowsOf(out).first()["relay"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -226,6 +297,52 @@ class RelayStatusReportTest {
         for (word in RelayStatusReport.STATUS_ORDER) {
             assertTrue("`$word`" in defined, "the glossary's `syncStatus` entry does not name $word, so a reader meets it undefined")
         }
+    }
+
+    @Test
+    fun `the roster's keys and the band file's keys are the same strings, against the real SyncBands`() {
+        // THE SEAM THE WHOLE TABLE HANGS ON, and the one failure that would be
+        // both total and silent: the join is verbatim on (stream, url, filter
+        // json), so if either side ever normalised differently from the other,
+        // every row on a working mirror would read `hasn't started` and nothing
+        // would say why. The fixtures above are string literals and cannot
+        // catch that — they are this report's contract with ITSELF.
+        //
+        // So this drives the REAL `SyncBands` and the REAL quartz Filter: the
+        // key a band is written under and the key the roster hands over are
+        // produced by the two classes that produce them in production, and the
+        // test asserts they meet.
+        val bands = SyncBands(null)
+        val url = RelayUrlNormalizer.normalize("wss://real.example")
+        val filter = Filter(kinds = listOf(1, 30023))
+        bands.record(
+            "content",
+            url,
+            filter,
+            observedMin = 1_600_000_000,
+            observedMax = 1_700_000_000,
+            paged = true,
+            observedByKind =
+                mapOf(
+                    1 to SyncCoverage.Span(1_600_000_000, 1_700_000_000, complete = true),
+                    30023 to SyncCoverage.Span(1_600_000_000, 1_700_000_000, complete = true),
+                ),
+            drained = true,
+        )
+
+        // `url.url` and `filter.toJson()` are exactly what `VisitPool.primeUnits`
+        // hands over — the second by reference, off `RosterBuilder.UnitAsks.identity`.
+        val row =
+            rowsOf(
+                RelayStatusReport.build(
+                    bands.snapshot(),
+                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", setOf(filter.toJson()), visiting = false, live = false)),
+                    1_700_000_000,
+                )!!,
+            ).single()
+        assertEquals("complete", row["syncStatus"]!!.jsonPrimitive.content, "a drained band the real SyncBands wrote must reach its own roster row")
+        assertEquals(1, row["settled"]!!.jsonPrimitive.int)
+        assertEquals(url.url, row["relay"]!!.jsonPrimitive.content, "and the row names the relay by the url both sides key on")
     }
 
     @Test
@@ -251,10 +368,10 @@ class RelayStatusReportTest {
                 """.trimIndent(),
             )
         val rows =
-            rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://odd.example", "content"), unit("wss://junk.example", "content")), 1_700_000_000)!!)
+            rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://odd.example/", "content", plain), unit("wss://junk.example/", "content", plain)), 1_700_000_000)!!)
                 .associate { it["relay"]!!.jsonPrimitive.content to it["syncStatus"]!!.jsonPrimitive.content }
-        assertEquals("paging", rows["wss://odd.example"], "no `complete` is read as not settled")
-        assertEquals("notStarted", rows["wss://junk.example"], "an entry that is not an object is skipped, not thrown on")
+        assertEquals("paging", rows["wss://odd.example/"], "no `complete` is read as not settled")
+        assertEquals("notStarted", rows["wss://junk.example/"], "an entry that is not an object is skipped, not thrown on")
     }
 
     @Test
@@ -263,12 +380,12 @@ class RelayStatusReportTest {
         // cannot be statuses — and both are absent rather than false when they
         // do not hold, so a row stays as short as its truth.
         val row =
-            rowsOf(RelayStatusReport.build(bands("{}"), listOf(unit("wss://busy.example", "content", visiting = true, live = true)), 1_700_000_000)!!)
+            rowsOf(RelayStatusReport.build(bands("{}"), listOf(unit("wss://busy.example/", "content", plain, visiting = true, live = true)), 1_700_000_000)!!)
                 .single()
         assertTrue(row["visiting"]!!.jsonPrimitive.content.toBoolean())
         assertTrue(row["tailed"]!!.jsonPrimitive.content.toBoolean())
         val quiet =
-            rowsOf(RelayStatusReport.build(bands("{}"), listOf(unit("wss://quiet.example", "content")), 1_700_000_000)!!).single()
+            rowsOf(RelayStatusReport.build(bands("{}"), listOf(unit("wss://quiet.example/", "content", plain)), 1_700_000_000)!!).single()
         assertFalse(quiet.containsKey("visiting"))
         assertFalse(quiet.containsKey("tailed"))
     }

@@ -822,6 +822,11 @@ function relayPanel(d) {
     // two more columns of mostly blanks.
     const st = el("td");
     st.appendChild(el("span", null, row.label));
+    if (row.progress) {
+      const done = el("span", "sy-quiet", ` ${row.progress}`);
+      done.title = term("settled");
+      st.appendChild(done);
+    }
     if (row.visiting) st.appendChild(chip("visiting", "busy", term("visiting")));
     if (row.tailed) st.appendChild(chip("live", "live", term("tailed")));
     st.title = term("syncStatus");

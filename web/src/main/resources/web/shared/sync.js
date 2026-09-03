@@ -1496,6 +1496,13 @@ export function relayStatusOf(relays) {
       stream: r.stream || null,
       syncStatus: r.syncStatus || null,
       label: SYNC_STATUSES.find(([k]) => k === r.syncStatus)?.[1] || r.syncStatus || "—",
+      // HOW MUCH OF WHAT IT OWES IS FINISHED, and it is what makes `paging`
+      // actionable rather than merely true: a unit owes one ask per bound
+      // provider, so "paging" covers 39-of-40 and 1-of-40 alike and only this
+      // separates them. Withheld on a single-ask unit, where `1/1` is the
+      // status restated, and on `complete`, where it is by definition all of
+      // them.
+      progress: r.syncStatus !== "complete" && r.asks > 1 ? `${r.settled || 0}/${r.asks}` : null,
       // Only the two that name a fault. `paging` is a mirror working and
       // `complete` is one that has finished; colouring either retires the mark.
       hot: r.syncStatus === "refused" || r.syncStatus === "notStarted",
