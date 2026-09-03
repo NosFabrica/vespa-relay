@@ -206,7 +206,7 @@ class VisitPoolLiveProbe {
                         pager =
                             NegentropyPager(
                                 StoreWindowIndex(store),
-                                ClientWindowSync(client, refused = refused),
+                                ClientWindowSync(client, FilterWidths(), refused = refused),
                                 SweepState(null),
                                 NegPageTuning(target = 5_000, minTarget = 500, maxTarget = 50_000, slackSeconds = 60),
                             ),

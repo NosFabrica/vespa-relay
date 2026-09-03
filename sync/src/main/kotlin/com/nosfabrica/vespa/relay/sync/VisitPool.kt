@@ -173,6 +173,17 @@ internal class VisitPool(
      * default, which is exactly the behaviour it arrived beside.
      */
     private val limits: PoolLimits = PoolLimits(emptyMap()),
+    /**
+     * WHAT EACH RELAY WILL TAKE IN ONE FILTER, learned from its own refusals —
+     * see [FilterWidths].
+     *
+     * SHARED WITH THE PAGER, and that is the whole reason it is a parameter
+     * rather than a field: the sweep's fallback REQs are the same REQs this
+     * pool sends, carrying the same filter, so a width learned here and not
+     * there left every width-capped relay's AUDIT refused exactly as before —
+     * which is what #185 came back about.
+     */
+    private val widths: FilterWidths = FilterWidths(),
 ) {
     /**
      * WHEN EACH STREAM'S RE-READS OF THE PAST COME DUE — the engine's own
@@ -692,12 +703,15 @@ internal class VisitPool(
     private val aborts = VisitAborts()
 
     /**
-     * WHAT EACH RELAY WILL TAKE IN ONE FILTER, learned from its own refusals —
-     * see [FilterWidths]. Per pool rather than per stream: a relay's limit is
-     * the relay's, and a stream that learns it should not leave the next one to
-     * find out again.
+     * Windows an audit could not read and therefore did not claim — see
+     * [SweepOutcome.refusedWindows].
+     *
+     * The audit's half of `abortedVisits`. A sweep can end incomplete for
+     * reasons nobody can act on; this counts only the windows a relay turned
+     * away, which is the number that says an audit is being refused rather
+     * than merely being slow.
      */
-    private val widths = FilterWidths()
+    private val auditsRefusedWindows = AtomicLong()
 
     fun start() {
         if (streams.isEmpty()) return
@@ -737,6 +751,7 @@ internal class VisitPool(
                 Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == POOL_NEGENTROPY }.toLong()),
                 Processors.Count("negentropyRuns", auditsRun.get()),
                 Processors.Count("negentropySkipped", auditsSkipped.get()),
+                Processors.Count("negentropyRefused", auditsRefusedWindows.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
                 Processors.Count("liveEvicted", evictedTails.get()),
                 Processors.Count("poolReceived", poolReceived.get()),
@@ -1358,6 +1373,7 @@ internal class VisitPool(
                 }
             }
         auditsRun.incrementAndGet()
+        auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
         if (outcome.complete) {
             // The audit compared every window up to the sweep's own head —
             // `slackSeconds` below its start, because a window still filling
@@ -1377,6 +1393,11 @@ internal class VisitPool(
         System.err.println(
             "router: audit ${stream.name} ${url.url} — $received event(s) recovered, " +
                 (if (outcome.complete) "history verified" else "incomplete (negentropy usable: ${outcome.negentropyUsable})") +
+                // WHICH KIND of incomplete, on the line that says it is. A
+                // sweep short of its head because the leg runs into the live
+                // window and one whose relay refused the windows are the same
+                // `complete=false` and different findings.
+                (if (outcome.refusedWindows > 0) ", ${outcome.refusedWindows} window(s) REFUSED and not claimed" else "") +
                 // WHY THIS ONE RAN, on the line that says it did. The document
                 // carries the schedule as a distribution; this is the per-audit
                 // half, and it is what turns "the audits look busy" into a

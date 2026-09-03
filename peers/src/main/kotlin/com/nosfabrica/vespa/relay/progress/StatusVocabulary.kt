@@ -1151,6 +1151,16 @@ object StatusVocabulary {
                     "relays. UNMEASURED relays are not counted here: no verdict means the ask tries and finds out.",
             )
             put(
+                "negentropyRefused",
+                "WINDOWS AN AUDIT COULD NOT READ, and therefore did not claim. The sweep's last resort for a window " +
+                    "it cannot reconcile is a plain REQ, and a relay that refuses that — a filter width it caps, an " +
+                    "auth wall, a policy CLOSED — serves zero events, which is exactly what an honest empty window " +
+                    "serves. Told apart, the cursor holds and the band is not stamped `reconciledThrough`, so the " +
+                    "next audit re-reads the window; conflated, this router claimed the history was verified over " +
+                    "ground nothing had ever been served for. Climbing means an audit is being REFUSED rather than " +
+                    "merely running slowly, which is the distinction `negentropyRuns` alone cannot make.",
+            )
+            put(
                 "retracted",
                 "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
                     "retracted scores, and nothing else — a provider's own profile is another stream's record and " +

@@ -4657,6 +4657,35 @@ statement about someone else's server.
 
 ## Traps that have cost real time
 
+- **A fallback that returns a COUNT cannot tell "empty" from "refused", and the
+  one that claims coverage must never be built on it.** The negentropy sweep's
+  last resort for a window it cannot reconcile is a plain REQ, and
+  `WindowSync.page` returned an `Int`. A relay that refused that REQ — a filter
+  width it caps, an auth wall, a policy `CLOSED` — delivered zero events, which
+  is exactly what an honest empty window delivers. So the sweep advanced its
+  cursor over the window, and, worse, reached the end of its stack and reported
+  `complete = true` — which is what makes the caller stamp `reconciledThrough`
+  on the band, the strongest claim this router makes. The history was recorded
+  as verified over ground nothing had ever been served for, and every later
+  audit was told there was nothing left to find. *An empty stack means the
+  windows were all VISITED; it never meant they were all answered.*
+  `page` returns `PagedFetchResult` now, three drain sites and the final return
+  are guarded on `refusedOutright`, and `negentropyRefused` counts the windows
+  that were not claimed. Both guards are mutation-checked.
+
+  **And the same fix has to reach every path that sends the filter.** #185 came
+  back precisely because the catch-up was chunked by `FilterWidths` and the
+  AUDIT was not: the sweep's fallback REQs carry the identical 139-kind filter,
+  so on every width-capped relay the audit went on being refused exactly as
+  before while its catch-up worked. One `FilterWidths` for the process now,
+  built in `SyncEngine` and passed to both — and the parameter on
+  `ClientWindowSync` has NO DEFAULT, because a `= FilterWidths()` would compile
+  at every call site and silently restore the bug. The NEG-OPEN itself is
+  deliberately left unchunked: a reconcile compares an ID SET, so splitting its
+  filter is N `snapshotIdsForNegentropy` reads — the largest allocation this
+  router makes — and it does not need to be, since a width-refused NEG-OPEN
+  already falls to the REQ path that is chunked.
+
 - **A "how complete is this" number needs the denominator the WORK uses, not the
   one the state file happens to hold.** `RelayStatusReport`'s first version
   counted the bands a (relay, stream) pair held and called the pair complete

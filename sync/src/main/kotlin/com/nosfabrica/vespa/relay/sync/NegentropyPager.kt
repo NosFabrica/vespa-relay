@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySync
@@ -81,11 +82,22 @@ internal interface WindowSync {
         onEvent: suspend (Event) -> Unit,
     ): NegentropySyncResult
 
+    /**
+     * The terminal fallback: walk this window over a plain REQ.
+     *
+     * **Returns quartz's whole answer, not the count.** It returned an `Int`,
+     * and a refusal — a relay that caps filter width, an auth wall, a policy
+     * `CLOSED` — delivers zero events exactly as an empty window does. The
+     * sweep could not tell them apart and marked the window complete either
+     * way, so the cursor claimed ground nothing had read: the same over-claim
+     * `refusedOutright` was written to stop on the catch-up side, one path
+     * over, and durable where an abort is not. See [NegentropyPager.sweep].
+     */
     suspend fun page(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): Int
+    ): PagedFetchResult
 }
 
 /** [NegentropyLocalIndex] over this relay's store: counts and id reads by range. */
@@ -144,6 +156,19 @@ internal class PrimedIndex(
 
 internal class ClientWindowSync(
     private val client: NostrClient,
+    /**
+     * What each relay takes in one filter — the SAME instance the pool learns
+     * into, because a width is a property of the relay and a stream that
+     * learned it should not leave the audit to find out again. See
+     * [FilterWidths].
+     *
+     * NO DEFAULT, deliberately. A `= FilterWidths()` here would compile at
+     * every call site and hand the audit a private map that nothing ever
+     * teaches — which is the bug this parameter exists to fix, restored
+     * silently. Requiring it means the sharing cannot regress without someone
+     * writing the words.
+     */
+    private val widths: FilterWidths,
     private val idleTimeoutMs: Long = NEG_IDLE_MS,
     /**
      * The twice-refused ids, so the reconcile can decline them before the REQ
@@ -203,11 +228,43 @@ internal class ClientWindowSync(
     // point inside the leg rather than the leg's bottom. Only a walk that
     // reached the filter's floor may settle history, and that judgement lives
     // at the leg's call site in `drainSettlesThePast`.
+
+    /**
+     * …chunked by whatever width this relay has told us it takes.
+     *
+     * THE SWEEP'S REQs ARE THE SAME REQs THE CATCH-UP SENDS, and they carry the
+     * same 139-kind filter. Chunking the catch-up and not this left every
+     * width-capped relay's audit refused exactly as before — the fallback for
+     * an unreconcilable window, and the per-kind drains inside a dense one,
+     * both go out through here.
+     *
+     * **The NEG-OPEN itself is deliberately NOT chunked.** A reconcile compares
+     * an ID SET, so splitting its filter by kinds is N separate reconciles and
+     * N `snapshotIdsForNegentropy` reads — the largest allocation this router
+     * makes — where the REQ path costs N round trips and nothing else. It does
+     * not need to be: a width-refused NEG-OPEN throws `UNAVAILABLE`, which on
+     * the first window hands the leg back to the caller to page and mid-sweep
+     * pages the window right here. Both land on the chunked path.
+     */
     override suspend fun page(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): Int = client.fetchAllPages(url, listOf(window), idleTimeoutMs, onEvent = onEvent).downloaded
+    ): PagedFetchResult {
+        var downloaded = 0
+        var end = PagedFetchResult.End.DRAINED
+        for (chunk in widths.chunk(url, window)) {
+            val walked = client.fetchAllPages(url, listOf(chunk), idleTimeoutMs, onEvent = onEvent)
+            downloaded += walked.downloaded
+            end = walked.end
+            // THE FIRST REFUSAL ENDS IT, and it is the ending that travels: the
+            // caller's one question is whether this window was read, and a
+            // later chunk answering DRAINED would paper over the one that was
+            // turned away. Everything already delivered is kept and reported.
+            if (VisitPool.refusedOutright(walked)) break
+        }
+        return PagedFetchResult(downloaded, end)
+    }
 }
 
 /** What one [NegentropyPager.sweep] did with one leg of one peer. */
@@ -234,6 +291,18 @@ internal class SweepOutcome(
      */
     val outstanding: Filter?,
     val failure: NegentropySyncException?,
+    /**
+     * Windows this sweep could not read and therefore did NOT claim — the
+     * relay refused the REQ that was the last resort for them.
+     *
+     * Published rather than merely logged, on the complaint that produced this
+     * whole change: a number that says a problem exists is what an operator
+     * has, and this is the audit's half of it. A sweep can be `complete = false`
+     * for reasons that are nobody's fault (the leg is inside the live head, the
+     * cursor ran out of budget); a non-zero count here is a relay turning us
+     * away, and only it can be acted on.
+     */
+    val refusedWindows: Int = 0,
 )
 
 /**
@@ -282,6 +351,12 @@ internal class NegentropyPager(
     private val peer: WindowSync,
     private val state: SweepState,
     private val tuning: NegPageTuning,
+    /**
+     * What each relay SAID when it refused — see [RelayComplaints]. Deaf by
+     * default, which is every probe and every test: a refused window then names
+     * itself without the relay's own words, exactly as it did before.
+     */
+    private val complaints: RelayComplaints = RelayComplaints.DEAF,
 ) {
     /** How far below `now` a sweep stops — the head its claims must not over-run. */
     internal val slackSeconds: Long get() = tuning.slackSeconds
@@ -327,7 +402,7 @@ internal class NegentropyPager(
         if (ceiling < floor) {
             // The whole leg is inside the live head. Not an error and not
             // complete: the subscription owns that range, not this sweep.
-            return SweepOutcome(0, 0, 0, complete = false, negentropyUsable = true, outstanding = null, failure = null)
+            return SweepOutcome(0, 0, 0, complete = false, negentropyUsable = true, outstanding = null, failure = null, refusedWindows = 0)
         }
 
         var target = state.target(url, tuning.target).coerceIn(tuning.minTarget, tuning.maxTarget)
@@ -341,6 +416,7 @@ internal class NegentropyPager(
         var downloaded = 0
         var reconciled = 0
         var paged = 0
+        var refusedWindows = 0
         var consecutiveFailures = 0
         var lastFailure: NegentropySyncException? = null
 
@@ -366,6 +442,10 @@ internal class NegentropyPager(
             onWindow?.invoke(sweepWindow.first, sweepWindow.last)
 
             var pagedHere = 0
+            // WHETHER ANYTHING IN THIS WINDOW WAS TURNED AWAY. The cursor may
+            // only advance over ground that was actually read, and a REQ this
+            // relay refused read nothing — see [WindowSync.page].
+            var refusedHere = false
             try {
                 // Offset by what the sweep already has: quartz counts from zero
                 // per NEG-OPEN, so passing its numbers straight through would
@@ -386,7 +466,9 @@ internal class NegentropyPager(
                         // in this window still reconciles — it never becomes an
                         // exception and the window never has to be re-tried.
                         onUnreconcilable = { dense ->
-                            downloaded += drainDense(url, shape, dense, target, onEvent)
+                            val drained = drainDense(url, shape, dense, target, onEvent)
+                            downloaded += drained.downloaded
+                            if (drained.refused) refusedHere = true
                             pagedHere++
                         },
                         onEvent = onEvent,
@@ -404,7 +486,12 @@ internal class NegentropyPager(
                         result.windows > 1 -> shrink(url, target)
                         else -> grow(url, target)
                     }
-                complete(cursor, sweepWindow)
+                if (refusedHere) {
+                    refusedWindows++
+                    sayRefused(url, sweepWindow, "a dense slice was refused")
+                } else {
+                    complete(cursor, sweepWindow)
+                }
             } catch (e: NegentropySyncException) {
                 lastFailure = e
                 when (e.reason) {
@@ -417,7 +504,8 @@ internal class NegentropyPager(
                         target = state.target(url, tuning.target)
                         val badFrom = (e.window.since ?: sweepWindow.first).coerceIn(sweepWindow.first, sweepWindow.last)
                         val badTo = (e.window.until ?: sweepWindow.last).coerceIn(badFrom, sweepWindow.last)
-                        downloaded += drainDense(url, shape, windowFilter(shape, badFrom..badTo), target, onEvent)
+                        val drained = drainDense(url, shape, windowFilter(shape, badFrom..badTo), target, onEvent)
+                        downloaded += drained.downloaded
                         paged++
                         if (badFrom > sweepWindow.first) stack.addLast(sweepWindow.first..(badFrom - 1))
                         if (badTo < sweepWindow.last) stack.addLast((badTo + 1)..sweepWindow.last)
@@ -425,7 +513,17 @@ internal class NegentropyPager(
                         // of the window: a slice out of the middle leaves a
                         // pending piece ABOVE it, and a cursor that reached down
                         // past that piece would claim ground no one compared.
-                        if (badTo >= sweepWindow.last) state.advance(cursor, badFrom, sweepWindow.last)
+                        //
+                        // …and only when the drain was actually SERVED. A slice
+                        // the relay refused is not drained, and advancing over
+                        // it is the same durable over-claim the fallback page
+                        // below is guarded against.
+                        if (drained.refused) {
+                            refusedWindows++
+                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused")
+                        } else if (badTo >= sweepWindow.last) {
+                            state.advance(cursor, badFrom, sweepWindow.last)
+                        }
                         consecutiveFailures = 0
                     }
 
@@ -444,6 +542,7 @@ internal class NegentropyPager(
                                 negentropyUsable = false,
                                 outstanding = outstanding(shape, floor, ceiling, cursor),
                                 failure = e,
+                                refusedWindows = refusedWindows,
                             )
                         }
                         // Mid-sweep: one window's worth of trouble. Page it so
@@ -451,15 +550,29 @@ internal class NegentropyPager(
                         System.err.println(
                             "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile (${e.detail}) — paging this window",
                         )
-                        downloaded += peer.page(url, windowFilter(shape, sweepWindow), onEvent)
+                        val walked = peer.page(url, windowFilter(shape, sweepWindow), onEvent)
+                        downloaded += walked.downloaded
                         paged++
-                        complete(cursor, sweepWindow)
+                        // THE BUG THIS GUARD IS FOR. The fallback page used to
+                        // complete the window unconditionally, and its result
+                        // was an `Int` — so a relay that refused the REQ
+                        // (a filter it caps, an auth wall, a policy CLOSED)
+                        // delivered zero, read as an empty window, and the
+                        // cursor claimed ground nothing had ever looked at.
+                        // Durably: the band recorded on top of it then told
+                        // every later audit there was nothing to find.
+                        if (VisitPool.refusedOutright(walked)) {
+                            refusedWindows++
+                            sayRefused(url, sweepWindow, "the fallback page was refused too")
+                        } else {
+                            complete(cursor, sweepWindow)
+                        }
                         if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                             System.err.println(
                                 "router: sweep ${url.url} gave up after $consecutiveFailures window(s) in a row failed" +
                                     " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${state.reconciled(cursor)?.downTo ?: sweepWindow.first}",
                             )
-                            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = e)
+                            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = e, refusedWindows = refusedWindows)
                         }
                     }
                 }
@@ -475,7 +588,25 @@ internal class NegentropyPager(
                     (state.peer(url)?.cap?.let { " (their cap ${fmtCount(it)})" } ?: ""),
             )
         }
-        return SweepOutcome(downloaded, reconciled, paged, complete = true, negentropyUsable = true, outstanding = null, failure = lastFailure)
+        // COMPLETE ONLY IF EVERY WINDOW WAS ACTUALLY READ, and this is the
+        // guard that matters most: `complete` is what makes the caller stamp
+        // `reconciledThrough` on the band, which is the strongest claim this
+        // router makes — the whole range compared, nothing outstanding below
+        // it. A sweep that walked every window and was REFUSED on one of them
+        // used to reach here and say `true`, so the band settled over ground
+        // no REQ had ever been served for, and every later audit was told
+        // there was nothing left to find. The stack being empty means the
+        // windows were all VISITED; it never meant they were all answered.
+        return SweepOutcome(
+            downloaded,
+            reconciled,
+            paged,
+            complete = refusedWindows == 0,
+            negentropyUsable = true,
+            outstanding = null,
+            failure = lastFailure,
+            refusedWindows = refusedWindows,
+        )
     }
 
     /**
@@ -552,6 +683,12 @@ internal class NegentropyPager(
         stack.addLast((mid + 1)..sweepWindow.last)
     }
 
+    /** What one fallback drain did: what it delivered, and whether the relay turned any of it away. */
+    private class Paged(
+        val downloaded: Int,
+        val refused: Boolean,
+    )
+
     /**
      * A slice the peer will not reconcile at any window size.
      *
@@ -577,8 +714,12 @@ internal class NegentropyPager(
         dense: Filter,
         target: Int,
         onEvent: suspend (Event) -> Unit,
-    ): Int {
+    ): Paged {
         var downloaded = 0
+        // Carried out of here for the window's own completion decision: a slice
+        // the relay refused was not drained, and a window holding one has not
+        // been read whatever the reconcile around it managed.
+        var refused = false
         val kinds = shape.kinds
         val span = (dense.until ?: 0L) - (dense.since ?: 0L) + 1
         if (kinds != null && kinds.size > 1) {
@@ -593,7 +734,9 @@ internal class NegentropyPager(
                 val mine = local.count(perKind)
                 if (mine == null || mine > target) {
                     stillOver++
-                    downloaded += peer.page(url, perKind, onEvent)
+                    val walked = peer.page(url, perKind, onEvent)
+                    downloaded += walked.downloaded
+                    if (VisitPool.refusedOutright(walked)) refused = true
                     continue
                 }
                 try {
@@ -614,13 +757,17 @@ internal class NegentropyPager(
                         peer
                             .reconcile(url, perKind, PrimedIndex(local, perKind, mine), target, null, { slice ->
                                 pagedSlices++
-                                downloaded += peer.page(url, slice, onEvent)
+                                val walked = peer.page(url, slice, onEvent)
+                                downloaded += walked.downloaded
+                                if (VisitPool.refusedOutright(walked)) refused = true
                             }, onEvent)
                             .downloaded
                     if (pagedSlices > 0) stillOver++
                 } catch (_: NegentropySyncException) {
                     stillOver++
-                    downloaded += peer.page(url, perKind, onEvent)
+                    val walked = peer.page(url, perKind, onEvent)
+                    downloaded += walked.downloaded
+                    if (VisitPool.refusedOutright(walked)) refused = true
                 }
             }
             System.err.println(
@@ -632,9 +779,30 @@ internal class NegentropyPager(
                 "router: sweep ${url.url} [${dense.since}, ${dense.until}] over the peer's cap and un-splittable" +
                     " (single kind, ${span}s) — paging it",
             )
-            downloaded += peer.page(url, dense, onEvent)
+            val walked = peer.page(url, dense, onEvent)
+            downloaded += walked.downloaded
+            if (VisitPool.refusedOutright(walked)) refused = true
         }
-        return downloaded
+        return Paged(downloaded, refused)
+    }
+
+    /**
+     * A window the sweep could not read, said once with the relay's own words.
+     *
+     * The counters cannot hold a sentence and this is the only place the reason
+     * exists — the same argument [VisitAborts] makes for the visit side, which
+     * is where the complaint that produced both of them started.
+     */
+    private fun sayRefused(
+        url: NormalizedRelayUrl,
+        sweepWindow: LongRange,
+        why: String,
+    ) {
+        System.err.println(
+            "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] NOT claimed — $why" +
+                (complaints.since(url, 0)?.let { "; the relay said: $it" } ?: "") +
+                " — the cursor holds and the next audit re-reads it",
+        )
     }
 
     /** One window finished, by any route: move the cursor. */

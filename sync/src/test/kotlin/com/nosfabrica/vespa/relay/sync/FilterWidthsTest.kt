@@ -140,6 +140,31 @@ class FilterWidthsTest {
     }
 
     @Test
+    fun `a sweep window is split by kinds and by nothing else`() {
+        // #185 came back for this. The catch-up was chunked and the AUDIT was
+        // not — the sweep's last-resort REQ carries the identical filter, so on
+        // every width-capped relay the audit went on being refused exactly as
+        // before while its catch-up worked. `ClientWindowSync` takes the same
+        // FilterWidths the pool learns into (no default on the parameter, so
+        // that sharing cannot regress silently) and chunks through this.
+        //
+        // THE WINDOW MUST SURVIVE THE SPLIT. A sweep compares a RANGE, and a
+        // chunk that moved `since`/`until` would compare a different one and
+        // report agreement about ground it never looked at.
+        val widths = FilterWidths()
+        val window = Filter(kinds = (1..250).toList(), since = 1_600_000_000, until = 1_700_000_000)
+        assertEquals(listOf(window), widths.chunk(url, window), "untouched until the relay complains")
+
+        assertTrue(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 250))
+        val chunks = widths.chunk(url, window)
+        assertEquals(listOf(100, 100, 50), chunks.map { it.kinds!!.size })
+        assertTrue(
+            chunks.all { it.since == window.since && it.until == window.until },
+            "the window is untouched — only the kinds are split",
+        )
+    }
+
+    @Test
     fun `an ask that already fits, or names no kinds, is one REQ`() {
         val widths = FilterWidths()
         assertTrue(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 139))

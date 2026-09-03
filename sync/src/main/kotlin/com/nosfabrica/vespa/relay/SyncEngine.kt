@@ -43,6 +43,7 @@ import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.ClientRelayComplaints
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
+import com.nosfabrica.vespa.relay.sync.FilterWidths
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
@@ -220,6 +221,26 @@ class SyncEngine(
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /**
+     * WHAT THE UPSTREAMS SAY WHEN THEY REFUSE — one listener on the shared
+     * client, for the pool to read its aborts by. See [ClientRelayComplaints];
+     * built here rather than inside the pool because it attaches to the client
+     * this engine owns and has to be let go in [close].
+     */
+    private val complaints = ClientRelayComplaints(client)
+
+    /**
+     * WHAT EACH RELAY TAKES IN ONE FILTER, learned from its own refusals — one
+     * instance for the whole process.
+     *
+     * Here rather than inside the pool because the POOL is not the only thing
+     * that sends this router's filters at a relay: the audit's fallback REQs
+     * are the same REQs, so a width the pool learned and the pager did not left
+     * a width-capped relay's audit refused while its catch-up worked. A limit
+     * is a property of the relay; one place to hold it.
+     */
+    private val widths = FilterWidths()
+
+    /**
      * The automatic window chunker. A peer's cap arrives through quartz —
      * `NegentropySyncResult.peerCap`, parsed off the relay's own refusal — so
      * nothing here has to watch the wire for it.
@@ -227,7 +248,7 @@ class SyncEngine(
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
-            ClientWindowSync(client, refused = refusedIds),
+            ClientWindowSync(client, widths, refused = refusedIds),
             sweepState,
             NegPageTuning(
                 target = config.negPageTarget,
@@ -235,6 +256,7 @@ class SyncEngine(
                 maxTarget = config.negPageMax,
                 slackSeconds = config.negPageSlackSec,
             ),
+            complaints,
         )
 
     /**
@@ -274,14 +296,6 @@ class SyncEngine(
      */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
 
-    /**
-     * WHAT THE UPSTREAMS SAY WHEN THEY REFUSE — one listener on the shared
-     * client, for the pool to read its aborts by. See [ClientRelayComplaints];
-     * built here rather than inside the pool because it attaches to the client
-     * this engine owns and has to be let go in [close].
-     */
-    private val complaints = ClientRelayComplaints(client)
-
     /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
     private val visitPool =
         VisitPool(
@@ -316,6 +330,8 @@ class SyncEngine(
             // What each stream may spend on each of the four jobs. Empty
             // where no stream configures a share, which is uncapped.
             limits = PoolLimits.of(visitStreams),
+            // …and the widths, the SAME instance the pager holds.
+            widths = widths,
         )
 
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)

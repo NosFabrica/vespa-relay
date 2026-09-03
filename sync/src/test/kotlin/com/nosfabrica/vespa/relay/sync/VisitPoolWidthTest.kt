@@ -172,7 +172,7 @@ class VisitPoolWidthTest {
             pager =
                 NegentropyPager(
                     StoreWindowIndex(store),
-                    ClientWindowSync(client, refused = RefusedIds.disabled()),
+                    ClientWindowSync(client, FilterWidths(), refused = RefusedIds.disabled()),
                     SweepState(null),
                     NegPageTuning(target = 5_000, minTarget = 500, maxTarget = 50_000, slackSeconds = 60),
                 ),
