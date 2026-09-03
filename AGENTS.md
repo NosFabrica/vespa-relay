@@ -658,6 +658,18 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the past, heal drain), earned live tails,
                           yield-paced revisits
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
+    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split seven
+                          ways and said once per (stream, relay, reason), with
+                          the ask and whatever the relay said for itself. An
+                          abort leaves its relay unreconciled, so this number
+                          IS whether the resync converges
+    RelayComplaints.kt    what a relay SAID when it would not answer — the
+                          NOTICE/CLOSED text quartz's PagedFetchResult has no
+                          room for, kept per relay and dated so a walk can only
+                          read the sentence its own REQ earned
+    FilterWidths.kt       how many kinds each relay takes in one filter,
+                          learned from its own refusal, so an over-wide ask is
+                          re-sent in chunks instead of refused forever
     RosterBuilder.kt      the asks a stream makes of each relay it may dial
     RetractionAudit.kt    the deleteMissing comparison, run as a retracting
                           ask's `negentropySyncThePastSeconds` reconcile:
@@ -1632,6 +1644,62 @@ refused at parse time. A scan whose select binds
 `(relay, provider)` granularity NIP-85's tags already chose, and the band key
 that stays valid however many providers join. A retracting stream
 (`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
+
+**A visit that aborts leaves its relay UNRECONCILED, and that is why the abort
+partition exists.** One unclean ask ends the visit (`refusedOutright`), and the
+next visit re-asks from the same first ask — so a relay that refuses
+deterministically never completes, however many times the pool visits it.
+Measured on `vespa-eventstore-staging`: 92.5% of visits aborting over one
+incremental minute, `contentViaOutbox` moving +15 reconciles in fifteen hours
+against 1,131 outstanding, and ~90% of those aborts emitting no line at all —
+the `!clean` path returned naming neither the relay, the stream, the ask nor the
+reason, and the refusals an operator COULD see were the relay client's own
+connection logging, undercounting by ~10x. `abortedVisits` said a problem
+existed and no instrument in the process could name it, which is the same shape
+as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: seven
+counters that partition the total exactly (`abortedAuthRequired`,
+`abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
+`abortedGaveUp`, `abortedFailed`), plus one line per (stream, relay, reason)
+per half hour carrying the ask and — through `RelayComplaints` — the sentence
+the relay refused with. **The sentence is the half that could not be
+inferred**: quartz reports how a walk ENDED, which is the right shape for the
+one decision it exists for (a `CLOSED` licenses no coverage claim whatever
+caused it), and a policy refusal, a rate limit and a filter the relay thinks is
+too wide are one ending with three different remedies.
+
+**One of those refusals the pool can take down itself: filter WIDTH.**
+`contentViaOutbox` asks for 139 kinds in one filter, and relays that cap width
+reject the whole REQ rather than trimming it — nine of them on the same window,
+answering `too many kinds in filter: 139`, `too many kinds (max 100)`, or just
+`too many kinds in filter`. `FilterWidths` reads that sentence, learns what the
+relay takes, and the leg goes back out as chunks of kinds — the catch-up AND the
+live tail, since a tail carrying the filter the relay just refused is one that
+silently never delivers. **The cap must be the RELAY's**: those three messages
+are three different limits and one of them states no number at all, so a
+constant is either above somebody's limit or below everybody's. A refusal naming
+a number BELOW our ask is adopted; anything else halves, including a relay that
+quotes our own 139 back at us — which is the trap, since adopting it would learn
+nothing and re-send the identical REQ forever. Every path narrows strictly or
+declines to narrow at all, which is what makes the loop terminate;
+`MAX_NARROWINGS` bounds what ONE visit pays, and the cap outlives the visit so a
+relay that names no limit converges across a handful of them. Splitting on KINDS
+and nothing else is what keeps it free of consequences downstream: the band is
+per kind, so the chunks of one leg widen one band between them and each carries
+evidence for exactly the kinds it walked. **The gate on the sentence is
+deliberately narrow** (`too many kinds`, nothing looser): 50 relays on that same
+roster refuse with `auth-required:` and 21 are outright blocked, and chunking
+THOSE asks would spend three extra round trips per leg, forever, on relays that
+will never serve us.
+
+**NIP-42 on upstream reads was already wired, and `abortedAuthRequired` is what
+finally says so.** `PeerClient` attaches quartz's `RelayAuthenticator` whenever
+`RELAY_NSEC` is set, and `fetchAllPages` waits out an `auth-required:` refusal on
+the AUTH's own verdict rather than on a timeout — so a relay counted here
+answered our challenge and turned OUR key down (an allowlist, a paid tier), and
+nothing in this router's configuration takes it down. What was missing was the
+ability to tell that apart from never having answered: an anonymous deployment
+printed NOTHING at boot, so "we authenticate and they refuse us" and "we have no
+signer" were the same log. `SyncMain` now says which it is either way.
 
 **No stream declares a transport any more.** `sync` (negentropy / fetch / auto)
 chose one for the engine that is gone, and the pool has one shape: page forward
@@ -4235,6 +4303,22 @@ Reach for it first.
   change**: an `X-Caller` header on the wire, and a server-side service-start
   timestamp — `VespaHttp` builds its own OkHttp client with no header or
   interceptor seam, so neither is reachable from this repository.
+- **the abort partition on the visits row, and the `visit … aborted` lines
+  beside it** — WHY visits are ending early, which on a mirror that has stopped
+  converging is the only question. `abortedVisits` is a total and unactionable
+  on its own; the seven counters that split it (`abortedAuthRequired`,
+  `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
+  `abortedGaveUp`, `abortedFailed`) sum back to it exactly, and each has a
+  different remedy — a key the relay accepts, its own CLOSED sentence read, a
+  slower revisit, nothing at all. Reach for it the moment `contentViaOutbox`
+  stops reconciling: 92.5% aborting says the resync cannot converge, and only
+  the split says what would fix it. The log half is one line per
+  (stream, relay, reason) per half hour, carrying the ask and — where the relay
+  explained itself — the sentence, which the counters cannot hold and
+  `SYNC_WIRE_LOG` could only give you for every relay at once. See
+  `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
+  fault: it counts relays that have told us how wide a filter they take, and
+  each one is a relay that could never finish an ask before.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.

@@ -39,6 +39,7 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.sync.ClientRelayComplaints
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
@@ -272,10 +273,19 @@ class SyncEngine(
      */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
 
+    /**
+     * WHAT THE UPSTREAMS SAY WHEN THEY REFUSE — one listener on the shared
+     * client, for the pool to read its aborts by. See [ClientRelayComplaints];
+     * built here rather than inside the pool because it attaches to the client
+     * this engine owns and has to be let go in [close].
+     */
+    private val complaints = ClientRelayComplaints(client)
+
     /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
     private val visitPool =
         VisitPool(
             reads = ClientRelayReads(client),
+            complaints = complaints,
             bands = bands,
             ingest = ingest,
             pager = pager,
@@ -846,6 +856,10 @@ class SyncEngine(
         // the client before it closes, instead of racing it and counting
         // their own deaths into `aborted`.
         scope.cancel()
+        // Off the client before the client goes: a listener left registered on
+        // a closing pool is the leak `RelayAuthenticator.destroy` is called for
+        // two lines down, in `peers.close()`.
+        runCatching { complaints.close() }
         peers.close()
         ingest.closeIntake()
         // After the scope, so a worker mid-batch is cancelled rather than

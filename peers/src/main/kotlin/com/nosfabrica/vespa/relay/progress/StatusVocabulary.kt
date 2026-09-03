@@ -1159,7 +1159,68 @@ object StatusVocabulary {
                 "abortedVisits",
                 "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
                     "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +
-                    "roster is the monitor's next sweep's decision, not a retry ladder's.",
+                    "roster is the monitor's next sweep's decision, not a retry ladder's. This is a TOTAL and the " +
+                    "seven `aborted…` counters beside it partition it exactly, which is the number to read: an " +
+                    "abort leaves its relay unreconciled, so a high share here is a resync that is not converging " +
+                    "and only the split says what would fix it. Each abort is also spoken once per " +
+                    "(stream, relay, reason) in the log, with the ask and whatever the relay said for itself.",
+            )
+            put(
+                "abortedAuthRequired",
+                "Visits ended because the relay refused with `auth-required:` and would not accept our NIP-42 " +
+                    "identity. This router DOES answer challenges whenever `RELAY_NSEC` is set — the signer drives " +
+                    "quartz's responder, and a refused walk waits out the AUTH's verdict rather than a timeout — so " +
+                    "this counts relays that answered and turned OUR key down (an allowlist, a paid tier), not " +
+                    "challenges nobody replied to. Nothing in this router's configuration can take these down; a " +
+                    "key the relay accepts is the only fix.",
+            )
+            put(
+                "abortedClosed",
+                "Visits ended because the relay closed the subscription with nothing delivered — a policy refusal, " +
+                    "a rate limit, or a filter it will not serve. Three remedies behind one ending, and the log " +
+                    "line carries the relay's own sentence, which is the only thing that tells them apart.",
+            )
+            put(
+                "abortedQuiet",
+                "Visits ended because the relay went quiet INSIDE a page and never ended it — no EOSE, no CLOSED, " +
+                    "just the idle window running out. Silence is not an answer, so nothing is recorded and the " +
+                    "leg stays outstanding. Distinct from `abortedGaveUp`, which is the whole SEQUENCE of a " +
+                    "relay's asks going quiet rather than one of them.",
+            )
+            put(
+                "abortedUnreachable",
+                "Visits ended because the dial never landed, so nothing was ever asked. A relay reaching the " +
+                    "roster and then failing to connect is the monitor's next sweep's business, not a retry " +
+                    "ladder's — but a Tor deployment whose SOCKS proxy has stopped answering shows up here first.",
+            )
+            put(
+                "abortedUnpageable",
+                "Visits ended because the relay answered but ignored the paging cursor — every event it sent was " +
+                    "NEWER than the `until` the page asked for, so the walk cannot advance and proves nothing " +
+                    "about what the relay holds. quartz ends such a walk deliberately rather than descending a " +
+                    "second at a time forever.",
+            )
+            put(
+                "abortedGaveUp",
+                "Visits ended because the relay delivered nothing at all for five minutes across the SEQUENCE of " +
+                    "its asks, and the remaining ones were left to the revisit. A stream with author-bound asks " +
+                    "visits one relay once per bound author, and a relay answering each with a full empty idle " +
+                    "window was measured holding one worker for five hours. Reset by any event that arrives, so a " +
+                    "visit that is delivering is never cut.",
+            )
+            put(
+                "abortedFailed",
+                "Visits ended because the visit itself threw. The exception's class and message are on the log " +
+                    "line. This was the only abort that ever emitted one, which is why the other six read as zero " +
+                    "before this partition existed rather than as unmeasured.",
+            )
+            put(
+                "narrowedRelays",
+                "Relays that have told us how many kinds they will take in one filter, so this router's asks go " +
+                    "to them in chunks of that many. Learned from the refusal itself — a relay stating `max 100` " +
+                    "is taken at its word, one that only says the ask was too wide is halved until it is accepted " +
+                    "— because relay limits differ and a static cap is either above somebody's or below " +
+                    "everybody's. Zero means no relay on this roster has ever complained about filter width.",
             )
             put(
                 "poolReceived",

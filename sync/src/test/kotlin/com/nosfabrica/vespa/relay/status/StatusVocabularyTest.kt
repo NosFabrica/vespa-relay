@@ -173,7 +173,9 @@ class StatusVocabularyTest {
                         "unpageable": 1, "auth-refused": 1, "restricted": 1},
                        {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                         "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
-                        "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "retracted": 2, "abortedVisits": 2, "liveEvicted": 1, "poolReceived": 4000},
+                        "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "retracted": 2, "liveEvicted": 1, "poolReceived": 4000,
+                        "narrowedRelays": 9, "abortedVisits": 2, "abortedAuthRequired": 1, "abortedClosed": 1, "abortedQuiet": 0,
+                        "abortedUnreachable": 0, "abortedUnpageable": 0, "abortedGaveUp": 0, "abortedFailed": 0},
                        {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
                      "store": {"outstanding": 3, "slowAfterSec": 60, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
                                "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
@@ -348,6 +350,18 @@ class StatusVocabularyTest {
                     "negentropySkipped",
                     "retracted",
                     "abortedVisits",
+                    // …and the split of it, one member per way a visit ends
+                    // early. Listed rather than derived from the enum: this
+                    // test's whole job is to notice a name that moved on one
+                    // side and not the other.
+                    "abortedAuthRequired",
+                    "abortedClosed",
+                    "abortedQuiet",
+                    "abortedUnreachable",
+                    "abortedUnpageable",
+                    "abortedGaveUp",
+                    "abortedFailed",
+                    "narrowedRelays",
                     "liveEvicted",
                     "poolReceived",
                 ) +
