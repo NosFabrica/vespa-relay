@@ -3263,20 +3263,59 @@ Measured on `vespa-eventstore-staging`, one 11-minute window on a fresh pod:
 
 | | |
 |---|---|
-| relays the mirror aborted for ignoring the paging cursor | 137 |
+| relays the mirror aborted with `End.UNPAGEABLE` | 137 |
 | of those, found in the monitor's own 30166 records | 137 |
 | graded `prime` | **137 (100%)** |
 | tagged `pageable: true` | **137 (100%)** |
 
 `nostr.wine`, `relay.primal.net`, `eden.nostr.land`, `nostr.mom`,
-`relay.nostr.com` and `nostr.bitcoiner.social` are in that list, so honouring
-`until` for the first ask and serving the present ever after is COMMON rather
-than a fringe of broken hobby relays. It is also the most expensive kind of bad
+`relay.nostr.com` and `nostr.bitcoiner.social` are in that list, so this is not
+a fringe of broken hobby relays. It is also the most expensive kind of bad
 roster entry, because it does not fail — it answers, takes a visit, delivers
 events, advances nothing, and leaves its relay unreconciled.
 
-So the pass asks a second page at `until = <oldest event of page one> - 1`,
-strictly below, and reads its three possible answers:
+**THE MECHANISM IS NOT CONFIRMED, AND THE OBVIOUS ONE IS RULED OUT.** The
+reading that produced the fix below — "honours `until` for the first ask, serves
+the present ever after" — was checked against the relays the issue names and
+does NOT hold. `RelayComplianceProbe` dialled eight of them in five ask shapes
+each: the monitor's bare rung, the second page below it, the mirror's
+`kinds=[0] since=…` and `kinds=[1] since=…`, and the OUTBOX shape with `authors`
+bound to pubkeys the relay had just served. Every relay that answered advanced
+the cursor or drained honestly, on every shape:
+
+| url | page two | mirror `k0` | mirror `k1` | outbox `k0` (authors bound) |
+|---|---|---|---|---|
+| `relay.nostr.com` | advanced | advanced | advanced | drained |
+| `relay.primal.net` | advanced | advanced | advanced | drained |
+| `nostr.mom` | advanced | advanced | advanced | drained |
+| `nostr.semisol.dev` | advanced | advanced | advanced | drained |
+| `nostr.einundzwanzig.space` | advanced | advanced | advanced | drained |
+| `relay.pleb.one` | advanced | advanced | advanced | advanced |
+| `ec1.f7z.io` | advanced | advanced | advanced | drained |
+| `relay.bchnostr.com` | advanced | advanced | advanced | drained |
+
+(`nostr.wine` answered no window at all — it is auth-gated — and
+`haven.dergigi.com` answered an empty one.)
+
+Two things follow, and the second is the open one:
+
+- **The second page is still the right check** and the argument for it needs no
+  relay to misbehave: one page cannot be evidence about paging, and it was
+  being published as if it were. The same goes for the empty-page claim below.
+  Both are about what this pass may honestly SAY.
+- **What the mirror is aborting on is still unexplained.** A clean single-socket
+  dial is not the mirror's situation: its asks carry real author sets, many
+  filters merged onto one REQ, and a socket shared with live tail subscriptions
+  from other streams. `PagedFetchResult.End.UNPAGEABLE` is quartz's verdict, not
+  ours, and reading its bytecode it has more than one path — one fires when a
+  page's ids were ALL already seen, which is a walk that made no progress rather
+  than a relay serving above the cursor. Those are different faults with
+  different fixes, and the second is not a relay's at all. **The next step is on
+  the mirror's side**: capture the filter, the relay and the page that produced
+  one `UNPAGEABLE`, rather than inferring it from the monitor's end.
+
+With that said, the pass asks a second page at `until = <oldest event of page
+one> - 1`, strictly below, and reads its three possible answers:
 
 | page two | what it proves | verdict |
 |---|---|---|

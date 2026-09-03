@@ -515,12 +515,18 @@ class AliasProbe(
      * statement about paging.
      *
      * Measured on `vespa-eventstore-staging`, one 11-minute window: 137 relays
-     * the mirror aborted with "the relay ignored the paging cursor" were ALL in
-     * our own records, ALL graded `prime`, and ALL tagged `pageable: true` —
-     * 100% of them, and 49% of every aborted visit in that window. `nostr.wine`,
-     * `relay.primal.net`, `eden.nostr.land` and `nostr.mom` are in the list, so
-     * this is not a fringe of broken hobby relays: honouring `until` for the
-     * first ask and serving the present forever afterwards is COMMON.
+     * the mirror aborted with `PagedFetchResult.End.UNPAGEABLE` were ALL in our
+     * own records, ALL graded `prime`, and ALL tagged `pageable: true` — 100% of
+     * them, and 49% of every aborted visit in that window.
+     *
+     * **WHAT THE MIRROR TRIPS ON IS NOT PROVEN TO BE THIS.** Eight of those
+     * relays were then dialled directly, in five ask shapes each including the
+     * mirror's own and the outbox shape with `authors` bound, and every one that
+     * answered advanced the cursor or drained honestly — see
+     * `RelayComplianceProbe` and AGENTS.md for the table. So the second page is
+     * NOT justified here as a reproduction of that fault, and the argument for
+     * it does not need one: one page cannot be evidence about paging, and this
+     * pass was publishing it as if it were.
      *
      * ## What this proves, in three answers
      *
