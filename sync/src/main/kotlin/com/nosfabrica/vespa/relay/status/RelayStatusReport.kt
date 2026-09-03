@@ -58,6 +58,43 @@ import kotlinx.serialization.json.putJsonArray
  *   jq '.sync.data.relays.rows[] | select(.relay == "wss://relay.example/")'
  * ```
  *
+ * ## TWO AXES, and collapsing them into one was the first mistake
+ *
+ * `complete` means *the past below this is settled*. It does NOT mean *our copy
+ * is current*, and the first version of this table let it read that way — green
+ * chip, bottom of the sort, nothing else on the row about the present. A pair
+ * that is `complete` with a dead tail and nothing newer than Tuesday is a worse
+ * finding than one that is `paging 3/40` and live, and the table ranked them
+ * the other way round.
+ *
+ * So a row carries two independent readings and neither is derived from the
+ * other:
+ *
+ *  - **[syncStatus] — the PAST.** How far the backfill has got: `notStarted`,
+ *    `paging`, `complete`, or `refused`.
+ *  - **[behindSec] — the PRESENT.** How old the newest event we hold from this
+ *    pair is. `SyncCoverage.legs` hands the catch-up its NEWER leg first, so
+ *    this reaches now for any pair we have caught up on whatever depth its
+ *    backfill is still at — which is what makes it a freshness measure rather
+ *    than a second depth one.
+ *
+ * The tail is the third fact and belongs to neither: a tailed pair has its
+ * present carried live between visits, so old content there is a quiet relay
+ * rather than a mirror falling behind. That is why the fault rule below is
+ * `stale AND NOT tailed` — the only combination in which nothing is watching
+ * and nothing is arriving.
+ *
+ * ## …and the terms each relay serves us on
+ *
+ * The other half of *how is this relay letting us sync* was measured and thrown
+ * away. The monitor signs a NIP-77 verdict per relay and the roster carries it
+ * ([RosterBuilder.Roster.speaksNegentropy]); the pool learns a filter width from
+ * each relay's own refusal ([FilterWidths]). Both decide what this mirror can
+ * DO with a relay — whether its history can be reconciled at all, and whether
+ * its asks have to be chunked — and neither was visible per relay anywhere.
+ * They ride the row beside the relay's own sentence, which is the third term
+ * and the only one that was already there.
+ *
  * ## The four answers, and what each rests on
  *
  * The unit is the pool's own — a (relay, stream) PAIR — because that is what
@@ -150,6 +187,23 @@ object RelayStatusReport {
         val visiting: Boolean,
         /** …and it is holding a live subscription. */
         val live: Boolean,
+        /**
+         * The monitor's signed NIP-77 verdict for this relay: true speaks
+         * negentropy, false measured as refusing a NEG-OPEN, null unmeasured.
+         *
+         * A TERM, not a status. It decides whether this pair's history can ever
+         * be reconciled — against a `false` relay both audits are futile and the
+         * only thing that re-reads its past is `refetchThePastSeconds` — so a
+         * `paging` row that will never settle reads completely differently
+         * depending on it, and nothing published it per relay before.
+         */
+        val speaksNegentropy: Boolean? = null,
+        /**
+         * …and the filter width this relay has told us it takes, learned from
+         * its own refusal ([FilterWidths]). Null is the ordinary relay that has
+         * never complained.
+         */
+        val kindCap: Int? = null,
         /** The last time this unit ended early, if it ever has. */
         val abortReason: String? = null,
         val abortSaid: String? = null,
@@ -171,8 +225,9 @@ object RelayStatusReport {
     ): JsonObject? {
         if (units.isEmpty()) return null
         val folded = fold(bandsDoc, units)
-        val rows = units.mapIndexed { at, unit -> row(unit, folded[at]) }
+        val rows = units.mapIndexed { at, unit -> row(unit, folded[at], nowSeconds) }
         val counts = rows.groupingBy { it.status }.eachCount()
+        val fresh = rows.groupingBy { it.freshness }.eachCount()
         // WORST FIRST, and the order is the whole usability of a list this
         // long: an operator opens it because something is wrong, and a table
         // sorted by relay name would put the four broken rows on page nine.
@@ -181,8 +236,17 @@ object RelayStatusReport {
         // same document.
         val ordered =
             rows.sortedWith(
-                compareBy<Row> { STATUS_ORDER.indexOf(it.status) }
-                    .thenBy { it.coveredFrom ?: Long.MAX_VALUE }
+                // FAULTS FIRST, ACROSS BOTH AXES. Sorting by `syncStatus` alone
+                // put every stale-but-complete pair below every healthy paging
+                // one, which on this deployment is a page nine nobody reaches —
+                // and staleness is the half an operator opened the table for.
+                compareByDescending<Row> { it.fault }
+                    // …then the coldest, which inside the fault band ranks a
+                    // pair that has delivered nothing in a month above one that
+                    // missed the last hour, and inside the healthy band puts
+                    // the pairs closest to becoming a fault at the top.
+                    .thenByDescending { it.behindSec ?: Long.MAX_VALUE }
+                    .thenBy { STATUS_ORDER.indexOf(it.status) }
                     .thenBy { it.relay }
                     .thenBy { it.stream },
             )
@@ -210,6 +274,21 @@ object RelayStatusReport {
                     )
                 }
             }
+            // …AND THE OTHER AXIS, counted the same way. Two distributions
+            // rather than one because they are independent: `complete` says the
+            // past is settled and says nothing about whether our copy is
+            // current, and a table that published only the first let a mirror
+            // nine days cold read as 1,452 relays finished.
+            putJsonArray("freshness") {
+                for (bucket in FRESHNESS_ORDER) {
+                    add(
+                        buildJsonObject {
+                            put("behind", bucket)
+                            put("pairs", fresh[bucket] ?: 0)
+                        },
+                    )
+                }
+            }
             putJsonArray("rows") {
                 for (r in ordered.take(MAX_ROWS)) {
                     add(
@@ -230,6 +309,16 @@ object RelayStatusReport {
                             // as a walk that reached the epoch.
                             r.coveredFrom?.let { put("coveredFrom", it) }
                             r.coveredTo?.let { put("coveredTo", it) }
+                            // THE PRESENT, as an age. Beside `coveredTo` rather
+                            // than instead of it: the stamp is what a reader
+                            // diffs between two polls to see the walk move, and
+                            // the age is what they judge now.
+                            r.behindSec?.let { put("behindSec", it) }
+                            put("behind", r.freshness)
+                            if (r.fault) put("fault", true)
+                            // The terms this relay serves us on — see [PrimeUnit].
+                            r.speaksNegentropy?.let { put("negentropy", it) }
+                            r.kindCap?.let { put("kindCap", it) }
                             // The AGE and not the stamp. One number where two
                             // would say the same thing, and the age is the one
                             // a reader judges — a stamp alone needs the
@@ -259,6 +348,11 @@ object RelayStatusReport {
         val relay: String,
         val stream: String,
         val status: String,
+        val behindSec: Long?,
+        val freshness: String,
+        val fault: Boolean,
+        val speaksNegentropy: Boolean?,
+        val kindCap: Int?,
         val asks: Int,
         val bands: Int,
         val settled: Int,
@@ -275,6 +369,7 @@ object RelayStatusReport {
     private fun row(
         unit: PrimeUnit,
         band: Folded,
+        nowSeconds: Long,
     ): Row {
         val status =
             when {
@@ -291,10 +386,29 @@ object RelayStatusReport {
 
                 else -> PAGING
             }
+        // HOW OLD THE NEWEST THING WE HOLD IS. Clamped at zero: a relay
+        // serving a `created_at` in the future would otherwise read as
+        // negative, which renders as a mirror ahead of the network.
+        val behind = band.max?.let { (nowSeconds - it).coerceAtLeast(0) }
         return Row(
             relay = unit.relay,
             stream = unit.stream,
             status = status,
+            behindSec = behind,
+            freshness = freshnessOf(behind),
+            // THE ROWS THAT NEED SOMEBODY. A refusal and a pair never reached
+            // are faults of the past; nothing recent AND no tail is a fault of
+            // the present, and it is the one the first version of this table
+            // could not surface at all — a `complete` pair nine days cold sat
+            // green at the bottom of the sort under 1,200 healthy paging rows.
+            //
+            // A TAILED pair is excluded whatever its age: its present is being
+            // carried live, so old content there is a quiet relay and not a
+            // mirror falling behind. That distinction is the whole reason the
+            // tail is a term rather than a status.
+            fault = status == REFUSED || status == NOT_STARTED || (behind != null && behind >= STALE_SEC && !unit.live),
+            speaksNegentropy = unit.speaksNegentropy,
+            kindCap = unit.kindCap,
             asks = unit.askKeys.size,
             bands = band.bands,
             settled = band.settled,
@@ -401,6 +515,54 @@ object RelayStatusReport {
 
     /** Every band this unit holds is settled. */
     const val COMPLETE = "complete"
+
+    /** Newest event within the hour — our copy of this pair is current. */
+    const val CURRENT = "current"
+
+    /** …within the day. */
+    const val TODAY = "today"
+
+    /** …within the week. */
+    const val THIS_WEEK = "thisWeek"
+
+    /** Older than that, which with no tail is a fault — see [Row.fault]. */
+    const val OLDER = "older"
+
+    /** Nothing held at all, so there is no age to state. */
+    const val NOTHING = "nothing"
+
+    /**
+     * Which bucket an age falls in.
+     *
+     * FOUR AGES AND AN ABSENCE, on a log-ish scale, because that is how a
+     * reader judges a mirror: within the hour is working, within the day is a
+     * revisit cadence, within the week is a relay we are barely reaching, and
+     * older is a relay we have effectively stopped syncing. A linear scale
+     * would put every healthy pair in one bucket and every interesting one in
+     * the last.
+     */
+    internal fun freshnessOf(behindSec: Long?): String =
+        when {
+            behindSec == null -> NOTHING
+            behindSec < 3_600 -> CURRENT
+            behindSec < 86_400 -> TODAY
+            behindSec < STALE_SEC -> THIS_WEEK
+            else -> OLDER
+        }
+
+    /**
+     * When "nothing recent" becomes a finding — a week.
+     *
+     * Well past every revisit cadence the pool runs (the untailed base is
+     * minutes, and a stream's audit clock a week at its longest), so a pair
+     * this cold is not one waiting its turn. It is also the bound the fault
+     * rule uses, which is why it is a constant rather than two numbers that
+     * could drift apart.
+     */
+    const val STALE_SEC = 7 * 86_400L
+
+    /** The buckets in the order they are counted and drawn — freshest first, unlike [STATUS_ORDER]. */
+    val FRESHNESS_ORDER = listOf(CURRENT, TODAY, THIS_WEEK, OLDER, NOTHING)
 
     /**
      * The order the statuses are counted and drawn in, worst first.

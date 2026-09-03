@@ -790,20 +790,38 @@ function relayPanel(d) {
   if (!r) return null;
   const box = el("div");
 
-  // THE PARTITION FIRST, as chips, because on a healthy router it is the whole
-  // answer and the table under it is a scroll nobody needs to open. Off
-  // `statuses` and never off the rows — see [relayStatusOf], which is where
-  // that decision is made and tested.
+  // TWO HEADLINES, ONE PER AXIS, and the order is the reading: how current we
+  // are first, because that is the question an operator arrives with, then how
+  // far the backfill behind it has got. Both off the document's own partitions
+  // and never re-counted from `rows`, which is cut — see [relayStatusOf].
   const head = el("div", "sy-pool-head");
-  head.appendChild(el("span", "sy-pool-name", `${fmt(r.pairs)} prime relay/stream pair(s)`));
-  for (const c of r.chips) head.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("syncStatus")));
+  head.appendChild(el("span", "sy-pool-name",
+    `${fmt(r.current)} of ${fmt(r.pairs)} pair(s) current`));
+  for (const c of r.freshness) head.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("behind")));
   box.appendChild(head);
 
+  const past = el("div", "sy-pool-head");
+  past.appendChild(el("span", "sy-pool-name", "the past behind it"));
+  for (const c of r.chips) past.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("syncStatus")));
+  box.appendChild(past);
+
   const nowSec = Date.now() / 1000;
+  // THREE GROUPS, because the row answers three questions and a flat eight
+  // columns made a reader work out which cell belonged to which. `headedTable`
+  // already draws the band and rules the divides — the jobs table has used it
+  // since the budgets and the schedule became one table.
   const { scroll, table } = headedTable(
-    [["relay", null, false], ["stream", null, false], ["status", "syncStatus", false],
-     ["back to", "coveredFrom", false], ["through", "coveredTo", false],
-     ["verified", "verifiedAgoSec", true], ["what the relay said", "relaySaid", false]],
+    [["relay", null, false], ["stream", null, false],
+     ["newest", "behindSec", false],
+     ["status", "syncStatus", false], ["back to", "coveredFrom", false], ["verified", "verifiedAgoSec", true],
+     // ONE COLUMN, not three. The terms and the relay's own sentence answer
+     // the same question and the sentence is the only cell here that WRAPS —
+     // split across columns they pushed the table wider than its card and cut
+     // the sentence off at the right edge, which is the one thing on the row
+     // that says what to do.
+     ["terms", "negentropy", false]],
+    false,
+    [["", 2], ["how current", 1], ["how far back", 3], ["on what terms", 1]],
   );
   for (const row of r.rows) {
     const tr = el("tr", row.hot ? "hot" : null);
@@ -817,9 +835,23 @@ function relayPanel(d) {
     tr.appendChild(url);
     tr.appendChild(el("td", null, row.stream || "—"));
 
-    // THE STATUS, and the live marks beside it. Neither is a status — a pair
-    // can be paging AND tailed — so they ride the cell rather than becoming
-    // two more columns of mostly blanks.
+    // HOW CURRENT — the age of the newest thing we hold, and whether anything
+    // is listening for the next one. The tail belongs HERE and not beside the
+    // status: it is what carries the present between visits, so old content on
+    // a tailed pair is a quiet relay rather than a mirror falling behind, and
+    // that is the whole difference between the two readings.
+    const fresh = el("td");
+    // fmtPeriod, not fmtDur: these are CALENDAR ages, and the phase clock
+    // renders nine days as `216h 0m` — a number a reader has to divide before
+    // it means anything, which is the complaint fmtPeriod already exists for
+    // one table over.
+    fresh.appendChild(el("span", null, row.behindSec != null ? `${fmtPeriod(row.behindSec)} old` : "—"));
+    if (row.tailed) fresh.appendChild(chip("live", "live", term("tailed")));
+    fresh.title = term("behind");
+    tr.appendChild(fresh);
+
+    // HOW FAR BACK — the backfill's own axis, and nothing on it says anything
+    // about the present.
     const st = el("td");
     st.appendChild(el("span", null, row.label));
     if (row.progress) {
@@ -828,24 +860,35 @@ function relayPanel(d) {
       st.appendChild(done);
     }
     if (row.visiting) st.appendChild(chip("visiting", "busy", term("visiting")));
-    if (row.tailed) st.appendChild(chip("live", "live", term("tailed")));
     st.title = term("syncStatus");
     tr.appendChild(st);
-
-    // HOW FAR BACK THE WALK HAS REACHED, which is the number to watch on a
-    // `paging` row: unchanged between two polls means the walk is not
-    // advancing, and nothing else on this page says so per relay.
+    // The number to watch on a `paging` row: unchanged between two polls means
+    // the walk is not advancing, and nothing else here says so per relay.
     tr.appendChild(el("td", "sy-at", row.coveredFrom != null ? cursorOf(row.coveredFrom, nowSec) : "—"));
-    tr.appendChild(el("td", "sy-at", row.coveredTo != null ? cursorOf(row.coveredTo, nowSec) : "—"));
-    // The last completed reconcile, which is the closest thing to a "last
-    // synced" stamp this router has. `—` where none has ever run, which is not
-    // a fault: an audit is on a weekly clock and a young relay has not had one.
-    tr.appendChild(el("td", "n", row.verifiedAgoSec != null ? `${fmtDur(row.verifiedAgoSec)} ago` : "—"));
+    // The last completed reconcile. `—` where none has ever run, which is not a
+    // fault: the clock is a week in the shipped example and a young relay has
+    // not had one.
+    tr.appendChild(el("td", "n", row.verifiedAgoSec != null ? `${fmtPeriod(row.verifiedAgoSec)} ago` : "—"));
 
-    const why = el("td", "sy-said");
-    why.appendChild(el("span", row.why ? null : "sy-quiet", row.why || "—"));
-    if (row.why && row.refusedAgoSec != null) why.title = `last refused ${fmtDur(row.refusedAgoSec)} ago`;
-    tr.appendChild(why);
+    // ON WHAT TERMS — what this relay lets us do, which decides what the two
+    // columns to the left can ever reach. A relay the monitor measured as
+    // refusing a NEG-OPEN can never have its history reconciled, so a `paging`
+    // row beside `no neg` is one that will not settle by itself; a width cap is
+    // why its asks go out in chunks.
+    const terms = el("td", "sy-said");
+    if (row.negentropy === true) terms.appendChild(chip("neg", "live", term("negentropy")));
+    if (row.negentropy === false) terms.appendChild(chip("no neg", "warn", term("negentropy")));
+    if (row.kindCap != null) terms.appendChild(chip(`≤${row.kindCap} kinds`, "busy", term("kindCap")));
+    // The relay's own sentence LAST, after the terms we measured: those are
+    // standing facts about the relay and this is what it said the last time it
+    // turned us away, which is the detail a reader lands on.
+    if (row.why) {
+      const said = el("span", null, row.why);
+      if (row.refusedAgoSec != null) said.title = `last refused ${fmtPeriod(row.refusedAgoSec)} ago`;
+      terms.appendChild(said);
+    }
+    if (!terms.children.length) terms.appendChild(el("span", "sy-quiet", "—"));
+    tr.appendChild(terms);
     table.appendChild(tr);
   }
   box.appendChild(scroll);

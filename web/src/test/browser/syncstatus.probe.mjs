@@ -55,15 +55,29 @@ const DOC = {
           { syncStatus: "paging", pairs: 1200 },
           { syncStatus: "complete", pairs: 1452 },
         ],
+        freshness: [
+          { behind: "current", pairs: 1400 }, { behind: "today", pairs: 900 },
+          { behind: "thisWeek", pairs: 300 }, { behind: "older", pairs: 106 }, { behind: "nothing", pairs: 6 },
+        ],
         rows: [
-          { relay: "wss://walled.example/", stream: "contentViaOutbox", syncStatus: "refused",
+          // The row the second axis exists for: `complete`, and nine days
+          // cold with nothing listening. Under one axis this sat green at the
+          // bottom of the sort; here it is a fault and comes first.
+          { relay: "wss://cold.example/", stream: "contentViaOutbox", syncStatus: "complete", fault: true,
+            behind: "older", behindSec: 9 * 86400, coveredFrom: now - 900 * 86400, coveredTo: now - 9 * 86400,
+            verifiedAgoSec: 9 * 86400, negentropy: true },
+          { relay: "wss://walled.example/", stream: "contentViaOutbox", syncStatus: "refused", fault: true,
+            behind: "nothing",
             refusedFor: "the relay would not accept our NIP-42 identity",
             relaySaid: "auth-required: you are not authorized to perform reqs", refusedAgoSec: 900 },
-          { relay: "wss://fresh.example/", stream: "contentViaOutbox", syncStatus: "notStarted" },
+          { relay: "wss://fresh.example/", stream: "contentViaOutbox", syncStatus: "notStarted", behind: "nothing", fault: true },
           { relay: "wss://deep.example/", stream: "contentViaOutbox", syncStatus: "paging",
-            coveredFrom: now - 200 * 86400, coveredTo: now - 60, asks: 40, bands: 12, settled: 3, visiting: true },
+            behind: "current", behindSec: 60,
+            coveredFrom: now - 200 * 86400, coveredTo: now - 60, asks: 40, bands: 12, settled: 3, visiting: true,
+            negentropy: false, kindCap: 8 },
           { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete",
-            coveredFrom: now - 900 * 86400, coveredTo: now - 5, verifiedAgoSec: 41200, tailed: true },
+            behind: "current", behindSec: 5,
+            coveredFrom: now - 900 * 86400, coveredTo: now - 5, verifiedAgoSec: 41200, tailed: true, negentropy: true },
         ],
         omitted: 1712,
       },
@@ -114,12 +128,16 @@ const check = (cond, name, detail) => (cond ? ok(name) : fail(name, detail));
 // the three things no unit test in this repository can see.
 const text = await page.textContent("body");
 check(/prime relays/.test(text), "the section is drawn");
-check(/2,712 prime relay\/stream pair\(s\)/.test(text), "the roster's size is the heading", text.slice(0, 200));
+check(/1,400 of 2,712 pair\(s\) current/.test(text), "how up to date we are is the headline", text.slice(0, 300));
+check(/the past behind it/.test(text), "…and the backfill is the second heading, not the first");
 
-// THE CHIPS COME OFF THE PARTITION. Four rows are drawn; the chips must say
-// 54 / 6 / 1,200 / 1,452 — read off `statuses`, not counted off the rows.
+// THE CHIPS COME OFF THE PARTITIONS, both of them. Five rows are drawn; the
+// chips must say what the router reported, not what the rows add up to.
 for (const want of ["54 refused", "6 hasn't started", "1,200 paging", "1,452 complete"]) {
-  check(text.includes(want), `the chip reads "${want}" from the document's own partition`);
+  check(text.includes(want), `the past chip reads "${want}" from the document's own partition`);
+}
+for (const want of ["1,400 current", "900 today", "300 this week", "106 older", "6 nothing yet"]) {
+  check(text.includes(want), `the freshness chip reads "${want}"`);
 }
 
 // EVERY ROW, AND THE FOUR STATUSES TOLD APART.
@@ -127,6 +145,7 @@ const rows = await page.$$eval("table.sy-legs tr", (trs) =>
   trs.map((tr) => ({ hot: tr.classList.contains("hot"), cells: [...tr.querySelectorAll("td")].map((td) => td.textContent.trim()) }))
      .filter((r) => r.cells.length));
 const byRelay = Object.fromEntries(rows.filter((r) => r.cells[0]).map((r) => [r.cells[0], r]));
+check(!!byRelay["cold.example/"], "the stale-but-complete relay has a row", Object.keys(byRelay).join(" | "));
 check(!!byRelay["walled.example/"], "the refused relay has a row", Object.keys(byRelay).join(" | "));
 check(!!byRelay["fresh.example/"], "…and so does the one never reached");
 check(!!byRelay["deep.example/"], "…and the one still paging");
@@ -137,11 +156,27 @@ check(!!byRelay["done.example/"], "…and the one that is finished");
 check(/auth-required: you are not authorized/.test(text), "the relay's own words reach the page");
 check(/would not accept our NIP-42 identity/.test(text), "…beside the router's reading of which wall it is");
 
-// ONLY THE TWO THAT NAME A FAULT ARE COLOURED. `paging` is a mirror working.
+// THE FAULT MARK SPANS BOTH AXES. Under one axis the cold-complete row was
+// green and last; it is the whole reason the second axis exists.
+check(byRelay["cold.example/"]?.hot === true, "a complete pair nine days cold is coloured");
 check(byRelay["walled.example/"]?.hot === true, "the refused row is coloured");
 check(byRelay["fresh.example/"]?.hot === true, "the never-started row is coloured");
 check(byRelay["deep.example/"]?.hot === false, "the paging row is NOT coloured — a mirror working is not a fault");
-check(byRelay["done.example/"]?.hot === false, "and neither is a finished one");
+check(byRelay["done.example/"]?.hot === false, "and neither is a current, finished one");
+
+// …AND THE ORDER FOLLOWS IT. The cold complete pair is first, above three
+// healthy rows it used to sit beneath.
+const first = rows.find((r) => r.cells[0])?.cells[0];
+check(first === "cold.example/", "the faults are first, across both axes", `first row: ${first}`);
+
+// THE TERMS, which decide what the two columns to their left can ever reach.
+check(/no neg/.test(text), "a relay that cannot reconcile says so");
+check(/≤8 kinds/.test(text), "…and one whose filter width we learned says that");
+check(/9d old/.test(text), "the newest event's age reads in days, not 216 hours");
+// The table must not run wider than its card: the sentence is the one cell
+// that wraps and the one an operator needs whole.
+const overflow = await page.$$eval("table.sy-legs", (ts) => ts.map((t) => t.scrollWidth - t.clientWidth));
+check(overflow.every((o) => o <= 1), "the table fits its card", `overflow: ${overflow.join(",")}`);
 
 // HOW MUCH OF WHAT IT OWES IS DONE — the number that makes `paging`
 // actionable, since a unit owes one ask per bound provider and the status

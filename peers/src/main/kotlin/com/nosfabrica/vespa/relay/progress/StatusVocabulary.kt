@@ -1228,6 +1228,45 @@ object StatusVocabulary {
                     "file and the opposite finding, which is the whole reason this table exists.",
             )
             put(
+                "behind",
+                "HOW CURRENT our copy of this pair is — which bucket the age of the newest event we hold falls in: " +
+                    "`current` (within the hour), `today`, `thisWeek`, `older`, or `nothing` where we hold none. " +
+                    "THE OTHER AXIS FROM `syncStatus`, and deliberately not folded into it: `complete` means the past " +
+                    "below is settled and says nothing about the present, so a pair that is complete and nine days " +
+                    "cold is a worse finding than one still paging and live. Read it with `tailed` — a tailed pair " +
+                    "has its present carried live between visits, so old content there is a quiet relay rather than " +
+                    "a mirror falling behind.",
+            )
+            put(
+                "behindSec",
+                "…and the age itself, in seconds. Off the newest `created_at` any of this pair's bands covers, which " +
+                    "is a freshness measure and not a second depth one: the catch-up walks its NEWER leg first, so " +
+                    "this reaches now for any pair we have caught up on whatever depth its backfill is still at.",
+            )
+            put(
+                "fault",
+                "This row needs somebody — the router's own verdict across BOTH axes, so a page cannot rank rows by " +
+                    "one of them and disagree with it. True for a refusal, for a pair never reached, and for one " +
+                    "with nothing recent AND no tail watching it. A cold pair that IS tailed is excluded: something " +
+                    "is listening, so what is old is the relay's content and not our copy of it.",
+            )
+            put(
+                "negentropy",
+                "Whether the monitor measured this relay as answering a NEG-OPEN — its signed NIP-77 verdict on the " +
+                    "same 30166 record the roster admits it by. A TERM, not a status: against a `false` relay both " +
+                    "audits are futile end to end, so its history can never be reconciled and only the stream's " +
+                    "`refetchThePastSeconds` re-reads its past — which is what turns a `paging` row that will not " +
+                    "settle from a puzzle into a configuration question. Absent means unmeasured, which is a third " +
+                    "reading and not a `false`: the ask tries and finds out.",
+            )
+            put(
+                "kindCap",
+                "How many kinds this relay accepts in one filter, learned from its own refusal, so this pair's asks " +
+                    "go to it in chunks of that many. Absent on every relay that has never complained — which is " +
+                    "nearly all of them. Present means this relay would otherwise have refused our whole ask and " +
+                    "could never have completed one; see `narrowedRelays` for the count.",
+            )
+            put(
                 "coveredFrom",
                 "How far BACK the walk of this pair has reached — the oldest `created_at` any of its bands " +
                     "covers. THE number to watch on a `paging` row: unchanged between two polls means the walk " +

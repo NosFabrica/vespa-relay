@@ -61,7 +61,20 @@ class RelayStatusReportTest {
         abort: String? = null,
         said: String? = null,
         abortAtSec: Long = 0,
-    ) = RelayStatusReport.PrimeUnit(relay, stream, askKeys.toSet(), visiting, live, abort, said, abortAtSec)
+        speaksNegentropy: Boolean? = null,
+        kindCap: Int? = null,
+    ) = RelayStatusReport.PrimeUnit(
+        relay = relay,
+        stream = stream,
+        askKeys = askKeys.toSet(),
+        visiting = visiting,
+        live = live,
+        speaksNegentropy = speaksNegentropy,
+        kindCap = kindCap,
+        abortReason = abort,
+        abortSaid = said,
+        abortAtSec = abortAtSec,
+    )
 
     /** The one-kind ask every fixture below that does not care uses. */
     private val plain = """{"kinds":[1]}"""
@@ -281,6 +294,145 @@ class RelayStatusReportTest {
         // WORST FIRST, which is what makes the cut safe: the one row naming a
         // fault is above it, not on page nine.
         assertEquals("wss://bad.example/", rowsOf(out).first()["relay"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `complete says nothing about current, and the sort no longer pretends it does`() {
+        // THE CONFLATION THIS AXIS EXISTS TO END. `complete` means the past
+        // below is settled. A pair that is complete with a dead tail and
+        // nothing newer than last week is a worse finding than one still
+        // paging and live — and the first version of this table ranked them
+        // the other way round, green chip and bottom of the sort, because it
+        // had one axis and that axis was the past.
+        val cold = 1_700_000_000 - 9 * 86_400
+        val doc =
+            bands(
+                """
+                {"content": {
+                   "{\"kinds\":[1]}": {
+                     "wss://cold.example/": {"min": 1600000000, "max": $cold, "complete": true},
+                     "wss://busy.example/": {"min": 1600000000, "max": 1699999900, "complete": false}}}}
+                """.trimIndent(),
+            )
+        val out =
+            RelayStatusReport.build(
+                doc,
+                listOf(
+                    unit("wss://cold.example/", "content", plain),
+                    unit("wss://busy.example/", "content", plain, live = true),
+                ),
+                nowSeconds = 1_700_000_000,
+            )!!
+        val rows = rowsOf(out)
+        val byRelay = rows.associateBy { it["relay"]!!.jsonPrimitive.content }
+
+        // Both readings on both rows, and neither derived from the other.
+        assertEquals("complete", byRelay.getValue("wss://cold.example/")["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals("older", byRelay.getValue("wss://cold.example/")["behind"]!!.jsonPrimitive.content)
+        assertEquals("paging", byRelay.getValue("wss://busy.example/")["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals("current", byRelay.getValue("wss://busy.example/")["behind"]!!.jsonPrimitive.content)
+
+        // THE ORDER, which is what an operator actually experiences: the cold
+        // complete pair is the fault and comes first.
+        assertTrue(
+            byRelay
+                .getValue("wss://cold.example/")["fault"]!!
+                .jsonPrimitive.content
+                .toBoolean(),
+        )
+        assertFalse(byRelay.getValue("wss://busy.example/").containsKey("fault"))
+        assertEquals("wss://cold.example/", rows.first()["relay"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a tailed pair is never a staleness fault, however quiet the relay is`() {
+        // The tail is what carries the present between visits, so old content
+        // on a tailed pair is a quiet relay and not a mirror falling behind.
+        // Without this exclusion every low-traffic relay on the roster — of
+        // which there are many — would sit in the fault band forever and
+        // retire the mark.
+        val cold = 1_700_000_000 - 60 * 86_400
+        val doc =
+            bands("""{"content": {"{\"kinds\":[1]}": {"wss://quiet.example/": {"min": 1600000000, "max": $cold, "complete": true}}}}""")
+        val row =
+            rowsOf(RelayStatusReport.build(doc, listOf(unit("wss://quiet.example/", "content", plain, live = true)), 1_700_000_000)!!).single()
+        assertEquals("older", row["behind"]!!.jsonPrimitive.content, "the age is still reported…")
+        assertFalse(row.containsKey("fault"), "…but something is listening, so it is not ours to fix")
+    }
+
+    @Test
+    fun `the freshness buckets partition the pairs too, and the two axes are counted apart`() {
+        val doc =
+            bands(
+                """
+                {"content": {"{\"kinds\":[1]}": {
+                   "wss://a.example/": {"min": 1600000000, "max": 1699999900, "complete": true},
+                   "wss://b.example/": {"min": 1600000000, "max": 1699990000, "complete": true}}}}
+                """.trimIndent(),
+            )
+        val out =
+            RelayStatusReport.build(
+                doc,
+                listOf(
+                    unit("wss://a.example/", "content", plain),
+                    unit("wss://b.example/", "content", plain),
+                    unit("wss://none.example/", "content", plain),
+                ),
+                1_700_000_000,
+            )!!
+        val fresh =
+            out["freshness"]!!
+                .jsonArray
+                .associate { it.jsonObject["behind"]!!.jsonPrimitive.content to it.jsonObject["pairs"]!!.jsonPrimitive.int }
+        assertEquals(RelayStatusReport.FRESHNESS_ORDER.toSet(), fresh.keys, "every bucket, in the document's own order")
+        assertEquals(3, fresh.values.sum(), "the buckets add up to the pairs they split")
+        assertEquals(1, fresh["current"], "100 seconds old")
+        assertEquals(1, fresh["today"], "ten thousand seconds old — inside the day, past the hour")
+        assertEquals(1, fresh["nothing"], "and one with no coverage at all has no age to state")
+        // …and the OTHER partition still closes over the same pairs, which is
+        // the point of two: three pairs, counted twice, two different answers.
+        assertEquals(3, statusesOf(out).values.sum())
+    }
+
+    @Test
+    fun `the terms a relay serves us on ride the row, and unmeasured is not false`() {
+        // The monitor signs a NIP-77 verdict per relay and the pool learns a
+        // filter width from each relay's own refusal. Both decide what this
+        // mirror can DO with a relay and neither was visible per relay: a
+        // `paging` row against a relay that cannot reconcile will never settle
+        // by itself, which is a configuration question rather than a puzzle.
+        val rows =
+            rowsOf(
+                RelayStatusReport.build(
+                    bands("{}"),
+                    listOf(
+                        unit("wss://neg.example/", "content", plain, speaksNegentropy = true),
+                        unit("wss://noneg.example/", "content", plain, speaksNegentropy = false, kindCap = 8),
+                        unit("wss://plain.example/", "content", plain),
+                    ),
+                    1_700_000_000,
+                )!!,
+            ).associateBy { it["relay"]!!.jsonPrimitive.content }
+        assertEquals(
+            true,
+            rows
+                .getValue("wss://neg.example/")["negentropy"]!!
+                .jsonPrimitive.content
+                .toBoolean(),
+        )
+        assertEquals(
+            false,
+            rows
+                .getValue("wss://noneg.example/")["negentropy"]!!
+                .jsonPrimitive.content
+                .toBoolean(),
+        )
+        assertEquals(8, rows.getValue("wss://noneg.example/")["kindCap"]!!.jsonPrimitive.int)
+        // UNMEASURED IS A THIRD READING. "no verdict yet" and "measured as
+        // refusing a NEG-OPEN" mean opposite things to an ask — the first
+        // tries and finds out — so the member is absent rather than false.
+        assertFalse(rows.getValue("wss://plain.example/").containsKey("negentropy"))
+        assertFalse(rows.getValue("wss://plain.example/").containsKey("kindCap"))
     }
 
     @Test

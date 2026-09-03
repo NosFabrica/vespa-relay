@@ -16,7 +16,7 @@ import {
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
   STARTING, STAGES_SHOWN, STUCK_CALL_SEC, CALLS_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
-  stageDeltas, storeOf, streamSections, relayStatusOf, SYNC_STATUSES,
+  stageDeltas, storeOf, streamSections, relayStatusOf, SYNC_STATUSES, FRESHNESS,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1344,15 +1344,20 @@ const leg = (n, quiet, over = {}) => ({
       { syncStatus: "paging", pairs: 1200 },
       { syncStatus: "complete", pairs: 1452 },
     ],
+    freshness: [
+      { behind: "current", pairs: 1400 }, { behind: "today", pairs: 900 },
+      { behind: "thisWeek", pairs: 300 }, { behind: "older", pairs: 106 }, { behind: "nothing", pairs: 6 },
+    ],
     rows: [
-      { relay: "wss://walled.example/", stream: "content", syncStatus: "refused",
+      { relay: "wss://walled.example/", stream: "content", syncStatus: "refused", behind: "nothing", fault: true,
         refusedFor: "the relay would not accept our NIP-42 identity",
         relaySaid: "auth-required: you are not authorized to perform reqs", refusedAgoSec: 900 },
-      { relay: "wss://fresh.example/", stream: "content", syncStatus: "notStarted" },
-      { relay: "wss://deep.example/", stream: "content", syncStatus: "paging",
-        coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true, asks: 40, settled: 3 },
-      { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete",
-        coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true },
+      { relay: "wss://fresh.example/", stream: "content", syncStatus: "notStarted", behind: "nothing", fault: true },
+      { relay: "wss://deep.example/", stream: "content", syncStatus: "paging", behind: "current", behindSec: 90,
+        coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true, asks: 40, settled: 3,
+        negentropy: false, kindCap: 8 },
+      { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete", behind: "current", behindSec: 5,
+        coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true, negentropy: true },
     ],
     omitted: 1712,
   };
@@ -1374,9 +1379,33 @@ const leg = (n, quiet, over = {}) => ({
   assert.deepEqual(empty.chips.map((c) => c.key), ["refused", "notStarted", "paging", "complete"]);
   ok("a status nothing is in is drawn as zero, in the document's own order");
 
-  // Only the two that name a fault are coloured. `paging` is a mirror working.
+  // THE ROUTER'S OWN VERDICT, taken and not re-derived. It spans both axes —
+  // a page that coloured rows off `syncStatus` alone would leave every stale
+  // `complete` pair uncoloured, which is the finding the second axis exists
+  // for.
   assert.deepEqual(t.rows.map((r) => r.hot), [true, true, false, false]);
-  ok("refused and never-started colour a row; paging and complete do not");
+  ok("the fault mark is the document's, so the page cannot disagree about which rows matter");
+
+  // THE OTHER HEADLINE, and the one that answers "how up to date are we". Off
+  // `freshness` for the same reason the statuses are off `statuses`.
+  assert.deepEqual(t.freshness.map((c) => [c.key, c.pairs]),
+    [["current", 1400], ["today", 900], ["thisWeek", 300], ["older", 106], ["nothing", 6]]);
+  assert.equal(t.current, 1400);
+  assert.equal(Math.round(t.currentShare * 100), 52);
+  ok("the freshness partition and the current share are read off the document");
+
+  assert.deepEqual(FRESHNESS.map(([k]) => k), ["current", "today", "thisWeek", "older", "nothing"]);
+  ok("the five freshness buckets are the document's, in the document's order");
+
+  // THE TERMS. `negentropy` is a tri-state and the absent case is a real
+  // reading — the monitor has not measured it — so it must not collapse to
+  // false, which would draw `no neg` over every unmeasured relay on the roster.
+  assert.equal(t.rows[2].negentropy, false);
+  assert.equal(t.rows[3].negentropy, true);
+  assert.equal(t.rows[0].negentropy, null, "unmeasured is neither true nor false");
+  assert.equal(t.rows[2].kindCap, 8);
+  assert.equal(t.rows[3].kindCap, null);
+  ok("the terms a relay serves us on reach the row, and unmeasured stays absent");
 
   // The two halves of a refusal joined: the router's reading of WHICH wall, and
   // the relay's own sentence, which is the only thing that says what to do.

@@ -489,6 +489,13 @@ internal class VisitPool(
                         askKeys = unit.identity,
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
+                        // THE TERMS THIS RELAY SERVES US ON, both already
+                        // decided and neither visible per relay until now: the
+                        // monitor's signed NIP-77 verdict, which is what says
+                        // whether this pair's history can ever be reconciled,
+                        // and the width its own refusal taught us.
+                        speaksNegentropy = snapshot.speaksNegentropy[url],
+                        kindCap = widths.capFor(url),
                         abortReason = abort?.reason?.says,
                         abortSaid = abort?.said,
                         abortAtSec = abort?.atSec ?: 0,

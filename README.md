@@ -297,13 +297,20 @@ is up:
   Charted from that service's own **`GET /stats.json`**.
 
   It opens with **`prime relays`** — one row per relay a stream is allowed to
-  dial, and where the sync of it actually stands: `complete` with the age of
-  its last full reconcile, `paging` with how far back the walk has reached,
-  `refused` with the reason and the relay's own sentence, or `hasn't started`.
-  That last pair is the reason the table exists: a relay never reached and one
-  refused on every visit have no band either way, so the coverage chart below
-  can show neither, and they are opposite findings. Worst rows first, with the
-  four counts above the table complete even when the list is cut.
+  dial, on two independent axes. **How current** we are: the age of the newest
+  event we hold from it, and whether a live tail is carrying its present.
+  **How far back** the walk has got: `complete`, `paging` (with how deep and
+  how much of what it owes is settled), `refused` with the reason, or `hasn't
+  started`. The two are not the same question — a relay can be `complete` and
+  nine days cold — and the headline answers the first one, because that is the
+  one an operator arrives with.
+
+  Beside them, **on what terms** that relay lets us sync: whether the monitor
+  measured it as speaking negentropy (without it, its history can never be
+  reconciled), the filter width its own refusal taught us, and the last thing
+  it said when it turned us away. Rows that need somebody come first — a
+  refusal, a relay never reached, or one gone cold with nothing listening —
+  and the counts above the table stay complete even when the list is cut.
 
   It is served by the process doing the work, and that is the point rather than
   a detail. These were two cards on the relay's page, drawn from JSON files the

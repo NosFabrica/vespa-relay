@@ -102,10 +102,11 @@ class StatusVocabularyTest {
             // and `examples` inside it are what a reader looks up; the plural
             // is the shape, exactly as `relays` is inside `inFlight`.
             "reasons",
-            // …and the same call for the per-relay table's partition: the rows
-            // inside it are `syncStatus` and `pairs`, both of which a reader
-            // looks up, and the plural is the shape they sit in.
+            // …and the same call for the per-relay table's two partitions: the
+            // rows inside them are `syncStatus` / `behind` and `pairs`, all of
+            // which a reader looks up, and the plural is the shape they sit in.
             "statuses",
+            "freshness",
         )
 
     @Test
@@ -144,8 +145,11 @@ class StatusVocabularyTest {
                                    "waiting": 397, "nextInSec": 41200}]}],
                      "relays": {"pairs": 44, "omitted": 2,
                                 "statuses": [{"syncStatus": "refused", "pairs": 4}, {"syncStatus": "complete", "pairs": 30}],
+                                "freshness": [{"behind": "current", "pairs": 30}, {"behind": "older", "pairs": 14}],
                                 "rows": [{"relay": "wss://nos.lol/", "stream": "content", "syncStatus": "paging",
                                           "asks": 40, "bands": 3, "settled": 1, "coveredFrom": 1689857148, "coveredTo": 1769998206,
+                                          "behindSec": 90, "behind": "current", "fault": true,
+                                          "negentropy": true, "kindCap": 100,
                                           "verifiedAgoSec": 41200, "visiting": true, "tailed": true,
                                           "refusedFor": "the relay closed the subscription",
                                           "relaySaid": "error: too many kinds in filter", "refusedAgoSec": 900}]},
@@ -378,6 +382,11 @@ class StatusVocabularyTest {
                     // reader looks up, exactly as `reasons` is.
                     "syncStatus",
                     "pairs",
+                    "behind",
+                    "behindSec",
+                    "fault",
+                    "negentropy",
+                    "kindCap",
                     "coveredFrom",
                     "coveredTo",
                     "verifiedAgoSec",

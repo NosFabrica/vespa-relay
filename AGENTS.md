@@ -807,8 +807,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           started, with the depth reached and the relay's own
                           sentence where it refused. Its subject is the ROSTER,
                           which is why it can report the two states the
-                          coverage fold structurally cannot. The join is on the
-                          unit's OWED ASKS — see the trap below
+                          coverage fold structurally cannot. TWO AXES per row —
+                          the past (`syncStatus`) and the present (`behind`),
+                          neither derived from the other — plus the terms the
+                          relay serves us on. The join is on the unit's OWED
+                          ASKS — see the trap below
     GaugeSeries.kt        the last hour of the four process gauges — the one
                           thing a single tick cannot state, and all that is
                           left of SyncProgressReport
@@ -4375,7 +4378,26 @@ Reach for it first.
   `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
   fault: it counts relays that have told us how wide a filter they take, and
   each one is a relay that could never finish an ask before.
-- **the `prime relays` table on the mirror's page** — WHERE EACH RELAY STANDS,
+- **the `prime relays` table on the mirror's page** — TWO AXES, and reading
+  either one alone is how this table was wrong first. `syncStatus` is the PAST
+  (`notStarted` / `paging` / `complete` / `refused`); `behind` is the PRESENT —
+  how old the newest event we hold from that pair is, bucketed `current` /
+  `today` / `thisWeek` / `older` / `nothing`. **`complete` says the past below
+  is settled and says nothing at all about whether we are current**, so a pair
+  that is complete with a dead tail and nothing since last week is a worse
+  finding than one still paging and live — and the first version ranked them
+  the other way round, green chip at the bottom of the sort. The `fault` mark
+  and the row order now span both: a refusal, a pair never reached, or one that
+  is cold with NO TAIL watching it. A cold pair that IS tailed is excluded on
+  purpose — something is listening, so what is old is the relay's content and
+  not our copy of it, and without that exclusion every low-traffic relay on the
+  roster would sit in the fault band forever and retire the mark. The third
+  reading is the TERMS a relay serves us on, both of which were measured and
+  invisible per relay: the monitor's signed NIP-77 verdict (`negentropy` —
+  against a `false` relay a `paging` row can never settle by itself, which is a
+  configuration question rather than a puzzle) and the filter width its own
+  refusal taught us (`kindCap`), beside the relay's own sentence.
+- **…and the same table's per-relay reading** — WHERE EACH RELAY STANDS,
   which everything else the mirror publishes is an aggregate over. `roster`
   counts them, the coverage card charts their bands folded per stream, and the
   in-flight tables name the handful a worker is holding this instant — so *is

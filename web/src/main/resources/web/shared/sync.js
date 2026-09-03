@@ -1443,6 +1443,26 @@ export function scheduleOf(progress) {
 }
 
 /**
+ * THE FIVE FRESHNESS BUCKETS — how old the newest event we hold from a pair is.
+ *
+ * The OTHER axis, and it is deliberately not folded into [SYNC_STATUSES]: a
+ * pair that is `complete` and nine days cold is a worse finding than one that
+ * is `paging` and live, and a single status column can only rank them one way.
+ * `complete` says the past is settled and says nothing at all about the
+ * present.
+ *
+ * Freshest first, unlike the statuses — this one reads as a distribution an
+ * operator wants the healthy end of, not a queue of faults.
+ */
+export const FRESHNESS = [
+  ["current", "current", "live"],
+  ["today", "today", "live"],
+  ["thisWeek", "this week", "busy"],
+  ["older", "older", "warn"],
+  ["nothing", "nothing yet", "warn"],
+];
+
+/**
  * THE FOUR SYNC STATUSES a prime (relay, stream) pair can be in — the
  * document's own words, the label the page shows, and the tone each earns.
  *
@@ -1484,9 +1504,18 @@ export const SYNC_STATUSES = [
 export function relayStatusOf(relays) {
   if (!relays || !relays.pairs) return null;
   const counted = new Map((relays.statuses || []).map((s) => [s.syncStatus, s.pairs || 0]));
+  const fresh = new Map((relays.freshness || []).map((f) => [f.behind, f.pairs || 0]));
+  // The headline, and the one sentence that answers "how up to date are we".
+  // Off the document's own partition for [relayStatusOf]'s reason, and stated
+  // as a share rather than a count because 1,452 means nothing without the
+  // denominator sitting beside it.
+  const current = fresh.get("current") || 0;
   return {
     pairs: relays.pairs,
+    current,
+    currentShare: relays.pairs ? current / relays.pairs : 0,
     chips: SYNC_STATUSES.map(([key, label, tone]) => ({ key, label, tone, pairs: counted.get(key) || 0 })),
+    freshness: FRESHNESS.map(([key, label, tone]) => ({ key, label, tone, pairs: fresh.get(key) || 0 })),
     rows: (relays.rows || []).map((r) => ({
       relay: r.relay || "",
       // The scheme is dropped and nothing else is, exactly as in `legsOf`: a
@@ -1503,9 +1532,19 @@ export function relayStatusOf(relays) {
       // status restated, and on `complete`, where it is by definition all of
       // them.
       progress: r.syncStatus !== "complete" && r.asks > 1 ? `${r.settled || 0}/${r.asks}` : null,
-      // Only the two that name a fault. `paging` is a mirror working and
-      // `complete` is one that has finished; colouring either retires the mark.
-      hot: r.syncStatus === "refused" || r.syncStatus === "notStarted",
+      // THE ROUTER'S OWN VERDICT, not re-derived here. It spans both axes —
+      // a refusal, a pair never reached, or one that is cold with no tail
+      // watching it — and re-computing that from `syncStatus` alone is exactly
+      // how the page and the document come to disagree about which rows matter.
+      hot: !!r.fault,
+      behindSec: Number.isFinite(r.behindSec) ? r.behindSec : null,
+      behind: r.behind || null,
+      behindLabel: FRESHNESS.find(([k]) => k === r.behind)?.[1] || null,
+      // The terms this relay serves us on. `negentropy` is a tri-state and the
+      // absent case is a real reading — the monitor has not measured it — so
+      // it stays null rather than collapsing to false.
+      negentropy: typeof r.negentropy === "boolean" ? r.negentropy : null,
+      kindCap: Number.isFinite(r.kindCap) ? r.kindCap : null,
       // Null rather than 0 for every clock and every edge on this row: a pair
       // with no band has no edges, and a 1970 in either column would read as a
       // walk that reached the epoch.
