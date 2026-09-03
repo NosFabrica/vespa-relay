@@ -286,6 +286,17 @@ every word tried), but its threshold is an ESTIMATE — kept sets held docs of
 rank 2 while excluding rank-40 ones — so no bound can be proven over it; the
 explicit range clause is what makes the proof sound, and it is as cheap.
 
+**Where it lives now:** the store branch `claude/trust-descent-myuucz` on
+NosFabrica/vespa-eventstore — `reputation.max_rank` and its import, the
+projection's upkeep and the one-time backfill, `EventQuery.trustFloor`, the
+descent and its bound in `TrustDescent`, the mock engine's rung support and
+the tests, and the measurement in that repo's `benchmark/README.md` §6. The
+relay takes it by bumping `vespaEventStore` in `gradle/libs.versions.toml`
+once it lands; nothing on the relay side changes shape, since a REQ still
+answers with its events in final rank order and then EOSE. The earlier
+depth-cut branch (`claude/search-query-performance-myuucz` there) is
+superseded and should be closed unmerged.
+
 ## What is NOT the problem
 
 Things measured on the way that are fine and need no change: the WebSocket
