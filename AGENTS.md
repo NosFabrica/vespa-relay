@@ -167,6 +167,18 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
+# that refuse us, and a real Vespa the events have to land in. Everything else
+# written for that issue is a unit test over a fake, a browser probe over a
+# fixture, or a dial that asserts what a relay SAYS — none of them run the
+# machine, and this is the one that found the listener race. Needs docker.
+DOCKER_MIN_API_VERSION=1.24 dockerd &
+VESPA_MEM_LIMIT=6g docker compose up -d vespa
+until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
+WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i
+#   Runs ~20 minutes: the untailed revisit base is five, and the point is what
+#   happens ACROSS revisits, not inside one.
+
 # CAN WE SYNC THIS RELAY, ASKED OF EACH ONE: dials every url #185 named, sends
 # contentViaOutbox's real 141-kind ask, and prints how each ends, what the relay
 # SAID for itself, whether our NIP-42 AUTH was accepted, and — where the refusal
@@ -4656,6 +4668,23 @@ failure stays quiet, because silence costs a retry and being wrong costs a false
 statement about someone else's server.
 
 ## Traps that have cost real time
+
+- **A relay's own words reach you on a DIFFERENT listener from its refusal, and
+  quartz runs the refusal's first.** `fetchAllPages` returns when the `CLOSED`
+  reaches its SUBSCRIPTION listener; `RelayComplaints` records the sentence on a
+  CONNECTION listener, which quartz dispatches afterwards
+  (`NostrClient.onIncomingMessage` — the same ordering `RelayAuthenticator`
+  documents its own grace for). So reading the sentence straight after a refused
+  walk is a race, and it is lost at random.
+  **Every unit test passed throughout, because a fake answers instantly.** It
+  took `WidthRescueLiveProbe` — the real pool, real relays, a real Vespa — to
+  see it: from identical code, `git.cloistr.xyz` won the race three times and
+  narrowed 139 → 69 → 34 → 17 until it was served, while `purplerelay.com` lost
+  it on the second attempt, stopped the narrowing dead at 69 and aborted a visit
+  that was one halving from working. `RelayComplaints.awaitSince` gives the
+  sentence a 250ms grace, paid only on a refusal. **If a fact arrives on a
+  different callback from the thing that makes you want it, assume you can be
+  early.**
 
 - **A fallback that returns a COUNT cannot tell "empty" from "refused", and the
   one that claims coverage must never be built on it.** The negentropy sweep's

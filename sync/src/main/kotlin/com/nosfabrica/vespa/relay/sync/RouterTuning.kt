@@ -81,6 +81,13 @@ internal const val LEG_QUIET_GIVE_UP_MS = 10 * NEG_IDLE_MS
  * It costs nothing in convergence because the cap OUTLIVES THE VISIT: the pool
  * keeps what it learned, so the next visit starts three halvings in and the
  * relay is inside its limit within a handful of visits rather than never.
+ *
+ * MEASURED, against two real relays and a real store — `WidthRescueLiveProbe`.
+ * `git.cloistr.xyz` fits inside one visit (139 → 69 → 34 → 17, then served).
+ * `purplerelay.com` does not: it spends the same three halvings, is still
+ * refused at 17, and aborts — and the revisit five minutes later starts at 17,
+ * narrows once more to 8, and pages its history back to 2023. Two visits, which
+ * is what this bound trades a re-walk of the succeeded chunks for.
  */
 internal const val MAX_NARROWINGS = 3
 

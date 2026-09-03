@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -73,7 +74,57 @@ internal interface RelayComplaints {
         sinceMs: Long,
     ): String?
 
+    /**
+     * …and the same read, given a moment for the sentence to ARRIVE.
+     *
+     * **The refusal reaches the caller before it reaches this.** quartz
+     * dispatches a `CLOSED` to SUBSCRIPTION listeners before connection
+     * listeners (`NostrClient.onIncomingMessage`, and the same ordering
+     * `RelayAuthenticator` documents for its own grace) — so `fetchAllPages`
+     * returns, the caller asks what the relay said, and the connection listener
+     * that records it has not run yet. A plain [since] therefore answers null a
+     * scheduling hop too early, at random.
+     *
+     * That is not cosmetic. It was measured against two real relays: the
+     * narrowing that reads this to learn a filter width got three sentences out
+     * of three from `git.cloistr.xyz` and narrowed 139 → 69 → 34 → 17 until it
+     * was served, and lost the race on the SECOND attempt against
+     * `purplerelay.com` — which stopped the narrowing dead at 69 and aborted
+     * the visit, on a relay that was one more halving from working.
+     *
+     * A few hundred milliseconds, and only ever paid on a refusal: the fast
+     * path is a map read that returns at once when the sentence is already
+     * there, which is the common case and every case where the relay went
+     * quiet instead of answering.
+     */
+    suspend fun awaitSince(
+        url: NormalizedRelayUrl,
+        sinceMs: Long,
+        graceMs: Long = GRACE_MS,
+    ): String? {
+        val deadline = System.currentTimeMillis() + graceMs
+        while (true) {
+            since(url, sinceMs)?.let { return it }
+            if (System.currentTimeMillis() >= deadline) return null
+            delay(POLL_MS)
+        }
+    }
+
     companion object {
+        /**
+         * How long [awaitSince] waits for a sentence that has not landed yet.
+         *
+         * A scheduling hop, not a user-facing wait — the two listeners run on
+         * the same incoming message, so the gap is microseconds in the ordinary
+         * case and this bound exists for the pathological one. Paid only on a
+         * refusal, and a relay that simply went quiet pays it once per aborted
+         * leg rather than per page.
+         */
+        const val GRACE_MS = 250L
+
+        /** …checked this often inside that grace. */
+        const val POLL_MS = 10L
+
         /** Heard nothing, ever — the probes, and any pool built without a client to listen on. */
         val DEAF: RelayComplaints =
             object : RelayComplaints {

@@ -1036,7 +1036,7 @@ internal class VisitPool(
                             url,
                             VisitAborts.of(refusal.end),
                             asked = VisitAborts.asked(refusal.filter),
-                            said = complaints.since(url, refusal.askedAtMs),
+                            said = complaints.awaitSince(url, refusal.askedAtMs),
                         )?.let(System.err::println)
                     return
                 }
@@ -1148,8 +1148,14 @@ internal class VisitPool(
                     // costs one map read: `learn` returns false for every
                     // sentence that is not about kinds, and for a cap this relay
                     // has already given us.
+                    // AWAITED, not read. The relay's sentence arrives on the
+                    // connection listener and the refusal on the subscription
+                    // one, and quartz runs the second first — so reading here
+                    // is a race the narrowing loses at random. See
+                    // [RelayComplaints.awaitSince], which was written after
+                    // watching it stop a real relay one halving short.
                     if (narrowings < MAX_NARROWINGS &&
-                        widths.learn(url, complaints.since(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
+                        widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
                     ) {
                         narrowings++
                         System.err.println(
