@@ -190,6 +190,21 @@ states its own admission rule:
 # nothing.
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i
 
+# DO #187'S RELAYS WORK ON EVERY STREAM: the real VisitPool, both outbox ask
+# shapes (141 kinds and 3), real relays, a real Vespa. The issue's 109 failed on
+# ONE stream and the same relay served the other, which cannot be a cursor fault
+# — the ask is the only thing that differs. Measured 2026-09-03 over 16 of them:
+# 103 visits, 65,961 events into the engine, ZERO abortedUnpageable, and the
+# only aborts were two relays that would not connect, identically on both
+# streams. Note what it does NOT yet stage: a declared-`urls` stream binds no
+# authors, so this is the width and the relay, not the outbox pairing.
+DOCKER_MIN_API_VERSION=1.24 dockerd &
+VESPA_MEM_LIMIT=6g docker compose up -d vespa
+until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
+ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCensusLiveProbe*' --rerun -i
+#   …relays of your own: -DabortCensusUrls='wss://a.example,wss://b.example'
+#   …and longer, since a revisit is five minutes: -DabortCensusMinutes=15
+
 # THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
 # that refuse us, and a real Vespa the events have to land in. Everything else
 # written for that issue is a unit test over a fake, a browser probe over a
@@ -3545,6 +3560,40 @@ match, and every part of the design is about not paying for it:
 
 One line, on the existing half-hourly per-(stream, relay, reason) gate, should
 settle in a single production pass what six shapes of clean dial could not.
+
+**AND THE 109 WERE PUT THROUGH THE REAL POOL.** #187 splits its relays into 28
+that failed on BOTH outbox streams and 109 that failed on ONE, and that second
+number is the sharpest fact in the issue: a relay refusing one stream and
+serving the other is the same server on the same socket under the same pool and
+the same quartz, so nothing about its cursor can differ between them. The ASK is
+what differs — `contentViaOutbox` carries 141 kinds, `profileViaOutbox` carries
+3. A fault that follows the STREAM is the filter's; one that follows the RELAY
+is the relay's; and they want opposite fixes.
+
+`AbortCensusLiveProbe` runs both streams over relays from that list through the
+real `VisitPool`, the real client and a real Vespa. Sixteen relays, eight
+minutes, **103 visits**, 65,961 events into the engine:
+
+| | |
+|---|---|
+| `abortedUnpageable` | **0** |
+| `abortedUnreachable` | 6 — two relays, on BOTH streams |
+| every other abort counter | 0 |
+| relays completing both streams | 14 of 16 |
+
+So the fault does not follow the stream here: the only relays that aborted
+(`relay.nostrcheck.me`, `nostr.hifish.org`) failed to connect at all, identically
+on both. Nothing reproduced the split the 109 describe.
+
+**What that run is still NOT, and the gap is specific.** A declared-`urls`
+stream binds no authors — `RosterBuilder.asksOf` splits one ask per bound author
+and returns the stream's whole filter unbound when there are none — so this
+tested the WIDTH and the relay, not the outbox pairing. Production also walks
+with accumulated band state, where an older leg's FIRST page carries an `until`
+off the band's floor; every leg here was a first walk against a fresh store. And
+it ran 4 workers over 16 relays, not 96 over 1,131 with 500 live tails. Closing
+the first gap needs kind-30382 pairings seeded into the store, which is the next
+thing to do to this probe.
 
 **The seam was verified against a real relay before being believed**, because
 the unit suite structurally cannot: it builds the sample by hand and gives the

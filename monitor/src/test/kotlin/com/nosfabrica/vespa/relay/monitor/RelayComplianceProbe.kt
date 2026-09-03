@@ -162,7 +162,9 @@ class RelayComplianceProbe {
                     // and still serves the mirror is the case worth the dial —
                     // the monitor's ask is one shape and the mirror's is
                     // another, which is the whole subject of #187.
-                    println("    ${"%-9s".format("outbox141")} ${runBlocking { realOutboxWalk(client, url) }}")
+                    for (stream in STREAM_SHAPES) {
+                        println("    ${"%-9s".format(stream.label)} ${runBlocking { realOutboxWalk(client, url, stream) }}")
+                    }
                     continue
                 }
                 val walks =
@@ -221,7 +223,9 @@ class RelayComplianceProbe {
                 // quartz's OWN paged walk so the ending is quartz's verdict
                 // rather than our reading of it. Everything above is a REQ this
                 // file interprets; this line is `PagedFetchResult.End` itself.
-                println("    ${"%-9s".format("outbox141")} ${runBlocking { realOutboxWalk(client, url) }}")
+                for (stream in STREAM_SHAPES) {
+                    println("    ${"%-9s".format(stream.label)} ${runBlocking { realOutboxWalk(client, url, stream) }}")
+                }
             }
         } finally {
             runCatching { authenticator.destroy() }
@@ -354,6 +358,7 @@ class RelayComplianceProbe {
     private suspend fun realOutboxWalk(
         client: NostrClient,
         url: NormalizedRelayUrl,
+        stream: StreamShape,
     ): String {
         // NO `limit`, because the mirror's leg has none — a limit ends the walk
         // at LIMIT_REACHED, which is our own instruction and not an ending the
@@ -369,16 +374,25 @@ class RelayComplianceProbe {
         // Taken from the relay's own recent events, so the pubkey is one it
         // demonstrably serves: an author it holds nothing for drains honestly
         // and proves nothing.
+        //
+        // …AND A FALLBACK WHEN IT HOLDS NOTHING RECENT, because otherwise the
+        // quiet relays go untested and they are not the uninteresting ones: a
+        // relay that REFUSES a 141-kind ask refuses it whether or not it holds
+        // events for the pubkey, so a stranger's key still answers the width
+        // question. Only the drain becomes uninformative, and the line says
+        // which kind of author it used.
         val seed = ask(client, url, Filter(kinds = listOf(1), since = since, limit = PAGE))
-        val author = seed?.firstOrNull()?.pubKey ?: return "no recent event to take an author from"
+        val known = seed?.firstOrNull()?.pubKey
+        val author = known ?: STRANGER
         val walked =
             withTimeoutOrNull(PER_ASK_MS) {
-                client.fetchAllPages(url, listOf(Filter(kinds = OUTBOX_KINDS, authors = listOf(author), since = since)), IDLE_MS) { }
+                client.fetchAllPages(url, listOf(Filter(kinds = stream.kinds, authors = listOf(author), since = since)), IDLE_MS) { }
             } ?: return "the walk did not come back inside ${PER_ASK_MS}ms"
         val aborts =
             walked.downloaded == 0 && walked.end != PagedFetchResult.End.DRAINED &&
                 walked.end != PagedFetchResult.End.LIMIT_REACHED
-        return "${OUTBOX_KINDS.size} kinds, 1 author, since $since -> end=${walked.end}, downloaded=${walked.downloaded}" +
+        return "${stream.kinds.size} kinds, ${if (known != null) "1 author it serves" else "1 STRANGER (holds nothing recent)"} " +
+            "-> end=${walked.end}, downloaded=${walked.downloaded}" +
             if (aborts) "  <<< the mirror ABORTS (refusedOutright)" else "  — the mirror records a band"
     }
 
@@ -393,6 +407,23 @@ class RelayComplianceProbe {
             val spoke = result.doneReasons.values.any { !it.startsWith("cannot:") }
             if (spoke) result.events.map { it.second } else null
         }
+
+    /**
+     * ONE VISIT STREAM'S ASK — and the pair of them is the point.
+     *
+     * #187's list splits 28 relays that failed on BOTH outbox streams from 109
+     * that failed on ONE, and the second number is the sharpest fact in the
+     * whole issue: a relay that refuses one stream and serves the other is the
+     * same server, on the same socket, under the same pool and the same quartz.
+     * Nothing about its cursor can differ between the two. The ASK is what
+     * differs — `contentViaOutbox` carries 141 kinds and `profileViaOutbox`
+     * carries 3 — so a fault that follows the stream is a fault of the filter,
+     * and one that follows the relay is a fault of the relay.
+     */
+    private class StreamShape(
+        val label: String,
+        val kinds: List<Int>,
+    )
 
     /** One shape of ask the mirror actually makes — see [syncWalk]. */
     private class SyncShape(
@@ -421,11 +452,29 @@ class RelayComplianceProbe {
         /** The mirror's page size for this diagnostic — small, and it is the `limit` being tested. */
         private const val PAGE = 20
 
+        /**
+         * A pubkey to bind when the relay holds nothing recent to take one
+         * from — fiatjaf's, because it is on every relay that holds anything at
+         * all, and a relay that holds none of it still has to answer the ASK.
+         */
+        private const val STRANGER = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+
         /** How many authors the outbox-shaped ask binds — a handful, as a real ask does. */
         private const val AUTHORS = 3
 
         /** How far back the unlimited outbox walk reaches — an hour, so it terminates. */
         private const val OUTBOX_WINDOW_SECONDS = 3600L
+
+        /**
+         * The two visit streams, verbatim from `router.conf.example` — see
+         * [StreamShape] for why both are walked against every url.
+         */
+        private val STREAM_SHAPES by lazy {
+            listOf(
+                StreamShape("content", OUTBOX_KINDS),
+                StreamShape("profile", listOf(0, 10002, 10040)),
+            )
+        }
 
         /** `contentViaOutbox`'s kinds, verbatim from `router.conf.example`. */
         private val OUTBOX_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
