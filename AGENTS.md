@@ -237,6 +237,17 @@ node web/src/test/js/run.mjs       # …the same suite, run directly
 # own header for the full sequence.
 node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
 
+# THE PER-RELAY TABLE, IN A REAL BROWSER, AND THIS ONE NEEDS NOTHING BUT
+# CHROMIUM TOO: it serves the page and answers /stats.json out of its own
+# fixture — a mirror with all four statuses at once — so "the chips are read off
+# the partition and not off the cut rows", "only the two faults are coloured"
+# and "an absent edge is a dash, never 1970" are assertions rather than a look.
+# It caught the wiring bug it was written for: the sync panel was guarded on
+# `progress || streams`, so a mirror whose whole roster is refused — no bands,
+# no walked streams, the exact deployment the table exists for — drew no card.
+node web/src/test/browser/syncstatus.probe.mjs
+#   …and to keep the picture:  SHOT=/tmp/sync.png node …
+
 # THE PAGER, IN A REAL BROWSER, AND THIS ONE NEEDS NOTHING BUT CHROMIUM: it
 # serves the page itself and answers its REQs from a fake WebSocket, so "page
 # two starts at result 40", "Back undoes a page turn" and "a keystroke does not
@@ -790,6 +801,13 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncCoverageReport.kt bands + sweep cursors folded into per-stream groups
                           and depth buckets. Real computation, which is why it
                           survived the move whole
+    RelayStatusReport.kt  WHERE EACH PRIME RELAY STANDS — the roster joined
+                          against the same band snapshot, one row per (relay,
+                          stream) pair: complete / paging / refused / never
+                          started, with the depth reached and the relay's own
+                          sentence where it refused. Its subject is the ROSTER,
+                          which is why it can report the two states the
+                          coverage fold structurally cannot
     GaugeSeries.kt        the last hour of the four process gauges — the one
                           thing a single tick cannot state, and all that is
                           left of SyncProgressReport
@@ -4356,6 +4374,21 @@ Reach for it first.
   `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
   fault: it counts relays that have told us how wide a filter they take, and
   each one is a relay that could never finish an ask before.
+- **the `prime relays` table on the mirror's page** — WHERE EACH RELAY STANDS,
+  which everything else the mirror publishes is an aggregate over. `roster`
+  counts them, the coverage card charts their bands folded per stream, and the
+  in-flight tables name the handful a worker is holding this instant — so *is
+  this relay synced*, the question an operator actually arrives with and
+  usually about ONE relay, could be answered only while that relay was being
+  visited. Four answers per (relay, stream) pair: `complete` (every band
+  settled, with the last reconcile's age), `paging` (still walking back — watch
+  `coveredFrom`, which not moving between two polls IS the finding),
+  `refused` (visited, no band written, with the reason and the relay's own
+  sentence) and `notStarted`. **The last two are the pair that could not be
+  told apart before**: both are the same absence in the band file, they are
+  opposite findings, and the coverage card can draw neither because its
+  denominator is *relays this stream has touched*. Worst first, the status
+  counts published whole even when the row list is cut. See `RelayStatusReport`.
 - **`RelayReachLiveProbe`** — the same question asked of a LIST of relays
   ahead of the deployment: dial each, send the real ask, print the ending, the
   relay's own sentence, whether our AUTH was accepted, and the width it will

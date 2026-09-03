@@ -982,7 +982,12 @@ const PANELS = [
   // the RELAY's document carries a `sync` section too, holding the manifest and
   // nothing else — a fact about this relay that clients read — and a coverage
   // card over it would report a mirror that has walked nothing.
-  { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams ? [syncCard(doc.sync)] : []) },
+  //
+  // `relays` counts as coverage for this guard and it has to: a mirror whose
+  // roster is entirely refused has no bands and no walked streams, so on the
+  // one deployment where the per-relay table is the whole point the card would
+  // not have been drawn at all.
+  { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams || doc.sync?.data?.relays ? [syncCard(doc.sync)] : []) },
   { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
   // `reads: []` on purpose: built ONCE and never rebuilt by the poller, because
   // it holds what the reader asked for over a websocket and what they typed

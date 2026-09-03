@@ -341,7 +341,11 @@ fun main() {
         } else {
             val statusSnapshot = StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
             val everySeconds = statusInterval(env)
-            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds)
+            // `engine::primeUnits` and not a copy of the roster: the pool
+            // rebuilds it on the discovery clock, so a list captured here would
+            // draw a table of the relays this router was allowed to dial at
+            // boot.
+            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds, engine::primeUnits)
             // Once before the server binds, so the first request answers with a
             // document rather than the 503 that means "nothing computed yet" —
             // this pass reads maps that are already populated, so there is no

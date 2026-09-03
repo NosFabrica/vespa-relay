@@ -148,6 +148,37 @@ internal class VisitAborts(
     private val counters = Reason.entries.associateWith { AtomicLong() }
     private val totalAborts = AtomicLong()
 
+    /**
+     * THE LAST ABORT PER UNIT, which the counters cannot hold and the log line
+     * scrolls away.
+     *
+     * A count answers "how much of this is happening"; a status table answers
+     * "what is wrong with THIS relay", and that question is asked of one row at
+     * a time, hours after the line was printed. `RelayStatusReport` reads this
+     * to turn a unit with no band into the two different findings it can be —
+     * *never visited* and *visited, and the relay would not have it* — which
+     * are the same absence in the band file.
+     *
+     * One entry per (stream, relay), overwritten, and bounded by [MAX_SPOKEN]
+     * like the narration map beside it: the roster is the real ceiling and sits
+     * far under it.
+     */
+    private val lastByUnit = ConcurrentHashMap<String, Last>()
+
+    /** The last time this unit ended early, and what the relay said about it. */
+    class Last(
+        val reason: Reason,
+        val said: String?,
+        /** Epoch SECONDS, because everything it is published beside is. */
+        val atSec: Long,
+    )
+
+    /** …read back for one unit. Null for a unit that has never aborted. */
+    fun last(
+        stream: String,
+        url: NormalizedRelayUrl,
+    ): Last? = lastByUnit[unitKey(stream, url)]
+
     /** The last time each (stream, relay, reason) was spoken — see [MAX_SPOKEN]. */
     private val spokenAt = ConcurrentHashMap<String, Long>()
 
@@ -171,18 +202,26 @@ internal class VisitAborts(
     ): String? {
         counters[reason]?.incrementAndGet()
         totalAborts.incrementAndGet()
-        if (!worthSaying(stream, url, reason)) return null
+        val at = now()
+        // Recorded BEFORE the narration gate, and that ordering is the point:
+        // the gate rations LINES, and a status row that went blank because this
+        // abort was inside a re-say window would report a relay as never
+        // visited while the log said otherwise.
+        val key = unitKey(stream, url)
+        if (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN) {
+            lastByUnit[key] = Last(reason, said, at / 1000)
+        }
+        if (!worthSaying(key, reason, at)) return null
         return "router: visit $stream ${url.url} aborted — ${reason.says} [$asked]" +
             (said?.let { " — the relay said: $it" } ?: "")
     }
 
     private fun worthSaying(
-        stream: String,
-        url: NormalizedRelayUrl,
+        unit: String,
         reason: Reason,
+        at: Long,
     ): Boolean {
-        val key = "$stream ${url.url} ${reason.name}"
-        val at = now()
+        val key = "$unit ${reason.name}"
         val last = spokenAt[key]
         if (last != null && at - last < resayAfterMs) return false
         // Past the bound nothing NEW is narrated, but a pair already in the map
@@ -204,6 +243,11 @@ internal class VisitAborts(
             add(Processors.Count("abortedVisits", totalAborts.get()))
             for (reason in Reason.entries) add(Processors.Count(reason.count, counters[reason]?.get() ?: 0L))
         }
+
+    private fun unitKey(
+        stream: String,
+        url: NormalizedRelayUrl,
+    ) = "$stream ${url.url}"
 
     companion object {
         /**

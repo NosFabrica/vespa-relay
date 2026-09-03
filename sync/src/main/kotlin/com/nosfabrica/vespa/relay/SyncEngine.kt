@@ -39,6 +39,7 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.ClientRelayComplaints
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
@@ -871,6 +872,17 @@ class SyncEngine(
                 ", ${upPush.pushed.get()} pushed)",
         )
     }
+
+    /**
+     * WHERE EACH PRIME RELAY STANDS — the pool's roster, as the status page's
+     * per-relay table needs it. See [VisitPool.primeUnits].
+     *
+     * Reached through this engine for [monitorStatus]'s reason: this process
+     * composes the planes, and `SyncMain` holds the engine rather than the pool
+     * inside it. A method rather than a stored list because the roster is
+     * rebuilt on its own clock — see the supplier note on [SyncStatus].
+     */
+    fun primeUnits(): List<RelayStatusReport.Unit> = visitPool.primeUnits()
 
     /**
      * The monitor plane's status document — see [MonitorEngine.status].

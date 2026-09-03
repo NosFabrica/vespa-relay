@@ -16,7 +16,7 @@ import {
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
   STARTING, STAGES_SHOWN, STUCK_CALL_SEC, CALLS_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
-  stageDeltas, storeOf, streamSections,
+  stageDeltas, storeOf, streamSections, relayStatusOf, SYNC_STATUSES,
 } from "../../main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -1325,4 +1325,95 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(many.rows.length, CALLS_SHOWN);
   assert.equal(many.more, 7 + (20 - CALLS_SHOWN));
   ok("the store's outstanding calls are named longest-first, coloured off the log's own bound, and every cut is disclosed");
+}
+
+// ── the per-relay table: which relays are being synced at all ────────────────
+//
+// The card this covers is the one that had to exist because everything else
+// the mirror publishes is an AGGREGATE — and the two states that matter most
+// (never reached, refused on every visit) have no band, so they appear in no
+// distribution and no coverage group.
+{
+  const relays = {
+    pairs: 2712,
+    // Deliberately NOT the sum of the rows below: the document cuts `rows` and
+    // does not cut this, which is the whole reason the chips read it.
+    statuses: [
+      { syncStatus: "refused", pairs: 54 },
+      { syncStatus: "notStarted", pairs: 6 },
+      { syncStatus: "paging", pairs: 1200 },
+      { syncStatus: "complete", pairs: 1452 },
+    ],
+    rows: [
+      { relay: "wss://walled.example/", stream: "content", syncStatus: "refused",
+        refusedFor: "the relay would not accept our NIP-42 identity",
+        relaySaid: "auth-required: you are not authorized to perform reqs", refusedAgoSec: 900 },
+      { relay: "wss://fresh.example/", stream: "content", syncStatus: "notStarted" },
+      { relay: "wss://deep.example/", stream: "content", syncStatus: "paging",
+        coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true },
+      { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete",
+        coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true },
+    ],
+    omitted: 1712,
+  };
+  const t = relayStatusOf(relays);
+
+  assert.equal(t.pairs, 2712);
+  // THE PARTITION COMES OFF `statuses`, NOT OFF `rows`. Counting the four rows
+  // would have drawn "1 refused" against a router reporting fifty-four — a bar
+  // against the wrong denominator, which is the bug class this whole suite was
+  // written after.
+  assert.deepEqual(t.chips.map((c) => [c.key, c.pairs]),
+    [["refused", 54], ["notStarted", 6], ["paging", 1200], ["complete", 1452]]);
+  ok("the status chips are read off the document's partition, never off the cut rows");
+
+  // Worst first, and every status present even at zero — an absent chip cannot
+  // be told from a build that does not publish the count.
+  const empty = relayStatusOf({ pairs: 3, statuses: [], rows: [] });
+  assert.deepEqual(empty.chips.map((c) => c.pairs), [0, 0, 0, 0]);
+  assert.deepEqual(empty.chips.map((c) => c.key), ["refused", "notStarted", "paging", "complete"]);
+  ok("a status nothing is in is drawn as zero, in the document's own order");
+
+  // Only the two that name a fault are coloured. `paging` is a mirror working.
+  assert.deepEqual(t.rows.map((r) => r.hot), [true, true, false, false]);
+  ok("refused and never-started colour a row; paging and complete do not");
+
+  // The two halves of a refusal joined: the router's reading of WHICH wall, and
+  // the relay's own sentence, which is the only thing that says what to do.
+  assert.match(t.rows[0].why, /NIP-42 identity — auth-required: you are not authorized/);
+  assert.equal(t.rows[1].why, null, "a pair that has never been visited has nothing to quote");
+  ok("the refusal cell carries the router's reading and the relay's own words");
+
+  // Absent is null and never zero: a pair with no band has no edges, and a 1970
+  // in either column would read as a walk that reached the epoch.
+  assert.equal(t.rows[1].coveredFrom, null);
+  assert.equal(t.rows[1].verifiedAgoSec, null);
+  assert.equal(t.rows[2].coveredFrom, 1600000000);
+  assert.equal(t.rows[3].verifiedAgoSec, 41200);
+  ok("a pair with no coverage has null edges, not epoch ones");
+
+  // Not statuses, and both true at once is legal.
+  assert.equal(t.rows[2].visiting, true);
+  assert.equal(t.rows[2].tailed, false);
+  assert.equal(t.rows[3].tailed, true);
+  ok("visiting and tailed ride beside the status rather than being values of it");
+
+  assert.equal(t.rows[0].short, "walled.example/", "the scheme is dropped and nothing else is");
+  assert.equal(t.rows[3].label, "complete");
+  assert.equal(t.rows[1].label, "hasn't started", "the page's words, not the member name");
+  ok("a row carries the label the page shows and the url it looks up");
+
+  // THE FOUR WORDS, pinned to the same literal list `RelayStatusReportTest`
+  // pins on the Kotlin side. Neither test can be the only one: this one would
+  // pass happily against a router that renamed a status, and that one against a
+  // page that stopped drawing it.
+  assert.deepEqual(SYNC_STATUSES.map(([k]) => k), ["refused", "notStarted", "paging", "complete"]);
+  ok("the four status words are the document's, in the document's order");
+
+  assert.equal(t.omitted, 1712);
+  // A router with no visit streams publishes no section, and the card draws
+  // nothing rather than an empty table that would read as a lost roster.
+  assert.equal(relayStatusOf(null), null);
+  assert.equal(relayStatusOf({ pairs: 0 }), null);
+  ok("no prime relays draws no table at all");
 }

@@ -1215,6 +1215,85 @@ object StatusVocabulary {
                     "before this partition existed rather than as unmeasured.",
             )
             put(
+                "syncStatus",
+                "Where this router's sync of one (relay, stream) pair stands. `complete` — every band the pair " +
+                    "holds is settled, which is a paged leg the relay EOSEd empty or a finished negentropy " +
+                    "reconcile; `paging` — bands exist and at least one is still walking backwards, so read " +
+                    "`coveredFrom`; `refused` — the pool visited it and could write no band, with the reason and " +
+                    "the relay's own sentence beside it; `notStarted` — on the roster, no band, and no refusal " +
+                    "recorded, so the queue has not reached it yet. The last two are the same absence in the band " +
+                    "file and the opposite finding, which is the whole reason this table exists.",
+            )
+            put(
+                "coveredFrom",
+                "How far BACK the walk of this pair has reached — the oldest `created_at` any of its bands " +
+                    "covers. THE number to watch on a `paging` row: unchanged between two polls means the walk " +
+                    "is not advancing, and nothing else here says that per relay. These filters carry no lower " +
+                    "bound, so there is no date this is finished AT — it means \"as deep as this relay has been " +
+                    "walked\", never \"done\".",
+            )
+            put(
+                "coveredTo",
+                "…and the newest `created_at` covered — how current this pair's copy is. A live tail keeps it at " +
+                    "now; a relay whose tail was evicted falls behind it by one revisit.",
+            )
+            put(
+                "verifiedAgoSec",
+                "How long since the last COMPLETED negentropy reconcile of this pair's history — the closest " +
+                    "thing this router has to a `last synced` stamp, because it is the only pass that compares " +
+                    "the whole past rather than walking forward from an edge. Absent where none has ever " +
+                    "finished, which on a young relay is not a fault: the clock is the stream's " +
+                    "`negentropySyncThePastSeconds`, a week in the shipped example.",
+            )
+            put(
+                "relaySaid",
+                "What the relay itself said when it last refused this pair — its `CLOSED` or `NOTICE` text, " +
+                    "verbatim and truncated. The router's own `refusedFor` names which WALL was hit; this is the " +
+                    "only thing that says what to do about it, because a `CLOSED` covers a policy refusal, a " +
+                    "rate limit and a filter the relay thinks is too wide alike.",
+            )
+            put(
+                "refusedFor",
+                "Which wall this pair's last visit hit, in the router's words — the same reading the " +
+                    "`aborted…` counters partition. Present on a row whose bands exist too, where it means the " +
+                    "pair has coverage AND its last visit was turned away: a relay that has stopped being " +
+                    "maintained rather than one that never started.",
+            )
+            put(
+                "refusedAgoSec",
+                "How long since that refusal. Read against `verifiedAgoSec` beside it: a refusal newer than the " +
+                    "last verified pass is a relay going backwards, and one much older is a wall that has since " +
+                    "come down.",
+            )
+            put(
+                "pairs",
+                "How many (relay, stream) pairs — the roster in the pool's own unit, so a relay two streams sync " +
+                    "is two pairs. The pair is what has a status: one relay can be complete for `indexers` and " +
+                    "never started for `contentViaOutbox`. On the `statuses` rows it is that status's share, and " +
+                    "those shares partition the total exactly and are published whole even when the row list is " +
+                    "cut.",
+            )
+            put(
+                "bands",
+                "How many of this pair's asks have coverage recorded at all. Read against `asks` beside it: 3 " +
+                    "bands against 40 asks is a relay barely begun, and both numbers reading the same is one " +
+                    "whose every ask has been walked at least once.",
+            )
+            put(
+                "asks",
+                "How many separate filters this stream owes this relay. One for a plain stream; one PER BOUND " +
+                    "AUTHOR where a `relaySource` select pairs providers with relays, which is the granularity " +
+                    "NIP-85's own tags chose. A visit walks them in turn and any single refusal ends it, which " +
+                    "is why a high count and a low `bands` is worth looking at.",
+            )
+            put(
+                "tailed",
+                "This pair is holding a live subscription right now, so its present arrives as it happens and " +
+                    "only what a dropped tail missed waits on the next visit. Not a status — a pair can be " +
+                    "paging and tailed at once — which is why it rides beside `syncStatus` rather than being one " +
+                    "of its values.",
+            )
+            put(
                 "narrowedRelays",
                 "Relays that have told us how many kinds they will take in one filter, so this router's asks go " +
                     "to them in chunks of that many. Learned from the refusal itself — a relay stating `max 100` " +

@@ -1441,3 +1441,78 @@ export function scheduleOf(progress) {
   }
   return rows;
 }
+
+/**
+ * THE FOUR SYNC STATUSES a prime (relay, stream) pair can be in — the
+ * document's own words, the label the page shows, and the tone each earns.
+ *
+ * Here rather than in the card for this file's whole reason: these strings are
+ * a CONTRACT with `RelayStatusReport`, and a card that quietly stopped matching
+ * one would draw an empty chip and a row labelled with a raw member name — the
+ * silent break `POOL_ORDER` above is kept here to avoid, one table over.
+ *
+ * Worst first, which is also the document's row order: an operator opens this
+ * table because something is wrong.
+ */
+export const SYNC_STATUSES = [
+  ["refused", "refused", "warn"],
+  ["notStarted", "hasn't started", "warn"],
+  ["paging", "paging", "busy"],
+  ["complete", "complete", "live"],
+];
+
+/**
+ * The per-relay table, read off the document — the partition, then the rows.
+ *
+ * ## The partition is read, never re-counted
+ *
+ * `rows` is CUT (`RelayStatusReport.MAX_ROWS`) and `statuses` is not, so the
+ * chips have to come off `statuses`. Counting the rows instead would draw a
+ * smaller problem than the one the router reported, on exactly the deployments
+ * where the cut bites — which is the shape this suite exists for: a bar drawn
+ * against the wrong denominator is wrong silently, and looks fine.
+ *
+ * Every status is returned even at zero. "Nothing refused" is a finding, and an
+ * absent chip cannot be told from a build that does not publish the count.
+ *
+ * ## What is NOT a status
+ *
+ * `visiting` and `tailed` ride beside it: a pair can be paging AND tailed AND
+ * have a worker on it right now, so folding either into the status would make
+ * three true things into one that has to pick.
+ */
+export function relayStatusOf(relays) {
+  if (!relays || !relays.pairs) return null;
+  const counted = new Map((relays.statuses || []).map((s) => [s.syncStatus, s.pairs || 0]));
+  return {
+    pairs: relays.pairs,
+    chips: SYNC_STATUSES.map(([key, label, tone]) => ({ key, label, tone, pairs: counted.get(key) || 0 })),
+    rows: (relays.rows || []).map((r) => ({
+      relay: r.relay || "",
+      // The scheme is dropped and nothing else is, exactly as in `legsOf`: a
+      // truncated relay url is not a relay url, and it is the thing being
+      // looked up.
+      short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+      stream: r.stream || null,
+      syncStatus: r.syncStatus || null,
+      label: SYNC_STATUSES.find(([k]) => k === r.syncStatus)?.[1] || r.syncStatus || "—",
+      // Only the two that name a fault. `paging` is a mirror working and
+      // `complete` is one that has finished; colouring either retires the mark.
+      hot: r.syncStatus === "refused" || r.syncStatus === "notStarted",
+      // Null rather than 0 for every clock and every edge on this row: a pair
+      // with no band has no edges, and a 1970 in either column would read as a
+      // walk that reached the epoch.
+      coveredFrom: Number.isFinite(r.coveredFrom) ? r.coveredFrom : null,
+      coveredTo: Number.isFinite(r.coveredTo) ? r.coveredTo : null,
+      verifiedAgoSec: Number.isFinite(r.verifiedAgoSec) ? r.verifiedAgoSec : null,
+      refusedAgoSec: Number.isFinite(r.refusedAgoSec) ? r.refusedAgoSec : null,
+      // The router's reading of WHICH wall, and the relay's own sentence about
+      // it, joined here so the card draws one cell: they answer different
+      // halves and are useless apart.
+      why: r.refusedFor ? (r.relaySaid ? `${r.refusedFor} — ${r.relaySaid}` : r.refusedFor) : null,
+      visiting: !!r.visiting,
+      tailed: !!r.tailed,
+    })),
+    omitted: relays.omitted || 0,
+  };
+}

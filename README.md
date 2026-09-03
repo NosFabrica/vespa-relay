@@ -296,6 +296,15 @@ is up:
   passes are measuring, and how far back the walk has reached per stream.
   Charted from that service's own **`GET /stats.json`**.
 
+  It opens with **`prime relays`** — one row per relay a stream is allowed to
+  dial, and where the sync of it actually stands: `complete` with the age of
+  its last full reconcile, `paging` with how far back the walk has reached,
+  `refused` with the reason and the relay's own sentence, or `hasn't started`.
+  That last pair is the reason the table exists: a relay never reached and one
+  refused on every visit have no band either way, so the coverage chart below
+  can show neither, and they are opposite findings. Worst rows first, with the
+  four counts above the table complete even when the list is cut.
+
   It is served by the process doing the work, and that is the point rather than
   a detail. These were two cards on the relay's page, drawn from JSON files the
   mirror wrote to a shared volume — an arrangement that could not answer "is the

@@ -30,7 +30,9 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
+import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.heal.Healer
+import com.nosfabrica.vespa.relay.util.canonicalRelay
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
@@ -442,6 +444,51 @@ internal class VisitPool(
         // missing cannot tell "nothing was dropped" from "this router does not
         // disclose". Kept so the answer stays explicit.
         return InFlight(relays = rows, omitted = 0)
+    }
+
+    /**
+     * EVERY PRIME (relay, stream) UNIT THIS POOL HOLDS, for the status page's
+     * per-relay table — see [RelayStatusReport].
+     *
+     * The roster is the ONLY place the prime set exists: it is rebuilt off the
+     * monitor's signed 30166 verdicts on the discovery clock, and nothing on
+     * disk holds it. So a relay that loses its certificate loses its row here
+     * rather than becoming a stale one that no file would ever retract, which
+     * is the property that lets the table be read as *the relays this router
+     * may dial* rather than as *the relays it once could*.
+     *
+     * WHOLE, and bounded by the roster rather than by a cut here: what a
+     * reader may not be shown is decided once, in the report, where the counts
+     * that close are published beside it.
+     *
+     * Off one snapshot read, like every other reader of the roster: the two
+     * maps consulted per unit are live, so a unit could in principle be
+     * visiting a relay the snapshot no longer names — a row that says
+     * `visiting` for a unit already dropped is the honest reading of that
+     * instant, and one this pool would rather publish than lock a rebuild
+     * behind a status poll.
+     */
+    internal fun primeUnits(): List<RelayStatusReport.Unit> {
+        val snapshot = currentRoster
+        val out = ArrayList<RelayStatusReport.Unit>(snapshot.asks.size)
+        for ((url, byStream) in snapshot.asks) {
+            for ((stream, unit) in byStream) {
+                val key = VisitKey(url, stream)
+                val abort = aborts.last(stream, url)
+                out +=
+                    RelayStatusReport.Unit(
+                        relay = canonicalRelay(url.url),
+                        stream = stream,
+                        asks = unit.asks.size,
+                        visiting = ongoing.containsKey(key),
+                        live = tails.containsKey(key),
+                        abortReason = abort?.reason?.says,
+                        abortSaid = abort?.said,
+                        abortAtSec = abort?.atSec ?: 0,
+                    )
+            }
+        }
+        return out
     }
 
     /**

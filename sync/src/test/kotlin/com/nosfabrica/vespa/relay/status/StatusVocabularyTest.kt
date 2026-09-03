@@ -102,6 +102,10 @@ class StatusVocabularyTest {
             // and `examples` inside it are what a reader looks up; the plural
             // is the shape, exactly as `relays` is inside `inFlight`.
             "reasons",
+            // …and the same call for the per-relay table's partition: the rows
+            // inside it are `syncStatus` and `pairs`, both of which a reader
+            // looks up, and the plural is the shape they sit in.
+            "statuses",
         )
 
     @Test
@@ -138,6 +142,13 @@ class StatusVocabularyTest {
                                 {"job": "negentropy", "streamCap": 4, "inUse": 2, "deferred": 91}],
                      "schedule": [{"job": "negentropy", "everySec": 604800, "due": 3, "neverRun": 12,
                                    "waiting": 397, "nextInSec": 41200}]}],
+                     "relays": {"pairs": 44, "omitted": 2,
+                                "statuses": [{"syncStatus": "refused", "pairs": 4}, {"syncStatus": "complete", "pairs": 30}],
+                                "rows": [{"relay": "wss://nos.lol/", "stream": "content", "syncStatus": "paging",
+                                          "asks": 40, "bands": 3, "coveredFrom": 1689857148, "coveredTo": 1769998206,
+                                          "verifiedAgoSec": 41200, "visiting": true, "tailed": true,
+                                          "refusedFor": "the relay closed the subscription",
+                                          "relaySaid": "error: too many kinds in filter", "refusedAgoSec": 900}]},
                      "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400,
                                           "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
                                           "doing": "holding a live tail", "pool": "live", "stream": "content"}],
@@ -362,6 +373,20 @@ class StatusVocabularyTest {
                     "abortedGaveUp",
                     "abortedFailed",
                     "narrowedRelays",
+                    // …and the per-relay table's own vocabulary. `relays` and
+                    // `statuses` are containers whose children are what a
+                    // reader looks up, exactly as `reasons` is.
+                    "syncStatus",
+                    "pairs",
+                    "coveredFrom",
+                    "coveredTo",
+                    "verifiedAgoSec",
+                    "refusedFor",
+                    "relaySaid",
+                    "refusedAgoSec",
+                    "bands",
+                    "asks",
+                    "tailed",
                     "liveEvicted",
                     "poolReceived",
                 ) +

@@ -81,6 +81,19 @@ class SyncStatus(
      * document states rather than on a guess — see `everySeconds`.
      */
     private val everySeconds: Long,
+    /**
+     * EVERY PRIME (relay, stream) UNIT THE POOL HOLDS — `VisitPool.primeUnits`.
+     *
+     * A supplier rather than a value for the same reason the processors'
+     * counters are one: the roster is rebuilt on its own clock and this is read
+     * once per tick, so a copy kept in step by hand would be the shape that
+     * produces a table disagreeing with the `roster` count above it.
+     *
+     * Empty by default, which publishes no section at all — a router with no
+     * visit streams has no prime relays, and an empty table would read as one
+     * that has lost them.
+     */
+    private val primeUnits: () -> List<RelayStatusReport.Unit> = { emptyList() },
 ) {
     /**
      * Build the document and hand it to [snapshot].
@@ -94,9 +107,28 @@ class SyncStatus(
         val startedMs = System.currentTimeMillis()
         val errors = LinkedHashMap<String, String>()
 
+        // ONE SNAPSHOT, TWO READERS. The band map is the expensive thing this
+        // tick touches (measured at 13.7MB and 213ms to parse from disk), and
+        // both the coverage fold and the per-relay table are walks of it — so
+        // it is built once here rather than once per report.
+        val bandsDoc =
+            runCatching { bands.snapshot() }
+                .onFailure { errors["bands"] = it.message ?: it::class.simpleName.orEmpty() }
+                .getOrNull()
+
         val coverage =
-            runCatching { SyncCoverageReport.build(bands.snapshot(), sweeps.snapshot(), nowSeconds) }
+            runCatching { SyncCoverageReport.build(bandsDoc, sweeps.snapshot(), nowSeconds) }
                 .onFailure { errors["sync"] = it.message ?: it::class.simpleName.orEmpty() }
+                .getOrNull()
+
+        // WHERE EACH PRIME RELAY STANDS. Its own member rather than a part of
+        // the coverage fold: that one groups by STREAM and its denominator is
+        // the relays a stream has touched, and this one's subject is the
+        // roster — which is the difference between "how far have the walks
+        // got" and "which relays are being synced at all".
+        val relays =
+            runCatching { RelayStatusReport.build(bandsDoc, primeUnits(), nowSeconds) }
+                .onFailure { errors["relays"] = it.message ?: it::class.simpleName.orEmpty() }
                 .getOrNull()
 
         // The previously served series, so this tick appends to it rather than
@@ -114,11 +146,12 @@ class SyncStatus(
             }
 
         val data =
-            if (coverage == null && withSeries == null) {
+            if (coverage == null && withSeries == null && relays == null) {
                 null
             } else {
                 buildJsonObject {
                     coverage?.forEach { (member, value) -> put(member, value) }
+                    relays?.let { put("relays", it) }
                     withSeries?.let { put("progress", it) }
                 }
             }
