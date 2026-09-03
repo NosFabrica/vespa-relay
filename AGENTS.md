@@ -177,6 +177,19 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
 #   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
 
+# DOES THE ABORT SAMPLER FIRE AT ALL — the half `RelayPagesTest` cannot reach.
+# That suite builds the Sample by hand and gives ClientRelayPages a client that
+# never delivers a message, so every assertion in it would pass just as happily
+# if quartz never dispatched an EventMessage to a connection listener in its
+# life — which is the whole mechanism, and was inferred from bytecode. This runs
+# a real client at a real relay and stages the aborting shape: a live tail, and
+# a walk over an empty window that ends DRAINED with downloaded=0 so the pool's
+# own onEvent never fires. Measured on nos.lol: the walk downloaded 0, onEvent
+# fired 0 times, and the sampler recorded 3 events under the tail's own
+# subscription id, flagged as above the `until`. Wants a BUSY relay. Asserts
+# nothing.
+./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i
+
 # THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
 # that refuse us, and a real Vespa the events have to land in. Everything else
 # written for that issue is a unit test over a fake, a browser probe over a
@@ -3532,6 +3545,27 @@ match, and every part of the design is about not paying for it:
 
 One line, on the existing half-hourly per-(stream, relay, reason) gate, should
 settle in a single production pass what six shapes of clean dial could not.
+
+**The seam was verified against a real relay before being believed**, because
+the unit suite structurally cannot: it builds the sample by hand and gives the
+listener a client that never delivers a message, so it would be just as green if
+quartz dispatched no event to a connection listener at all — and that dispatch
+was inferred from bytecode. `RelayPagesLiveProbe` stages the aborting shape on
+`nos.lol`: the walk ended DRAINED with `downloaded = 0` and its `onEvent` fired
+zero times, while the sampler recorded three events under the tail's own
+subscription id, flagged as above the `until`. That is both claims at once — the
+events are there when every instrument downstream of the match has lost them,
+and a foreign subscription is legible as foreign.
+
+Two things that probe corrected on the way, and both are the same lesson:
+
+- **A first cut armed the sampler for ~100ms** — the drain is instant — against
+  a relay serving an event every few seconds, saw nothing, and read it as the
+  seam being broken. The instrument was fine and the measurement was not.
+- **The sentence hard-coded "quartz then counted as none"**, which is true where
+  `VisitPool` calls it (a refusal is `downloaded == 0` by definition) and false
+  the first time anything else does — the probe was told quartz had counted none
+  of the 158 events it had just downloaded. `render` takes the count now.
 
 With that said, the pass asks a second page at `until = <oldest event of page
 one> - 1`, strictly below, and reads its three possible answers:

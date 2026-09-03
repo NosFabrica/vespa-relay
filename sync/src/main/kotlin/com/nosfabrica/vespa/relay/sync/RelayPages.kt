@@ -106,6 +106,21 @@ internal interface RelayPages {
     fun render(
         sample: Sample?,
         asked: Filter,
+        /**
+         * What the walk itself counted, so the sentence cannot assert something
+         * the caller knows to be false.
+         *
+         * The "everything matched and quartz still counted none" reading is the
+         * sharpest thing this instrument can say — it is not a relay
+         * misbehaving, it is our side of the walk — and it is only true at
+         * zero. `VisitPool` renders on a refusal, where zero is the definition,
+         * so it was tempting to bake in; the live probe renders on a walk that
+         * downloaded 158 and got told quartz had counted none of them. A
+         * sentence that is right only where it happens to be called is a
+         * sentence that will be wrong the first time somebody calls it
+         * elsewhere.
+         */
+        downloaded: Int,
     ): String?
 
     /**
@@ -145,7 +160,10 @@ internal interface RelayPages {
          * different faults wearing one `UNPAGEABLE`.
          */
         @Synchronized
-        fun render(asked: Filter): String? {
+        fun render(
+            asked: Filter,
+            downloaded: Int,
+        ): String? {
             if (seen == 0) return null
             val kinds = asked.kinds?.toSet()
             val offKind = rows.count { kinds != null && it.kind !in kinds }
@@ -157,7 +175,15 @@ internal interface RelayPages {
                     if (offKind > 0) add("$offKind off-kind")
                     if (above > 0) add("$above above the `until`")
                     if (below > 0) add("$below below the `since`")
-                    if (isEmpty()) add("all of them MATCHING the ask, which quartz then counted as none")
+                    if (isEmpty()) {
+                        add(
+                            if (downloaded == 0) {
+                                "all of them MATCHING the ask, which quartz still counted as none — this one is OUR side of the walk"
+                            } else {
+                                "all of them matching the ask"
+                            },
+                        )
+                    }
                 }
             val shown = rows.joinToString(" ") { "k${it.kind}@${it.createdAt}" }
             return "the socket carried $seen event(s) on ${subs.size} subscription(s) [${subs.joinToString()}]: " +
@@ -183,6 +209,7 @@ internal interface RelayPages {
                 override fun render(
                     sample: Sample?,
                     asked: Filter,
+                    downloaded: Int,
                 ): String? = null
             }
     }
@@ -218,7 +245,8 @@ internal class ClientRelayPages(
     override fun render(
         sample: RelayPages.Sample?,
         asked: Filter,
-    ): String? = sample?.render(asked)
+        downloaded: Int,
+    ): String? = sample?.render(asked, downloaded)
 
     private val listener =
         object : RelayConnectionListener {

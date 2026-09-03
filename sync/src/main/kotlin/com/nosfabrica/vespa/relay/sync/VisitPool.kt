@@ -1280,7 +1280,7 @@ internal class VisitPool(
                 // No band for the refused chunk: nothing was observed, nothing
                 // drained, and a record would re-stamp a walk that never
                 // happened. Same rule as the legacy engine's.
-                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, chunk))
+                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, chunk, walked.downloaded))
             }
             bands.record(
                 stream.name,

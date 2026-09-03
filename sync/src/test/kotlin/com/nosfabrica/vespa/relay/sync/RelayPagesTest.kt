@@ -58,7 +58,7 @@ class RelayPagesTest {
         // do with the cursor. The sentence is what tells them apart.
         val s = sample()
         repeat(3) { s.add("sub1", kind = 7, createdAt = anchor - it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor)))
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
 
         assertTrue("3 off-kind" in said, said)
         assertTrue("k7@" in said, said)
@@ -69,7 +69,7 @@ class RelayPagesTest {
     fun `a page above the cursor is named as above the cursor`() {
         val s = sample()
         repeat(2) { s.add("sub1", kind = 1, createdAt = anchor + 500 + it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor)))
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
 
         assertTrue("2 above the `until`" in said, said)
         assertTrue("off-kind" !in said, said)
@@ -83,9 +83,26 @@ class RelayPagesTest {
         // side of the walk, and an operator must be able to tell.
         val s = sample()
         s.add("sub1", kind = 1, createdAt = anchor - 10)
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), since = anchor - 100, until = anchor)))
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), since = anchor - 100, until = anchor), downloaded = 0))
 
         assertTrue("MATCHING the ask" in said, said)
+        assertTrue("OUR side of the walk" in said, said)
+    }
+
+    @Test
+    fun `the same page under a walk that DID download says the ordinary thing`() {
+        // The sharp reading — everything matched and quartz still counted none
+        // — is only true at zero, and `VisitPool` renders on a refusal where
+        // zero is the definition. The live probe renders on a walk that
+        // downloaded 158 and was told quartz had counted none of them: a
+        // sentence that is right only where it happens to be called is one that
+        // will be wrong the first time somebody calls it elsewhere.
+        val s = sample()
+        s.add("sub1", kind = 1, createdAt = anchor - 10)
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 158))
+
+        assertTrue("matching the ask" in said, said)
+        assertTrue("OUR side of the walk" !in said, said)
     }
 
     @Test
@@ -98,7 +115,7 @@ class RelayPagesTest {
         val s = sample()
         s.add("walk", kind = 1, createdAt = anchor - 1)
         s.add("tail", kind = 1, createdAt = anchor - 2)
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor)))
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
 
         assertTrue("2 subscription(s)" in said, said)
         assertTrue("walk" in said && "tail" in said, said)
@@ -110,14 +127,14 @@ class RelayPagesTest {
         // 0 events" would read as one, so the line is simply absent — the same
         // rule the monitor's own passes follow for a measurement they did not
         // take.
-        assertNull(sample().render(Filter(kinds = listOf(1))))
+        assertNull(sample().render(Filter(kinds = listOf(1)), downloaded = 0))
     }
 
     @Test
     fun `the sample is bounded, and says how many it did not print`() {
         val s = sample()
         repeat(50) { s.add("sub1", kind = 7, createdAt = anchor - it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor)))
+        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
 
         assertTrue("carried 50 event(s)" in said, "the COUNT is all of them: $said")
         assertEquals(

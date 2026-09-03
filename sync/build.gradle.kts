@@ -67,6 +67,8 @@ tasks.test {
     System.getProperty("enforceLocalRelay")?.let { systemProperty("enforceLocalRelay", it) }
     System.getProperty("enforceProbe")?.let { systemProperty("enforceProbe", it) }
     System.getProperty("enforceProviderRelay")?.let { systemProperty("enforceProviderRelay", it) }
+    System.getProperty("pagesProbe")?.let { systemProperty("pagesProbe", it) }
+    System.getProperty("pagesUrl")?.let { systemProperty("pagesUrl", it) }
     System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
     System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
     System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
