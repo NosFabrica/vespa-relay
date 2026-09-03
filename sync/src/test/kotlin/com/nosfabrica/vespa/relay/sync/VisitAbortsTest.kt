@@ -43,6 +43,40 @@ class VisitAbortsTest {
     ) = VisitAborts(resayAfterMs, clock)
 
     @Test
+    fun `the line carries what the relay SENT, which is the third thing an abort needs`() {
+        // #187. `asked` is what we sent, `said` is what the relay answered in
+        // words, and neither could explain an `unpageable`: the abort fires on
+        // `downloaded == 0`, so the events that would say why were discarded by
+        // the match that produced it. See [RelayPages].
+        val a = VisitAborts()
+        val line =
+            assertNotNull(
+                a.record(
+                    "content",
+                    url,
+                    VisitAborts.Reason.UNPAGEABLE,
+                    asked = "kinds 141, 1 author",
+                    said = null,
+                    sent = "the socket carried 3 event(s) on 1 subscription(s) [sub1]: 3 off-kind — of the first 3: k7@100 k7@99 k7@98",
+                ),
+            )
+
+        assertTrue("3 off-kind" in line, line)
+        assertTrue("the relay ignored the paging cursor" in line, line)
+    }
+
+    @Test
+    fun `a sample nobody took is simply absent from the line`() {
+        // Another walk held the sampler, the socket carried nothing, or this
+        // pool has none. An empty clause would read as "the relay sent
+        // nothing", which is a claim this did not make.
+        val a = VisitAborts()
+        val line = assertNotNull(a.record("content", url, VisitAborts.Reason.QUIET, asked = "kinds 141", said = null))
+
+        assertTrue("—" !in line.substringAfter("]"), "nothing trails the ask: $line")
+    }
+
+    @Test
     fun `the reasons partition the total, exactly`() {
         // THE PROPERTY THE ROW IS READ BY. `abortedVisits` is the number that
         // says whether the resync converges, and the split is the only thing

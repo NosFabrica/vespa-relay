@@ -114,6 +114,12 @@ internal class VisitPool(
      * relay's own words, exactly as it did before this existed.
      */
     private val complaints: RelayComplaints = RelayComplaints.DEAF,
+    /**
+     * …and what it SENT, sampled only across a refused ask — see [RelayPages].
+     * `DEAF` for every caller that has no client to listen on, which is every
+     * test and probe that does not care.
+     */
+    private val pages: RelayPages = RelayPages.DEAF,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val pager: NegentropyPager,
@@ -1049,6 +1055,7 @@ internal class VisitPool(
                             VisitAborts.of(refusal.end),
                             asked = VisitAborts.asked(refusal.filter),
                             said = complaints.awaitSince(url, refusal.askedAtMs),
+                            sent = refusal.sent,
                         )?.let(System.err::println)
                     return
                 }
@@ -1096,6 +1103,8 @@ internal class VisitPool(
         val end: PagedFetchResult.End,
         val filter: Filter,
         val askedAtMs: Long,
+        /** What the socket carried while this ask was out — see [RelayPages]. */
+        val sent: String? = null,
     )
 
     /**
@@ -1252,12 +1261,26 @@ internal class VisitPool(
             // instant belongs to some earlier ask and must not be reported as
             // this one's cause.
             val askedAtMs = System.currentTimeMillis()
-            val walked = reads.page(url, chunk, NEG_IDLE_MS, onEvent)
+            // ARMED ACROSS THE ASK AND DISARMED WHATEVER HAPPENS. The sample is
+            // free on a walk that succeeds — it is read only on the refusal
+            // below — but the slot must not outlive the ask, or the next walk
+            // of this relay finds it taken and reports nothing. See
+            // [RelayPages].
+            val sampling = pages.arm(url)
+            val walked =
+                try {
+                    reads.page(url, chunk, NEG_IDLE_MS, onEvent)
+                } finally {
+                    // The SLOT goes back whatever happened. The sentence is
+                    // read below, from the same object, and only on the one
+                    // path that wants it — see [RelayPages.free].
+                    pages.free(sampling)
+                }
             if (refusedOutright(walked)) {
                 // No band for the refused chunk: nothing was observed, nothing
                 // drained, and a record would re-stamp a walk that never
                 // happened. Same rule as the legacy engine's.
-                return Refusal(walked.end, chunk, askedAtMs)
+                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, chunk))
             }
             bands.record(
                 stream.name,

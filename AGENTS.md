@@ -712,6 +712,12 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           NOTICE/CLOSED text quartz's PagedFetchResult has no
                           room for, kept per relay and dated so a walk can only
                           read the sentence its own REQ earned
+    RelayPages.kt         …and what it SENT: the page an abort could not name,
+                          because a walk aborts on `downloaded == 0` and the
+                          events that would say why are dropped by the match
+                          that produced the abort. ARMED per ask rather than
+                          always on — it is a listener on every event of every
+                          socket of both planes
     FilterWidths.kt       how many kinds each relay takes in one filter,
                           learned from its own refusal, so an over-wide ask is
                           re-sent in chunks instead of refused forever
@@ -3487,11 +3493,45 @@ Two things follow, and the second is the open one:
   it matched the filter (the min-`created_at` ref is still `Long.MAX_VALUE`).
   The second is a walk that made no progress because the answer was not an
   answer, which is not a paging fault at all. **The next step is on the mirror's
-  side, and only the deployment can take it**: `VisitAborts` already captures
-  the ask and, through `RelayComplaints`, what the relay SAID — what it does not
-  capture is the PAGE. One throttled line naming the aborting page's first few
-  events (kind and `created_at`) against the ask's `kinds` and `until` would
-  settle in a single production pass what six shapes of clean dial could not.
+  side, and only the deployment can take it** — which is what `RelayPages` is
+  for, below.
+
+**So the mirror now catches the page itself** — `RelayPages`, read by
+`VisitAborts`. An abort line had two of the three things it needs: `asked` (what
+we sent) and, through `RelayComplaints`, `said` (what the relay answered in
+words). The third is what the relay answered in EVENTS, and no instrument in the
+process could see it: quartz calls the pool's `onEvent` only for events matching
+the filter, and an abort is `downloaded == 0` — so on exactly the walks worth
+diagnosing, the pool's own hook never fires. The events crossed the socket and
+were dropped by the match that produced the abort.
+
+The sample is taken on the connection listener, the one seam upstream of that
+match, and every part of the design is about not paying for it:
+
+- **Armed, not always on.** This runs for every event of every socket of both
+  planes — the mirror's ingest and the monitor's 20,000-url probe passes alike.
+  Disarmed it costs one `isEmpty` per message; armed it costs a map lookup and,
+  for at most five events per walk, a small append. The slot is taken before the
+  ask and given back in a `finally`.
+- **One sampler per relay.** Several streams walk one relay over one socket, so
+  `arm` takes the slot with `putIfAbsent` and hands the loser nothing — a second
+  sample would be the first walk's events, and a line attributing them would be
+  worse than no line.
+- **Subscription ids are reported, not filtered on.** The walk's own id is not
+  knowable from a connection listener (`fetchAllPages` mints its own), and a
+  page carrying another subscription's events is itself the answer: one id is
+  the walk, several means the socket's other traffic landed inside the ask,
+  which is a different fault with a different fix.
+- **The sentence is comparisons, not counts.** "3 off-kind", "2 above the
+  `until`" — because the question is never what the relay sent, it is which part
+  of the ask went unhonoured. And a page that matched everything says so in
+  those words, since that reading is not a relay misbehaving at all but our own
+  side of the walk, and an operator has to be able to tell.
+- **Nothing sampled prints nothing.** A socket that carried no event is not
+  evidence, and "sent 0 events" would read as a finding.
+
+One line, on the existing half-hourly per-(stream, relay, reason) gate, should
+settle in a single production pass what six shapes of clean dial could not.
 
 With that said, the pass asks a second page at `until = <oldest event of page
 one> - 1`, strictly below, and reads its three possible answers:
