@@ -165,9 +165,16 @@ class RelayComplianceTest {
      *
      * The point of the fake: it is not broken, not slow and not lying about who
      * it is. It simply does not read the filter.
+     *
+     * [honoursCursor] is the one axis that has to be separable, and #187 is why:
+     * a relay can honour `until` for the first ask and serve the present forever
+     * after, and the two halves of that behaviour want different verdicts. With
+     * it set, the fake pages properly and any refusal it earns is about the
+     * CONTENT of its answers rather than about the cursor.
      */
     private inner class Liar(
         val serves: List<Event>,
+        val honoursCursor: Boolean = false,
     ) {
         var asks = 0
 
@@ -179,7 +186,8 @@ class RelayComplianceTest {
             kinds: List<Int>?,
         ): AliasProbe.Page {
             asks++
-            return AliasProbe.Page(serves)
+            if (!honoursCursor) return AliasProbe.Page(serves)
+            return AliasProbe.Page(serves.filter { until == null || it.createdAt <= until }.take(want))
         }
     }
 
@@ -214,8 +222,9 @@ class RelayComplianceTest {
             assertEquals(0, bare.compliance.offKind)
             assertTrue(!bare.compliance.kindsAsked, "nothing was asked about kinds, so nothing was learned about them")
 
-            // …and the narrow ask closes it, on the same relay, in one REQ.
-            val narrow = probe.complianceAsk(url, anchor = settled) {}
+            // …and the second page closes it, on the same relay, in one REQ —
+            // it carries a `kinds` where the bare rung could not.
+            val narrow = assertNotNull(probe.pageBelow(url, until = settled, kinds = null) {})
             assertEquals(10, narrow.offKind)
             assertTrue(narrow.kindsAsked)
         }
@@ -249,7 +258,7 @@ class RelayComplianceTest {
             val liar = Liar(signed(kind = 1, at = settled, n = 4))
             val probe = AliasProbe(fetch = liar::fetch, target = 10, page = 10, fallbackPage = 10)
             val delivered = mutableListOf<Event>()
-            probe.complianceAsk(url, anchor = settled) { delivered += it }
+            probe.pageBelow(url, until = settled, kinds = null) { delivered += it }
             assertEquals(4, delivered.size)
         }
 
@@ -260,9 +269,10 @@ class RelayComplianceTest {
     private suspend fun grade(
         store: NostrSemanticsStore,
         serves: List<Event>,
+        honoursCursor: Boolean = false,
     ): Pair<String?, Map<String, Array<String>>> {
         val record = RelayVerdictRecord(store, signer)
-        val liar = Liar(serves)
+        val liar = Liar(serves, honoursCursor)
         FitnessPass(
             record = record,
             probe =
@@ -297,7 +307,10 @@ class RelayComplianceTest {
             // certifies it; asked ANYTHING it answers with kind 7. Before this
             // check the monitor published `prime` about it and every visit-mode
             // stream dialled it forever.
-            val (label, facts) = grade(newStore(), signed(kind = 7, at = settled, n = 20))
+            // Deep enough that page two has something below page one to serve:
+            // a relay that DRAINS on page two has proved its cursor and told us
+            // nothing more about its kinds, which is a different test.
+            val (label, facts) = grade(newStore(), signed(kind = 7, at = settled, n = 40), honoursCursor = true)
 
             assertEquals("noncompliant", label)
             val compliant = assertNotNull(facts[RelayVerdictRecord.COMPLIANT_TAG])
@@ -308,11 +321,13 @@ class RelayComplianceTest {
     @Test
     fun `a relay that serves what it was asked for is prime, and says why on the record`(): Unit =
         runBlocking {
-            val (label, facts) = grade(newStore(), signed(kind = 1, at = settled, n = 20))
+            val (label, facts) = grade(newStore(), signed(kind = 1, at = settled, n = 40), honoursCursor = true)
 
             assertEquals("prime", label)
             assertEquals("true", assertNotNull(facts[RelayVerdictRecord.COMPLIANT_TAG])[1])
-            assertEquals("true", assertNotNull(facts[RelayVerdictRecord.PAGEABLE_TAG])[1])
+            val pageable = assertNotNull(facts[RelayVerdictRecord.PAGEABLE_TAG])
+            assertEquals("true", pageable[1])
+            assertTrue(pageable[2].startsWith("walked two pages"), pageable[2])
         }
 
     @Test
@@ -339,5 +354,70 @@ class RelayComplianceTest {
 
             assertEquals("prime", label)
             assertNull(facts[RelayVerdictRecord.COMPLIANT_TAG], "no events came back, so there is no claim to make")
+            assertNull(
+                facts[RelayVerdictRecord.PAGEABLE_TAG],
+                "#187's second half: `pageable: true` on an empty anchored page was 26% of the 137, and an honest " +
+                    "EOSE proves the relay ANSWERS — there was never anything here to page from",
+            )
+        }
+
+    // ------------------------------------------------------------------------
+    // #187 — one page is not a walk.
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `a relay that honours the anchor and then ignores the cursor is unpageable`(): Unit =
+        runBlocking {
+            // THE 137. Measured on staging in one 11-minute window: every relay
+            // the mirror aborted for ignoring the paging cursor was in our own
+            // records, graded `prime`, tagged `pageable: true` — because the
+            // pass asked ONE page, and one page is exactly what this relay
+            // answers honestly.
+            //
+            // Page one is at or below the anchor, so the older all-or-nothing
+            // test passes it. Page two, asked strictly below where page one
+            // ended, comes back as the same events all over again.
+            val (label, facts) = grade(newStore(), signed(kind = 1, at = settled, n = 20), honoursCursor = false)
+
+            assertEquals("unpageable", label)
+            val pageable = assertNotNull(facts[RelayVerdictRecord.PAGEABLE_TAG])
+            assertEquals("false", pageable[1])
+            assertTrue(pageable[2].contains("page two"), pageable[2])
+        }
+
+    @Test
+    fun `the five-minute slack does not apply to a cursor the relay itself supplied`(): Unit =
+        runBlocking {
+            // THE WAY THE FIX ABOVE FAILS SILENTLY. The anchor comparison
+            // carries [AliasProbe.WINDOW_SLACK_SECONDS] because an anchor is our
+            // clock and a `created_at` is the author's. Page two's cursor is
+            // neither: it is one of the relay's own stamps minus one. Twenty
+            // events at a busy relay span SECONDS, so a cursor-ignoring relay
+            // re-serving them lands inside five minutes of the cursor every
+            // time — and this whole check reads it as a walk that advanced.
+            //
+            // These events are one second apart, which is what a real firehose
+            // looks like and what makes this test the interesting one.
+            val page = signed(kind = 1, at = settled, n = 20)
+            val liar = Liar(page, honoursCursor = false)
+            val probe = AliasProbe(fetch = liar::fetch, target = 20, page = 20, fallbackPage = 20)
+            val second = assertNotNull(probe.pageBelow(url, until = settled - 20, kinds = null) {})
+
+            assertEquals(second.seen, second.offWindow, "every event came back above a cursor one second below them")
+        }
+
+    @Test
+    fun `a page two that drains is the strongest proof of all, and is published as one`(): Unit =
+        runBlocking {
+            // A small relay holding exactly one page. Page two below it comes
+            // back EMPTY, which a cursor-ignoring relay could not have done —
+            // it would have served its newest events again. The walk
+            // terminates, which is what pageable means.
+            val (label, facts) = grade(newStore(), signed(kind = 1, at = settled, n = 20), honoursCursor = true)
+
+            assertEquals("prime", label)
+            val pageable = assertNotNull(facts[RelayVerdictRecord.PAGEABLE_TAG])
+            assertEquals("true", pageable[1])
+            assertTrue(pageable[2].contains("drained"), pageable[2])
         }
 }

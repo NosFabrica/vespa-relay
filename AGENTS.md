@@ -710,7 +710,9 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           cannot see: it compares two answers to each other, so
                           a relay serving the same wrong events to every REQ
                           scores 1.000. Graded by the fitness pass, on the ask
-                          ladder it was already paying for plus one narrow ask
+                          ladder it was already paying for plus ONE second page
+                          — which is also what proves the relay can be walked
+                          rather than merely answered once (#187)
     FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
                           the 30166 record, earned by answering a settled-anchor
                           probe — the tag [VisitPool]'s roster selects on
@@ -3204,8 +3206,8 @@ checked, and where the evidence comes from:
 
 | check | evidence | where it comes from |
 |---|---|---|
-| `kinds` | events of a kind the filter did not name | the narrow ask (the ladder's first rung is BARE, so it cannot see this) |
-| `until` | events stamped above the cursor they were asked under, past a 300s slack | every page of the walk, against THAT page's own cursor |
+| `kinds` | events of a kind the filter did not name | the second page, which carries one where the ladder's bare rung cannot |
+| `until` | events stamped above the cursor they were asked under | every page of the walk, against THAT page's own cursor |
 | `limit` | events beyond what the page asked for | every page — published as a fact, never graded on |
 
 Three things about the shape:
@@ -3214,16 +3216,24 @@ Three things about the shape:
   backwards, so an event above page four's cursor is the cursor being ignored
   even when it sits below the anchor. `FitnessPass` counted against the anchor
   alone before this and scored those relays clean.
-- **One extra REQ per url per sweep, and only for the relays that answered the
-  bare rung.** `AliasProbe.complianceAsk` — `kinds=[1]`, `until=anchor`,
-  `limit=10`. A rung that already carried a `kinds` has put the checkable
-  question and pays nothing. Its budget is a quarter of the url's whole
-  deadline, and when that clock fires the url is still graded, on a tally that
-  never got to ask about `kinds` — the pass says so on its own line, because a
-  check that silently stops checking looks exactly like a corpus that passed.
+- **One extra REQ per url per sweep** — `AliasProbe.pageBelow`, ten events,
+  which is also the second page #187 needs. Its budget is a quarter of the
+  url's whole deadline, and when that clock fires the url is still graded on
+  one page; the pass says so on its own line, because a check that silently
+  stops checking looks exactly like a corpus that passed.
 - **Over-serving the `limit` is deliberately not a refusal.** An over-served
   event matches the filter; it was simply not asked for yet. It costs bandwidth,
   which is why it is measured, and it does not make the answer wrong.
+
+**The 300s slack applies to the ANCHOR and never to a cursor the relay itself
+supplied.** An anchor is our clock against an author's `created_at`, so a
+publisher running fast puts an honestly-served event above the line and the
+slack absorbs it. Page two's cursor is one of the relay's OWN stamps minus one
+— no second clock, nothing to absorb — and leaving the slack there is not
+conservative but blind: twenty events at a busy relay span SECONDS, so a
+cursor-ignoring relay re-serving them lands inside five minutes of the cursor
+every time and scores as a walk that advanced. That is #187's failure surviving
+the check written for it, and it is what `Compliance.of(slack = 0)` is for.
 
 **The two bars are PROVISIONAL and the probe for them is written.** A relay is
 refused at ≥3 off-filter events AND ≥10% of the answer — both, because a share
@@ -3241,6 +3251,52 @@ standing warning about believing a single run of it:
 Record what it says here when it has been run twice, and move the bars in the
 same commit as a `FITNESS_EPOCH` bump — which is what took every epoch-1 `prime`
 back when this check shipped, since none of them was ever tested against it.
+
+**One page is not a walk, and for a year the `pageable` tag said it was
+(#187).** The pass sizes its walk at `FITNESS_TARGET` (20) and asks for that
+many at once, so a relay serving a full page satisfies the target on the FIRST
+`fetch` and `AliasProbe.walk` returns having never moved the cursor. The tag
+then read `"20 events, all at or below the anchor"` — a statement about one
+anchored page, published as a statement about paging.
+
+Measured on `vespa-eventstore-staging`, one 11-minute window on a fresh pod:
+
+| | |
+|---|---|
+| relays the mirror aborted for ignoring the paging cursor | 137 |
+| of those, found in the monitor's own 30166 records | 137 |
+| graded `prime` | **137 (100%)** |
+| tagged `pageable: true` | **137 (100%)** |
+
+`nostr.wine`, `relay.primal.net`, `eden.nostr.land`, `nostr.mom`,
+`relay.nostr.com` and `nostr.bitcoiner.social` are in that list, so honouring
+`until` for the first ask and serving the present ever after is COMMON rather
+than a fringe of broken hobby relays. It is also the most expensive kind of bad
+roster entry, because it does not fail — it answers, takes a visit, delivers
+events, advances nothing, and leaves its relay unreconciled.
+
+So the pass asks a second page at `until = <oldest event of page one> - 1`,
+strictly below, and reads its three possible answers:
+
+| page two | what it proves | verdict |
+|---|---|---|
+| events at or below the cursor | the cursor advanced; a walk terminates | `pageable: true` |
+| **empty** | a DRAIN — a cursor-ignoring relay would have served its newest events again | `pageable: true`, the strongest of the three |
+| its newest events again | the cursor was ignored | **`unpageable`** |
+
+It is the same REQ as the compliance check above, which is why the whole of
+this costs one round trip: it carries a `kinds`, a `limit` and an `until`, so
+one answer settles both questions. It is asked through the rung that answered,
+because a group host holds no kind 1 and would drain a `kinds=[1]` ask honestly
+— which this would then read as a walk that terminated.
+
+**`pageable: true` on an empty first page is gone** — 26% of the 137, granted on
+`"empty anchored page, honestly EOSEd"`. An honest EOSE proves the relay
+answers; there was never anything there to page from. Those urls now carry NO
+`pageable` tag and are counted on the pass's own line. They keep their grade:
+absence of evidence is not a refusal here, for the reason the `silent` branch
+spells out at length, and an empty anchored page is the honest answer of every
+relay holding nothing recent.
 
 **Most of a candidate set is never decided, and that is the normal state rather
 than a fault.** A pass dials its whole set — the per-pass budget was dropped —

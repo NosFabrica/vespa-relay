@@ -98,16 +98,25 @@ class FastLaneTest {
     /**
      * A fetch where [shuffler] walks its window forward on every ask, so no two
      * answers agree — the same shape `RelayConsistencyTest` measures the gate
-     * with — and everything else answers the same page every time.
+     * with — and everything else is an ordinary relay that pages.
+     *
+     * The cursor is honoured for everything but the shuffler, and since #187
+     * that is what "ordinary" means: the fitness pass asks a second page below
+     * the first and grades a relay that ignores it `unpageable`. This test is
+     * about the LANE admitting and refusing, so its good relays have to page or
+     * they are all refused for a reason it is not measuring.
      */
     private fun shufflingFetch(
         dials: AtomicInteger,
         drift: AtomicInteger,
     ): suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page =
-        { at, want, _, _ ->
+        { at, want, until, _ ->
             dials.incrementAndGet()
-            val from = if (at == shuffler) drift.getAndAdd(40) else 0
-            AliasProbe.Page(corpus.drop(from).take(want))
+            if (at == shuffler) {
+                AliasProbe.Page(corpus.drop(drift.getAndAdd(40)).take(want))
+            } else {
+                AliasProbe.Page(corpus.filter { until == null || it.createdAt <= until }.take(want))
+            }
         }
 
     /** The two real passes the lane runs, wired the way [MonitorEngine] wires them. */

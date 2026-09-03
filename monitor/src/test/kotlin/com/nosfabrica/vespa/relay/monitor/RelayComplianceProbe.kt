@@ -58,18 +58,22 @@ import kotlin.test.Test
  *    a fact and never graded on, on the argument that an over-served event
  *    still matches. This says how common it is, which is what decides whether
  *    that argument was worth making.
- * 3. **Does the narrow ask cost what it is budgeted?** One REQ at
+ * 3. **Does the second page cost what it is budgeted?** One REQ at
  *    [AliasProbe.COMPLIANCE_LIMIT] events, per url, per sweep. The elapsed
  *    column is that number against a corpus five figures wide.
+ * 4. **How many relays honour the anchor and then ignore the cursor?** The
+ *    `walk` line is #187 measured directly: 137 of them in one 11-minute
+ *    window on staging, every one graded `prime` and `pageable: true` by a
+ *    pass that had only ever asked one page.
  *
  * ## What is printed
  *
- * Per url, for the BARE ladder rung and then for the narrow ask, the counters
+ * Per url, for the BARE ladder rung and then for the second page, the counters
  * [AliasProbe.Compliance] holds and the verdict [RelayCompliance] would draw
  * from them. The bare rung's `offKind` is ALWAYS zero and that is not a finding
  * — a bare filter constrains no kind. It is printed anyway because the
- * difference between the two rows is the whole argument for the narrow ask
- * existing.
+ * difference between the two rows is the whole argument for the second page
+ * carrying a `kinds`.
  *
  * OFF by default, asserts NOTHING — it dials other people's servers and a relay
  * being down is not a regression.
@@ -116,7 +120,10 @@ class RelayComplianceProbe {
             "bars: refuse at >= ${RelayCompliance.DEFAULT_MIN_OFF_FILTER_EVENTS} off-filter event(s) " +
                 "AND >= ${RelayCompliance.DEFAULT_MIN_OFF_FILTER_SHARE} of the answer",
         )
-        println("slack on `until` is ${AliasProbe.WINDOW_SLACK_SECONDS}s; the narrow ask is kinds=${AliasProbe.FALLBACK_KINDS} limit=${AliasProbe.COMPLIANCE_LIMIT}")
+        println(
+            "slack on the anchor is ${AliasProbe.WINDOW_SLACK_SECONDS}s and ZERO on page two's cursor; " +
+                "page two is kinds=${AliasProbe.FALLBACK_KINDS} limit=${AliasProbe.COMPLIANCE_LIMIT}",
+        )
         println("=".repeat(96))
         try {
             for (url in urls) {
@@ -132,18 +139,34 @@ class RelayComplianceProbe {
                     println("    bare      ${row(judge, ladder.compliance)}  ${ladderMs}ms")
                 }
 
+                // PAGE TWO, below where page one ended — the ask that carries
+                // a `kinds` and proves the cursor moved at the same time. See
+                // [AliasProbe.pageBelow] and #187.
+                val floor = ladder?.oldestAt
                 val narrowAt = System.currentTimeMillis()
-                val narrow = runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.complianceAsk(url, anchor) {} } }
+                val narrow =
+                    if (floor == null) {
+                        null
+                    } else {
+                        runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.pageBelow(url, floor - 1, null) {} } }
+                    }
                 val narrowMs = System.currentTimeMillis() - narrowAt
                 if (narrow == null) {
-                    println("    narrow    the ask did not come back inside ${PER_ASK_MS}ms")
+                    println("    page two  nothing to page from, or the ask did not come back inside ${PER_ASK_MS}ms")
                     continue
                 }
-                println("    narrow    ${row(judge, narrow)}  ${narrowMs}ms")
+                val walks =
+                    when {
+                        narrow.seen == 0 -> "DRAINED — the walk terminates"
+                        narrow.offWindow == narrow.seen -> "UNPAGEABLE — every event came back above the cursor"
+                        else -> "cursor advanced past $floor"
+                    }
+                println("    page two  ${row(judge, narrow)}  ${narrowMs}ms")
+                println("    walk      $walks")
 
                 // WHAT THE PASS WOULD ACTUALLY PUBLISH, which is the sum of the
                 // two and not either row — the ladder is paid for anyway and the
-                // narrow ask is what makes `kinds` checkable at all.
+                // second page is what makes `kinds` checkable at all.
                 val both = (ladder?.compliance ?: AliasProbe.Compliance()) + narrow
                 println("    VERDICT   ${judge.decide(both)} — ${judge.evidence(both)}")
             }
