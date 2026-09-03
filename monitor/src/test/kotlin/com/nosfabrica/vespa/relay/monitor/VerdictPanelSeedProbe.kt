@@ -191,7 +191,23 @@ class VerdictPanelSeedProbe {
     private companion object {
         /** Weighted the way a real sweep comes out: mostly prime, then the refusals. */
         val GRADES =
-            listOf("prime", "prime", "prime", "prime", "prime", "prime", "dead", "dead", "alias", "silent", "inconsistent", "unpageable", "auth-refused", "restricted")
+            listOf(
+                "prime",
+                "prime",
+                "prime",
+                "prime",
+                "prime",
+                "prime",
+                "dead",
+                "dead",
+                "alias",
+                "silent",
+                "inconsistent",
+                "unpageable",
+                "noncompliant",
+                "auth-refused",
+                "restricted",
+            )
 
         val SOFTWARE =
             listOf(

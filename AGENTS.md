@@ -167,6 +167,16 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# Asks each relay whether what it SERVES matches what it was ASKED — the kind,
+# the window, the size — and prints what each bar in `RelayCompliance` would
+# decide from it. The check the stability gate above structurally cannot make:
+# that one compares two answers to each other, so a relay serving the same wrong
+# events to every REQ passes it at 1.000. The bars it prints are PROVISIONAL;
+# run this more than once before moving either, for the reason the table in
+# RelayConsistency.ANCHOR_LAG_SECONDS records. Asserts nothing.
+./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
+#   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
+
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
 # true, explicit false, and the derived default — and prints hasAuthResponder()
 # beside them. Pins that this router's client really does have a NIP-42
@@ -695,6 +705,12 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     RelayAliases.kt       which discovered urls are ONE relay (see below)
     ConsistencyPass.kt    the pass that measures the stability gate
     RelayConsistency.kt   which relays answer one filter the same way twice
+    RelayCompliance.kt    …and which relays answer THE FILTER at all — the
+                          other half, and the one the gate above structurally
+                          cannot see: it compares two answers to each other, so
+                          a relay serving the same wrong events to every REQ
+                          scores 1.000. Graded by the fitness pass, on the ask
+                          ladder it was already paying for plus one narrow ask
     FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
                           the 30166 record, earned by answering a settled-anchor
                           probe — the tag [VisitPool]'s roster selects on
@@ -1893,7 +1909,7 @@ still pins them; `processorFact` is where the choice lives:
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
 not.** The passes write tags onto the same addressable kind 30166 record per url
 — `same-as` from the fold, `self-consistent` from the stability gate, `s` /
-`pageable` / `nip77` from the fitness pass — which is why
+`pageable` / `compliant` / `nip77` from the fitness pass — which is why
 `RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
 between the other's read and its store, silently, since the result is still a
@@ -3171,6 +3187,60 @@ for. Re-run this probe more than once before moving the bar or the depth.
 The seven-day anchor is not there to let a relay converge — it is there to
 remove OUR anchor from the list of explanations, so a failure cannot be blamed
 on new events, indexing lag, or replication.
+
+**Consistency is not compliance, and the gate above cannot become one.** It
+compares two answers to EACH OTHER — set containment over ids, and nothing in it
+ever opens an event — so it catches the relay whose window is a fresh random
+slice per REQ and is blind by construction to the relay whose window is the SAME
+wrong slice every time. That second relay answers identically twice, scores
+1.000, and was certified `prime`. The failure it produces downstream is the one
+`RelayConsistency`'s own header describes for the first: bands and coverage
+built over events the ask never wanted.
+
+So the second question — **do the events match the filter that asked for
+them** — is `RelayCompliance`, graded by `FitnessPass` and published as a
+`compliant` tag beside `pageable`, with `noncompliant` as the refusal. What is
+checked, and where the evidence comes from:
+
+| check | evidence | where it comes from |
+|---|---|---|
+| `kinds` | events of a kind the filter did not name | the narrow ask (the ladder's first rung is BARE, so it cannot see this) |
+| `until` | events stamped above the cursor they were asked under, past a 300s slack | every page of the walk, against THAT page's own cursor |
+| `limit` | events beyond what the page asked for | every page — published as a fact, never graded on |
+
+Three things about the shape:
+
+- **The tally is per PAGE, not per walk.** `until` steps down as a walk pages
+  backwards, so an event above page four's cursor is the cursor being ignored
+  even when it sits below the anchor. `FitnessPass` counted against the anchor
+  alone before this and scored those relays clean.
+- **One extra REQ per url per sweep, and only for the relays that answered the
+  bare rung.** `AliasProbe.complianceAsk` — `kinds=[1]`, `until=anchor`,
+  `limit=10`. A rung that already carried a `kinds` has put the checkable
+  question and pays nothing. Its budget is a quarter of the url's whole
+  deadline, and when that clock fires the url is still graded, on a tally that
+  never got to ask about `kinds` — the pass says so on its own line, because a
+  check that silently stops checking looks exactly like a corpus that passed.
+- **Over-serving the `limit` is deliberately not a refusal.** An over-served
+  event matches the filter; it was simply not asked for yet. It costs bandwidth,
+  which is why it is measured, and it does not make the answer wrong.
+
+**The two bars are PROVISIONAL and the probe for them is written.** A relay is
+refused at ≥3 off-filter events AND ≥10% of the answer — both, because a share
+alone refuses a thin answer (one wrong out of two) and a count alone refuses a
+firehose (three wrong out of five hundred). Neither number has been taken
+against the network yet. `RelayComplianceProbe` prints exactly what each bar
+would decide per url, asserts nothing, and the table above this one is the
+standing warning about believing a single run of it:
+
+```bash
+./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
+#   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
+```
+
+Record what it says here when it has been run twice, and move the bars in the
+same commit as a `FITNESS_EPOCH` bump — which is what took every epoch-1 `prime`
+back when this check shipped, since none of them was ever tested against it.
 
 **Most of a candidate set is never decided, and that is the normal state rather
 than a fault.** A pass dials its whole set — the per-pass budget was dropped —

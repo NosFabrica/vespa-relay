@@ -357,7 +357,146 @@ class AliasProbe(
          * instantly.
          */
         val firstPageMs: Long? = null,
+        /**
+         * What the relay DID with the filter it was handed — see [Compliance].
+         *
+         * Zeroed on a walk that got no page, which is the same "no evidence"
+         * a null [ids] already says. A caller must read [seen][Compliance.seen]
+         * before believing a zero: nothing off-filter and nothing at all look
+         * identical in the counters and are opposite findings.
+         */
+        val compliance: Compliance = Compliance(),
     )
+
+    /**
+     * DID THE ANSWER MATCH THE ASK — the counters, and nothing that judges them.
+     *
+     * ## Why this is not the same question as consistency
+     *
+     * [RelayConsistency] asks one filter twice and compares the two answers to
+     * EACH OTHER. That catches a relay whose answer is a fresh random slice
+     * every time, and it is blind by construction to the one next door: a relay
+     * that answers every REQ with the same wrong events agrees with itself
+     * perfectly, scores 1.000 containment, and is certified. Nothing in that
+     * comparison ever reads a field of an event, so nothing in it can notice
+     * that the events are not what was asked for.
+     *
+     * This is the other half. Every check here is one event against the filter
+     * that fetched it, so it needs no second walk and no second relay — the
+     * evidence is already in hand on any ask the pass was going to make anyway.
+     *
+     * ## What is counted, and against what
+     *
+     * Against THE PAGE'S OWN filter, never the walk's first one. `until` steps
+     * down as a walk pages backwards, so an event above page four's cursor is
+     * the cursor being ignored even when it sits below the anchor the walk
+     * started at — and a tally kept against the anchor alone would score that
+     * relay clean.
+     *
+     * [offKind] is the check that needs an ask shaped for it: a bare
+     * `{"limit": n, "until": …}` constrains no kind, so nothing it returns can
+     * be off-kind and a zero here means only that the question was not put. That
+     * is what [kindsAsked] exists to say, and what [FitnessPass]'s narrow ask
+     * exists to make true for the relays that answer the bare rung.
+     */
+    data class Compliance(
+        /** Events the answer carried, off-filter ones included. The denominator. */
+        val seen: Int = 0,
+        /** …of which carried a kind the filter did not ask for. Only meaningful when [kindsAsked]. */
+        val offKind: Int = 0,
+        /** …of which were stamped above the `until` they were asked under, past [WINDOW_SLACK_SECONDS]. */
+        val offWindow: Int = 0,
+        /**
+         * Events served BEYOND the `limit` asked for, summed over pages.
+         *
+         * Counted apart from [offFilter] and deliberately not a per-event fault:
+         * an over-served event is a real event that really matches, so the
+         * answer is not WRONG, it is merely larger than the ask. It costs
+         * bandwidth and it says something about the relay, which is why it is
+         * measured; it does not poison a walk the way a wrong kind does, which
+         * is why [RelayCompliance] does not refuse on it.
+         */
+        val overLimit: Int = 0,
+        /**
+         * DISTINCT events failing at least one per-event check — the numerator.
+         *
+         * Not [offKind] + [offWindow]: one event can be both, and a share built
+         * by adding the two would climb past 1.0 on exactly the relay this is
+         * for, the one answering a narrow ask with its newest firehose.
+         */
+        val offFilter: Int = 0,
+        /** Was a `kinds` actually asked? A zero [offKind] means nothing without it. */
+        val kindsAsked: Boolean = false,
+    ) {
+        /** Two tallies of the same relay — pages of one walk, or a walk and the narrow ask beside it. */
+        operator fun plus(other: Compliance) =
+            Compliance(
+                seen = seen + other.seen,
+                offKind = offKind + other.offKind,
+                offWindow = offWindow + other.offWindow,
+                overLimit = overLimit + other.overLimit,
+                offFilter = offFilter + other.offFilter,
+                kindsAsked = kindsAsked || other.kindsAsked,
+            )
+
+        companion object {
+            /** One page against the filter that asked for it. */
+            fun of(
+                events: List<Event>,
+                limit: Int,
+                until: Long?,
+                kinds: List<Int>?,
+            ): Compliance {
+                var offKind = 0
+                var offWindow = 0
+                var offFilter = 0
+                for (event in events) {
+                    val wrongKind = kinds != null && event.kind !in kinds
+                    val aboveWindow = until != null && event.createdAt > until + WINDOW_SLACK_SECONDS
+                    if (wrongKind) offKind++
+                    if (aboveWindow) offWindow++
+                    if (wrongKind || aboveWindow) offFilter++
+                }
+                return Compliance(
+                    seen = events.size,
+                    offKind = offKind,
+                    offWindow = offWindow,
+                    overLimit = (events.size - limit).coerceAtLeast(0),
+                    offFilter = offFilter,
+                    kindsAsked = kinds != null,
+                )
+            }
+        }
+    }
+
+    /**
+     * ONE ASK WHOSE WHOLE PURPOSE IS TO BE CHECKABLE — a narrow filter, a small
+     * page, and every event it returns compared against it.
+     *
+     * The ladder's first rung is a BARE filter on purpose ([leaderPrint]), so on
+     * the relays that answer it — most of them — `kinds` is never put to the
+     * relay at all and [Compliance.offKind] cannot be anything but zero. This is
+     * the one extra round trip that closes that: `kinds` and `until` and a
+     * `limit`, all three checkable, at [COMPLIANCE_LIMIT] events.
+     *
+     * One page, never a walk: the question is whether the answer matches the
+     * ask, and a second page answers it no better than the first while costing
+     * a second round trip at every relay in the corpus.
+     *
+     * A relay that holds no [FALLBACK_KINDS] answers empty, which proves
+     * nothing and is graded as nothing — see [RelayCompliance.Verdict.UNMEASURABLE].
+     * Everything it does return goes to [onEvent] like any other window: this is
+     * a sync that also checks, same bargain as the rest of the class.
+     */
+    suspend fun complianceAsk(
+        url: NormalizedRelayUrl,
+        anchor: Long?,
+        onEvent: suspend (Event) -> Unit,
+    ): Compliance {
+        val events = fetch(url, COMPLIANCE_LIMIT, anchor, FALLBACK_KINDS).events ?: return Compliance()
+        for (event in events) onEvent(event)
+        return Compliance.of(events, COMPLIANCE_LIMIT, anchor, FALLBACK_KINDS)
+    }
 
     private suspend fun walk(
         url: NormalizedRelayUrl,
@@ -378,6 +517,11 @@ class AliasProbe(
         var stalls = 0
         // Set once, by the first ask that comes back — see [Window.firstPageMs].
         var firstPageMs: Long? = null
+        // What every page of this walk did with the filter that asked for it.
+        // Accumulated rather than taken from the last page: a relay that serves
+        // one honest page and then stops honouring the cursor has done both
+        // things, and only the sum says so.
+        var compliance = Compliance()
 
         // Every exit from this walk goes through here, so the measurement
         // cannot be dropped by whichever of the seven returns is taken.
@@ -385,7 +529,7 @@ class AliasProbe(
             found: Set<String>?,
             authRefused: Boolean = false,
             reason: String? = null,
-        ) = Window(found, authRefused, reason, firstPageMs)
+        ) = Window(found, authRefused, reason, firstPageMs, compliance)
 
         repeat(maxPages) {
             if (ids.size >= target) return done(newest(ids))
@@ -428,6 +572,12 @@ class AliasProbe(
                 }
                 return done(newest(ids))
             }
+            // AGAINST THIS PAGE'S OWN FILTER — `size`, `until` and `kinds` as
+            // they stand on this iteration, not as the walk began. See
+            // [Compliance]. Tallied before the events are folded into `ids`,
+            // because a duplicate id collapses there and an off-filter event
+            // the relay sent twice was sent twice.
+            compliance += Compliance.of(events, size, until, kinds)
             val before = ids.size
             for (event in events) {
                 onEvent(event)
@@ -541,6 +691,26 @@ class AliasProbe(
 
         /** Consecutive pages that add nothing before the walk gives up. */
         private const val MAX_STALLS = 2
+
+        /**
+         * How far above an `until` an event may be stamped before it counts as
+         * the cursor being ignored: FIVE MINUTES.
+         *
+         * A compliant relay owes us `created_at <= until` exactly, so in
+         * principle the slack is zero. It is not zero because the number being
+         * compared is not ours on both sides: the cursor is our clock and the
+         * stamp is the AUTHOR's, and a relay that accepted an event from a
+         * publisher running a few minutes fast is serving it honestly at a
+         * `created_at` we would score above the line. Five minutes is wide
+         * enough to cover the ordinary fast clock and far too narrow to hide
+         * the failure this is for, where the answer is the relay's newest
+         * events and the gap is the whole anchor lag — a minute for the fold,
+         * SEVEN DAYS for the stability gate.
+         *
+         * Was [FitnessPass]'s own `ANCHOR_SLACK_SECONDS` and moved here with
+         * the check, so the one number is not two numbers kept in step by hand.
+         */
+        const val WINDOW_SLACK_SECONDS = 300L
 
         /**
          * The live wiring: one paged REQ per ask, over the router's own client.
@@ -671,6 +841,18 @@ class AliasProbe(
          * ordinary REQ.
          */
         const val MIN_PAGE = 10
+
+        /**
+         * How many events the narrow ask asks for — see [complianceAsk].
+         *
+         * [MIN_PAGE], because this is the one ask in the class whose size is a
+         * fact being TESTED rather than a depth being reached: a relay serving
+         * more than this asked for is over-serving, and the smallest ordinary
+         * REQ is the cheapest way to find that out. A corpus-wide sweep pays it
+         * once per url, so the number is also the per-sweep cost of the whole
+         * check: ten events a relay.
+         */
+        const val COMPLIANCE_LIMIT = MIN_PAGE
 
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
         private const val CANNOT_CONNECT = "cannot:"

@@ -179,7 +179,7 @@ const LABEL_EPOCH_INDEX = 5;
  * Same duplication and the same mitigation as the two below: an out-of-epoch
  * grade is drawn as expired WITH its evidence and age, never hidden.
  */
-export const FITNESS_EPOCH = "1";
+export const FITNESS_EPOCH = "2";
 
 /**
  * The rule versions the router currently acts on — `RelayAliasRecord.FOLD_EPOCH`

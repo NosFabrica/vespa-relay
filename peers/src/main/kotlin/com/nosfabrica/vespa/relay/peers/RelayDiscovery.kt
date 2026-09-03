@@ -240,9 +240,10 @@ object RelayDiscovery {
      * gate may be unscoped.
      *
      * `dead` alone, never the other refusals: `alias`, `inconsistent`,
-     * `unpageable`, `auth-refused` and `restricted` are all verdicts a relay
-     * earned by ANSWERING, and holding those out would stop the fold and the
-     * stability gate from ever re-measuring the relays they exist to judge.
+     * `unpageable`, `noncompliant`, `auth-refused` and `restricted` are all
+     * verdicts a relay earned by ANSWERING, and holding those out would stop
+     * the fold and the stability gate from ever re-measuring the relays they
+     * exist to judge.
      * Only the transport saying no is a reason not to dial.
      *
      * EMPTY AUTHORS HOLDS NOTHING OUT — the opposite of what an absent

@@ -81,14 +81,14 @@ class FitnessVocabularyTest {
         val values = Verdict.entries.map { it.value }
         assertEquals(values.toSet().size, values.size, "two verdicts sharing a value would make records unreadable")
         assertEquals(
-            setOf("prime", "dead", "silent", "alias", "inconsistent", "unpageable", "auth-refused", "restricted"),
+            setOf("prime", "dead", "silent", "alias", "inconsistent", "unpageable", "noncompliant", "auth-refused", "restricted"),
             values.toSet(),
             "the vocabulary is a wire contract; changing it needs a FITNESS_EPOCH bump and a matching stream-side change",
         )
     }
 
     @Test
-    fun `five of the refusals describe relays that are alive`() {
+    fun `six of the refusals describe relays that are alive`() {
         // The argument for the name: "live" would admit most of what this
         // vocabulary exists to refuse. If this list shrinks, the name argument
         // changes and the glossary prose should too.
@@ -98,9 +98,13 @@ class FitnessVocabularyTest {
                 Verdict.ALIAS,
                 Verdict.INCONSISTENT,
                 Verdict.UNPAGEABLE,
+                // Alive in the loudest way of the six: it is serving real,
+                // signed, verifiable events promptly. They are simply not the
+                // ones that were asked for.
+                Verdict.NONCOMPLIANT,
                 Verdict.AUTH_REFUSED,
                 Verdict.RESTRICTED,
             )
-        assertTrue(aliveButRefused.size >= 5)
+        assertTrue(aliveButRefused.size >= 6)
     }
 }

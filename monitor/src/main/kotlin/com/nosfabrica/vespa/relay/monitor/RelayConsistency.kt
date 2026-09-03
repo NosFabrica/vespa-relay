@@ -36,6 +36,17 @@ import java.util.concurrent.ConcurrentHashMap
  * into the past precisely so that "the answer changed" cannot be explained by
  * new events arriving, by indexing lag, or by a shard that has not caught up.
  *
+ * ## What this deliberately does NOT measure
+ *
+ * WHETHER THE ANSWER IS AN ANSWER. Both walks are compared to each other and
+ * never to the filter that produced them — nothing here opens an event — so a
+ * relay serving the same wrong slice to every REQ scores 1.000 and passes. That
+ * is not an oversight to fix in place: "twice the same" and "what was asked
+ * for" are different questions with different evidence, and folding them
+ * together would make one verdict that cannot say which half failed. The second
+ * question is [RelayCompliance]'s, graded by [FitnessPass] on the ask ladder it
+ * was already paying for.
+ *
  * ## What it costs to leave one in
  *
  * Everything. A relay whose window is a fresh random slice has NO stable band:

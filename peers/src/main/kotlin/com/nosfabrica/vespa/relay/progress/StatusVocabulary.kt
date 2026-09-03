@@ -1027,7 +1027,8 @@ object StatusVocabulary {
             put(
                 "prime",
                 "Relays the monitor currently grades prime: reachable AND answering AND canonical AND " +
-                    "consistent AND pageable AND readable by us, measured on the socket in one pass. This is the whole " +
+                    "consistent AND pageable AND serving what was asked for AND readable by us, measured on the " +
+                    "socket in one pass. This is the whole " +
                     "admission decision — a stream's relay list is the store query `#l = prime` and nothing else. " +
                     "Slow is not a refusal, empty is not a refusal, and a small message cap is not a refusal.",
             )
@@ -1050,6 +1051,13 @@ object StatusVocabulary {
                 "unpageable",
                 "Ignores the `until` cursor, so a paged walk against it cannot terminate — the measured failure mode " +
                     "is ~5.5 pages a second forever. Refused outright in v1 rather than given tail-only treatment.",
+            )
+            put(
+                "noncompliant",
+                "Answered with events the filter did not ask for — a kind that was not in the ask, a `created_at` " +
+                    "above the `until`. Measured by reading the events themselves, which is why it is a separate " +
+                    "refusal from `inconsistent`: that one compares two answers to EACH OTHER, so a relay that " +
+                    "serves the same wrong events to every REQ passes it perfectly.",
             )
             put(
                 "auth-refused",

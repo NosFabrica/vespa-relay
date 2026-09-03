@@ -439,7 +439,8 @@ function processorFact(p) {
     // over `live`, then the dead. The glossary hangs per member.
     add(`${fmt(p.prime)} graded prime`, "prime");
     const alive = (p.silent || 0) + (p.alias || 0) + (p.inconsistent || 0) +
-                  (p.unpageable || 0) + (p["auth-refused"] || 0) + (p.restricted || 0);
+                  (p.unpageable || 0) + (p.noncompliant || 0) +
+                  (p["auth-refused"] || 0) + (p.restricted || 0);
     if (alive) add(`${fmt(alive)} refused while alive`, "silent");
     if (p.dead) add(`${fmt(p.dead)} dead`, "dead");
     return cell;

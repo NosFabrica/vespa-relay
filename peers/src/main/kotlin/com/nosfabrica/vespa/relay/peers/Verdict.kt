@@ -66,6 +66,16 @@ enum class Verdict(
     /** Ignores `until`: a paged walk against it cannot terminate. */
     UNPAGEABLE("unpageable"),
 
+    /**
+     * Answers with events the filter did not ask for — a wrong kind, a stamp
+     * above the `until`.
+     *
+     * The refusal [INCONSISTENT] structurally cannot make: that one compares
+     * two answers to each other, so a relay serving the same wrong events every
+     * time passes it. This one reads the events.
+     */
+    NONCOMPLIANT("noncompliant"),
+
     /** Requires NIP-42 and turned OUR key down. */
     AUTH_REFUSED("auth-refused"),
 
