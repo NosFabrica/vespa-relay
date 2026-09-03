@@ -167,6 +167,29 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
+# that refuse us, and a real Vespa the events have to land in. Everything else
+# written for that issue is a unit test over a fake, a browser probe over a
+# fixture, or a dial that asserts what a relay SAYS — none of them run the
+# machine, and this is the one that found the listener race. Needs docker.
+DOCKER_MIN_API_VERSION=1.24 dockerd &
+VESPA_MEM_LIMIT=6g docker compose up -d vespa
+until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
+WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i
+#   Runs ~20 minutes: the untailed revisit base is five, and the point is what
+#   happens ACROSS revisits, not inside one.
+
+# CAN WE SYNC THIS RELAY, ASKED OF EACH ONE: dials every url #185 named, sends
+# contentViaOutbox's real 141-kind ask, and prints how each ends, what the relay
+# SAID for itself, whether our NIP-42 AUTH was accepted, and — where the refusal
+# was about width — the cap learned and whether the narrowed ask is then served.
+# `-DreachNoAuth=true` detaches the responder, which is the control arm that
+# settles what NIP-42 is worth. Asserts nothing; it dials 81 other people's
+# servers, and a relay declining our key is an answer rather than a regression.
+./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i
+#   …with the deployment's own identity, which is the one relays allowlist:
+#   -DreachNsec=nsec1…      -DreachUrls='wss://a.example,wss://b.example'
+#   …and the control arm:   -DreachNoAuth=true
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
 # true, explicit false, and the derived default — and prints hasAuthResponder()
 # beside them. Pins that this router's client really does have a NIP-42
@@ -225,6 +248,17 @@ node web/src/test/js/run.mjs       # …the same suite, run directly
 # Needs a Vespa, a corpus that is not in the repo, and Chromium; see the file's
 # own header for the full sequence.
 node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
+
+# THE PER-RELAY TABLE, IN A REAL BROWSER, AND THIS ONE NEEDS NOTHING BUT
+# CHROMIUM TOO: it serves the page and answers /stats.json out of its own
+# fixture — a mirror with all four statuses at once — so "the chips are read off
+# the partition and not off the cut rows", "only the two faults are coloured"
+# and "an absent edge is a dash, never 1970" are assertions rather than a look.
+# It caught the wiring bug it was written for: the sync panel was guarded on
+# `progress || streams`, so a mirror whose whole roster is refused — no bands,
+# no walked streams, the exact deployment the table exists for — drew no card.
+node web/src/test/browser/syncstatus.probe.mjs
+#   …and to keep the picture:  SHOT=/tmp/sync.png node …
 
 # THE PAGER, IN A REAL BROWSER, AND THIS ONE NEEDS NOTHING BUT CHROMIUM: it
 # serves the page itself and answers its REQs from a fake WebSocket, so "page
@@ -658,6 +692,18 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the past, heal drain), earned live tails,
                           yield-paced revisits
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
+    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split seven
+                          ways and said once per (stream, relay, reason), with
+                          the ask and whatever the relay said for itself. An
+                          abort leaves its relay unreconciled, so this number
+                          IS whether the resync converges
+    RelayComplaints.kt    what a relay SAID when it would not answer — the
+                          NOTICE/CLOSED text quartz's PagedFetchResult has no
+                          room for, kept per relay and dated so a walk can only
+                          read the sentence its own REQ earned
+    FilterWidths.kt       how many kinds each relay takes in one filter,
+                          learned from its own refusal, so an over-wide ask is
+                          re-sent in chunks instead of refused forever
     RosterBuilder.kt      the asks a stream makes of each relay it may dial
     RetractionAudit.kt    the deleteMissing comparison, run as a retracting
                           ask's `negentropySyncThePastSeconds` reconcile:
@@ -767,6 +813,17 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncCoverageReport.kt bands + sweep cursors folded into per-stream groups
                           and depth buckets. Real computation, which is why it
                           survived the move whole
+    RelayStatusReport.kt  WHERE EACH PRIME RELAY STANDS — the roster joined
+                          against the same band snapshot, one row per (relay,
+                          stream) pair: complete / paging / refused / never
+                          started, with the depth reached and the relay's own
+                          sentence where it refused. Its subject is the ROSTER,
+                          which is why it can report the two states the
+                          coverage fold structurally cannot. TWO AXES per row —
+                          the past (`syncStatus`) and the present (`behind`),
+                          neither derived from the other — plus the terms the
+                          relay serves us on. The join is on the unit's OWED
+                          ASKS — see the trap below
     GaugeSeries.kt        the last hour of the four process gauges — the one
                           thing a single tick cannot state, and all that is
                           left of SyncProgressReport
@@ -1632,6 +1689,88 @@ refused at parse time. A scan whose select binds
 `(relay, provider)` granularity NIP-85's tags already chose, and the band key
 that stays valid however many providers join. A retracting stream
 (`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
+
+**A visit that aborts leaves its relay UNRECONCILED, and that is why the abort
+partition exists.** One unclean ask ends the visit (`refusedOutright`), and the
+next visit re-asks from the same first ask — so a relay that refuses
+deterministically never completes, however many times the pool visits it.
+Measured on `vespa-eventstore-staging`: 92.5% of visits aborting over one
+incremental minute, `contentViaOutbox` moving +15 reconciles in fifteen hours
+against 1,131 outstanding, and ~90% of those aborts emitting no line at all —
+the `!clean` path returned naming neither the relay, the stream, the ask nor the
+reason, and the refusals an operator COULD see were the relay client's own
+connection logging, undercounting by ~10x. `abortedVisits` said a problem
+existed and no instrument in the process could name it, which is the same shape
+as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: seven
+counters that partition the total exactly (`abortedAuthRequired`,
+`abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
+`abortedGaveUp`, `abortedFailed`), plus one line per (stream, relay, reason)
+per half hour carrying the ask and — through `RelayComplaints` — the sentence
+the relay refused with. **The sentence is the half that could not be
+inferred**: quartz reports how a walk ENDED, which is the right shape for the
+one decision it exists for (a `CLOSED` licenses no coverage claim whatever
+caused it), and a policy refusal, a rate limit and a filter the relay thinks is
+too wide are one ending with three different remedies.
+
+**One of those refusals the pool can take down itself: filter WIDTH.**
+`contentViaOutbox` asks for 139 kinds in one filter, and relays that cap width
+reject the whole REQ rather than trimming it — nine of them on the same window,
+answering `too many kinds in filter: 139`, `too many kinds (max 100)`, or just
+`too many kinds in filter`. `FilterWidths` reads that sentence, learns what the
+relay takes, and the leg goes back out as chunks of kinds — the catch-up AND the
+live tail, since a tail carrying the filter the relay just refused is one that
+silently never delivers. **The cap must be the RELAY's**: those three messages
+are three different limits and one of them states no number at all, so a
+constant is either above somebody's limit or below everybody's. A refusal naming
+a number BELOW our ask is adopted; anything else halves, including a relay that
+quotes our own 139 back at us — which is the trap, since adopting it would learn
+nothing and re-send the identical REQ forever. Every path narrows strictly or
+declines to narrow at all, which is what makes the loop terminate;
+`MAX_NARROWINGS` bounds what ONE visit pays, and the cap outlives the visit so a
+relay that names no limit converges across a handful of them. Splitting on KINDS
+and nothing else is what keeps it free of consequences downstream: the band is
+per kind, so the chunks of one leg widen one band between them and each carries
+evidence for exactly the kinds it walked. **The gate on the sentence is
+deliberately narrow** (`too many kinds`, nothing looser): 50 relays on that same
+roster refuse with `auth-required:` and 21 are outright blocked, and chunking
+THOSE asks would spend three extra round trips per leg, forever, on relays that
+will never serve us.
+
+**NIP-42 on upstream reads was ALREADY WIRED, and the A/B is what proves it.**
+`PeerClient` attaches quartz's `RelayAuthenticator` whenever `RELAY_NSEC` is set,
+and `fetchAllPages` waits out an `auth-required:` refusal on the AUTH's own
+verdict rather than on a timeout. `RelayReachLiveProbe` dialled all fifty relays
+#185 lists as "unreadable for want of NIP-42" with an EPHEMERAL key: sixteen
+served us, and re-run with `-DreachNoAuth=true` over those sixteen, THIRTEEN
+fall back to `AUTH_REQUIRED` with nothing delivered. The deployment sets
+`RELAY_NSEC`, so it was already reading those thirteen while the log said
+`auth-required:` — the sentence is the relay's FIRST word on the connection, not
+its last, which is exactly the misreading a log without an instrument produces.
+What is left is six relays: four ACCEPT our AUTH and still refuse (`you are not
+authorized to perform reqs`), which is `abortedAuthRequired` and wants a key
+they allowlist, and two never get an AUTH through. What was missing was the
+ability to tell any of that apart from never having answered — an anonymous
+deployment printed NOTHING at boot, so "we authenticate and they refuse us" and
+"we have no signer" were the same log. `SyncMain` now says which it is either
+way.
+
+**…and the same probe says what the width narrowing is actually worth: three of
+the nine.** git.cloistr.xyz (cap 17), purplerelay.com (cap 8) and
+relay.internationalright-wing.org (cap 35) narrow and then deliver, where before
+they could never finish an ask. The other six say `too many kinds` all the way
+down and then change their answer — nostria's two discovery relays reach a width
+of TWO and say `kind not allowed: 0`, mostro-p2p and whitenoise's two say `kind
+not allowed: 1`, hsuite answers `blocked: kinds 0, 1, 5, …`. `FilterWidths.learn`
+stops there because the sentence stopped being about width, which is the gate
+working and the reason it had to be written against the sentence and not against
+the ending. **Two more shapes are sitting in #185's "permanent" lists and are
+not permanent**: six `groups.*` relays refuse with `blocked: it's not allowed to
+mix metadata kinds with others` — kind 0 in one filter with everything else,
+which a split would take down the way a width cap now is — and
+mercury-relay.imwald.eu answers `invalid: Invalid kind in filter: '40002' must
+be in the range [0, 40000)`, so five kinds this router's own config asks for
+(40002, 40100, 45001, 45003, 48106) cost it that relay outright. Both want their
+own change.
 
 **No stream declares a transport any more.** `sync` (negentropy / fetch / auto)
 chose one for the engine that is gone, and the pool has one shape: page forward
@@ -4235,6 +4374,71 @@ Reach for it first.
   change**: an `X-Caller` header on the wire, and a server-side service-start
   timestamp — `VespaHttp` builds its own OkHttp client with no header or
   interceptor seam, so neither is reachable from this repository.
+- **the abort partition on the visits row, and the `visit … aborted` lines
+  beside it** — WHY visits are ending early, which on a mirror that has stopped
+  converging is the only question. `abortedVisits` is a total and unactionable
+  on its own; the seven counters that split it (`abortedAuthRequired`,
+  `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
+  `abortedGaveUp`, `abortedFailed`) sum back to it exactly, and each has a
+  different remedy — a key the relay accepts, its own CLOSED sentence read, a
+  slower revisit, nothing at all. Reach for it the moment `contentViaOutbox`
+  stops reconciling: 92.5% aborting says the resync cannot converge, and only
+  the split says what would fix it. The log half is one line per
+  (stream, relay, reason) per half hour, carrying the ask and — where the relay
+  explained itself — the sentence, which the counters cannot hold and
+  `SYNC_WIRE_LOG` could only give you for every relay at once. See
+  `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
+  fault: it counts relays that have told us how wide a filter they take, and
+  each one is a relay that could never finish an ask before.
+- **the `prime relays` table on the mirror's page** — TWO AXES, and reading
+  either one alone is how this table was wrong first. `syncStatus` is the PAST
+  (`notStarted` / `paging` / `complete` / `refused`); `behind` is the PRESENT —
+  how old the newest event we hold from that pair is, bucketed `current` /
+  `today` / `thisWeek` / `older` / `nothing`. **`complete` says the past below
+  is settled and says nothing at all about whether we are current**, so a pair
+  that is complete with a dead tail and nothing since last week is a worse
+  finding than one still paging and live — and the first version ranked them
+  the other way round, green chip at the bottom of the sort. The `fault` mark
+  and the row order now span both: a refusal, a pair never reached, or one that
+  is cold with NO TAIL watching it. A cold pair that IS tailed is excluded on
+  purpose — something is listening, so what is old is the relay's content and
+  not our copy of it, and without that exclusion every low-traffic relay on the
+  roster would sit in the fault band forever and retire the mark. The third
+  reading is the TERMS a relay serves us on, both of which were measured and
+  invisible per relay: the monitor's signed NIP-77 verdict (`negentropy` —
+  against a `false` relay a `paging` row can never settle by itself, which is a
+  configuration question rather than a puzzle) and the filter width its own
+  refusal taught us (`kindCap`), beside the relay's own sentence.
+- **…and the same table's per-relay reading** — WHERE EACH RELAY STANDS,
+  which everything else the mirror publishes is an aggregate over. `roster`
+  counts them, the coverage card charts their bands folded per stream, and the
+  in-flight tables name the handful a worker is holding this instant — so *is
+  this relay synced*, the question an operator actually arrives with and
+  usually about ONE relay, could be answered only while that relay was being
+  visited. Four answers per (relay, stream) pair: `complete` (every band
+  settled, with the last reconcile's age), `paging` (still walking back — watch
+  `coveredFrom`, which not moving between two polls IS the finding),
+  `refused` (visited, no band written, with the reason and the relay's own
+  sentence) and `notStarted`. **The last two are the pair that could not be
+  told apart before**: both are the same absence in the band file, they are
+  opposite findings, and the coverage card can draw neither because its
+  denominator is *relays this stream has touched*. Worst first, the status
+  counts published whole even when the row list is cut, and `settled/asks` on a
+  `paging` row because a unit owes one ask per bound provider and the status
+  alone covers 39-of-40 and 1-of-40 the same way. **The page is not where ONE
+  relay is looked up** — that is `jq` over `/stats.json`, which carries the same
+  rows; the table's job is what is wrong on this mirror. See
+  `RelayStatusReport`.
+- **`RelayReachLiveProbe`** — the same question asked of a LIST of relays
+  ahead of the deployment: dial each, send the real ask, print the ending, the
+  relay's own sentence, whether our AUTH was accepted, and the width it will
+  take. This is what turned #185's four log-derived lists into per-relay
+  verdicts in one run, and its `-DreachNoAuth=true` control arm is the only
+  thing that can price the NIP-42 responder — thirteen relays flip from
+  `AUTH_REQUIRED` to serving when it is attached. Reach for it before believing
+  any claim of the form *the router cannot read these relays*: a production log
+  shows a relay's FIRST word, and for an auth-gated relay that word is always
+  `auth-required:` whether or not the AUTH that follows gets us in.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
@@ -4464,6 +4668,78 @@ failure stays quiet, because silence costs a retry and being wrong costs a false
 statement about someone else's server.
 
 ## Traps that have cost real time
+
+- **A relay's own words reach you on a DIFFERENT listener from its refusal, and
+  quartz runs the refusal's first.** `fetchAllPages` returns when the `CLOSED`
+  reaches its SUBSCRIPTION listener; `RelayComplaints` records the sentence on a
+  CONNECTION listener, which quartz dispatches afterwards
+  (`NostrClient.onIncomingMessage` — the same ordering `RelayAuthenticator`
+  documents its own grace for). So reading the sentence straight after a refused
+  walk is a race, and it is lost at random.
+  **Every unit test passed throughout, because a fake answers instantly.** It
+  took `WidthRescueLiveProbe` — the real pool, real relays, a real Vespa — to
+  see it: from identical code, `git.cloistr.xyz` won the race three times and
+  narrowed 139 → 69 → 34 → 17 until it was served, while `purplerelay.com` lost
+  it on the second attempt, stopped the narrowing dead at 69 and aborted a visit
+  that was one halving from working. `RelayComplaints.awaitSince` gives the
+  sentence a 250ms grace, paid only on a refusal. **If a fact arrives on a
+  different callback from the thing that makes you want it, assume you can be
+  early.**
+
+- **A fallback that returns a COUNT cannot tell "empty" from "refused", and the
+  one that claims coverage must never be built on it.** The negentropy sweep's
+  last resort for a window it cannot reconcile is a plain REQ, and
+  `WindowSync.page` returned an `Int`. A relay that refused that REQ — a filter
+  width it caps, an auth wall, a policy `CLOSED` — delivered zero events, which
+  is exactly what an honest empty window delivers. So the sweep advanced its
+  cursor over the window, and, worse, reached the end of its stack and reported
+  `complete = true` — which is what makes the caller stamp `reconciledThrough`
+  on the band, the strongest claim this router makes. The history was recorded
+  as verified over ground nothing had ever been served for, and every later
+  audit was told there was nothing left to find. *An empty stack means the
+  windows were all VISITED; it never meant they were all answered.*
+  `page` returns `PagedFetchResult` now, three drain sites and the final return
+  are guarded on `refusedOutright`, and `negentropyRefused` counts the windows
+  that were not claimed. Both guards are mutation-checked.
+
+  **And the same fix has to reach every path that sends the filter.** #185 came
+  back precisely because the catch-up was chunked by `FilterWidths` and the
+  AUDIT was not: the sweep's fallback REQs carry the identical 139-kind filter,
+  so on every width-capped relay the audit went on being refused exactly as
+  before while its catch-up worked. One `FilterWidths` for the process now,
+  built in `SyncEngine` and passed to both — and the parameter on
+  `ClientWindowSync` has NO DEFAULT, because a `= FilterWidths()` would compile
+  at every call site and silently restore the bug. The NEG-OPEN itself is
+  deliberately left unchunked: a reconcile compares an ID SET, so splitting its
+  filter is N `snapshotIdsForNegentropy` reads — the largest allocation this
+  router makes — and it does not need to be, since a width-refused NEG-OPEN
+  already falls to the REQ path that is chunked.
+
+- **A "how complete is this" number needs the denominator the WORK uses, not the
+  one the state file happens to hold.** `RelayStatusReport`'s first version
+  counted the bands a (relay, stream) pair held and called the pair complete
+  when all of those were settled. A unit owes one ask PER BOUND AUTHOR, so a
+  `contentViaOutbox` unit on a many-provider relay owes dozens — and the moment
+  the first of them drained, the row read `complete`. Silently, on exactly the
+  relays the mirror cares most about, from a table whose entire job is to say
+  whether a relay is synced. The denominator has to be what the unit OWES, and
+  it was free the whole time: `RosterBuilder.UnitAsks.identity` is already each
+  ask's filter as JSON, computed for the roster's own change detection, and that
+  is the very string `SyncBands.snapshot` keys a band under — so `askKeys` joins
+  exactly, a band for an ask the roster has since dropped is ignored rather than
+  counted, and only `settled == askKeys.size` earns `complete`.
+
+  Two things follow, both worth copying. **Join on the string both sides already
+  produce, not on a canonical form you invent**: the first version canonicalised
+  the relay url on both sides, which was ~10,000 re-parses per status tick to
+  produce the strings it started with, and a canonical form that ever stopped
+  matching the file's key would have reported the whole roster as `hasn't
+  started` with nothing saying why. **And pin that seam against the real
+  classes**: `RelayStatusReportTest` drives a real `SyncBands` and a real quartz
+  `Filter` so the two keys are produced by the two things that produce them in
+  production. Fixture strings are a report's contract with itself and cannot
+  catch a divergence; that test is mutation-checked (strip the url's trailing
+  slash on one side and four tests fail).
 
 - **`SCAN_PAGE` MUST STAY UNDER THE DEPLOYED `maxHits`, and multi-node is where
   that bites.** Every relay-list read is `RelayDiscovery.scan`, which pages

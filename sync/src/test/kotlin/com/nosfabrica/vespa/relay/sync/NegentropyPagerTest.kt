@@ -167,15 +167,37 @@ class NegentropyPagerTest {
             )
         }
 
+        /**
+         * …and whether this peer REFUSES the fallback page.
+         *
+         * Off by default, which is the honest empty relay every case below
+         * assumes. Set for the one case that could not be written before the
+         * signature carried the ending: a relay that answers the last-resort
+         * REQ with a `CLOSED` and nothing delivered, which the sweep read as an
+         * empty window and CLAIMED.
+         */
+        var refusesPages = false
+
+        /**
+         * …and whether the page DELIVERED SOMETHING while still being refused.
+         *
+         * The case that reintroduced the bug the signature change was for:
+         * `page` may walk several kind-chunks, so a chunk that served events
+         * and a later one that was turned away is one call returning both. A
+         * refusal inferred from `downloaded == 0` cannot see it.
+         */
+        var refusedPagesStillDeliver = 0
+
         override suspend fun page(
             url: NormalizedRelayUrl,
             window: Filter,
             onEvent: suspend (Event) -> Unit,
-        ): Int {
+        ): PagedWindow {
             val range = window.since!!..window.until!!
             pagedRanges += range
             kindsAsked += window.kinds
-            return density.count(range)
+            if (refusesPages) return PagedWindow(refusedPagesStillDeliver, refused = true)
+            return PagedWindow(density.count(range), refused = false)
         }
     }
 
@@ -582,6 +604,81 @@ class NegentropyPagerTest {
             val rest = assertNotNull(out.outstanding)
             assertEquals(1_000, rest.since)
             assertEquals(1_999, rest.until)
+        }
+
+    // ---- when the fallback page is refused too --------------------------------
+
+    @Test
+    fun `a window whose fallback page was refused is NOT claimed by the cursor`() =
+        runBlocking {
+            // THE BUG THIS SIGNATURE CHANGE EXISTS FOR, and it is the durable
+            // one. `WindowSync.page` returned an `Int`, so a relay that refused
+            // the last-resort REQ — a filter width it caps, an auth wall, a
+            // policy CLOSED — delivered zero events, which is exactly what an
+            // honest empty window delivers. The sweep could not tell them apart
+            // and advanced the cursor either way, so a band was recorded over
+            // ground nothing had ever read and every later audit was told there
+            // was nothing to find.
+            //
+            // Mid-sweep, so the first window reconciles and the SECOND one is
+            // the one that falls to a refused page: `failAt = setOf(1)`.
+            val state = SweepState(null)
+            // Dense enough that the leg is cut into several windows, so there
+            // IS a second one for the peer to drop — a leg inside the target
+            // reconciles in a single call and never reaches the fallback.
+            val peer = FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply { refusesPages = true }
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(peer.pagedRanges.isNotEmpty(), "the fallback page was attempted")
+            assertEquals(1, out.refusedWindows, "…and counted as a window this sweep could not read")
+            assertFalse(out.complete, "a sweep holding an unread window has not verified the history")
+            // THE CURSOR IS THE DURABLE HALF. It may only ever cover ground
+            // that was actually read, so a refused window has to leave a hole
+            // it does not reach past.
+            val held = state.reconciled(SweepState.keyFor(mirror, relay, notes))
+            assertTrue(
+                held == null || held.downTo > peer.pagedRanges.first().first,
+                "the cursor claimed ${held?.downTo} but the window at ${peer.pagedRanges.first()} was refused",
+            )
+        }
+
+    @Test
+    fun `a fallback page that delivered SOME events and was still refused is not claimed`() =
+        runBlocking {
+            // THE REGRESSION THE FIRST FIX SHIPPED WITH. `page` walks the
+            // window in kind-chunks against a width-capped relay, so one call
+            // can both deliver and be turned away — and the first version
+            // returned quartz's `PagedFetchResult`, whose `refusedOutright` is
+            // `downloaded == 0 && …`. A chunk that served events therefore
+            // masked the chunk that was refused, the window completed, and the
+            // over-claim came back through the fix for it.
+            val state = SweepState(null)
+            val peer =
+                FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply {
+                    refusesPages = true
+                    refusedPagesStillDeliver = 25
+                }
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(out.downloaded >= 25, "what the served chunk delivered is kept")
+            assertEquals(1, out.refusedWindows, "…and the refusal is still seen")
+            assertFalse(out.complete, "so the leg cannot claim its history was verified")
+        }
+
+    @Test
+    fun `a window whose fallback page was SERVED is claimed exactly as before`() =
+        runBlocking {
+            // The other direction, so the guard cannot be "never claim
+            // anything": the same shape with a peer that answers the fallback
+            // must still advance, or every relay that ever needs one would
+            // re-walk its history forever.
+            val state = SweepState(null)
+            val peer = FakePeer(Density(perSecond = 100), failAt = setOf(1))
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(peer.pagedRanges.isNotEmpty(), "the fallback page was attempted")
+            assertEquals(0, out.refusedWindows)
+            assertTrue(out.complete, "every window was read, one way or the other")
         }
 
     // ---- the live head -------------------------------------------------------

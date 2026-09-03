@@ -372,6 +372,21 @@ const PROBE_NONE = {
  * is drawn LOUD and only when non-zero: at zero it belongs in the JSON, above
  * zero it belongs in front of an operator.
  */
+/**
+ * The visits row's abort partition — the document's member, and the words the
+ * card says it in. Ordered as the engine's own enum is, which is only a
+ * tie-break: what is drawn is the largest of them.
+ */
+const ABORTS = [
+  ["abortedAuthRequired", "on a NIP-42 wall"],
+  ["abortedClosed", "on a CLOSED"],
+  ["abortedQuiet", "on silence"],
+  ["abortedUnreachable", "unreachable"],
+  ["abortedUnpageable", "unpageable"],
+  ["abortedGaveUp", "given up on"],
+  ["abortedFailed", "failed"],
+];
+
 function processorFact(p) {
   const cell = el("span");
   /** Append a fact, hanging the document's own words on it where it has some. */
@@ -475,7 +490,22 @@ function processorFact(p) {
     // not at all, and which one is a config question the tooltip names.
     if (p.negentropySkipped) add(`${fmt(p.negentropySkipped)} skipped, no NIP-77`, "negentropySkipped");
     if (p.retracted) add(`${fmt(p.retracted)} RETRACTED upstream`, "retracted", true);
-    if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
+    // THE ABORT, AND THE REASON THAT IS MOST OF IT. A visit that aborts leaves
+    // its relay unreconciled, so this number IS whether the resync converges —
+    // and on its own it is unactionable, which is the whole complaint the
+    // per-reason counters answer. Drawn as the largest single reason rather
+    // than as seven chips: the partition is on the document for anyone reading
+    // it, and what a card has room to say is which wall the pool is mostly
+    // hitting.
+    if (p.abortedVisits) {
+      add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
+      const worst = ABORTS.map(([member, word]) => [p[member] || 0, member, word])
+        .sort((a, b) => b[0] - a[0])[0];
+      if (worst[0]) add(`${fmt(worst[0])} ${worst[2]}`, worst[1]);
+    }
+    // Not a fault: a relay that has told us its filter width is one we can now
+    // finish, where before this it could never complete a single ask.
+    if (p.narrowedRelays) add(`${fmt(p.narrowedRelays)} asked in kind chunks`, "narrowedRelays");
     if (p.liveEvicted) add(`${fmt(p.liveEvicted)} live subscription(s) rotated out`, "liveEvicted");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;

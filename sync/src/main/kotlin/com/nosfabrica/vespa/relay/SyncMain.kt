@@ -160,6 +160,20 @@ fun main() {
     val identity = RelayIdentity.fromEnv { env[it] }
     if (identity != null) {
         System.err.println("sync identity: ${identity.pubKey.take(12)}… (NIP-42 auth, NIP-66 monitor)")
+    } else {
+        // SAID, because the silence it replaces is unreadable from the outside.
+        // `PeerClient` attaches quartz's NIP-42 responder only when there is a
+        // signer, and without one an auth-gated upstream serves nothing and
+        // looks exactly like an ordinary empty relay — which is the whole
+        // reason that class's KDoc says this line has to exist. It did not: an
+        // anonymous deployment printed nothing at all, so "we authenticate and
+        // they turn our key down" and "we never answer" were the same boot log.
+        // The `abortedAuthRequired` counter is the running half of the same
+        // fact; this is the half that says whether it could ever be zero.
+        System.err.println(
+            "sync identity: none (RELAY_NSEC unset) — upstream NIP-42 challenges go unanswered, so relays that " +
+                "gate reads behind AUTH will serve nothing and read as empty",
+        )
     }
 
     // Both processes deploy on boot (AUTO_DEPLOY, default true): THIS is the
@@ -327,7 +341,11 @@ fun main() {
         } else {
             val statusSnapshot = StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
             val everySeconds = statusInterval(env)
-            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds)
+            // `engine::primeUnits` and not a copy of the roster: the pool
+            // rebuilds it on the discovery clock, so a list captured here would
+            // draw a table of the relays this router was allowed to dial at
+            // boot.
+            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds, engine::primeUnits)
             // Once before the server binds, so the first request answers with a
             // document rather than the 503 that means "nothing computed yet" —
             // this pass reads maps that are already populated, so there is no

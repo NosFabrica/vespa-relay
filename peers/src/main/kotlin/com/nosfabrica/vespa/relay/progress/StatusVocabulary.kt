@@ -82,7 +82,10 @@ object StatusVocabulary {
                 "settled",
                 "Nothing outstanding below the span this stream has walked on this relay — published as `complete` on a " +
                     "row and counted as `reconciled`. Earned two ways: a finished negentropy reconcile, or a paged walk " +
-                    "that drained (the relay EOSE'd an empty page, so there is nothing older). It says nothing about HOW.",
+                    "that drained (the relay EOSE'd an empty page, so there is nothing older). It says nothing about HOW. " +
+                    "On the prime-relays table it is a COUNT: how many of the `asks` this pair owes are settled, which is " +
+                    "the only thing `syncStatus: complete` may be claimed from. Read as a fraction of `asks` — a unit owes " +
+                    "one ask per bound provider, so `paging` covers 39 of 40 and 1 of 40 alike and only this tells them apart.",
             )
             put(
                 "open",
@@ -1148,6 +1151,16 @@ object StatusVocabulary {
                     "relays. UNMEASURED relays are not counted here: no verdict means the ask tries and finds out.",
             )
             put(
+                "negentropyRefused",
+                "WINDOWS AN AUDIT COULD NOT READ, and therefore did not claim. The sweep's last resort for a window " +
+                    "it cannot reconcile is a plain REQ, and a relay that refuses that — a filter width it caps, an " +
+                    "auth wall, a policy CLOSED — serves zero events, which is exactly what an honest empty window " +
+                    "serves. Told apart, the cursor holds and the band is not stamped `reconciledThrough`, so the " +
+                    "next audit re-reads the window; conflated, this router claimed the history was verified over " +
+                    "ground nothing had ever been served for. Climbing means an audit is being REFUSED rather than " +
+                    "merely running slowly, which is the distinction `negentropyRuns` alone cannot make.",
+            )
+            put(
                 "retracted",
                 "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
                     "retracted scores, and nothing else — a provider's own profile is another stream's record and " +
@@ -1159,7 +1172,186 @@ object StatusVocabulary {
                 "abortedVisits",
                 "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
                     "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +
-                    "roster is the monitor's next sweep's decision, not a retry ladder's.",
+                    "roster is the monitor's next sweep's decision, not a retry ladder's. This is a TOTAL and the " +
+                    "seven `aborted…` counters beside it partition it exactly, which is the number to read: an " +
+                    "abort leaves its relay unreconciled, so a high share here is a resync that is not converging " +
+                    "and only the split says what would fix it. Each abort is also spoken once per " +
+                    "(stream, relay, reason) in the log, with the ask and whatever the relay said for itself.",
+            )
+            put(
+                "abortedAuthRequired",
+                "Visits ended because the relay refused with `auth-required:` and would not accept our NIP-42 " +
+                    "identity. This router DOES answer challenges whenever `RELAY_NSEC` is set — the signer drives " +
+                    "quartz's responder, and a refused walk waits out the AUTH's verdict rather than a timeout — so " +
+                    "this counts relays that answered and turned OUR key down (an allowlist, a paid tier), not " +
+                    "challenges nobody replied to. Nothing in this router's configuration can take these down; a " +
+                    "key the relay accepts is the only fix.",
+            )
+            put(
+                "abortedClosed",
+                "Visits ended because the relay closed the subscription with nothing delivered — a policy refusal, " +
+                    "a rate limit, or a filter it will not serve. Three remedies behind one ending, and the log " +
+                    "line carries the relay's own sentence, which is the only thing that tells them apart.",
+            )
+            put(
+                "abortedQuiet",
+                "Visits ended because the relay went quiet INSIDE a page and never ended it — no EOSE, no CLOSED, " +
+                    "just the idle window running out. Silence is not an answer, so nothing is recorded and the " +
+                    "leg stays outstanding. Distinct from `abortedGaveUp`, which is the whole SEQUENCE of a " +
+                    "relay's asks going quiet rather than one of them.",
+            )
+            put(
+                "abortedUnreachable",
+                "Visits ended because the dial never landed, so nothing was ever asked. A relay reaching the " +
+                    "roster and then failing to connect is the monitor's next sweep's business, not a retry " +
+                    "ladder's — but a Tor deployment whose SOCKS proxy has stopped answering shows up here first.",
+            )
+            put(
+                "abortedUnpageable",
+                "Visits ended because the relay answered but ignored the paging cursor — every event it sent was " +
+                    "NEWER than the `until` the page asked for, so the walk cannot advance and proves nothing " +
+                    "about what the relay holds. quartz ends such a walk deliberately rather than descending a " +
+                    "second at a time forever.",
+            )
+            put(
+                "abortedGaveUp",
+                "Visits ended because the relay delivered nothing at all for five minutes across the SEQUENCE of " +
+                    "its asks, and the remaining ones were left to the revisit. A stream with author-bound asks " +
+                    "visits one relay once per bound author, and a relay answering each with a full empty idle " +
+                    "window was measured holding one worker for five hours. Reset by any event that arrives, so a " +
+                    "visit that is delivering is never cut.",
+            )
+            put(
+                "abortedFailed",
+                "Visits ended because the visit itself threw. The exception's class and message are on the log " +
+                    "line. This was the only abort that ever emitted one, which is why the other six read as zero " +
+                    "before this partition existed rather than as unmeasured.",
+            )
+            put(
+                "syncStatus",
+                "Where this router's sync of one (relay, stream) pair stands. `complete` — every band the pair " +
+                    "holds is settled, which is a paged leg the relay EOSEd empty or a finished negentropy " +
+                    "reconcile; `paging` — bands exist and at least one is still walking backwards, so read " +
+                    "`coveredFrom`; `refused` — the pool visited it and could write no band, with the reason and " +
+                    "the relay's own sentence beside it; `notStarted` — on the roster, no band, and no refusal " +
+                    "recorded, so the queue has not reached it yet. The last two are the same absence in the band " +
+                    "file and the opposite finding, which is the whole reason this table exists.",
+            )
+            put(
+                "behind",
+                "HOW CURRENT our copy of this pair is — which bucket the age of the newest event we hold falls in: " +
+                    "`current` (within the hour), `today`, `thisWeek`, `older`, or `nothing` where we hold none. " +
+                    "THE OTHER AXIS FROM `syncStatus`, and deliberately not folded into it: `complete` means the past " +
+                    "below is settled and says nothing about the present, so a pair that is complete and nine days " +
+                    "cold is a worse finding than one still paging and live. Read it with `tailed` — a tailed pair " +
+                    "has its present carried live between visits, so old content there is a quiet relay rather than " +
+                    "a mirror falling behind.",
+            )
+            put(
+                "behindSec",
+                "…and the age itself, in seconds. Off the newest `created_at` any of this pair's bands covers, which " +
+                    "is a freshness measure and not a second depth one: the catch-up walks its NEWER leg first, so " +
+                    "this reaches now for any pair we have caught up on whatever depth its backfill is still at.",
+            )
+            put(
+                "fault",
+                "This row needs somebody — the router's own verdict across BOTH axes, so a page cannot rank rows by " +
+                    "one of them and disagree with it. True for a refusal, for a pair never reached, and for one " +
+                    "with nothing recent AND no tail watching it. A cold pair that IS tailed is excluded: something " +
+                    "is listening, so what is old is the relay's content and not our copy of it.",
+            )
+            put(
+                "negentropy",
+                "Whether the monitor measured this relay as answering a NEG-OPEN — its signed NIP-77 verdict on the " +
+                    "same 30166 record the roster admits it by. A TERM, not a status: against a `false` relay both " +
+                    "audits are futile end to end, so its history can never be reconciled and only the stream's " +
+                    "`refetchThePastSeconds` re-reads its past — which is what turns a `paging` row that will not " +
+                    "settle from a puzzle into a configuration question. Absent means unmeasured, which is a third " +
+                    "reading and not a `false`: the ask tries and finds out.",
+            )
+            put(
+                "kindCap",
+                "How many kinds this relay accepts in one filter, learned from its own refusal, so this pair's asks " +
+                    "go to it in chunks of that many. Absent on every relay that has never complained — which is " +
+                    "nearly all of them. Present means this relay would otherwise have refused our whole ask and " +
+                    "could never have completed one; see `narrowedRelays` for the count.",
+            )
+            put(
+                "coveredFrom",
+                "How far BACK the walk of this pair has reached — the oldest `created_at` any of its bands " +
+                    "covers. THE number to watch on a `paging` row: unchanged between two polls means the walk " +
+                    "is not advancing, and nothing else here says that per relay. These filters carry no lower " +
+                    "bound, so there is no date this is finished AT — it means \"as deep as this relay has been " +
+                    "walked\", never \"done\".",
+            )
+            put(
+                "coveredTo",
+                "…and the newest `created_at` covered — how current this pair's copy is. A live tail keeps it at " +
+                    "now; a relay whose tail was evicted falls behind it by one revisit.",
+            )
+            put(
+                "verifiedAgoSec",
+                "How long since the last COMPLETED negentropy reconcile of this pair's history — the closest " +
+                    "thing this router has to a `last synced` stamp, because it is the only pass that compares " +
+                    "the whole past rather than walking forward from an edge. Absent where none has ever " +
+                    "finished, which on a young relay is not a fault: the clock is the stream's " +
+                    "`negentropySyncThePastSeconds`, a week in the shipped example.",
+            )
+            put(
+                "relaySaid",
+                "What the relay itself said when it last refused this pair — its `CLOSED` or `NOTICE` text, " +
+                    "verbatim and truncated. The router's own `refusedFor` names which WALL was hit; this is the " +
+                    "only thing that says what to do about it, because a `CLOSED` covers a policy refusal, a " +
+                    "rate limit and a filter the relay thinks is too wide alike.",
+            )
+            put(
+                "refusedFor",
+                "Which wall this pair's last visit hit, in the router's words — the same reading the " +
+                    "`aborted…` counters partition. Present on a row whose bands exist too, where it means the " +
+                    "pair has coverage AND its last visit was turned away: a relay that has stopped being " +
+                    "maintained rather than one that never started.",
+            )
+            put(
+                "refusedAgoSec",
+                "How long since that refusal. Read against `verifiedAgoSec` beside it: a refusal newer than the " +
+                    "last verified pass is a relay going backwards, and one much older is a wall that has since " +
+                    "come down.",
+            )
+            put(
+                "pairs",
+                "How many (relay, stream) pairs — the roster in the pool's own unit, so a relay two streams sync " +
+                    "is two pairs. The pair is what has a status: one relay can be complete for `indexers` and " +
+                    "never started for `contentViaOutbox`. On the `statuses` rows it is that status's share, and " +
+                    "those shares partition the total exactly and are published whole even when the row list is " +
+                    "cut.",
+            )
+            put(
+                "bands",
+                "How many of this pair's asks have coverage recorded at all. Read against `asks` beside it: 3 " +
+                    "bands against 40 asks is a relay barely begun, and both numbers reading the same is one " +
+                    "whose every ask has been walked at least once.",
+            )
+            put(
+                "asks",
+                "How many separate filters this stream owes this relay. One for a plain stream; one PER BOUND " +
+                    "AUTHOR where a `relaySource` select pairs providers with relays, which is the granularity " +
+                    "NIP-85's own tags chose. A visit walks them in turn and any single refusal ends it, which " +
+                    "is why a high count and a low `bands` is worth looking at.",
+            )
+            put(
+                "tailed",
+                "This pair is holding a live subscription right now, so its present arrives as it happens and " +
+                    "only what a dropped tail missed waits on the next visit. Not a status — a pair can be " +
+                    "paging and tailed at once — which is why it rides beside `syncStatus` rather than being one " +
+                    "of its values.",
+            )
+            put(
+                "narrowedRelays",
+                "Relays that have told us how many kinds they will take in one filter, so this router's asks go " +
+                    "to them in chunks of that many. Learned from the refusal itself — a relay stating `max 100` " +
+                    "is taken at its word, one that only says the ask was too wide is halved until it is accepted " +
+                    "— because relay limits differ and a static cap is either above somebody's or below " +
+                    "everybody's. Zero means no relay on this roster has ever complained about filter width.",
             )
             put(
                 "poolReceived",
