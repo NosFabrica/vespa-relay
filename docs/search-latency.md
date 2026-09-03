@@ -133,7 +133,10 @@ slow. The permit is held from the store call to EOSE, not to the end of a REQ
 that parks at its live tail.
 
 **The store** (`vespa-eventstore`, a patch prepared in this session and NOT
-yet applied — see the branch's pull request for where it is): a relevance
+yet applied — `docs/proposals/vespa-eventstore-newest-n-cut.patch`, one
+commit against the pinned `e1ecd7f23e`, its unit suite green, `git am`-able;
+the relay takes it by bumping `vespaEventStore` in `gradle/libs.versions.toml`
+once it lands): a relevance
 search asks Vespa for a **match-phase cut** — `ranking.matchPhase.attribute=
 created_at`, descending, `maxHits=VESPA_SEARCH_MATCH_PHASE_MAX_HITS` (default
 10,000) — as query parameters, and the client accepts that one degradation on
