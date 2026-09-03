@@ -70,6 +70,10 @@ tasks.test {
     System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
     System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
     System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
+    System.getProperty("reachNoAuth")?.let { systemProperty("reachNoAuth", it) }
+    System.getProperty("reachNsec")?.let { systemProperty("reachNsec", it) }
+    System.getProperty("reachUrls")?.let { systemProperty("reachUrls", it) }
+    System.getProperty("relayReachProbe")?.let { systemProperty("relayReachProbe", it) }
     System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
     System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
     System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }

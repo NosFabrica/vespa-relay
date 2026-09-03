@@ -167,6 +167,17 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# CAN WE SYNC THIS RELAY, ASKED OF EACH ONE: dials every url #185 named, sends
+# contentViaOutbox's real 141-kind ask, and prints how each ends, what the relay
+# SAID for itself, whether our NIP-42 AUTH was accepted, and — where the refusal
+# was about width — the cap learned and whether the narrowed ask is then served.
+# `-DreachNoAuth=true` detaches the responder, which is the control arm that
+# settles what NIP-42 is worth. Asserts nothing; it dials 81 other people's
+# servers, and a relay declining our key is an answer rather than a regression.
+./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i
+#   …with the deployment's own identity, which is the one relays allowlist:
+#   -DreachNsec=nsec1…      -DreachUrls='wss://a.example,wss://b.example'
+#   …and the control arm:   -DreachNoAuth=true
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
 # true, explicit false, and the derived default — and prints hasAuthResponder()
 # beside them. Pins that this router's client really does have a NIP-42
@@ -1691,15 +1702,41 @@ roster refuse with `auth-required:` and 21 are outright blocked, and chunking
 THOSE asks would spend three extra round trips per leg, forever, on relays that
 will never serve us.
 
-**NIP-42 on upstream reads was already wired, and `abortedAuthRequired` is what
-finally says so.** `PeerClient` attaches quartz's `RelayAuthenticator` whenever
-`RELAY_NSEC` is set, and `fetchAllPages` waits out an `auth-required:` refusal on
-the AUTH's own verdict rather than on a timeout — so a relay counted here
-answered our challenge and turned OUR key down (an allowlist, a paid tier), and
-nothing in this router's configuration takes it down. What was missing was the
-ability to tell that apart from never having answered: an anonymous deployment
-printed NOTHING at boot, so "we authenticate and they refuse us" and "we have no
-signer" were the same log. `SyncMain` now says which it is either way.
+**NIP-42 on upstream reads was ALREADY WIRED, and the A/B is what proves it.**
+`PeerClient` attaches quartz's `RelayAuthenticator` whenever `RELAY_NSEC` is set,
+and `fetchAllPages` waits out an `auth-required:` refusal on the AUTH's own
+verdict rather than on a timeout. `RelayReachLiveProbe` dialled all fifty relays
+#185 lists as "unreadable for want of NIP-42" with an EPHEMERAL key: sixteen
+served us, and re-run with `-DreachNoAuth=true` over those sixteen, THIRTEEN
+fall back to `AUTH_REQUIRED` with nothing delivered. The deployment sets
+`RELAY_NSEC`, so it was already reading those thirteen while the log said
+`auth-required:` — the sentence is the relay's FIRST word on the connection, not
+its last, which is exactly the misreading a log without an instrument produces.
+What is left is six relays: four ACCEPT our AUTH and still refuse (`you are not
+authorized to perform reqs`), which is `abortedAuthRequired` and wants a key
+they allowlist, and two never get an AUTH through. What was missing was the
+ability to tell any of that apart from never having answered — an anonymous
+deployment printed NOTHING at boot, so "we authenticate and they refuse us" and
+"we have no signer" were the same log. `SyncMain` now says which it is either
+way.
+
+**…and the same probe says what the width narrowing is actually worth: three of
+the nine.** git.cloistr.xyz (cap 17), purplerelay.com (cap 8) and
+relay.internationalright-wing.org (cap 35) narrow and then deliver, where before
+they could never finish an ask. The other six say `too many kinds` all the way
+down and then change their answer — nostria's two discovery relays reach a width
+of TWO and say `kind not allowed: 0`, mostro-p2p and whitenoise's two say `kind
+not allowed: 1`, hsuite answers `blocked: kinds 0, 1, 5, …`. `FilterWidths.learn`
+stops there because the sentence stopped being about width, which is the gate
+working and the reason it had to be written against the sentence and not against
+the ending. **Two more shapes are sitting in #185's "permanent" lists and are
+not permanent**: six `groups.*` relays refuse with `blocked: it's not allowed to
+mix metadata kinds with others` — kind 0 in one filter with everything else,
+which a split would take down the way a width cap now is — and
+mercury-relay.imwald.eu answers `invalid: Invalid kind in filter: '40002' must
+be in the range [0, 40000)`, so five kinds this router's own config asks for
+(40002, 40100, 45001, 45003, 48106) cost it that relay outright. Both want their
+own change.
 
 **No stream declares a transport any more.** `sync` (negentropy / fetch / auto)
 chose one for the engine that is gone, and the pool has one shape: page forward
@@ -4319,6 +4356,16 @@ Reach for it first.
   `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
   fault: it counts relays that have told us how wide a filter they take, and
   each one is a relay that could never finish an ask before.
+- **`RelayReachLiveProbe`** — the same question asked of a LIST of relays
+  ahead of the deployment: dial each, send the real ask, print the ending, the
+  relay's own sentence, whether our AUTH was accepted, and the width it will
+  take. This is what turned #185's four log-derived lists into per-relay
+  verdicts in one run, and its `-DreachNoAuth=true` control arm is the only
+  thing that can price the NIP-42 responder — thirteen relays flip from
+  `AUTH_REQUIRED` to serving when it is attached. Reach for it before believing
+  any claim of the form *the router cannot read these relays*: a production log
+  shows a relay's FIRST word, and for an auth-gated relay that word is always
+  `auth-required:` whether or not the AUTH that follows gets us in.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
