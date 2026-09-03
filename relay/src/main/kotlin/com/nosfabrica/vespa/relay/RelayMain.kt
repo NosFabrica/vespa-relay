@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.config.requireReadLensFromEnv
+import com.nosfabrica.vespa.relay.config.searchConcurrencyPerConnectionFromEnv
 import com.nosfabrica.vespa.relay.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
@@ -361,6 +362,7 @@ fun main() {
             kindDeny = denyKindsFromEnv(env),
             rejectFutureSeconds = rejectFutureSeconds,
             requireReadLens = requireReadLens,
+            searchConcurrencyPerConnection = searchConcurrencyPerConnectionFromEnv(env),
         )
 
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).

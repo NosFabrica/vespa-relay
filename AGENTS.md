@@ -410,6 +410,15 @@ while and it is REFUSED at parse time now, with the reason (`gone with the
 legacy backfill`). Every stream is visited the same way: page from the band's
 edge, live-tail, and re-check the past on the two clocks above.
 
+**WHAT A SEARCH COSTS THERE, 2026-09-03**, and why: the cost is the match set
+a relevance profile scores, not the page — `bitcoin` kind 1 took 4.4s at limit
+1 and 4.0s at limit 200; `nostr` and `the` 16s; a rare word 0.3s; the same
+`bitcoin` under `sort:recent` (the match-phase profile) 0.6s. Three concurrent
+searches cost 5.0s each against 3.8s alone. docs/search-latency.md has the
+tables, the page's REQ sequence that turned one 3.7s search into a 9.1s first
+paint, and the three fixes (the page, `SearchGate`, and the store's
+newest-N cut).
+
 Two cautions. It is **shared and live**: read it, don't publish test events to
 it — anything written is written to a relay other people are reading, and
 NIP-09 does not un-ring that bell. And it is a **moving system**, so every
@@ -446,7 +455,16 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
   resources/web/            every module the pages import: shared/ (the design,
                             the render engine, the protocol clients), sync/ and
                             monitor/ (each plane's cards), cards/ (the search
-                            UI's per-kind renderers)
+                            UI's per-kind renderers). shared/asks.js is the
+                            one to know before touching a search ask: the
+                            relay's cost is the MATCH SET, not the limit
+                            (limit 1 and limit 200 took the same 4s on
+                            staging), so the type-ahead and the results view
+                            ask one question at one width and the second gets
+                            the first one's answer; app.js runs one type-ahead
+                            at a time and paging.js's first ask already covers
+                            the preload. Nine ranked searches per typed word
+                            became one — docs/search-latency.md
   CachedPages.kt            CachedPage/IconedPage and the ETag exchange every
                             page and document answers with
   WebAssets.kt              /web/… off the classpath, hashed once, and /favicon.ico
@@ -605,6 +623,19 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         posted one". Off the AUTH path entirely: an OK is what
                         a client waits on before it reads, and quartz reads a
                         throw from that hook as a FAILED LOGIN
+    SearchGate.kt       ONE RANKED READ AT A TIME PER CONNECTION — terms, a
+                        phrase, a `sort:`, and the COUNTs of either queue in
+                        arrival order behind the one in the engine; plain and
+                        lens-only reads never wait. A relevance search takes
+                        every match thread the cluster has, so two on one
+                        socket share rather than overlap (measured on staging:
+                        one `bitcoin` 3.8s, three at once 5.0s EACH, six 6.8s
+                        each), and the search page used to stack nine per typed
+                        word. `SEARCH_CONCURRENCY_PER_CONNECTION`; the permit is
+                        held to EOSE, not to the end of a REQ that parks at its
+                        live tail. docs/search-latency.md has the whole
+                        measurement, including what the page and the store
+                        changed beside it
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route

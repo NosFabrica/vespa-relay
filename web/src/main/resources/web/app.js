@@ -24,10 +24,20 @@ import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
 import { PAGE_SIZE, MAX_ASK, MAX_PAGES, firstAsk, askLimit, pageOf, pageCount, covered, canGrow, lastPage, mergePages, drained } from "./paging.js";
 import { mountSearchField, softKeyboard } from "./searchfield.js";
+import { AskCache } from "./shared/asks.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
 
+// Rows the popup DRAWS. Not what it asks for: the ask is one results page
+// with its preload (paging.js's askLimit), because the relay's cost is the
+// match set rather than the rows, and an ask at that width is what Enter can
+// reuse — see shared/asks.js.
 const POPUP_LIMIT = 8;
-const DEBOUNCE_MS = 150;
+// A keystroke gap this long is a pause worth answering. 150ms fired on nearly
+// every keystroke of ordinary typing (a 200ms cadence), and each firing was a
+// full ranked search — the seven prefixes of `bitcoin`, then the word. The
+// serialisation in runPopup() is the real fix (one ask in flight, the latest
+// text runs next); this only stops the first character from being it.
+const DEBOUNCE_MS = 250;
 
 // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
 // `slug` is the tab's name in the URL (`?tab=notes`). A slug, not the label
@@ -516,10 +526,14 @@ function uniqueById(events) {
  * them an ungated label read, on every debounced keystroke, for a row that
  * does not exist. The cards view asks; the popup does not.
  */
-async function search(text, limit, deep) {
+async function search(text, limit, deep, signal) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  const answer = await relay.req(filters);
+  // Through the cache: the popup and the results view ask the same question
+  // at the same width, and the second of them gets the first one's answer.
+  // [signal] is the popup's, so a type-ahead Enter has overtaken can be
+  // closed at the relay rather than left to finish for nobody.
+  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }));
   // `complete` is EOSE rather than the ten-second timeout, and it rides out of
   // here because the PAGER reasons about it: an answer shorter than the prefix
   // it asked for means the corpus ends there — but only if the relay said so.
@@ -1697,7 +1711,7 @@ function onQueryEdit() {
   // screen and one set of arrow keys, so while a picker owns them the results
   // preview stays shut.
   if (!text || field.picking) { closePopup(); return; }
-  debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
+  armPopup(text);
 }
 
 // paintScores goes in for the same reason the entity page takes it: the faces
@@ -1713,6 +1727,9 @@ const field = mountSearchField($q, $mentions, {
 // abandoned before it ever runs — so "there are hits" is not "these hits are
 // about what the box says", and reopening the popup on that assumption showed
 // one query's answers under another query's words.
+// The last ranked ask, so Enter after a type-ahead is one search, not two.
+const asks = new AskCache();
+
 const s = {
   requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
   // ---- the pager, which is five more facts about that same array ----------
@@ -1734,7 +1751,12 @@ const s = {
  * page two out of the eight rows of a query nobody submitted — so the two
  * answers get two states, which is what they always were.
  */
-const pop = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true };
+const pop = {
+  requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
+  // ---- the ask in flight, which the results view may take over or close ----
+  inFlightFor: null, // the text the in-flight ask is for; null when none is
+  abort: null,       // its AbortController — see runFull()
+};
 
 /** Forget an answer without drawing anything: a view that is being left. */
 function forget(st) {
@@ -1744,6 +1766,27 @@ function forget(st) {
 
 let debounceTimer = null;
 let activeKey = null;
+
+/**
+ * The text waiting for the popup while an ask is in flight — the latest only.
+ *
+ * ONE TYPE-AHEAD ASK AT A TIME, and the reason is what an ask costs. A ranked
+ * search is the one read this relay cannot make cheap (a common word ranks
+ * millions of postings), and the engine shares its match threads between
+ * concurrent asks, so stacking them makes every one slower: measured against
+ * staging (2026-09-03) the popup's asks for `b`, `bi`, `bit` … `bitcoin` were
+ * seven ranked searches in flight together, answering in 1.6s to 7.4s each,
+ * and the results view's own ask — sent when Enter was pressed at 2.4s — came
+ * back at 9.1s for a query that answers alone in 3.7s. The relay now holds a
+ * connection's ranked reads to one at a time as well (SearchGate), so the
+ * stack would queue there rather than run together; but a queue of prefixes
+ * nobody is looking at any more is still work done for nothing, and the
+ * fix belongs where the asks are made. So: while an ask is in flight the
+ * keystrokes only replace the text waiting here, and when the ask lands the
+ * waiting text runs — which is how `bitcoin` becomes two searches (`b`, then
+ * `bitcoin`) instead of seven.
+ */
+let popupQueued = null;
 
 /**
  * The avatar says who you are; the "ranking as" control says whose trust is
@@ -2391,6 +2434,7 @@ function openPopup() {
   $q.setAttribute("aria-controls", "popup");
 }
 function closePopup() {
+  popupQueued = null; // a text that queued for the popup is not run into a popup that closed
   $popup.classList.remove("open");
   // Two listboxes hang off one combobox, and only one is ever up. When the
   // PICKER is the one showing, these attributes are describing it — lowering
@@ -2416,7 +2460,37 @@ function setActive(idx) {
 
 // Never over the people picker: a debounced type-ahead from before the `from:`
 // was started can still land after it, and the two popups occupy the same box.
-function runPopup(text) { if (field.picking) return; openPopup(); run(pop, () => search(text, POPUP_LIMIT, false), KEEP, renderPopup); }
+function runPopup(text) {
+  if (field.picking) return;
+  if (pop.loading) { popupQueued = text; return; }
+  popupQueued = null;
+  openPopup();
+  const abort = new AbortController();
+  pop.inFlightFor = text;
+  pop.abort = abort;
+  // askLimit(0), the results view's first ask: the same question at the same
+  // width, so Enter reuses this answer (shared/asks.js) instead of asking it
+  // again — and the width costs nothing the popup's eight rows did not.
+  run(pop, () => search(text, askLimit(0), false, abort.signal), KEEP, renderPopup).then((live) => {
+    if (pop.abort === abort) { pop.inFlightFor = null; pop.abort = null; }
+    const next = popupQueued;
+    popupQueued = null;
+    // Only for a popup that is still the view on screen, and only for a text
+    // the box still says — and through the DEBOUNCE again, not straight away.
+    // The text that queued while this ask ran is the box as it was mid-word:
+    // measured against staging, running it at once searched `bitco` for four
+    // seconds while the reader had already finished typing `bitcoin`, and
+    // the word itself waited behind it. Another pause is another keystroke
+    // gap, and it is the only evidence there is that a text is finished.
+    if (live && next != null && next !== text && $q.value.trim() === next) armPopup(next);
+  });
+}
+
+/** Run the popup for [text] once the box has held it for a debounce. */
+function armPopup(text) {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => { if ($q.value.trim() === text) runPopup(text); }, DEBOUNCE_MS);
+}
 
 /**
  * The full results view, opening on [page] — 0 for every way in but a restore.
@@ -2429,6 +2503,12 @@ function runPopup(text) { if (field.picking) return; openPopup(); run(pop, () =>
 function runFull(text, page = 0) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
   pop.requestId++;             // …and its answer must not repaint a popup this view has closed
+  // A type-ahead in flight for THIS text is this view's answer, about to be
+  // taken over through shared/asks.js. One for any other text is a search
+  // nobody will draw, and left open it holds the connection's ranked-read
+  // lane at the relay (SearchGate) — the submit below would queue behind it.
+  // Closed here, the relay cancels it and the submit takes the lane.
+  if (pop.abort && pop.inFlightFor !== text) pop.abort.abort();
   cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
   hideFeedPreview();   // …and the hero's preview is not part of a results page
   document.title = "SearchOverTrust";
