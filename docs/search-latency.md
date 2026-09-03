@@ -198,6 +198,94 @@ Three things to read off it:
 Match threads help the uncut shape and nothing under the cut: `the` uncut
 629 → 331 ms from one thread to four, `the` at 10,000 53 → 69 ms (noise).
 
+## A cut that does not decide the answer: trust descent (2026-09-03, later)
+
+The newest-N cut above was refused as a product: a configured depth must not
+decide what a search answers. So the question became whether the engine can
+be made to stop early WITHOUT changing the answer, and the answer is yes —
+because of what the ranking is.
+
+**The ranking is trust, then text.** `search` scores `text × wot_mult(trust)
+× recency`; text spans ×236 across its bands, trust spans ×250,000 across
+0..100 (`wot_mult = 1 + (rank − floor)^2.7`), recency ×1.1. The exact top-10
+for `the` under the observer is ten weak-band hashtag hits ordered purely by
+their authors' trust (97, 95, 71, 71, 64, 61, 58, 58, 51, 51); for `nostr`,
+ten hits by authors ranked 100, 100, 100, 99, 99, 99, 99, 97, 97, 97. So the
+docs that can be on a page are, overwhelmingly, the docs of the most trusted
+authors — and the reputation parent already knows who those are.
+
+**The mechanism.** A scalar on the reputation document, `max_rank` — the best
+rank ANY observer gives this author, kept fresh by the trust projection —
+imported into the event as `author_max_rank`. A relevance search then carries
+`author_max_rank >= T`, and Vespa drives the AND with THAT range: it walks the
+trusted authors' notes and checks the word against each, instead of walking
+the word's postings (millions) and checking each against the gate. Measured
+on the local slice (1.28M kind-1 notes, the observer's provider's real cards):
+
+| authors ranked ≥ T (by anyone) | share of kind-1 notes |
+|---:|---:|
+| 2 (everyone the provider scores) | 10.6% |
+| 10 | 5.0% |
+| 20 | 3.8% |
+| 50 | 2.2% |
+| 90 | 0.5% |
+
+**The proof.** Every doc the clause excludes has `max_rank < T`, so its score
+under THIS observer (whose rank for it is ≤ its max) is at most
+`ceiling × wot_mult(T−1) × 1.1`, where `ceiling` is the largest text score a
+document can earn (the token tier plus its tails, ~131,100 — a schema
+constant). If the page's K-th hit scores at least that, no excluded doc could
+have displaced it: the page is the exact page. The K-th score also says how
+low T must go for the proof to hold, so the descent is two queries — a first
+rung high (T=90, cheap) that reveals the K-th score, then one rung at the T
+that score proves — and a page whose K-th hit is by a poorly ranked author
+descends to `T = floor`, which is the exact answer walked over the trusted
+authors only. The answer is exact at every rung it stops on; T never decides
+it, only how fast it was found.
+
+Measured, same corpus, kind 1, K=40, 4 threads (`descent.mjs`, ladder shown
+rung by rung; `proven` is the bound above holding):
+
+```
+"the"      exact 154ms, served 31,604
+  rank>=90  13ms kept  2,138  top10  2/10   rank>=50  22ms kept 7,409  top10 10/10
+  rank>=20  30ms kept 11,716  top10 10/10   rank>=10  35ms kept 16,157 PROVEN, page identical
+"nostr"    exact  86ms — rank>=90 12ms 10/10 … rank>=20 35ms PROVEN, identical
+"bitcoin"  exact  39ms — rank>=90 14ms 10/10 … rank>=20 25ms PROVEN, identical
+"love"     exact  32ms — rank>=90 15ms  6/10 … rank>=10 24ms PROVEN, identical
+```
+
+Two rungs (T=90, then the proven T) cost 46 ms for `the` against 154 exact.
+The slice is 190x smaller than staging and its authors are scored by ONE
+provider (so `max_rank` is that provider's rank; on staging it is the max
+over 1,023 providers and covers more authors); the transferable numbers are
+the shares and the per-doc walk cost (~0.5 µs per trusted-author note
+checked, 4 threads). On staging, authors ranked ≥ 20 by anyone are perhaps
+5-10% of 149M notes: an exact `the` becomes a ~3-7M-doc walk, roughly
+**0.5-1 s where it is 16 s today**, and `bitcoin` **~0.3-0.5 s** — for every
+common word alike, since the walk is the trusted corpus rather than the
+word. Rare words stay on the text driver and stay fast. That is exact, with
+no knob in the answer; it is not 200 ms.
+
+**Why exact cannot be 200 ms**, in one line: 200 ms buys a walk of ~1.5M
+notes, which is authors ranked ≥ ~50; the proof at T=50 needs the K-th hit to
+score 5.3e9, and no note can (a body hit by a rank-100 author scores 1.3e8).
+The ×236 text spread is what defeats a trust-only stop; the recency term is
+too weak to stop on at all.
+
+**What the trust key can also do, if the product allows a first answer that
+is not the final one:** the T=90 rung answers in ~100 ms on staging's shape
+and is the exact top of the page for most words (`nostr`, `bitcoin`: 10/10
+already); the proven rung follows. A relay REQ streams, so a page could draw
+the first rung and re-sort when the proven one lands. That is a product
+decision, not made here.
+
+**What was checked and set aside:** Vespa accepts a match phase keyed on the
+imported `author_max_rank` (it works, and at moderate depths it was exact on
+every word tried), but its threshold is an ESTIMATE — kept sets held docs of
+rank 2 while excluding rank-40 ones — so no bound can be proven over it; the
+explicit range clause is what makes the proof sound, and it is as cheap.
+
 ## What is NOT the problem
 
 Things measured on the way that are fine and need no change: the WebSocket
