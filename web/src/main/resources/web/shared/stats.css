@@ -888,6 +888,16 @@ table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white
 table.sy-legs tr:last-child td { border-bottom: 0; }
 table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+/* THE RELAY'S OWN SENTENCE, which is the one cell here that is prose.
+   `nowrap` is right for every other cell — they are urls, words and clocks, and
+   a wrapped one would make a row two lines to say nothing more. This one is a
+   whole message from someone else's server, and under the shared rule it ran
+   off the right edge of the table with the actionable half of it ("…not
+   authorized to perform reqs") behind a horizontal scroll. Wrapping it costs a
+   second line on the few rows that carry one and is what makes the column worth
+   having. */
+table.sy-legs td.sy-said { white-space: normal; max-width: 46ch; color: var(--muted); }
+table.sy-legs tr.hot td.sy-said { color: inherit; }
 /* …and the heading over a numeric column, which was three inline styles in the
    card until the three tables were built by one function. Same class as the
    cells under it, so a column is right-aligned in one place. */

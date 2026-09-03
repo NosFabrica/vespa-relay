@@ -102,6 +102,11 @@ class StatusVocabularyTest {
             // and `examples` inside it are what a reader looks up; the plural
             // is the shape, exactly as `relays` is inside `inFlight`.
             "reasons",
+            // …and the same call for the per-relay table's two partitions: the
+            // rows inside them are `syncStatus` / `behind` and `pairs`, all of
+            // which a reader looks up, and the plural is the shape they sit in.
+            "statuses",
+            "freshness",
         )
 
     @Test
@@ -138,6 +143,16 @@ class StatusVocabularyTest {
                                 {"job": "negentropy", "streamCap": 4, "inUse": 2, "deferred": 91}],
                      "schedule": [{"job": "negentropy", "everySec": 604800, "due": 3, "neverRun": 12,
                                    "waiting": 397, "nextInSec": 41200}]}],
+                     "relays": {"pairs": 44, "omitted": 2,
+                                "statuses": [{"syncStatus": "refused", "pairs": 4}, {"syncStatus": "complete", "pairs": 30}],
+                                "freshness": [{"behind": "current", "pairs": 30}, {"behind": "older", "pairs": 14}],
+                                "rows": [{"relay": "wss://nos.lol/", "stream": "content", "syncStatus": "paging",
+                                          "asks": 40, "bands": 3, "settled": 1, "coveredFrom": 1689857148, "coveredTo": 1769998206,
+                                          "behindSec": 90, "behind": "current", "fault": true,
+                                          "negentropy": true, "kindCap": 100,
+                                          "verifiedAgoSec": 41200, "visiting": true, "tailed": true,
+                                          "refusedFor": "the relay closed the subscription",
+                                          "relaySaid": "error: too many kinds in filter", "refusedAgoSec": 900}]},
                      "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400,
                                           "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
                                           "doing": "holding a live tail", "pool": "live", "stream": "content"}],
@@ -173,7 +188,9 @@ class StatusVocabularyTest {
                         "unpageable": 1, "noncompliant": 1, "auth-refused": 1, "restricted": 1},
                        {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                         "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
-                        "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "retracted": 2, "abortedVisits": 2, "liveEvicted": 1, "poolReceived": 4000},
+                        "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "negentropyRefused": 2, "retracted": 2, "liveEvicted": 1, "poolReceived": 4000,
+                        "narrowedRelays": 9, "abortedVisits": 2, "abortedAuthRequired": 1, "abortedClosed": 1, "abortedQuiet": 0,
+                        "abortedUnreachable": 0, "abortedUnpageable": 0, "abortedGaveUp": 0, "abortedFailed": 0},
                        {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
                      "store": {"outstanding": 3, "slowAfterSec": 60, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
                                "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
@@ -349,6 +366,38 @@ class StatusVocabularyTest {
                     "negentropySkipped",
                     "retracted",
                     "abortedVisits",
+                    // …and the split of it, one member per way a visit ends
+                    // early. Listed rather than derived from the enum: this
+                    // test's whole job is to notice a name that moved on one
+                    // side and not the other.
+                    "abortedAuthRequired",
+                    "abortedClosed",
+                    "abortedQuiet",
+                    "abortedUnreachable",
+                    "abortedUnpageable",
+                    "abortedGaveUp",
+                    "abortedFailed",
+                    "narrowedRelays",
+                    "negentropyRefused",
+                    // …and the per-relay table's own vocabulary. `relays` and
+                    // `statuses` are containers whose children are what a
+                    // reader looks up, exactly as `reasons` is.
+                    "syncStatus",
+                    "pairs",
+                    "behind",
+                    "behindSec",
+                    "fault",
+                    "negentropy",
+                    "kindCap",
+                    "coveredFrom",
+                    "coveredTo",
+                    "verifiedAgoSec",
+                    "refusedFor",
+                    "relaySaid",
+                    "refusedAgoSec",
+                    "bands",
+                    "asks",
+                    "tailed",
                     "liveEvicted",
                     "poolReceived",
                 ) +

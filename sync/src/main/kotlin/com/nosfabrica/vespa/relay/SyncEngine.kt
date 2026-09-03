@@ -39,8 +39,11 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.status.RelayStatusReport
+import com.nosfabrica.vespa.relay.sync.ClientRelayComplaints
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
+import com.nosfabrica.vespa.relay.sync.FilterWidths
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
@@ -218,6 +221,26 @@ class SyncEngine(
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /**
+     * WHAT THE UPSTREAMS SAY WHEN THEY REFUSE — one listener on the shared
+     * client, for the pool to read its aborts by. See [ClientRelayComplaints];
+     * built here rather than inside the pool because it attaches to the client
+     * this engine owns and has to be let go in [close].
+     */
+    private val complaints = ClientRelayComplaints(client)
+
+    /**
+     * WHAT EACH RELAY TAKES IN ONE FILTER, learned from its own refusals — one
+     * instance for the whole process.
+     *
+     * Here rather than inside the pool because the POOL is not the only thing
+     * that sends this router's filters at a relay: the audit's fallback REQs
+     * are the same REQs, so a width the pool learned and the pager did not left
+     * a width-capped relay's audit refused while its catch-up worked. A limit
+     * is a property of the relay; one place to hold it.
+     */
+    private val widths = FilterWidths()
+
+    /**
      * The automatic window chunker. A peer's cap arrives through quartz —
      * `NegentropySyncResult.peerCap`, parsed off the relay's own refusal — so
      * nothing here has to watch the wire for it.
@@ -225,7 +248,7 @@ class SyncEngine(
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
-            ClientWindowSync(client, refused = refusedIds),
+            ClientWindowSync(client, widths, refused = refusedIds),
             sweepState,
             NegPageTuning(
                 target = config.negPageTarget,
@@ -233,6 +256,7 @@ class SyncEngine(
                 maxTarget = config.negPageMax,
                 slackSeconds = config.negPageSlackSec,
             ),
+            complaints,
         )
 
     /**
@@ -276,6 +300,7 @@ class SyncEngine(
     private val visitPool =
         VisitPool(
             reads = ClientRelayReads(client),
+            complaints = complaints,
             bands = bands,
             ingest = ingest,
             pager = pager,
@@ -305,6 +330,8 @@ class SyncEngine(
             // What each stream may spend on each of the four jobs. Empty
             // where no stream configures a share, which is uncapped.
             limits = PoolLimits.of(visitStreams),
+            // …and the widths, the SAME instance the pager holds.
+            widths = widths,
         )
 
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
@@ -846,6 +873,10 @@ class SyncEngine(
         // the client before it closes, instead of racing it and counting
         // their own deaths into `aborted`.
         scope.cancel()
+        // Off the client before the client goes: a listener left registered on
+        // a closing pool is the leak `RelayAuthenticator.destroy` is called for
+        // two lines down, in `peers.close()`.
+        runCatching { complaints.close() }
         peers.close()
         ingest.closeIntake()
         // After the scope, so a worker mid-batch is cancelled rather than
@@ -857,6 +888,17 @@ class SyncEngine(
                 ", ${upPush.pushed.get()} pushed)",
         )
     }
+
+    /**
+     * WHERE EACH PRIME RELAY STANDS — the pool's roster, as the status page's
+     * per-relay table needs it. See [VisitPool.primeUnits].
+     *
+     * Reached through this engine for [monitorStatus]'s reason: this process
+     * composes the planes, and `SyncMain` holds the engine rather than the pool
+     * inside it. A method rather than a stored list because the roster is
+     * rebuilt on its own clock — see the supplier note on [SyncStatus].
+     */
+    fun primeUnits(): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnits()
 
     /**
      * The monitor plane's status document — see [MonitorEngine.status].

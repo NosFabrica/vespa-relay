@@ -8,7 +8,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
-import { STUCK_CALL_SEC, STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
+import { STUCK_CALL_SEC, STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, relayStatusOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
 
 /**
  * A LIVE cursor, which is the one place a day is not enough precision.
@@ -755,6 +755,151 @@ function poolTable(group) {
 }
 
 /**
+ * WHERE EACH PRIME RELAY STANDS — one row per relay a stream is allowed to
+ * dial, and what the sync of it has actually reached.
+ *
+ * ## This is not the per-relay table that was removed
+ *
+ * [coveragePanel] below replaced a 10,462-row list of BANDS behind a filter
+ * box, and that was right: its rows were spans, its subject was "how deep is
+ * the mirror", and a distribution answers that in one glance where the table
+ * needed all 10,462 read. This asks the opposite question — *which relays are
+ * being synced at all* — and a distribution cannot answer it, because the two
+ * states that matter most (a relay never reached, and one refused on every
+ * visit) have NO BAND and so appear in no distribution. Its subject is the
+ * ROSTER, not the band file, which is also why its denominator is honest where
+ * the coverage card's cannot be.
+ *
+ * ## Worst first, and the counts are the key to it
+ *
+ * The order is the document's — refused, then never started, then paging, then
+ * complete — because an operator opens this because something is wrong, and a
+ * table sorted by relay name would put the four broken rows on page nine. The
+ * counts above the table are published WHOLE even when the row list is cut, so
+ * a truncation can never be read as a smaller problem.
+ *
+ * ## A row is a (relay, STREAM) pair
+ *
+ * Because that is what has a status: one relay can be complete for `indexers`
+ * and never started for `contentViaOutbox`, and a row per relay would have to
+ * invent a verdict over the two. The stream column is what makes that legible;
+ * on a one-stream deployment it is one repeated word and harmless.
+ */
+function relayPanel(d) {
+  const r = relayStatusOf(d.relays);
+  if (!r) return null;
+  const box = el("div");
+
+  // TWO HEADLINES, ONE PER AXIS, and the order is the reading: how current we
+  // are first, because that is the question an operator arrives with, then how
+  // far the backfill behind it has got. Both off the document's own partitions
+  // and never re-counted from `rows`, which is cut — see [relayStatusOf].
+  const head = el("div", "sy-pool-head");
+  head.appendChild(el("span", "sy-pool-name",
+    `${fmt(r.current)} of ${fmt(r.pairs)} pair(s) current`));
+  for (const c of r.freshness) head.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("behind")));
+  box.appendChild(head);
+
+  const past = el("div", "sy-pool-head");
+  past.appendChild(el("span", "sy-pool-name", "the past behind it"));
+  for (const c of r.chips) past.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("syncStatus")));
+  box.appendChild(past);
+
+  const nowSec = Date.now() / 1000;
+  // THREE GROUPS, because the row answers three questions and a flat eight
+  // columns made a reader work out which cell belonged to which. `headedTable`
+  // already draws the band and rules the divides — the jobs table has used it
+  // since the budgets and the schedule became one table.
+  const { scroll, table } = headedTable(
+    [["relay", null, false], ["stream", null, false],
+     ["newest", "behindSec", false],
+     ["status", "syncStatus", false], ["back to", "coveredFrom", false], ["verified", "verifiedAgoSec", true],
+     // ONE COLUMN, not three. The terms and the relay's own sentence answer
+     // the same question and the sentence is the only cell here that WRAPS —
+     // split across columns they pushed the table wider than its card and cut
+     // the sentence off at the right edge, which is the one thing on the row
+     // that says what to do.
+     ["terms", "negentropy", false]],
+    false,
+    [["", 2], ["how current", 1], ["how far back", 3], ["on what terms", 1]],
+  );
+  for (const row of r.rows) {
+    const tr = el("tr", row.hot ? "hot" : null);
+    const url = el("td", "u");
+    // The url in its own LTR isolate inside the rtl cell — see [poolTable],
+    // which is where this rule is explained.
+    const inner = el("span", null, row.short);
+    inner.dir = "ltr";
+    url.appendChild(inner);
+    url.title = row.relay;
+    tr.appendChild(url);
+    tr.appendChild(el("td", null, row.stream || "—"));
+
+    // HOW CURRENT — the age of the newest thing we hold, and whether anything
+    // is listening for the next one. The tail belongs HERE and not beside the
+    // status: it is what carries the present between visits, so old content on
+    // a tailed pair is a quiet relay rather than a mirror falling behind, and
+    // that is the whole difference between the two readings.
+    const fresh = el("td");
+    // fmtPeriod, not fmtDur: these are CALENDAR ages, and the phase clock
+    // renders nine days as `216h 0m` — a number a reader has to divide before
+    // it means anything, which is the complaint fmtPeriod already exists for
+    // one table over.
+    fresh.appendChild(el("span", null, row.behindSec != null ? `${fmtPeriod(row.behindSec)} old` : "—"));
+    if (row.tailed) fresh.appendChild(chip("live", "live", term("tailed")));
+    fresh.title = term("behind");
+    tr.appendChild(fresh);
+
+    // HOW FAR BACK — the backfill's own axis, and nothing on it says anything
+    // about the present.
+    const st = el("td");
+    st.appendChild(el("span", null, row.label));
+    if (row.progress) {
+      const done = el("span", "sy-quiet", ` ${row.progress}`);
+      done.title = term("settled");
+      st.appendChild(done);
+    }
+    if (row.visiting) st.appendChild(chip("visiting", "busy", term("visiting")));
+    st.title = term("syncStatus");
+    tr.appendChild(st);
+    // The number to watch on a `paging` row: unchanged between two polls means
+    // the walk is not advancing, and nothing else here says so per relay.
+    tr.appendChild(el("td", "sy-at", row.coveredFrom != null ? cursorOf(row.coveredFrom, nowSec) : "—"));
+    // The last completed reconcile. `—` where none has ever run, which is not a
+    // fault: the clock is a week in the shipped example and a young relay has
+    // not had one.
+    tr.appendChild(el("td", "n", row.verifiedAgoSec != null ? `${fmtPeriod(row.verifiedAgoSec)} ago` : "—"));
+
+    // ON WHAT TERMS — what this relay lets us do, which decides what the two
+    // columns to the left can ever reach. A relay the monitor measured as
+    // refusing a NEG-OPEN can never have its history reconciled, so a `paging`
+    // row beside `no neg` is one that will not settle by itself; a width cap is
+    // why its asks go out in chunks.
+    const terms = el("td", "sy-said");
+    if (row.negentropy === true) terms.appendChild(chip("neg", "live", term("negentropy")));
+    if (row.negentropy === false) terms.appendChild(chip("no neg", "warn", term("negentropy")));
+    if (row.kindCap != null) terms.appendChild(chip(`≤${row.kindCap} kinds`, "busy", term("kindCap")));
+    // The relay's own sentence LAST, after the terms we measured: those are
+    // standing facts about the relay and this is what it said the last time it
+    // turned us away, which is the detail a reader lands on.
+    if (row.why) {
+      const said = el("span", null, row.why);
+      if (row.refusedAgoSec != null) said.title = `last refused ${fmtPeriod(row.refusedAgoSec)} ago`;
+      terms.appendChild(said);
+    }
+    if (!terms.children.length) terms.appendChild(el("span", "sy-quiet", "—"));
+    tr.appendChild(terms);
+    table.appendChild(tr);
+  }
+  box.appendChild(scroll);
+  if (r.omitted) {
+    box.appendChild(el("p", "sy-sub",
+      `${fmt(r.omitted)} more pair(s) not listed — the counts above are complete, and every row naming a fault is above the cut`));
+  }
+  return box;
+}
+
+/**
  * HOW DEEP THE COVERAGE IS — every walked band at once, as how many relays
  * reach each point in the frame.
  *
@@ -906,7 +1051,11 @@ function syncCard(section) {
   const streams = d.streams || [];
   const progress = d.progress;
   const card = el("div", "card");
-  cardHead(card, "Sync coverage", streams.length || progress ? null : "No sync state in this document.", section);
+  // `relays` counts as state here for [stats.html]'s reason: a router whose
+  // whole roster is refused has no walked streams and no progress worth the
+  // word, and the sub-heading would say the document is empty over a table
+  // naming every relay it could not sync.
+  cardHead(card, "Sync coverage", streams.length || progress || d.relays ? null : "No sync state in this document.", section);
   // The glossary this card's marks explain themselves with, before anything
   // below draws. It is the document's own, so a chip cannot describe a member
   // in words the router would not use — see `term` and `SyncVocabularyTest`.
@@ -966,6 +1115,16 @@ function syncCard(section) {
   if (store) {
     card.appendChild(el("p", "sy-h", "the store"));
     card.appendChild(store);
+  }
+
+  // BEFORE the coverage distribution, and the order is the reading: this says
+  // which relays are being synced, that one says how deep the ones that are
+  // have got. A depth chart over a roster half of which is refused is a chart
+  // of the survivors.
+  const relays = relayPanel(d);
+  if (relays) {
+    card.appendChild(el("p", "sy-h", "prime relays"));
+    card.appendChild(relays);
   }
 
   const coverage = coveragePanel(d);

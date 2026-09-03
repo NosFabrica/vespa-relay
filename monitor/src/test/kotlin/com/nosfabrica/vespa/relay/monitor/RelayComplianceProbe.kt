@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.relay.monitor
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllWithHooks
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -156,6 +158,11 @@ class RelayComplianceProbe {
                 val narrowMs = System.currentTimeMillis() - narrowAt
                 if (narrow == null) {
                     println("    page two  nothing to page from, or the ask did not come back inside ${PER_ASK_MS}ms")
+                    // NOT `continue`. A relay that answers no window of OURS
+                    // and still serves the mirror is the case worth the dial —
+                    // the monitor's ask is one shape and the mirror's is
+                    // another, which is the whole subject of #187.
+                    println("    ${"%-9s".format("outbox141")} ${runBlocking { realOutboxWalk(client, url) }}")
                     continue
                 }
                 val walks =
@@ -195,6 +202,26 @@ class RelayComplianceProbe {
                 // docs/proposals/negentropy-replaced-ids.md, which is about the
                 // same replaceable-event lookup seen from the write side.
                 println("    ${"%-9s".format("outbox k0")} ${runBlocking { outboxWalk(client, url) }}")
+
+                // THE OLDER LEG'S FIRST ASK, which is the one shape nothing
+                // above reproduces and the only one that can produce the abort
+                // the mirror actually counts.
+                //
+                // `VisitPool.refusedOutright` requires `downloaded == 0`, so
+                // `abortedUnpageable` fires only for a walk that delivered
+                // NOTHING — page ONE, not page two. And quartz's paged listener
+                // drops what does not `Filter.match`, `until` included, so a
+                // first page answered entirely above the cursor counts zero
+                // events and ends UNPAGEABLE. `SyncCoverage.legs` gives the
+                // older leg exactly that: a `since` AND an `until`, both at
+                // once, which no ask in this file has carried until now.
+                println("    ${"%-9s".format("older leg")} ${runBlocking { olderLeg(client, url) }}")
+
+                // AND THE ASK THE MIRROR ACTUALLY ABORTS ON, run through
+                // quartz's OWN paged walk so the ending is quartz's verdict
+                // rather than our reading of it. Everything above is a REQ this
+                // file interprets; this line is `PagedFetchResult.End` itself.
+                println("    ${"%-9s".format("outbox141")} ${runBlocking { realOutboxWalk(client, url) }}")
             }
         } finally {
             runCatching { authenticator.destroy() }
@@ -279,6 +306,82 @@ class RelayComplianceProbe {
             }
     }
 
+    /**
+     * ONE ASK CARRYING BOTH BOUNDS, as the mirror's older leg sends it: a
+     * `since` from the stream's filter and an `until` from the band's floor.
+     *
+     * Every ask above has carried one bound or the other. This is the pair, on
+     * the FIRST page, which is the only ask whose failure can reach
+     * `VisitPool.refusedOutright` — anything that fails later has already
+     * downloaded something and is recorded rather than aborted.
+     */
+    private suspend fun olderLeg(
+        client: NostrClient,
+        url: NormalizedRelayUrl,
+    ): String {
+        val now = System.currentTimeMillis() / 1000
+        val since = now - 30L * 24 * 60 * 60
+        val until = now - 24L * 60 * 60
+        val events =
+            ask(client, url, Filter(kinds = listOf(1), since = since, until = until, limit = PAGE))
+                ?: return "no answer to {kinds=[1], since=$since, until=$until}"
+        if (events.isEmpty()) return "empty — the relay holds nothing in a 30d..1d window, or served none of it"
+        val above = events.count { it.createdAt > until }
+        val below = events.count { it.createdAt < since }
+        return "served ${events.size} for a [$since, $until] window: $above above the `until`, $below below the `since`" +
+            when {
+                above == events.size -> "  <<< quartz matches NONE of them: downloaded=0, End.UNPAGEABLE, the mirror ABORTS"
+                above > 0 || below > 0 -> "  <<< partial — some of the answer is outside the window asked for"
+                else -> "  — the window was honoured"
+            }
+    }
+
+    /**
+     * `contentViaOutbox`'s REAL ask, walked by quartz's own `fetchAllPages`.
+     *
+     * The one thing every other leg in this file cannot give: the ending is
+     * `PagedFetchResult.End` as the mirror sees it, not this probe's reading of
+     * a REQ. `VisitPool.refusedOutright` aborts on `downloaded == 0` AND an
+     * ending in its refusal set, so both halves are printed — an `UNPAGEABLE`
+     * that downloaded something is RECORDED by the mirror, not aborted, and
+     * only the pair reproduces what the counter counts.
+     *
+     * The kinds are `router.conf.example`'s verbatim, because the width is
+     * itself a suspect: this is the ask the newer `FilterWidths` work exists
+     * for, and a relay that refuses a filter this wide has several ways to say
+     * so.
+     */
+    private suspend fun realOutboxWalk(
+        client: NostrClient,
+        url: NormalizedRelayUrl,
+    ): String {
+        // NO `limit`, because the mirror's leg has none — a limit ends the walk
+        // at LIMIT_REACHED, which is our own instruction and not an ending the
+        // mirror ever aborts on. The window is an hour so an unlimited walk
+        // over 141 kinds still terminates inside this probe's clock.
+        val since = (System.currentTimeMillis() / 1000) - OUTBOX_WINDOW_SECONDS
+        // ONE AUTHOR, because that is the ask the mirror sends:
+        // `RosterBuilder.asksOf` splits a relay's bound authors ONE PER FILTER,
+        // structurally and with no knob. A filter naming many pubkeys is not a
+        // shape this router ever walks, so a probe sending one would measure
+        // something nothing does.
+        //
+        // Taken from the relay's own recent events, so the pubkey is one it
+        // demonstrably serves: an author it holds nothing for drains honestly
+        // and proves nothing.
+        val seed = ask(client, url, Filter(kinds = listOf(1), since = since, limit = PAGE))
+        val author = seed?.firstOrNull()?.pubKey ?: return "no recent event to take an author from"
+        val walked =
+            withTimeoutOrNull(PER_ASK_MS) {
+                client.fetchAllPages(url, listOf(Filter(kinds = OUTBOX_KINDS, authors = listOf(author), since = since)), IDLE_MS) { }
+            } ?: return "the walk did not come back inside ${PER_ASK_MS}ms"
+        val aborts =
+            walked.downloaded == 0 && walked.end != PagedFetchResult.End.DRAINED &&
+                walked.end != PagedFetchResult.End.LIMIT_REACHED
+        return "${OUTBOX_KINDS.size} kinds, 1 author, since $since -> end=${walked.end}, downloaded=${walked.downloaded}" +
+            if (aborts) "  <<< the mirror ABORTS (refusedOutright)" else "  — the mirror records a band"
+    }
+
     /** One REQ, the events it produced, or null when the relay never answered. */
     private suspend fun ask(
         client: NostrClient,
@@ -320,6 +423,12 @@ class RelayComplianceProbe {
 
         /** How many authors the outbox-shaped ask binds — a handful, as a real ask does. */
         private const val AUTHORS = 3
+
+        /** How far back the unlimited outbox walk reaches — an hour, so it terminates. */
+        private const val OUTBOX_WINDOW_SECONDS = 3600L
+
+        /** `contentViaOutbox`'s kinds, verbatim from `router.conf.example`. */
+        private val OUTBOX_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
 
         /**
          * The mirror's asks, as the issue recorded them: `kinds 0, since …` for

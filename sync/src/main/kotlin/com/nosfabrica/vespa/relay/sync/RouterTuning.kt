@@ -67,5 +67,29 @@ internal const val NEG_IDLE_MS = 30_000L
  */
 internal const val LEG_QUIET_GIVE_UP_MS = 10 * NEG_IDLE_MS
 
+/**
+ * How many times ONE leg may be narrowed and re-walked inside a single visit
+ * when a relay refuses it on filter width — see [FilterWidths].
+ *
+ * Three, and the number is a cost bound rather than a convergence one. A relay
+ * that STATES its limit (`too many kinds (max 100)`) is under it on the first
+ * retry, so this never bites there. A relay that only says the ask was too wide
+ * is halved, and from this router's 139-kind `contentViaOutbox` ask that is
+ * seven halvings to reach one kind — so the bound stops a single visit from
+ * paying all seven, each of which re-walks the chunks that already succeeded.
+ *
+ * It costs nothing in convergence because the cap OUTLIVES THE VISIT: the pool
+ * keeps what it learned, so the next visit starts three halvings in and the
+ * relay is inside its limit within a handful of visits rather than never.
+ *
+ * MEASURED, against two real relays and a real store — `WidthRescueLiveProbe`.
+ * `git.cloistr.xyz` fits inside one visit (139 → 69 → 34 → 17, then served).
+ * `purplerelay.com` does not: it spends the same three halvings, is still
+ * refused at 17, and aborts — and the revisit five minutes later starts at 17,
+ * narrows once more to 8, and pages its history back to 2023. Two visits, which
+ * is what this bound trades a re-walk of the succeeded chunks for.
+ */
+internal const val MAX_NARROWINGS = 3
+
 /** How often progress lines and phase reports refresh. */
 internal const val PROGRESS_INTERVAL_MS = 15_000L

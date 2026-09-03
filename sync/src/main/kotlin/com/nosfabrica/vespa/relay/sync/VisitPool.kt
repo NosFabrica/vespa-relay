@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StreamPhases
+import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -104,6 +105,15 @@ internal class VisitPool(
      * holding a `NostrClient` can only be tested by being one.
      */
     private val reads: RelayReads,
+    /**
+     * WHAT A RELAY SAID when it would not answer — see [RelayComplaints].
+     * Beside [reads] rather than inside it because it is not a read: nothing
+     * here asks the relay anything, it listens to what the relay volunteers on
+     * a socket somebody else opened. Deaf by default, which is the probes and
+     * every test that does not care: an abort then names its reason and not the
+     * relay's own words, exactly as it did before this existed.
+     */
+    private val complaints: RelayComplaints = RelayComplaints.DEAF,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val pager: NegentropyPager,
@@ -163,6 +173,17 @@ internal class VisitPool(
      * default, which is exactly the behaviour it arrived beside.
      */
     private val limits: PoolLimits = PoolLimits(emptyMap()),
+    /**
+     * WHAT EACH RELAY WILL TAKE IN ONE FILTER, learned from its own refusals —
+     * see [FilterWidths].
+     *
+     * SHARED WITH THE PAGER, and that is the whole reason it is a parameter
+     * rather than a field: the sweep's fallback REQs are the same REQs this
+     * pool sends, carrying the same filter, so a width learned here and not
+     * there left every width-capped relay's AUDIT refused exactly as before —
+     * which is what #185 came back about.
+     */
+    private val widths: FilterWidths = FilterWidths(),
 ) {
     /**
      * WHEN EACH STREAM'S RE-READS OF THE PAST COME DUE — the engine's own
@@ -224,6 +245,18 @@ internal class VisitPool(
     private class Tail(
         val subId: String,
         val wantsAtOpen: Set<String>,
+        /**
+         * The filter width this subscription was opened at, or null for the
+         * ordinary relay that has never told us one — see [FilterWidths].
+         *
+         * Part of the tail's identity beside [wantsAtOpen], and it has to be:
+         * a cap is learned from a REFUSAL, which is the roster changing nothing
+         * at all, so without it a tail opened at full width and then taught a
+         * cap kept the very filter that relay refuses — on a subscription the
+         * relay had already closed — while the pair went on reporting `tailed`
+         * and was excluded from the staleness fault for it.
+         */
+        val capAtOpen: Int? = null,
         /**
          * Since the subscription was opened — the live pool's own `held`
          * clock, and NOT the visit's: the worker that opened this tail moved
@@ -436,6 +469,66 @@ internal class VisitPool(
     }
 
     /**
+     * EVERY PRIME (relay, stream) UNIT THIS POOL HOLDS, for the status page's
+     * per-relay table — see [RelayStatusReport].
+     *
+     * The roster is the ONLY place the prime set exists: it is rebuilt off the
+     * monitor's signed 30166 verdicts on the discovery clock, and nothing on
+     * disk holds it. So a relay that loses its certificate loses its row here
+     * rather than becoming a stale one that no file would ever retract, which
+     * is the property that lets the table be read as *the relays this router
+     * may dial* rather than as *the relays it once could*.
+     *
+     * WHOLE, and bounded by the roster rather than by a cut here: what a
+     * reader may not be shown is decided once, in the report, where the counts
+     * that close are published beside it.
+     *
+     * Off one snapshot read, like every other reader of the roster: the two
+     * maps consulted per unit are live, so a unit could in principle be
+     * visiting a relay the snapshot no longer names — a row that says
+     * `visiting` for a unit already dropped is the honest reading of that
+     * instant, and one this pool would rather publish than lock a rebuild
+     * behind a status poll.
+     */
+    internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
+        val snapshot = currentRoster
+        val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
+        for ((url, byStream) in snapshot.asks) {
+            for ((stream, unit) in byStream) {
+                val key = VisitKey(url, stream)
+                val abort = aborts.last(stream, url)
+                out +=
+                    RelayStatusReport.PrimeUnit(
+                        // VERBATIM, which is what makes the join to the band
+                        // file exact: `SyncBands` writes this very string as
+                        // its relay key, and every other relay row in this
+                        // document publishes it unaltered too.
+                        relay = url.url,
+                        stream = stream,
+                        // BY REFERENCE. `identity` is the roster's own memo —
+                        // each ask's filter as JSON, computed for its change
+                        // detection — and it is the exact key a band is written
+                        // under, so the report joins on it and pays nothing.
+                        askKeys = unit.identity,
+                        visiting = ongoing.containsKey(key),
+                        live = tails.containsKey(key),
+                        // THE TERMS THIS RELAY SERVES US ON, both already
+                        // decided and neither visible per relay until now: the
+                        // monitor's signed NIP-77 verdict, which is what says
+                        // whether this pair's history can ever be reconciled,
+                        // and the width its own refusal taught us.
+                        speaksNegentropy = snapshot.speaksNegentropy[url],
+                        kindCap = widths.capFor(url),
+                        abortReason = abort?.reason?.says,
+                        abortSaid = abort?.said,
+                        abortAtSec = abort?.atSec ?: 0,
+                    )
+            }
+        }
+        return out
+    }
+
+    /**
      * THE LIVE POOL — every relay whose tail subscription is open right now,
      * quietest first.
      *
@@ -613,7 +706,24 @@ internal class VisitPool(
      * being re-checked by reconcile or is waiting on `refetchThePastSeconds`.
      */
     private val auditsSkipped = AtomicLong()
-    private val abortedVisits = AtomicLong()
+
+    /**
+     * WHY visits are ending early, counted and said — the instrument
+     * `abortedVisits` alone could not be. See [VisitAborts]; the total it owns
+     * IS the `abortedVisits` this row used to publish from a bare counter.
+     */
+    private val aborts = VisitAborts()
+
+    /**
+     * Windows an audit could not read and therefore did not claim — see
+     * [SweepOutcome.refusedWindows].
+     *
+     * The audit's half of `abortedVisits`. A sweep can end incomplete for
+     * reasons nobody can act on; this counts only the windows a relay turned
+     * away, which is the number that says an audit is being refused rather
+     * than merely being slow.
+     */
+    private val auditsRefusedWindows = AtomicLong()
 
     fun start() {
         if (streams.isEmpty()) return
@@ -653,11 +763,22 @@ internal class VisitPool(
                 Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == POOL_NEGENTROPY }.toLong()),
                 Processors.Count("negentropyRuns", auditsRun.get()),
                 Processors.Count("negentropySkipped", auditsSkipped.get()),
+                Processors.Count("negentropyRefused", auditsRefusedWindows.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
-                Processors.Count("abortedVisits", abortedVisits.get()),
                 Processors.Count("liveEvicted", evictedTails.get()),
                 Processors.Count("poolReceived", poolReceived.get()),
-            )
+                // Relays that have told us how wide a filter they will take, so
+                // this stream's asks go to them in chunks — see [FilterWidths].
+                // Zero on a deployment whose streams ask for few enough kinds
+                // that nobody has ever complained, which is the fact to read it
+                // for; it climbing is a roster acquiring width-capped relays,
+                // not a fault.
+                Processors.Count("narrowedRelays", widths.narrowed.toLong()),
+                // …and the abort partition: `abortedVisits`, then the reasons
+                // it is made of. Appended as a block rather than spelled out
+                // here so the total and its parts cannot drift apart — see
+                // [VisitAborts.counts].
+            ) + aborts.counts()
         }
         // The streams' own rows: the pool's one phase, and the source that
         // names which relays a worker is on — see the [phases] parameter.
@@ -807,8 +928,19 @@ internal class VisitPool(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            abortedVisits.incrementAndGet()
-            System.err.println("router: visit ${key.stream} ${key.url.url} failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            // Through [VisitAborts] like every other abort, so this ending is
+            // in the partition rather than beside it. It used to be the ONE
+            // abort with a line of its own — two lines against ~4,400 aborts
+            // over twenty minutes — which read as a pool whose visits almost
+            // never failed.
+            aborts
+                .record(
+                    key.stream,
+                    key.url,
+                    VisitAborts.Reason.FAILED,
+                    asked = "${e.javaClass.simpleName}: ${e.message?.take(80)}",
+                    said = null,
+                )?.let(System.err::println)
         }
     }
 
@@ -873,10 +1005,14 @@ internal class VisitPool(
                 // so a visit that is delivering is never cut, and the clock
                 // starts at the claim so it cannot fire before the first ask.
                 if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
-                    abortedVisits.incrementAndGet()
-                    System.err.println(
-                        "router: visit ${key.stream} ${url.url} gave up after ${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s) — the revisit takes the remaining asks",
-                    )
+                    aborts
+                        .record(
+                            key.stream,
+                            url,
+                            VisitAborts.Reason.GAVE_UP,
+                            asked = "${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s), ${VisitAborts.asked(ask.filter)}",
+                            said = null,
+                        )?.let(System.err::println)
                     return
                 }
                 // BOTH MOVE TOGETHER OR THE ROW LIES. The depth is the
@@ -894,14 +1030,26 @@ internal class VisitPool(
                 // pools and says so by carrying no pool word.
                 ongoingVisit.pagingUntil = null
                 ongoingVisit.stage = ASKING
-                val clean = catchUp(ask, url, ongoingVisit)
+                val refusal = catchUp(ask, url, ongoingVisit)
                 // A refusal ends this stream's visit, not just this ask's
                 // part: the next ask is the same conversation with the same
                 // relay, and the monitor's sweep — not a retry loop — is what
                 // re-admits it. Another stream's visit is its own
                 // conversation and is unaffected.
-                if (!clean) {
-                    abortedVisits.incrementAndGet()
+                //
+                // AND IT SAYS WHICH REFUSAL, which this path did not: it
+                // returned here naming neither the relay, the stream, the ask
+                // nor the reason, and it is ~90% of every abort this pool
+                // counts. See [VisitAborts].
+                if (refusal != null) {
+                    aborts
+                        .record(
+                            key.stream,
+                            url,
+                            VisitAborts.of(refusal.end),
+                            asked = VisitAborts.asked(refusal.filter),
+                            said = complaints.awaitSince(url, refusal.askedAtMs),
+                        )?.let(System.err::println)
                     return
                 }
                 auditIfDue(
@@ -912,6 +1060,12 @@ internal class VisitPool(
                     snapshot.speaksNegentropy[url],
                 )
             }
+            // EVERY ASK CAME BACK CLEAN, so whatever wall this unit last met is
+            // gone and the row must stop reporting it — see [VisitAborts.cleared].
+            // Here rather than after the tail: the heal drain and the tail open
+            // are not asks of the roster, and a tail budget turning one away is
+            // not a relay refusing us.
+            aborts.cleared(key.stream, url)
             ongoingVisit.stage = FINISHING
             // Per url rather than per stream, and safe from several at once:
             // the healer's queue REMOVES what it hands out, so two streams
@@ -929,14 +1083,41 @@ internal class VisitPool(
     }
 
     /**
-     * The catch-up: walk what the band says is outstanding. Returns false when
-     * the relay refused with nothing delivered — the visit's stop signal.
+     * ONE REFUSED WALK — quartz's ending, the ask that met it, and when.
+     *
+     * The instant is the load-bearing member and the reason this is a class
+     * rather than the `End` alone: [RelayComplaints] keeps one sentence per
+     * relay, so it can only be attributed to THIS refusal by the clock the REQ
+     * went out at. The filter is the CHUNK the relay actually saw, not the
+     * leg — against a width-capped relay those differ, and the one an operator
+     * needs on the line is the one that was refused.
+     */
+    class Refusal(
+        val end: PagedFetchResult.End,
+        val filter: Filter,
+        val askedAtMs: Long,
+    )
+
+    /**
+     * The catch-up: walk what the band says is outstanding. Returns the refusal
+     * when the relay refused with nothing delivered — the visit's stop signal —
+     * and null when every leg came back clean.
+     *
+     * **A leg refused on WIDTH is re-walked here rather than abandoned.** Nine
+     * relays on staging reject this router's 139-kind ask outright instead of
+     * trimming it, which under the stop signal above meant they could never
+     * complete a single ask however often they were visited. [FilterWidths]
+     * reads the relay's own complaint, learns what it will take, and the leg
+     * goes back out as chunks — see there for why the cap cannot be a constant
+     * of ours. Bounded at [MAX_NARROWINGS] per leg because each retry re-walks
+     * the chunks that already succeeded; a relay that names no limit converges
+     * by halving across visits instead, since the cap outlives the visit.
      */
     private suspend fun catchUp(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
-    ): Boolean {
+    ): Refusal? {
         val stream = ask.stream
         // WHAT THIS ASK ALREADY HAD when the visit opened, read once and read
         // BEFORE the first `record` below widens it. It is the only thing that
@@ -947,9 +1128,6 @@ internal class VisitPool(
         // "why is this relay downloading its whole history again".
         val covered = bands.band(stream.name, url, ask.filter)
         for (leg in bands.legs(stream.name, url, ask.filter)) {
-            var seenMin: Long? = null
-            var seenMax: Long? = null
-            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // THE LEG'S OWN JOB DECIDES WHICH CAP IT PAYS, which is the whole
             // reason the classification exists in the engine rather than only
@@ -975,8 +1153,74 @@ internal class VisitPool(
                     null
                 }
             ongoingVisit.stage = stage
-            // PER LEG, like the three locals above it — and it is on the shared
-            // visit object only because the status row reads it live.
+            val flooredLeg = leg.flooredForPaging()
+            try {
+                var narrowings = 0
+                while (true) {
+                    val refusal = walkLeg(ask, url, flooredLeg, ongoingVisit) ?: break
+                    // THE ONE REFUSAL THIS POOL CAN TAKE DOWN ITSELF. Everything
+                    // else — an auth wall, a policy refusal, a dead socket — is
+                    // the relay declining to serve US and ends the visit; a
+                    // width refusal is the relay declining an ask we can simply
+                    // make smaller. Asked in this order so the ordinary refusal
+                    // costs one map read: `learn` returns false for every
+                    // sentence that is not about kinds, and for a cap this relay
+                    // has already given us.
+                    // AWAITED, not read. The relay's sentence arrives on the
+                    // connection listener and the refusal on the subscription
+                    // one, and quartz runs the second first — so reading here
+                    // is a race the narrowing loses at random. See
+                    // [RelayComplaints.awaitSince], which was written after
+                    // watching it stop a real relay one halving short.
+                    if (narrowings < MAX_NARROWINGS &&
+                        widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
+                    ) {
+                        narrowings++
+                        System.err.println(
+                            "router: visit ${stream.name} ${url.url} — the relay refused a " +
+                                "${refusal.filter.kinds?.size}-kind filter; asking in chunks of ${widths.capFor(url)} from here",
+                        )
+                        continue
+                    }
+                    return refusal
+                }
+            } finally {
+                // From a `finally` including the `return` above: a refusal ends
+                // the visit, and a permit left behind shrinks its cap by one
+                // for the life of the process. Null on a catch-up, which pays
+                // no cap of its own.
+                hold?.release()
+            }
+        }
+        return null
+    }
+
+    /**
+     * ONE LEG, as the REQs this relay will actually take — itself, or its kinds
+     * in chunks where the relay has told us it will not take them all
+     * ([FilterWidths]). Returns the first chunk that was refused, or null when
+     * every one of them came back clean.
+     *
+     * **A chunk records its own band, and that is safe rather than merely
+     * convenient.** `SyncCoverage.Band` is per kind and `record` keeps only the
+     * kinds the ask NAMED, so the chunks of one leg widen one band between them
+     * and each carries evidence for exactly the kinds it walked. A split on
+     * authors or on time would have no such property — which is why this splits
+     * on kinds and nothing else.
+     */
+    private suspend fun walkLeg(
+        ask: RosterBuilder.Ask,
+        url: NormalizedRelayUrl,
+        flooredLeg: Filter,
+        ongoingVisit: OngoingVisit,
+    ): Refusal? {
+        val stream = ask.stream
+        for (chunk in widths.chunk(url, flooredLeg)) {
+            var seenMin: Long? = null
+            var seenMax: Long? = null
+            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
+            // PER CHUNK, like the three locals above it — and it is on the
+            // shared visit object only because the status row reads it live.
             //
             // It only ever DECREASES (`event.createdAt < pagingUntil` is the
             // guard that assigns it), and one visit serves every stream's asks
@@ -985,7 +1229,7 @@ internal class VisitPool(
             // and the guard never fired again: the in-flight row went on
             // reporting the deepest point of an EARLIER leg's walk. The ask
             // loop resets it too, for the ask that has no legs at all; this one
-            // is for the second and later legs of an ask that does.
+            // is for the second and later walks of an ask that does.
             ongoingVisit.pagingUntil = null
             val onEvent: suspend (Event) -> Unit = { event ->
                 arrived(url, ongoingVisit)
@@ -1003,34 +1247,30 @@ internal class VisitPool(
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
-            val flooredLeg = leg.flooredForPaging()
-            try {
-                val walked = reads.page(url, flooredLeg, NEG_IDLE_MS, onEvent)
-                if (refusedOutright(walked)) {
-                    // No band for the refused leg: nothing was observed, nothing
-                    // drained, and a record would re-stamp a walk that never
-                    // happened. Same rule as the legacy engine's.
-                    return false
-                }
-                bands.record(
-                    stream.name,
-                    url,
-                    ask.filter,
-                    seenMin,
-                    seenMax,
-                    paged = true,
-                    observedByKind = seenByKind,
-                    drained = drainSettlesThePast(walked, flooredLeg, ask.filter),
-                )
-            } finally {
-                // From a `finally` including the `return` above: a refusal ends
-                // the visit, and a permit left behind shrinks its cap by one
-                // for the life of the process. Null on a catch-up, which pays
-                // no cap of its own.
-                hold?.release()
+            // READ BEFORE THE REQ GOES OUT, and that ordering is the whole
+            // contract with [RelayComplaints]: a sentence stamped before this
+            // instant belongs to some earlier ask and must not be reported as
+            // this one's cause.
+            val askedAtMs = System.currentTimeMillis()
+            val walked = reads.page(url, chunk, NEG_IDLE_MS, onEvent)
+            if (refusedOutright(walked)) {
+                // No band for the refused chunk: nothing was observed, nothing
+                // drained, and a record would re-stamp a walk that never
+                // happened. Same rule as the legacy engine's.
+                return Refusal(walked.end, chunk, askedAtMs)
             }
+            bands.record(
+                stream.name,
+                url,
+                ask.filter,
+                seenMin,
+                seenMax,
+                paged = true,
+                observedByKind = seenByKind,
+                drained = drainSettlesThePast(walked, chunk, ask.filter),
+            )
         }
-        return true
+        return null
     }
 
     /**
@@ -1157,6 +1397,7 @@ internal class VisitPool(
                 }
             }
         auditsRun.incrementAndGet()
+        auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
         if (outcome.complete) {
             // The audit compared every window up to the sweep's own head —
             // `slackSeconds` below its start, because a window still filling
@@ -1176,6 +1417,11 @@ internal class VisitPool(
         System.err.println(
             "router: audit ${stream.name} ${url.url} — $received event(s) recovered, " +
                 (if (outcome.complete) "history verified" else "incomplete (negentropy usable: ${outcome.negentropyUsable})") +
+                // WHICH KIND of incomplete, on the line that says it is. A
+                // sweep short of its head because the leg runs into the live
+                // window and one whose relay refused the windows are the same
+                // `complete=false` and different findings.
+                (if (outcome.refusedWindows > 0) ", ${outcome.refusedWindows} window(s) REFUSED and not claimed" else "") +
                 // WHY THIS ONE RAN, on the line that says it did. The document
                 // carries the schedule as a distribution; this is the per-audit
                 // half, and it is what turns "the audits look busy" into a
@@ -1228,9 +1474,16 @@ internal class VisitPool(
         // `urlAsks` is non-empty; said as a return rather than carrying a
         // live-looking recompute path.
         val wantsNow = snapshot.asks[url]?.get(key.stream)?.identity ?: return
+        // …AND THE WIDTH IT WOULD BE OPENED AT. A tail is re-opened when the
+        // roster changes its mind about a relay, and a learned kind cap is the
+        // roster changing nothing — so a tail opened at full width before the
+        // relay taught us a cap kept the very filter that relay refuses, on a
+        // subscription it had already closed, and the pair went on reporting
+        // `tailed` (which excludes it from the staleness fault) forever.
+        val capNow = widths.capFor(url)
         val sitting = tails[key]
         if (sitting != null) {
-            if (sitting.wantsAtOpen == wantsNow) return
+            if (sitting.wantsAtOpen == wantsNow && sitting.capAtOpen == capNow) return
             // The live subscription upstream still carries the want list from
             // when it was opened; the roster has since changed its mind about
             // this relay. Re-opened below on the current asks — a tail that
@@ -1267,7 +1520,7 @@ internal class VisitPool(
         // and the `putIfAbsent` below — which on a busy relay is the whole
         // first burst, and the row would open reading `0 events` on a socket
         // that had already delivered thousands.
-        val tail = Tail(subId, wantsNow, hold = hold)
+        val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
 
         // EVERY WAY OUT BEFORE THE PUBLISH, in one place. A tail that never
         // reached `tails` is unwound by whoever built it — three paths reach
@@ -1289,7 +1542,13 @@ internal class VisitPool(
         // can release.
         sockets.claim(url)
         try {
-            reads.tail(subId, url, tailFilters(urlAsks, nowSeconds() - TAIL_OVERLAP_SECONDS)) { event ->
+            // …AND THE TAIL PAYS THE SAME WIDTH. A relay that refuses a
+            // 139-kind catch-up refuses the identical filter on a live
+            // subscription, so a tail opened at full width against a
+            // width-capped relay is one that silently never delivers. The
+            // chunks are one REQ between them, exactly as the merged shapes
+            // beside them are.
+            reads.tail(subId, url, widths.chunkAll(url, tailFilters(urlAsks, nowSeconds() - TAIL_OVERLAP_SECONDS))) { event ->
                 arrived(url, ongoingVisit = null, tail = tail)
                 // Bind trust per stream, and re-check scope so a broken relay
                 // cannot widen what we ingest. Matching is against THIS
