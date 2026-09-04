@@ -356,6 +356,10 @@ class FitnessPass(
         // already earned and is published. It is counted because a budget that
         // spends itself in silence is exactly what made #172 hard.
         val negOpenCut = AtomicInteger()
+        // …and the urls that answered every rung by REFUSING it — see the climb
+        // in [dialVerdict]. Not a loss and not a refusal: they are graded, on
+        // the relay having answered rather than on a window.
+        val refusedShapes = AtomicInteger()
         // …and the urls whose SECOND PAGE was cut by its own — see
         // [COMPLIANCE_BUDGET_DIVISOR]. Kept apart from the count above because
         // this one costs a check the verdict rests on: the url is graded on ONE
@@ -426,6 +430,7 @@ class FitnessPass(
                                             readings,
                                             downloaded,
                                             negOpenCut,
+                                            refusedShapes,
                                             secondPageCut,
                                             pageUnproven,
                                             onEvent,
@@ -526,6 +531,7 @@ class FitnessPass(
                     negOpenCut = negOpenCut.get(),
                     secondPageCut = secondPageCut.get(),
                     pageUnproven = pageUnproven.get(),
+                    refusedShapes = refusedShapes.get(),
                 )
                 return downloaded.get()
             }
@@ -770,6 +776,7 @@ class FitnessPass(
                 negOpenCut = negOpenCut.get(),
                 secondPageCut = secondPageCut.get(),
                 pageUnproven = pageUnproven.get(),
+                refusedShapes = refusedShapes.get(),
             )
         } finally {
             progress.finish()
@@ -801,6 +808,7 @@ class FitnessPass(
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
         negOpenCut: AtomicInteger,
+        refusedShapes: AtomicInteger,
         secondPageCut: AtomicInteger,
         pageUnproven: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
@@ -837,6 +845,7 @@ class FitnessPass(
                     anchor,
                     settled = { outcomes[url] = it },
                     negOpenCut = negOpenCut,
+                    refusedShapes = refusedShapes,
                     secondPageCut = secondPageCut,
                     pageUnproven = pageUnproven,
                 ) { event ->
@@ -897,6 +906,16 @@ class FitnessPass(
         /** Bumped when the NEG-OPEN's own wall clock fires — see [NIP77_DEADLINE_MS]. */
         negOpenCut: AtomicInteger,
         /**
+         * …and when a url answered every rung by REFUSING it — see the climb in
+         * this function.
+         *
+         * Counted because it is a population, not an oddity: 46 of 229 hosts on
+         * one sweep. The grade those urls carry rests on the relay having
+         * answered rather than on anything measured, and an operator watching
+         * this land needs to see how much of the corpus that is.
+         */
+        refusedShapes: AtomicInteger,
+        /**
          * …and when the SECOND PAGE's does — see [COMPLIANCE_BUDGET_DIVISOR].
          *
          * Counted for [negOpenCut]'s reason and one degree more sharply: this
@@ -924,6 +943,8 @@ class FitnessPass(
         var answered: AliasProbe.Window? = null
         var shape: List<Int>? = null
         var readMs: Long? = null
+        // A relay that answered every rung by refusing it — see the climb below.
+        var refusedEveryShape: AliasProbe.Window? = null
         for (rung in listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS)) {
             val window = probe.window(url, anchor, rung, onEvent)
             if (window.authRefused) {
@@ -936,16 +957,56 @@ class FitnessPass(
                 )
             }
             if (window.ids != null) {
-                answered = window
-                shape = rung
-                readMs = window.firstPageMs
-                break
+                // AN EMPTY WINDOW IS NOT ALWAYS A DRAIN, and the ladder used to
+                // treat it as one. `dialVerdict` stopped on ANY non-null
+                // window, so a relay answering the bare rung with `CLOSED
+                // blocked: can't handle empty filters` — 46 of 229 hosts, 892
+                // urls, on the sweep [AliasProbe.leaderPrint] records — was read
+                // as "holds nothing" and graded `prime` on no window at all.
+                // Nothing about it was measured: not its cursor, not its
+                // compliance, not its read latency.
+                //
+                // [AliasProbe.Window.drained] is the signal that was missing,
+                // and it says the relay EOSEd. An empty window that did not is
+                // this SHAPE being refused, so the ladder climbs — which is what
+                // `leaderPrint` has always done and what this loop's own comment
+                // claimed it followed.
+                if (window.ids.isNotEmpty() || window.drained) {
+                    answered = window
+                    shape = rung
+                    readMs = window.firstPageMs
+                    break
+                }
+                // Kept so a relay that refuses EVERY shape is still graded on
+                // having answered — see the branch below. It is the last rung's
+                // refusal, which is as good as any: none of them is a window.
+                refusedEveryShape = window
+                continue
             }
             lastReason = window.reason ?: lastReason
             // Two silent rungs in a row is a url that is not there — the same
             // early exit [AliasProbe.leaderPrint] makes, for the same Tor-window
             // arithmetic.
             if (rung == AliasProbe.FALLBACK_KINDS && lastReason != null) break
+        }
+
+        // REFUSED EVERY SHAPE THIS PASS KNOWS, and that is still not a reason
+        // to take the relay out of the fan-out.
+        //
+        // [Verdict.RESTRICTED] describes exactly this and is still left with no
+        // path to it, deliberately: the mirror's own asks carry 141 kinds and 3,
+        // neither of which is a rung here, so a relay declining `kinds=[1]` may
+        // serve `contentViaOutbox` perfectly well. Refusing it on the strength
+        // of three shapes we happen to probe with would cost real data to make a
+        // grade tidier — the same trade the silence branch below refuses at
+        // greater length.
+        //
+        // So it grades on what it DID do: it answered. The evidence says the
+        // grade rests on that and not on a window, and no `pageable` or
+        // `compliant` fact rides with it, because there was nothing to measure.
+        if (answered == null && refusedEveryShape != null) {
+            answered = refusedEveryShape
+            refusedShapes.incrementAndGet()
         }
 
         if (answered == null) {
@@ -1049,7 +1110,17 @@ class FitnessPass(
                 compliant = factOf(walked),
             )
         }
-        val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
+        val evidence =
+            when {
+                seen > 0 -> "answered $seen events at a settled anchor"
+
+                answered.drained -> "answered an empty anchored page at a settled anchor"
+
+                // See the climb above: it answered, and none of the answers was
+                // a window. The sentence has to say which, or the record reads
+                // as a relay that simply holds nothing.
+                else -> "answered, and refused every filter shape this pass knows — graded on the answer, not on a window"
+            }
 
         // THE VERDICT THE LADDER EARNED, HANDED OVER BEFORE ANY FURTHER DIAL —
         // and it moved back up here for the reason [measure]'s cut-late branch
@@ -1356,6 +1427,8 @@ class FitnessPass(
         secondPageCut: Int = 0,
         /** …and how many ended with no `pageable` claim at all — see the parameter on [dialVerdict]. */
         pageUnproven: Int = 0,
+        /** …and how many answered every rung by refusing it — see [dialVerdict]'s climb. */
+        refusedShapes: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -1404,6 +1477,17 @@ class FitnessPass(
         // They are still graded — absence of evidence is not a refusal — so
         // this line is how an operator sees the size of what is now honestly
         // unclaimed.
+        // A POPULATION, NOT AN ODDITY — 46 of 229 hosts on one sweep. These
+        // urls are graded on having answered rather than on a window, which is
+        // the honest reading and a thin one, and the number is how an operator
+        // sees how much of the corpus it covers.
+        if (refusedShapes > 0) {
+            System.err.println(
+                "router: fitness [$label] — $refusedShapes url(s) refused every filter shape this pass knows and were " +
+                    "graded on having answered; no window, so no `pageable` and no `compliant` fact rides with them. " +
+                    "They STAY in the fan-out: the mirror's own asks are shapes this ladder does not send",
+            )
+        }
         if (pageUnproven > 0) {
             System.err.println(
                 "router: fitness [$label] — $pageUnproven url(s) carry NO `pageable` claim: nothing came back to " +

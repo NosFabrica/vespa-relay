@@ -379,6 +379,24 @@ class AliasProbe(
          * paged-tested at all — see [FitnessPass]'s unproven branch.
          */
         val oldestAt: Long? = null,
+        /**
+         * Did the relay end this ask with an EOSE — an honest drain — rather
+         * than by refusing it?
+         *
+         * ONLY MEANINGFUL ON AN EMPTY WINDOW, and there it is the whole
+         * difference between "this relay holds nothing under that filter" and
+         * "this relay will not answer that filter". A walk that came back with
+         * events ended on an EOSE too and the flag says nothing extra about it.
+         *
+         * Measured rather than assumed: `EmptyFilterRefusalProbe` asked sixteen
+         * live relays a bare filter and quartz's terminal reason for an honest
+         * empty answer is the literal `"eose"`, every time. That is what
+         * [EOSE_REASON] keys on, and keying on the POSITIVE is what makes this
+         * safe — a refusal's own wording is the relay's to choose and differs by
+         * implementation, so a check written against it would be a guess that
+         * compiles.
+         */
+        val drained: Boolean = false,
     )
 
     /**
@@ -606,6 +624,11 @@ class AliasProbe(
         var stalls = 0
         // Set once, by the first ask that comes back — see [Window.firstPageMs].
         var firstPageMs: Long? = null
+        // The terminal reason of the LAST page asked — what [Window.drained]
+        // is read from. Kept across pages rather than taken from the page that
+        // happened to end the walk, because every exit below goes through
+        // `done` and only one of them holds a page in hand.
+        var lastReason: String? = null
         // What every page of this walk did with the filter that asked for it.
         // Accumulated rather than taken from the last page: a relay that serves
         // one honest page and then stops honouring the cursor has done both
@@ -629,6 +652,7 @@ class AliasProbe(
             // Over the KEPT ids rather than over everything walked — see
             // [Window.oldestAt].
             found?.let { kept -> ids.entries.filter { it.key in kept }.minOfOrNull { it.value } },
+            drained = lastReason == EOSE_REASON,
         )
 
         repeat(maxPages) {
@@ -642,6 +666,7 @@ class AliasProbe(
             // events go to ingest either way.
             val startedNs = System.nanoTime()
             val page = fetch(url, size, until, kinds)
+            lastReason = page.reason
             // The relay ANSWERED — an empty page and a CLOSED are answers, and
             // both are round trips. Only a transport that never returned one
             // leaves this null.
@@ -968,6 +993,19 @@ class AliasProbe(
 
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
         private const val CANNOT_CONNECT = "cannot:"
+
+        /**
+         * Quartz's terminal reason for a subscription the relay ENDED honestly:
+         * the literal `"eose"`.
+         *
+         * MEASURED, not read off a type — `EmptyFilterRefusalProbe` asked
+         * sixteen live relays and every honest empty answer came back exactly
+         * this, while the refusals came back as a `cannot:` string or with no
+         * reason at all. It is keyed on POSITIVELY for that reason: a refusal's
+         * wording belongs to whoever wrote the relay, and the one string in this
+         * repository that ever named one lived in a test fake.
+         */
+        const val EOSE_REASON = "eose"
 
         /**
          * What to ask a relay that will not take a bare filter. Kind 1 because

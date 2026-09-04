@@ -405,13 +405,17 @@ class ProbeDeadlineTest {
             pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
             assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
-            // …AND THE OTHER SIDE OF THE SWAP HAS NO PATH TO IT. A relay that
-            // CLOSES every rung has SPOKEN as far as the probe is concerned, so
-            // it comes back as an empty window — which this pass reads as a
-            // drain, not a refusal — and grades `prime`. Pinned so the state is
-            // recorded rather than assumed: `restricted` is currently
-            // unreachable, and reaching it needs a signal `AliasProbe.Page`
-            // does not carry.
+            // …AND THE OTHER SIDE OF THE SWAP STILL HAS NO PATH TO IT, now by
+            // decision rather than for want of a signal. A relay that CLOSES
+            // every rung is climbed past on each — [AliasProbe.Window.drained]
+            // tells a refusal from an EOSE — and when none of the three answers
+            // with a window it is graded on having ANSWERED, which is `prime`.
+            //
+            // `restricted` would fit it and would be wrong: the mirror's own
+            // asks carry 141 kinds and 3, neither of them a rung here, so a
+            // relay declining `kinds=[1]` may serve `contentViaOutbox`
+            // perfectly. Refusing it on three shapes we happen to probe with
+            // costs real data to make a grade tidier.
             val refusing = newStore()
             FitnessPass(
                 record = RelayVerdictRecord(refusing, signer),
@@ -422,6 +426,38 @@ class ProbeDeadlineTest {
                 progress = Processors().of("fitness"),
             ).measure("refusal", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.PRIME.value, gradeOf(refusing, wedged))
+            assertTrue(
+                evidenceOf(refusing, wedged)?.contains("refused every filter shape") == true,
+                "…and the record says the grade rests on the answer rather than on a window: ${evidenceOf(refusing, wedged)}",
+            )
+
+            // AND THE CASE THE CLIMB IS FOR: a relay that refuses the BARE rung
+            // and serves a kinds one. It used to be graded on the empty window
+            // the refusal produced — `prime`, "an empty anchored page", nothing
+            // measured — which is 46 of 229 hosts on one full-corpus sweep, 892
+            // urls. Now the ladder climbs past the refusal and grades it on the
+            // window it actually served.
+            val climbed = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(climbed, signer),
+                probe =
+                    probe { _, want, until, kinds ->
+                        if (kinds == null) {
+                            AliasProbe.Page(events = emptyList(), reason = "closed: blocked: can't handle empty filters")
+                        } else {
+                            AliasProbe.Page(corpus().filter { until == null || it.createdAt <= until }.take(want), reason = AliasProbe.EOSE_REASON)
+                        }
+                    },
+                client = EmptyNostrClient(),
+                foldedAway = { emptyMap() },
+                inconsistent = { emptySet() },
+                progress = Processors().of("fitness"),
+            ).measure("climb", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.PRIME.value, gradeOf(climbed, wedged))
+            assertTrue(
+                evidenceOf(climbed, wedged)?.contains("events at a settled anchor") == true,
+                "graded on the kinds window it served, not on the refusal: ${evidenceOf(climbed, wedged)}",
+            )
         }
 
     /**
@@ -444,4 +480,16 @@ class ProbeDeadlineTest {
             ).flatMap { it.tags.toList() }
             .firstOrNull { it.size >= 3 && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE }
             ?.get(1)
+
+    /** …and the sentence beside it, which is where a thin grade has to say it is thin. */
+    private suspend fun evidenceOf(
+        store: NostrSemanticsStore,
+        url: NormalizedRelayUrl,
+    ): String? =
+        store
+            .query<Event>(
+                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
+            ).flatMap { it.tags.toList() }
+            .firstOrNull { it.size > RelayVerdictRecord.LABEL_EVIDENCE_INDEX && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE }
+            ?.get(RelayVerdictRecord.LABEL_EVIDENCE_INDEX)
 }

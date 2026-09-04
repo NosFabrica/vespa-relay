@@ -177,6 +177,18 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
 #   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
 
+# WHAT QUARTZ SAYS WHEN A RELAY REFUSES A BARE FILTER — two asks per url, a bare
+# filter and the same window with kinds=[1], printing quartz's terminal reason
+# verbatim. The fitness ladder has to tell a refused empty page from an honest
+# drain, and the only refusal string this repository ever named lived in a test
+# fake: a fix keyed on a guessed prefix would compile, pass, and do nothing.
+# Measured 2026-09-04 over 16 relays: an honest empty answer is the literal
+# "eose", every time, which is what Window.drained keys on. nostr.wine is the
+# live example of the population — no reason at all for bare, 20 events for
+# kinds=[1] — and it is NOT auth-gated. Asserts nothing.
+./gradlew :monitor:test --tests '*EmptyFilterRefusalProbe*' -DemptyFilterProbe=true --rerun -i
+#   …or hosts of your own: -DemptyFilterUrls='wss://a.example,wss://b.example'
+
 # DOES THE ABORT SAMPLER FIRE AT ALL — the half `RelayPagesTest` cannot reach.
 # That suite builds the Sample by hand and gives ClientRelayPages a client that
 # never delivers a message, so every assertion in it would pass just as happily
