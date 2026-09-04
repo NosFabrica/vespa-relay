@@ -54,6 +54,19 @@ class SyncProgress {
          * differences consecutive polls to recover a rate.
          */
         val stageMs: List<Pair<String, Long>> = emptyList(),
+        /**
+         * The same stages with the SHAPE of the time, not just the total:
+         * calls, mean and worst single call. One pathological call and a
+         * hundred thousand ordinary ones sum the same and need different
+         * fixes. Empty against a store without `IngestStats.snapshot()`.
+         */
+        val stageDetail: List<StageDetail> = emptyList(),
+        /**
+         * What holds the store's write lock AT THIS INSTANT — null when
+         * nothing does. The stages are a history; this is the present tense,
+         * which is what an operator wants while ingest is stalled.
+         */
+        val lockHeld: LockHeld? = null,
         /** The store's own feed-health line, quoted verbatim rather than parsed. */
         val feed: String? = null,
         val heapUsedMb: Long,
@@ -66,6 +79,31 @@ class SyncProgress {
         val socketsQueued: Int,
         /** The relay's mean client read latency, which this router yields to. Null with no pressure feed. */
         val servingMs: Long?,
+    )
+
+    /**
+     * One stage's time with its shape: [ms] over [calls] calls, worst single
+     * call [maxMs]. `calls = 0` means the stage was booked from a duration
+     * measured elsewhere (a lock's wait/hold pair), where a mean would be a
+     * fiction — so the page shows none.
+     */
+    class StageDetail(
+        val stage: String,
+        val ms: Long,
+        val calls: Long,
+        val meanMs: Long,
+        val maxMs: Long,
+    )
+
+    /**
+     * The store's write lock in the present tense: which stage holds it, how
+     * long for, and the holder's own sentence about the work ([detail],
+     * quoted rather than parsed).
+     */
+    class LockHeld(
+        val stage: String,
+        val heldMs: Long,
+        val detail: String?,
     )
 
     /**
@@ -121,6 +159,22 @@ class SyncProgress {
                             put("socketsQueued", h.socketsQueued)
                             h.servingMs?.let { put("servingMs", it) }
                             h.feed?.takeIf { it.isNotBlank() }?.let { put("feed", it) }
+                            // The present-tense holder goes FIRST, above the
+                            // history: when ingest is stalled this is the row
+                            // that answers it, and a reader should not have to
+                            // scroll a cumulative table to learn the gate is
+                            // held right now by something else.
+                            h.lockHeld?.let { held ->
+                                put(
+                                    "lockHeldBy",
+                                    buildJsonObject {
+                                        put("stage", held.stage)
+                                        put("heldMs", held.heldMs)
+                                        held.detail?.let { put("doing", it) }
+                                    },
+                                )
+                            }
+                            val detail = h.stageDetail.associateBy { it.stage }
                             // Rows, not a member per stage: the names are the
                             // store's, and a dynamic member name is one the
                             // glossary can never define.
@@ -131,6 +185,15 @@ class SyncProgress {
                                             buildJsonObject {
                                                 put("stage", stage)
                                                 put("ms", ms)
+                                                // Only where the store timed the stage as
+                                                // calls: a lock's wait/hold pair has no call
+                                                // count, and inventing one would put a mean
+                                                // over a denominator that does not exist.
+                                                detail[stage]?.takeIf { it.calls > 0 }?.let { d ->
+                                                    put("calls", d.calls)
+                                                    put("meanMs", d.meanMs)
+                                                    put("maxMs", d.maxMs)
+                                                }
                                             },
                                         )
                                     }

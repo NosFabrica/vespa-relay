@@ -102,7 +102,9 @@ class StatusVocabularyTest {
                      "health": {"bottleneck": "wedged", "eventsPerSec": 2350, "arrivingPerSec": 4100, "heapUsedMb": 900, "heapMaxMb": 2048,
                                 "sockets": 412, "socketCeiling": 1024, "socketsRunning": 418, "socketsQueued": 0,
                                 "servingMs": 18, "feed": "feed ok 4211 inflight 32 lat 18ms",
-                                "stages": [{"stage": "write", "ms": 33300}, {"stage": "lock.ingest.wait", "ms": 21900}]},
+                                "lockHeldBy": {"stage": "lock.gate.hold", "heldMs": 412000, "doing": "derive 4812 subject(s) in 49 chunk(s), fanout 4"},
+                                "stages": [{"stage": "write", "ms": 33300, "calls": 1200, "meanMs": 27, "maxMs": 900},
+                                           {"stage": "lock.ingest.wait", "ms": 21900}]},
                      "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
                      "roster": 412, "liveHeld": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
@@ -242,6 +244,17 @@ class StatusVocabularyTest {
                     "inUse",
                     "deferred",
                     "stage",
+                    // The stage split's SHAPE, published beside its total for
+                    // the stages the store times as calls, and the write
+                    // lock's present-tense holder. A total says a stage cost
+                    // 24 minutes; only these say whether that was one call or
+                    // a hundred thousand, and who is holding the lock while
+                    // the mirror waits.
+                    "calls",
+                    "meanMs",
+                    "maxMs",
+                    "lockHeldBy",
+                    "heldMs",
                     "pagingUntil",
                     "omitted",
                 ) +

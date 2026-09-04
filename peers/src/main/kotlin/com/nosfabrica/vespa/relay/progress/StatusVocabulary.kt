@@ -896,10 +896,44 @@ object StatusVocabulary {
                 "stage",
                 "One named stage inside ingest, as the STORE names it. The router's own are `verify` and " +
                     "`dedup.pre`/`versions.pre` (its two drop probes); the rest are the store's — `dedup`, " +
-                    "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's `proj.fetch`/" +
-                    "`proj.write`, and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
+                    "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's " +
+                    "`proj.fetch.derive` (the contact-card recall behind a batch) / `proj.fetch.maxrank` (its " +
+                    "`max_rank` reads, a function of cache misses) / `proj.write`, and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
                     "mutex versus holding it. Read `wait` against `hold` and `write`, never alone: workers queueing " +
                     "for a saturated engine show a huge `wait` and are not the reason for anything.",
+            )
+            put(
+                "calls",
+                "How many times the stage was ENTERED, where the store timed it as a call. Present only for the " +
+                    "stages that are calls: a lock's `wait`/`hold` pair is booked from one pair of timestamps and " +
+                    "has no call count, and a mean over that denominator would be a fiction. `ms` alone cannot " +
+                    "separate one pathological call from a hundred thousand ordinary ones — the same 24 minutes, " +
+                    "two different faults and two different fixes.",
+            )
+            put(
+                "meanMs",
+                "`ms` divided by `calls` — the ordinary call. Read it beside `maxMs`: equal means every call costs " +
+                    "the same and the LOOP is the cost, far apart means one call is the cost and the rest are noise.",
+            )
+            put(
+                "maxMs",
+                "The worst single call to this stage since boot. The number that says whether a stage's total is a " +
+                    "steady cost or one outlier — and, for a stage that runs while the store's write lock is held, " +
+                    "the longest any other writer can have been made to wait behind it.",
+            )
+            put(
+                "lockHeldBy",
+                "WHAT HOLDS THE STORE'S SINGLE WRITE LOCK AT THIS INSTANT — absent when nothing does. Every write " +
+                    "in the store is serialised behind one mutex, so a stalled mirror is nearly always someone " +
+                    "else holding this, and the cumulative `stages` are a history that cannot say who holds it " +
+                    "NOW. `heldMs` is how long this holder has had it; `doing` is the holder's own sentence about " +
+                    "its work, quoted rather than parsed.",
+            )
+            put(
+                "heldMs",
+                "How long the CURRENT holder has held the write lock, in milliseconds. Growing across two page " +
+                    "loads with the same `stage` means one holder is not letting go — which is the reading that " +
+                    "explains a full ingest queue whose workers are idle.",
             )
             put(
                 "ms",

@@ -373,7 +373,12 @@ quartz = "cecc3287b2"
 # LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
 # replaces — the safe direction, and as the previous two notes say, one that
 # has never been needed: nothing else in the graph names vespa-eventstore.
-vespaEventStore = "e0e638d73f"
+# 77bed35f93 = the lock-instrumentation branch (claude/lock-instrumentation),
+# NOT a main commit — a diagnostic pin for staging while we find what holds the
+# store's write gate. It adds `IngestStats.snapshot()` (calls/mean/max), a live
+# `heldNow()` holder, and splits `proj.fetch` into `.derive` and `.maxrank`.
+# Back to a main pin as soon as the question is answered.
+vespaEventStore = "77bed35f93"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
