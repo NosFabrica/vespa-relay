@@ -373,12 +373,14 @@ quartz = "cecc3287b2"
 # LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
 # replaces — the safe direction, and as the previous two notes say, one that
 # has never been needed: nothing else in the graph names vespa-eventstore.
-# 77bed35f93 = the lock-instrumentation branch (claude/lock-instrumentation),
-# NOT a main commit — a diagnostic pin for staging while we find what holds the
-# store's write gate. It adds `IngestStats.snapshot()` (calls/mean/max), a live
-# `heldNow()` holder, and splits `proj.fetch` into `.derive` and `.maxrank`.
-# Back to a main pin as soon as the question is answered.
-vespaEventStore = "77bed35f93"
+# 15d2733595 = claude/gate-slice, NOT a main commit. Carries the diagnostic
+# instrumentation (77bed35f93: `IngestStats.snapshot()` with calls/mean/max, a
+# live `heldNow()` holder, `proj.fetch` split into `.derive`/`.maxrank`) AND the
+# fix it found: the write gate is now taken per 500-subject slice instead of
+# once per 20,000-subject batch. That hold was measured at 13 minutes on
+# staging with ingest queueing 38 behind it. Back to a main pin once both have
+# landed upstream.
+vespaEventStore = "15d2733595"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
