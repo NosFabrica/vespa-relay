@@ -209,8 +209,24 @@ class SyncProgress {
          * words in `SyncEngine.healthLoop`, which is where this is decided.
          */
         val bottleneck: String,
-        /** Events reaching ingest per second, averaged over the last minute. */
+        /**
+         * Events LEAVING ingest per second — accepted plus rejected, a batch
+         * verdict each — averaged over the last minute. The drain side of the
+         * queue; [arrivingPerSec] is the other.
+         */
         val eventsPerSec: Int,
+        /**
+         * Events HANDED TO INGEST per second, averaged over the same minute.
+         *
+         * The arrival side, and the half the document did not carry: with the
+         * queue full and [eventsPerSec] at zero — staging, 2026-09 — the
+         * page read "0 events/s into the store", which is true of a store
+         * that has stopped answering and of a fan-out that has gone quiet
+         * alike. Whether downloads are still pushing at that queue is what
+         * decides which, and it is `IngestPipeline.submitted` differenced,
+         * counted at the queue's entrance rather than at its exit.
+         */
+        val arrivingPerSec: Int,
         /**
          * WHERE THE INGEST TIME WENT, cumulative milliseconds per named stage
          * since boot, busiest first — `IngestStats`, which until now reached a
@@ -362,6 +378,7 @@ class SyncProgress {
                         buildJsonObject {
                             put("bottleneck", h.bottleneck)
                             put("eventsPerSec", h.eventsPerSec)
+                            put("arrivingPerSec", h.arrivingPerSec)
                             put("heapUsedMb", h.heapUsedMb)
                             put("heapMaxMb", h.heapMaxMb)
                             put("sockets", h.sockets)

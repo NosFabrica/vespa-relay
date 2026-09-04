@@ -106,7 +106,7 @@ class SyncStatusTest {
     @Test
     fun `the series accumulates across passes, which is the only state this holds`() {
         val (status, progress, snapshot) = status()
-        val health = SyncProgress.Health("ingest", eventsPerSec = 900, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
+        val health = SyncProgress.Health("ingest", eventsPerSec = 900, arrivingPerSec = 1_200, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
 
         progress.publish(emptyList(), health = health, nowSeconds = 1_000)
         status.publish(nowSeconds = 1_000)
@@ -122,12 +122,15 @@ class SyncStatusTest {
                 .jsonObject
         assertEquals(listOf(1_000L, 1_060L), (series["at"] as JsonArray).map { it.jsonPrimitive.long })
         assertEquals(2, (series["eventsPerSec"] as JsonArray).size)
+        // Both ends of the queue are sampled, so the level's history can be
+        // read against the rates that made it.
+        assertEquals(listOf(1_200L, 1_200L), (series["arrivingPerSec"] as JsonArray).map { it.jsonPrimitive.long })
     }
 
     @Test
     fun `a pass whose clock has not moved appends nothing, so a republish is not a sample`() {
         val (status, progress, snapshot) = status()
-        val health = SyncProgress.Health("mixed", eventsPerSec = 4, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
+        val health = SyncProgress.Health("mixed", eventsPerSec = 4, arrivingPerSec = 4, heapUsedMb = 1, heapMaxMb = 2, sockets = 5, socketCeiling = 10, socketsRunning = 5, socketsQueued = 0, servingMs = null)
         progress.publish(emptyList(), health = health, nowSeconds = 1_000)
 
         status.publish(nowSeconds = 1_000)

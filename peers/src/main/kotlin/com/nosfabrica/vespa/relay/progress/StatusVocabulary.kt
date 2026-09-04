@@ -947,11 +947,23 @@ object StatusVocabulary {
             )
             put(
                 "eventsPerSec",
-                "Events reaching ingest per second, averaged over the last minute, across every stream. ALL of " +
+                "Events LEAVING ingest per second, averaged over the last minute, across every stream. ALL of " +
                     "them: accepted plus rejected, so duplicates and superseded versions count — this is the drain " +
-                    "rate, not the rate of NEW events, and on a wide fan-out the two differ by fifty times. NOT a " +
+                    "rate, not the rate of NEW events, and on a wide fan-out the two differ by fifty times. Read " +
+                    "it against `arrivingPerSec`, the other end of the same queue: a full queue draining at zero " +
+                    "with thousands still arriving is a store that has stopped answering, and the same zero with " +
+                    "nothing arriving is a fan-out that has gone quiet. NOT a " +
                     "stream's `received`, which is counted at the socket before dedup — the two are counted at " +
                     "different points on purpose and disagreeing is not a fault in either.",
+            )
+            put(
+                "arrivingPerSec",
+                "Events HANDED TO INGEST per second, averaged over the same minute as `eventsPerSec` — counted " +
+                    "as each one enters the queue, where that one is counted as each leaves a batch. The two are " +
+                    "the ends of one queue: `arrivingPerSec` above `eventsPerSec` is a queue filling, below it a " +
+                    "queue draining, and equal is steady state. Events the refusal filter suppresses never reach " +
+                    "the queue and are not here (see `suppressed`), so a suppression storm cannot hold this up " +
+                    "while the queue sits empty.",
             )
             put(
                 "heapUsedMb",

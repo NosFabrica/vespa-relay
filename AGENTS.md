@@ -4735,11 +4735,16 @@ projects `tags`, rather than a visit).
 Most of this exists because something was diagnosed wrongly from inference.
 Reach for it first.
 
-- **health line** (once a minute) — heap, ingest queue depth vs capacity, ev/s,
-  relays transferring, connected, fatal count, events lost to store errors. A
-  full queue and an empty queue are opposite diagnoses that look identical
-  everywhere else — and so are the two FULL ones, which is why the line names
-  the workers in a batch and the age of the oldest when it says `wedged`.
+- **health line** (once a minute) — heap, ingest queue depth vs capacity, ev/s
+  IN and OUT of the ingest queue, relays transferring, connected, fatal count,
+  events lost to store errors. A full queue and an empty queue are opposite
+  diagnoses that look identical everywhere else — and so are the two FULL
+  ones, which is why the line names the workers in a batch and the age of the
+  oldest when it says `wedged`. The rate is a pair for the same reason: `0
+  ev/s` on a full queue was the drain alone, and it reads the same for a store
+  that has stopped answering and for a fan-out that has gone quiet. The `in`
+  half (`arrivingPerSec` on the page, `IngestPipeline.submitted` differenced)
+  is what tells them apart.
 - **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because

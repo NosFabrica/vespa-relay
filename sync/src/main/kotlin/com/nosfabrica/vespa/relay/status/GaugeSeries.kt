@@ -32,7 +32,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * THE LAST HOUR OF THE FOUR PROCESS GAUGES, appended one sample per rollup.
+ * THE LAST HOUR OF THE FIVE PROCESS GAUGES, appended one sample per rollup.
  *
  * The one thing the status document cannot state from a single tick. Everything
  * else on the mirror's card is a reading `SyncProgress` already holds; this is
@@ -75,9 +75,12 @@ internal object GaugeSeries {
      *
      * ## What is in it, and what is deliberately not
      *
-     * The four PROCESS gauges, because they are the ones that decide whether
-     * there is a problem at all, and because they are four scalars rather than
-     * a shape that changes with the deployment. Per-stream and per-processor
+     * The five PROCESS gauges, because they are the ones that decide whether
+     * there is a problem at all, and because they are five scalars rather than
+     * a shape that changes with the deployment. Both ends of the ingest queue
+     * are here, and on purpose: a queue level alone cannot say whether it is
+     * full because the store stopped or because the fan-out is fast, and the
+     * arrival series beside the drain series is what does. Per-stream and per-processor
      * series are not here and are not an oversight: the alias fold runs on a
      * six-hour clock, so at this cadence an hour of samples would not contain
      * one of its passes. That needs a different window and is a different
@@ -158,7 +161,7 @@ internal object GaugeSeries {
      * times over to let the page divide them would triple the cost of the
      * feature for nothing.
      */
-    internal val SERIES = listOf("eventsPerSec", "queued", "heapPct", "sockets")
+    internal val SERIES = listOf("arrivingPerSec", "eventsPerSec", "queued", "heapPct", "sockets")
 
     /**
      * How many samples the ring holds — an hour at the stock 60s counters
