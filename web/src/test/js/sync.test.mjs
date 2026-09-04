@@ -412,23 +412,42 @@ const leg = (n, quiet, over = {}) => ({
 {
   // A url leaves the relay lists and every measurement of it stays in the
   // store, so rooted at `sourced` alone the tree lost most of its corpus.
+  //
+  // BUT `recordedOnly` IS INSIDE `candidates`, NOT BESIDE IT, and this fixture
+  // used to say otherwise: sourced 1,754 and recordedOnly 15,830 against
+  // candidates 1,700, a combination the router cannot produce. It derives
+  // `known = sourced + recordedOnly` then `candidates = known - dead`, so
+  // candidates here must be ~17,530. Modelling it wrong is how the double
+  // count shipped: staging drew 40,285 where the router knew 20,152.
   const shrunk = (over = {}) => funnelOf({
     name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50, recordedOnly: 15830,
-    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+    // The outcome split sums to `candidates`, as the router's does: 6,000 +
+    // 1,000 + 30 + 10,500 = 17,530. A fixture whose children fall short would
+    // draw an `unattributed` row and hide whatever the assertions meant to say.
+    streams: [{ candidates: 17530, foldedAway: 6000, consistent: 1000, inconsistent: 30, unmeasured: 10500 }],
     ...over,
   });
   const f = shrunk();
   const at = (key) => f.rows.find((r) => r.key === key);
   assert.equal(f.total, 17584, "the mouth is what was named PLUS what only our records know");
-  assert.equal(at("recordedOnly").value, 15830);
-  assert.equal(at("recordedOnly").depth, 1, "a sibling of the candidate set, not a slice of it");
-  assert.equal(at("recordedOnly").tone, "mute", "nothing was decided against them — nobody asked");
-  // The three children still divide the root exactly once.
-  assert.equal(at("dropped").value + at("recordedOnly").value + at("candidates").value, f.total);
+  assert.equal(at("candidates").value, 17530, "the candidate set already holds what only our records know");
+  assert.equal(at("recordedOnly"), undefined, "NOT a sibling: a node beside `candidates` counts it twice");
+  // The children still divide the root exactly once — which is the property
+  // the old shape could not have, and which nothing caught because
+  // `unattributed` only fires when children fall SHORT of their parent.
+  assert.equal(at("dropped").value + at("candidates").value, f.total);
   assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
 
-  // A router older than this member must not be shown a zero row claiming it measured that corpus.
-  const old = shrunk({ recordedOnly: undefined });
+  // The number itself is not lost: the summary line reports it outside the
+  // derivation, where a figure that is not one of the funnel's slices belongs.
+
+  // A router older than this member must not be shown a zero row claiming it
+  // measured that corpus — and its candidate set is the sourced one alone, so
+  // this fixture drops the 15,830 from `candidates` too.
+  const old = funnelOf({
+    name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50,
+    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+  });
   assert.equal(old.total, 1754);
   assert.equal(old.rows.some((r) => r.key === "recordedOnly"), false);
   ok("the tree's mouth is every url the router knows of, not what one derivation named");

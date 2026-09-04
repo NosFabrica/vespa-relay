@@ -328,9 +328,12 @@ export function funnelOf(p) {
   // Urls that left the relay lists but whose measurements the fold still
   // reads. Rooted at `sourced` alone the tree loses them without a word.
   const recordedOnly = Math.max(0, p.recordedOnly || 0);
-  // `sourced` is what was named this round where the router publishes it;
-  // without it the tree starts lower rather than inventing a mouth.
-  const total = Math.max(candidates + dropped, p.sourced || 0) + recordedOnly;
+  // Both readings of the SAME set, and the max picks whichever this router
+  // publishes rather than summing them: `candidates + dropped` is the funnel's
+  // own arithmetic, `sourced + recordedOnly` is the mouth the glossary names.
+  // Adding `recordedOnly` to `candidates` double counted every url in it —
+  // staging drew 40,285 where the router knew 20,152.
+  const total = Math.max(candidates + dropped, (p.sourced || 0) + recordedOnly);
 
   /** One node. `children` is built by the callers below, never inferred. */
   const node = (key, label, value, children = []) => ({
@@ -392,11 +395,6 @@ export function funnelOf(p) {
     node("inconsistent", "inconsistent — refused", sum("inconsistent")),
     node("unmeasured", "no verdict", sum("unmeasured"), reasons),
   ];
-  // Only where the router counted it: a zero row here is a claim about a
-  // corpus an older router never measured.
-  const beyond = recordedOnly
-    ? [node("recordedOnly", "known from our own records — no relay list names it now", recordedOnly)]
-    : [];
   // Keyed `corpus`, not `sourced`: `sourced` is a published member with an
   // exact meaning and the root is that plus what only our records know.
   const root =
@@ -405,7 +403,13 @@ export function funnelOf(p) {
         node("excluded", "excluded by config, or our own url", excluded),
         node("heldOutDead", "known dead — a signed unreachability record", heldOutDead),
       ]),
-      ...beyond,
+      // `recordedOnly` is NOT a sibling here. The router derives
+      // `known = sourced + recordedOnly` and `candidates = known - dead`, so a
+      // node beside `candidates` counts every url in it twice. The summary
+      // line still reports the number, outside the derivation where it
+      // belongs — and without the old label's claim that no relay list names
+      // them, which is a fact about the round that was read, not about the
+      // urls: a short source read makes it say the opposite of the truth.
       node("candidates", "in reach — the candidate set", candidates, kept),
     ]);
   // The relay's own check of the arithmetic. `unattributed` only reports a
