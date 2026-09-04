@@ -1266,7 +1266,7 @@ internal class VisitPool(
             // below — but the slot must not outlive the ask, or the next walk
             // of this relay finds it taken and reports nothing. See
             // [RelayPages].
-            val sampling = pages.arm(url)
+            val sampling = pages.arm(url, chunk)
             val walked =
                 try {
                     reads.page(url, chunk, NEG_IDLE_MS, onEvent)
@@ -1280,7 +1280,7 @@ internal class VisitPool(
                 // No band for the refused chunk: nothing was observed, nothing
                 // drained, and a record would re-stamp a walk that never
                 // happened. Same rule as the legacy engine's.
-                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, chunk, walked.downloaded))
+                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded))
             }
             bands.record(
                 stream.name,

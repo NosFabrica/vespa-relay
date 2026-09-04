@@ -82,7 +82,16 @@ internal interface RelayPages {
      * The token is what [disarm] needs to prove the slot is still this walk's —
      * see the class header.
      */
-    fun arm(url: NormalizedRelayUrl): Sample?
+    fun arm(
+        url: NormalizedRelayUrl,
+        /**
+         * The filter the walk is about to send, taken HERE rather than at
+         * render: each event is classified as it arrives, so the counts cover
+         * every event the socket carried and not merely the handful kept for
+         * display. See [Sample.add].
+         */
+        asked: Filter,
+    ): Sample?
 
     /**
      * Give the slot back. Called from a `finally`, always: a walk that throws
@@ -105,7 +114,6 @@ internal interface RelayPages {
      */
     fun render(
         sample: Sample?,
-        asked: Filter,
         /**
          * What the walk itself counted, so the sentence cannot assert something
          * the caller knows to be false.
@@ -130,9 +138,21 @@ internal interface RelayPages {
      */
     class Sample(
         val url: NormalizedRelayUrl,
+        private val asked: Filter,
     ) {
+        /**
+         * The ask's kinds AS A SET, once. `contentViaOutbox` carries 141 of
+         * them and this classifies every event of an armed walk, so a list
+         * membership test here is 141 comparisons an event on the hottest path
+         * in the process.
+         */
+        private val kinds = asked.kinds?.toSet()
         private val rows = ArrayList<Row>(MAX_ROWS)
+        private val subs = LinkedHashSet<String>()
         private var seen = 0
+        private var offKind = 0
+        private var above = 0
+        private var below = 0
 
         private class Row(
             val subId: String,
@@ -140,6 +160,16 @@ internal interface RelayPages {
             val createdAt: Long,
         )
 
+        /**
+         * COUNTED ON ARRIVAL, kept for display only up to [MAX_ROWS].
+         *
+         * The two used to be one thing, and the counts were wrong for it:
+         * tallied at render over the RETAINED rows, a 158-event page whose
+         * first five happened to match reported "all of them MATCHING the ask"
+         * — the sharpest sentence this instrument has, the one pointing at OUR
+         * side of the walk — about a page that was mostly the relay's fault.
+         * The rows are a sample; the numbers must not be.
+         */
         @Synchronized
         fun add(
             subId: String,
@@ -147,6 +177,10 @@ internal interface RelayPages {
             createdAt: Long,
         ) {
             seen++
+            subs += subId
+            if (kinds != null && kind !in kinds) offKind++
+            asked.until?.let { if (createdAt > it) above++ }
+            asked.since?.let { if (createdAt < it) below++ }
             if (rows.size < MAX_ROWS) rows += Row(subId, kind, createdAt)
         }
 
@@ -160,16 +194,8 @@ internal interface RelayPages {
          * different faults wearing one `UNPAGEABLE`.
          */
         @Synchronized
-        fun render(
-            asked: Filter,
-            downloaded: Int,
-        ): String? {
+        fun render(downloaded: Int): String? {
             if (seen == 0) return null
-            val kinds = asked.kinds?.toSet()
-            val offKind = rows.count { kinds != null && it.kind !in kinds }
-            val above = rows.count { asked.until != null && it.createdAt > asked.until!! }
-            val below = rows.count { asked.since != null && it.createdAt < asked.since!! }
-            val subs = rows.map { it.subId }.distinct()
             val faults =
                 buildList {
                     if (offKind > 0) add("$offKind off-kind")
@@ -202,13 +228,15 @@ internal interface RelayPages {
         /** Samples nothing — the probes, and any pool built without a client to listen on. */
         val DEAF: RelayPages =
             object : RelayPages {
-                override fun arm(url: NormalizedRelayUrl): Sample? = null
+                override fun arm(
+                    url: NormalizedRelayUrl,
+                    asked: Filter,
+                ): Sample? = null
 
                 override fun free(sample: Sample?) = Unit
 
                 override fun render(
                     sample: Sample?,
-                    asked: Filter,
                     downloaded: Int,
                 ): String? = null
             }
@@ -231,8 +259,11 @@ internal class ClientRelayPages(
      */
     private val armed = ConcurrentHashMap<NormalizedRelayUrl, RelayPages.Sample>()
 
-    override fun arm(url: NormalizedRelayUrl): RelayPages.Sample? {
-        val mine = RelayPages.Sample(url)
+    override fun arm(
+        url: NormalizedRelayUrl,
+        asked: Filter,
+    ): RelayPages.Sample? {
+        val mine = RelayPages.Sample(url, asked)
         return if (armed.putIfAbsent(url, mine) == null) mine else null
     }
 
@@ -244,9 +275,8 @@ internal class ClientRelayPages(
 
     override fun render(
         sample: RelayPages.Sample?,
-        asked: Filter,
         downloaded: Int,
-    ): String? = sample?.render(asked, downloaded)
+    ): String? = sample?.render(downloaded)
 
     private val listener =
         object : RelayConnectionListener {

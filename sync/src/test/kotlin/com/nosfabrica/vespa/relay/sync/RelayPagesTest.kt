@@ -45,7 +45,12 @@ class RelayPagesTest {
     private val other = RelayUrlNormalizer.normalize("wss://other.example")
     private val anchor = 1_788_000_000L
 
-    private fun sample(of: NormalizedRelayUrl = url) = RelayPages.Sample(of)
+    private fun sample(
+        asked: Filter,
+        of: NormalizedRelayUrl = url,
+    ) = RelayPages.Sample(of, asked)
+
+    private val kind1Below = Filter(kinds = listOf(1), until = anchor)
 
     /** The real slot logic, over a client that will never deliver a message. */
     private fun pages() = ClientRelayPages(EmptyNostrClient())
@@ -56,9 +61,9 @@ class RelayPagesTest {
         // quartz that page matches nothing, `downloaded` stays 0, and the walk
         // ends UNPAGEABLE — a word about paging for a fault that has nothing to
         // do with the cursor. The sentence is what tells them apart.
-        val s = sample()
+        val s = sample(kind1Below)
         repeat(3) { s.add("sub1", kind = 7, createdAt = anchor - it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
+        val said = assertNotNull(s.render(downloaded = 0))
 
         assertTrue("3 off-kind" in said, said)
         assertTrue("k7@" in said, said)
@@ -67,9 +72,9 @@ class RelayPagesTest {
 
     @Test
     fun `a page above the cursor is named as above the cursor`() {
-        val s = sample()
+        val s = sample(kind1Below)
         repeat(2) { s.add("sub1", kind = 1, createdAt = anchor + 500 + it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
+        val said = assertNotNull(s.render(downloaded = 0))
 
         assertTrue("2 above the `until`" in said, said)
         assertTrue("off-kind" !in said, said)
@@ -81,9 +86,9 @@ class RelayPagesTest {
         // impossible: a page that matched everything asked, which quartz still
         // counted as nothing downloaded, is not a relay misbehaving — it is our
         // side of the walk, and an operator must be able to tell.
-        val s = sample()
+        val s = sample(Filter(kinds = listOf(1), since = anchor - 100, until = anchor))
         s.add("sub1", kind = 1, createdAt = anchor - 10)
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), since = anchor - 100, until = anchor), downloaded = 0))
+        val said = assertNotNull(s.render(downloaded = 0))
 
         assertTrue("MATCHING the ask" in said, said)
         assertTrue("OUR side of the walk" in said, said)
@@ -97,9 +102,9 @@ class RelayPagesTest {
         // downloaded 158 and was told quartz had counted none of them: a
         // sentence that is right only where it happens to be called is one that
         // will be wrong the first time somebody calls it elsewhere.
-        val s = sample()
+        val s = sample(kind1Below)
         s.add("sub1", kind = 1, createdAt = anchor - 10)
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 158))
+        val said = assertNotNull(s.render(downloaded = 158))
 
         assertTrue("matching the ask" in said, said)
         assertTrue("OUR side of the walk" !in said, said)
@@ -112,10 +117,10 @@ class RelayPagesTest {
         // own — so the ids are printed rather than filtered on: one id is this
         // walk, several means the socket's other traffic landed inside the ask,
         // which is a different fault with a different fix.
-        val s = sample()
+        val s = sample(kind1Below)
         s.add("walk", kind = 1, createdAt = anchor - 1)
         s.add("tail", kind = 1, createdAt = anchor - 2)
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
+        val said = assertNotNull(s.render(downloaded = 0))
 
         assertTrue("2 subscription(s)" in said, said)
         assertTrue("walk" in said && "tail" in said, said)
@@ -127,14 +132,30 @@ class RelayPagesTest {
         // 0 events" would read as one, so the line is simply absent — the same
         // rule the monitor's own passes follow for a measurement they did not
         // take.
-        assertNull(sample().render(Filter(kinds = listOf(1)), downloaded = 0))
+        assertNull(sample(Filter(kinds = listOf(1))).render(downloaded = 0))
+    }
+
+    @Test
+    fun `the counts are over every event, not over the handful kept for display`() {
+        // THE REGRESSION AN AUDIT CAUGHT. Faults were tallied at render over the
+        // RETAINED rows, so a page whose first five happened to match reported
+        // "all of them MATCHING the ask" — the sharpest sentence here, the one
+        // that points at OUR side of the walk — about a page that was 45/50 the
+        // relay's fault. The rows are a sample; the numbers are not.
+        val s = sample(kind1Below)
+        repeat(5) { s.add("sub1", kind = 1, createdAt = anchor - it) }
+        repeat(45) { s.add("sub1", kind = 7, createdAt = anchor - 100 - it) }
+        val said = assertNotNull(s.render(downloaded = 0))
+
+        assertTrue("45 off-kind" in said, said)
+        assertTrue("MATCHING the ask" !in said, "the first five matched; the page did not: $said")
     }
 
     @Test
     fun `the sample is bounded, and says how many it did not print`() {
-        val s = sample()
+        val s = sample(kind1Below)
         repeat(50) { s.add("sub1", kind = 7, createdAt = anchor - it) }
-        val said = assertNotNull(s.render(Filter(kinds = listOf(1), until = anchor), downloaded = 0))
+        val said = assertNotNull(s.render(downloaded = 0))
 
         assertTrue("carried 50 event(s)" in said, "the COUNT is all of them: $said")
         assertEquals(
@@ -154,12 +175,12 @@ class RelayPagesTest {
         // sampler would be collecting the FIRST walk's events, and a line that
         // attributed them to the second ask would be worse than no line.
         val pages = pages()
-        val first = assertNotNull(pages.arm(url))
-        assertNull(pages.arm(url), "the relay's slot is taken")
-        assertNotNull(pages.arm(other), "…and it is per relay, not global")
+        val first = assertNotNull(pages.arm(url, kind1Below))
+        assertNull(pages.arm(url, kind1Below), "the relay's slot is taken")
+        assertNotNull(pages.arm(other, kind1Below), "…and it is per relay, not global")
 
         pages.free(first)
-        assertNotNull(pages.arm(url), "freed, so the next walk of this relay samples")
+        assertNotNull(pages.arm(url, kind1Below), "freed, so the next walk of this relay samples")
     }
 
     @Test
@@ -169,14 +190,14 @@ class RelayPagesTest {
         // silently stop working for whichever relay is busiest, which is the
         // one it exists for.
         val pages = pages()
-        val stale = assertNotNull(pages.arm(url))
+        val stale = assertNotNull(pages.arm(url, kind1Below))
         pages.free(stale)
-        val current = assertNotNull(pages.arm(url))
+        val current = assertNotNull(pages.arm(url, kind1Below))
 
         pages.free(stale)
 
-        assertNull(pages.arm(url), "the current walk still holds it")
+        assertNull(pages.arm(url, kind1Below), "the current walk still holds it")
         pages.free(current)
-        assertNotNull(pages.arm(url))
+        assertNotNull(pages.arm(url, kind1Below))
     }
 }

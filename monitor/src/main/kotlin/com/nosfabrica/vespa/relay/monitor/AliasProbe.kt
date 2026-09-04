@@ -542,14 +542,24 @@ class AliasProbe(
      *    [Verdict.UNPAGEABLE] word for word and exactly what the mirror aborts
      *    on.
      *
-     * ## …and it is the compliance ask as well
+     * ## THE SHAPE IS THE LADDER'S, and substituting one breaks the claim
      *
-     * The ladder's first rung is a BARE filter on purpose ([leaderPrint]), so on
-     * the relays that answer it — most of them — `kinds` is never put to the
-     * relay at all and [Compliance.offKind] cannot be anything but zero. This
-     * ask carries a `kinds`, a `limit` and an `until`, all three checkable, so
-     * ONE round trip answers both questions. That is why there is no separate
-     * compliance ask: it would be this REQ with a different cursor.
+     * [kinds] is passed through exactly as the rung that answered used it —
+     * null included. An earlier cut defaulted a null to [FALLBACK_KINDS] so the
+     * ask would carry a `kinds` and the compliance tally could see `offKind`,
+     * and that is the same unearned claim this whole check exists to remove: a
+     * relay that answered a BARE first page and holds no kind 1 below the
+     * cursor drains a `kinds=[1]` page two honestly, and the drain would be
+     * read as "the walk terminates" for a walk nobody made. Page two must be
+     * page two OF PAGE ONE.
+     *
+     * What that costs is the `kinds` dimension on the relays that answer the
+     * bare rung — most of them. It is not recoverable in one round trip, and a
+     * second REQ per url per sweep is not worth a check that only sharpens a
+     * fault `until` and `limit` already catch: a relay answering with events it
+     * was not asked for is answering ABOVE THE CURSOR too, which a bare page
+     * two sees perfectly well. [Compliance.kindsAsked] is what stops the
+     * resulting zero from being read as a clean sheet.
      *
      * Null is the relay not answering at all, empty is the drain above — the
      * distinction the whole class is built on, and here the difference between
@@ -561,17 +571,20 @@ class AliasProbe(
     suspend fun pageBelow(
         url: NormalizedRelayUrl,
         until: Long,
-        /** The shape the ladder got its answer through — a group host holds no kind 1. */
+        /**
+         * The shape the rung that answered used, passed through UNCHANGED —
+         * null for the bare rung. See the header: substituting a `kinds` here
+         * makes a drain prove nothing.
+         */
         kinds: List<Int>?,
         onEvent: suspend (Event) -> Unit,
     ): Compliance? {
-        val asked = kinds ?: FALLBACK_KINDS
-        val events = fetch(url, COMPLIANCE_LIMIT, until, asked).events ?: return null
+        val events = fetch(url, COMPLIANCE_LIMIT, until, kinds).events ?: return null
         for (event in events) onEvent(event)
         // NO SLACK — see [Compliance.of]'s parameter. This cursor is one of the
         // relay's own timestamps minus one, so there is no clock but its own on
         // either side of the comparison and nothing for a slack to absorb.
-        return Compliance.of(events, COMPLIANCE_LIMIT, until, asked, slack = 0)
+        return Compliance.of(events, COMPLIANCE_LIMIT, until, kinds, slack = 0)
     }
 
     private suspend fun walk(
@@ -598,6 +611,8 @@ class AliasProbe(
         // one honest page and then stops honouring the cursor has done both
         // things, and only the sum says so.
         var compliance = Compliance()
+        // Which page this is, for the slack rule at the tally below.
+        var pagesAsked = 0
 
         // Every exit from this walk goes through here, so the measurement
         // cannot be dropped by whichever of the seven returns is taken.
@@ -662,7 +677,18 @@ class AliasProbe(
             // [Compliance]. Tallied before the events are folded into `ids`,
             // because a duplicate id collapses there and an off-filter event
             // the relay sent twice was sent twice.
-            compliance += Compliance.of(events, size, until, kinds)
+            //
+            // AND THE SLACK IS THE FIRST PAGE'S ALONE. Only page one's `until`
+            // is the CALLER's anchor, our clock against an author's stamp, which
+            // is the whole argument for [WINDOW_SLACK_SECONDS]. Every page after
+            // it is asked below a timestamp the relay itself served, where there
+            // is no second clock and nothing to absorb — and where five minutes
+            // of grace is not conservative but blind, because a busy relay's
+            // page spans seconds and a cursor-ignoring one re-serving it lands
+            // inside the slack every time. The same distinction [pageBelow]
+            // makes, applied where the walk makes it too.
+            compliance += Compliance.of(events, size, until, kinds, slack = if (pagesAsked == 0) WINDOW_SLACK_SECONDS else 0)
+            pagesAsked++
             val before = ids.size
             for (event in events) {
                 onEvent(event)

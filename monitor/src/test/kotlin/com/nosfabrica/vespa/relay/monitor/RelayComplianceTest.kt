@@ -175,6 +175,18 @@ class RelayComplianceTest {
     private inner class Liar(
         val serves: List<Event>,
         val honoursCursor: Boolean = false,
+        /**
+         * Never answers a BARE filter — the only way the fitness ladder ever
+         * reaches its `kinds` rung.
+         *
+         * SILENCE, not an empty page, and the difference is the ladder's:
+         * `dialVerdict` breaks on any non-null window, so an empty answer to the
+         * bare rung ENDS the climb and is graded as a drain. That is a decision
+         * with its own paragraph there — an empty window and a refusal are
+         * indistinguishable without a signal `AliasProbe.Page` does not carry —
+         * so a fake that wants the kinds rung has to be silent on the bare one.
+         */
+        val refusesBare: Boolean = false,
     ) {
         var asks = 0
 
@@ -186,6 +198,7 @@ class RelayComplianceTest {
             kinds: List<Int>?,
         ): AliasProbe.Page {
             asks++
+            if (refusesBare && kinds == null) return AliasProbe.Page(events = null, reason = null)
             if (!honoursCursor) return AliasProbe.Page(serves)
             return AliasProbe.Page(serves.filter { until == null || it.createdAt <= until }.take(want))
         }
@@ -209,7 +222,7 @@ class RelayComplianceTest {
         }
 
     @Test
-    fun `a bare ask constrains no kind, and the tally says so rather than reporting a clean sheet`(): Unit =
+    fun `a bare ask constrains no kind, and page two of a bare walk stays bare`(): Unit =
         runBlocking {
             // THE HOLE THE NARROW ASK EXISTS FOR. Most relays answer the bare
             // rung, and a bare filter cannot be violated on `kinds` — so a zero
@@ -222,11 +235,16 @@ class RelayComplianceTest {
             assertEquals(0, bare.compliance.offKind)
             assertTrue(!bare.compliance.kindsAsked, "nothing was asked about kinds, so nothing was learned about them")
 
-            // …and the second page closes it, on the same relay, in one REQ —
-            // it carries a `kinds` where the bare rung could not.
-            val narrow = assertNotNull(probe.pageBelow(url, until = settled, kinds = null) {})
-            assertEquals(10, narrow.offKind)
-            assertTrue(narrow.kindsAsked)
+            // AND PAGE TWO DOES NOT CLOSE IT, deliberately. An earlier cut
+            // substituted `kinds=[1]` here so the tally could see `offKind` —
+            // and that is the unearned claim this whole check exists to remove:
+            // a relay that answered a BARE page one and holds no kind 1 below
+            // the cursor drains a `kinds=[1]` page two honestly, and the drain
+            // would be read as "the walk terminates" for a walk nobody made.
+            // Page two must be page two OF PAGE ONE.
+            val second = assertNotNull(probe.pageBelow(url, until = settled, kinds = null) {})
+            assertEquals(0, second.offKind)
+            assertTrue(!second.kindsAsked, "page two of a bare walk is bare, so it learns nothing about kinds either")
         }
 
     @Test
@@ -238,7 +256,13 @@ class RelayComplianceTest {
             // relay clean. The `Liar` above serves the SAME page every time, so
             // page two is asked with a lower `until` and answered with the same
             // events, every one of them now above it.
-            val page = signed(kind = 1, at = settled, n = 5, step = 3600)
+            // ONE SECOND APART, which is what a busy relay looks like and the
+            // spacing that used to slip through: the walk tallied every page
+            // with the anchor's five-minute slack, so a relay re-serving its
+            // page against a stepped cursor landed inside the slack every time
+            // and scored a clean sheet. Pages after the first carry a cursor the
+            // RELAY supplied, so they are tallied with no slack at all.
+            val page = signed(kind = 1, at = settled, n = 5)
             val liar = Liar(page)
             val probe = AliasProbe(fetch = liar::fetch, target = 20, page = 5, fallbackPage = 5)
             val window = probe.window(url, anchor = settled, kinds = null) {}
@@ -270,9 +294,10 @@ class RelayComplianceTest {
         store: NostrSemanticsStore,
         serves: List<Event>,
         honoursCursor: Boolean = false,
+        refusesBare: Boolean = false,
     ): Pair<String?, Map<String, Array<String>>> {
         val record = RelayVerdictRecord(store, signer)
-        val liar = Liar(serves, honoursCursor)
+        val liar = Liar(serves, honoursCursor, refusesBare)
         FitnessPass(
             record = record,
             probe =
@@ -307,10 +332,13 @@ class RelayComplianceTest {
             // certifies it; asked ANYTHING it answers with kind 7. Before this
             // check the monitor published `prime` about it and every visit-mode
             // stream dialled it forever.
-            // Deep enough that page two has something below page one to serve:
+            // Deep enough that page two has something below page one to serve —
             // a relay that DRAINS on page two has proved its cursor and told us
-            // nothing more about its kinds, which is a different test.
-            val (label, facts) = grade(newStore(), signed(kind = 7, at = settled, n = 40), honoursCursor = true)
+            // nothing about its kinds — and SILENT on the bare rung, because
+            // that is the only way the ladder reaches a `kinds` filter and so
+            // the only way `offKind` is ever measurable. See [Liar.refusesBare].
+            val (label, facts) =
+                grade(newStore(), signed(kind = 7, at = settled, n = 40), honoursCursor = true, refusesBare = true)
 
             assertEquals("noncompliant", label)
             val compliant = assertNotNull(facts[RelayVerdictRecord.COMPLIANT_TAG])
@@ -328,6 +356,68 @@ class RelayComplianceTest {
             val pageable = assertNotNull(facts[RelayVerdictRecord.PAGEABLE_TAG])
             assertEquals("true", pageable[1])
             assertTrue(pageable[2].startsWith("walked two pages"), pageable[2])
+        }
+
+    @Test
+    fun `a page two our own clock cuts costs the FACT and never the verdict`(): Unit =
+        runBlocking {
+            // THE REGRESSION AN AUDIT CAUGHT. The second page can change the
+            // verdict, so it was placed before the handover — and that meant the
+            // per-url deadline firing during it left the url with NO verdict at
+            // all, where the ladder had already proved one. Those urls are
+            // counted `abandoned`, `abandoned` feeds the batch guard's blind
+            // share, and a slow enough batch would refuse to publish any of its
+            // own verdicts. A paging check must not be able to cost a pass its
+            // output.
+            val store = newStore()
+            val serves = signed(kind = 1, at = settled, n = 40)
+            val record = RelayVerdictRecord(store, signer)
+            val parked =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page = { _, want, until, _ ->
+                // Page one answers; every ask below its floor parks forever, so
+                // the second page's own budget is what ends the job.
+                // Page one is asked at the ANCHOR, far above this corpus; page
+                // two is asked one below the floor of what page one served,
+                // which is `settled - 20`. Anything down there is page two.
+                if (until != null && until < settled - 15) {
+                    parked.incrementAndGet()
+                    kotlinx.coroutines.CompletableDeferred<AliasProbe.Page>().await()
+                } else {
+                    AliasProbe.Page(serves.filter { until == null || it.createdAt <= until }.take(want))
+                }
+            }
+            FitnessPass(
+                record = record,
+                probe =
+                    AliasProbe(
+                        fetch = fetch,
+                        target = FitnessPass.FITNESS_TARGET,
+                        page = FitnessPass.FITNESS_TARGET,
+                        fallbackPage = FitnessPass.FITNESS_TARGET,
+                        idleMs = { 60L },
+                    ),
+                client = EmptyNostrClient(),
+                foldedAway = { emptyMap() },
+                inconsistent = { emptySet() },
+                progress = Processors().of("fitness"),
+            ).measure("cut page two", listOf(url), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+
+            val published =
+                store
+                    .query<Event>(
+                        Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
+                    ).maxByOrNull { it.createdAt }
+            val facts = published?.tags?.associateBy { it[0] }.orEmpty()
+
+            assertTrue(parked.get() > 0, "page two has to have been reached, or this proves nothing")
+            assertEquals(
+                "prime",
+                published?.tags?.firstOrNull { it[0] == RelayVerdictRecord.LABEL_TAG }?.getOrNull(1),
+                "the ladder earned this before the second page was asked; our clock does not un-earn it",
+            )
+            assertNull(facts[RelayVerdictRecord.PAGEABLE_TAG], "…and the fact it could not take is simply absent")
         }
 
     @Test

@@ -225,6 +225,25 @@ class FitnessPass(
     )
 
     /**
+     * The `compliant` fact for one reading, or NOTHING where the bars do not
+     * support one — the single place every path asks [RelayCompliance] rather
+     * than asserting.
+     *
+     * It exists because two of the three publishing paths are refusals, and a
+     * refusal is exactly where it is tempting to state the fact rather than
+     * measure it: a relay that put one event above the anchor is `unpageable`
+     * by a rule that needs no share and no count, and a `compliant false`
+     * written beside it on that evidence is the claim
+     * [RelayCompliance.minOffFilterEvents] exists to refuse.
+     */
+    private fun factOf(reading: AliasProbe.Compliance): Pair<Boolean, String>? =
+        when (compliance.decide(reading)) {
+            RelayCompliance.Verdict.UNMEASURABLE -> null
+            RelayCompliance.Verdict.NONCOMPLIANT -> false to compliance.evidence(reading)
+            RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
+        }
+
+    /**
      * What the second page came back with, boxed — see [Reconciled], whose
      * argument this is one for one.
      */
@@ -1022,10 +1041,30 @@ class FitnessPass(
                 // A relay that ignores the cursor still answered, and how fast
                 // it did so is a fact about it either way.
                 rttReadMs = readMs,
-                compliant = false to compliance.evidence(walked),
+                // ASKED OF THE JUDGE, not asserted. A relay that answered ONE
+                // event above the anchor is unpageable by the rule above and
+                // below [RelayCompliance]'s own floors, and a hard-coded
+                // `compliant false` beside it would publish a claim those bars
+                // exist to refuse.
+                compliant = factOf(walked),
             )
         }
         val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
+
+        // THE VERDICT THE LADDER EARNED, HANDED OVER BEFORE ANY FURTHER DIAL —
+        // and it moved back up here for the reason [measure]'s cut-late branch
+        // exists. The second page below can change it, so it was tempting to
+        // wait; what waiting cost is that the per-url deadline firing during
+        // that ask left the url with NO verdict at all, where it used to keep
+        // the one the ladder had already proved. Those urls are counted
+        // `abandoned`, `abandoned` feeds the batch guard's blind share, and a
+        // slow enough batch could then refuse to publish any of its own
+        // verdicts — a paging check costing a pass its output.
+        //
+        // A later refusal simply replaces this: both paths below return an
+        // Outcome the write loop records over it, exactly as the NEG-OPEN's
+        // fuller verdict replaces this same handover today.
+        settled(Outcome(Verdict.PRIME, evidence, rttReadMs = readMs))
 
         // THE SECOND PAGE — the whole of #187, and the one ask that answers
         // both open questions at once. See [AliasProbe.pageBelow] for the
@@ -1033,15 +1072,15 @@ class FitnessPass(
         // ignoring the cursor were all graded `prime` AND `pageable: true`
         // here, because the pass had only ever asked ONE page.
         //
-        // Bounded, and its own clock. It sits BEFORE the handover below because
-        // unlike the NEG-OPEN it can change the verdict; a clock that fires here
-        // publishes no `pageable` claim and no refusal — our instrument giving
-        // up is not the relay ignoring a cursor, the same rule
-        // [AliasProbe.deadlineMs] states one level up.
+        // Bounded, and its own clock. A clock that fires here publishes no
+        // `pageable` claim and no refusal — our instrument giving up is not the
+        // relay ignoring a cursor, the same rule [AliasProbe.deadlineMs] states
+        // one level up — and the verdict above is already down, so it costs a
+        // fact rather than a url.
         //
-        // ASKED THROUGH THE RUNG THAT ANSWERED, because a group host holds no
-        // kind 1 and would drain a `kinds=[1]` ask honestly, which this would
-        // then read as a walk that terminated.
+        // ASKED THROUGH THE RUNG THAT ANSWERED, unchanged: a page two of a
+        // different shape is not page two of page one, and its drain would
+        // prove nothing. See [AliasProbe.pageBelow].
         val floor = answered.oldestAt
         val asked =
             if (floor == null) {
@@ -1095,44 +1134,32 @@ class FitnessPass(
                         "honoured the anchor and then ignored the cursor: page two came back entirely above it",
                         pageable = false to "page one walked to $floor; page two asked below it and answered ${second.seen} events, all above it",
                         rttReadMs = readMs,
-                        compliant = false to compliance.evidence(walked + second),
+                        compliant = factOf(walked + second),
                     )
                 }
 
                 else -> {
-                    true to "walked two pages, cursor advanced past $floor (${second.seen} event(s) below it)"
+                    true to
+                        "walked two pages, cursor advanced past $floor " +
+                        "(${second.seen - second.offWindow} of ${second.seen} event(s) below it)"
                 }
             }
 
         val checked = walked + (second ?: AliasProbe.Compliance())
-        val compliantFact =
-            when (compliance.decide(checked)) {
-                // Nothing came back through either ask. No fact — a drain is
-                // not a relay honouring anything.
-                RelayCompliance.Verdict.UNMEASURABLE -> {
-                    null
-                }
+        if (compliance.decide(checked) == RelayCompliance.Verdict.NONCOMPLIANT) {
+            return Outcome(
+                Verdict.NONCOMPLIANT,
+                "answered with events the filter did not ask for",
+                pageable = pageable,
+                rttReadMs = readMs,
+                compliant = factOf(checked),
+            )
+        }
+        val compliantFact = factOf(checked)
 
-                RelayCompliance.Verdict.NONCOMPLIANT -> {
-                    return Outcome(
-                        Verdict.NONCOMPLIANT,
-                        "answered with events the filter did not ask for",
-                        pageable = pageable,
-                        rttReadMs = readMs,
-                        compliant = false to compliance.evidence(checked),
-                    )
-                }
-
-                RelayCompliance.Verdict.COMPLIANT -> {
-                    true to compliance.evidence(checked)
-                }
-            }
-
-        // THE VERDICT IS EARNED HERE, AND IT IS HANDED OVER HERE — one line
-        // before the only step of this job that can outlive the url's wall
-        // clock. Everything `prime` asserts has been measured by now; what
-        // follows is one more FACT beside it, and a fact must never be able to
-        // cost the verdict it rides on. See [measure]'s cut-late branch.
+        // …AND RE-HANDED with the facts the two steps above earned, so a
+        // NEG-OPEN that outlives the url's clock leaves the fuller verdict
+        // down rather than the bare one. The write loop records the latest.
         settled(Outcome(Verdict.PRIME, evidence, pageable = pageable, compliant = compliantFact, rttReadMs = readMs))
 
         // One NEG-OPEN against a sliver of the window. A normal return —

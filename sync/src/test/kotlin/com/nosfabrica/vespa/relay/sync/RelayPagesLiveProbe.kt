@@ -149,14 +149,14 @@ class RelayPagesLiveProbe {
                 // construction, so if the sampler records none of THOSE, the
                 // seam is wrong and no amount of tail will save it.
                 val busy = Filter(kinds = listOf(1), since = now - BUSY_WINDOW_SECONDS, until = now)
-                val busySampling = pages.arm(url)
+                val busySampling = pages.arm(url, busy)
                 val busyDownloaded =
                     try {
                         client.fetchAllPages(url, listOf(busy), IDLE_MS) { }.downloaded
                     } finally {
                         pages.free(busySampling)
                     }
-                val busySample = pages.render(busySampling, busy, busyDownloaded)
+                val busySample = pages.render(busySampling, busyDownloaded)
                 println("  dispatch      a walk that downloaded $busyDownloaded event(s)")
                 println("  SAMPLE        ${busySample ?: "nothing — the listener recorded no event"}")
                 println(
@@ -182,7 +182,7 @@ class RelayPagesLiveProbe {
                 // window is the whole ask — seconds to a minute — so it is held
                 // open for a comparable slice here, and the tail is counted
                 // ACROSS THAT SLICE rather than across the probe.
-                val sampling = pages.arm(url)
+                val sampling = pages.arm(url, asked)
                 val before = tailed.get()
                 delay(ARMED_WINDOW_MS)
                 val walked =
@@ -192,7 +192,7 @@ class RelayPagesLiveProbe {
                         pages.free(sampling)
                     }
                 val duringArmed = tailed.get() - before
-                val sample = pages.render(sampling, asked, walked.downloaded)
+                val sample = pages.render(sampling, walked.downloaded)
 
                 println("  tail          carried ${tailed.get()} event(s), $duringArmed of them while the sampler was armed")
                 println("  walk          end=${walked.end}, downloaded=${walked.downloaded}, onEvent fired ${delivered.get()} time(s)")

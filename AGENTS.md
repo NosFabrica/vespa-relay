@@ -3395,7 +3395,8 @@ Three things about the shape:
   even when it sits below the anchor. `FitnessPass` counted against the anchor
   alone before this and scored those relays clean.
 - **One extra REQ per url per sweep** — `AliasProbe.pageBelow`, ten events,
-  which is also the second page #187 needs. Its budget is a quarter of the
+  which is also the second page #187 needs. It carries the rung's own shape, so
+  on a bare walk `kinds` goes unchecked; see the three rules below the table. Its budget is a quarter of the
   url's whole deadline, and when that clock fires the url is still graded on
   one page; the pass says so on its own line, because a check that silently
   stops checking looks exactly like a corpus that passed.
@@ -3640,6 +3641,39 @@ Two things that probe corrected on the way, and both are the same lesson:
 
 With that said, the pass asks a second page at `until = <oldest event of page
 one> - 1`, strictly below, and reads its three possible answers:
+
+**Three rules the pre-merge audit put here, each of which was violated by the
+first cut of this check and none of which a passing test caught:**
+
+- **Page two is page two OF PAGE ONE.** It asks the shape the rung that answered
+  used — null included. Substituting `kinds=[1]` on a bare walk so the tally
+  could see `offKind` re-creates the exact unearned claim: a relay that answered
+  a bare page one and holds no kind 1 below the cursor drains that page two
+  honestly, and the drain reads as "the walk terminates" for a walk nobody made.
+  What it costs is the `kinds` dimension on the relays that answer the bare rung
+  — most of them — and that is not recoverable in one round trip. It is a fair
+  price: a relay answering with events it was not asked for is answering ABOVE
+  THE CURSOR too, which a bare page two sees perfectly well.
+- **The verdict is handed over BEFORE any further dial.** The second page can
+  change it, so it was tempting to wait — and waiting meant the per-url deadline
+  firing during that ask left the url with no verdict at all, where the ladder
+  had already proved one. Those urls count as `abandoned`, `abandoned` feeds the
+  batch guard's blind share, and a slow enough batch would then refuse to
+  publish any of its own verdicts. A paging check must not be able to cost a
+  pass its output. A later refusal simply replaces the handover, exactly as the
+  NEG-OPEN's fuller verdict already does.
+- **The slack belongs to the ANCHOR alone.** Only page one's `until` is our
+  clock against an author's stamp. Every page after it — inside a walk as much
+  as in `pageBelow` — is asked below a timestamp the relay itself served, where
+  five minutes of grace is not conservative but blind: a busy relay's page spans
+  seconds, so a cursor-ignoring relay re-serving it lands inside the slack every
+  time. `Compliance.of` takes the slack as a parameter for exactly this.
+
+And one for the sampler: **`RelayPages` counts on arrival and keeps rows only
+for display.** Tallied at render over the retained rows, a 158-event page whose
+first five happened to match reported "all of them MATCHING the ask" — the
+sharpest sentence the instrument has, the one pointing at OUR side of the walk —
+about a page that was mostly the relay's fault.
 
 | page two | what it proves | verdict |
 |---|---|---|
