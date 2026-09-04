@@ -22,39 +22,27 @@ package com.nosfabrica.vespa.relay.sync.heal
 
 /** What one relay's answer to one repair means. */
 enum class PushVerdict {
-    /** Took it. Whether it also DROPPED the stale copy is next cycle's question. */
+    /** Took it. Whether it also dropped the stale copy is next cycle's question. */
     ACCEPTED,
 
-    /**
-     * Refused on policy — paid relay, allow list, block list. It will refuse
-     * the next one identically, so the stale id it serves is suppressed now and
-     * the relay is closed for writes.
-     */
+    /** Refused on policy. The next repair meets the same answer, so the relay is closed for writes and the stale id suppressed now. */
     CLOSED,
 
-    /**
-     * Refused transiently. Suppress NOTHING and close nothing: a momentary blip
-     * must never permanently blind us to a relay that was about to heal.
-     */
+    /** Refused transiently. Suppresses nothing and closes nothing. */
     RETRY,
 
     /** Answered, but the answer says nothing about the relay's willingness. */
     IGNORE,
 
-    /** Never answered. Earns a strike, never a suppression — see [WriteCapability]. */
+    /** Never answered. Earns a strike, never a suppression; see [WriteCapability]. */
     SILENT,
 }
 
 /**
- * NIP-01's machine-readable `OK` reason, read for one question: has this relay
- * told us it will not take our repairs?
- *
- * The dangerous row is `rate-limited:` — and `error:` beside it. Treating a
- * momentary refusal as policy would suppress the very ids a relay was about to
- * accept a repair for, permanently and silently. Unknown prefixes are also
- * treated as nothing, on the same conservatism `Unreachability.proves()`
- * already applies to NIP-66 claims: silence about someone else's server costs a
- * retry, being wrong costs a false statement.
+ * Reads NIP-01's machine-readable `OK` prefix for one question: has this relay
+ * said it will not take our repairs? A transient refusal read as policy would
+ * suppress ids the relay was about to accept, so `rate-limited:` and `error:`
+ * are [PushVerdict.RETRY] and an unknown prefix is [PushVerdict.IGNORE].
  */
 object OkClassifier {
     fun classify(
@@ -73,8 +61,7 @@ object OkClassifier {
 
             "invalid", "pow", "duplicate" -> PushVerdict.IGNORE
 
-            // No recognised prefix at all. NIP-01 asks for one; a relay that
-            // does not give one has not told us anything we may act on.
+            // NIP-01 asks for a prefix; a relay that gives none has told us nothing to act on.
             else -> PushVerdict.IGNORE
         }
     }

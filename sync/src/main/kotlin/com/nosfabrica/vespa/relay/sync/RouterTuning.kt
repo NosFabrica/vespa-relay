@@ -21,73 +21,26 @@
 package com.nosfabrica.vespa.relay.sync
 
 /**
- * Idle time a transfer may sit silent before it is abandoned.
- *
- * IDLE, not a deadline: the clock resets on every message, so a relay that is
- * still delivering is never cut off however long its history takes. A
- * wall-clock deadline could only ever fire on the healthy case — one once
- * truncated four working upstreams at exactly its 4h mark.
- *
- * **THE SYNC PLANE'S BUDGET, AND THE MONITOR PLANE HAS A DIFFERENT ONE.** Every
- * caller of this constant is a sync-plane transfer — `VisitPool`,
- * `StaticBackfill`, `RetractionAudit`, `UpstreamPush`, `NegentropyPager` — while
- * the probe passes derive theirs per url from `connectionTimeout` (20s by
- * default) through [probeIdleMs], plus the Tor circuit budget where the url
- * needs one. The two are deliberately different numbers, because they are
- * sizing different things: this one is the silence a relay is allowed WHILE
- * DELIVERING a history that may run for hours, and the probe's is the silence a
- * relay is allowed while answering a single twenty-event ask that has no
- * business taking longer than a handshake.
- *
- * The passes also carry something no caller of this constant does — a hard
- * per-url wall clock, [AliasProbe.deadlineMs], sized as a multiple of the probe
- * window above. That is not a disagreement with the paragraph above either: a
- * probe is not a transfer, so cutting one costs a re-measure next pass rather
- * than a truncated history, and a probe pass BLOCKS the roster every stream is
- * built from while it runs.
+ * How long a sync-plane transfer may sit silent before it is abandoned. An
+ * idle clock, not a deadline: it resets on every message, so a relay still
+ * delivering is never cut off. The probe passes size theirs per url from
+ * `connectionTimeout` through [probeIdleMs], because a probe answers one
+ * twenty-event ask and a transfer delivers a history.
  */
 internal const val NEG_IDLE_MS = 30_000L
 
 /**
- * How long one relay may deliver NOTHING before the rest of its asks are left
- * for the next pass.
- *
- * [NEG_IDLE_MS] bounds a single ask; this bounds the SEQUENCE of them. A stream
- * with author-bound asks visits one relay once per bound author, and a relay
- * that answers each chunk with a full idle window costs `chunks * NEG_IDLE_MS`
- * of a transfer slot and a socket — measured at 5h00m on one url, of which
- * 4h56m arrived nothing.
- *
- * Ten idle windows, so an ordinary run of empty-but-prompt chunks never reaches
- * it and a relay must be genuinely silent for five minutes to be given up on.
- *
- * Still not a deadline, and that distinction is the one the comment above is
- * about: this clock is reset by every event that arrives, so it cannot fire on a
- * leg that is working, however long that leg runs.
+ * How long one relay may deliver nothing across a sequence of asks before the
+ * rest are left for the next visit. [NEG_IDLE_MS] bounds one ask; this bounds
+ * the run of them, and is likewise reset by every event that arrives.
  */
 internal const val LEG_QUIET_GIVE_UP_MS = 10 * NEG_IDLE_MS
 
 /**
- * How many times ONE leg may be narrowed and re-walked inside a single visit
- * when a relay refuses it on filter width — see [FilterWidths].
- *
- * Three, and the number is a cost bound rather than a convergence one. A relay
- * that STATES its limit (`too many kinds (max 100)`) is under it on the first
- * retry, so this never bites there. A relay that only says the ask was too wide
- * is halved, and from this router's 139-kind `contentViaOutbox` ask that is
- * seven halvings to reach one kind — so the bound stops a single visit from
- * paying all seven, each of which re-walks the chunks that already succeeded.
- *
- * It costs nothing in convergence because the cap OUTLIVES THE VISIT: the pool
- * keeps what it learned, so the next visit starts three halvings in and the
- * relay is inside its limit within a handful of visits rather than never.
- *
- * MEASURED, against two real relays and a real store — `WidthRescueLiveProbe`.
- * `git.cloistr.xyz` fits inside one visit (139 → 69 → 34 → 17, then served).
- * `purplerelay.com` does not: it spends the same three halvings, is still
- * refused at 17, and aborts — and the revisit five minutes later starts at 17,
- * narrows once more to 8, and pages its history back to 2023. Two visits, which
- * is what this bound trades a re-walk of the succeeded chunks for.
+ * How many times one leg may be narrowed and re-walked inside a single visit
+ * when a relay refuses it on filter width. A cost bound, not a convergence
+ * one: the learned cap outlives the visit, so the next visit starts where this
+ * one stopped. See [FilterWidths].
  */
 internal const val MAX_NARROWINGS = 3
 

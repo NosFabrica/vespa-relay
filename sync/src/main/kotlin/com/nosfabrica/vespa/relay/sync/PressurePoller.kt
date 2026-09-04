@@ -32,22 +32,11 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * The sync process's half of the clients-first rule. In one JVM the relay
- * recorded read latency straight into the [ServingPressure] ingest reads; as
- * separate processes the two still share one Vespa — a mirror batch's dedup
- * and projection queries queue in the same engine a client's REQ does — so the
- * signal crosses over HTTP instead: the relay serves its mean on `/pressure`,
- * and this poller adopts it into the instance ingest consults.
- *
- * A dead feed must not throttle forever on a number from the past: after
- * [MISSES_BEFORE_RESET] consecutive failures the pressure resets to none — a
- * relay that is down has no clients to protect — and says so once, not per
- * miss. That announcement fires whether or not the feed EVER connected: a
- * typo'd url and a relay that died look identical from here, and the boot
- * line already claimed we would yield, so staying quiet would leave that
- * claim standing forever — the configured-but-silently-inert failure this
- * codebase forbids. Reconnection is announced too, so the log shows which
- * regime a slow night's ingest ran under.
+ * The sync process's half of the clients-first rule: the relay serves its
+ * mean read latency on `/pressure`, and this poller adopts it into the
+ * [ServingPressure] ingest consults. After [MISSES_BEFORE_RESET] consecutive
+ * failures the pressure resets to none and the log says so once, whether or
+ * not the feed ever connected; reconnection is announced too.
  */
 class PressurePoller(
     private val url: String,
@@ -67,18 +56,12 @@ class PressurePoller(
         poller =
             Thread {
                 var misses = 0
-                // Two flags, not one: "the feed has ever worked" decides the
-                // wording, "we have announced it down" decides whether the
-                // next success is news. A single flag conflated them, and a
-                // feed that never connected was never reported at all — while
-                // the start() line above kept claiming the throttle was on.
+                // "Ever fed" decides the wording; "announced down" decides whether the next success is news.
                 var everFed = false
                 var down = false
                 while (!Thread.currentThread().isInterrupted) {
                     val polled = poll()
-                    // poll() restores the interrupt flag instead of counting a
-                    // shutdown as a miss — re-check before reading null as the
-                    // relay's absence, or a restart logs a fabricated loss.
+                    // poll() restores the interrupt flag rather than counting a shutdown as a miss.
                     if (Thread.currentThread().isInterrupted) return@Thread
                     if (polled == null) {
                         misses++
@@ -95,8 +78,7 @@ class PressurePoller(
                             )
                         }
                     } else {
-                        // Quiet on an uneventful first connect — the start()
-                        // line already said the feed is on.
+                        // Quiet on an uneventful first connect: the start() line already said the feed is on.
                         if (down) {
                             System.err.println(
                                 "router: pressure feed ${if (everFed) "recovered" else "connected"} — relay reads ${polled.first}ms",
@@ -121,7 +103,7 @@ class PressurePoller(
         return this
     }
 
-    /** One GET: (meanMs, samples), or null for any failure — the loop counts those. */
+    /** One GET: (meanMs, samples), or null for any failure. */
     private fun poll(): Pair<Long, Long>? =
         try {
             val request =
@@ -137,10 +119,7 @@ class PressurePoller(
             val samples = body.getValue("samples").jsonPrimitive.long
             mean to samples
         } catch (e: InterruptedException) {
-            // close() interrupts a send in flight, and the throw CLEARS the
-            // flag — swallowed with the HTTP failures it would count a
-            // shutdown as a miss, sleep the full interval, and leave close()
-            // a no-op. Restore it so the loop sees the shutdown.
+            // The throw clears the flag; restore it so the loop sees the shutdown.
             Thread.currentThread().interrupt()
             null
         } catch (_: Exception) {
@@ -152,17 +131,10 @@ class PressurePoller(
     }
 
     companion object {
-        /**
-         * Often enough that a latency spike reaches ingest within a batch or
-         * two, rare enough that the poll itself is no load on the relay.
-         */
+        /** Often enough that a latency spike reaches ingest within a batch or two, rare enough to be no load. */
         const val POLL_INTERVAL_MS = 5_000L
 
-        /**
-         * Three misses is a relay actually gone (or the url wrong), not one
-         * dropped packet. At the 5s interval this holds a stale mean for at
-         * most ~15s, which one slow batch outlives anyway.
-         */
+        /** Three misses is a relay gone or a wrong url, not one dropped packet. */
         const val MISSES_BEFORE_RESET = 3
     }
 }

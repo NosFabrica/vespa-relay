@@ -70,26 +70,17 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Run a standalone trust-ranking Nostr relay against a Vespa: open the store,
- * serve the NIP-50 relay + NIP-11 doc, and block. Mirroring upstream relays
- * into the same store is `:sync`'s job, as its own process — see SyncMain.
+ * The relay process: open the store, serve the NIP-50 relay and the NIP-11
+ * doc, and block. Mirroring upstreams into the same store is the sync
+ * process's job (SyncMain).
  *
- * Configuration is entirely from the environment. `docs/configuration.md`
- * documents every variable; the essentials:
- *
- *   VESPA_URL     the Vespa query endpoint (default http://localhost:8080)
- *   RELAY_PORT    the port to listen on (default 7777)
- *   RELAY_URL     this relay's own ws url (REQUIRED)
- *   RELAY_NSEC    the relay's identity key (NIP-11 self, NIP-42, NIP-66)
- *   RELAY_ONION_* the .onion this relay also answers at, for NIP-42
+ * Configured from the environment; `docs/configuration.md` lists every
+ * variable. `RELAY_URL` is required.
  */
 fun main() {
     val env = System.getenv()
 
-    // The router moved to its own process; a stream config aimed here would
-    // once have started the mirror and now starts nothing. Refusing to boot is
-    // the migration notice — a configured component must never be silently
-    // inert, and "the mirror stopped mirroring" is the worst spelling of it.
+    // A sync config aimed at this process is a configured component that would run nothing.
     listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE")
         .firstOrNull { !env[it].isNullOrBlank() }
         ?.let {
@@ -101,23 +92,14 @@ fun main() {
             )
         }
 
-    // The rest of the family that moved with the mirror. Not fatal — none of
-    // these starts a subsystem, so nothing is half-running — but a setting
-    // read by nobody must not pass in silence: PARSE_AUDIT_FILE left here
-    // would look exactly like an audit that found nothing.
+    // The rest of the sync family starts no subsystem here, so a warning is enough.
     env.keys
         .filter { key ->
             (
                 key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
                     key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
             ) &&
-                // ...except the ones the relay now READS. They are still the
-                // router's files and it is still the only writer, but the stats
-                // rollup reads them off the shared volume, so the warning's
-                // premise — "read by nobody here" — is false for exactly these.
-                // Named identically on both services on purpose: one setting
-                // per file, so moving the path cannot leave the card pointed at
-                // where the router used to write.
+                // The stats rollup reads these off the shared volume; the name is the same on both services.
                 key !in SYNC_FILES_THE_RELAY_READS &&
                 !env[key].isNullOrBlank()
         }.sorted()
@@ -135,39 +117,25 @@ fun main() {
             ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
     val autoDeploy = env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() ?: true
 
-    // The relay's own keypair. Read first so a malformed key stops the
-    // process here with a clear message, rather than surfacing hours later as
-    // upstreams that mysteriously serve nothing. Unset ⇒ anonymous.
+    // Read first so a malformed key stops the boot here. Unset is an anonymous relay.
     val identity = RelayIdentity.fromEnv { env[it] }
     if (identity != null) {
         System.err.println("relay identity: ${identity.pubKey.take(12)}… (NIP-11 self, NIP-42 auth, NIP-66 monitor)")
     }
 
-    // A hidden service in front of this same port answers at a second address,
-    // and a Tor client signs the one it dialled. Read here so a malformed
-    // RELAY_ONION_URL stops the boot rather than costing Tor clients their
-    // ranking lens quietly. The eager alternates() call is for the log: an
-    // address Tor has already published is named at boot, and one that
-    // appears later is named by the connection that first finds it.
+    // The eager alternates() names an already published .onion in the boot log.
     val addresses = relayAddressesFromEnv(env).also { it.alternates() }
 
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
-    // Whether an anonymous read has to say whose trust it is read through. On
-    // by default; announced at boot only when an operator turned it OFF, since
-    // "this relay answers anonymous reads out of the whole corpus" is the line
-    // worth finding in a log when a client is getting more than it expected.
+    // Announced only when off: that is the line worth finding when a client gets more than it expected.
     val requireReadLens = requireReadLensFromEnv(env)
     if (!requireReadLens) {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
     }
 
-    // Whether a search also answers with the records its hits point at. On by
-    // default, and announced only when it is OFF or capped at nothing, for the
-    // same reason as the line above: a client getting FEWER events than the
-    // feature promises has no way to tell that from a corpus that holds none
-    // of them, and this is the line that says which it was.
+    // Announced only when off or capped at nothing: fewer events than promised looks like an empty corpus.
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
         System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
@@ -175,38 +143,20 @@ fun main() {
         System.err.println("relay: search reference expansion is on but capped at 0 — it will add nothing")
     }
 
-    // The icon this relay serves on its own tab, as an absolute url a stranger
-    // can fetch — the value `RELAY_ICON` defaults to, and the one the server
-    // compares against to tell "no override" from an operator's own icon.
-    //
-    // From `RELAY_HTTP_URL` when it is set, because that is already this
-    // deployment's answer to "what http origin am I reachable at" (NIP-98 binds
-    // its tokens to it), and a relay behind a proxy on another name would
-    // otherwise advertise an icon at the websocket's host. Null when neither
-    // address is one a stranger can reach.
+    // From RELAY_HTTP_URL when set: a relay behind a proxy on another name would otherwise
+    // advertise an icon at the websocket's host. See [selfIconUrl].
     val ownIconUrl = selfIconUrl(env["RELAY_HTTP_URL"] ?: relayUrl.url)
 
-    // How this relay presents itself. Built here rather than at the serveRelay
-    // call it used to sit in, because the relay's own kind 0 is these same
-    // fields — one description of this relay, served as NIP-11 and published
-    // as an event, and no second place for it to drift.
+    // One description of this relay: served as NIP-11 and published as its kind 0.
     val nip11 =
         Nip11Info(
             name = env["RELAY_NAME"] ?: "vespa-relay",
             description = env["RELAY_DESCRIPTION"],
-            // One icon, both places. Unset publishes the one this relay already
-            // serves on its own tab, so a stock deployment stops advertising
-            // nothing to the clients that draw a relay beside its picture;
-            // set, it is also what the pages link and what /favicon.ico
-            // redirects to. Null for an address a stranger cannot reach — see
-            // selfIconUrl, which refuses to sign `http://localhost:7777/…` into
-            // a public kind 0 on every development boot.
+            // Unset publishes the icon this relay already serves on its own tab.
             icon = env["RELAY_ICON"] ?: ownIconUrl,
             banner = env["RELAY_BANNER"],
             contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
-            // Derived, never declared: a typed-in pubkey is an assertion
-            // no reader can check, while this one is provable against
-            // every 22242 and 30166 the relay signs.
+            // Derived from the key, never declared: provable against every event the relay signs.
             selfPubkey = identity?.pubKey,
             contact = env["RELAY_CONTACT"],
             version = env["RELAY_VERSION"],
@@ -215,8 +165,7 @@ fun main() {
             termsOfService = env["RELAY_TERMS_OF_SERVICE"],
         )
 
-    // NIP-86 is enabled only when at least one valid admin key is configured;
-    // its ban lists persist to RELAY_STATE_FILE when set.
+    // NIP-86 exists only with at least one valid admin key.
     val adminPubkeys = adminPubkeysFromEnv(env)
     val banStore = if (adminPubkeys.isNotEmpty()) openBanStore(env["RELAY_STATE_FILE"]) else null
 
@@ -227,7 +176,6 @@ fun main() {
             RelayServerListener.None
         }
 
-    // Deploy the schema this build expects, every boot — see [deployBundledSchema].
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
     if (autoDeploy) {
         System.err.println("schema: deploying the bundled application package to $configUrl")
@@ -235,10 +183,7 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    // STORE_WRITERS, not the store's default, because the answer is a property
-    // of this deployment and not of the library: the sync process writes the
-    // same index, and the deletions this relay must honour are largely ones it
-    // mirrored.
+    // STORE_WRITERS is a property of this deployment: the sync process writes the same index.
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -249,52 +194,32 @@ fun main() {
             searchExpansion = searchExpansion,
         )
 
-    // Background maintenance. Everything here runs BEHIND the server and is
-    // awaited nowhere: blocking the port on any of it turns every restart
-    // into an outage (the trust reconcile alone was measured at 12+ minutes).
+    // Everything on this scope runs behind the server and is awaited nowhere;
+    // blocking the port on any of it turns a restart into an outage.
     val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     if (env["REINDEX_FTS_ON_START"]?.toBooleanStrictOrNull() == true) {
         launchFtsReindex(maintenanceScope, store, env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt")
     }
     env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
-        // Anything other than `true` is a dry run — a sweep that deletes on a
-        // typo is not a sweep anyone should have to think twice about.
+        // Anything other than `true` is a dry run.
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
     }
-    // The corpus statistics behind GET /stats.json and /stats.html.
-    // Seeded from the state file first, so a restart serves the last document
-    // instead of a blank page for however long the first rollup takes.
+    // Seeded from the state file so a restart serves the last document until the first rollup.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
-    // TWO INTERVALS, because the queries behind this document are not within an
-    // order of magnitude of each other in cost — see `StatsTier`. The
-    // corpus-wide groupings keep the setting they always had; the cheap counters
-    // (totals, freshness, trust health, the router's heartbeat) get their own,
-    // fifteen times faster, because nothing about them justified being that
-    // stale.
+    // Two intervals: the tiers' queries are not within an order of magnitude of each other. See StatsTier.
     val statsIntervalSeconds = statsInterval(env, "STATS_INTERVAL_SECONDS", 900L)
     val statsCountersIntervalSeconds = statsInterval(env, "STATS_COUNTERS_INTERVAL_SECONDS", 60L)
     if (statsIntervalSeconds > 0 || statsCountersIntervalSeconds > 0) {
         val rollup =
             StatsRollup(
                 StatsVespa(vespaUrl),
-                // The NORMALIZED url, the same string NIP-42 and NIP-62 key off —
-                // so a document fetched from two of this relay's addresses names
-                // one relay rather than reading as two.
+                // The normalized url, the same string NIP-42 and NIP-62 key off.
                 relayUrl = relayUrl.url,
-                // Read-only, off the volume the sync service writes it to.
-                // Absent is the normal case — a serve-only deployment has no
-                // router — and the section is then simply not in the document.
-                // The manifest ALONE: what the mirror has walked and what it is
-                // doing are served by the sync process itself now.
+                // Read-only, off the volume the sync service writes to. Absent on a serve-only deployment.
                 syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
             )
-        // ONE ROLLUP, two timers: the tiers write disjoint halves of the
-        // document and share nothing else, so a second instance would only be a
-        // second copy of the same config.
-        //
-        // The counters go first so a fresh relay has totals, trust health and
-        // router progress within a second or two of boot, rather than a blank
-        // page for however long the first histogram takes.
+        // One rollup, two timers: the tiers write disjoint halves of the document.
+        // Counters first, so a fresh relay has totals within seconds of boot.
         if (statsCountersIntervalSeconds > 0) {
             launchStatsRollup(maintenanceScope, rollup, statsSnapshot, StatsTier.COUNTERS, statsCountersIntervalSeconds)
         } else {
@@ -306,19 +231,10 @@ fun main() {
             println("stats: STATS_INTERVAL_SECONDS=$statsIntervalSeconds — no charts; /stats.json will carry only the counter sections")
         }
     } else {
-        // A zero/negative interval is "don't compute", which is a legitimate
-        // choice on a busy box — the grouping competes with client reads. Say
-        // so, because the alternative is an operator watching a page that never
-        // fills and looking for the bug in the rollup.
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
     }
-    // Say who this relay is, in the two kinds every client already reads: a
-    // kind 0 carrying the NIP-11 name and description, and a kind 10002 naming
-    // this relay as its own inbox and outbox. Only with a key to sign them —
-    // an anonymous relay has nothing to be discovered AS.
-    //
-    // One instance, held past the boot publish: a NIP-86 rename republishes
-    // through the same object below, and it is the object that serializes them.
+    // The relay's own kind 0 and kind 10002, only with a key to sign them.
+    // One instance, held past the boot publish: a NIP-86 rename republishes through it.
     val profile = identity?.let { RelayProfile(store, it, relayUrl) }
     if (profile != null) {
         launchRelayProfile(maintenanceScope, profile, nip11)
@@ -331,17 +247,8 @@ fun main() {
             println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
         }
     }
-    // The store's trust descent — the exact early stop a ranked search takes
-    // over the trusted authors' documents — turns itself on once its one-time
-    // walk has written `max_rank` onto every reputation document. Until then
-    // a common word costs what it always did, so the boot log says when that
-    // ends. The walk retries a refused engine for as long as it takes (the
-    // store counts each refusal on its background-failures line), so the
-    // only way this prints nothing is the store closing first. With the
-    // operator's switch off (VESPA_TRUST_DESCENT, docs/configuration.md) the
-    // walk still runs — it keeps the invariant the descent needs — and the
-    // line says so, because a boot log that reads "on" while every ranked
-    // search takes the full walk is the state the switch exists to name.
+    // The trust descent turns itself on once the max_rank walk has finished; the
+    // walk runs even with the operator's switch off, and the line says which state applies.
     maintenanceScope.launch {
         val written =
             runCatching { store.awaitTrustDescent() }.getOrElse { e ->
@@ -358,18 +265,9 @@ fun main() {
         )
     }
 
-    // The relay server measures client reads into it; the sync process polls
-    // the mean over GET /pressure to decide whether its ingest should yield.
-    // No threshold here on purpose: this side only records and serves — the
-    // threshold belongs to the process that yields on it, and reading
-    // SERVING_PRESSURE_THRESHOLD_MS into an instance whose backoffMs() nobody
-    // calls would be a setting that is accepted and does nothing.
+    // Recorded here, served over GET /pressure; the threshold belongs to the sync process that yields on it.
     val servingPressure = ServingPressure()
-    // What a reader is told the moment they sign in: whether this relay holds
-    // the two things their ranking depends on, and nothing at all when it does.
-    // On `maintenanceScope` like every other read that happens behind the
-    // server — a login must not wait on the store, and a check still running
-    // when the process is asked to stop dies with it.
+    // On maintenanceScope: a login must not wait on the store, and a check still running at shutdown dies with it.
     val trustNotice = TrustNotice(store, maintenanceScope)
     val relay =
         NostrRelayServer(
@@ -391,11 +289,8 @@ fun main() {
             searchConcurrencyPerConnection = searchConcurrencyPerConnectionFromEnv(env),
         )
 
-    // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).
     val sweeper = ExpirationSweeper(store, expirationSweepSecondsFromEnv(env)).start()
 
-    // The knob that quiets quartz's own logging. The parse audit itself lives
-    // in the sync process — ingest is what feeds it, and nothing here does.
     applyQuartzLogLevel(env)
 
     val admin =
@@ -411,9 +306,7 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
-            // Cancelled first and NOT waited for: an unfinished reconcile
-            // costs a less complete ranking until the next start, which is
-            // exactly what it costs anyway.
+            // Cancelled and not waited for: an unfinished reconcile costs what it costs anyway.
             maintenanceScope.cancel()
             sweeper.close()
             relay.close()
@@ -432,11 +325,8 @@ fun main() {
         limits = limits,
         admin = admin,
         pressure = servingPressure,
-        // A NIP-86 admin RPC can rename this relay, re-describe it or change
-        // its icon while it runs. The doc is the profile's source, so the
-        // profile follows it here rather than freezing what the environment
-        // said at boot — the fields the doc no longer carries are cleared from
-        // the kind 0 for the same reason an unset RELAY_DESCRIPTION is.
+        // The doc is the profile's source, so a NIP-86 rewrite republishes the kind 0
+        // and clears the fields the doc no longer carries.
         onInfoChanged = { doc ->
             profile?.let {
                 launchRelayProfile(
@@ -446,23 +336,17 @@ fun main() {
                 )
             }
         },
-        // "This relay is also a hidden service" — read by Tor Browser and by
-        // clients that move the connection inside the network when Tor is on.
         onionLocation = addresses::onionLocation,
-        // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
         observerStatsPage = resourceText("/observer_stats.html"),
         statsPage = resourceText("/stats.html"),
         statsJson = statsSnapshot,
-        // What "no override" looks like. The server compares the doc's icon
-        // against this to decide whether /favicon.ico redirects — it cannot
-        // read that off the doc, where our own url and an operator's are the
-        // same field.
+        // What "no override" looks like; the doc cannot tell our url from an operator's.
         selfIconUrl = ownIconUrl,
     )
 }
 
-/** Map a ws/wss url to its http/https origin for NIP-98's `u` tag. */
+/** The http/https origin of a ws/wss url, for NIP-98's `u` tag. */
 private fun String.httpFromWs(): String =
     when {
         startsWith("wss://") -> "https://" + substring(6)
@@ -474,15 +358,9 @@ private fun String.httpFromWs(): String =
 private fun resourceText(path: String): String? = object {}.javaClass.getResource(path)?.readText()
 
 /**
- * One of the stats rollup's two intervals, in seconds.
- *
- * A value that will not parse STOPS the boot rather than falling back to the
- * default. `=0s` or `=off` are the obvious ways an operator writes "turn this
- * off", and `?: default` accepted both by silently running the rollup on the
- * schedule they were trying to change — a setting that was read, was wrong, and
- * did the opposite of what it said, which is exactly the silent inertness this
- * codebase refuses elsewhere. The message names [key] because there are two of
- * these now and they are off by a factor of fifteen.
+ * One of the stats rollup's two intervals, in seconds. A value that does not
+ * parse stops the boot: `=off` falling back to the default would run the
+ * rollup on the schedule the operator was trying to change.
  */
 private fun statsInterval(
     env: Map<String, String>,
@@ -494,24 +372,14 @@ private fun statsInterval(
     } ?: default
 
 /**
- * The router file the stats rollup reads. A shared name, not a relay-side copy —
- * see the exemption in the unused-settings warning above.
- *
- * ONE, where it was four. `SYNC_STATE_FILE`, `SYNC_SWEEP_STATE_FILE` and
- * `SYNC_PROGRESS_FILE` are the sync process's own now: it serves what it has
- * walked and what it is doing on its own status site, so setting them here is
- * exactly the mistake the warning above exists to catch.
+ * The sync process's files this relay reads, exempt from the unused-settings
+ * warning. The other sync files are served by the sync process itself.
  */
 private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_MANIFEST_FILE")
 
 /**
- * Where one of the router's files lives, from the env or the path
- * `docker-compose.yml` mounts it at.
- *
- * The default is not a guess: it is the same literal the compose file gives
- * both services, so the stock deployment charts its sync with nothing set. An
- * explicit empty value turns the card off, which is the escape hatch for a
- * deployment that mounts the volume but does not want the relay reading it.
+ * Where one of the sync process's files lives: the env, or the path
+ * `docker-compose.yml` mounts it at. An explicit empty value turns the card off.
  */
 private fun syncFile(
     env: Map<String, String>,

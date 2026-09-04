@@ -28,25 +28,14 @@ import java.util.Properties
 
 private const val SOFTWARE = "https://github.com/NosFabrica/vespa-relay"
 
-/**
- * The NIPs this relay actually implements. NIP-86 is not here: the composition
- * root appends it only when an admin key is configured, so the doc never
- * claims an admin API that would reject every request.
- */
+/** The NIPs this relay implements. NIP-86 is appended by the composition root only with an admin key. */
 val BASE_SUPPORTED_NIPS = listOf(1, 9, 11, 40, 42, 45, 50, 62, 77)
 
 /**
- * The NIP-50 `nip50` list: the search extensions this relay honors, in the
- * `"<class> <token>"` spelling relays already publish (`ext include:spam`,
- * `query negate`).
- *
- * It matters more here than on a relay that merely searches. Since
- * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy], `observer:` and
- * `include:spam` are not garnish on a query — they are the two ways an
- * unauthenticated client gets an answer at all, and NIP-11 is the one place a
- * client can learn that BEFORE it is refused. Only tokens the store actually
- * parses belong here; the doc is a promise, and a token listed but ignored is
- * worse than one left out.
+ * The NIP-50 `nip50` list, in the `"<class> <token>"` spelling. `observer`
+ * and `include:spam` are how an unauthenticated client gets an answer at
+ * all, and this doc is where it learns that before being refused. Only
+ * tokens the store parses belong here.
  */
 val NIP50_FEATURES =
     listOf(
@@ -60,11 +49,7 @@ val NIP50_FEATURES =
 
 private object RelayInfoMarker
 
-/**
- * The relay's version, read from the build-generated `relay-version.properties`
- * so NIP-11 `version` tracks releases instead of a hand-edited constant.
- * `"dev"` when the resource isn't on the classpath.
- */
+/** The build's version from `relay-version.properties`, or `"dev"` off the classpath. */
 val BUILD_VERSION: String by lazy {
     RelayInfoMarker::class.java
         .getResourceAsStream("/relay-version.properties")
@@ -74,10 +59,8 @@ val BUILD_VERSION: String by lazy {
 }
 
 /**
- * Build the NIP-11 relay information document. The `limitation` block is
- * derived from the same [RelayLimits] the engine enforces. The object (rather
- * than only its JSON) is returned so NIP-86 admin RPCs can update it at
- * runtime.
+ * The NIP-11 document. The `limitation` block is derived from the [RelayLimits]
+ * the engine enforces. Returned as an object so NIP-86 RPCs can update it.
  */
 fun buildRelayInfo(
     info: Nip11Info,
@@ -90,9 +73,9 @@ fun buildRelayInfo(
         info.description.ifSet { this.description = it }
         info.icon.ifSet { this.icon = it }
         info.banner.ifSet { this.banner = it }
-        info.contactPubkey.ifSet { pubkey = it } // admin contact key
-        info.selfPubkey.ifSet { self = it } // the relay's OWN key
-        info.contact.ifSet { this.contact = it } // human contact (email / uri)
+        info.contactPubkey.ifSet { pubkey = it }
+        info.selfPubkey.ifSet { self = it }
+        info.contact.ifSet { this.contact = it }
         info.postingPolicy.ifSet { this.postingPolicy = it }
         info.privacyPolicy.ifSet { this.privacyPolicy = it }
         info.termsOfService.ifSet { this.termsOfService = it }
@@ -103,7 +86,7 @@ fun buildRelayInfo(
         limitation(limits)
     }
 
-/** The NIP-11 document as JSON — a convenience for the simple case and tests. */
+/** The NIP-11 document as JSON, for the simple case and tests. */
 fun relayInfoJson(
     name: String = "vespa-relay",
     description: String? = null,
@@ -130,5 +113,5 @@ fun relayInfoJson(
         supportedNips = supportedNips,
     ).toJson()
 
-/** Run [set] with this string only when it's present and non-blank. */
+/** Runs [set] with this string only when it is present and non-blank. */
 internal inline fun String?.ifSet(set: (String) -> Unit) = this?.takeIf(String::isNotBlank)?.let(set)

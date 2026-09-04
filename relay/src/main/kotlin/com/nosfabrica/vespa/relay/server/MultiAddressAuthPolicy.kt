@@ -33,64 +33,35 @@ import com.vitorpamplona.quartz.utils.TimeUtils
 import kotlinx.coroutines.CancellationException
 
 /**
- * NIP-42 for a relay that answers at more than one address — the clearnet url
- * and a `.onion` hidden service in front of the same port.
+ * NIP-42 for a relay that answers at more than one address: the clearnet url
+ * and a `.onion` in front of the same port.
  *
- * A client signs the address it dialled, and a Tor client has never heard of
- * the clearnet name: its kind-22242 carries `["relay","ws://…onion/"]`. Quartz's
- * [OptionalAuthPolicy] binds ONE url and rejects everything else with
- * "invalid: relay url does not match", which is right for a relay with one
- * address and silently wrong for this one — every AUTH from the hidden service
- * would fail, and on this relay a failed AUTH is not a locked door but a
- * downgrade: reads keep working and lose their web-of-trust ranking lens
- * ([ObserverBackend] takes the observer from the authenticated pubkey). The
- * onion endpoint would look fine and rank nothing.
+ * A client signs the address it dialled. Quartz's [OptionalAuthPolicy] binds
+ * one url, and on this relay a failed AUTH is not a locked door but a lost
+ * ranking lens, so the hidden service would look fine and rank nothing. The
+ * check is restated rather than delegated because the challenge is minted
+ * per policy instance; the other conditions are quartz's, in quartz's order,
+ * with quartz's messages, pinned by `RelayOnionAuthTest`.
  *
- * The whole check is re-stated here rather than delegated because the address
- * comparison is one line inside quartz's `accept` and there is no seam to widen
- * from the outside: the challenge is generated per policy instance, so a second
- * instance bound to the second address would test a challenge no client was
- * ever sent. The other three conditions are quartz's, in quartz's order, with
- * quartz's messages — `RelayOnionAuthTest` pins each one, so this drifting from
- * the engine fails the build rather than the deployment.
- *
- * It is also where "somebody just signed in" becomes an event this relay can
- * act on: quartz's `authorize` hook is the only seam that sees a verified AUTH
- * and this connection's `send` at once, which is what [onAuthenticated] needs.
- *
- * Three deliberate widenings over the original:
- *  - any of [addresses] satisfies the relay tag, not one fixed url;
- *  - EVERY `relay` tag is considered, not just the first. Quartz's own
- *    `RelayAuthEvent.create(relays, …)` builds multi-relay auth events, and a
- *    client that names both of our addresses means both. This is not a replay
- *    hole: [challenge] is 32 random chars minted per connection, so an event
- *    listing ten relays is still only usable on the connection that issued it;
- *  - a scheme's default port is dropped from both sides before comparing. The
- *    normalizer keeps `ws://host:80/` and `ws://host/` apart, and a hidden
- *    service is published on port 80 — so a client configured with the port
- *    spelled out would sign an address this relay does serve and be told it
- *    does not match. Only the DEFAULT port folds: `ws://host:7777/` is a
- *    different endpoint and still has to be one we answer at.
+ * Three widenings: any of the addresses satisfies the relay tag; every
+ * `relay` tag is considered, safe because [challenge] is per connection; and
+ * a scheme's default port folds on both sides, since a hidden service is
+ * published on port 80. It is also where a verified AUTH becomes
+ * [onAuthenticated].
  */
 class MultiAddressAuthPolicy(
     primary: NormalizedRelayUrl,
     alsoAt: Set<NormalizedRelayUrl> = emptySet(),
-    /**
-     * Told who just signed in, and how to reach them — see [TrustNotice], the
-     * one thing wired here. Absent is a relay that says nothing on login, which
-     * is what every deployment did before this hook existed.
-     */
+    /** Told who just signed in and how to reach them. See [TrustNotice]. */
     private val onAuthenticated: AuthNotifier? = null,
 ) : OptionalAuthPolicy(primary) {
-    /** [primary] is always accepted; the set is never empty, whatever [alsoAt] holds. */
+    /** Never empty: [primary] is always in it. */
     private val addresses = (alsoAt + primary).mapTo(HashSet(), NormalizedRelayUrl::withoutDefaultPort)
 
     /**
-     * This connection's channel to the client, captured from the only hook that
-     * is handed one. Safe to hold because a policy is built fresh per
-     * connection (quartz's `policyBuilder`), and `@Volatile` because the AUTH
-     * that reads it can land on a different transport coroutine than the
-     * connect that wrote it.
+     * This connection's channel to the client. A policy is built per
+     * connection; `@Volatile` because the AUTH can land on a different
+     * coroutine than the connect.
      */
     @Volatile
     private var send: ((Message) -> Unit)? = null
@@ -99,40 +70,26 @@ class MultiAddressAuthPolicy(
         scope: RequestContext,
         send: (Message) -> Unit,
     ) {
-        // Super first: it is what sends the NIP-42 challenge, and a connection
-        // that never gets one can never reach [authorize] at all.
+        // Super first: it sends the challenge, without which [authorize] is never reached.
         super.onConnect(scope, send)
         this.send = send
     }
 
     /**
-     * Who this connection has already been told about. An AUTH event stays
-     * valid for its whole ten-minute freshness window against the challenge
-     * that minted it, so a client may send the same frame any number of times
-     * and quartz will accept every one — each of which would start another
-     * walk of the store on a scope the socket's close does not cancel. The
-     * answer is a property of the identity, not of the frame, so it is worth
-     * paying once per identity per connection; a reader who wants a fresh one
-     * reconnects, which costs a socket rather than an unbounded read.
+     * Identities already told. An AUTH frame stays valid for its whole
+     * freshness window, so a client may resend it any number of times; the
+     * answer is a property of the identity, paid once per connection.
      */
     private val told = HashSet<String>()
 
     /**
-     * Quartz's post-verification hook, run once the WHOLE policy chain has
-     * approved the AUTH and before the `OK` goes out.
-     *
-     * Two rules, both from where it sits. It must not BLOCK — an `OK` is what
-     * a client waits on before it starts reading, and no login should wait on
-     * this relay's store — so [onAuthenticated] starts its work and returns.
-     * And it must not THROW: quartz reads a throw here as a failed login and
-     * records no identity, which would trade the reader's ranking lens for a
-     * background check they never asked for.
+     * Quartz's post-verification hook, before the `OK` goes out. It must not
+     * block, since the client waits on the `OK`, and must not throw, since
+     * quartz reads a throw as a failed login.
      */
     override suspend fun authorize(event: RelayAuthEvent) {
         val notify = onAuthenticated ?: return
         val send = send ?: return
-        // Synchronized rather than a concurrent set: AUTH is rare, this holds
-        // the lock for one hash lookup, and the set is per connection.
         if (!synchronized(told) { told.add(event.pubKey) }) return
         try {
             notify(event.pubKey, send)
@@ -167,14 +124,10 @@ class MultiAddressAuthPolicy(
 }
 
 /**
- * `ws://host:80/` and `ws://host/` name one endpoint; `wss://host:443/` and
- * `wss://host/` likewise. Quartz's normalizer folds case and adds the trailing
- * slash but keeps an explicitly-spelled default port, so the two spellings are
- * different strings and `==` says they are different relays.
- *
- * Bracketed IPv6 survives it: `[::1]:80` ends with the port and loses it,
- * `[::1]` does not end with `:80` at all — the port only ever follows the
- * closing bracket.
+ * `ws://host:80/` and `ws://host/` name one endpoint, likewise `wss` and 443.
+ * Quartz's normalizer keeps an explicit default port, so the spellings
+ * compare unequal. The port only ever follows a bracketed IPv6 host's
+ * closing bracket, so `[::1]` survives.
  */
 private fun NormalizedRelayUrl.withoutDefaultPort(): NormalizedRelayUrl {
     val port =
