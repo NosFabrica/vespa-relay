@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -192,6 +193,41 @@ class IngestPipeline(
      */
     val queued = AtomicInteger()
 
+    /**
+     * PRODUCERS PARKED IN A FULL QUEUE, per relay — the fact that tells a
+     * relay's silence apart from our own.
+     *
+     * Every event a relay socket carries reaches this pipeline through
+     * quartz's ONE consumer coroutine per socket, which awaits each listener
+     * before it reads the next frame. So while one producer's [submit] is
+     * suspended on this relay's events — a walk's, a tail's, a retraction
+     * audit's, a monitor pass's — nothing else on that socket is delivered:
+     * not the EOSE that would end a page, not the events behind it, not the
+     * OK to an AUTH. quartz's pager then reports what it can see, which is
+     * silence or a page received and never counted as delivered, and the
+     * mirror used to file both against the relay. See `VisitPool.heldByUs`.
+     *
+     * Counted HERE and not at the call sites, so that every producer is
+     * covered by construction: the pool's three hooks, `RetractionAudit`
+     * and the monitor's `StreamWorld` all hand events to the same [submit],
+     * and one that bypassed a per-caller wrapper would be a stall the
+     * classification could not see. And counted only while the send is
+     * actually SUSPENDED — the fast path is tried first — so a hook merely
+     * passing through at the instant a walk gives up does not read as a
+     * stall.
+     */
+    private val parked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+
+    /** How many producers are suspended in a full queue on this relay's events right now. */
+    fun parkedOn(url: NormalizedRelayUrl): Int = parked[url]?.get() ?: 0
+
+    /**
+     * Is the queue at capacity, so the next [submit] would suspend its
+     * caller — and with it that caller's whole socket? The one number a
+     * producer should read BEFORE opening a conversation it cannot drain.
+     */
+    fun isFull(): Boolean = queued.get() >= capacity
+
     val accepted = AtomicLong()
     val rejected = AtomicLong()
 
@@ -344,8 +380,22 @@ class IngestPipeline(
         queued.incrementAndGet()
         var handedOff = false
         try {
-            inbound.send(Inbound(event, skipVerify, origin))
-            handedOff = true
+            val inbound = Inbound(event, skipVerify, origin)
+            // The fast path first, so [parked] counts only a send that really
+            // suspends; a closed channel falls through to `send`, which throws
+            // the same way it always did.
+            if (this.inbound.trySend(inbound).isSuccess) {
+                handedOff = true
+            } else {
+                val held = origin.url?.let { parked.getOrPut(it) { AtomicInteger() } }
+                held?.incrementAndGet()
+                try {
+                    this.inbound.send(inbound)
+                    handedOff = true
+                } finally {
+                    held?.decrementAndGet()
+                }
+            }
         } catch (_: ClosedSendChannelException) {
             // Shutdown (closeIntake) raced this event in. Not an error.
         } finally {

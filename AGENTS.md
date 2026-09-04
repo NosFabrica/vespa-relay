@@ -1850,9 +1850,14 @@ life of the process. The visits kept coming at full rate (one per unit every
 seven minutes, 96 at a time), each re-dialling a healthy relay to park one
 event and blame it.
 
-So `VisitPool.holding` counts, per relay, the hooks of ours currently suspended
-in `submit` (every hand-off goes through `handOff`, which is the invariant), and
-a walk that comes back refused is re-read at that instant: an `IDLE` or an
+So `IngestPipeline.parkedOn` counts, per relay, the producers currently
+suspended in `submit` — in the pipeline and not at the pool's call sites,
+because the pool is not the only producer on a shared socket: `RetractionAudit`
+and the monitor's `StreamWorld` hand events to the same queue, and a wrapper
+each caller had to remember was a stall the classification could not see. It
+counts only a send that actually suspends (the fast path is tried first), so a
+hook merely passing through at the instant a walk gives up is not read as a
+stall. A walk that comes back refused is re-read at that instant: an `IDLE` or an
 `UNPAGEABLE` while a hook of ours is parked on that socket is
 `abortedBackpressured` — ours, counted and spoken like the others, and NEVER
 written on the relay's row (`VisitAborts.Reason.ours`), nor does it clear what
@@ -1863,10 +1868,19 @@ consumer was not parked when it was said. Nothing else about the abort changes
 happen. `VisitPoolBackpressureTest` stages it against a pipeline filled to
 capacity and never started.
 
-**Two things this does NOT do, and one it found.** It does not slow the visits
-down while the queue is full; the pool still burns a dial per unit per revisit
-to park one event, and a visit rate that reads the ingest queue is the next
-thing to want. It does not fix the ingest: the store was accepting a 2-worker
+**And a visit is not dialled into a queue that cannot take it.** `visit` reads
+`IngestPipeline.isFull` before the dial permit and returns if so — skipped, not
+queued, exactly as a refused permit is, counted as `visitsHeldByIngest` on the
+visits row. A download into a full queue does one thing: parks its first event,
+stalls the socket for everyone on it, and comes back `abortedBackpressured`
+thirty seconds later, having cost the relay a handshake and a REQ for nothing —
+per unit, per revisit, 96 at a time, for as long as the store is behind. The
+tails already open stay open: a tail that is not draining is honest
+backpressure, and a tail closed is coverage lost. The classification above is
+still needed for the queue that fills DURING a visit, which is the common case
+on a mirror that is merely busy rather than wedged.
+
+**One thing this does NOT do, and one it found.** It does not fix the ingest: the store was accepting a 2-worker
 batch every two minutes with `lock.ingest.wait` at 25 hours cumulative, which
 is #167's territory and the store's. And the monitor's four processors on the
 same page read `starting` for the whole 28,591 seconds of that process — the

@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -52,7 +53,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -85,6 +85,8 @@ class VisitPoolBackpressureTest {
         private val scope: CoroutineScope,
         private val end: PagedFetchResult.End,
         private val handsAnEvent: Boolean,
+        /** What the queue does WHILE the page is out — fills to the brim, or nothing. */
+        private val meanwhile: suspend () -> Unit,
     ) : RelayReads {
         val pages = AtomicInteger()
         val tails = ConcurrentHashMap<String, List<Filter>>()
@@ -96,6 +98,7 @@ class VisitPoolBackpressureTest {
             onEvent: suspend (Event) -> Unit,
         ): PagedFetchResult {
             pages.incrementAndGet()
+            meanwhile()
             if (handsAnEvent) {
                 scope.launch { onEvent(event(pages.get())) }
                 // Long enough for the hook to reach the queue and park in it.
@@ -127,14 +130,26 @@ class VisitPoolBackpressureTest {
     private class Harness(
         end: PagedFetchResult.End,
         handsAnEvent: Boolean = true,
+        /** The queue fills DURING the page — room at the dial, none by the time the hook runs. */
+        fillsDuringThePage: Boolean = true,
+        /** …and a producer that is not the pool parks on this relay's events while the page is out. */
+        parksAForeignProducer: Boolean = false,
     ) {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
-        val relay = StalledRelay(scope, end, handsAnEvent)
         val processors = Processors()
 
         /** NEVER STARTED: nothing drains it, so filling it parks every submit after. */
         val ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null)
+
+        val relay =
+            StalledRelay(scope, end, handsAnEvent) {
+                if (fillsDuringThePage) fillIngest()
+                if (parksAForeignProducer) {
+                    scope.launch { ingest.submit(event(FOREIGN), skipVerify = true, origin = IngestOrigin(streams.single().urls.single())) }
+                    delay(HOOK_SETTLE_MS)
+                }
+            }
 
         val streams =
             listOf(
@@ -176,7 +191,9 @@ class VisitPoolBackpressureTest {
             repeat(ingest.capacity) { ingest.submit(event(FILL_BASE + it), skipVerify = true) }
         }
 
-        suspend fun countsAfterTheVisit(): Map<String, Long> =
+        suspend fun countsAfterTheVisit(): Map<String, Long> = countsOnce { (it["visitsRun"] ?: 0L) >= 1L && (it["abortedVisits"] ?: 0L) >= 1L }
+
+        suspend fun countsOnce(settled: (Map<String, Long>) -> Boolean): Map<String, Long> =
             withTimeout(15_000) {
                 while (true) {
                     val counts =
@@ -185,7 +202,7 @@ class VisitPoolBackpressureTest {
                             .single { it.name == "visits" }
                             .counts
                             .associate { it.name to it.value }
-                    if ((counts["visitsRun"] ?: 0L) >= 1L && (counts["abortedVisits"] ?: 0L) >= 1L) return@withTimeout counts
+                    if (settled(counts)) return@withTimeout counts
                     delay(50)
                 }
                 @Suppress("UNREACHABLE_CODE")
@@ -202,7 +219,6 @@ class VisitPoolBackpressureTest {
         runBlocking {
             val h = Harness(PagedFetchResult.End.UNPAGEABLE)
             try {
-                h.fillIngest()
                 h.pool.start()
                 val counts = h.countsAfterTheVisit()
                 assertEquals(1L, counts["abortedVisits"])
@@ -224,7 +240,6 @@ class VisitPoolBackpressureTest {
             // subscription it came in on.
             val h = Harness(PagedFetchResult.End.IDLE)
             try {
-                h.fillIngest()
                 h.pool.start()
                 val counts = h.countsAfterTheVisit()
                 assertEquals(1L, counts["abortedBackpressured"])
@@ -240,7 +255,7 @@ class VisitPoolBackpressureTest {
             // The classification is about the instant, not the relay: the hook
             // returns at once, nothing of ours is parked, and UNPAGEABLE with
             // nothing downloaded means what quartz says it means.
-            val h = Harness(PagedFetchResult.End.UNPAGEABLE)
+            val h = Harness(PagedFetchResult.End.UNPAGEABLE, fillsDuringThePage = false)
             try {
                 h.pool.start()
                 val counts = h.countsAfterTheVisit()
@@ -259,12 +274,60 @@ class VisitPoolBackpressureTest {
             // parked consumer can manufacture are ever re-read.
             val h = Harness(PagedFetchResult.End.CLOSED)
             try {
-                h.fillIngest()
                 h.pool.start()
                 val counts = h.countsAfterTheVisit()
                 assertEquals(1L, counts["abortedClosed"])
                 assertEquals(0L, counts["abortedBackpressured"])
-                assertNull(counts["abortedBackpressured"]?.takeIf { it > 0 })
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a queue already full at the claim is not dialled into at all`() =
+        runBlocking {
+            // The cheaper of the two: a download into a queue that cannot take
+            // it would park its first event, stall the socket, and come back
+            // `abortedBackpressured` an idle window later, having cost the
+            // relay a handshake and a REQ for nothing. Skipped like a refused
+            // dial permit — nothing recorded, the revisit brings it back.
+            val h = Harness(PagedFetchResult.End.UNPAGEABLE, fillsDuringThePage = false)
+            try {
+                h.fillIngest()
+                h.pool.start()
+                val counts = h.countsOnce { (it["visitsHeldByIngest"] ?: 0L) >= 1L }
+                assertEquals(0, h.relay.pages.get(), "no REQ went out")
+                assertEquals(0L, counts["visitsRun"])
+                assertEquals(0L, counts["abortedVisits"])
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a producer outside the pool parks the socket just the same`() =
+        runBlocking {
+            // The count lives in the pipeline, so the retraction audit and the
+            // monitor's passes — which hand events to the same queue on the
+            // same sockets — are covered without knowing it. Staged as a
+            // foreign submit tagged with the relay, parked while the page is
+            // out and the walk's own hook never fires.
+            val h = Harness(PagedFetchResult.End.IDLE, handsAnEvent = false, parksAForeignProducer = true)
+            try {
+                h.pool.start()
+                val counts = h.countsAfterTheVisit()
+                assertEquals(
+                    1,
+                    h.ingest.parkedOn(
+                        h.streams
+                            .single()
+                            .urls
+                            .single(),
+                    ),
+                    "the foreign producer is still parked on the relay",
+                )
+                assertEquals(1L, counts["abortedBackpressured"])
+                assertEquals(0L, counts["abortedQuiet"])
             } finally {
                 h.close()
             }
@@ -292,6 +355,7 @@ class VisitPoolBackpressureTest {
         private const val KIND = 1
         private const val HOOK_SETTLE_MS = 300L
         private const val FILL_BASE = 1_000_000
+        private const val FOREIGN = 2_000_000
 
         private fun idOf(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("backpressure-$n".toByteArray()))
 

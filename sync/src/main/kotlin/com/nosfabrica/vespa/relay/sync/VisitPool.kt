@@ -344,7 +344,7 @@ internal class VisitPool(
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
     /**
-     * HOOKS OF OURS SUSPENDED INSIDE THE INGEST QUEUE, per relay — the one
+     * IS A PRODUCER OF OURS PARKED ON THIS RELAY'S SOCKET RIGHT NOW — the one
      * fact that tells a relay's silence apart from our own.
      *
      * Every event a socket carries reaches this pool through quartz's ONE
@@ -369,37 +369,17 @@ internal class VisitPool(
      * (`UnpageableLegLiveProbe`). The monitor was right and the mirror was
      * describing itself in the relay's words.
      *
-     * A count, not a flag, because several hooks on one socket can be parked
-     * at once; and per url rather than per visit because the hook that stalls
-     * a walk is as often a tail's. Read at the one instant it matters — when
-     * a walk comes back refused — by [heldByUs].
+     * The count lives in the pipeline ([IngestPipeline.parkedOn]), not here:
+     * the pool is not the only producer on a shared socket — the retraction
+     * audit and the monitor's passes hand events to the same queue — and a
+     * wrapper each caller had to remember was a stall the classification
+     * could not see. Read at the one instant it matters: when a walk comes
+     * back refused.
      */
-    private val holding = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+    private fun heldByUs(url: NormalizedRelayUrl): Boolean = ingest.parkedOn(url) > 0
 
-    /**
-     * Hand one event to the ingest, counted while the hand-off is suspended.
-     *
-     * Every submit this pool makes goes through here, and that is the
-     * invariant [heldByUs] rests on: a hand-off that bypassed it would be a
-     * stall the classification could not see, filed against the relay again.
-     */
-    private suspend fun handOff(
-        url: NormalizedRelayUrl,
-        event: Event,
-        trusted: Boolean,
-        origin: IngestOrigin,
-    ) {
-        val held = holding.getOrPut(url) { AtomicInteger() }
-        held.incrementAndGet()
-        try {
-            ingest.submit(event, trusted, origin)
-        } finally {
-            held.decrementAndGet()
-        }
-    }
-
-    /** Is one of our hooks suspended on this relay's socket right now? See [holding]. */
-    private fun heldByUs(url: NormalizedRelayUrl): Boolean = (holding[url]?.get() ?: 0) > 0
+    /** Visits not dialled because the ingest queue was full at the claim — see [visit]. */
+    private val visitsHeldByIngest = AtomicLong()
 
     /**
      * ONE ROW'S WORKLOAD, as the pair that must never come apart: the pool a
@@ -820,6 +800,12 @@ internal class VisitPool(
                 Processors.Count("visiting", queue.visiting.toLong()),
                 Processors.Count("liveHeld", tails.size.toLong()),
                 Processors.Count("visitsRun", visitsRun.get()),
+                // …and the visits NOT run because the ingest queue was full at
+                // the claim. Read beside the ingest row's `queued` against its
+                // `capacity`: this climbing is the pool declining to dial into
+                // a store that is not accepting, which is the right thing and
+                // still a mirror standing still.
+                Processors.Count("visitsHeldByIngest", visitsHeldByIngest.get()),
                 // The gauge beside the odometer: audits RUNNING against
                 // auditsRun's total. A deep history's audit holds a worker for
                 // minutes, and without this the only trace was one unit of
@@ -1048,6 +1034,21 @@ internal class VisitPool(
         // authors the retraction consults were computed together.
         val snapshot = currentRoster
         val wanted = asksFor(snapshot, key)
+        // NOT WHILE THE QUEUE IS FULL. A visit is a download, and a download
+        // into a queue that cannot take it does exactly one thing: parks its
+        // first event, stalls the socket for everyone on it, and comes back
+        // `abortedBackpressured` thirty seconds later — one TLS handshake and
+        // one REQ the relay served for nothing, per unit, per revisit, 96 at
+        // a time, for as long as the store is behind (staging: hours). Skipped
+        // rather than queued, exactly as a refused dial permit is: nothing is
+        // recorded, and the revisit timer brings the unit back. The tails
+        // already open stay open — they are the one thing a full queue
+        // should hold, since a tail that is not draining is honest
+        // backpressure and a tail closed is coverage lost.
+        if (ingest.isFull()) {
+            visitsHeldByIngest.incrementAndGet()
+            return
+        }
         // THE DIAL WIDTH, decided BEFORE the socket is claimed — that ordering
         // is what makes a stream's `visitConcurrency` a bound on simultaneous
         // TLS handshakes and not merely on work. A worker refused here returns
@@ -1169,7 +1170,7 @@ internal class VisitPool(
         /**
          * The ending was manufactured by OUR side of the socket — a hook of
          * ours was suspended in the ingest queue when the walk gave up — and
-         * says nothing about the relay. See [holding] for the mechanism and
+         * says nothing about the relay. See [heldByUs] for the mechanism and
          * [VisitAborts.Reason.BACKPRESSURED] for what it is filed under.
          */
         val ours: Boolean = false,
@@ -1326,7 +1327,7 @@ internal class VisitPool(
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    handOff(url, event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
             // READ BEFORE THE REQ GOES OUT, and that ordering is the whole
@@ -1504,7 +1505,7 @@ internal class VisitPool(
                 received++
                 arrived(url, ongoingVisit)
                 if (ask.filter.match(event)) {
-                    handOff(url, event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
         auditsRun.incrementAndGet()
@@ -1685,7 +1686,7 @@ internal class VisitPool(
                     healContent = healContent || ask.stream.healContent
                     healRetractions = healRetractions || ask.stream.healRetractions
                 }
-                if (any) handOff(url, event, allTrusted, IngestOrigin(url, healContent, healRetractions))
+                if (any) ingest.submit(event, allTrusted, IngestOrigin(url, healContent, healRetractions))
             }
         } catch (e: CancellationException) {
             abandon()

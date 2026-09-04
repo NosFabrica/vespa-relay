@@ -1134,6 +1134,16 @@ object StatusVocabulary {
                     "the rotation rate, not beside `roster`.",
             )
             put(
+                "visitsHeldByIngest",
+                "Visits the pool declined to dial because the ingest queue was full at the moment the unit " +
+                    "came up — read beside the ingest processor's `queued` against its `capacity`. A download into " +
+                    "a queue that cannot take it parks its first event, stalls the whole socket for every " +
+                    "subscription on it, and comes back `abortedBackpressured` an idle window later, having cost " +
+                    "the relay a handshake and a REQ for nothing; declining is the cheaper of the two. Nothing is " +
+                    "recorded and the revisit timer brings the unit back, as after a refused dial permit. This " +
+                    "climbing is the pool standing still on purpose, and the number to fix is the store's.",
+            )
+            put(
                 "negentropyRunning",
                 "Negentropy syncs of the past RUNNING right now — the gauge beside `negentropyRuns`'s odometer. A deep history's audit " +
                     "holds its worker for minutes, and without this it was one unit of `visiting` that could " +

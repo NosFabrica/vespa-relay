@@ -72,9 +72,10 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The dedup map is bounded at [MAX_SPOKEN] and stops growing there — past it
  * aborts are still COUNTED, they are just no longer narrated. A roster of
- * thousands times a handful of streams times seven reasons is the real ceiling
- * and sits under it; the bound exists so that a pathological roster costs a
- * quiet log rather than a heap.
+ * hundreds times a handful of streams times eight reasons sits well under it
+ * (staging: 594 relays, two outbox streams); a roster of thousands can reach
+ * it, and the bound exists so that a pathological roster costs a quiet log
+ * rather than a heap.
  */
 internal class VisitAborts(
     /** How long before the same (stream, relay, reason) is worth a line again. */
