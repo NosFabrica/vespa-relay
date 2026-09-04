@@ -321,6 +321,47 @@ answers with its events in final rank order and then EOSE. The earlier
 depth-cut branch (`claude/search-query-performance-myuucz` there) is
 superseded and should be closed unmerged.
 
+## On staging, with the descent on (2026-09-04, after the deploy)
+
+The pin landed (PR #189, deployed 02:11 UTC), the `max_rank` walk finished on
+a later boot (`trust descent: on — max_rank written onto 317595 reputation
+documents`), and the same probe as above, one REQ at a time on one socket,
+`kinds:[1]`, limit 40, the observer's lens:
+
+| word | before (old build) | descent on | control, same socket |
+|---|---:|---:|---|
+| `bitcoin` | 2.7–4.4 s | **8.4–14 s** | `sort:text include:spam` 2.1 s (was 2.3); `sort:recent` 0.8 s (was 0.6) |
+| `nostr` | 16.0 s | **23–29 s** | |
+| `the` | 16.4 s | **19–21 s** | `sort:text include:spam` 8.1 s |
+| `lightning` | 1.5 s | 1.9–2.6 s | |
+| `zap` | 0.9 s | 1.3–1.5 s | |
+| `xylophonist` | 0.3 s | 0.1–0.4 s | |
+
+The controls say the engine is not starved (the sync process was wedged at
+boot with twenty-odd store scans outstanding — see the issue on
+`retireOwnStaleVerdicts` — and text-only and recency reads cost what they
+cost yesterday). Only the shape that descends regressed, by two to three
+times: that is two or three rungs, each costing a full text walk. On this
+cluster (two content nodes, 333M events) Vespa is NOT driving a rung's AND by
+the imported `author_max_rank` range, which is what made a rung cheap on the
+local slice (`the` 154 → 46 ms); it is walking the word's postings and
+filtering, so a rung costs the exact query and the descent pays for two or
+three of them. Which iterator Vespa picks is decided by its estimated hit
+counts per term, and an estimate for a range over an IMPORTED attribute is
+not one the slice could have exercised at staging's cardinalities.
+
+**What to do:** switch the descent off on staging (`VESPA_TRUST_DESCENT=off`,
+store PR #99; the schema, the walk and the upkeep stay, so on again is a
+restart) and take a query trace there — `trace.level=3` on one rung, or the
+relay's `searchTrace` task against staging's Vespa — to see which term drives
+the AND and what the range term's estimate is. If the estimate is the
+problem, the rung can be written to force the range as the driver (Vespa's
+`rank()`/`weakAnd` shaping, or a `filter` annotation on the text term); if the
+imported-range iterator itself is the cost at this scale, the descent should
+stay off until the parent field is replaced by something the child carries.
+Either way this branch's measurement of the descent on the slice stands, and
+its transfer to staging did not.
+
 ## What is NOT the problem
 
 Things measured on the way that are fine and need no change: the WebSocket

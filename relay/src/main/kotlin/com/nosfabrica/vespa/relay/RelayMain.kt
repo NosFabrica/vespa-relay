@@ -335,15 +335,27 @@ fun main() {
     // over the trusted authors' documents — turns itself on once its one-time
     // walk has written `max_rank` onto every reputation document. Until then
     // a common word costs what it always did, so the boot log says when that
-    // ends; a walk that fails leaves the descent off and is reported by the
-    // store's own background-failures line, never as a different page.
+    // ends. The walk retries a refused engine for as long as it takes (the
+    // store counts each refusal on its background-failures line), so the
+    // only way this prints nothing is the store closing first. With the
+    // operator's switch off (VESPA_TRUST_DESCENT, docs/configuration.md) the
+    // walk still runs — it keeps the invariant the descent needs — and the
+    // line says so, because a boot log that reads "on" while every ranked
+    // search takes the full walk is the state the switch exists to name.
     maintenanceScope.launch {
         val written =
             runCatching { store.awaitTrustDescent() }.getOrElse { e ->
-                System.err.println("trust descent: OFF — the max_rank walk failed (${e.message?.take(200)}); ranked search stays on the full walk")
+                System.err.println("trust descent: OFF — the max_rank walk did not finish (${e.message?.take(200)}); ranked search stays on the full walk")
                 return@launch
             }
-        println(if (written > 0) "trust descent: on — max_rank written onto $written reputation documents" else "trust descent: on")
+        val walked = if (written > 0) " — max_rank written onto $written reputation documents" else ""
+        println(
+            if (store.trustDescent) {
+                "trust descent: on$walked"
+            } else {
+                "trust descent: off by ${VespaEventStore.TRUST_DESCENT_ENV}$walked; ranked search takes the full walk"
+            },
+        )
     }
 
     // The relay server measures client reads into it; the sync process polls

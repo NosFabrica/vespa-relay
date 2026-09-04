@@ -312,7 +312,17 @@ fun main() {
                         docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
                     }
             },
-        ).start()
+        )
+    // NOT started yet: the two status sites below bind FIRST. They exist to
+    // say what this process is doing, and a boot that stalls in `start()`
+    // (staging, 2026-09-04: `main` parked for the life of the process behind
+    // a store walk, `:7778` and `:7779` never bound, `/sync/` and `/monitor/`
+    // answering 502 while the log kept printing visits and health lines) is
+    // exactly the state they are for. Everything they read — the bands, the
+    // sweep, the progress maps, the engine's roster and the monitor's
+    // document — exists once the engine is CONSTRUCTED; only the streams and
+    // the passes wait for `start()`, and a page that says "starting" is the
+    // truth a reader needs.
 
     // THIS PROCESS'S OWN UI, on its own port. What the mirror has walked and
     // what it is doing were three JSON files on a shared volume the serving
@@ -389,6 +399,10 @@ fun main() {
     if (monitorSite != null) {
         println("vespa-sync monitor page on http://localhost:$monitorPort/")
     }
+
+    // Now the streams and the passes — with both pages already answering, so
+    // whatever `start()` waits on is visible while it waits.
+    engine.start()
 
     Runtime.getRuntime().addShutdownHook(
         Thread {

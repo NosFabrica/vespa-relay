@@ -340,7 +340,40 @@ quartz = "cecc3287b2"
 # the previous note gives: nothing else in the graph names vespa-eventstore,
 # so there is no conflict to lose. It is written down so the next reader does
 # not take the previous bump's "safe direction" as a property of the pin.
-vespaEventStore = "9f07b0b30a"
+#
+# e0e638d73f = vespa-eventstore main @ 2026-09-04 (PR #99, the descent after
+# its first deploy). THREE THINGS, all learned on staging the day 9f07b0b30a
+# went out: the `max_rank` walk RETRIES a refused engine instead of leaving
+# the descent off for the life of the process (the walk started as Vespa was
+# being OOM-killed and died on its first page); a read the trust projection
+# WRITES FROM — the card fetch under every derivation, the 10040 read under
+# the attribution map — now refuses an answer the engine cannot call full or
+# served short of its count (17k reputation documents were removed by a
+# boot-time recompute derived from a fetch that missed cards; the read path's
+# rounded-100 carve-out is right for a page and wrong for a delete); and
+# `VESPA_TRUST_DESCENT=off`, the operator's switch, because with the descent
+# ON staging's descending shape got SLOWER (`bitcoin` 2.7-4.4s -> 8.4-14s,
+# text-only and recency controls unchanged): on that two-node cluster Vespa
+# walks the word's postings and filters by the imported range instead of
+# driving by it, so each rung costs a full walk. docs/search-latency.md and
+# docs/configuration.md carry both accounts; the boot line in RelayMain now
+# says which way the switch is set, which is the one relay change here.
+#
+# Quartz stays at cecc3287b2: the range 9f07b0b30a..e0e638d73f touches no
+# quartz pin (three commits and their merge).
+#
+# The merge commit e0e638d73f carries the branch head b139c57's tree
+# UNCHANGED (`git diff b139c57 e0e638d73f` is empty; main was its ancestor).
+# Engine 174 and store 343 unit tests ran on b139c57; the integration gate's
+# standing on this pin is recorded below the bump that ran it, if one did.
+#
+# DIRECTION: 9f07b0b30a is a strict ancestor of this (`git merge-base
+# --is-ancestor`).
+#
+# LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
+# replaces — the safe direction, and as the previous two notes say, one that
+# has never been needed: nothing else in the graph names vespa-eventstore.
+vespaEventStore = "e0e638d73f"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
