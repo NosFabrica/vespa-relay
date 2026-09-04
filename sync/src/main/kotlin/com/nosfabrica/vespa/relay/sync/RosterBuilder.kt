@@ -33,135 +33,53 @@ import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * WHAT THE POOL SHOULD BE SYNCING — the roster derivation, apart from the
- * machinery that runs it.
- *
- * One [rebuild] reads every stream's sources out of the store, intersects
- * them with that stream's gate, and answers url → asks. No sockets, ever:
- * everything here is store walks and record reads, which is what makes the
- * derivation testable without a client and keeps [VisitPool] itself a
- * scheduler — the pool calls [rebuild] on its roster clock and owns
- * everything after: queueing, visits, tails, pacing.
+ * What the pool should be syncing. One [rebuild] reads every stream's
+ * sources out of the store, intersects them with the stream's gate, and
+ * answers url → stream → asks. Store walks and record reads only, never a
+ * socket; [VisitPool] calls it on the roster clock and owns everything after.
  */
 internal class RosterBuilder(
     private val store: IEventStore,
-    /** The visit-mode streams — every one of them carrying at least one relaySource. */
+    /** The visit-mode streams, every one carrying at least one relaySource. */
     private val streams: List<SyncStream>,
-    /** For [SyncBands.dropFolded], as the fold is applied to a stream's discovery — see [discovered]. */
     private val bands: SyncBands,
-    /**
-     * The duplicate-url fold, applied READ-ONLY: url → the survivor standing
-     * in for it, over one scan's candidates ([AliasFolding.apply] — standing
-     * verdicts, no sockets). Used for what the legacy cycle did as the fold
-     * took hold: the duplicate out of the dial list, and its stale bands out
-     * of the state file ([SyncBands.dropFolded]) — left in, the coverage
-     * card names a dozen urls of one host as separately walked while one of
-     * them is synced. Defaults to folding nothing: the probes, and a router
-     * with no signer to read verdicts by.
-     */
+    /** The duplicate-url fold, read-only: url → the survivor standing in for it. Folds nothing by default. */
     private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl> = { emptyMap() },
-    /** Urls a static subscription holds — their bands are never dropped, see [SyncBands.dropFolded]. */
+    /** Urls a static subscription holds; their bands are never dropped. See [SyncBands.dropFolded]. */
     private val keepBands: Set<NormalizedRelayUrl> = emptySet(),
     private val tor: TorTransport? = null,
-    /**
-     * The monitor's NIP-77 verdict for the urls this roster ends up holding —
-     * `RelayVerdictRecord.load`'s `speaksNegentropy`, injected the same way
-     * [foldedAway] is, so a router with no signer to read verdicts by (and
-     * every probe) simply learns nothing and every ask keeps trying.
-     */
+    /** The monitor's NIP-77 verdict per url. Empty (every ask keeps trying) for probes and unsigned routers. */
     private val speaksNegentropy: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, Boolean> = { emptyMap() },
 ) {
-    /**
-     * ONE UNIT OF WORK against one relay: the stream asking, and the exact
-     * filter it asks — the stream's own where the source binds nothing, or
-     * the paired narrow where it does (one Ask PER BOUND AUTHOR, fixed:
-     * the tag structure already decided the granularity, and a per-author ask
-     * is what keeps a `(relay, provider)` band valid forever — see the
-     * `asksOf` arithmetic). Bands, catch-ups, audits and tails all key on
-     * this filter, which is why the port is a type change and not an engine.
-     */
+    /** One unit of work against one relay: the stream asking and the exact filter it asks. Bands, audits and tails key on it. */
     internal data class Ask(
         val stream: SyncStream,
         val filter: Filter,
     )
 
-    /**
-     * ONE UNIT'S WHOLE ANSWER: what this stream asks of this relay, and the
-     * IDENTITY of that ask set.
-     *
-     * One class because they are one fact about one unit, and they were two
-     * maps — `asks` and `wants`, both `url → stream → …`, built side by side
-     * in `want()` and required to keep identical key structure by convention
-     * alone. That is the shape this codebase has already been bitten by twice
-     * (a semaphore beside its own size; a default beside its own warning), and
-     * it had drifted here in the mildest possible way: two adjacent numbers on
-     * the status card were counted off different maps, because nothing said
-     * which one was authoritative.
-     */
+    /** What one stream asks of one relay, and the identity of that ask set. */
     internal class UnitAsks(
         val asks: List<Ask>,
         /**
-         * THE IDENTITY OF THIS ASK SET, for change detection across rebuilds:
-         * each ask's filter as JSON — the `toJson` keying [SyncBands] already
-         * trusts.
-         *
-         * A memo, not a second source. quartz's [Filter] compares by
-         * REFERENCE, so two rebuilds deriving the very same roster produce
-         * unequal [Ask]s: comparing those would requeue the whole roster every
-         * tick, and comparing nothing leaves a new ask waiting out the tailed
-         * revisit base for its first catch-up. Serializing on demand instead
-         * would pay a `toJson` per ask per comparison, which is the cost this
-         * exists to avoid.
-         *
-         * The STREAM is not in the strings — it is the map key one level up,
-         * which is what makes one stream's set comparable with its own
-         * predecessor and with nothing else. One set per URL made every
-         * stream's business every other stream's: a scan pairing relay R with
-         * a new provider for `indexers` moved the url's set, so `content`'s
-         * tail on R saw its want list change, dropped its subscription and
-         * re-opened it, losing its live edge for a change it had no part in.
+         * Each ask's filter as JSON, for change detection across rebuilds.
+         * [Filter] compares by reference, so [asks] cannot be compared. The
+         * stream is the map key above, so one stream's set changes for no
+         * other stream's reasons.
          */
         val identity: Set<String>,
     )
 
     /** One rebuild's whole answer. */
     internal class Roster(
-        /**
-         * url → STREAM → that unit's asks and their identity — nested by the
-         * UNIT OF WORK, which is the (relay, stream) pair.
-         *
-         * It was url → asks, and every reader then filtered a list to find its
-         * own stream's: the tail listener did it per EVENT, so a relay three
-         * streams want walked all three streams' asks three times for every
-         * message it delivered. Nested, the same question is two map lookups
-         * and no allocation — which is what `wantedBy` and `asksFor` are.
-         *
-         * `asks.keys` is still the relays, so a count of them is unchanged; a
-         * count of UNITS is the sum of the inner sizes.
-         */
+        /** url → stream → that unit's asks. Nested by the (relay, stream) unit, so a lookup is two reads and no allocation. */
         val asks: Map<NormalizedRelayUrl, Map<String, UnitAsks>>,
-        /**
-         * Per stream: authors found at MORE THAN ONE relay. One relay's empty
-         * answer does not retract what a sibling relay may still be serving,
-         * so the retraction audit never judges their asks — the same rule the
-         * legacy cycle applied, computed on the roster clock.
-         */
+        /** Per stream: authors found at more than one relay. The retraction audit never judges their asks. */
         val sharedAuthors: Map<String, Set<String>>,
-        /**
-         * url → whether the monitor measured it ANSWERING a NEG-OPEN, absent
-         * where nothing measured it. Read off the same signed 30166 records
-         * the gate admits relays by, so the sync plane still decides nothing
-         * about a relay itself — it reads a verdict, exactly as it does for
-         * admission.
-         *
-         * What it decides: which re-check of the past a relay gets. A `false`
-         * here is why an audit is not attempted at all rather than attempted
-         * every six hours against a relay that cannot answer it.
-         */
+        /** url → whether the monitor measured it answering a NEG-OPEN; absent where unmeasured. Decides which re-check of the past a relay gets. */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
     )
 
-    /** One source's discovery, held for its own `refreshSeconds` — a store walk is not a poll. */
+    /** One source's discovery, held for its own `refreshSeconds`. */
     private class ScannedList(
         val expiresAtMs: Long,
         val relays: List<DiscoveredRelay>,
@@ -170,25 +88,11 @@ internal class RosterBuilder(
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
     suspend fun rebuild(): Roster {
-        // Built as the two halves it is assembled from and sealed into
-        // [UnitAsks] at the end — the identity has to be a growing set while
-        // `want()` dedups against it, and a `List<Ask>` is what appends.
+        // Built as two halves and sealed into [UnitAsks] at the end: the identity dedups `want()` while it grows.
         val asksByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableList<Ask>>>()
-        // One identity set per url, reused three ways: it dedups want() by
-        // VALUE (Ask equality degrades to Filter reference equality, so the
-        // old `ask !in wanting` linear-scanned and matched nothing for
-        // freshly built asks), and it IS the per-(url, stream) wants set the
-        // Roster carries out.
         val wantsByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableSet<String>>>()
 
-        // THE IDENTITY OF AN ASK, and the only one: the filter's own JSON —
-        // the `toJson` keying [SyncBands] already trusts. quartz's [Filter]
-        // compares by reference, so two rebuilds deriving the very same roster
-        // produce unequal [Ask]s; comparing those would requeue the whole
-        // roster every tick, and comparing nothing leaves a new ask waiting
-        // out the tailed revisit. The STREAM is not part of the string — it is
-        // the map key one level up, which is what makes one stream's want set
-        // comparable with its own predecessor and with nothing else.
+        // Dedup by the filter's JSON; Ask equality degrades to Filter reference equality.
         fun want(
             url: NormalizedRelayUrl,
             ask: Ask,
@@ -199,14 +103,7 @@ internal class RosterBuilder(
             }
         }
         for (stream in streams) {
-            // A stream's relays come from one of two places and are visited the
-            // same way after that. `urls` are DECLARED — an operator wrote them
-            // in router.conf, which is the same statement a verdict makes about
-            // a discovered one, so they skip discovery, the gate and the fold
-            // and go straight into the roster. Everything downstream of here —
-            // catch-up, the reconcile of the past, the re-fetch, the tail — is
-            // one policy for both, which is the whole point of there being one
-            // engine now.
+            // Declared urls skip discovery, the gate and the fold; everything after is one policy for both.
             for (url in stream.urls) {
                 for (filter in asksOf(stream.filter, DiscoveredRelay(url))) want(url, Ask(stream, filter))
             }
@@ -215,11 +112,7 @@ internal class RosterBuilder(
                 for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))
             }
         }
-        // Shared authors are read off EVERY ask in the built roster. They used
-        // to be counted only in the scan branch, so an author-bound stream
-        // filter fanned to N relays by a verdict source ran its retraction
-        // audits with an empty shared set, and one relay's answer could
-        // retract what its siblings still serve.
+        // Shared authors are read off every ask in the built roster, not only the scan branch.
         val byAuthor = HashMap<String, HashMap<String, MutableSet<NormalizedRelayUrl>>>()
         for ((url, byStream) in asksByUrl) {
             for (ask in byStream.values.flatten()) {
@@ -229,30 +122,18 @@ internal class RosterBuilder(
             }
         }
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
-        // Asked for the urls this roster actually holds, not for the whole
-        // discovered universe: the read is chunked by `#d`, and the fan-out
-        // discovers an order of magnitude more urls than it dials.
+        // Asked for the urls this roster holds, not the whole discovered universe: the read is chunked by `#d`.
         val negentropy =
             try {
                 speaksNegentropy(asksByUrl.keys.toList())
             } catch (e: CancellationException) {
-                // A rebuild cancelled at shutdown is not a store that could not
-                // answer — swallowed here it printed the could-not-read line
-                // during every ordinary stop, which is a wolf cry against the
-                // one line that matters when the store really cannot.
+                // A rebuild cancelled at shutdown is not a store that could not answer.
                 throw e
             } catch (e: Exception) {
-                // The read throws rather than answering partially, and an
-                // unread verdict is UNMEASURED — every ask keeps trying, which
-                // is what this did before it could read one at all. Said out
-                // loud because the alternative reading, "no relay speaks
-                // negentropy", would stop every audit in the router.
+                // An unread verdict is unmeasured, so every ask keeps trying; the opposite reading would stop every audit.
                 System.err.println("router: could not read the NIP-77 verdicts (${e.message?.take(120)}) — audits will try every relay this rebuild")
                 emptyMap()
             }
-        // SEALED HERE, and this is the only place the two halves are ever
-        // apart: past this line a unit's asks and their identity are one
-        // value, so nothing downstream can read one and forget the other.
         val units =
             asksByUrl.mapValues { (url, byStream) ->
                 byStream.mapValues { (stream, asks) -> UnitAsks(asks, wantsByUrl[url]?.get(stream).orEmpty()) }
@@ -260,27 +141,14 @@ internal class RosterBuilder(
         return Roster(asks = units, sharedAuthors = shared, speaksNegentropy = negentropy)
     }
 
-    /**
-     * ONE STREAM'S DIALLABLE RELAYS: everything its sources found, intersected
-     * with what its [RelayDiscoveryConfig.gatedBy] vouches for.
-     *
-     * There is one read path here now. A kind-30166 verdict query used to take
-     * a separate verified read and skip the gate entirely, which made "where
-     * urls come from" and "which urls may be dialled" look like two kinds of
-     * source rather than two questions about every source. Both are ordinary
-     * discovery, and the gate applies to whatever any of them produced.
-     */
+    /** One stream's diallable relays: everything its sources found, intersected with what its `gatedBy` vouches for. */
     private suspend fun permitted(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
     ): List<DiscoveredRelay> {
         val found = discovered(stream, discovery)
         if (discovery.gatedBy.isEmpty()) return found
-        // Cached on the same per-source clock the sources use. It was not, and
-        // a gate is a store read like any other: re-derived every roster tick
-        // it ignored its own `refreshSeconds`, which for a 30166 gate is an
-        // extra indexed query a minute and for one pointed at a curated 10002
-        // list is a corpus walk a minute.
+        // Cached on the same per-source clock the sources use; a gate is a store read like any other.
         val vouched = cached(stream.name, "gate", discovery.gatedBy, discovery).mapTo(HashSet()) { it.url }
         val kept = found.filter { it.url in vouched }
         if (kept.size != found.size) {
@@ -293,38 +161,20 @@ internal class RosterBuilder(
         return kept
     }
 
-    /**
-     * A stream's discovery, cached PER SOURCE for that source's own
-     * `refreshSeconds` — see [RelaySource.refreshSeconds] for why one clock
-     * across a stream cannot be right: a 30166 read is one indexed query and
-     * a 10002 scan walks a corpus, and holding the first behind the second's
-     * six hours would keep a newly-certified relay out of the fan-out for six
-     * hours against a fast lane that verdicts it in two minutes.
-     *
-     * An EMPTY result is cached only briefly: "no lists yet" is the state the
-     * next ingested event ends.
-     */
+    /** A stream's discovery, cached per source for that source's own `refreshSeconds`, with the fold applied. */
     private suspend fun discovered(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
     ): List<DiscoveredRelay> {
         val perSource = cached(stream.name, "source", discovery.sources, discovery)
-        // The fold, applied where the legacy cycle applied it — over the WHOLE
-        // discovered universe, because `dropFolded` diffs against last time
-        // and a url missing from the set un-hides. Called on the scan clock,
-        // never with an increment.
+        // Over the whole discovered universe: `dropFolded` diffs against last time, and a missing url un-hides.
         val all = perSource
         val folded = foldedAway(all.map { it.url }.distinct())
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
         return if (folded.isEmpty()) all else all.filter { it.url !in folded }
     }
 
-    /**
-     * [sources] read out of the store, each held for its own
-     * `refreshSeconds`, unioned. [what] separates a stream's sources from its
-     * gate in the cache — they are different reads on different clocks and a
-     * shared key would serve one the other's answer.
-     */
+    /** [sources] read out of the store, each held for its own `refreshSeconds`. [what] keeps a gate's cache apart from a source's. */
     private suspend fun cached(
         streamName: String,
         what: String,
@@ -337,6 +187,7 @@ internal class RosterBuilder(
             scans[key]?.takeIf { it.expiresAtMs > nowMs }?.relays ?: run {
                 val relays = urlsFound(listOf(source), discovery)
                 val ttl = source.refreshSeconds ?: discovery.refreshSeconds
+                // An empty result is held only briefly: the next ingested event ends "no lists yet".
                 val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else ttl * 1000L
                 scans[key] = ScannedList(nowMs + holdMs, relays)
                 relays
@@ -358,19 +209,11 @@ internal class RosterBuilder(
 
     companion object {
         /**
-         * The ask filters one discovered relay contributes: ONE PER BOUND
-         * AUTHOR, fixed — no knob. The tag structure already decided the
-         * granularity (a `30382:rank` tag pairs one provider with one relay),
-         * and the per-author split is what keeps each `(relay, provider)`
-         * band's filter — and therefore the band — valid forever: a new
-         * provider naming the relay is a new band beside the old ones, never
-         * an invalidation of them. This is `authorsPerLeg = 1` made
-         * structural; every other value of that knob answered a question the
-         * data answers better. A select that binds nothing keeps one ask with
-         * the stream's whole filter; narrow keys other than `authors` ride
-         * along in every split, sorted by the same argument
-         * [DiscoveredRelay.narrowed] sorts — a band is keyed on the filter's
-         * serialized form.
+         * The ask filters one discovered relay contributes: one per bound
+         * author, so a new provider naming the relay is a new band beside the
+         * old ones rather than an invalidation. A relay binding nothing keeps
+         * one ask with the stream's whole filter. Sorted, since a band is
+         * keyed on the filter's serialised form.
          */
         internal fun asksOf(
             base: Filter,

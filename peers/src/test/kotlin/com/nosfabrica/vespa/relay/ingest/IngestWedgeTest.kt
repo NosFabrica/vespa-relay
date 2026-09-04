@@ -37,23 +37,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * **A WEDGED PIPELINE MUST NOT READ AS A BUSY ONE.**
- *
- * The store's query client carries no read or call deadline on purpose, so a
- * request whose response never arrives suspends its caller for the life of the
- * process. Ingest makes three of those per batch — the id probe, the version
- * probe and the write — on eight workers that are the whole of ingest, and in
- * #167 all eight went into one. Nothing here ends that; cutting a pass would
- * discard a batch of good events that nothing re-offers, which is the worse
- * failure. What the router owes instead is an honest account of it, and it did
- * not have one: the queue sat at 8206/8192 and the health line called it
- * backpressure, while a thread dump showed every ingest thread parked in
- * `LinkedBlockingQueue.take` looking idle, because a suspended coroutine has no
- * frame and its pool thread goes back to `take()`.
- *
- * These pin the account: a worker inside a pass is visible from outside the
- * process, and a full queue holding one reads as `wedged` rather than as a
- * mirror going flat out.
+ * A wedged pipeline must not read as a busy one: a worker held inside a pass is
+ * visible from outside the process, and every worker held reads as `wedged`.
  */
 class IngestWedgeTest {
     private val relayUrl = RelayUrlNormalizer.normalize("wss://here.example")
@@ -61,7 +46,7 @@ class IngestWedgeTest {
 
     private fun note(n: Int): Event = signer.sign(1_700_000_000L + n, 1, emptyArray(), "note $n")
 
-    /** Waits for [ready] or fails the test — never a fixed sleep, which is a guess about a loaded CI box. */
+    /** Waits for [ready] or fails the test; never a fixed sleep. */
     private suspend fun settle(
         what: String,
         ready: () -> Boolean,
@@ -87,11 +72,8 @@ class IngestWedgeTest {
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
-            // TEN EVENTS, on a queue that holds thousands. This asserted the
-            // opposite once — that an unfull queue is never a wedge — and it was
-            // encoding how #167 PRESENTED rather than what a wedge is. Behind a
-            // slow upstream every worker can be held with the queue nearly
-            // empty, and the depth test rendered that as "keeping up".
+            // Ten events on a queue that holds thousands: behind a slow upstream
+            // every worker can be held with the queue nearly empty.
             (0 until 10).map { note(it) }.forEach { pipeline.submit(it, skipVerify = true) }
             pipeline.start()
             settle("the worker to enter the wedged pass") { pipeline.inBatch() == 1 }
@@ -116,10 +98,8 @@ class IngestWedgeTest {
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
-            // ONE event for TWO workers: the first takes it and never returns,
-            // the second sits on the channel. That is a pipeline at half
-            // capacity, not a stopped one, and the age of the held pass alone
-            // must never say otherwise.
+            // One event for two workers: the first never returns, the second
+            // sits on the channel. Half capacity is not stopped.
             pipeline.submit(note(0), skipVerify = true)
             pipeline.start()
             settle("one worker to enter the wedged pass") { pipeline.inBatch() == 1 }
@@ -130,7 +110,7 @@ class IngestWedgeTest {
             pipeline.close()
         }
 
-    /** A store whose write suspends forever — the failure this bounds, with nothing else changed. */
+    /** A store whose write suspends forever. */
     private class WedgedStore : IEventStore by NostrSemanticsStore(InMemoryEventIndex(), RelayUrlNormalizer.normalize("wss://here.example")) {
         override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> = awaitCancellation()
     }

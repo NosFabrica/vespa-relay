@@ -34,25 +34,15 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The readers, against responses a real engine actually produced.
- *
- * Every fixture below is verbatim output from Vespa 8.733 answering the exact
- * pipeline named above it, captured from a node running this repo's bundled
- * application package, trimmed to three groups. That provenance is the point:
- * a grouping response is nested, version-shaped, and easy to hand-write into
- * the shape you assumed rather than the one you get — which is how both of the
- * traps these tests pin got written in the first place.
+ * The readers, against grouping responses captured verbatim from Vespa 8.733
+ * running this repo's application package, trimmed to three groups.
  */
 class StatsYqlTest {
     private fun root(json: String) = Json.parseToJsonElement(json).jsonObject
 
     // ---- the two traps ------------------------------------------------------
 
-    /**
-     * `time.date` does not zero-pad, and unpadded dates misorder as text. The
-     * bug this prevents is not a crash: every count stays correct and only the
-     * x-axis is scrambled, which reads as noisy data rather than a defect.
-     */
+    /** `time.date` does not zero-pad, and unpadded dates misorder as text. */
     @Test
     fun `day groups are rekeyed to sortable iso dates`() {
         val groups = StatsYql.topGroups(root(COUNTS_BY_DAY))
@@ -61,14 +51,8 @@ class StatsYqlTest {
     }
 
     /**
-     * The property that matters: sorting the normalized values gives calendar
-     * order, and sorting the raw ones does not.
-     *
-     * The counterexample set is chosen, not incidental. `2025-1-5` beside
-     * `2025-10-9` sorts CORRECTLY as text — `'-'` is below `'0'` — so a test
-     * written around the pair the fixture happens to contain proves nothing.
-     * The values that break are the ones whose digit count differs in the same
-     * position: November before February, the 15th before the 5th.
+     * The fixture's own pair, `2025-1-5` beside `2025-10-9`, happens to sort
+     * correctly as text; the values that break differ in digit count at one position.
      */
     @Test
     fun `unpadded day values are the ones that misorder`() {
@@ -80,7 +64,6 @@ class StatsYqlTest {
         )
     }
 
-    /** Anything that is not `Y-M-D` is dropped rather than charted under a label the axis cannot order. */
     @Test
     fun `a day value that is not a date is refused`() {
         for (bad in listOf("", "2025", "2025-10", "2025-10-09-01", "2025-13-01", "2025-10-32", "x-y-z", "2025--9")) {
@@ -89,12 +72,8 @@ class StatsYqlTest {
     }
 
     /**
-     * The counts pipeline and the distinct-authors pipeline answer in the SAME
-     * shape and mean different things — Vespa collapses the nested list's
-     * aggregate onto the outer group. Nothing in the response distinguishes
-     * them, so this pins the numbers from the two fixtures against each other:
-     * kind 0 has 79 events from 35 authors, and reading either through the
-     * other's reader must not quietly produce the wrong one.
+     * Vespa collapses the nested pubkey list's aggregate onto the outer group,
+     * so both pipelines answer in one shape and only the numbers tell them apart.
      */
     @Test
     fun `documents and distinct authors are the same shape and different numbers`() {
@@ -116,12 +95,7 @@ class StatsYqlTest {
         assertTrue(events.keys == authors.keys && authors.all { (kind, a) -> a < events.getValue(kind) }, "authors cannot exceed their own events")
     }
 
-    /**
-     * The nested-list fallback in [StatsYql.distinctCountOf], for an engine
-     * that stops collapsing. Hand-built rather than captured, because no
-     * version we run answers this way — it exists so an upgrade that changes
-     * the shape degrades to the right number instead of to no column at all.
-     */
+    /** Hand-built, not captured: no version we run answers uncollapsed, but an upgrade that does must still give a number. */
     @Test
     fun `distinct count also reads an uncollapsed nested list`() {
         val nested =
@@ -139,8 +113,7 @@ class StatsYqlTest {
     @Test
     fun `a flat count is read through the group wrapper`() {
         assertEquals(602L, StatsYql.singleCount(root(TOTAL)))
-        // Zero matches is a count of zero, not a missing one — the distinction
-        // a page needs to tell "we hold none of these" from "we did not ask".
+        // Zero matches is a count of zero, not a missing one.
         assertEquals(0L, StatsYql.singleCount(root(EMPTY_MATCH)))
     }
 
@@ -154,16 +127,11 @@ class StatsYqlTest {
         assertTrue(spans.values.all { (first, last) -> first!! <= last!! })
     }
 
-    /**
-     * The group list is found by descending to the shallowest one rather than
-     * by counting levels — Vespa wraps every grouping result in a `group:root:0`
-     * whose depth is not part of any contract we control.
-     */
+    /** Vespa wraps every grouping result in a `group:root:0` whose depth is not a contract. */
     @Test
     fun `the reader does not depend on how deeply vespa wraps the result`() {
         assertEquals(3, StatsYql.topGroups(root(COUNTS_BY_KIND)).size)
 
-        // The same list one wrapper deeper, and one wrapper shallower.
         val leaf = """{"id":"group:long:1","value":"1","fields":{"count()":7}}"""
         val list = """{"id":"grouplist:kind","children":[$leaf]}"""
         for (depth in 0..3) {
@@ -172,26 +140,17 @@ class StatsYqlTest {
             val groups = StatsYql.topGroups(root("""{"id":"toplevel","children":[$node]}"""))
             assertEquals(listOf("1"), groups.map { StatsYql.valueOf(it) }, "wrapped $depth deep")
         }
-        // A response with no grouping at all is empty, not an exception.
         assertEquals(emptyList(), StatsYql.topGroups(root("""{"id":"toplevel","fields":{"totalCount":0}}""")))
     }
 
     /**
-     * The two-level pipeline that turned eight queries into one.
-     *
-     * Its inner list does NOT collapse onto the outer group the way
-     * [StatsYql.distinctAuthorsBy]'s does — the `each()` means there are many
-     * inner values to keep rather than one aggregate to fold up — so the same
-     * response carries an outer group with no `count()` of its own and a nested
-     * list that has one per day. Reading it with the flat reader would find
-     * nothing; reading a flat response with [StatsYql.childGroups] finds nothing
-     * either. This pins both directions.
+     * With an `each()` on the inner level the list does not collapse: the outer
+     * group carries no `count()` of its own and the days sit one level down.
      */
     @Test
     fun `a nested pipeline is read one level down`() {
         val outer = StatsYql.topGroups(root(KIND_BY_DAY))
         assertEquals(listOf("1", "7"), outer.map { StatsYql.valueOf(it) })
-        // The outer group of a nested pipeline carries no aggregate of its own.
         assertNull(StatsYql.aggOf(outer.first(), "count()"))
 
         val perKind =
@@ -206,16 +165,12 @@ class StatsYqlTest {
         assertEquals(mapOf("2026-07-10" to 17L, "2026-07-11" to 16L), perKind["1"])
         assertEquals(mapOf("2026-07-10" to 13L, "2026-07-11" to 8L), perKind["7"])
 
-        // A FLAT response has nothing one level down — the two readers cannot be
-        // swapped and quietly return the other pipeline's numbers.
         assertEquals(emptyList(), StatsYql.childGroups(StatsYql.topGroups(root(COUNTS_BY_KIND)).first()))
     }
 
     @Test
     fun `the nested pipeline keeps an each on the inner level`() {
-        // The `each()` is what distinguishes this from distinctAuthorsBy, whose
-        // inner list has none and therefore collapses. Losing it here would turn
-        // every kind's whole series into a single distinct-day count.
+        // Without the inner `each()` the list collapses, as distinctAuthorsBy's does.
         assertEquals("all(group(kind) each(all(group(time.date(created_at)) each(output(count())))))", StatsYql.nested("kind", StatsYql.DAY))
         assertTrue(!StatsYql.distinctAuthorsBy("kind").contains("each(output(count()))"), "the collapsing shape has no inner each()")
     }
@@ -223,21 +178,14 @@ class StatsYqlTest {
     // ---- the other bucket decoders ------------------------------------------
 
     /**
-     * Week buckets land on Mondays.
-     *
-     * The shift is the whole content of [StatsYql.WEEK]: epoch second 0 is a
-     * THURSDAY, so the un-shifted `created_at / 604800` buckets
-     * Thursday-to-Wednesday — which produces a chart no reader would question
-     * and every reader would misread, because a weekly axis is assumed to start
-     * on Monday. These bucket indices came back from a real node over the
-     * seeded corpus.
+     * Epoch second 0 is a Thursday, so the shift in [StatsYql.WEEK] is what
+     * puts buckets on Mondays. The indices came back from a real node.
      */
     @Test
     fun `week buckets start on monday`() {
         assertEquals("2026-04-06", StatsYql.isoWeekStart("2936"))
         assertEquals("2026-04-13", StatsYql.isoWeekStart("2937"))
         assertEquals("2026-04-20", StatsYql.isoWeekStart("2938"))
-        // Consecutive buckets are exactly seven days apart, and all Mondays.
         for (bucket in 2900..2960) {
             val day = assertNotNull(StatsYql.isoWeekStart(bucket.toString()))
             assertEquals(DayOfWeek.MONDAY, LocalDate.parse(day).dayOfWeek, "bucket $bucket is $day")
@@ -245,74 +193,52 @@ class StatsYqlTest {
         assertEquals(0, StatsYql.WEEK.count { it == '%' }, "the pipeline is a literal expression, not a format string")
     }
 
-    /**
-     * Month buckets decode `year * 12 + month`, and December is the case that
-     * breaks a naive split: `year * 12 + 12` must stay in that year rather than
-     * rolling into January of the next.
-     */
+    /** `year * 12 + month`, where December must stay in its year rather than rolling into January. */
     @Test
     fun `month buckets decode year and month, december included`() {
         assertEquals("2026-04", StatsYql.isoMonth("24316"), "the value a real node returned for April 2026")
         assertEquals("2026-12", StatsYql.isoMonth((2026 * 12 + 12).toString()))
         assertEquals("2027-01", StatsYql.isoMonth((2027 * 12 + 1).toString()))
-        // Consecutive indices are consecutive months, across the year boundary.
         val run: List<String> = (2026 * 12 + 10..2027 * 12 + 2).mapNotNull { StatsYql.isoMonth(it.toString()) }
         assertEquals(listOf("2026-10", "2026-11", "2026-12", "2027-01", "2027-02"), run)
-        // Sortable as text, which is the entire reason for the zero padding.
+        // Sortable as text is the reason for the padding.
         assertEquals(run.sorted(), run)
         for (bad in listOf("", "0", "-5", "x", "1")) assertNull(StatsYql.isoMonth(bad), "must refuse $bad")
     }
 
     /**
-     * The monthly axis is enumerated from a fixed anchor, and every label it
-     * produces has to be one [StatsYql.isoMonth] would produce for the same
-     * month — that agreement is the only thing making the series gapless, since
-     * the rollup fills by matching these strings against the engine's decoded
-     * buckets. A month spelled two ways would not error; it would draw the same
-     * month twice, once at its real height and once at zero.
+     * Every label must be one [StatsYql.isoMonth] would produce: the rollup
+     * fills gaps by matching these strings against decoded buckets, and a month
+     * spelled two ways draws twice.
      */
     @Test
     fun `the month axis runs from the anchor to now, in the format the buckets decode to`() {
         val jan2023 = YearMonth.of(2023, 1)
         val labels = months(jan2023, at("2023-04-17T05:00:00Z"))
         assertEquals(listOf("2023-01", "2023-02", "2023-03", "2023-04"), labels, "the current month is included, whole")
-        // Both ends of the axis, spelled by the decoder the engine's buckets go
-        // through: same string or the fill draws a duplicate bar.
         assertEquals(StatsYql.isoMonth((2023 * 12 + 1).toString()), labels.first())
         assertEquals(StatsYql.isoMonth((2023 * 12 + 4).toString()), labels.last())
         assertEquals(labels.sorted(), labels, "the page sorts on these")
 
-        // Anchored, so the span GROWS rather than sliding: the first label is
-        // the anchor at any `now`, which is the whole point of the change from a
-        // rolling 24-month window.
+        // Anchored, so the span grows rather than sliding.
         val later = months(jan2023, at("2026-08-10T00:00:00Z"))
         assertEquals("2023-01", later.first())
         assertEquals("2026-08", later.last())
         assertEquals(44, later.size, "Jan 2023 through Aug 2026 inclusive")
 
-        // The first instant of the anchor month, UTC — one second earlier is
-        // December, and a window opening there returns a bucket for it.
+        // One second before the anchor month is December, and a window opening there returns a bucket for it.
         val start = StatsYql.startOfMonth(jan2023)
         assertEquals(at("2023-01-01T00:00:00Z"), start)
         assertEquals("2022-12", months(YearMonth.of(2022, 12), start - 1).last())
 
-        // A clock behind the anchor yields no axis rather than counting
-        // backwards — or generating months until the heap goes.
+        // A clock behind the anchor yields no axis, not a backwards one.
         assertEquals(emptyList(), StatsYql.monthSlicesFrom(jan2023, at("2022-12-31T23:59:59Z")))
         assertEquals(listOf("2023-01"), months(jan2023, start))
     }
 
     /**
-     * The series is asked a calendar year at a time, and the slices have to TILE
-     * the span: every month in exactly one slice, every slice's window covering
-     * exactly its own months.
-     *
-     * The failure this pins is silent in both directions and invisible on the
-     * page. A gap between two windows drops whatever was signed in it; an
-     * overlap is worse than double-counting, because a month appearing in two
-     * slices is a month whose DISTINCT AUTHORS cannot be recombined — the same
-     * pubkey posting either side of the seam is one author and would be counted
-     * as two. Either way every bar still draws, at a plausible height.
+     * A gap between windows drops what was signed in it; an overlap puts one
+     * month in two slices, whose distinct authors cannot be recombined.
      */
     @Test
     fun `year slices tile the month span with no gap and no overlap`() {
@@ -321,42 +247,33 @@ class StatsYqlTest {
         assertEquals(listOf(2023, 2024, 2025, 2026), slices.map { it.year })
         assertEquals(44, slices.sumOf { it.months.size })
 
-        // Contiguous to the second: each slice resumes exactly where the last
-        // one stopped, so nothing signed between them is lost.
         slices.zipWithNext { a, b -> assertEquals(a.until + 1, b.since, "${a.year} must hand straight over to ${b.year}") }
         assertEquals(at("2023-01-01T00:00:00Z"), slices.first().since)
-        // The last slice stops at NOW, not at the year's end — the upper bound
-        // that keeps future-dated events out of the newest bar.
+        // The last slice stops at now, which keeps future-dated events out of the newest bar.
         assertEquals(now, slices.last().until)
         assertEquals(at("2026-01-01T00:00:00Z"), slices.last().since)
 
-        // Each window covers precisely the months claimed for it: a month
-        // reported by a slice that did not ask for it would be a bar built from
-        // part of that month.
         for (slice in slices) {
             assertEquals(StatsYql.startOfMonth(YearMonth.parse(slice.months.first())), slice.since)
             assertTrue(slice.months.all { it.startsWith("${slice.year}-") }, "slice ${slice.year} holds ${slice.months}")
             val lastMonthEnds = StatsYql.endOfMonth(YearMonth.parse(slice.months.last()))
             assertTrue(slice.until == lastMonthEnds || slice.until == now, "slice ${slice.year} ends at ${slice.until}")
         }
-        // No month is claimed twice — the invariant the whole cut depends on.
         val all = slices.flatMap { it.months }
         assertEquals(all.size, all.toSet().size)
         assertEquals(all.sorted(), all)
 
-        // A month boundary is exact at both ends, leap years included.
         assertEquals(at("2024-02-29T23:59:59Z"), StatsYql.endOfMonth(YearMonth.of(2024, 2)))
         assertEquals(StatsYql.startOfMonth(YearMonth.of(2024, 3)), StatsYql.endOfMonth(YearMonth.of(2024, 2)) + 1)
         assertEquals(StatsYql.startOfMonth(YearMonth.of(2025, 1)), StatsYql.endOfMonth(YearMonth.of(2024, 12)) + 1)
 
-        // An anchor partway through a year opens its slice at the anchor, not in
-        // January: the first slice is short, and its window says so.
+        // An anchor partway through a year opens its slice at the anchor, not in January.
         val mid = StatsYql.monthSlicesFrom(YearMonth.of(2023, 4), now).first()
         assertEquals(listOf("2023-04", "2023-05", "2023-06", "2023-07", "2023-08", "2023-09", "2023-10", "2023-11", "2023-12"), mid.months)
         assertEquals(at("2023-04-01T00:00:00Z"), mid.since)
     }
 
-    /** The months of every slice, in order — the axis the chart draws. */
+    /** The axis the chart draws: every slice's months, in order. */
     private fun months(
         start: YearMonth,
         nowSeconds: Long,
@@ -364,10 +281,7 @@ class StatsYqlTest {
 
     private fun at(iso: String): Long = Instant.parse(iso).epochSecond
 
-    /**
-     * `tag_index` pairs are `<letter>:<value>`, CASED — so NIP-57's `P` (sender)
-     * and `p` (recipient) are different tags and must not collapse.
-     */
+    /** `tag_index` pairs are cased: NIP-57's `P` (sender) and `p` (recipient) are different tags. */
     @Test
     fun `tag pairs are split by letter, case sensitively`() {
         assertEquals("wss://nos.lol", StatsYql.tagValue("r:wss://nos.lol", 'r'))
@@ -379,13 +293,7 @@ class StatsYqlTest {
         for (bad in listOf("", "r", "r:", "rr:x", ":x")) assertNull(StatsYql.tagValue(bad, 'r'), "must refuse '$bad'")
     }
 
-    /**
-     * The spellings a hand-written relay list carries collapse onto one relay.
-     *
-     * This is what makes the distribution a count of RELAYS. Sorted by count,
-     * a relay split across a trailing slash and a capitalised host sits below
-     * relays it actually outnumbers, and neither row is its real total.
-     */
+    /** What makes the distribution a count of relays rather than of spellings. */
     @Test
     fun `relay urls that name one relay canonicalise to one string`() {
         val canonical = canonicalRelay("wss://nos.lol")
@@ -399,17 +307,8 @@ class StatsYqlTest {
     }
 
     /**
-     * Different relays stay different — the failure mode a normalizer invites
-     * is over-merging, which silently ADDS counts to the wrong row.
-     *
-     * `wss://nos.lol:443` is in here rather than in the merged set above, and
-     * that is Quartz's call, not ours: its normalizer preserves an explicit
-     * port even when it is the scheme's default, and `RelayOnionAuthTest` pins
-     * exactly that ("the normalizer keeps the two strings apart") because a
-     * relay is identified by the url a client dialled and AUTH'd against.
-     * Stripping the port here would be a THIRD identity rule, disagreeing with
-     * the router on the one page that reports what the router sees, to merge a
-     * spelling that is vanishingly rare in real relay lists.
+     * `wss://nos.lol:443` stays distinct: quartz's normalizer keeps an explicit
+     * port, and a relay is identified by the url a client AUTH'd against.
      */
     @Test
     fun `a path, a port and a scheme are not normalised away`() {
@@ -425,13 +324,7 @@ class StatsYqlTest {
         assertEquals(distinct.size, distinct.toSet().size, "these are six different endpoints: $distinct")
     }
 
-    /**
-     * A url the normalizer cannot parse keeps its place in the census.
-     *
-     * The panel says how many relays our lists name; dropping the unparseable
-     * ones would make `total` a count of the well-formed ones under a heading
-     * that claims otherwise.
-     */
+    /** Dropping unparseable urls would make `total` a count of the well-formed ones. */
     @Test
     fun `an unparseable relay url survives as itself`() {
         assertEquals("not a url at all", canonicalRelay("  not a url at all  "))
@@ -444,17 +337,12 @@ class StatsYqlTest {
     fun `every aggregation is unranked, unlimited and unsorted`() {
         val q = StatsYql.query(StatsYql.countsBy("kind"), StatsYql.window(100, 200))
         assertEquals("select * from event where created_at >= 100 and created_at <= 200 limit 0 | all(group(kind) each(output(count())))", q)
-        // `order by` would reintroduce the match phase that UNRANKED exists to
-        // avoid, and a capped match set undercounts silently.
+        // `order by` would reintroduce the match phase that unranked avoids, and a capped match set undercounts silently.
         assertTrue(!q.contains("order by"))
         assertEquals("-1", StatsYql.params["grouping.defaultMaxGroups"])
         assertEquals("-1", StatsYql.params["grouping.defaultMaxHits"])
     }
 
-    /**
-     * The trust section reads a second document type, and the source has to
-     * reach the FROM clause rather than being assumed.
-     */
     @Test
     fun `an aggregation can name the document type it runs over`() {
         assertEquals("select * from event where true limit 0 | ${StatsYql.TOTAL}", StatsYql.query(StatsYql.TOTAL))
@@ -465,28 +353,21 @@ class StatsYqlTest {
     }
 
     /**
-     * Freshness is bounded to the present and the future is counted separately —
-     * the two halves of the same fact.
-     *
      * `created_at` is author-signed, so an unbounded `max(created_at)` reports
-     * the corpus's most optimistically-dated spam and a relay whose mirror died
-     * an hour ago still shows a freshness of "in 74 years". The bound is what
-     * makes the number an answer to "is this relay keeping up".
+     * the most optimistically dated spam rather than whether the mirror keeps up.
      */
     @Test
     fun `freshness excludes the future, and the future is its own question`() {
         assertEquals("created_at <= 500", StatsYql.upTo(500))
         assertEquals("created_at > 500", StatsYql.after(500))
         assertEquals("kind = 1 and created_at <= 500", StatsYql.kindUpTo(1, 500))
-        // The two partition the corpus at the same instant — no event is in
-        // both, none in neither, so a total can be reassembled from the pair.
+        // The two partition the corpus at one instant, so a total can be reassembled from the pair.
         assertTrue(StatsYql.upTo(500).contains("<= 500") && StatsYql.after(500).contains("> 500"))
     }
 
     @Test
     fun `the window is closed at both ends`() {
-        // The upper bound is what keeps one event dated 2100 from opening a
-        // bucket 74 years out and flattening every real bar in the chart.
+        // The upper bound keeps one event dated 2100 from opening a bucket 74 years out.
         assertEquals("created_at >= 10 and created_at <= 20", StatsYql.window(10, 20))
         assertEquals("kind = 1 and created_at >= 10 and created_at <= 20", StatsYql.windowOfKind(1, 10, 20))
     }
@@ -504,7 +385,7 @@ class StatsYqlTest {
         const val COUNTS_BY_KIND =
             """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 602}, "coverage": {"coverage": 100, "documents": 602, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:kind", "relevance": 1.0, "label": "kind", "children": [{"id": "group:long:0", "relevance": 0.0, "value": "0", "fields": {"count()": 79}}, {"id": "group:long:1", "relevance": 0.0, "value": "1", "fields": {"count()": 83}}, {"id": "group:long:3", "relevance": 0.0, "value": "3", "fields": {"count()": 65}}]}]}]}"""
 
-        // Vespa 8.733, `all(group(kind) each(all(group(pubkey) output(count()))))` — note the collapse.
+        // Vespa 8.733, `all(group(kind) each(all(group(pubkey) output(count()))))`, collapsed onto the kind.
         const val DISTINCT_AUTHORS_BY_KIND =
             """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 602}, "coverage": {"coverage": 100, "documents": 602, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:kind", "relevance": 1.0, "label": "kind", "children": [{"id": "group:long:0", "relevance": 0.0, "value": "0", "fields": {"count()": 35}}, {"id": "group:long:1", "relevance": 0.0, "value": "1", "fields": {"count()": 36}}, {"id": "group:long:3", "relevance": 0.0, "value": "3", "fields": {"count()": 33}}]}]}]}"""
 
@@ -518,7 +399,7 @@ class StatsYqlTest {
             """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 721}, "coverage": {"coverage": 100, "documents": 1500, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:kind", "relevance": 1.0, "label": "kind", "children": [{"id": "group:long:1", "relevance": 0.0, "value": "1", "children": [{"id": "grouplist:time.date(created_at)", "relevance": 1.0, "label": "time.date(created_at)", "children": [{"id": "group:string:2026-7-10", "relevance": 0.0, "value": "2026-7-10", "fields": {"count()": 17}}, {"id": "group:string:2026-7-11", "relevance": 0.0, "value": "2026-7-11", "fields": {"count()": 16}}]}]}, {"id": "group:long:7", "relevance": 0.0, "value": "7", "children": [{"id": "grouplist:time.date(created_at)", "relevance": 1.0, "label": "time.date(created_at)", "children": [{"id": "group:string:2026-7-10", "relevance": 0.0, "value": "2026-7-10", "fields": {"count()": 13}}, {"id": "group:string:2026-7-11", "relevance": 0.0, "value": "2026-7-11", "fields": {"count()": 8}}]}]}]}]}]}"""
 
         // Vespa 8.733, `all(group(time.date(created_at)) each(output(count())))` over two
-        // documents nine months apart — the unpadded values, exactly as returned.
+        // documents nine months apart; the unpadded values, exactly as returned.
         const val COUNTS_BY_DAY =
             """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 2}, "coverage": {"coverage": 100, "documents": 602, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:time.date(created_at)", "relevance": 1.0, "label": "time.date(created_at)", "children": [{"id": "group:string:2025-1-5", "relevance": 0.0, "value": "2025-1-5", "fields": {"count()": 1}}, {"id": "group:string:2025-10-9", "relevance": 0.0, "value": "2025-10-9", "fields": {"count()": 1}}]}]}]}"""
     }

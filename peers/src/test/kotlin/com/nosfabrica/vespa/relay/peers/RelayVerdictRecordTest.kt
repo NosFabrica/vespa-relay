@@ -38,16 +38,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * One relay url, one kind-30166 address, two writers.
- *
- * NIP-66's relay record is ADDRESSABLE on `d` = the relay url, so the passive
- * monitor (which updates a record every time a connection is opened or used)
- * and the fold (which adds what a probe proved) are aiming at the same slot.
- * A writer that rebuilds the record from only its own tags silently erases the
- * other's, and the loss is invisible: the event is still there, still signed,
- * still parses.
- *
- * These tests hold the merge from both directions.
+ * The kind-30166 record is addressable on the relay url, so the monitor and the
+ * fold write the same slot; every edit must keep the other writer's tags.
  */
 class RelayVerdictRecordTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -81,10 +73,7 @@ class RelayVerdictRecordTest {
             val monitor = RelayReachabilityStore(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
-            // The monitor sees this url again — an ordinary dial, on the passive
-            // path that runs every time a connection opens. It rewrites the same
-            // address, and the only thing keeping our verdict alive is that it
-            // edits rather than rebuilds.
+            // The passive path, run every time a connection opens: it rewrites the same address.
             monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds() + 1)
 
             val after = tagNames(recordFor(store, alias.url))
@@ -92,18 +81,14 @@ class RelayVerdictRecordTest {
                 RelayVerdictRecord.SAME_AS_TAG in after,
                 "the monitor erased the fold's verdict: left $after",
             )
-            // And it did write what it came to write, so this is a merge rather
-            // than a monitor that gave up on the record.
             assertTrue("rtt-open" in after, "the monitor recorded nothing: left $after")
         }
 
     @Test
     fun `a cleared url reads back as cleared, not as a fold onto itself`() =
         runBlocking {
-            // The self-form: `same-as` pointing at the record's own url. It has
-            // to come back in `distinct` and never in `aliases`, or the fan-out
-            // would resolve the url to itself through a verdict and the whole
-            // point — not re-probing it — would be lost.
+            // The self-form, `same-as` pointing at the record's own url, must never
+            // come back in `aliases`: the fan-out would resolve the url to itself.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
 
@@ -117,11 +102,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `the two forms are told apart after normalisation, not by string`() =
         runBlocking {
-            // `wss://nos.lol` and `wss://nos.lol/` are one url and the store
-            // holds whichever the normalizer produced. Comparing the raw strings
-            // would read a cleared verdict as a fold of a url onto itself, which
-            // `RelayAliases.adopt` silently drops — leaving the url unmeasured
-            // and re-probed every pass, the exact bug this half exists to fix.
+            // `wss://nos.lol` and `wss://nos.lol/` are one url. Compared as strings a
+            // cleared verdict reads as a fold onto itself, which `RelayAliases.adopt` drops.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val unslashed = RelayUrlNormalizer.normalize("wss://nos.lol")
@@ -134,10 +116,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `clearing a url replaces an earlier fold on the same address`() =
         runBlocking {
-            // A host that split one endpoint into two real relays: the url used
-            // to be a duplicate and is not any more. One owned tag name means
-            // the newer verdict replaces the older rather than sitting beside it
-            // and contradicting it.
+            // A host that split one endpoint into two real relays: one owned tag
+            // name means the newer verdict replaces the older rather than contradicting it.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
 
@@ -206,9 +186,7 @@ class RelayVerdictRecordTest {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
-            // A record stamped well into the future — a peer's clock, or simply
-            // two writers inside the same second. `now` alone would be rejected
-            // as older and the edit would vanish into a caught exception.
+            // A record stamped in the future: a peer's clock, or two writers inside one second.
             monitor.recordProbed(mapOf(alias to 99L), emptySet(), nowSeconds() + 3_600)
 
             val written = record.publish(alias, canonical, sampled = 500, shared = 500)
@@ -229,7 +207,6 @@ class RelayVerdictRecordTest {
             record.publish(alias, canonical, sampled = 500, shared = 500)
             record.publish(alias, canonical, sampled = 500, shared = 499)
 
-            // Two edits later, everything the other writer put there is intact.
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(after.containsAll(theirs), "an edit dropped $theirs, leaving $after")
         }
@@ -237,12 +214,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `the fitness writer owns its own label namespace and nobody else's`() =
         runBlocking {
-            // `l` IS SHARED GROUND — nostr.watch labels the same relay with its
-            // country, ISP and ASN, all on `l` — which is the whole reason
-            // ownership here is a predicate over the NAMESPACE rather than the
-            // tag name. Owning the name would delete every other labeller's
-            // work on each sweep, which is the mistake this record type exists
-            // to make impossible.
+            // `l` is shared ground (nostr.watch labels country, ISP and ASN on it), so
+            // ownership is a predicate over the namespace, not the tag name.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             store.insert(
@@ -279,12 +252,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `the NIP-77 measurement reads back, and an unmeasured relay is not a no`(): Unit =
         runBlocking {
-            // The pass has always published this; the sync plane reads it now,
-            // and what it decides is whether an ask is reconciled or re-fetched.
-            // Three states, and the third is the one worth a test: a url NOBODY
-            // measured must not read as "does not speak negentropy", or the
-            // router would give up NIP-77 for every relay a monitor has not
-            // reached yet.
+            // A url nobody measured must not read as a refusal, or the router gives
+            // up NIP-77 for every relay the monitor has not reached yet.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
@@ -300,9 +269,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `a label carrying no namespace is dropped rather than carried forever`() =
         runBlocking {
-            // Nobody can attribute it — not us, not the monitor that wrote it —
-            // so there is no writer it could be taken from, and leaving it
-            // costs a tag on the record for the life of the address.
+            // Nobody can attribute it, so there is no writer it could be taken from.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             store.insert(
@@ -326,10 +293,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `the measured facts are replaced on every pass, not accumulated`() =
         runBlocking {
-            // The residue this is written against: `n` and `rtt-open` written
-            // by a passive monitor that no longer exists, carried forward by
-            // every edit since, and drawn on the stats panel as current
-            // readings of a socket nobody had opened in months.
+            // Carried forward by every edit, a stale `rtt-open` draws on the stats
+            // panel as a current reading of a socket nobody has opened in months.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(
@@ -342,8 +307,7 @@ class RelayVerdictRecordTest {
             )
             assertEquals("40", recordFor(store, alias.url)!!.tags.single { it[0] == "rtt-open" }[1])
 
-            // A pass that learned nothing must CLEAR them rather than leave the
-            // old reading standing beside a new verdict.
+            // A pass that learned nothing clears them rather than leaving the old reading beside a new verdict.
             record.publishFitness(alias, "dead", "no TCP answer", pageable = null, nip77 = null)
             val names = tagNames(recordFor(store, alias.url))
             for (gone in listOf("rtt-open", "s", "n")) {
@@ -354,9 +318,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `the grade carries its clock and rules one place right of the fold's`() =
         runBlocking {
-            // NIP-32 spends index 2 on the namespace, so the house shape sits
-            // at 3/4/5 here and 2/3/4 on `same-as`. A reader using the fold's
-            // offsets would date every grade by its own evidence string.
+            // NIP-32 spends index 2 on the namespace, so the house shape sits at 3/4/5 here and 2/3/4 on `same-as`.
             val store = newStore()
             RelayVerdictRecord(store, signer)
                 .publishFitness(alias, "prime", "answered 20 events", pageable = null, nip77 = null)
@@ -382,25 +344,15 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict still reads as CURRENT after the other writers have edited the record`() =
         runBlocking {
-            // The tag-name check two tests up is not enough, and the gap it
-            // leaves is the one that would hurt most. Expiry now lives in the
-            // tag's 4th and 5th elements, and every other writer on this
-            // address — quartz's passive monitor, our own stability pass —
-            // carries our tag forward by copying it. If any of them rebuilt it
-            // at a fixed arity, the tag would survive with its NAME and lose its
-            // clock and its rules version, which reads as a stale verdict: the
-            // url would be re-fingerprinted every pass, forever, while the
-            // record on screen looked perfectly healthy.
-            //
-            // So this asserts what `load` DECIDES, not what the tags are called.
+            // Other writers carry the tag forward by copying it, so this asserts what
+            // `load` decides, not what the tags are called.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
             monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds() + 1)
-            // And an edit of ours that owns the OTHER tag, which carries this
-            // one forward the same way.
+            // An edit of ours that owns the other tag, which carries this one forward the same way.
             record.publishConsistency(alias, consistent = true, first = 500, second = 500, shared = 500, score = 1.0, anchorDays = 7)
 
             val held = record.load(listOf(alias))
@@ -415,16 +367,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict measured under superseded rules is no verdict at all`() =
         runBlocking {
-            // The forcing lever, and the only one that works on records already
-            // signed. The fold's rules have changed repeatedly — comparing a
-            // host's urls to each other rather than only to whichever one led is
-            // the largest of them — and a record from before such a change is
-            // not an old reading of today's rule, it is a reading of a different
-            // rule. Waiting out the TTL does not make it agree; it only means a
-            // month of applying conclusions we would no longer draw.
-            //
-            // Written HERE with a fresh measured-at, so nothing but the epoch can
-            // be what makes it stale.
+            // A record from before a rules change is a reading of a different rule, and
+            // the TTL cannot make it agree. Fresh measured-at, so only the epoch can make it stale.
             val store = newStore()
             store.insert(
                 signer.sign(
@@ -452,13 +396,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict written before the epoch existed is re-measured, not trusted forever`() =
         runBlocking {
-            // Every record signed before this element existed, which on a live
-            // store is all of them. They carry no measured-at either, and THAT is
-            // the trap: the reader used to fall back to the event's clock, which
-            // quartz's monitor rewrites every time we connect — so a verdict on
-            // any relay still in the fan-out could never age out under any TTL.
-            // Measure once, trust forever, with no way to force otherwise short
-            // of deleting records.
+            // Pre-epoch records carry no measured-at either. Falling back to the event's
+            // clock, which the monitor rewrites on every connect, made them never age out.
             val store = newStore()
             store.insert(
                 signer.sign(
@@ -475,11 +414,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `what this build publishes reads back as current`() =
         runBlocking {
-            // The other half of the two above: the epoch check must reject the
-            // past and nothing else. A constant that disagreed with the writer —
-            // bumped on one side of the file only — would silently re-probe the
-            // entire fan-out every pass and never converge, and every test here
-            // that goes through `publish` would still pass.
+            // The epoch check must reject the past and nothing else: a constant bumped on
+            // the writer's side only would re-probe the whole fan-out every pass and never converge.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publish(alias, canonical, sampled = 500, shared = 498)

@@ -36,30 +36,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * WHICH queries each cadence asks — the claim the two-tier document rests on.
- *
- * The split in [StatsTier] is an argument about cost: the counters run about
- * once a minute, so nothing whose cost scales with the corpus may be in them.
- * Against a real Vespa that claim is only checkable with a 90M-document corpus
- * and a stopwatch, and it fails silently — a pipeline that drifts into the fast
- * tier does not break a chart, it just runs fifteen times more often than it can
- * afford, until an engine falls over. Against [StatsQueries] it is an assertion
- * over a recorded list, which is why that seam exists.
- *
- * The engine's responses here are the ones [StatsYqlTest] captured from Vespa
- * 8.733, and the fake is deliberately loose about which one it hands back: these
- * tests are about the questions, not the answers. The one place an answer matters
- * is `newestEvent`, which is the single number that crosses the tier boundary.
+ * Which queries each cadence of [StatsTier] asks. Against [StatsQueries] that
+ * is an assertion over a recorded list, and the fake is loose about the answers.
  */
 class StatsRollupTest {
     /**
-     * Every question asked of the engine, in order.
-     *
-     * [spans] is the only answer any test varies, because it is the only one a
-     * test's conclusion depends on: `spanBy(kind)` over a window is how the
-     * counters tier finds the newest event, and an EMPTY answer there is a
-     * mirror that has published nothing lately — the case the carry-forward
-     * exists for.
+     * Every question asked of the engine, in order. [spans] is the one answer a
+     * test varies: an empty one is a mirror that has published nothing lately.
      */
     private class FakeQueries(
         private val spans: String = SPAN_BY_KIND,
@@ -92,8 +75,7 @@ class StatsRollupTest {
 
                     pipeline == StatsYql.nested("kind", StatsYql.DAY) -> COUNTS_BY_KIND
 
-                    // Every bucketed series comes back in one shape and these
-                    // tests do not read the buckets — see the class KDoc.
+                    // Nothing here reads buckets, so every bucketed series shares one shape.
                     else -> COUNTS_BY_DAY
                 }
             return Json.parseToJsonElement(body).jsonObject
@@ -102,37 +84,15 @@ class StatsRollupTest {
 
     private fun rollup(queries: FakeQueries) = StatsRollup(queries, relayUrl = "wss://relay.example", nowSeconds = { NOW })
 
-    /**
-     * The members that are the document's envelope rather than one of its
-     * sections.
-     *
-     * `title` and `counted` joined it when one markup file started serving all
-     * three services: the heading, the tab and the line about what the numbers
-     * cover cannot be in the page any more, because the page does not know
-     * which service is serving it. They describe the document, so they are
-     * envelope — a section is a thing a panel reads.
-     */
+    /** The members that describe the document rather than being a section a panel reads. */
     private fun sectionsOf(doc: JsonObject) = doc.keys - setOf("schema", "relay", "title", "generatedAt", "scope", "counted", "countedAs", "timezone", "tiers")
 
     // ---- the tiering itself -------------------------------------------------
 
     /**
-     * The counters may only ask questions whose cost is bounded by something
-     * other than the corpus.
-     *
-     * Stated as an invariant over the pipelines rather than as a list of the
-     * queries we happen to make today, because the failure this guards against
-     * is a NEW query landing in the fast tier. Four shapes are the expensive
-     * ones, and all four are recognisable in the YQL:
-     *
-     *  - `group(pubkey)` with no `kind` filter materialises the store's whole
-     *    distinct-pubkey set
-     *  - a grouping nested inside `each(...)` materialises one such set per
-     *    bucket — the shape that OOMKilled this engine twice
-     *  - `tag_index` emits every tag pair on every matched document
-     *  - a grouping bounded ONLY by a populous `kind` — see [SELECTIVE_KINDS]
-     *
-     * …and a bucketed grouping is only affordable over a window.
+     * An invariant over the pipelines rather than a list of today's queries, so
+     * a new query landing in the fast tier fails here. Each expensive shape is
+     * recognisable in the YQL; [SELECTIVE_KINDS] covers the kind-bounded one.
      */
     @Test
     fun `the counters tier asks nothing whose cost scales with the corpus`() {
@@ -144,8 +104,7 @@ class StatsRollupTest {
             for ((pipeline, where, _) in queries.asked) {
                 assertFalse(pipeline.contains(StatsYql.TAG), "tag_index is a per-tag emission, not a counter: `$pipeline`")
                 assertFalse(pipeline.contains("each(all(group("), "a set per bucket is the shape that OOMs: `$pipeline`")
-                // A count() needs no bound at all: it does not materialise what
-                // it counts. Everything that GROUPS does.
+                // A count() materialises nothing; everything that groups does.
                 if (!pipeline.startsWith("all(group(")) continue
                 val windowed = where.contains("created_at >=")
                 val kinds = KIND_FILTER.findAll(where).map { it.groupValues[1].toInt() }.toSet()
@@ -160,7 +119,6 @@ class StatsRollupTest {
         }
     }
 
-    /** …and the expensive shapes are all still asked, on the slow cadence. */
     @Test
     fun `the charts tier is where the corpus-wide groupings live`() {
         runBlocking {
@@ -182,15 +140,7 @@ class StatsRollupTest {
         }
     }
 
-    /**
-     * The two tiers partition the document: no member is computed twice, and
-     * none is left with nobody to compute it.
-     *
-     * A member owned by neither tier would simply never appear — a panel that
-     * reads "not in this document" forever, with nothing failing anywhere to say
-     * why. A member owned by both would be written by two cadences, which is the
-     * contradiction the split exists to avoid.
-     */
+    /** A member owned by neither tier never appears; one owned by both is written by two cadences. */
     @Test
     fun `every section belongs to exactly one tier`() {
         runBlocking {
@@ -198,11 +148,8 @@ class StatsRollupTest {
             val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
 
             assertEquals(emptySet(), StatsTier.COUNTERS.sections intersect StatsTier.CHARTS.sections)
-            // What each tier PUBLISHED is what it declares it owns — `sync`
-            // excepted, which is absent with no router files to read. The
-            // declaration is what StatsSnapshot removes stale members by, so a
-            // tier that quietly publishes outside it would leave sections
-            // nobody ever clears.
+            // `sync` is absent with no router files to read. The declaration is what
+            // StatsSnapshot clears stale members by, so publishing outside it leaves sections nobody clears.
             assertEquals(StatsTier.COUNTERS.sections - "sync", sectionsOf(counters))
             assertEquals(StatsTier.CHARTS.sections, sectionsOf(charts))
             for (member in sectionsOf(counters) + sectionsOf(charts)) {
@@ -214,13 +161,7 @@ class StatsRollupTest {
         }
     }
 
-    /**
-     * Each pass says which cadence it is, when it ran, and what it produced.
-     *
-     * The `sections` list is the published set rather than the owned one: a list
-     * naming `sync` on a relay with no router reads as a section that failed
-     * silently, which is the opposite of what an absent one means.
-     */
+    /** The `sections` list is the published set, not the owned one: naming an absent `sync` reads as a silent failure. */
     @Test
     fun `a pass states its own cadence`() {
         runBlocking {
@@ -232,20 +173,12 @@ class StatsRollupTest {
             assertNotNull(tier["tookMs"])
             assertEquals(sectionsOf(doc).toList().sorted(), tier["sections"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted())
             assertNull(doc["tiers"]!!.jsonObject["charts"], "a pass claims nothing about the other half of the document")
-            // Dropped at schema 2: a document computed in two passes has no one
-            // duration, and `tiers.<name>.tookMs` is where each pass states its own.
+            // A document computed in two passes has no one duration; each pass states its own in `tiers.<name>.tookMs`.
             assertNull(doc["tookMs"])
         }
     }
 
-    /**
-     * The counters carry the totals; the expensive counters are elsewhere.
-     *
-     * `pubkeys` and `kinds` used to sit in `corpus`. Both had to leave — a
-     * section carries one `generatedAt` for all of its members, so a number
-     * refreshed on the slow cadence inside a section stamped seconds ago is a
-     * section that lies about half of itself.
-     */
+    /** A section carries one `generatedAt` for all its members, so a slow-cadence number cannot sit in a fast-cadence section. */
     @Test
     fun `the corpus section is the cheap half of what it used to be`() {
         runBlocking {
@@ -265,14 +198,7 @@ class StatsRollupTest {
 
     // ---- the one number that crosses the boundary ----------------------------
 
-    /**
-     * Freshness is asked for over a WINDOW, which is what makes it affordable
-     * every minute.
-     *
-     * The same `spanBy(kind)` pipeline the kinds histogram uses, bounded at both
-     * ends: the match set is a couple of days of events instead of the store, and
-     * the answer is identical whenever the mirror is publishing at all.
-     */
+    /** The histogram's `spanBy(kind)`, bounded at both ends so the match set is days rather than the store. */
     @Test
     fun `the newest event is asked for over days, not over the store`() {
         runBlocking {
@@ -285,13 +211,8 @@ class StatsRollupTest {
     }
 
     /**
-     * A quiet window does not retract a freshness this relay has already
-     * reported.
-     *
-     * `newestEvent` is an absolute timestamp, so carrying it forward is not a
-     * stale number — it is exactly as true as when it was taken. Both places the
-     * previous document may hold it are read, and the answer is the MAXIMUM of
-     * those and the fresh window, so the tile only ever moves forward.
+     * `newestEvent` is an absolute timestamp, so the maximum of the previous
+     * document's two copies and the fresh window is as true as when it was taken.
      */
     @Test
     fun `the newest event survives a quiet window and never goes backwards`() {
@@ -302,34 +223,22 @@ class StatsRollupTest {
                 "nothing measured and nothing known is an absent number, not a zero",
             )
 
-            // The counters tier's own last answer.
             val carried = quiet.compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_900_000_000L))
             assertEquals(1_900_000_000L, carried.newestEvent())
 
-            // The charts tier's per-kind spans, which are the authoritative
-            // whole-corpus maximum and the only thing present before the first
-            // counters pass has published anything.
+            // The charts tier's per-kind spans are all that exists before the first counters pass.
             val fromKinds = quiet.compute(StatsTier.COUNTERS, previousWith(kindsLastSeen = 1_800_000_000L))
             assertEquals(1_800_000_000L, fromKinds.newestEvent())
 
-            // A fresh window beats an older carry…
+            // A fresh window beats an older carry and loses to a newer one.
             assertEquals(1_754_581_422L, rollup(FakeQueries()).compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_700_000_000L)).newestEvent())
-            // …and loses to a newer one rather than winding the tile back.
             assertEquals(1_900_000_000L, rollup(FakeQueries()).compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_900_000_000L)).newestEvent())
         }
     }
 
     // ---- what a failure costs ------------------------------------------------
 
-    /**
-     * A refused query costs its own number, is named, and is TIMED.
-     *
-     * The timing is the part that is new and the reason it is published at all:
-     * which queries can afford the fast cadence is a measurement, not a
-     * deduction, and a corpus twice this size moves the boundary. A failure is
-     * timed too — a query that took a minute to be refused is a different
-     * problem from one refused instantly.
-     */
+    /** Which queries can afford the fast cadence is a measurement, and a slow refusal is its own problem. */
     @Test
     fun `every query is timed, including the ones that fail`() {
         runBlocking {
@@ -344,7 +253,6 @@ class StatsRollupTest {
         }
     }
 
-    /** A relay with no router has no sync section — and does not claim one. */
     @Test
     fun `a serve-only relay publishes no sync section`() {
         runBlocking {
@@ -402,28 +310,18 @@ class StatsRollupTest {
     }
 
     private companion object {
-        /** A fixed clock, so a window is an exact string a test can assert. */
         const val NOW = 1_800_000_000L
 
-        /** Every `kind = N` a WHERE clause pins. */
         val KIND_FILTER = Regex("""kind = (\d+)""")
 
         /**
-         * The kinds a counters query may lean on as its only bound.
-         *
-         * A CLAIM ABOUT POPULATIONS, which is what makes it worth pinning here.
-         * A `kind` filter bounds the group set — `group(pubkey)` over kind 30382
-         * returns the few services that publish scores — but it does not bound
-         * the walk, and the engine still touches every matching document. That is
-         * fine for the NIP-85 kinds, which run to thousands of events on a real
-         * mirror, and is not fine for kind 9735: a mirror holds millions of zap
-         * receipts, which is why `zaps` sits with the charts despite being three
-         * counts. A new fast-tier query filtered on kind 1 would look exactly as
-         * bounded as these and cost a full pass.
+         * The kinds a counters query may lean on as its only bound. A kind
+         * filter bounds the group set, not the walk, so only sparse kinds
+         * qualify; kind 9735 does not, which is why `zaps` sits with the charts.
          */
         val SELECTIVE_KINDS = setOf(10040, 30382)
 
-        // Vespa 8.733 — the same captures StatsYqlTest asserts the readers against.
+        // Vespa 8.733, the captures StatsYqlTest asserts the readers against.
         const val TOTAL =
             """{"id":"toplevel","fields":{"totalCount":602},"children":[{"id":"group:root:0","fields":{"count()":602}}]}"""
         const val DISTINCT =

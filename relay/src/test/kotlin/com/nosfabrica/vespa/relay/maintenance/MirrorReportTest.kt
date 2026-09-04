@@ -34,13 +34,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The router's manifest, as `/stats.json` publishes it.
- *
- * What is being pinned is a DENOMINATOR: a client scopes its NIP-45 COUNT to
- * `mirrors.kinds`, so a kind that goes missing here silently shrinks somebody
- * else's total, and a kind that appears here without being mirrored inflates it
- * — which is the 31,118-of-89,485 bug this exists to end, in the other
- * direction.
+ * The router's manifest as `/stats.json` publishes it: the denominator a
+ * client scopes its NIP-45 COUNT to.
  */
 class MirrorReportTest {
     /** A manifest in the shape `SyncManifest` writes, built rather than pasted. */
@@ -90,7 +85,6 @@ class MirrorReportTest {
         assertEquals(1_800_000_000L, doc?.get("writtenAt")?.jsonPrimitive?.longOrNull)
     }
 
-    /** A push stream holds nothing here, so its kinds are not in the set — but it is still named. */
     @Test
     fun `an up stream contributes no kinds and is still published`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("push", dir = "up", kinds = "[62]")))
@@ -104,12 +98,7 @@ class MirrorReportTest {
         assertEquals(listOf(1, 62), kindsOf(MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("heal", dir = "both", kinds = "[62]")))))
     }
 
-    /**
-     * The case a partial union would answer WRONGLY. A stream with no kind bound
-     * mirrors whatever its relays serve, so no list is the set — and a client
-     * scoping a COUNT to a union taken over the other streams would under-count
-     * the denominator it came here to fix.
-     */
+    /** A stream with no kind bound mirrors whatever its relays serve, so a union over the others would under-count. */
     @Test
     fun `an unbounded stream suppresses the list rather than shrinking it`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("everything")))
@@ -142,11 +131,7 @@ class MirrorReportTest {
         assertEquals(listOf(1), kindsOf(MirrorReport.build(manifest(stream("content", dir = null, kinds = "[1]")))))
     }
 
-    /**
-     * A `kinds` member this build cannot read is a bound it failed to parse, not
-     * the absence of one: the stream contributes nothing, and the document does
-     * not claim the mirror holds every kind on the strength of a typo.
-     */
+    /** A `kinds` member that cannot be read is a bound that failed to parse, not the absence of one. */
     @Test
     fun `an unreadable kinds member neither widens nor is invented`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("broken", kinds = "\"0,1\"")))
@@ -163,12 +148,9 @@ class MirrorReportTest {
     }
 
     /**
-     * The seam. Every other fixture here is this test's own idea of what the
-     * router writes; this one is CAPTURED — the exact bytes `SyncManifest` put
-     * on disk for a three-stream config, pasted verbatim. The two halves live in
-     * different modules and cannot import each other, so a rename on the writing
-     * side is otherwise a change that passes both test suites and publishes an
-     * empty set. Re-capture it, do not hand-edit it, if the format moves.
+     * The exact bytes `SyncManifest` wrote for a three-stream config. The two
+     * halves live in modules that cannot import each other, so a rename on the
+     * writing side otherwise passes both suites. Re-capture, do not hand-edit.
      */
     @Test
     fun `a manifest the router actually wrote reads back whole`() {
@@ -225,14 +207,8 @@ class MirrorReportTest {
     }
 
     /**
-     * A member of the RIGHT name and the WRONG type must not throw.
-     *
-     * `jsonPrimitive` is an assertion, not an accessor: it throws on an object
-     * or an array. Every one of these parsed fine and then blew up inside the
-     * reader, and the blast radius was not this object — [StatsRollup] catches
-     * per section, so the whole `sync` section came back `failed` and took the
-     * coverage card, already computed beside it, with it. A file this process
-     * did not write may cost its own member and nothing else.
+     * `jsonPrimitive` throws on an object or an array, and [StatsRollup] catches
+     * per section, so a throw here takes the coverage card down with it.
      */
     @Test
     fun `a member of the wrong type costs that member, never a throw`() {
@@ -249,11 +225,8 @@ class MirrorReportTest {
                 """.trimIndent(),
             )
         assertNotNull(doc)
-        // The named entry survives; the one whose name was an object is gone,
-        // and its kinds went with it rather than into the set.
         assertEquals(listOf("content"), streamsOf(doc).map { it.getValue("name").jsonPrimitive.content })
-        // A `dir` that is not text reads as `down` — the same default an absent
-        // one gets, and the direction that cannot silently drop kinds.
+        // An unreadable `dir` reads as `down`, the direction that cannot drop kinds.
         assertEquals(
             "down",
             streamsOf(doc)
@@ -261,13 +234,12 @@ class MirrorReportTest {
                 .getValue("dir")
                 .jsonPrimitive.content,
         )
-        // Element by element: the array member survives, the nested one does not.
+        // Element by element: the nested array is dropped, the numeric string is read.
         assertEquals(listOf(2, 3), kindsOf(doc))
         assertNull(doc["writtenAt"])
         assertNull(streamsOf(doc).single()["since"])
     }
 
-    /** Whatever a manifest holds, reading it is not allowed to be a way to crash the rollup. */
     @Test
     fun `no shape of manifest throws`() {
         listOf(
@@ -289,11 +261,7 @@ class MirrorReportTest {
         assertNull(MirrorReport.build("{\"writtenAt\":1800000000}"))
     }
 
-    /**
-     * A manifest written before the timestamp existed still parses — nothing
-     * here is load-bearing except the streams, and refusing the document over a
-     * missing member would lose the kind set to a missing disclosure.
-     */
+    /** A manifest written before the timestamp existed still parses. */
     @Test
     fun `a manifest with no timestamp still publishes its kinds`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), writtenAt = null))

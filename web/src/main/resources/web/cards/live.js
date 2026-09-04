@@ -1,6 +1,6 @@
-// The time family: live streams and calendar events. The one liberty taken
-// with the badge system: a 30311's status tag is surfaced as a pill, because
-// "live" versus "ended" is the entire question a person clicking one has.
+// The time family: live streams and calendar events. A 30311's status tag
+// is surfaced as a pill beside the badge: "live" versus "ended" is the whole
+// question a person clicking one has.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
@@ -27,11 +27,7 @@ function liveCard(ev, opts) {
 /** NIP-52 splits all-day (a YYYY-MM-DD string, passed through) from timed (unix seconds). */
 const ts = (v) => (v && /^\d{9,}$/.test(v) ? fmtTs(v) : v);
 
-/**
- * 31922/31923 — calendar events. Two kinds because NIP-52 splits all-day
- * (dates as YYYY-MM-DD strings) from timed (unix seconds); one renderer,
- * because the difference is only how `start`/`end` want to be read.
- */
+/** 31922/31923 — calendar events, all-day and timed; only how `start`/`end` read differs. */
 function calendarEventCard(ev, opts) {
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}</h2>` : "") +
@@ -52,11 +48,7 @@ function calendarCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 31925 — an RSVP. `status` is the answer (accepted/declined/tentative) and it
- * is the entire event; the `a` tag names what is being answered, so both ride
- * on the same line as the pill.
- */
+/** 31925 — an RSVP: `status` is the answer (accepted/declined/tentative), the `a` tag what is being answered. */
 function rsvpCard(ev, opts) {
   const status = (tagOf(ev, "status") || "").toLowerCase();
   const target = tagOf(ev, "a");
@@ -70,21 +62,18 @@ function rsvpCard(ev, opts) {
   ]);
 }
 
-// 30312/30313 are NIP-53's interactive rooms and conference events: the same
-// title/summary/status/streaming vocabulary as a live event, so the same card.
+// 30312/30313 are NIP-53's rooms and conference events: the same vocabulary as a live event.
 register([30311, 30312, 30313], liveCard);
 register([31922, 31923], calendarEventCard);
 register([31924], calendarCard);
 register([31925], rsvpCard);
 
-// The rows. `status` leads the second line for the same reason it is a pill on
-// the card: "live" versus "ended" is the entire question anybody scanning these
-// has, and it is nowhere in the title.
+// `status` leads the second line for the reason it is a pill on the card.
 registerRow([30311, 30312, 30313], (ev) => ({
   name: titleOf(ev),
   sub: [tagOf(ev, "status"), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
 }));
-// WHEN, and where — which for a calendar entry is most of what it is.
+// When and where, which for a calendar entry is most of what it is.
 registerRow([31922, 31923], (ev) => ({
   name: titleOf(ev),
   sub: [ts(tagOf(ev, "start")), tagOf(ev, "location")].filter(Boolean).join(" · ")

@@ -39,28 +39,16 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * THE PROPERTY: one connection's ranked reads reach the engine one at a time,
- * in arrival order; its plain reads, and another connection's reads, never
- * wait behind them; and the lane is released at EOSE, not at the end of a REQ
- * that parks at its live tail.
- *
- * Driven through the real server and a real session — the gate sits in the
- * backend the session calls, and what the property is about is what a CLIENT
- * sees on the wire — over an index whose searches can be HELD, so "still
- * queued" is observable rather than a race against a fast in-memory answer.
+ * One connection's ranked reads reach the engine one at a time, in arrival order;
+ * its plain reads and other connections never wait, and the lane frees at EOSE.
  */
 class SearchGateTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
     /**
-     * An index whose ranked searches park on [holds] until their TERM is
-     * released; plain recall answers at once.
-     *
-     * Keyed by term, not by arrival: one searching REQ reaches the index more
-     * than once — the store runs the reference expansion's companion queries
-     * (labels, assertions, lists naming the same words) beside the filter's
-     * own — so "the search for `alpha`" is several index calls carrying
-     * `alpha`, and the gate's unit is the REQ, not the call.
+     * An index whose ranked searches park on [holds] until their term is released; plain recall
+     * answers at once. Keyed by term, not arrival: one searching REQ reaches the index several
+     * times (the store's companion queries carry the same term), and the gate's unit is the REQ.
      */
     private class HoldingIndex : EventIndex {
         val inner = InMemoryEventIndex()
@@ -139,9 +127,7 @@ class SearchGateTest {
                 settle()
                 assertEquals(1, server.searchLanesOpen, "a closed connection's lane is dropped")
 
-                // Releasing the first search answers it and admits the second —
-                // and the first REQ is still OPEN (it parks at its live tail),
-                // which is the whole reason the lane is freed at EOSE.
+                // The first REQ stays open at its live tail after its EOSE, which is why the lane frees at EOSE.
                 release("alpha")
                 awaitMessage(out) { it.startsWith("""["EOSE","a"]""") }
                 awaitStarted("beta")
@@ -152,10 +138,7 @@ class SearchGateTest {
             } finally {
                 session.close()
             }
-            // A Unit last expression: JUnit silently SKIPS a test method that
-            // returns a value, and `runBlocking { try … finally }` returns the
-            // try block's last expression — the two session tests here ran
-            // zero times under that shape and reported green.
+            // A Unit last expression: JUnit skips a test method that returns a value.
             assertEquals(0, server.searchLanesOpen, "no lane outlives its connection")
         }
 
@@ -181,8 +164,7 @@ class SearchGateTest {
                 session.receive("""["REQ","a",{"kinds":[1],"search":"alpha include:spam","limit":5}]""")
                 session.receive("""["REQ","b",{"kinds":[1],"search":"beta include:spam","limit":5}]""")
                 awaitStarted("beta")
-                // A set: with nothing gating them the two run TOGETHER, and which
-                // reaches the index first is the scheduler's business.
+                // A set: ungated, the two run together and reach the index in scheduler order.
                 assertEquals(setOf("alpha", "beta"), index.terms().toSet())
                 assertEquals(0, zero.searchLanesOpen)
                 release("alpha")
@@ -196,14 +178,10 @@ class SearchGateTest {
             assertEquals(0, zero.searchLanesOpen, "a gate of zero opens no lane at all")
         }
 
-    /** Long enough for a read that WOULD have started to have started. */
+    /** Long enough for a read that would have started to have started. */
     private fun settle() = Thread.sleep(300)
 
-    /**
-     * Let every index call carrying [term] answer — the ones parked now AND
-     * the ones the same REQ makes after them (the expansion asks again once
-     * the filter's own search returns), for as long as the REQ is answering.
-     */
+    /** Lets every index call carrying [term] answer, including the ones the same REQ makes after the first returns. */
     private fun release(term: String) {
         val deadline = System.currentTimeMillis() + 2_000
         var freed = 0

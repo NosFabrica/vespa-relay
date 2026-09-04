@@ -24,14 +24,9 @@ import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 
 /**
- * `QUARTZ_LOG_LEVEL` — quartz's own log floor (it defaults to DEBUG, which
- * prints a line per unparseable event a backfill meets).
- *
- * The one piece of ParseAudit both processes read, split out when the audit
- * moved to `:sync`: the relay wants the floor but must NOT install the audit —
- * nothing on the serving side calls `inspect()`, and an installed-but-unfed
- * audit is precisely the silently-inert configured component this codebase
- * forbids.
+ * `QUARTZ_LOG_LEVEL`, quartz's own log floor; it defaults to DEBUG, a line per
+ * unparseable event. Read by both processes, without installing the parse
+ * audit the relay never feeds.
  */
 fun applyQuartzLogLevel(env: Map<String, String>) {
     env["QUARTZ_LOG_LEVEL"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let { name ->

@@ -56,31 +56,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * A WALK THE MIRROR'S OWN INGEST QUEUE STALLED IS NOT A RELAY REFUSING US.
- *
- * quartz drains each socket through one consumer coroutine that awaits every
- * listener, and this pool's hooks hand each event to `IngestPipeline.submit`,
- * which suspends when the queue is full. So under backpressure the pager sees
- * silence, or a first page received and never counted as delivered, and ends
- * `IDLE` or `UNPAGEABLE` with nothing downloaded — which `refusedOutright`
- * reads as the relay's refusal. On staging that was 90% of all aborts, filed
- * as `abortedQuiet` and `abortedUnpageable` against relays the monitor had
- * correctly graded `prime`.
- *
- * Staged here the way it happens there: a pipeline never started and filled to
- * its capacity, a relay whose page hands the pool one event and returns the
- * ending quartz would while the hook is still parked. The same relay against
- * a pipeline with room keeps its own ending — the reclassification is about
- * the instant, not the relay.
+ * A walk the mirror's own full ingest queue stalled is filed as
+ * `abortedBackpressured`, not as the relay's refusal; a queue already full at
+ * the claim is not dialled into at all. Staged with a pipeline never started
+ * and filled to capacity.
  */
 class VisitPoolBackpressureTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
 
-    /**
-     * Hands the walk ONE matching event on a coroutine of its own — quartz's
-     * socket consumer, in effect — waits for it to park, and returns the
-     * ending the pager would report having never seen the hook come back.
-     */
+    /** Hands the walk one event on its own coroutine, lets it park, and returns the pager's ending. */
     private class StalledRelay(
         private val scope: CoroutineScope,
         private val end: PagedFetchResult.End,
@@ -233,11 +217,7 @@ class VisitPoolBackpressureTest {
     @Test
     fun `silence while another hook of ours is parked is our stall too`() =
         runBlocking {
-            // The hook that stalls a walk is as often a tail's or an audit's on
-            // the same socket, and the walk then sees nothing at all. Staged
-            // with the relay handing the event and reporting IDLE: what matters
-            // is a hook of ours parked on that relay at the instant, whichever
-            // subscription it came in on.
+            // The parked hook is as often a tail's or an audit's; the walk then sees nothing at all.
             val h = Harness(PagedFetchResult.End.IDLE)
             try {
                 h.pool.start()
@@ -252,9 +232,7 @@ class VisitPoolBackpressureTest {
     @Test
     fun `with room in the queue the same ending is the relay's own`() =
         runBlocking {
-            // The classification is about the instant, not the relay: the hook
-            // returns at once, nothing of ours is parked, and UNPAGEABLE with
-            // nothing downloaded means what quartz says it means.
+            // Nothing of ours is parked, so UNPAGEABLE means what quartz says it means.
             val h = Harness(PagedFetchResult.End.UNPAGEABLE, fillsDuringThePage = false)
             try {
                 h.pool.start()
@@ -269,9 +247,7 @@ class VisitPoolBackpressureTest {
     @Test
     fun `a CLOSED is the relay's word even under backpressure`() =
         runBlocking {
-            // The relay's sentence came through the same consumer, so the
-            // consumer was not parked when it was said. Only the endings a
-            // parked consumer can manufacture are ever re-read.
+            // The relay's sentence came through the same consumer, so it was not parked when said.
             val h = Harness(PagedFetchResult.End.CLOSED)
             try {
                 h.pool.start()
@@ -286,11 +262,7 @@ class VisitPoolBackpressureTest {
     @Test
     fun `a queue already full at the claim is not dialled into at all`() =
         runBlocking {
-            // The cheaper of the two: a download into a queue that cannot take
-            // it would park its first event, stall the socket, and come back
-            // `abortedBackpressured` an idle window later, having cost the
-            // relay a handshake and a REQ for nothing. Skipped like a refused
-            // dial permit — nothing recorded, the revisit brings it back.
+            // Skipped like a refused dial permit: nothing recorded, the revisit brings it back.
             val h = Harness(PagedFetchResult.End.UNPAGEABLE, fillsDuringThePage = false)
             try {
                 h.fillIngest()
@@ -307,11 +279,7 @@ class VisitPoolBackpressureTest {
     @Test
     fun `a producer outside the pool parks the socket just the same`() =
         runBlocking {
-            // The count lives in the pipeline, so the retraction audit and the
-            // monitor's passes — which hand events to the same queue on the
-            // same sockets — are covered without knowing it. Staged as a
-            // foreign submit tagged with the relay, parked while the page is
-            // out and the walk's own hook never fires.
+            // The count lives in the pipeline, so a producer the pool does not own is covered too.
             val h = Harness(PagedFetchResult.End.IDLE, handsAnEvent = false, parksAForeignProducer = true)
             try {
                 h.pool.start()
@@ -335,9 +303,7 @@ class VisitPoolBackpressureTest {
 
     @Test
     fun `refusedOutright and stalledByUs agree on which endings are refusals at all`() {
-        // Every ending a stall can be mistaken for is one that aborts; the
-        // converse is deliberately false, and both are exhaustive over quartz's
-        // enum so a new ending is a compile error here and a decision there.
+        // Every ending a stall can be mistaken for is one that aborts; the converse is false.
         for (end in PagedFetchResult.End.entries) {
             if (VisitPool.stalledByUs(end)) {
                 assertTrue(VisitPool.refusedOutright(PagedFetchResult(0, end)), "$end")

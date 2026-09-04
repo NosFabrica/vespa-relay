@@ -39,60 +39,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The relay's own kind 0 and kind 10002, signed with `RELAY_NSEC` and stored
- * here — the two events every Nostr client already knows how to read, saying
- * what the NIP-11 document says and where to reach the thing that said it.
+ * The relay's own kind 0 and kind 10002, signed with `RELAY_NSEC` and inserted
+ * straight into the store, so a reader who meets the relay's pubkey anywhere
+ * but on this host still finds a name and a way back.
  *
- * NIP-11 is only served to whoever asks this host directly. A reader who meets
- * the relay's pubkey anywhere else — in a NIP-42 AUTH, on one of the kind-30166
- * records the monitor signs, as `self` in someone else's copy of our doc — has
- * no name, no description and no way back. A kind 0 and a kind 10002 close
- * both gaps with events, which travel.
- *
- * **The NIP-11 doc is the source, and these two fields ARE its fields.**
- * `RELAY_NAME` becomes `name` and `display_name`; `RELAY_DESCRIPTION` becomes
- * `about`; `RELAY_ICON` and `RELAY_BANNER` become `picture` and `banner`. The
- * relay therefore describes itself once, in the settings it already had, and
- * cannot drift into saying two different things about itself in two places.
- * Everything else in a stored kind 0 — a `nip05`, a `lud16`, anything an
- * operator published for this key by hand — is carried forward untouched
- * (quartz's [MetadataEvent.updateFromPast]), for the same reason the NIP-66
- * monitor edits rather than rewrites: a replaceable event has one address, and
- * a writer that rebuilds it from its own fields alone silently deletes
- * everybody else's.
- *
- * The five fields above are the exception to that rule, and deliberately so:
- * this writer OWNS them, so unsetting `RELAY_DESCRIPTION` clears `about`
- * rather than leaving a description the doc no longer carries. `RELAY_NAME` is
- * the one with a default: unset, the doc still serves `vespa-relay`, so that is
- * what the profile says too — mirroring the doc includes mirroring its default.
- *
- * **The 10002 names this relay read AND write** — `["r", "<RELAY_URL>"]` with
- * no marker, which NIP-65 reads as both — because a relay is its own inbox and
- * its own outbox: what it publishes is here, and reaching it is how you reply.
- * Other entries in an existing list are kept: an operator who added a mirror,
- * or the relay's own `.onion`, has said something we have no basis to
- * contradict. Only OUR url is authored here, and only up to both directions if
- * it was listed as one.
- *
- * **Written when it would change something, and never otherwise.** Both kinds
- * are compared against what the store already holds and skipped when they
- * match, so a restart loop cannot walk the relay's own profile forward one
- * `created_at` at a time.
- *
- * That is also why the doc is passed to [publish] rather than held here: the
- * NIP-11 document is not fixed for the life of the process. `changerelayname`,
- * `changerelaydescription` and `changerelayicon` are NIP-86 RPCs this relay
- * answers, and they rewrite the served document at runtime — so the boot
- * publish and the republish an admin RPC triggers are the same call with
- * different fields, and the profile follows the doc instead of freezing the
- * environment it started with. A [Mutex] serializes them: two RPCs seconds
- * apart would otherwise both read the same held event and both write from it.
- *
- * The events are inserted straight into the store rather than published over
- * the relay's own websocket: this process IS the relay, the store is what it
- * serves, and going out through the front door would only add a NIP-42 dance
- * with ourselves.
+ * The NIP-11 document is the source: its name, description, icon and banner
+ * are the profile's, and this writer owns those fields outright, clearing what
+ * the doc no longer says. Everything else an operator published for this key
+ * (a `nip05`, other relays in the list) is carried forward untouched. Both
+ * kinds are compared against what the store holds and skipped when they
+ * match, so a restart loop cannot walk `created_at` forward. [publish] takes
+ * the doc as an argument because NIP-86 RPCs rewrite it at runtime.
  */
 class RelayProfile(
     private val store: IEventStore,
@@ -100,13 +57,12 @@ class RelayProfile(
     val relayUrl: NormalizedRelayUrl,
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
-    /** One writer at a time — see the class doc: the boot publish and a NIP-86 republish can overlap. */
+    /** The boot publish and a NIP-86 republish may overlap. */
     private val writing = Mutex()
 
-    /** The key everything here is signed with — the relay's own. */
     val pubKey: String get() = signer.pubKey
 
-    /** What one kind needed. [PUBLISHED] wrote an event; [UNCHANGED] found the store already saying it. */
+    /** [PUBLISHED] wrote an event; [UNCHANGED] found the store already saying it. */
     enum class Outcome {
         PUBLISHED,
         UNCHANGED,
@@ -116,7 +72,7 @@ class RelayProfile(
         val metadata: Outcome,
         val relayList: Outcome,
     ) {
-        /** For the boot line: which of the two were written, if either. */
+        /** The kinds written, for the boot line. */
         fun published(): List<Int> =
             listOfNotNull(
                 MetadataEvent.KIND.takeIf { metadata == Outcome.PUBLISHED },
@@ -125,11 +81,9 @@ class RelayProfile(
     }
 
     /**
-     * Bring both events up to date against [info] — whatever the NIP-11
-     * document says right now. Throws whatever the store throws — see
-     * [launchRelayProfile], which retries: a read that FAILED must never be
-     * read as "nothing is stored", because that is the one way this could
-     * replace a richer profile with a freshly built one.
+     * Bring both events up to date against [info]. Throws whatever the store
+     * throws: a failed read must never be taken as "nothing stored", which is
+     * the one way this could replace a richer profile.
      */
     suspend fun publish(info: Nip11Info): Report =
         writing.withLock {
@@ -139,10 +93,8 @@ class RelayProfile(
     private suspend fun publishMetadata(info: Nip11Info): Outcome {
         val held = newest(MetadataEvent.KIND)?.let { it as? MetadataEvent ?: MetadataEvent(it.id, it.pubKey, it.createdAt, it.tags, it.content, it.sig) }
         val at = nextCreatedAt(held)
-        // Empty rather than null for the fields this writer owns: quartz reads
-        // null as "leave whatever is there" and blank as "delete it", and a
-        // description the operator has REMOVED from the NIP-11 doc must not
-        // survive in the profile the doc is supposed to be the source of.
+        // Empty rather than null for the owned fields: quartz reads null as
+        // "leave it" and blank as "delete it".
         val template =
             if (held == null) {
                 MetadataEvent.createNew(
@@ -162,24 +114,8 @@ class RelayProfile(
                     banner = info.banner.orEmpty(),
                     about = info.description.orEmpty(),
                     createdAt = at,
-                    // NIP-39 claims, put back exactly as they were found.
-                    //
-                    // [MetadataEvent.updateFromPast] rebuilds the `i` tags: it
-                    // drops every one and re-adds what [IdentityClaimTag.parse]
-                    // gives back, which is LOSSY in two ways this writer has no
-                    // business inflicting on somebody else's tag. A claim with
-                    // no proof (`["i", "github:alice"]`) does not parse and
-                    // disappears; an identity carrying a second colon
-                    // (`matrix:@alice:example.org`) is split on the first one
-                    // and reassembled as `matrix:@alice`. Both are silent, both
-                    // are signed, and both survive every later boot because the
-                    // damaged tag is what the next edit reads.
-                    //
-                    // The initializer runs last, so removing and re-adding the
-                    // held event's own `i` tags here is the whole fix. Quartz's
-                    // rewrite still happens; it is simply overwritten by the
-                    // originals. This writer manages no claims of its own —
-                    // twitter/mastodon/github stay null above.
+                    // updateFromPast re-parses the `i` tags lossily; the
+                    // initializer runs last, so the originals win.
                     initializer = {
                         remove(IdentityClaimTag.TAG_NAME)
                         held.tags.filter { it.firstOrNull() == IdentityClaimTag.TAG_NAME }.forEach { add(it) }
@@ -197,74 +133,41 @@ class RelayProfile(
                 it as? AdvertisedRelayListEvent ?: AdvertisedRelayListEvent(it.id, it.pubKey, it.createdAt, it.tags, it.content, it.sig)
             }
         val listed = held?.relays().orEmpty()
-        // Both directions already claimed for this url — nothing to say. Note
-        // this is the only thing checked: another relay's entry, a marker on
-        // it, and anything else in the list are somebody else's statements.
+        // Our url is the only entry checked; the rest are somebody else's statements.
         if (listed.any { it.relayUrl == relayUrl && it.type == AdvertisedRelayType.BOTH }) return Outcome.UNCHANGED
 
-        // Ours last, so re-publishing a list that already named it read-only
-        // upgrades that one entry in place rather than leaving two `r` tags for
-        // one url disagreeing about direction.
+        // Ours last, so an entry that named us read-only is upgraded in place
+        // rather than doubled.
         val next = listed.filterNot { it.relayUrl == relayUrl } + AdvertisedRelayInfo(relayUrl, AdvertisedRelayType.BOTH)
         val at = nextCreatedAt(held)
         val event =
             if (held == null) {
                 AdvertisedRelayListEvent.create(next, signer, at)
             } else {
-                // Keeps every non-`r` tag the held event carried, whoever wrote
-                // it. The `r` tags come back through [AdvertisedRelayListEvent.relays],
-                // so one naming a url that will not normalize is dropped rather
-                // than carried — it named no relay anything could dial.
+                // Keeps every non-`r` tag; an `r` tag whose url will not
+                // normalize is dropped by [AdvertisedRelayListEvent.relays].
                 AdvertisedRelayListEvent.replaceRelayListWith(held, next, signer, at)
             }
         store.insert(event)
         return Outcome.PUBLISHED
     }
 
-    /**
-     * The newest event of [kind] this relay has signed, or null when it has
-     * signed none.
-     *
-     * A replaceable kind should hold exactly one, but the query is not asserted
-     * down to that: a store mid-supersede, or one that mirrored an older
-     * version of our own event from an upstream, is a state to read past rather
-     * than to fail on.
-     */
+    /** The newest event of [kind] signed by this relay. Not asserted to be the only one: a store mid-supersede is read past. */
     private suspend fun newest(kind: Int): Event? =
         store
             .query<Event>(Filter(kinds = listOf(kind), authors = listOf(signer.pubKey)))
             .maxByOrNull { it.createdAt }
 
-    /**
-     * `max(now, held + 1)`, because a store enforcing replaceable semantics
-     * REFUSES an edit that is not strictly newer — and a clock that has not
-     * moved since the last write, or one that went backwards across a restart,
-     * is ordinary. Silently losing the write to "a newer version exists" is how
-     * a boot reports success having published nothing.
-     */
+    /** `max(now, held + 1)`: a replaceable edit that is not strictly newer is silently refused. */
     private fun nextCreatedAt(held: Event?): Long = maxOf(nowSeconds(), (held?.createdAt ?: 0L) + 1)
 }
 
 /**
  * Publish the relay's own kind 0 and kind 10002 in the background, waiting out
- * an engine that is not answering yet.
- *
- * The wait is the whole reason this is a loop. Both kinds are REPLACEABLE, so
- * publishing decides what to write from what the store already holds, and a
- * cold Vespa that cannot answer must therefore never be taken for a store with
- * nothing in it — that reading is what would replace a profile carrying a
- * `nip05` and a `lud16` with the two fields this file knows about. A failed
- * read is a failed attempt, and the attempt is retried; the work is idempotent,
- * so re-running one that got halfway costs a query.
- *
- * Bounded like every other boot job here: a failure that is not warm-up (a
- * wrong url, a dead cluster) must not leave a coroutine retrying for the life
- * of the process. Serving without a profile is a relay that is harder to
- * discover, not a relay that is down.
- *
- * Called at boot and again whenever a NIP-86 admin RPC rewrites the served
- * document, with the fields it now carries — [RelayProfile] takes the lock, so
- * the two cannot interleave.
+ * a cold engine. Both kinds are replaceable and decided from what the store
+ * holds, so a failed read is retried rather than read as an empty store.
+ * Bounded so a failure that is not warm-up cannot retry for the life of the
+ * process. Called at boot and again when a NIP-86 RPC rewrites the document.
  */
 fun launchRelayProfile(
     scope: CoroutineScope,
@@ -289,8 +192,7 @@ fun launchRelayProfile(
                 return@launch
             }
             val cause = result.exceptionOrNull()
-            // Shutdown is not a failed publish, and swallowing it here would
-            // keep this loop alive past the scope that owns it.
+            // Shutdown is not a failed publish.
             if (cause is CancellationException) throw cause
             if (waited >= PROFILE_MAX_WAIT_MS) {
                 System.err.println(
@@ -310,7 +212,6 @@ fun launchRelayProfile(
     }
 }
 
-/** Same shape as the trust reconcile's wait: a cold content node takes minutes, and each attempt is a real query. */
 private const val PROFILE_RETRY_MS = 5_000L
 
 private const val PROFILE_MAX_WAIT_MS = 10 * 60 * 1000L

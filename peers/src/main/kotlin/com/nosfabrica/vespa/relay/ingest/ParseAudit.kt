@@ -38,16 +38,13 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Collects every event quartz cannot fully parse, with the raw event JSON, so
- * the gaps can be fixed in quartz instead of silently degrading this relay's
- * search index.
+ * the gaps can be fixed in quartz. Quartz reports parse problems through
+ * [Log] with no event attached, so [inspect] re-runs each event's
+ * search-indexing parse with the event parked in a [ThreadLocal]; everything
+ * quartz logs during that call belongs to that event. The extra parse per
+ * event is why the audit is opt-in.
  *
- * Quartz reports parse problems through [Log] with no event attached, so
- * [inspect] re-runs each event's search-indexing parse itself with the event
- * parked in a [ThreadLocal] — everything quartz logs during that call is then
- * attributable to exactly one event. That costs one extra parse per event,
- * which is why the audit is opt-in (`PARSE_AUDIT_FILE`).
- *
- * Findings are grouped by signature (tag + message with event URIs, hex ids
+ * Findings are grouped by signature (tag plus message with event URIs, hex ids
  * and offsets stripped), each keeping up to `PARSE_AUDIT_SAMPLES` raw events.
  */
 class ParseAudit(
@@ -56,11 +53,7 @@ class ParseAudit(
     private val delegate: LogSink = Log.sink,
 ) : LogSink,
     AutoCloseable {
-    /**
-     * The event whose parse this thread is currently inside. The `reported`
-     * flag lives here because a second event hitting an already-known defect
-     * adds no map entry.
-     */
+    /** The event whose parse this thread is currently inside. */
     private class InFlight(
         val event: Event,
     ) {
@@ -71,9 +64,7 @@ class ParseAudit(
 
     private val findings = ConcurrentHashMap<String, Finding>()
 
-    // Parse reports that arrived outside [inspect] — e.g. the store's own
-    // indexing pass. Counted, not attributed: there is no event to tie them
-    // to. A high number here means inspection is missing a path.
+    // Parse reports that arrived outside [inspect], with no event to tie them to.
     private val unattributed = ConcurrentHashMap<String, AtomicLong>()
 
     private val inspected = AtomicLong()
@@ -81,11 +72,7 @@ class ParseAudit(
 
     @Volatile private var flusher: Thread? = null
 
-    /**
-     * Run the event through quartz's search-indexing parse and record whatever
-     * it reports. Never throws: an audit must not be able to reject an event
-     * the relay would otherwise have stored.
-     */
+    /** Run the event through quartz's search-indexing parse and record what it reports. Never throws. */
     fun inspect(event: Event) {
         if (event !is SearchableEvent) return
         inspected.incrementAndGet()
@@ -111,8 +98,7 @@ class ParseAudit(
         val ctx = inFlight.get()
         if (ctx != null) {
             record(ctx, tag, level, message)
-            // Swallowed: the report is the output — one line per malformed
-            // profile across a multi-year backfill is what buried the real logs.
+            // Swallowed: the report is the output.
             return
         }
         if (isParseReport(tag)) {
@@ -136,7 +122,7 @@ class ParseAudit(
     /** Everything seen so far, most frequent first. */
     fun snapshot(): List<Finding> = findings.values.sortedByDescending { it.count.get() }
 
-    /** Total reports recorded — one event can trip more than one defect. */
+    /** Total reports recorded; one event can trip more than one defect. */
     private fun totalReports(): Long = findings.values.sumOf { it.count.get() }
 
     /** A one-line summary for the periodic progress log. */
@@ -147,8 +133,7 @@ class ParseAudit(
 
     /**
      * Write the report via a sibling temp file and a move, so a reader never
-     * sees a half file. Synchronized because the flusher thread and [close]
-     * both write, and both use the SAME temp path.
+     * sees a half file. Synchronized because the flusher and [close] share the temp path.
      */
     @Synchronized
     fun writeReport() {
@@ -175,10 +160,7 @@ class ParseAudit(
         }
     }
 
-    /**
-     * Rewrite the report every [intervalSec] on a daemon thread, so a long
-     * backfill can be read while it runs rather than only after shutdown.
-     */
+    /** Rewrite the report every [intervalSec] on a daemon thread, so it can be read mid-backfill. */
     fun startPeriodicFlush(intervalSec: Long): ParseAudit {
         flusher =
             Thread {
@@ -202,9 +184,8 @@ class ParseAudit(
     /** Flush the final report. */
     override fun close() {
         flusher?.interrupt()
-        // Joined, not just interrupted: a flusher caught mid-writeReport()
-        // would race this thread on the same temp file, and the loser's
-        // half-written tmp could be renamed over the report.
+        // Joined, not just interrupted: a flusher mid-writeReport() would race
+        // this thread on the same temp file.
         runCatching { flusher?.join(FLUSHER_JOIN_MS) }
         runCatching { writeReport() }
             .onFailure { System.err.println("parse audit: could not write ${outFile.path}: ${it.message}") }
@@ -269,10 +250,8 @@ class ParseAudit(
     companion object {
         private val json = Json { prettyPrint = true }
 
-        // Bounded: shutdown must not hang on a flusher stuck in disk I/O.
         private const val FLUSHER_JOIN_MS = 5_000L
 
-        // Tags whose messages are parse reports rather than relay logging.
         private val PARSE_TAGS =
             setOf(
                 "MetadataEvent",
@@ -285,15 +264,13 @@ class ParseAudit(
 
         private fun isParseReport(tag: String): Boolean = tag in PARSE_TAGS || tag.endsWith("Serializer")
 
-        // Event URIs, 64-hex ids and byte offsets make every occurrence unique;
-        // strip them so the same underlying gap groups into one finding.
+        // Stripped from signatures so one underlying gap groups into one finding.
         private val NOSTR_URI = Regex("""nostr:[a-z0-9]+""", RegexOption.IGNORE_CASE)
         private val HEX64 = Regex("""\b[0-9a-f]{64}\b""", RegexOption.IGNORE_CASE)
         private val OFFSET = Regex("""offset \d+""")
 
-        // kotlinx.serialization appends the offending document ("JSON input: …")
-        // to its messages. Kept verbatim in samples, stripped from signatures —
-        // otherwise two profiles failing identically would never group.
+        // kotlinx.serialization appends the offending document to its messages;
+        // kept verbatim in samples, stripped from signatures.
         private val JSON_INPUT = Regex("""JSON input:.*""", RegexOption.DOT_MATCHES_ALL)
 
         private fun normalize(message: String): String =
@@ -310,12 +287,9 @@ class ParseAudit(
         ): String = "$tag|${normalize(message)}"
 
         /**
-         * Install the audit from the environment, or return null when it is off.
-         *
-         *   PARSE_AUDIT_FILE     where to write the report; unset ⇒ audit disabled
-         *   PARSE_AUDIT_SAMPLES  raw events kept per distinct finding (default 5)
-         *   QUARTZ_LOG_LEVEL     DEBUG / INFO / WARN / ERROR — quartz's own log
-         *                        floor, which defaults to DEBUG
+         * Install the audit from the environment, or return null when
+         * `PARSE_AUDIT_FILE` is unset. `PARSE_AUDIT_SAMPLES` bounds the raw
+         * events kept per finding; `QUARTZ_LOG_LEVEL` is quartz's own log floor.
          */
         fun installFromEnv(env: Map<String, String>): ParseAudit? {
             applyQuartzLogLevel(env)
@@ -323,8 +297,7 @@ class ParseAudit(
             val path = env["PARSE_AUDIT_FILE"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val samples = env["PARSE_AUDIT_SAMPLES"]?.trim()?.toIntOrNull()?.coerceIn(1, 100) ?: 5
 
-            // The audit needs to see what quartz reports, so it must not be
-            // filtered out before reaching the sink.
+            // The sink must see what quartz reports.
             if (Log.minLevel > LogLevel.WARN) Log.minLevel = LogLevel.WARN
 
             val flushSec = env["PARSE_AUDIT_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(5L) ?: 60L

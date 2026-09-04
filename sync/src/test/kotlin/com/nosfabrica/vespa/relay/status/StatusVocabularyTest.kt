@@ -31,31 +31,18 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The glossary against the numbers it is a glossary FOR.
- *
- * The failure this pins is silent and inevitable otherwise: a new count is
- * published, nobody adds a term, and the section is back to numbers that cannot
- * be read without this repository open beside them — which is the whole
- * complaint. So the terms are checked against the members the other two reports
- * actually emit, in both directions.
+ * The glossary checked against the members the two reports actually emit,
+ * in both directions.
  */
 class StatusVocabularyTest {
     /**
-     * Members that carry no NUMBER and need no entry: identifiers, timestamps,
-     * and structures whose own children are what a reader looks up.
-     *
-     * Deliberately short and deliberately explicit. Every addition to it is a
-     * decision that something is self-describing, which is exactly the judgement
-     * that produced the unreadable section in the first place — so it should be
-     * uncomfortable to extend.
+     * Members that carry no number and need no entry: identifiers, timestamps
+     * and containers whose children are what a reader looks up. Every addition
+     * is a judgement that something is self-describing; keep it uncomfortable.
      */
     private val selfDescribing =
         setOf(
-            // `kinds` is the FILTER's own member, echoed back verbatim — a
-            // Nostr kind list needs no gloss from this relay.
             "name",
-            // The owning stream on a row that is not already one stream's —
-            // an identifier, like `name` and `relay` beside it.
             "stream",
             "phase",
             "phaseForSec",
@@ -63,8 +50,6 @@ class StatusVocabularyTest {
             "kinds",
             "narrowedBy",
             "cycle",
-            // A pass's own number within its owner. An identifier, like `name`
-            // — what it MEANS is `passes`, which has a term of its own.
             "number",
             "streams",
             "rows",
@@ -77,8 +62,6 @@ class StatusVocabularyTest {
             "max",
             "complete",
             "fullAt",
-            // A hostname, inside a row whose `urls` is the count a reader looks
-            // up — the same call `relay` gets inside `foldedOnto`.
             "host",
             "everyKindMin",
             "everyKindMax",
@@ -92,19 +75,9 @@ class StatusVocabularyTest {
             "balanced",
             "urls",
             "taken",
-            // The fold's per-survivor sample urls: strings, and `urls` beside
-            // them is the count a reader looks up.
             "examples",
-            // The container the constraint's numbers sit in; `bottleneck` and
-            // each gauge inside it is what a reader looks up.
             "health",
-            // The container `undecided` holds its rows in. `reason`, `hosts`
-            // and `examples` inside it are what a reader looks up; the plural
-            // is the shape, exactly as `relays` is inside `inFlight`.
             "reasons",
-            // …and the same call for the per-relay table's two partitions: the
-            // rows inside them are `syncStatus` / `behind` and `pairs`, all of
-            // which a reader looks up, and the plural is the shape they sit in.
             "statuses",
             "freshness",
         )
@@ -120,18 +93,18 @@ class StatusVocabularyTest {
                 sweepsJson = null,
                 nowSeconds = 1_000,
             )!!
-        // The mirror's own document, parsed rather than re-projected: nothing
-        // filters these members on their way to the page any more, so a member
-        // with no term really does reach a reader — which is what this asserts.
+        // Parsed, not re-projected: nothing filters these members on the way to the page.
         val progress =
             Json
                 .parseToJsonElement(
                     """
                     {"fatals": 0,
-                     "health": {"bottleneck": "wedged", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
+                     "health": {"bottleneck": "wedged", "eventsPerSec": 2350, "arrivingPerSec": 4100, "heapUsedMb": 900, "heapMaxMb": 2048,
                                 "sockets": 412, "socketCeiling": 1024, "socketsRunning": 418, "socketsQueued": 0,
                                 "servingMs": 18, "feed": "feed ok 4211 inflight 32 lat 18ms",
-                                "stages": [{"stage": "write", "ms": 33300}, {"stage": "lock.ingest.wait", "ms": 21900}]},
+                                "lockHeldBy": {"stage": "lock.gate.hold", "heldMs": 412000, "doing": "derive 4812 subject(s) in 49 chunk(s), fanout 4"},
+                                "stages": [{"stage": "write", "ms": 33300, "calls": 1200, "meanMs": 27, "maxMs": 900},
+                                           {"stage": "lock.ingest.wait", "ms": 21900}]},
                      "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
                      "roster": 412, "liveHeld": 300,
                      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
@@ -228,29 +201,20 @@ class StatusVocabularyTest {
 
     @Test
     fun `no term describes something the document never publishes`() {
-        // A definition for an absent member is a promise the document does not
-        // keep, and it is how a glossary rots into fiction.
         val known =
             selfDescribing +
                 setOf(
-                    // Names for CONCEPTS rather than for members — the three
-                    // meanings of "done" that had to be told apart, plus the
-                    // one deliberately NOT published here.
+                    // Concepts rather than members: the meanings of "done", and the one not published.
                     "scope",
                     "settled",
                     "open",
                     "walkEnvelope",
                     "evidence",
                     "holdings",
-                    // The coverage tree's root, synthesised by the page from
-                    // `sourced` and `recordedOnly` — a name for the sum, which
-                    // is why no document member carries it.
+                    // Synthesised by the page from `sourced` and `recordedOnly`.
                     "corpus",
                     "frame",
                     "unnamed",
-                    // The other phase word that reads as a stall and is not —
-                    // a visit stream has no pass to be a phase OF, so the word
-                    // simply lasts and its numbers are the whole story.
                     "rotating",
                     "accountedFor",
                 ) +
@@ -268,22 +232,10 @@ class StatusVocabularyTest {
                     "events",
                     "quietForSec",
                     "doing",
-                    // …and `doing`'s OTHER counterpart: the stable word four
-                    // tables are grouped by, where `doing` is the sentence
-                    // inside them.
                     "pool",
-                    // The fourth of those tables, which is the only one that is
-                    // a document member of its own — the tails are pool-wide,
-                    // so they sit at the root rather than under a stream.
                     "live",
-                    // What a stream may SPEND on each of those four, and what
-                    // it has spent — the caps, both levels, and the work each
-                    // has turned away.
                     "limits",
                     "job",
-                    // …and when the two scheduled re-reads of the past come
-                    // due, which is what says an audit ran because its clock
-                    // ran out rather than because something asked.
                     "schedule",
                     "everySec",
                     "due",
@@ -292,25 +244,27 @@ class StatusVocabularyTest {
                     "streamCap",
                     "inUse",
                     "deferred",
-                    // …and `doing`'s counterpart on the other kind of held row:
-                    // a probe leg is a ladder, not a transfer, so what it
-                    // publishes is which STEP it is on.
                     "stage",
+                    // The stage split's SHAPE, published beside its total for
+                    // the stages the store times as calls, and the write
+                    // lock's present-tense holder. A total says a stage cost
+                    // 24 minutes; only these say whether that was one call or
+                    // a hundred thousand, and who is holding the lock while
+                    // the mirror waits.
+                    "calls",
+                    "meanMs",
+                    "maxMs",
+                    "lockHeldBy",
+                    "heldMs",
                     "pagingUntil",
                     "omitted",
                 ) +
-                // The passes beside a stream's current cycle, and the work that
-                // is not a stream at all — the two probe passes, the NIP-66
-                // monitor, ingest, the healer, the push.
+                // The processors: the probe passes, the monitor, ingest, the healer, the push.
                 setOf(
                     "passesRun",
                     "processors",
                     "candidates",
-                    // …the share of them that arrived undecided, which is what
-                    // the card counts against rather than the whole set.
                     "newUrls",
-                    // The candidate set's own partition, and the two nodes above
-                    // it that say where the set came from.
                     "sourced",
                     "heldOutDead",
                     "recordedOnly",
@@ -321,17 +275,12 @@ class StatusVocabularyTest {
                     "dialled",
                     "decided",
                     "undecided",
-                    // The ranked hosts under one reason — the tree's deepest
-                    // level — and the reason a row refines, which is what nests
-                    // the sub-causes of silence under it.
                     "top",
                     "parent",
                     "reason",
                     "lastPassAt",
                     "lastPassSec",
                     "nextInSec",
-                    // …and the countdown's opposite half: where the pass
-                    // RUNNING right now has got to, in units it names itself.
                     "measuring",
                     "attempted",
                     "toProbe",
@@ -342,8 +291,7 @@ class StatusVocabularyTest {
                     "rejected",
                     "pushed",
                     "dropped",
-                    // The fitness pass's verdict funnel — each member one value
-                    // of the `s` tag it signs — and the rotating pool's row.
+                    // The fitness verdicts, one member per value of the `s` tag it signs.
                     "prime",
                     "dead",
                     "silent",
@@ -353,10 +301,6 @@ class StatusVocabularyTest {
                     "auth-refused",
                     "restricted",
                     "roster",
-                    // …and the same roster in the pool's UNITS OF WORK, which
-                    // is what `visiting` and `awaitingVisit` are parts of: a
-                    // relay three streams want is one roster entry and three
-                    // units.
                     "rosterVisits",
                     "awaitingVisit",
                     "visiting",
@@ -368,10 +312,7 @@ class StatusVocabularyTest {
                     "negentropySkipped",
                     "retracted",
                     "abortedVisits",
-                    // …and the split of it, one member per way a visit ends
-                    // early. Listed rather than derived from the enum: this
-                    // test's whole job is to notice a name that moved on one
-                    // side and not the other.
+                    // Listed rather than derived from the enum, so a name that moved on one side is noticed.
                     "abortedAuthRequired",
                     "abortedClosed",
                     "abortedQuiet",
@@ -382,9 +323,6 @@ class StatusVocabularyTest {
                     "abortedBackpressured",
                     "narrowedRelays",
                     "negentropyRefused",
-                    // …and the per-relay table's own vocabulary. `relays` and
-                    // `statuses` are containers whose children are what a
-                    // reader looks up, exactly as `reasons` is.
                     "syncStatus",
                     "pairs",
                     "behind",
@@ -404,9 +342,6 @@ class StatusVocabularyTest {
                     "liveEvicted",
                     "poolReceived",
                 ) +
-                // What the phase itself knows, which used to reach a log line
-                // and stop there — plus the two facts about the process rather
-                // than about a stream.
                 setOf(
                     "running",
                     "transferring",
@@ -431,6 +366,7 @@ class StatusVocabularyTest {
                     "ms",
                     "feed",
                     "eventsPerSec",
+                    "arrivingPerSec",
                     "heapUsedMb",
                     "heapMaxMb",
                     "sockets",
@@ -442,8 +378,7 @@ class StatusVocabularyTest {
                     "at",
                     "heapPct",
                 ) +
-                // WHICH STORE CALLS ARE OUT and whose — the half of a wedge
-                // `oldestBatchSec` never carried. See [StoreCalls].
+                // See [StoreCalls].
                 setOf(
                     "store",
                     "calls",
@@ -470,15 +405,10 @@ class StatusVocabularyTest {
 
     @Test
     fun `the meanings of done are named apart`() {
-        // The core of the complaint: one word covered a walk that SETTLED and
-        // the span every kind has EVIDENCE for. (It covered a third — a fan-out
-        // leg that had RETURNED, the least meaningful of them and the one being
-        // read as progress — until the fan-out itself went.)
         val terms = StatusVocabulary.TERMS
 
         assertTrue(terms["settled"]!!.jsonPrimitive.content.contains("Nothing outstanding"))
         assertTrue(terms["evidence"]!!.jsonPrimitive.content.contains("not a coverage claim"))
-        // And the fourth thing none of them is.
         assertTrue(terms["holdings"]!!.jsonPrimitive.content.contains("NOT PUBLISHED HERE"))
     }
 
@@ -493,9 +423,6 @@ class StatusVocabularyTest {
 
     @Test
     fun `a stream-scoped count says it is stream-scoped`() {
-        // One relay settled under one stream and open under another is not a
-        // contradiction, and the document has to say why before a reader files
-        // it as one.
         assertTrue(
             StatusVocabulary.TERMS["scope"]!!
                 .jsonPrimitive.content
@@ -505,12 +432,7 @@ class StatusVocabularyTest {
 
     @Test
     fun `each document ships the definitions it needs and not the other plane's`() {
-        // The property `termsFor` exists for. There are two status documents
-        // now — the mirror's and the monitor's — and they publish disjoint
-        // halves of one vocabulary. Shipping the whole map in both would put a
-        // definition for `queued` in the monitor's document and one for
-        // `foldedAway` in the mirror's, and a glossary listing members the
-        // reader will not find is the way that promise rots into fiction.
+        // The mirror's and the monitor's documents publish disjoint halves of one vocabulary.
         val mirror =
             Json
                 .parseToJsonElement("""{"progress": {"processors": [{"name": "ingest", "queued": 3, "capacity": 4096}]}}""")
@@ -527,8 +449,7 @@ class StatusVocabularyTest {
         assertTrue("queued" !in forMonitor, "…and not the ones it does not")
         assertTrue("foldedAway" in forMonitor)
         assertTrue("foldedAway" !in forMirror)
-        // Both still draw from ONE map: a member defined twice is two
-        // definitions to keep in step, which is the state this replaced.
+        // Both draw from one map.
         assertTrue((forMirror + forMonitor).all { it in StatusVocabulary.TERMS.keys })
     }
 }

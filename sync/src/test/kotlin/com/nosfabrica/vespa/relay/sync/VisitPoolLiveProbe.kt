@@ -60,25 +60,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * THE NEW PLANES AGAINST REAL RELAYS, end to end: the fitness pass earns
- * verdicts on live servers, the verdicts land on kind-30166 records in an
- * in-memory store, `RelayDiscovery` reads the roster back, and a
- * small [VisitPool] runs it — catch-up pages, tails, the works — printing what
- * each stage decided.
- *
- * This is the probe the pool shipped without, and the one that tells our
- * reading of a relay apart from the relay. The candidate list is chosen for
- * coverage of the verdict vocabulary: healthy strfry hosts, an auth wall
- * (`relays.diggoo.com` answers `auth-required` to an unknown key), and a name
- * that does not resolve.
- *
- * OFF by default, asserts NOTHING — it dials other people's servers, and any
- * of them declining an ephemeral key or being down today is an answer, not a
- * regression.
- *
- * ```
- * ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
- * ```
+ * Runs the fitness pass over a few live relays, reads the kind-30166 roster
+ * back from an in-memory store and lets a small [VisitPool] with two streams
+ * work it for 45 seconds, printing each stage's decisions and the progress
+ * document. Asserts nothing. Selected by `-DvisitPoolProbe=true`.
  */
 class VisitPoolLiveProbe {
     /** The kind-30166 source the loader writes for `filter = { "kinds": [30166], "#l": ["prime"] }`. */
@@ -94,6 +79,7 @@ class VisitPoolLiveProbe {
             maxAgeSeconds = 3600,
         )
 
+    /** Healthy hosts, an auth wall (diggoo answers `auth-required` to an unknown key) and a name that does not resolve. */
     private val candidates =
         listOf(
             "wss://nos.lol",
@@ -152,16 +138,8 @@ class VisitPoolLiveProbe {
                 ingest.start()
                 val refused = RefusedIds.disabled()
 
-                // TWO STREAMS OVER ONE ROSTER, which is the whole point of the
-                // probe now: the unit of work is a (relay, stream) pair, so
-                // every relay here is two units that must run at once, over
-                // ONE socket, each with its own tail carrying its own filter.
-                // A single-stream probe cannot see any of that.
-                //
-                // The second is MULTI-KIND on purpose. `rewalksCovered` reads
-                // a band's per-kind spans, and kinds do not cover the same
-                // time on a real relay — a single-kind probe is exactly the
-                // shape that hid the misfiled catch-up in the first place.
+                // Two streams over one roster, so every relay is two units sharing one socket.
+                // The second is multi-kind because `rewalksCovered` reads per-kind spans.
                 fun probeStream(
                     name: String,
                     filter: Filter,
@@ -179,9 +157,7 @@ class VisitPoolLiveProbe {
                     negentropySyncThePastSeconds = audit,
                     discovery =
                         RelayDiscoveryConfig(
-                            // The same source the roster printed above read,
-                            // identity and all: the halves of the probe have
-                            // to be about one thing.
+                            // The same source the roster above read, identity and all.
                             sources = listOf(probeSource(signer.pubKey)),
                             refreshSeconds = 3600,
                             exclude = RelayExcludes.NONE,
@@ -190,9 +166,7 @@ class VisitPoolLiveProbe {
                 val probeStreams =
                     listOf(
                         probeStream("notes", Filter(kinds = listOf(1), limit = 50), visits = 4, live = 3),
-                        // Small budgets deliberately: with more relays than
-                        // permits the caps have to BITE, so `deferred` and the
-                        // schedule rows carry real numbers instead of zeroes.
+                        // Budgets smaller than the roster, so the caps bite and `deferred` carries real numbers.
                         probeStream("mixed", Filter(kinds = listOf(0, 3, 10002), limit = 50), visits = 2, live = 1, audit = 3600),
                     )
                 val bands = SyncBands(null)
@@ -228,18 +202,12 @@ class VisitPoolLiveProbe {
                     )
                 println("workers for these streams: ${VisitPool.workersFor(probeStreams)} (the SUM of their dial widths)")
                 pool.start()
-                // Long enough for the roster loop's first rebuild, a full
-                // rotation of visits, tails to open, and — with a 3-tail budget
-                // over a larger prime set — at least one eviction decision.
+                // Long enough for the first roster rebuild, a full rotation, tails, and one eviction.
                 delay(45_000)
                 println("=".repeat(78))
                 for (p in processors.snapshot()) {
                     println("  ${p.name}: ${p.phase} — " + p.counts.joinToString { "${it.name}=${it.value}" })
                 }
-                // THE DOCUMENT THE PAGE READS, in full: the four pools with a
-                // `pool` word per held row, each stream's limits with what
-                // they turned away, and the schedule rows. This is the half
-                // that has only ever been asserted against hand-written JSON.
                 println("=".repeat(78))
                 println(
                     SyncProgress.document(

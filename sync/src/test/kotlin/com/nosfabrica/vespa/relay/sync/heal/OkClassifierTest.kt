@@ -27,9 +27,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The two decisions that keep the healer from doing damage: which `OK` answers
- * mean "this relay will never take a repair", and how much silence it takes to
- * conclude the same thing.
+ * Which `OK` answers mean a relay will never take a repair, and how much
+ * silence it takes to conclude the same.
  */
 class OkClassifierTest {
     private fun classify(
@@ -40,9 +39,6 @@ class OkClassifierTest {
 
     @Test
     fun `rate-limited earns no tombstone and no write-closed mark`() {
-        // SAFETY. The dangerous row: treating a momentary refusal as policy
-        // would suppress the very ids a relay was about to accept a repair for,
-        // permanently and silently.
         assertEquals(PushVerdict.RETRY, classify(false, "rate-limited: slow down"))
         assertEquals(PushVerdict.RETRY, classify(false, "error: could not connect to backend"))
     }
@@ -69,8 +65,6 @@ class OkClassifierTest {
 
     @Test
     fun `an unrecognised reason prefix earns nothing`() {
-        // Unknown means unknown — the same conservatism Unreachability.proves()
-        // applies before publishing a claim about someone else's server.
         assertEquals(PushVerdict.IGNORE, classify(false, "nope"))
         assertEquals(PushVerdict.IGNORE, classify(false, ""))
         assertEquals(PushVerdict.IGNORE, classify(false, "banned: mystery prefix"))
@@ -84,8 +78,7 @@ class OkClassifierTest {
 
     @Test
     fun `OK true earns no tombstone on its own`() {
-        // Accepted means taken, not that the stale copy was dropped — an
-        // archival relay does the first and not the second.
+        // Accepted means taken, not that the stale copy was dropped; an archival relay does only the first.
         assertEquals(PushVerdict.ACCEPTED, classify(true, ""))
     }
 
@@ -107,8 +100,6 @@ class WriteCapabilityTest {
 
     @Test
     fun `silence in a single pass never closes a relay`() {
-        // One bad session must not cost a relay forever — the same reasoning as
-        // the NIP-45 idle-window trap, applied to writes.
         val caps = WriteCapability()
         repeat(20) { caps.strike(relay, passId = 1) }
         assertFalse(caps.isClosed(relay), "20 strikes inside one pass is one bad session, not a verdict")
@@ -144,9 +135,6 @@ class WriteCapabilityTest {
 
     @Test
     fun `an answer from a relay that never struck still records it as probed`() {
-        // The health line prints closed/probed, and counting only relays that
-        // had struck or closed meant a fan-out where everything worked read
-        // `0/0` — indistinguishable from a healer that never ran.
         val caps = WriteCapability()
         assertEquals(0, caps.probedCount())
         caps.succeeded(relay)
@@ -156,12 +144,7 @@ class WriteCapabilityTest {
 
     @Test
     fun `a relay that answers after one silence is never closed by later silences`() {
-        // The false close this guards. A relay that timed out once and then
-        // replied to everything kept its first strike, because only ACCEPTED
-        // cleared doubt and a `duplicate`/`invalid` answer is not ACCEPTED.
-        // Two more timeouts across later passes then closed a relay that was
-        // plainly answering. The Healer now clears on ANY answer; this pins
-        // the WriteCapability half of it.
+        // Any answer clears doubt, not only ACCEPTED; a `duplicate` reply is still a reply.
         val caps = WriteCapability()
         caps.strike(relay, passId = 1)
         caps.succeeded(relay)

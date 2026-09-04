@@ -24,10 +24,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Prints the live websocket connection count on each connect/disconnect.
- * Only installed when `LOG_CONNECTIONS` is set — a quiet mode would be the
- * same as not installing it. (For the gauge without the log lines, the
- * engine's own `activeConnections` already exists.)
+ * Prints the live connection count on each connect and disconnect. Installed
+ * only under `LOG_CONNECTIONS`; the engine's `activeConnections` is the gauge.
  */
 class ConnectionCountListener : RelayServerListener {
     private val active = AtomicInteger(0)

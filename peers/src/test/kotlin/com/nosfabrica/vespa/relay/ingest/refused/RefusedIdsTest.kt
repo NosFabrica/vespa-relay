@@ -30,10 +30,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The gate and the partitioning, which together decide two things nothing else
- * can recover from: how many independent refusals an id needs before it is
- * suppressed, and whether a lookup can find a row that a different code path
- * inserted.
+ * The gate and the partitioning: how many refusals an id needs before it is
+ * suppressed, and whether a lookup finds a row a different code path inserted.
  */
 class RefusedIdsTest {
     private val epoch = 1_000L
@@ -49,8 +47,7 @@ class RefusedIdsTest {
 
     @Test
     fun `one refusal makes a candidate and suppresses nothing`() {
-        // The property that keeps a candidate-filter false positive costing one
-        // download instead of a permanent suppression.
+        // A candidate-filter false positive costs one download, never a suppression.
         refused().use { r ->
             assertEquals(RecordOutcome.CANDIDATE, r.record(id(1), 5_000))
             assertFalse(r.suppressed(id(1), 5_000), "one refusal must never suppress")
@@ -77,8 +74,7 @@ class RefusedIdsTest {
 
     @Test
     fun `a permanent push refusal suppresses immediately, with no candidate stage`() {
-        // The relay has told us outright it will never take the repair, so a
-        // second sighting would buy nothing.
+        // The relay has said outright it will never take the repair.
         refused().use { r ->
             assertEquals(RecordOutcome.SUPPRESSED, r.suppressNow(id(2), 5_000))
             assertTrue(r.suppressed(id(2), 5_000))
@@ -87,22 +83,19 @@ class RefusedIdsTest {
 
     @Test
     fun `a lookup window spanning an epoch boundary consults both epochs`() {
-        // Insertion keys on the event's exact created_at; a sweep lookup keys on
-        // the window, and windows do not respect epoch edges. Get this wrong and
-        // suppression silently stops working near every boundary — which looks
-        // exactly like the fix simply not helping.
+        // Insertion keys on the exact created_at, a sweep lookup on its window,
+        // and windows do not respect epoch edges.
         refused().use { r ->
             val at = 2_500L // epoch 2
             r.record(id(3), at)
             r.record(id(3), at)
             assertTrue(r.suppressed(id(3), at))
 
-            // A window that starts in epoch 1 and ends in epoch 3.
+            // Starts in epoch 1, ends in epoch 3.
             assertTrue(
                 r.suppressedInWindow(id(3), since = 1_500, until = 3_500),
                 "a window straddling the boundary must still find the row",
             )
-            // And one that does not reach it at all must not.
             assertFalse(r.suppressedInWindow(id(3), since = 0, until = 999))
         }
     }
@@ -138,8 +131,7 @@ class RefusedIdsTest {
 
     @Test
     fun `with no directory nothing is recorded and nothing is suppressed`() {
-        // Opt-in: a router that has not been given somewhere to keep its filters
-        // must behave exactly as it did before they existed.
+        // Opt-in: a router with nowhere to keep its filters behaves as if they did not exist.
         RefusedIds.disabled().use { r ->
             assertFalse(r.enabled)
             r.record(id(7), 5_000)
@@ -164,7 +156,6 @@ class RefusedIdsTest {
             }
             assertTrue(sealedAt > 0, "a small epoch must seal rather than absorb 20k ids")
             assertTrue(r.summary().contains("SEALED"), "sealing must be visible: ${r.summary()}")
-            // What it already holds still works.
             assertTrue(r.suppressed(id(0), 5_000))
         }
     }
@@ -179,20 +170,13 @@ class RefusedIdsTest {
     }
 }
 
-/**
- * The window lookup, which is the only path a sweep can reach and the only one
- * whose cost scales with something other than the data.
- */
+/** The window lookup, the only path a sweep reaches. */
 class RefusedIdsWindowTest {
     private fun dir() = Files.createTempDirectory("window").toFile().also { it.deleteOnExit() }
 
     /**
-     * Real SHA-256 hex, because the filter slices its bucket out of the id's
-     * first 16 hex characters and its fingerprint out of the next 8, with no
-     * hashing of its own — an event id is already a uniform hash. A counter
-     * formatted as `"%064x"` is all zeros across both of those slices, so every
-     * such id lands in one bucket with one fingerprint and they are all hits on
-     * each other. That is a property of the test data, not of the filter.
+     * Real hashes: the filter slices its bucket and fingerprint straight out of the
+     * id, and `"%064x"` counters all land in one bucket with one fingerprint.
      */
     private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("window-$n".toByteArray()))
 
@@ -207,9 +191,7 @@ class RefusedIdsWindowTest {
 
     @Test
     fun `an open-ended window still finds a suppressed id`() {
-        // `since = null` is the ordinary shape of a deleteMissing ask, so this
-        // is the case that actually runs — and the one the old index-counting
-        // loop made expensive rather than wrong.
+        // `since = null` is the ordinary shape of a deleteMissing ask.
         val r = RefusedIds(dir(), 86_400L, 10_000)
         twiceRefuse(r, id(1), 1_780_000_000L)
         assertTrue(r.suppressedInWindow(id(1), null, null))
@@ -220,16 +202,15 @@ class RefusedIdsWindowTest {
     fun `a window that excludes the id's epoch does not match it`() {
         val r = RefusedIds(dir(), 86_400L, 10_000)
         twiceRefuse(r, id(2), 1_780_000_000L)
-        // Two days earlier, closed well before the epoch the id landed in.
+        // Two days earlier, closed before the epoch the id landed in.
         assertFalse(r.suppressedInWindow(id(2), 1_779_000_000L, 1_779_500_000L))
         r.close()
     }
 
     @Test
     fun `an id is found from either side of its own epoch boundary`() {
-        // The boundary this class's KDoc calls out: insertion keys on the exact
-        // created_at, lookup keys on a window, and windows do not respect epoch
-        // edges. Get it wrong and suppression quietly stops near every edge.
+        // Insertion keys on the exact created_at, lookup on a window, and
+        // windows do not respect epoch edges.
         val epoch = 86_400L
         val r = RefusedIds(dir(), epoch, 10_000)
         val at = 1_780_000_000L
@@ -241,11 +222,7 @@ class RefusedIdsWindowTest {
 
     @Test
     fun `an open-ended window costs the epochs that exist, not the epochs since 1970`() {
-        // A guard on cost, not correctness. The previous version counted from
-        // epoch 0 to epochOf(now) and probed each index: at a one-day epoch
-        // that is >20,000 map misses per id, paid once per id in diff.needIds
-        // — thousands per relay per sweep. Measured at 0.57ms per call against
-        // 0.0007ms for a narrow window before the fix.
+        // A guard on cost, not correctness.
         val r = RefusedIds(dir(), 86_400L, 10_000)
         twiceRefuse(r, id(4), 1_780_000_000L)
 

@@ -29,30 +29,17 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * THE POOL'S ROTATION BOOKKEEPING — one home for the invariants five bare
- * collections used to share by convention, and where two audited race bugs
- * lived: the requeue a worker collision swallowed, and the revisit timers
- * that stacked into double-cadence chains.
+ * The pool's rotation bookkeeping: offers, collisions and revisit timers,
+ * generic in its unit of work.
  *
- * - [offer] dedups against the QUEUE, never against a running visit — a url
- *   can be wanted again while it is being visited.
- * - A url drawn while its visit is still running is PARKED, and the visit's
- *   own worker re-offers it the moment it finishes: the promptness a changed
- *   ask set was promised, kept through the race instead of dropped by it.
- * - A finished visit that consumed no parked requeue arms exactly ONE
- *   revisit timer, however many out-of-band offers (evictions, rebuilds)
- *   landed meanwhile.
+ * - [offer] dedups against the queue, never against a running visit.
+ * - A unit drawn while its visit is still running is parked, and the visit's
+ *   own worker re-offers it the moment it finishes.
+ * - A finished visit that consumed no parked requeue arms exactly one revisit
+ *   timer, however many out-of-band offers landed meanwhile.
  *
- * The queue knows nothing about relays, rosters or tails: [visitLoop]'s three
- * callbacks are the whole contract, which is what makes the invariants a
- * hermetically testable surface rather than probe-only choreography.
- *
- * GENERIC IN ITS KEY, and that is what let the pool's unit of work change
- * under it without touching a line of this file. The unit was a relay; it is a
- * (relay, stream) PAIR now, so that many streams can work one relay at once
- * while each stream sees a relay in one state at a time. Every invariant here
- * is about identity and none about relays, so [K] is whatever the caller
- * decides a unit of work is.
+ * [visitLoop]'s three callbacks are the whole contract; the queue knows
+ * nothing about relays, rosters or tails.
  */
 internal class VisitQueue<K : Any>(
     private val scope: CoroutineScope,
@@ -62,13 +49,10 @@ internal class VisitQueue<K : Any>(
     private val inFlight = ConcurrentHashMap.newKeySet<K>()
     private val parked = ConcurrentHashMap.newKeySet<K>()
 
-    /**
-     * The pending revisit per unit, as a CANCELLABLE job rather than a bare
-     * membership mark — see [disarm] for what a mark could not express.
-     */
+    /** The pending revisit per unit, as a cancellable job; see [disarm]. */
     private val armed = ConcurrentHashMap<K, Job>()
 
-    /** Guards the two compound reads that decide a park — see [visitLoop]. */
+    /** Guards the two compound reads that decide a park; see [visitLoop]. */
     private val handoff = Any()
 
     val waiting: Int get() = queued.size
@@ -76,20 +60,8 @@ internal class VisitQueue<K : Any>(
     val visiting: Int get() = inFlight.size
 
     /**
-     * [waiting], SPLIT by whatever the caller calls a group — the stream, for
-     * the pool, which is how a per-stream card says how much of its own roster
-     * is still queued.
-     *
-     * A projection rather than a `waitingFor(stream)`, and one walk rather than
-     * one per group: the caller wants every group at once, on a set bounded by
-     * the roster's units, and asking N times would walk it N times for one
-     * tick's numbers. The queue still knows nothing about relays or streams —
-     * [of] is the whole of what it is told.
-     *
-     * A SNAPSHOT of a set two workers are mutating, so the counts are read at
-     * one tick and not one instant. That is the same looseness every other
-     * number on this document has and the reason the page's remainder is
-     * clamped at zero.
+     * [waiting] split by [of], in one walk. A snapshot of a set the workers
+     * are mutating, so the counts are read at one tick and not one instant.
      */
     fun <G : Any> waitingBy(of: (K) -> G): Map<G, Int> {
         val out = HashMap<G, Int>()
@@ -97,7 +69,7 @@ internal class VisitQueue<K : Any>(
         return out
     }
 
-    /** Queue [key] now. False when it is already waiting (running is fine). */
+    /** Queues [key] now. False when it is already waiting (running is fine). */
     fun offer(key: K): Boolean {
         if (!queued.add(key)) return false
         channel.trySend(key)
@@ -105,12 +77,10 @@ internal class VisitQueue<K : Any>(
     }
 
     /**
-     * One worker's forever-loop: draw urls and run [visit] on each, keeping
-     * the invariants above. [revisitDelayMs] is read as the visit finishes —
-     * the delay depends on what it delivered — and [stillWanted] gates both
-     * the visit and every requeue, so a url the roster dropped mid-wait dies
-     * quietly. [visit] is expected to contain its own failure handling; a
-     * throw that escapes it (cancellation) ends the worker.
+     * One worker's loop: draws units and runs [visit] on each, keeping the
+     * invariants above. [revisitDelayMs] is read as the visit finishes, and
+     * [stillWanted] gates both the visit and every requeue. A throw escaping
+     * [visit] ends the worker.
      */
     suspend fun visitLoop(
         stillWanted: (K) -> Boolean,
@@ -119,17 +89,8 @@ internal class VisitQueue<K : Any>(
     ) {
         for (url in channel) {
             queued.remove(url)
-            // ONE STEP, because these two collections have to agree.
-            //
-            // `inFlight.add` and `parked.add` were separate, and so were the
-            // finishing visit's `inFlight.remove` and `parked.remove`. Between
-            // a worker's failed add and its park, the running visit could
-            // finish, see nothing parked, and arm a timer — so the prompt
-            // requeue this class promises as its second invariant was
-            // downgraded to a timer wait, and the park left behind bought one
-            // spurious back-to-back visit later. Both blocks are pure
-            // collection work and neither suspends, so a plain monitor is the
-            // whole fix.
+            // One step with the finishing visit's removal below: between a failed add and the
+            // park, the running visit could finish, see nothing parked, and arm a timer.
             val parkedInstead =
                 synchronized(handoff) {
                     if (inFlight.add(url)) false else parked.add(url).let { true }
@@ -146,8 +107,7 @@ internal class VisitQueue<K : Any>(
                     }
             }
             if (requeue) {
-                // A requeue arrived mid-visit: back on the queue now, and no
-                // timer — the prompt visit will arm its own.
+                // A requeue arrived mid-visit: back on the queue now, and the prompt visit arms its own timer.
                 offer(url)
             } else {
                 armRevisit(url, revisitDelayMs, stillWanted)
@@ -156,19 +116,9 @@ internal class VisitQueue<K : Any>(
     }
 
     /**
-     * DROP A PENDING REVISIT so the next completion arms a fresh one.
-     *
-     * The delay is read once, when the timer is armed, and a url armed while
-     * it was TAILED gets the tailed cadence — half an hour against five
-     * minutes for an untailed one. Eviction promptly requeues the url, but the
-     * visit that follows finds the old timer still standing in `armed` and
-     * arms nothing, so the relay that just LOST its live feed then waits out
-     * the cadence it earned while it had one. Six times the freshness gap, on
-     * exactly the relays least able to afford it.
-     *
-     * So the pool disarms on eviction. The "exactly one timer" rule is intact
-     * — this removes one rather than adding a second — and a url with nothing
-     * armed is a no-op.
+     * Drops a pending revisit so the next completion arms a fresh one. The
+     * delay is read when the timer is armed, so without this a tail's cadence
+     * would outlive the tail. A unit with nothing armed is a no-op.
      */
     fun disarm(key: K) {
         armed.remove(key)?.cancel()
@@ -180,32 +130,17 @@ internal class VisitQueue<K : Any>(
         stillWanted: (K) -> Boolean,
     ) {
         val delayMs = revisitDelayMs(url)
-        // LAZY, and registered before it can run: the body clears its own
-        // entry, so a job that started before the map knew about it would
-        // either clear a successor's entry or leak its own.
+        // Lazy and registered before it can run: the body clears its own entry.
         val job =
             scope.launch(start = CoroutineStart.LAZY) {
                 delay(delayMs)
-                // Only OUR OWN entry — a [disarm] and re-arm in between put a
-                // different job there, and that one still owes a revisit.
+                // Only our own entry: a disarm and re-arm in between put a different job there.
                 if (armed.remove(url, coroutineContext[Job])) {
                     if (stillWanted(url)) offer(url)
                 }
             }
-        // THE LOSER OF THE SLOT HAS TO BE CANCELLED, not merely dropped.
-        //
-        // `scope.launch` registers the job as a child of the scope's Job the
-        // moment it is created — LAZY defers the BODY, not the parenting. A
-        // job that is never started and never cancelled therefore stays an
-        // incomplete child for the life of the process: one retained Job per
-        // lost race, on a scope that lives as long as the router, and a parent
-        // that can never complete normally while it is there.
-        //
-        // The race is narrow but real. `armRevisit` runs after the
-        // synchronized block has already dropped the url from `inFlight`, so
-        // another worker can draw it, visit it and arm it in the gap — and the
-        // gap is as wide as `revisitDelayMs`, which is the caller's lambda and
-        // reads the roster.
+        // The loser must be cancelled, not dropped: LAZY defers the body, not the parenting,
+        // and an unstarted child stays incomplete on the scope for the life of the process.
         if (armed.putIfAbsent(url, job) != null) {
             job.cancel()
             return

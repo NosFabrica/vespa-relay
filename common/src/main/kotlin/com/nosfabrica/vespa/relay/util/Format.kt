@@ -20,12 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.util
 
-/**
- * `h:mm:ss` past an hour, `m:ss` below it. The one formatter both processes
- * print (the relay's FTS reindex, the sync process's every progress line) —
- * its former siblings (`fmtDay`, `fmtCount`, `nowSeconds`) live in `:sync`'s
- * `SyncFormat.kt`, which is all that reads them.
- */
+/** `h:mm:ss` past an hour, `m:ss` below it; the one formatter both processes print. */
 fun fmtDuration(ms: Long): String {
     val s = ms / 1000
     val h = s / 3600

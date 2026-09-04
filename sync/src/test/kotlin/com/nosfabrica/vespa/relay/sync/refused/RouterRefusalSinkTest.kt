@@ -37,27 +37,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The gate: which store refusals earn a filter row, which earn a repair, and —
- * far more important — which earn neither.
- *
- * Three of these guard data loss that nothing downstream could detect, let
- * alone undo.
- */
+/** Which store refusals earn a filter row, which earn a repair, and which earn neither. */
 class RouterRefusalSinkTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
 
-    /**
-     * A realistic event id, not `"%064x".format(n)`.
-     *
-     * These ids reach the cuckoo filter through the sink, and the filter takes
-     * its bucket from the first 16 hex characters and its fingerprint from the
-     * next 8 — both all zeros for any small counter, so every such id is a hit
-     * on every other. The assertions below happened to survive that because
-     * each test builds its own filter and most key on the heal queue rather
-     * than on suppression, but "passes because nothing distinguishes the ids"
-     * is not a property to leave in place.
-     */
+    /** A hashed id: the cuckoo filter buckets on the first 16 hex chars, which a small counter leaves all zero. */
     private fun idOf(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("sink-$n".toByteArray()))
 
     private fun event(
@@ -91,10 +75,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `a store failure never becomes a candidate`() {
-        // SAFETY. `InsertOutcome.Failed` means the event was GOOD and the store
-        // broke; a row would convert a transient fault into permanent silent
-        // loss. The pipeline never routes Failed here, and this pins the
-        // classifier too, so a future reason string cannot sneak in.
+        // Failed means the event was good and the store broke; a row would make a transient fault permanent loss.
         val h = Harness()
         assertFalse(PermanentRefusals.isPermanent(RejectionReason.INSERT_FAILED))
         h.sink().onRefused(event(1), origin(), RejectionReason.INSERT_FAILED)
@@ -105,8 +86,6 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `a duplicate never becomes a candidate`() {
-        // It is already in our id set, so a reconcile never asks for it — a row
-        // would be pure growth for zero saving.
         val h = Harness()
         assertFalse(PermanentRefusals.isPermanent(RejectionReason.DUPLICATE))
         h.sink().onRefused(event(2), origin(), RejectionReason.DUPLICATE)
@@ -116,8 +95,6 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `an unstorable-text rejection never becomes a candidate`() {
-        // The store's own text guard is about THIS engine's limits, not about
-        // the event being unwanted; nothing else should inherit that verdict.
         val h = Harness()
         assertFalse(PermanentRefusals.isPermanent("blocked: text carries a code point the engine cannot store"))
     }
@@ -146,8 +123,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `the repair is queued before the id is ever recorded`() {
-        // Heal-then-remember. A suppressed id is never downloaded again, so if
-        // the order were reversed the relay would never get its repair.
+        // A suppressed id is never downloaded again, so the reverse order would starve the relay of its repair.
         val h = Harness()
         h.sink().onRefused(event(4), origin(), RejectionReason.REPLACED)
         assertEquals(1, h.queue.size(), "the first refusal must already have queued the repair")
@@ -157,10 +133,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `a refusal with no source relay queues no repair`() {
-        // SAFETY, and the reason the push can never introduce an author to a
-        // relay that has never seen them: the ONLY way into the queue is a
-        // refusal of an event a relay actually served us. There is no path here
-        // from "we hold something they lack".
+        // The only way into the queue is a refusal of an event a relay served us; the push never introduces an author.
         val h = Harness()
         h.sink().onRefused(event(5), IngestOrigin.Local, RejectionReason.REPLACED)
         assertEquals(0, h.queue.size())
@@ -177,8 +150,6 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `with both switches off nothing is ever queued`() {
-        // The configured-but-inert trap: assert the queue stays empty, not that
-        // some flag was read.
         val h = Harness()
         listOf(RejectionReason.REPLACED, RejectionReason.DELETED, RejectionReason.VANISHED).forEach {
             h.sink().onRefused(event(8), origin(content = false, retractions = false), it)
@@ -241,8 +212,6 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `suppression can be off while healing stays on`() {
-        // The measurement rollout: learn the acceptance rate before anything
-        // starts being suppressed.
         val h = Harness()
         val sink = h.sink(suppression = false)
         sink.onRefused(event(13), origin(), RejectionReason.REPLACED)

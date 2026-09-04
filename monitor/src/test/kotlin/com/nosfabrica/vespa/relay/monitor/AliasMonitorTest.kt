@@ -38,11 +38,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * The monitor is what keeps a probe pass off a sync cycle, so what matters
- * about it is bookkeeping rather than folding: what it holds between passes,
- * and what it does when one stream's pass blows up.
- */
+/** The monitor's bookkeeping between passes: what it holds, and what it does when a pass throws. */
 class AliasMonitorTest {
     private val a = RelayUrlNormalizer.normalize("wss://nos.lol")
     private val b = RelayUrlNormalizer.normalize("wss://nos.lol/cipher-zulu")
@@ -74,12 +70,11 @@ class AliasMonitorTest {
         vararg urls: NormalizedRelayUrl,
     ) = sourced(pass, World(urls.toList()))
 
-    /** A [AliasMonitor.CandidateSource] over a fixed world, standing in for the engine's derivation. */
+    /** A [AliasMonitor.CandidateSource] over a fixed world. */
     private class World(
         private val urls: List<NormalizedRelayUrl>,
-        /** The row the derivation reports on, where a test is watching it. */
         override val progress: Processors.Handle? = null,
-        /** Run INSIDE the derivation, which is the only moment its own phase is observable. */
+        /** Run inside the derivation, the only moment its own phase is observable. */
         private val whileDeriving: () -> Unit = {},
         private val fail: (() -> Throwable)? = null,
     ) : AliasMonitor.CandidateSource {
@@ -107,12 +102,6 @@ class AliasMonitorTest {
     @Test
     fun `a source measures every stream's world without waiting for any of them to submit`() =
         runBlocking {
-            // THE RACE THIS EXISTS TO END, measured on staging: a 16-url stream
-            // finished discovering in one second, the first pass ran against
-            // those 16, and the two 17,499-url streams submitted 190 seconds
-            // later — three minutes after the pass had gone to sleep for six
-            // hours. Nothing had submitted here at all and the pass still
-            // covers the whole world.
             val pass = Recording()
             val world = World(listOf(a, b, c))
             val m = sourced(pass, world)
@@ -127,11 +116,6 @@ class AliasMonitorTest {
     @Test
     fun `the derivation reports on a row of its own, bracketed like the passes it feeds`() =
         runBlocking {
-            // THE FIVE MINUTES NOTHING COULD SEE. Deriving the candidate set
-            // walks the whole store, and it happens at the head of a sweep,
-            // before any pass has been given anything — so every row on the
-            // monitor card read `idle` with no countdown, which is exactly what
-            // they read when the monitor is asleep for six hours.
             val processors = Processors()
             val row = processors.of("aliasSource")
             var duringPhase: String? = null
@@ -144,9 +128,7 @@ class AliasMonitorTest {
 
             sourced(Recording(), world).runPass()
 
-            // Its own word, and not `measuring`: this opens no socket. A reader
-            // told a pass is dialling looks at the relays, and there are none
-            // to look at yet.
+            // `collecting`, not `measuring`: the walk opens no socket.
             assertEquals(Processors.COLLECTING, duringPhase, "the walk says what it is doing while it walks")
             val after = processors.snapshot().single()
             assertEquals(Processors.IDLE, after.phase, "and stands down when the passes take over")
@@ -157,10 +139,8 @@ class AliasMonitorTest {
     @Test
     fun `a derivation that throws still stamps its clock`() =
         runBlocking {
-            // The same reason the passes stamp theirs from a `finally`: a walk
-            // that fails every sweep and one that never returns are different
-            // faults, and a frozen `lastPassAt` under a phase that never leaves
-            // `collecting` is the only thing that tells them apart.
+            // A walk that fails every sweep and one that never returns are different
+            // faults; a frozen clock under a phase stuck on `collecting` is what separates them.
             val processors = Processors()
             val row = processors.of("aliasSource")
             val world = World(listOf(a, b, c), progress = row, fail = { IllegalStateException("the store is down") })
@@ -176,8 +156,7 @@ class AliasMonitorTest {
     @Test
     fun `an empty world is an empty pass, not a measured one`() =
         runBlocking {
-            // A cold store legitimately has no relay lists yet, which must read
-            // as "nothing to do YET" and retry rather than as a pass that ran.
+            // A cold store has no relay lists yet; that is a retry, not a pass that ran.
             val pass = Recording()
             val m = sourced(pass, World(emptyList()))
 
@@ -189,18 +168,7 @@ class AliasMonitorTest {
     @Test
     fun `a world of ONE is measured, because only the fold needs a second url`() =
         runBlocking {
-            // THIS USED TO BE SKIPPED, and skipping it took the mirror down.
-            // The guard read `size < 2` from when this class ran the fold and
-            // nothing else: one url cannot be held up against another. The
-            // stability gate and the fitness pass joined the list since and
-            // neither compares urls to anything — so a router discovering
-            // exactly one relay never got a `prime` grade written for it, and
-            // every stream selecting on that grade had a permanently empty
-            // roster.
-            //
-            // The fold's own refusal is unaffected: it lives in
-            // `AliasFolding.measure`, against the world it assembles rather
-            // than against this pass's candidate list.
+            // The fold's own refusal lives in `AliasFolding.measure`, against the world it assembles.
             val pass = Recording()
             val m = sourced(pass, World(listOf(a)))
 
@@ -213,10 +181,6 @@ class AliasMonitorTest {
     @Test
     fun `one pass failing does not skip the passes after it`() =
         runBlocking {
-            // A probe pass talks to arbitrary third-party relays; any of them
-            // can fail in ways this cannot enumerate. Losing the rest of the
-            // run to one of them is how the stability gate silently stops
-            // measuring because the fold threw.
             val failing = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { IllegalStateException("upstream went away") }))
             val after = Recording()
             val m = AliasMonitor(listOf(failing, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
@@ -229,8 +193,7 @@ class AliasMonitorTest {
     @Test
     fun `cancellation ends the pass rather than being logged`() =
         runBlocking {
-            // Swallowing this would keep the monitor grinding through every
-            // remaining stream after the scope has been told to stop.
+            // Swallowed, the monitor would grind through every remaining stream after the scope was told to stop.
             val cancelling = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { CancellationException("scope closing") }))
             val after = Recording()
             val m = AliasMonitor(listOf(cancelling, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
@@ -242,10 +205,6 @@ class AliasMonitorTest {
     @Test
     fun `a boot whose streams have not discovered yet retries soon, not next interval`() =
         runBlocking {
-            // A cold store has no relay lists to derive from, so the first pass
-            // legitimately finds nothing. Sleeping the full interval on that
-            // would push the first measurement six hours out on exactly the
-            // boot with the most to learn.
             val pass = Recording()
             val filling =
                 object : AliasMonitor.CandidateSource {
@@ -279,11 +238,8 @@ class AliasMonitorTest {
     @Test
     fun `the generation moves only when a pass learns something`() =
         runBlocking {
-            // It is a VERSION for the fold, read by streams holding a relay list
-            // across cycles: a list built before a verdict was published goes on
-            // dialling urls now known to be one relay. Bumping it on a pass that
-            // learned nothing would throw that list away for no gain — a full
-            // rediscovery, which is the cost the cache exists to avoid.
+            // A version for streams holding a relay list across cycles; bumping it on a
+            // pass that learned nothing would force a full rediscovery for no gain.
             var learn = 0
             val pass =
                 AliasMonitor.Pass { _, _, _, _, _ -> learn }
@@ -304,8 +260,7 @@ class AliasMonitorTest {
     @Test
     fun `the union's verdicts move one generation for every stream`() =
         runBlocking {
-            // A verdict is about a URL, and two streams routinely discover the
-            // same one. There is nothing per stream to version.
+            // A verdict is about a url, and two streams routinely discover the same one.
             val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == AliasMonitor.ALL_STREAMS) 4 else 0 }
             val m = monitor(pass, a, b, c)
 

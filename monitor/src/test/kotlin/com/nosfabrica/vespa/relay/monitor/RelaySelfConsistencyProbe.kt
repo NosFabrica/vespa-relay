@@ -40,33 +40,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Does an OLDER anchor make a relay agree with itself?
- *
- * The reproducibility bar ([RelayAliases.reproducible]) walks a url twice from
- * one anchor and asks how much of the window came back. Today that anchor is
- * [AliasProbe.ANCHOR_LAG_SECONDS] — one minute — which settles indexing lag and
- * nothing else. The open question is whether the hosts that fail it are failing
- * because the top of their window is still moving, or because they genuinely do
- * not answer the same question the same way twice.
- *
- * Those two have opposite consequences for using self-consistency as a RELAY
- * QUALITY gate. If an older anchor fixes them, the bar is measuring our own
- * timing and a deeper anchor is a free upgrade. If it does not, the relay is
- * sharded or shuffling, and "inconsistent" is a fact about its architecture
- * rather than its honesty — which is the whole question behind dropping it.
- *
- * Each host is walked twice per anchor age, from the same anchor, through the
- * same filter, and the containment printed is exactly the arithmetic
- * [RelayAliases.reproducible] applies.
- *
- * OFF by default, asserts NOTHING — it dials other people's servers and a relay
- * being down is not a regression.
- *
- * ```
- * ./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
- * #  …or hosts of your own:
- * #  -DselfConsistencyUrls='wss://relay.example,wss://other.example'
- * ```
+ * Whether an older anchor makes a relay agree with itself: walks each host
+ * twice per anchor age through one filter, prints the containment
+ * [RelayAliases.reproducible] applies, then what the real [ConsistencyPass]
+ * decides. Asserts nothing. Selected by `-DselfConsistency=true`; hosts via
+ * `-DselfConsistencyUrls=a,b`. Run it more than once before moving the anchor.
  */
 class RelaySelfConsistencyProbe {
     private val urls: List<NormalizedRelayUrl> =
@@ -116,9 +94,7 @@ class RelaySelfConsistencyProbe {
                     val asked = first.kinds?.let { "kinds=$it" } ?: "bare"
                     println("    %-8s %s  (%s)".format(label, containment(first.ids, second.orEmpty()), asked))
                 }
-                // …and what the REAL pass decides at the anchor it actually
-                // uses, which is the only line that says whether this relay
-                // keeps its place in the fan-out.
+                // The real pass at its own anchor: the only line that says whether the relay keeps its place.
                 val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
                 val consistency = RelayConsistency()
                 val pass =
@@ -147,7 +123,7 @@ class RelaySelfConsistencyProbe {
         println("=".repeat(78))
     }
 
-    /** The fold's own arithmetic: how much of the SMALLER window is in the larger. */
+    /** The fold's own arithmetic: how much of the smaller window is in the larger. */
     private fun containment(
         a: Set<String>,
         b: Set<String>,
@@ -161,11 +137,7 @@ class RelaySelfConsistencyProbe {
     }
 
     companion object {
-        /**
-         * How far back each walk is anchored. The first is what the fold uses
-         * today; the rest test the premise that a window nothing is still being
-         * written into is a window a relay can reproduce.
-         */
+        /** The first is the fold's own anchor; the rest are windows nothing is still being written into. */
         private val ANCHOR_AGES =
             listOf(
                 "1min" to AliasProbe.ANCHOR_LAG_SECONDS,

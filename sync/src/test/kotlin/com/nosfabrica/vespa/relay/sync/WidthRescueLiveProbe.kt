@@ -54,73 +54,14 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * THE WHOLE FIX, RUNNING: the real [VisitPool], the real relay client, real
- * relays that refuse us, and a real Vespa the events have to land in.
- *
- * Everything else written for #185 is a unit test over a fake, a browser probe
- * over a fixture, or a dial that asserts what a relay SAYS. None of them run
- * the machine. This does: it stands the pool up on a declared-`urls` stream
- * carrying `contentViaOutbox`'s real 141-kind filter, points it at relays that
- * are known to refuse exactly that, and then asks the three questions the issue
- * actually asked —
- *
- *  1. does a relay that refused us now DELIVER, and do its events reach the
- *     store (the convergence claim);
- *  2. does the abort partition name what happened, with the relay's own
- *     sentence (the instrument claim);
- *  3. does a relay that never had a problem still work (the no-regression
- *     claim, which is the one a fix like this quietly breaks).
- *
- * ## What it answered, 2026-09-03 — one run, three relays, a real Vespa
- *
- * ```
- * [ 300s] purplerelay.com=refused(<=17)   git.cloistr.xyz=complete(<=17)  nos.lol=paging
- * [ 330s] purplerelay.com=paging(<=8)     git.cloistr.xyz=complete(<=17)  nos.lol=paging
- *
- * 4 visit(s) run, 2 relay(s) narrowed, 1 abort (abortedClosed)
- * ingest accepted=1178 rejected=51   kinds 0/1/1111/10002/30023 in the engine
- * ```
- *
- * **Both width-capped relays now deliver, and one of them took two visits to
- * get there** — which is the `MAX_NARROWINGS` claim, observed rather than
- * argued. `git.cloistr.xyz` narrowed 139 → 69 → 34 → 17 inside its first visit
- * and was served; `purplerelay.com` spent the same three halvings, was still
- * refused at 17, and aborted — then the revisit five minutes later started from
- * the cap it had learned, narrowed 17 → 8, and paged its history back to 2023.
- * Its row carries `syncStatus: paging` AND the refusal that came before it,
- * which is the "coverage and a refusal are both true" case the report was
- * written for, live.
- *
- * `nos.lol` is the control and is untouched: no cap, no abort, current.
- *
- * **AND IT FOUND A BUG NO OTHER TEST COULD.** On the first run purplerelay
- * stopped narrowing after ONE halving while cloistr managed three, from
- * identical code. The relay's sentence arrives on quartz's CONNECTION listener
- * and the refusal on its SUBSCRIPTION listener, and quartz runs the second
- * first — so reading the sentence straight after a refused walk is a race, and
- * losing it makes `FilterWidths.learn` see nothing and stop. See
- * [RelayComplaints.awaitSince]. Every unit test passed throughout, because a
- * fake answers instantly.
- *
- * OFF by default and asserts NOTHING — it dials other people's servers and
- * writes to an engine. A relay that has changed its policy since the issue was
- * filed is a legitimate answer here, not a failure.
- *
- * ```
- * DOCKER_MIN_API_VERSION=1.24 dockerd &
- * VESPA_MEM_LIMIT=6g docker compose up -d vespa
- * until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
- * WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i
- * ```
+ * Stands the real [VisitPool] up on `contentViaOutbox`'s 141-kind filter
+ * against two relays known to refuse that width and one control, with a live
+ * Vespa behind the ingest, and prints each relay's status row, the abort
+ * counts and what landed in the store over several revisits. Asserts nothing.
+ * Selected by the `WIDTH_RESCUE_VESPA` environment variable (the engine url).
  */
 class WidthRescueLiveProbe {
-    /**
-     * The relays this runs against.
-     *
-     * Two that refuse `contentViaOutbox`'s width and one that does not — the
-     * control, because a chunking change that broke the ordinary relay would
-     * pass every assertion about the two that needed it.
-     */
+    /** Two relays that refuse `contentViaOutbox`'s width, and nos.lol as the control. */
     private val urls =
         listOf(
             "wss://purplerelay.com",
@@ -146,7 +87,6 @@ class WidthRescueLiveProbe {
                         .pingInterval(Duration.ofSeconds(120))
                         .build()
                 val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-                // The router's own wiring, both halves of it.
                 val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(NostrSignerInternal(KeyPair()).sign(template)) }
                 val complaints = ClientRelayComplaints(client)
                 val widths = FilterWidths()
@@ -156,11 +96,7 @@ class WidthRescueLiveProbe {
                         SyncStream(
                             name = "contentViaOutbox",
                             dir = SyncDirection.DOWN,
-                            // BOUNDED, unlike the deployment's. The width is what
-                            // is under test and the limit does not touch it — a
-                            // relay decides on the REQ, before an event moves —
-                            // and without it this drains three strangers' whole
-                            // corpora into a probe's engine.
+                            // Bounded, unlike the deployment's: a relay judges width on the REQ, before an event moves.
                             filter = Filter(kinds = CONTENT_KINDS, limit = EVENTS_PER_ASK),
                             urls = urls.map { RelayUrlNormalizer.normalize(it) },
                             trusted = false,
@@ -195,14 +131,8 @@ class WidthRescueLiveProbe {
                 client.connect()
                 try {
                     pool.start()
-                    // ACROSS REVISITS, which is the claim `MAX_NARROWINGS`
-                    // rests on and the one no unit test can make: a visit pays
-                    // at most three halvings, and the cap OUTLIVES the visit,
-                    // so a relay whose limit is further down is reached over
-                    // the next few. The untailed revisit base is five minutes,
-                    // so this watches for several of them and prints each
-                    // relay's row every time it polls — the convergence is the
-                    // sequence of caps, not the last one.
+                    // A visit pays at most MAX_NARROWINGS halvings and the cap outlives the visit,
+                    // so the convergence is the sequence of caps across revisits, not the last one.
                     val deadline = System.currentTimeMillis() + RUN_MS
                     while (System.currentTimeMillis() < deadline) {
                         delay(POLL_MS)
@@ -222,9 +152,6 @@ class WidthRescueLiveProbe {
                                 },
                             ),
                         )
-                        // Done when nothing is still being refused — the point
-                        // this run exists to reach — or when the walls are
-                        // plainly not width.
                         if (rows.none { it.second == "refused" }) {
                             println("  …every relay is being served; stopping early")
                             break
@@ -256,9 +183,6 @@ class WidthRescueLiveProbe {
                         println("  %-24s %d".format(name, counts[name] ?: 0))
                     }
 
-                    // WHAT EACH RELAY ENDED UP AT, through the very report the
-                    // status page draws — so a row here is the row an operator
-                    // would read.
                     println("-".repeat(100))
                     val rows =
                         RelayStatusReport
@@ -266,12 +190,9 @@ class WidthRescueLiveProbe {
                             ?.get("rows")
                     println("  rows: $rows")
 
-                    // AND THE ONLY ANSWER THAT COUNTS: what is in the store.
                     println("-".repeat(100))
                     println("  ingest accepted=${ingest.accepted.get()} rejected=${ingest.rejected.get()}")
-                    // Through the store's own read path, which is also the one
-                    // the relay serves clients from — a count taken any other
-                    // way would not prove the events are servable.
+                    // Through the store's own read path, so the count proves the events are servable.
                     for (kind in SAMPLE_KINDS) {
                         val held = store.count(Filter(kinds = listOf(kind), limit = 100_000))
                         if (held > 0) println("  kind %-6d %d event(s) stored".format(kind, held))
@@ -307,7 +228,7 @@ class WidthRescueLiveProbe {
             }.orEmpty()
 
     private companion object {
-        /** `contentViaOutbox`'s own kinds, as the issue quotes them. */
+        /** `contentViaOutbox`'s own kinds. */
         val CONTENT_KINDS =
             listOf(
                 0,
@@ -451,7 +372,6 @@ class WidthRescueLiveProbe {
                 48106,
             )
 
-        /** A few of them, read back out of the engine at the end. */
         val SAMPLE_KINDS = listOf(0, 1, 3, 7, 1111, 10002, 30023, 30078)
 
         const val EVENTS_PER_ASK = 40

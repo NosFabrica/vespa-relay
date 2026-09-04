@@ -42,131 +42,11 @@ import kotlin.test.Test
 import kotlin.test.fail
 
 /**
- * WHAT THE REFERENCE EXPANSION COSTS A READ, measured through the whole serving
- * stack — a websocket session, quartz's engine, [ObserverBackend], the store —
- * by running the SAME REQ against two relays over ONE store and differing in
- * one thing: [SearchExpansionLimits.enabled].
- *
- * Both relays in one JVM against one corpus is the point. An absolute
- * milliseconds-per-REQ number off a laptop or a cloud sandbox says nothing
- * portable; the RATIO between two arms that shared a heap, a page cache and a
- * scheduler is the thing that survives the move to another machine.
- *
- * Three arms, because the change has three different prices:
- *
- *  1. **recall** — a termless `include:spam` read: a mirror's paging, a
- *     NIP-77 catch-up, the web page's plain filters. The expansion must not
- *     touch this at all, and the only thing it adds is the store's "does any
- *     query carry TERMS" test. This is the arm that would have caught gating on
- *     "has a `search` field" — every anonymous read on a lens-requiring relay
- *     stamps `include:spam`, and a mirror's paging carries it too.
- *  2. **search, no kind can point** — a real text search that names `kinds`
- *     holding no Trusted List, Assertion or label. This is what most client
- *     searches look like, and the store's kind test — no `kinds` entry in
- *     `SearchReferences.KINDS` — sends it down the untouched path, so it must
- *     come out at zero.
- *  3. **search, could point, none does** — the same search with `kinds`
- *     omitted, so any kind may come back and the relay has to look. Pays for
- *     collecting the page before writing it out, and NO extra store round trip,
- *     because no row's kind nominates anything. This is the arm that prices the
- *     mechanism itself.
- *  4. **search, every hit a pointer** — a page of Trusted Lists. Pays the
- *     above plus the extra recall for the subjects. Their memberships OVERLAP,
- *     which is what a real roster does, so the splice converges on a handful of
- *     distinct pubkeys however long the page is.
- *  5. **search, every hit a label** — a page of NIP-32 labels, each naming ONE
- *     distinct event. This is the worst case the feature actually has in
- *     production, and the one the arm above understates: nothing dedupes, so
- *     the splice is as big as the page and the frame count doubles.
- *
- * The store round trips are counted as well as timed. A count is a structural
- * fact that holds on any engine; a duration is a measurement of this one, and
- * against [InMemoryEventIndex] a "round trip" costs a hash lookup rather than
- * a network hop — which is exactly why the in-memory arm OVERSTATES the
- * relative cost of the relay-side work and UNDERSTATES the extra recalls. Point
- * it at a real engine to see the other bias:
- *
- *     ./gradlew :relay:test --tests '*SearchExpansionCostBench*' -DsearchExpansionBench -i
- *     BENCH_VESPA_URL=http://localhost:8080 ./gradlew :relay:test \
- *         --tests '*SearchExpansionCostBench*' -DsearchExpansionBench -i
- *
- * Off unless asked for by name: it writes a corpus and runs thousands of REQs,
- * which is not a unit test. Asserts nothing about durations — a timing
- * assertion on a shared CI box is a flake generator, and the numbers are for a
- * person to read.
- *
- * ## What it reads with the splice in the store
- *
- * 2026-08-29, 4-core sandbox, single-node Vespa in Docker, 2,521-event corpus,
- * 201 rounds per arm, medians:
- *
- * | arm | page | off | on | | frames |
- * |---|---|---|---|---|---|
- * | recall | 50 / 500 | 7.0 / 19.7ms | 7.0 / 19.8ms | -0.2% / +0.1% | unchanged |
- * | search, no kind can point | 50 / 500 | 12.1 / 29.8ms | 12.2 / 29.6ms | +0.2% / -0.7% | unchanged |
- * | search, could point, none does | 50 / 500 | 11.2 / 29.7ms | 11.3 / 29.4ms | +0.2% / -0.9% | unchanged |
- * | search, every hit a pointer | 50 / 500 | 10.1 / 46.0ms | 14.4 / 50.0ms | +42% / +9% | +20 |
- * | search, every hit a label | 50 / 500 | 13.4 / 34.0ms | 18.0 / 54.7ms | +35% / +61% | x2 |
- *
- * RE-TAKEN AFTER THE MOVE, and the pointer arm had to be, twice over. The gate
- * was the relay's before and flat across kinds, so a Treasure Map naming a
- * `30382:rank` service unpacked Trusted Lists too; it is per-kind now, and this
- * bench's corpus had to grow a bare `30392` entry — and its store a
- * `TrustProjection` — to keep that arm expanding at all. Without either it ran
- * at +0.0 queries and +0.0 frames while still reporting a ~+50-100% median,
- * which is noise attributed to a splice that never happened.
- *
- * The label arm was never gated (NIP-32 is ungated by design), and it is the
- * check that the box has not changed shape under the table: +61% at 500 both
- * times, against +15% -> +9% on the pointer arm.
- *
- * Everything that does not expand is free. A page that does expand pays ONE
- * extra round trip whatever its size, and then the subjects themselves.
- *
- * THE TWO EXPANDING ARMS DIVERGE, and the reason is the shape of the data
- * rather than anything in the code. Trusted Lists OVERLAP — a page of 500
- * rosters names the same 20 pubkeys — so the splice converges and the relative
- * cost FALLS as the page grows (+44% -> +15%). NIP-32 labels do not: each names
- * its own event, so the splice is as big as the page, the frame count DOUBLES,
- * and the cost RISES with it (+38% -> +61%). The marginal cost of a spliced
- * event on this box is ~48us — its share of the batched recall plus its frame.
- *
- * The label arm is the worst case the feature actually has in production, and
- * it is the one to look at first. Real labels carry a median of ONE nostr
- * target (405 of 433 sampled), with a thin tail up to 40, so a page of labels
- * really does splice about one event per hit. At that rate the default
- * `SEARCH_EXPAND_MAX_TOTAL` of 1,000 is spent by a page of roughly 400-500
- * labels — which is what bounds a REQ that names no `limit` at all and takes
- * the relay's 5,000 default.
- *
- * The in-memory index prices the extra round trip at well under a millisecond,
- * which is why its relative numbers look so different and why this table is the
- * real one.
- *
- * THINGS THIS BENCH FOUND, none of them visible in the correctness tests:
- *
- *  - the expansion originally lived in the session backend, where no delivery
- *    callback can suspend, so it awaited a child coroutine — putting back the
- *    scheduler hop quartz's UNDISPATCHED REQ exists to avoid, a flat ~90us on
- *    EVERY search. Chasing that number is what exposed the seam as wrong:
- *    moving it one layer down, into an `IEventStore` decorator, made the same
- *    calls ordinary suspend functions that return, and the coroutine went away
- *    entirely along with ~280 lines of machinery. (That decorator has since
- *    moved again, into the store itself — see AGENTS.md — so neither class this
- *    paragraph once linked to exists here any more.)
- *  - the plan read every row's pointers before spending the budget, so a
- *    500-list page paid 450 tags-parses for rows it had already decided to take
- *    nothing from: 12.2ms -> 6.5ms on the in-memory pointer arm, and the Vespa
- *    pointer arm's absolute delta is flat across a 10x page because of it.
- *  - the reader's 10040 was re-read inside every REQ, a second round trip
- *    (+2.0 queries, 27.9ms at 50 hits) to re-fetch a document that changes when
- *    someone enrols a service. Caching it per reader took that to +1.0 queries
- *    and 21.5ms, and the arm went from +74% to +44%. The cache is now the
- *    store's `ProviderMap` pass, which a 10040 write invalidates directly —
- *    the relay-side version needed a TTL because it could not see the sync
- *    process writing 10040s into the same index from another JVM, and that is
- *    one of the two reasons the feature moved.
- *
+ * What the reference expansion costs a read, measured through the whole serving stack by running the
+ * same REQ against two relays over one store that differ only in [SearchExpansionLimits.enabled]. Five
+ * arms: a termless recall, a search no kind can point from, one that could but none does, a page of
+ * Trusted Lists, a page of NIP-32 labels. Prints medians, p90s, store round trips and frames per REQ;
+ * asserts nothing. Selected by `-DsearchExpansionBench`; `BENCH_VESPA_URL` points it at a real engine.
  */
 class SearchExpansionCostBench {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -198,11 +78,7 @@ class SearchExpansionCostBench {
     private val reader = NostrSignerSync()
     private val curator = NostrSignerSync()
 
-    /**
-     * One arm's numbers. The MEDIAN and the p90, never the mean: a sandbox
-     * hands you a handful of multi-millisecond GC pauses per thousand REQs, and
-     * a mean is then mostly a report of which arm they landed in.
-     */
+    /** One arm's numbers: the median and the p90, never the mean, which mostly reports where the GC pauses landed. */
     private class Timing(
         val label: String,
         samples: LongArray,
@@ -226,30 +102,14 @@ class SearchExpansionCostBench {
         }
         val vespa = System.getenv("BENCH_VESPA_URL")
         println(if (vespa == null) "EXPANSION-BENCH: in-memory index (set BENCH_VESPA_URL for a real engine)" else "EXPANSION-BENCH: real engine at $vespa")
-        // COUNTER INNERMOST, PROJECTION OUTSIDE IT, on both arms. Two reasons,
-        // and the move made both of them load-bearing:
-        //
-        //  - the gate reads the reader's Treasure Map off [TrustProjection], so
-        //    a store assembled without one admits NO declaration and the
-        //    Trusted List arm below silently prices a splice that never
-        //    happens. It used to work over any store, because the enrolment
-        //    cache was the relay's; it is the store's now.
-        //  - the projection's own provider-list reads go to the index it
-        //    wraps, so a counter placed OUTSIDE it never sees them — which is
-        //    the opposite of what this bench is for. The counter is the
-        //    innermost layer so that every engine search is counted, trust
-        //    resolution's included.
+        // Counter innermost, projection outside it: the gate reads the Map off the projection, and the
+        // projection's own reads must be counted too.
         val counted = CountingIndex(if (vespa == null) InMemoryEventIndex() else vespaEvents(vespa))
         val index = TrustProjection(counted, if (vespa == null) InMemoryReputationIndex() else VespaReputationIndex(vespa))
         NostrSemanticsStore(index, relay = relayUrl).use { runBench(it, index, counted) }
     }
 
-    /**
-     * The real engine, deployed if absent. The [TrustProjection] that
-     * `VespaEventStore.open` puts over it is assembled by the caller, around
-     * the counter — a bench that skipped the projection would be measuring a
-     * different query planner from the one that serves.
-     */
+    /** The real engine, deployed if absent. The caller puts the [TrustProjection] around the counter, as `VespaEventStore.open` would. */
     private fun vespaEvents(url: String): EventIndex {
         SchemaDeployer(System.getenv("BENCH_VESPA_CONFIG_URL") ?: url.replace(":8080", ":19071")).deployIfAbsent(url)
         return VespaEventIndex(url)
@@ -261,11 +121,8 @@ class SearchExpansionCostBench {
         counter: CountingIndex,
     ) = runBlocking {
         val on = NostrRelayServer(store, relayUrl)
-        // The OFF arm is a second store over the same index, because the splice
-        // moved into the store: "the same corpus without the expansion" is a
-        // store opened without it, not a relay told to skip it. The SAME
-        // projection instance, so both arms share one provider-map cache and
-        // the difference between them is the splice alone.
+        // The off arm is a second store over the same projection instance, so both arms share one
+        // provider-map cache and differ in the splice alone.
         val off = NostrRelayServer(NostrSemanticsStore(index, relay = relayUrl, searchExpansion = SearchExpansionLimits.Off), relayUrl)
         try {
             seed(on)
@@ -278,9 +135,7 @@ class SearchExpansionCostBench {
                     "search, every hit a label" to { page -> """{"kinds":[1,1985],"limit":$page,"search":"$LABEL_VALUE $lens"}""" },
                 )
 
-            // Warm-up: the first REQ through a fresh JVM pays class loading,
-            // the JIT and the store's first query plan, and it is easily 100x
-            // the steady-state cost. Measuring it would drown every arm.
+            // The first REQ through a fresh JVM pays class loading, the JIT and the first query plan.
             repeat(WARMUP) {
                 arms.forEach { (_, filter) ->
                     measure(on, filter(SMALL_PAGE))
@@ -293,11 +148,7 @@ class SearchExpansionCostBench {
             println("------------------------------------------------------------------------------------------")
             for ((label, filter) in arms) {
                 for (page in PAGES) {
-                    // INTERLEAVED, one REQ each per round, rather than all of
-                    // one arm and then all of the other: a GC pause or a JIT
-                    // recompile that lands inside a whole arm is read as that
-                    // arm being slower, and running them apart is how you get a
-                    // 30% "regression" that reverses when you swap the order.
+                    // Interleaved, one REQ each per round: a GC pause inside a whole arm reads as that arm being slower.
                     val offSamples = LongArray(ROUNDS)
                     val onSamples = LongArray(ROUNDS)
                     var offFrames = 0L
@@ -370,24 +221,15 @@ class SearchExpansionCostBench {
         }
     }
 
-    /**
-     * The corpus: notes to search, profiles for the lists to name, and lists
-     * whose titles are the thing a search matches. Small enough to load on a
-     * 4-core box, big enough that a page is a page.
-     */
+    /** The corpus: notes to search, profiles for the lists to name, and lists whose titles a search matches. */
     private suspend fun seed(server: NostrRelayServer) {
         val out = Collections.synchronizedList(mutableListOf<String>())
         val session = server.connect { out.add(it) }
         try {
             val members = (0 until MEMBERS).map { NostrSignerSync() }
             val events = ArrayList<Event>()
-            // BOTH DELEGATION SHAPES, because the gate is per KIND and the
-            // pointer arm below searches 30392: NIP-85's `<kind>:<metric>`
-            // appoints a service to rank users, and the Tapestry ADR's generic
-            // bare `<kind>` appoints a publisher to curate lists of them. A map
-            // carrying only the first leaves every Trusted List here unexpanded
-            // and the arm prices a splice that never happens — which is what it
-            // did while the enrolment cache was the relay's and flat.
+            // Both delegation shapes: the gate is per kind, and a Map carrying only `30382:rank` leaves every
+            // Trusted List unexpanded, so the pointer arm would price a splice that never happens.
             events +=
                 reader.sign<Event>(
                     1_699_999_000L,
@@ -413,14 +255,8 @@ class SearchExpansionCostBench {
                         "",
                     )
             }
-            // NIP-32 labels, in the shape production actually publishes them:
-            // an `L` namespace, one `l` value shared by all of them (a language
-            // tag is 243 of every 400 labels on the search relay), and ONE `e`
-            // target each. The one-target-each part is what makes this the
-            // worst case and the reason it is its own arm — a page of N labels
-            // names N DISTINCT events, so nothing dedupes and the splice is the
-            // same size as the page, where a page of Trusted Lists converges on
-            // the handful of pubkeys they all name.
+            // Labels in production's shape: one shared `l` value and one `e` target each, so a page of N
+            // labels names N distinct events and nothing dedupes.
             val notes = events.filter { it.kind == 1 }
             repeat(minOf(LABELS, notes.size)) { i ->
                 events +=
@@ -462,14 +298,7 @@ class SearchExpansionCostBench {
         const val ROUNDS = 201
         const val WARMUP = 30
 
-        /**
-         * TWO page sizes, because the change has a fixed cost and a per-row one
-         * and a single size cannot tell them apart. The buffering pays a child
-         * coroutine and a `CompletableDeferred` ONCE per REQ; the gate, the
-         * `sent` record and the kind test are paid PER ROW. A delta that is
-         * flat across a 10x page is the former and a bigger page is free; one
-         * that scales with the page is the latter.
-         */
+        /** Two sizes, because the change has a fixed cost per REQ and a per-row one, and one size cannot tell them apart. */
         val PAGES = listOf(50, 500)
         const val SMALL_PAGE = 50
 
@@ -478,7 +307,7 @@ class SearchExpansionCostBench {
         const val MEMBERS = 20
         const val LABELS = 1_000
 
-        /** The `l` value every bench label shares — a common label, which is the question. */
+        /** The `l` value every bench label shares. */
         const val LABEL_VALUE = "benchlabelvalue"
     }
 }

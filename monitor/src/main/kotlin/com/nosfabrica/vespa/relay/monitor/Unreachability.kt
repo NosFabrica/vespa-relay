@@ -23,17 +23,10 @@ package com.nosfabrica.vespa.relay.monitor
 /**
  * Whether a failure may be published as "this relay is unreachable".
  *
- * The distinction matters because the answer is PUBLISHED: a negative NIP-66
- * record is a signed, public statement about someone else's server. A relay
- * that completes a handshake and then hangs up mid-page is emphatically
- * reachable, and an exception thrown by our own code says nothing about the
- * relay at all. So this asks only about the connection itself — name
- * resolution, routing, refusal, TLS.
- *
- * Unknown failures stay quiet: the cost of silence is one retry next cycle,
- * the cost of being wrong is a false record carrying our signature.
- *
- * Top-level and pure so the rule can be tested without a live client.
+ * A negative NIP-66 record is a signed public statement about someone else's
+ * server, so only the connection itself counts: name resolution, routing,
+ * refusal, TLS. A hang-up mid-page or a bug of our own proves nothing, and an
+ * unknown failure costs one retry next cycle rather than a false record.
  */
 object Unreachability {
     fun proves(e: Exception): Boolean =

@@ -29,25 +29,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * The two things a caller reads a relay's sentence by: WHEN it was said, and
- * whether it has been said YET.
- *
- * The second is the one that cost a real relay its sync. quartz dispatches a
- * `CLOSED` to SUBSCRIPTION listeners before connection listeners, so
- * `fetchAllPages` returns and the caller asks what the relay said a scheduling
- * hop before the connection listener that records it has run. Measured against
- * two live relays: the narrowing won that race three times out of three on
- * `git.cloistr.xyz` and narrowed 139 → 69 → 34 → 17 until it was served, and
- * LOST it on the second attempt against `purplerelay.com` — which stopped the
- * narrowing dead at 69 and aborted a visit that was one halving from working.
+ * When a relay's sentence was said, and whether it has landed yet: quartz
+ * dispatches a `CLOSED` to subscription listeners before connection listeners.
  */
 class RelayComplaintsTest {
     private val url = RelayUrlNormalizer.normalize("wss://purplerelay.com")
 
-    /**
-     * A relay whose sentence lands on the [lateBy]-th read — the dispatch race,
-     * made deterministic.
-     */
+    /** A relay whose sentence lands on the [lateBy]-th read: the dispatch race, made deterministic. */
     private class LateComplaint(
         private val text: String,
         private val lateBy: Int,
@@ -65,10 +53,7 @@ class RelayComplaintsTest {
         runBlocking {
             val said = "ERROR: bad req: filter validation failed: too many kinds in filter: 69"
             val relay = LateComplaint(said, lateBy = 3)
-            // The plain read is what the narrowing used to do, and it answers
-            // null here — which `FilterWidths.learn` correctly reads as "not a
-            // width refusal" and stops on, because it cannot tell a relay that
-            // said nothing from one whose sentence is a hop behind.
+            // The plain read answers null here, which `FilterWidths.learn` reads as not a width refusal.
             assertNull(relay.since(url, 0))
             assertEquals(said, relay.awaitSince(url, 0), "the grace has to cover a listener that has not run yet")
         }
@@ -76,9 +61,7 @@ class RelayComplaintsTest {
     @Test
     fun `a relay that genuinely said nothing costs the grace and no more`() =
         runBlocking {
-            // The other direction, and the one that bounds the cost: an aborted
-            // leg against a relay that simply went quiet must not wait forever
-            // for words that are not coming.
+            // A relay that went quiet must not be waited on forever.
             val relay = LateComplaint("never", lateBy = Int.MAX_VALUE)
             val startedMs = System.currentTimeMillis()
             assertNull(relay.awaitSince(url, 0, graceMs = 100))
@@ -89,8 +72,7 @@ class RelayComplaintsTest {
     @Test
     fun `a sentence already in hand costs nothing`() =
         runBlocking {
-            // The common case, and it must not pay the grace: the relay usually
-            // answers before the caller asks.
+            // The common case must not pay the grace.
             val relay = LateComplaint("said at once", lateBy = 0)
             val startedMs = System.currentTimeMillis()
             assertEquals("said at once", relay.awaitSince(url, 0))
@@ -101,9 +83,7 @@ class RelayComplaintsTest {
     @Test
     fun `the deaf one hears nothing however long it is given`() =
         runBlocking {
-            // Every probe and every test that does not care. An abort then
-            // names its reason without the relay's own words, exactly as it did
-            // before this existed.
+            // Every probe and test that does not care; an abort then names its reason without the relay's words.
             assertNull(RelayComplaints.DEAF.since(url, 0))
             assertNull(RelayComplaints.DEAF.awaitSince(url, 0, graceMs = 20))
         }

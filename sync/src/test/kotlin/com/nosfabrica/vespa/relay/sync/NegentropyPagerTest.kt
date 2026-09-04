@@ -37,17 +37,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The chunker's contract, which is easier to state than to eyeball in a log:
- *
- *  - every window is sized before it is asked for, from BOTH sides;
- *  - windows are walked newest-first, because the one-timestamp cursor is only
- *    correct while the finished region stays contiguous;
- *  - a crash resumes where the cursor points, and a completed sweep leaves none;
- *  - a second nobody can reconcile costs that second, not the sweep.
- *
- * The peer here is a model of a relay with a `max_sync_events`, including the
- * part quartz does for us: it halves an over-cap window itself and only refuses
- * when a one-second slice is still over.
+ * The chunker's contract. The peer models a relay with a `max_sync_events`,
+ * including the halving quartz does on its behalf before refusing.
  */
 class NegentropyPagerTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -88,20 +79,15 @@ class NegentropyPagerTest {
     }
 
     /**
-     * A relay with a cap, wrapped in the quartz that now talks to it: it splits
-     * an over-cap window itself, hands a slice no window size can fit to the
-     * caller's hook instead of throwing, and reports the cap it refused with.
+     * A relay with a cap, behind the quartz that splits an over-cap window itself
+     * and hands a slice no size can fit to the caller's hook.
      */
     private class FakePeer(
         val density: Density,
         val cap: Int = Int.MAX_VALUE,
         // Windows (in call order) the relay drops instead of answering.
         val failAt: Set<Int> = emptySet(),
-        // Refuse through the exception rather than the hook — the defensive
-        // path, for a quartz that could not hand the window over.
         val throwsOverMax: Boolean = false,
-        // A relay whose refusal carries no number: nothing to fit to, so the
-        // caller is left halving.
         val statesCap: Boolean = true,
     ) : WindowSync {
         val asked = mutableListOf<LongRange>()
@@ -130,8 +116,7 @@ class NegentropyPagerTest {
             val done = mutableListOf<LongRange>()
             var refused = false
 
-            // quartz's own loop: split what does not fit, hand over what cannot
-            // be split, and keep going.
+            // quartz's own loop: split what does not fit, hand over what cannot be.
             suspend fun walk(r: LongRange) {
                 if (density.count(r) <= cap) {
                     done += r
@@ -167,24 +152,12 @@ class NegentropyPagerTest {
             )
         }
 
-        /**
-         * …and whether this peer REFUSES the fallback page.
-         *
-         * Off by default, which is the honest empty relay every case below
-         * assumes. Set for the one case that could not be written before the
-         * signature carried the ending: a relay that answers the last-resort
-         * REQ with a `CLOSED` and nothing delivered, which the sweep read as an
-         * empty window and CLAIMED.
-         */
+        /** Whether the fallback page is refused: a `CLOSED` with nothing delivered. */
         var refusesPages = false
 
         /**
-         * …and whether the page DELIVERED SOMETHING while still being refused.
-         *
-         * The case that reintroduced the bug the signature change was for:
-         * `page` may walk several kind-chunks, so a chunk that served events
-         * and a later one that was turned away is one call returning both. A
-         * refusal inferred from `downloaded == 0` cannot see it.
+         * Events a refused page still delivered: a kind-chunked page can serve
+         * one chunk and be turned away on the next.
          */
         var refusedPagesStillDeliver = 0
 
@@ -236,21 +209,14 @@ class NegentropyPagerTest {
             val out = pager(index, peer).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
             assertTrue(out.complete)
-            // The leg holds 100x the target, so it cannot have gone in one ask,
-            // and the FIRST window — the one asked before anything is learned —
-            // must fit the starting target. Later windows are allowed to be
-            // bigger: clean ones grow the target, which is the point of it.
+            // Only the first window must fit the starting target; clean ones grow it.
             assertTrue(peer.asked.size > 1, "a leg 100x the target must be cut")
             assertTrue(
                 index.density.count(peer.asked.first()) <= 1_000,
                 "first window holds ${index.density.count(peer.asked.first())} local events, over the starting target",
             )
-            // Every window was counted before it was asked for — that is what
-            // "before any round trip" means.
             peer.asked.forEach { assertTrue(it in index.counted, "window $it was asked for without being counted first") }
             assertTiles(peer.reconciled, 1_000, 1_999)
-            // Nothing was refused: the pre-split did the work, so the peer never
-            // had to split anything itself.
             assertEquals(peer.asked.size, peer.reconciled.size)
         }
 
@@ -258,7 +224,6 @@ class NegentropyPagerTest {
     fun `a store that cannot be counted lets the peer decide`() =
         runBlocking {
             val index = FakeIndex(Density(perSecond = 100)).apply { answersCount = false }
-            // The peer's own cap is what cuts it up instead.
             val peer = FakePeer(Density(perSecond = 100), cap = 5_000)
             val out = pager(index, peer).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
@@ -267,13 +232,8 @@ class NegentropyPagerTest {
             peer.reconciled.forEach { assertTrue(peer.density.count(it) <= 5_000) }
         }
 
-    // `: Unit` is load-bearing on the two tests below and not decoration:
-    // an expression-bodied test whose last statement HAS a value —
-    // `zipWithNext` returns the list of its lambda's results — compiles to a
-    // method returning that type, and JUnit 5 silently does not run a
-    // non-void @Test. `windows are walked newest first` had been skipped that
-    // way, unnoticed, since it was written. Declaring Unit discards the value
-    // and the method comes back void.
+    // `: Unit` is load-bearing on the two tests below: `zipWithNext` returns a list,
+    // and JUnit 5 silently does not run a non-void @Test.
     @Test
     fun `windows are walked newest first`(): Unit =
         runBlocking {
@@ -289,12 +249,6 @@ class NegentropyPagerTest {
     @Test
     fun `the window cursor is the older edge, announced after the cut, and only descends`(): Unit =
         runBlocking {
-            // The in-flight row draws this as `back to <date>` beside
-            // `auditing history (negentropy)`, in the same direction as a paged
-            // leg's cursor. Two ways that reading used to be wrong: the newer
-            // edge (a sweep with years left reporting today's date), and
-            // announcing a window BEFORE it is cut (the whole leg, then a
-            // cursor walking upwards as each bisection narrowed it).
             val index = FakeIndex(Density(perSecond = 100))
             val peer = FakePeer(Density(perSecond = 1))
             val announced = mutableListOf<LongRange>()
@@ -313,9 +267,6 @@ class NegentropyPagerTest {
     @Test
     fun `a store that cannot count still hands the peer a bound`() =
         runBlocking {
-            // Without a count there is nothing to pre-split on, so the window
-            // goes to the peer whole — but never unbounded: the target rides
-            // along, and quartz splits and reads inside it against that number.
             val index = FakeIndex(Density(perSecond = 100)).apply { answersCount = false }
             val peer = FakePeer(Density(perSecond = 100))
             val out = pager(index, peer).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
@@ -329,9 +280,7 @@ class NegentropyPagerTest {
     @Test
     fun `the count the pager took is not asked for twice`() =
         runBlocking {
-            // quartz sizes the window it is handed before splitting it, using
-            // the same count this layer just took. Priming the index is what
-            // keeps that from being a second store round trip per window.
+            // Priming the index with the count just taken spares quartz a second store round trip.
             val index = FakeIndex(Density(perSecond = 1))
             val peer =
                 object : WindowSync by FakePeer(Density(perSecond = 1)) {
@@ -362,9 +311,6 @@ class NegentropyPagerTest {
     @Test
     fun `a cap below the target pulls it down, a cap above it does not`() =
         runBlocking {
-            // The number is the point: a peer that will take 400 must be asked
-            // for less than we planned, and a peer that will take 40,000 must
-            // not drag us down just because it happened to split this window.
             val tight = SweepState(null)
             pager(FakeIndex(Density(perSecond = 0)), FakePeer(Density(perSecond = 100), cap = 500), tight)
                 .sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
@@ -379,7 +325,6 @@ class NegentropyPagerTest {
     @Test
     fun `a refusal with no number leaves us halving`() =
         runBlocking {
-            // Nothing to fit to, so the only move is to ask for less next time.
             val state = SweepState(null)
             val peer = FakePeer(Density(perSecond = 100), cap = 5_000, statesCap = false)
             pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
@@ -404,14 +349,11 @@ class NegentropyPagerTest {
     fun `a stated cap sizes the window in one step and is remembered`() =
         runBlocking {
             val state = SweepState(null)
-            // The peer refuses once and says what it will take; quartz parses
-            // that off the refusal and reports it, so no ladder is walked.
             val peer = FakePeer(Density(perSecond = 100), cap = 1_000)
             pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
             assertEquals(1_000, state.peer(relay)?.cap, "the cap outlives the sweep that learned it")
             assertTrue(state.target(relay, 999_999) <= 800, "the target must fit under the cap with margin")
-            // And it never grows past it, however many clean windows follow.
             pager(FakeIndex(Density(perSecond = 0)), FakePeer(Density(perSecond = 0)), state)
                 .sweep(mirror, relay, notes, leg(2_000, 2_999)) {}
             assertTrue(state.target(relay, 999_999) <= 800)
@@ -424,9 +366,7 @@ class NegentropyPagerTest {
         runBlocking {
             val state = SweepState(null)
             val peer = FakePeer(Density(perSecond = 1), failAt = setOf(2))
-            // Fails mid-sweep: the failed window is paged, so the sweep still
-            // finishes and the cursor is cleared. What we want to see is that
-            // while it ran, the cursor only ever described one contiguous slice.
+            // The failed window falls to paging, so the sweep still completes.
             val index = FakeIndex(Density(perSecond = 100))
             val out = pager(index, peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
@@ -438,7 +378,7 @@ class NegentropyPagerTest {
     fun `a stopped sweep keeps its cursor and a resume skips what it covers`() =
         runBlocking {
             val state = SweepState(null)
-            // Three failures in a row stops it, with everything above still done.
+            // Three failures in a row stop the sweep, with everything above still done.
             val stopping = FakePeer(Density(perSecond = 1), failAt = setOf(1, 2, 3, 4, 5, 6))
             val index = FakeIndex(Density(perSecond = 100))
             val first = pager(index, stopping, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
@@ -488,16 +428,8 @@ class NegentropyPagerTest {
     @Test
     fun `a per-kind slice the peer still refuses falls to paging, never to the floor`() =
         runBlocking {
-            // The kind split is a retry, not an answer. Here the second is
-            // dense at the PEER for every kind while our side of it is thin,
-            // so each per-kind reconcile hands the slice straight back through
-            // `onUnreconcilable` — and that hook used to be `{ }`: the slice
-            // was neither reconciled nor paged, `stillOver` never counted it,
-            // the surrounding window completed and the cursor claimed it, and
-            // events dense at the peer but absent here — a spam burst we never
-            // mirrored, the exact thing an audit exists to find — stayed
-            // unreachable on every later audit. The KDoc's terminal fallback
-            // ("Page it over REQ. Always available") must actually run.
+            // Our side of the second is thin, so each per-kind reconcile hands the
+            // slice straight back through `onUnreconcilable`.
             val shape = Filter(kinds = listOf(1, 7))
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
             val peer = FakePeer(hot, cap = 5_000)
@@ -520,23 +452,15 @@ class NegentropyPagerTest {
             assertTrue(out.complete)
             assertEquals(1, out.pagedWindows)
             assertTrue(peer.pagedRanges.any { 1_500L in it }, "the dense second must be paged: ${peer.pagedRanges}")
-            // And the rest of the leg is still reconciled, not paged with it.
             assertTiles(peer.reconciled + peer.pagedRanges, 1_000, 1_999)
         }
 
     @Test
     fun `the cursor never reaches past a window that is still pending`() =
         runBlocking {
-            // The invariant everything else rests on, checked at every step
-            // rather than at the end: whatever the cursor claims must be
-            // strictly above the window about to be asked for. A crash between
-            // any two windows resumes from that cursor, so a claim that reaches
-            // past pending work silently skips events — the one failure mode
-            // here that loses data instead of repeating it.
-            //
-            // Driven through the escape hatch (a second the peer refuses at any
-            // size), because that is the path that takes a slice out of the
-            // MIDDLE of a window and leaves a piece above it pending.
+            // Checked at every step: the cursor must stay strictly above the window about
+            // to be asked. The escape hatch takes a slice out of the middle of a window,
+            // leaving a piece above it pending.
             val state = SweepState(null)
             val shape = notes
             val hot = Density(perSecond = 10, spikes = mapOf(1_500L to 100_000))
@@ -581,9 +505,6 @@ class NegentropyPagerTest {
     @Test
     fun `a resumed sweep that cannot reconcile hands back only what is left`() =
         runBlocking {
-            // A relay that stops speaking NIP-77 between runs must not cost the
-            // caller the ground the cursor was holding: what comes back is the
-            // un-swept remainder, not the whole leg.
             val state = SweepState(null)
             state.advance(SweepState.keyFor(mirror, relay, notes), 1_500, 1_999)
             val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0))
@@ -611,30 +532,16 @@ class NegentropyPagerTest {
     @Test
     fun `a window whose fallback page was refused is NOT claimed by the cursor`() =
         runBlocking {
-            // THE BUG THIS SIGNATURE CHANGE EXISTS FOR, and it is the durable
-            // one. `WindowSync.page` returned an `Int`, so a relay that refused
-            // the last-resort REQ — a filter width it caps, an auth wall, a
-            // policy CLOSED — delivered zero events, which is exactly what an
-            // honest empty window delivers. The sweep could not tell them apart
-            // and advanced the cursor either way, so a band was recorded over
-            // ground nothing had ever read and every later audit was told there
-            // was nothing to find.
-            //
-            // Mid-sweep, so the first window reconciles and the SECOND one is
-            // the one that falls to a refused page: `failAt = setOf(1)`.
+            // Mid-sweep: the first window reconciles and the second falls to a refused page.
             val state = SweepState(null)
-            // Dense enough that the leg is cut into several windows, so there
-            // IS a second one for the peer to drop — a leg inside the target
-            // reconciles in a single call and never reaches the fallback.
+            // Dense enough to cut the leg into several windows, so there is a second one to drop.
             val peer = FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply { refusesPages = true }
             val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
             assertTrue(peer.pagedRanges.isNotEmpty(), "the fallback page was attempted")
             assertEquals(1, out.refusedWindows, "…and counted as a window this sweep could not read")
             assertFalse(out.complete, "a sweep holding an unread window has not verified the history")
-            // THE CURSOR IS THE DURABLE HALF. It may only ever cover ground
-            // that was actually read, so a refused window has to leave a hole
-            // it does not reach past.
+            // The cursor is the durable half: it may only cover ground that was read.
             val held = state.reconciled(SweepState.keyFor(mirror, relay, notes))
             assertTrue(
                 held == null || held.downTo > peer.pagedRanges.first().first,
@@ -645,13 +552,6 @@ class NegentropyPagerTest {
     @Test
     fun `a fallback page that delivered SOME events and was still refused is not claimed`() =
         runBlocking {
-            // THE REGRESSION THE FIRST FIX SHIPPED WITH. `page` walks the
-            // window in kind-chunks against a width-capped relay, so one call
-            // can both deliver and be turned away — and the first version
-            // returned quartz's `PagedFetchResult`, whose `refusedOutright` is
-            // `downloaded == 0 && …`. A chunk that served events therefore
-            // masked the chunk that was refused, the window completed, and the
-            // over-claim came back through the fix for it.
             val state = SweepState(null)
             val peer =
                 FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply {
@@ -668,10 +568,6 @@ class NegentropyPagerTest {
     @Test
     fun `a window whose fallback page was SERVED is claimed exactly as before`() =
         runBlocking {
-            // The other direction, so the guard cannot be "never claim
-            // anything": the same shape with a peer that answers the fallback
-            // must still advance, or every relay that ever needs one would
-            // re-walk its history forever.
             val state = SweepState(null)
             val peer = FakePeer(Density(perSecond = 100), failAt = setOf(1))
             val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}

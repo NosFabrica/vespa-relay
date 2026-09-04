@@ -29,11 +29,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * An outbox list is five figures of urls and mostly corpses — 20,340 discovered
- * here against a few hundred that ever answer. These pin the two rules that make
- * the difference: failures count per HOST (or a filtering relay's hundreds of
- * per-user urls never add up to anything), and a host that has ever delivered is
- * never dropped (or a fan-out this wide sheds working relays on a race).
+ * Failures count per host, so a filtering relay's per-user urls add up; a host
+ * that has ever delivered is never dropped, whichever order the race lands in.
  */
 class HostStrikesTest {
     private fun url(u: String) = RelayUrlNormalizer.normalize(u)
@@ -51,8 +48,6 @@ class HostStrikesTest {
 
     @Test
     fun `a subdomain is not folded into its parent`() {
-        // Different servers. Shedding the filtering one must never take out the
-        // bare host, which may be perfectly open.
         assertTrue(
             HostStrikes.authorityOf("wss://filter.nostr.wine/npub1x") !=
                 HostStrikes.authorityOf("wss://nostr.wine"),
@@ -71,7 +66,6 @@ class HostStrikesTest {
 
     @Test
     fun `one host is struck out by failures spread across its many urls`() {
-        // The whole point: no single url would ever reach the threshold alone.
         val h = HostStrikes()
         h.strike(url("wss://filter.example/npub1aaa"))
         h.strike(url("wss://filter.example/npub1bbb"))
@@ -83,10 +77,7 @@ class HostStrikesTest {
 
     @Test
     fun `eviction returns a verdict once, so it is published once`() {
-        // The eviction is the only finding that will ever exist about the sibling
-        // urls under this host: from here they are skipped without being dialled,
-        // so nothing observes them again. It must surface exactly once — silent
-        // would publish nothing, repeated would rewrite the record every strike.
+        // Sibling urls are skipped undialled from here on, so this is the only finding they ever get.
         val h = HostStrikes()
         assertNull(h.strike(url("wss://filter.example/npub1")), "one strike is not a verdict")
         assertNull(h.strike(url("wss://filter.example/npub2")), "two is not either")
@@ -117,9 +108,7 @@ class HostStrikesTest {
 
     @Test
     fun `a host that ever delivered is never dead, whichever way the race lands`() {
-        // At a hundred relays in flight one worker can strike an authority out at
-        // the same instant another is receiving from it. Ever-produced must win in
-        // both orders, which is why it overrides rather than clearing strikes.
+        // Ever-produced overrides rather than clearing strikes, so it wins in both orders.
         val strikeFirst = HostStrikes()
         repeat(3) { strikeFirst.strike(url("wss://busy.example/npub$it")) }
         assertTrue(strikeFirst.isDead(url("wss://busy.example/npubX")))
@@ -151,8 +140,7 @@ class HostStrikesTest {
 
     @Test
     fun `a known-dead relay that answers anyway is believed over the record`() {
-        // Relays come back. A TTL'd record is "not now", never "never again", so a
-        // delivery this cycle must beat what an earlier one wrote down.
+        // A TTL'd record is "not now", never "never again".
         val back = url("wss://back.example")
         val h = HostStrikes(knownDead = setOf(back))
         h.produced(back)

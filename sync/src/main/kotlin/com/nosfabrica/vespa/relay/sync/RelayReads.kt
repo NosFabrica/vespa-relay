@@ -29,29 +29,16 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * THE THREE THINGS THE VISIT POOL ASKS OF A RELAY, and the seam that makes the
- * pool's scheduling testable without a network.
- *
- * `fetchAllPages` is a quartz EXTENSION on `NostrClient`, so a pool that calls
- * it directly cannot be driven by a stand-in: the only way to answer it is to
- * be a real client with a real socket. That is why the pool's own behaviour —
- * which units run together, which are excluded, what a refusal ends, when a
- * tail opens and whose budget it costs — had no test at all, and every change
- * to it was verified by compiling and by reading. Two defects in one
- * afternoon's work said what that was worth.
- *
- * DELIBERATELY THREE METHODS. This is not a client abstraction and must not
- * grow into one: it is the list of things `VisitPool` does to a relay, and the
- * day it needs a fourth is a day to ask whether the pool should be doing it.
- *
- * The url is a parameter rather than a property because one instance serves
- * every relay, exactly as the client does.
+ * The three things the visit pool asks of a relay, and the seam that lets the
+ * pool's scheduling be tested without a network. Deliberately three methods:
+ * this is the list of what `VisitPool` does to a relay, not a client
+ * abstraction. The url is a parameter because one instance serves every relay.
  */
 internal interface RelayReads {
     /**
-     * Walk [filter] newest-first, paging until the relay drains, refuses, or
-     * goes quiet for [idleTimeoutMs] — quartz's own endings, believed. See
-     * `VisitPool.refusedOutright` for which of them ends a visit.
+     * Walks [filter] newest-first until the relay drains, refuses, or goes
+     * quiet for [idleTimeoutMs]. `VisitPool.refusedOutright` decides which of
+     * those endings ends a visit.
      */
     suspend fun page(
         url: NormalizedRelayUrl,
@@ -61,13 +48,10 @@ internal interface RelayReads {
     ): PagedFetchResult
 
     /**
-     * Hold a live subscription on [url] under [subId], delivering only that
-     * relay's events.
-     *
-     * The relay check is HERE rather than at every call site: quartz reports a
-     * subscription's events with the relay they came from, one listener can be
-     * fed by several, and a pool that forgot the check would ingest another
-     * relay's events under this unit's trust and scope.
+     * Holds a live subscription on [url] under [subId], delivering only that
+     * relay's events. The relay check lives here: one listener can be fed by
+     * several relays, and a missed check would ingest another relay's events
+     * under this unit's trust and scope.
      */
     suspend fun tail(
         subId: String,
@@ -76,11 +60,11 @@ internal interface RelayReads {
         onEvent: suspend (Event) -> Unit,
     )
 
-    /** …and let it go. Idempotent, because every caller of it is racing another. */
+    /** Drops the subscription. Idempotent, because every caller is racing another. */
     fun untail(subId: String)
 }
 
-/** The real one: quartz, unchanged, with the relay check folded in. */
+/** Quartz, unchanged, with the relay check folded in. */
 internal class ClientRelayReads(
     private val client: NostrClient,
 ) : RelayReads {

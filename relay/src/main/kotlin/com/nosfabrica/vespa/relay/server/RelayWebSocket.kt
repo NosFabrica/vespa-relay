@@ -31,25 +31,17 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * The most frames the outbound queue holds for one connection before the
- * client is treated as a slow consumer. An empty queue costs nothing.
- */
+/** Outbound frames queued for one connection before it is treated as a slow consumer. */
 private const val MAX_OUTGOING_BUFFER = 8192
 
-/**
- * How long a slow consumer's polite close frame gets before the session is
- * torn down anyway. Short: the socket is congested by definition here.
- */
+/** How long a slow consumer's close frame gets before the session is torn down anyway. */
 private const val CLOSE_GRACE_MS = 5_000L
 
-/** Mount the relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
+/** The relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
-        // One writer coroutine drains a bounded ordered queue to the socket
-        // (the engine's send callback is non-suspend). When the queue fills,
-        // the client isn't draining — disconnect it rather than drop frames:
-        // silently dropping EVENT/EOSE would corrupt NIP-01 semantics.
+        // One writer drains a bounded ordered queue; the engine's send is non-suspend.
+        // A full queue disconnects the client rather than dropping frames, which would break NIP-01.
         val outCh = Channel<String>(MAX_OUTGOING_BUFFER)
         val writer = launch { for (text in outCh) outgoing.send(Frame.Text(text)) }
         try {
@@ -59,12 +51,8 @@ fun Route.nostrRelay(server: NostrRelayServer) {
                     if (result.isFailure && !result.isClosed) {
                         outCh.close()
                         launch {
-                            // The polite close frame queues behind the very
-                            // congestion that tripped this, so it may never
-                            // leave. Give it a moment, then cancel the whole
-                            // session: that closes the socket even when the
-                            // client never drains, and stops its still-running
-                            // REQs from querying for replies nobody reads.
+                            // The close frame queues behind the congestion that tripped this, so it may
+                            // never leave; cancelling the session closes the socket regardless.
                             runCatching {
                                 withTimeoutOrNull(CLOSE_GRACE_MS) {
                                     close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: over $MAX_OUTGOING_BUFFER buffered frames"))

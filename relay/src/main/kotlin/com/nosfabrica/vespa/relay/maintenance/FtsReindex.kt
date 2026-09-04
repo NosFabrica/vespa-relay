@@ -33,30 +33,13 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * Re-derive every event's search fields, in the background — a one-off
- * migration (`REINDEX_FTS_ON_START`), not a boot step. Needed after a store
- * upgrade that changes SearchExtractors or adds fed search fields, which a
- * Vespa reindex cannot produce — only a put can.
+ * Re-put every event so its fed search fields are re-derived, in the
+ * background (`REINDEX_FTS_ON_START`). It repairs a fed field only: a column
+ * Vespa derives at index time stays empty after this walk and needs a Vespa
+ * reindex instead, see docs/migrations.md.
  *
- * IT IS THE WRONG TOOL FOR A *DERIVED* COLUMN, and the two cases look identical
- * from here, so read the store's release before reaching for this flag. A FED
- * field (the near tier) only changes on a put, which is what this walk does. A
- * DERIVED one — `search_text_gram`, added in store e3be81564d with
- * `indexing: input search_text | … | index` — is produced by Vespa at index
- * time, so deploying it leaves the column EMPTY on every event already stored,
- * and this walk does not repair it: the store's drift check compares the search
- * columns and near arrays, finds both identical, re-puts nothing, and the run
- * reports success having fixed nothing. Nothing errors, and the corpus keeps
- * serving whole-word search the whole time, which is why it goes unnoticed.
- * That class of column is repaired by a Vespa REINDEX on the config server, or
- * by a genuine full re-feed — never by this. The runnable procedure, and the
- * step that makes it work (a POST alone leaves the job `pending` forever; a
- * redeploy dispatches it), is in docs/migrations.md.
- *
- * The walk is resumable: the cursor is persisted to [cursorFile] so a failed
- * page costs a retry, not the 12M events an in-memory cursor once threw away.
- * It runs behind the server and is never awaited — as a startup barrier it
- * would be an hours-long outage.
+ * The cursor is persisted to [cursorFile] so a failed page costs a retry, not
+ * the walk. Never awaited: as a boot barrier it would be an hours-long outage.
  */
 fun launchFtsReindex(
     scope: CoroutineScope,
@@ -68,8 +51,6 @@ fun launchFtsReindex(
         println("fts: reindexing the whole corpus in the background — search results may be incomplete until it finishes")
         var total = 0L
         var pages = 0
-        // The denominator, asked for once. Null rather than a guess if it
-        // fails: an unknown denominator is better than a wrong one.
         var cursor: String? =
             runCatching {
                 File(cursorFile)
@@ -79,28 +60,21 @@ fun launchFtsReindex(
                     ?.ifBlank { null }
             }.getOrNull()
         if (cursor != null) println("fts: resuming from a saved cursor")
-        // On a resumed run the denominator is unknowable: `total` counts only
-        // the remaining walk, so total/corpus would report 3% at completion —
-        // the same misleading instrumentation this class exists to end. An
-        // unknown denominator is better than a wrong one.
+        // On a resumed run `total` counts only the remainder, so no denominator
+        // is honest; an unknown one beats a wrong one.
         val expected = if (cursor != null) null else runCatching { store.count(Filter()) }.getOrNull()?.toLong()
         try {
             do {
-                // A page can fail for reasons unrelated to its contents (Vespa
-                // under memory pressure answers with an HTML error body). Retry
-                // the SAME cursor a few times before giving up.
+                // A page can fail for reasons unrelated to its contents; retry
+                // the same cursor a few times before giving up.
                 var progress: FtsReindexProgress? = null
                 var attempt = 0
                 while (progress == null) {
                     progress =
                         runCatching { store.reindexFullTextSearch(cursor) }
                             .onFailure { e ->
-                                // runCatching catches EVERYTHING, cancellation
-                                // included — so a shutdown mid-page arrived
-                                // here and printed a page failure and a retry
-                                // for a page that had not failed. The catch
-                                // below says a cancelled walk is not a failure;
-                                // this is the same rule, one level down.
+                                // runCatching catches cancellation too, and a
+                                // shutdown mid-page is not a failed page.
                                 if (e is CancellationException) throw e
                                 if (++attempt > FTS_PAGE_RETRIES) throw e
                                 System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
@@ -108,10 +82,8 @@ fun launchFtsReindex(
                     if (progress == null) delay(attempt * 5_000L)
                 }
                 cursor = progress.cursor
-                // Temp file + move, like every other state file here: this
-                // cursor's entire job is surviving a crash, and a bare
-                // writeText truncated mid-kill leaves a corrupt token that
-                // fails every resume until someone deletes it by hand.
+                // Temp file and move: a cursor truncated mid-kill fails every
+                // resume until someone deletes it by hand.
                 runCatching {
                     val f = File(cursorFile)
                     f.absoluteFile.parentFile?.mkdirs()
@@ -120,7 +92,6 @@ fun launchFtsReindex(
                     Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 }
                 total += progress.processedThisBatch
-                // Every page would be a flood; never would be silence.
                 if (++pages % 50 == 0) {
                     val secs = (System.currentTimeMillis() - startedMs) / 1000
                     val rate = if (secs > 0) total / secs else 0
@@ -138,12 +109,11 @@ fun launchFtsReindex(
                 }
             } while (!progress.done)
             println("fts: reindex complete — $total event(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}")
-            // Done means done: a leftover cursor would resume a finished walk
-            // from its tail on the next boot with the flag still set.
+            // A leftover cursor would resume a finished walk from its tail on
+            // the next boot with the flag still set.
             runCatching { File(cursorFile).delete() }
         } catch (e: CancellationException) {
-            // Shutdown mid-walk: the cursor is saved, the next boot resumes.
-            // Not a failure, so the log must not print one.
+            // Shutdown mid-walk: the cursor is saved and the next boot resumes.
             throw e
         } catch (e: Exception) {
             System.err.println(
@@ -154,5 +124,4 @@ fun launchFtsReindex(
     }
 }
 
-/** Retries for one page before the walk gives up. */
 private const val FTS_PAGE_RETRIES = 5

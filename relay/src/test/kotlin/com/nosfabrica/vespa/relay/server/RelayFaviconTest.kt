@@ -34,28 +34,14 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The tab icon: that it is still the page's own brand mark, that the .ico is a
- * real .ico, and that a browser guessing `/favicon.ico` gets it.
- *
- * The icon is a COPY of the header mark, kept by hand, which is what makes the
- * first test the important one: a copy of a drawing is a copy that silently
- * stops being the drawing.
- *
- * It only holds half of that, and the half it cannot hold is worth knowing.
- * `favicon.svg` is markup, so it can be compared to the mark element by
- * element. `favicon.ico` is a raster of the same drawing at three sizes, and
- * nothing here can tell whether it is still that drawing — the tests below
- * check that it is a well-formed .ico carrying the sizes the markup advertises,
- * and nothing about what it depicts. So an edit to the mark fails the first
- * test, gets fixed in the SVG, and leaves the .ico stale with every test
- * passing. Redraw both, and see the note at the top of favicon.svg for the
- * numbers a redraw needs.
+ * The tab icon is a hand-kept copy of the header mark. Only `favicon.svg` is
+ * compared to the mark; an edit to the mark also needs the .ico redrawn, which nothing here checks.
  */
 class RelayFaviconTest {
     private val index = assertNotNull(javaClass.getResource("/index.html")?.readText())
     private val favicon = assertNotNull(javaClass.getResource("/web/favicon.svg")?.readText())
 
-    /** Every `<circle …>`'s geometry, in document order — the shapes, not their paint. */
+    /** Every `<circle>`'s geometry in document order: the shapes, not their paint. */
     private fun circles(svg: String) =
         Regex("""<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"""")
             .findAll(svg)
@@ -64,7 +50,7 @@ class RelayFaviconTest {
 
     private fun linkPath(svg: String) = assertNotNull(Regex("""<path d="([^"]+)"""").find(svg)).groupValues[1]
 
-    /** The `<svg class="mark">…</svg>` out of the landing page's header. */
+    /** The `<svg class="mark">` out of the landing page's header. */
     private fun mark(): String {
         val at = index.indexOf("""<svg class="mark"""")
         assertTrue(at >= 0, "index.html still draws the brand mark")
@@ -73,16 +59,11 @@ class RelayFaviconTest {
 
     @Test
     fun `the favicon draws the page's own brand mark, shape for shape`() {
-        // Geometry only. The favicon deliberately differs in everything else —
-        // white ink on an accent tile instead of `currentColor` on the page, a
-        // heavier stroke, less margin — because a 16px tab strip is not a
-        // header. What must not differ is WHICH network is drawn.
-        // The count first, or a regex that stopped matching would compare two
-        // empty lists and pass while asserting nothing.
+        // Geometry only: the favicon differs in paint, stroke and margin on purpose.
+        // The count first, or a regex that stopped matching compares two empty lists.
         assertEquals(4, circles(mark()).size, "the hub and three nodes")
         assertEquals(circles(mark()), circles(favicon), "the hub and the three nodes must be the mark's")
-        // Compared as a string, which is why index.html spells the third link
-        // `M14.9 12 17.7 12` rather than the `h2.8` it used to.
+        // Compared as a string, which is why index.html spells the third link `M14.9 12 17.7 12` rather than `h2.8`.
         assertEquals(linkPath(mark()), linkPath(favicon), "the three links must be the mark's")
         assertTrue(favicon.contains("""viewBox="0 0 24 24""""), "and in the mark's own 24-unit box")
     }
@@ -103,7 +84,7 @@ class RelayFaviconTest {
         val sizes = mutableListOf<Int>()
         for (i in 0 until count) {
             val e = 6 + 16 * i
-            // A one-byte field, so 0 would mean 256 — none of ours is that big.
+            // A one-byte field in which 0 means 256.
             val w = ico[e].toInt() and 0xff
             assertEquals(w, ico[e + 1].toInt() and 0xff, "square")
             sizes += w
@@ -111,15 +92,12 @@ class RelayFaviconTest {
             val off = u32(e + 12)
             val len = u32(e + 8)
             assertTrue(off + len <= ico.size, "entry $i points inside the file")
-            // PNG-compressed entries rather than the BMP the format was born
-            // with: 1.3KB against ~15KB of uncompressed 32bpp bitmaps, and no
-            // hand-built AND mask for the transparency to get wrong.
+            // PNG entries rather than BMP: no hand-built AND mask for the transparency to get wrong.
             val magic = ico.copyOfRange(off, off + 8).map { it.toInt() and 0xff }
             assertEquals(listOf(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a), magic, "entry $i is a PNG")
         }
         assertEquals(listOf(16, 32, 48), sizes)
-        // The markup advertises exactly what is in the file. A `sizes` that
-        // over-promises makes a browser pick this over the SVG and then scale.
+        // A `sizes` that over-promises makes a browser pick this over the SVG and scale it.
         assertTrue(index.contains("""href="./web/favicon.ico" sizes="16x16 32x32 48x48""""), "index.html says so too")
     }
 
@@ -128,11 +106,8 @@ class RelayFaviconTest {
         for (page in listOf("/index.html", "/stats.html", "/observer_stats.html")) {
             val html = assertNotNull(javaClass.getResource(page)?.readText(), "$page is on the classpath")
             val hrefs =
-                // Document-relative, which is the spelling every reference in
-                // :web carries so a page survives a path-prefix mount — see
-                // stats.html's head. Asserted as the literal `./web/`, so a
-                // reference that quietly went back to the host root fails here
-                // rather than half-loading against another service.
+                // Document-relative so a page survives a path-prefix mount, and asserted
+                // as the literal `./web/` so a reference back to the host root fails here.
                 Regex("""<link rel="icon" href="\./web/([^"]+)"""")
                     .findAll(html)
                     .map { it.groupValues[1] }
@@ -144,8 +119,7 @@ class RelayFaviconTest {
         assertEquals("image/svg+xml", "${svg.contentType.contentType}/${svg.contentType.contentSubtype}")
         val ico = assertNotNull(WebAssets.get("favicon.ico"))
         assertEquals("image", ico.contentType.contentType)
-        // Not text, so no charset is invented for it — the same rule the
-        // modules' UTF-8 comes from, running the other way.
+        // Not text, so no charset is invented for it.
         assertEquals(null, ico.contentType.parameter("charset"))
     }
 
@@ -161,10 +135,7 @@ class RelayFaviconTest {
             val again = client.get("/favicon.ico") { header(HttpHeaders.IfNoneMatch, etag) }
             assertEquals(HttpStatusCode.NotModified, again.status)
 
-            // The NIP-19 catch-all is mounted at /{nip19} and this route is
-            // literal, so Ktor prefers this one — but that is a routing
-            // subtlety, and the whole point of it having its own function is
-            // that the icon can be asked for here on its own.
+            // On its own the route answers only the icon, with no /{nip19} catch-all beneath it.
             assertEquals(HttpStatusCode.NotFound, client.get("/favicon.png").status)
         }
 }

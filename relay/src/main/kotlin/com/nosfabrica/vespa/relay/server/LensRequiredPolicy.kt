@@ -34,85 +34,29 @@ import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * EVERY READ SAYS WHOSE EYES IT IS READ THROUGH. A REQ or a COUNT from a
- * connection that has not authenticated is answered only if each of its
- * filters names a lens — NIP-50 `observer:<64-hex>` — or waives one with
- * `include:spam`. Anything else is refused with `auth-required:` — and that
- * prefix is not a formality: signing a NIP-42 AUTH and asking again is the
- * THIRD way to be answered, the one where the connection itself becomes the
- * lens.
+ * Every read says whose eyes it is read through. A REQ or COUNT from a
+ * connection that has not authenticated is answered only if each filter
+ * names a lens (`observer:<64-hex>`) or waives one (`include:spam`); anything
+ * else is refused with `auth-required:`, and signing in is the third way.
  *
- * WHY A RELAY WOULD DO THAT. This store treats a web-of-trust lens as a
- * FILTER, and it has no house observer to fall back on ([ObserverBackend] says
- * why). So a read with no lens is not "the same answers, unranked" — it is a
- * DIFFERENT question: the whole corpus, spam and all, in text-relevance or
- * recency order, with the trust this relay exists to apply switched off
- * entirely. The engine does not even send `min_rank` without an observer to
- * anchor it (the store's `EventYql`), so the default trust floor a search
- * carries is silently inert. That answer is a legitimate thing to want, and
- * `include:spam` is how a client asks for it. What it must not be is what a
- * client gets by SAYING NOTHING — a search relay whose unstated default is
- * "no trust at all" misreports itself to every client that never heard of
- * this feature, and the reader has no way to tell the two corpora apart.
+ * This store applies a lens as a filter and has no house observer, so a read
+ * with no lens is the whole corpus with trust switched off. That is a
+ * legitimate ask, and it must be asked for rather than got by saying nothing.
  *
- * WHAT IT IS NOT. Not authentication for reads: `include:spam` and
- * `observer:` both work on a socket that never signs anything, because trust
- * scores here are public and any client may rank through any lens. The
- * NIP-11 `limitation.auth_required` therefore stays FALSE — it would claim a
- * door that is not locked. And not a write gate: EVENT and AUTH are untouched.
+ * Not authentication: both tokens work on a socket that signs nothing, so
+ * `limitation.auth_required` stays false. Not a write gate. NIP-77 is gated
+ * too, because quartz runs a NEG-OPEN's filters through `accept(ReqCmd)`;
+ * an anonymous peer must declare `include:spam` to mirror from here.
  *
- * NIP-77 IS GATED, and not by a second decision here. Quartz's
- * `NegSessionRegistry.open` builds a [ReqCmd] out of the NEG-OPEN's filters
- * and runs it through this very hook, turning a rejection into `NEG-ERR
- * <subid> <reason>` — so a NEG-OPEN declares a lens exactly as a REQ does, and
- * `accept(ReqCmd)` cannot tell the two apart even if it wanted to. Measured
- * against this relay with a real corpus: an undeclared NEG-OPEN comes back
- * `NEG-ERR … auth-required:`, the same filter carrying `include:spam` is
- * admitted. `NegentropyGatedTest` pins both, because the day quartz stops
- * routing negentropy through this hook is the day a reconcile silently
- * becomes the one unguarded read of the corpus's id space.
- *
- * That is the RIGHT default for a relay that is filled from public relays
- * rather than serving mirrors — a reconcile hands over the shape of the whole
- * corpus, ids and times, which is exactly the lensless read this gate exists
- * to stop — but it has a cost worth naming: an anonymous PEER can no longer
- * mirror from here. It must declare (`include:spam` in the NEG-OPEN filter
- * works, and is what a vespa-relay peer would send), sign a NIP-42 AUTH, or
- * be answered by an operator setting `REQUIRE_READ_LENS=false`. Our own
- * router sends none of those, so it reads an auth-required upstream as a
- * refusal (`VisitPool.refusedOutright`) — visible in the refusal sink rather
- * than silently mirroring nothing.
- *
- * WHAT IT COSTS A CLIENT THAT COMPLIES: nothing but the token. Measured
- * against the staging deployment on 2026-08-22, one anonymous socket, three
- * REQs — `{kinds:[1],limit:5}` and the same filter carrying
- * `search:"include:spam"` returned the SAME five ids, while the same filter
- * carrying `observer:460c25…` returned five different ones. The waiver is free
- * because the store maps a termless `include:spam` to plain recall, and the
- * lens resolves on a socket that signed nothing because the scores are public.
- * That is why the page can stamp a whole connection (`web/shared/lens.js`)
- * rather than reason about it per ask.
- *
- * ALL FILTERS OR NONE. A subscription's filters are ORed, so one undeclared
+ * All filters or none: a subscription's filters are ORed, so one undeclared
  * filter beside a declared one would serve the undeclared question in full.
- * The refusal names the whole REQ rather than dropping filters out of it: a
- * client that gets back fewer answers than it asked for cannot tell that from
- * a quiet corpus.
- *
- * The parse is quartz's own [SearchQuery], the very parser the store maps
- * with, so the gate cannot come to a different reading of a token than the
- * query planner does — including the lexing rules that make `"include:spam"`
- * in quotes a phrase and `-observer:…` an exclusion rather than either being
- * a way through.
+ * The parse is quartz's own [SearchQuery], the parser the store maps with.
  */
 class LensRequiredPolicy : PassThroughPolicy() {
     /**
-     * This connection's context, captured from the only hook handed one.
-     * `@Volatile` for the same reason [MultiAddressAuthPolicy] holds its
-     * `send` that way: the REQ that reads it can land on a different transport
-     * coroutine than the connect that wrote it. The SET inside is quartz's own
-     * and grows as AUTHs land, so this reads the live auth state rather than a
-     * snapshot of it.
+     * This connection's context. `@Volatile` because the REQ that reads it can
+     * land on a different coroutine than the connect that wrote it. The set
+     * inside is quartz's own and grows as AUTHs land.
      */
     @Volatile
     private var scope: RequestContext? = null
@@ -133,8 +77,7 @@ class LensRequiredPolicy : PassThroughPolicy() {
         filters: List<Filter>,
     ): PolicyResult<T> =
         when {
-            // Signed in: the connection's own pubkey IS the lens, applied by
-            // ObserverBackend. Nothing to declare.
+            // Signed in: the connection's own pubkey is the lens, applied by ObserverBackend.
             scope?.authenticatedUsers?.isNotEmpty() == true -> PolicyResult.Accepted(cmd)
 
             filters.all(Filter::declaresLens) -> PolicyResult.Accepted(cmd)
@@ -144,12 +87,8 @@ class LensRequiredPolicy : PassThroughPolicy() {
 
     companion object {
         /**
-         * The refusal, and the whole of the client's way out — the three ways,
-         * in the order a client can act on them. `auth-required:` is the
-         * machine-readable half NIP-42 clients already act on (ours is
-         * `shared/relay.js`, which authenticates and resends), and the prose is
-         * for the reader of a `CLOSED` frame in a console, who is the person
-         * this default exists to inform.
+         * The refusal names all three ways out. `auth-required:` is the half
+         * NIP-42 clients act on; the prose is for a person reading a CLOSED.
          */
         internal val NO_LENS =
             AUTH_REQUIRED.format(
@@ -160,27 +99,16 @@ class LensRequiredPolicy : PassThroughPolicy() {
     }
 }
 
-/**
- * Does this filter say whose eyes it is read through?
- *
- * `observer:` must be a USABLE lens — see [observerLens], which is where that
- * acceptance test lives for this whole module.
- */
+/** Whether this filter names a usable lens or waives one. See [observerLens]. */
 internal fun Filter.declaresLens(): Boolean {
     val parsed = SearchQuery.parse(search ?: return false)
     return parsed.includeSpam || observerLens() != null
 }
 
 /**
- * The pubkey this filter names as its ranking lens, or null when it names
- * none — the ONE reading of the `observer:` token in this module, and the same
- * one the store's `SearchQuery` applies when it resolves a query's lens, so a
- * REQ cannot be understood one way by the gate and another by the expansion.
- *
- * It must be a USABLE lens — 64 hex, the store's own acceptance test
- * ([com.nosfabrica.vespa.eventstore.mapping] drops anything else) — or
- * `observer:npub1…` would pass the gate here and rank nothing there, which is
- * the silent no-lens read [LensRequiredPolicy] exists to stop.
+ * The pubkey this filter names as its lens, or null. The one reading of the
+ * `observer:` token in this module. Must be 64 hex, the store's own
+ * acceptance test, or `observer:npub1…` would pass here and rank nothing there.
  */
 internal fun Filter.observerLens(): HexKey? =
     search
@@ -189,5 +117,4 @@ internal fun Filter.observerLens(): HexKey? =
         ?.lowercase()
         ?.takeIf { it.length == 64 && Hex.isHex64(it) }
 
-/** The NIP-50 extension naming the pubkey whose web of trust ranks a read. */
 private const val OBSERVER = "observer"

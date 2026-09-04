@@ -46,34 +46,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * ONE URL MUST NOT BE ABLE TO HOLD A PASS OPEN, and what the pass says about
- * the url it gave up on.
- *
- * ## The failure being pinned
- *
- * A production fitness pass sat at `attempted: 12,373 of 12,374` for 74 minutes
- * and counting, on one url. Every outbound call the per-url job makes is
- * bounded — a 5s TCP pre-probe, a 10s NIP-11 document, an idle window per rung
- * of the ask ladder, a 10s NEG-OPEN — and the pass hung anyway, because
- * `coroutineScope` joins on every child and an IDLE WINDOW IS NOT A WALL CLOCK.
- * Quartz says so in its own header for the call these walks are made of: *"there
- * is no wall-clock ceiling parameter … a hard deadline composes at the call
- * site"*. Two paths inside that fetch loop are outside the window by
- * construction — a relay that never stops sending keeps the timeout disarmed,
- * and the suspending `onEvent` hook (which for this router is a bounded ingest
- * queue) is deliberately run outside the timeout scope.
- *
- * Because the streams admit a relay only on the grade that pass writes, the
- * whole dynamic mirror was down for as long as the one probe hung: `roster: 0`,
- * `tails: 0`, three streams reporting `0 certified relay(s)`.
- *
- * ## What each test drives
- *
- * A probe whose fetch NEVER RETURNS, through a real pass, with an idle window
- * small enough that [AliasProbe.WINDOWS_PER_URL] of them pass in test time. The
- * assertion is always the same pair: the pass RETURNS, and the url it abandoned
- * carries no verdict — a deadline is our instrument giving up, and publishing a
- * grade off it would sign our own timeout as a claim about somebody's server.
+ * One url must not hold a pass open, and a url the deadline cut carries no
+ * verdict: the clock is ours and a grade would be about the relay.
  */
 class ProbeDeadlineTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -87,41 +61,22 @@ class ProbeDeadlineTest {
     /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE], as one page. */
     private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
-    /**
-     * A page of [events] at or below `until`, [want] at a time — an ordinary
-     * relay, which is what these tests need their fakes to be.
-     *
-     * A fetch that ignores the cursor IS a cursor-ignoring relay, and since
-     * #187 the fitness pass asks a second page and grades one `unpageable`.
-     * These tests are about clocks and write loops, so their relays have to
-     * page properly or every one of them measures the wrong thing.
-     */
+    /** A relay that honours the cursor; one that ignores it is graded `unpageable` before any clock fires. */
     private fun paged(
         events: List<Event>,
         want: Int,
         until: Long?,
     ) = AliasProbe.Page(events.filter { until == null || it.createdAt <= until }.take(want))
 
-    /**
-     * A window short enough that the whole deadline fits in a test.
-     *
-     * The point of deriving the deadline from the idle window rather than from
-     * a constant is exactly that it scales, so a test can shrink it: 12 windows
-     * of 20ms is a quarter of a second here and four minutes in production,
-     * from the same line of code.
-     */
+    /** The deadline scales with the idle window, so twelve of these is a whole deadline in test time. */
     private val tinyIdleMs = 20L
 
     private fun deadlineMs() = AliasProbe.WINDOWS_PER_URL * tinyIdleMs
 
     /**
-     * A fetch that answers [answering] normally and never answers [wedged].
-     *
-     * `CompletableDeferred` that nobody completes, rather than a long `delay`:
-     * a delay is cancellable at a known point and would prove only that
-     * `withTimeoutOrNull` cancels a sleeping coroutine. This parks the walk on
-     * something with no timer under it at all, which is the shape of the
-     * failure — a fetch loop whose idle window is never armed.
+     * Answers [answering] normally and never answers [wedged]. Parked with no
+     * timer under it, the shape of a fetch loop whose idle window is never armed;
+     * a `delay` would only prove that a timeout cancels a sleeper.
      */
     private fun stalling(hits: AtomicInteger? = null): suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page =
         { url, want, until, _ ->
@@ -139,15 +94,8 @@ class ProbeDeadlineTest {
     @Test
     fun `a pass whose dials all come back empty publishes NOTHING, including the verdicts that looked fine`() =
         runBlocking {
-            // THE BATCH GUARD. Every other rule here is per url, and the failure
-            // it exists for is not: when this router's dialling breaks it breaks
-            // for the whole batch at once, and a pass judging each url honestly
-            // on its own still signs one wrong verdict per url.
-            //
-            // Staged as the incident ran: most of the batch answers nothing at
-            // all, and a handful answer normally. The handful are dropped WITH
-            // the rest, because the same socket layer produced them and a batch
-            // this blind cannot vouch for any of its own readings.
+            // The batch guard: when dialling breaks it breaks for the whole batch, and the handful that
+            // answered came through the same socket layer, so they are dropped with the rest.
             val store = newStore()
             val blind = (0 until 90).map { RelayUrlNormalizer.normalize("wss://blind$it.example") }
             val fine = (0 until 10).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
@@ -169,11 +117,7 @@ class ProbeDeadlineTest {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
             }
 
-            // …AND THE GUARD IS NOT A CEILING ON REFUSALS. A corpus of genuinely
-            // dead hosts is the ordinary case here and every one of them
-            // ANSWERED — with a refused connection, which is a transport word
-            // and a fact about the host. Those still publish, or the guard would
-            // have replaced one silence with another.
+            // A refused connection is a transport word and a fact about the host, so a dead corpus still publishes.
             val dead = newStore()
             FitnessPass(
                 record = RelayVerdictRecord(dead, signer),
@@ -188,10 +132,7 @@ class ProbeDeadlineTest {
 
     @Test
     fun `the deadline is a multiple of the very window it bounds`() {
-        // Per URL, not per process — a `.onion` is allowed its circuit on top of
-        // the clearnet budget, and a deadline sized from a constant would cut
-        // every hidden service the monitor measures. So the probe is asked, and
-        // it answers from the same lambda its fetch uses.
+        // Per url, not per process: a `.onion` is allowed its circuit on top of the clearnet budget.
         val clearnet = AliasProbe(fetch = stalling(), idleMs = { 20_000L })
         assertEquals(AliasProbe.WINDOWS_PER_URL * 20_000L, clearnet.deadlineMs(answering))
 
@@ -218,10 +159,7 @@ class ProbeDeadlineTest {
                     progress = processors.of("fitness"),
                 )
 
-            // The bound this test is really about: BEFORE the deadline existed
-            // this call did not return at all, so the assertion is the call
-            // completing. Generous against the pass's own budget — the point is
-            // "bounded", not "bounded to the millisecond" on a shared runner.
+            // Generous against the pass's own budget: the assertion is the call completing at all.
             withTimeout(deadlineMs() * 20) {
                 pass.measure(
                     "deadline",
@@ -232,9 +170,6 @@ class ProbeDeadlineTest {
                 )
             }
 
-            // The url that answered is graded; the url that hung is not
-            // mentioned. `prime` is the whole admission decision, so a wrong
-            // grade here is a relay wrongly in or out of every stream's list.
             assertEquals(Verdict.PRIME.value, gradeOf(store, answering))
             assertNull(
                 gradeOf(store, wedged),
@@ -260,10 +195,7 @@ class ProbeDeadlineTest {
                 pass.measure("deadline", listOf(wedged, answering), canDial = { true })
             }
 
-            // The reason is its own — not the probe-threw bucket beside it.
-            // "The walk got an answer it could not use" and "the walk never got
-            // an answer" want different responses, and only one of them is the
-            // failure this deadline exists for.
+            // Its own reason, not the probe-threw bucket: "never got an answer" and "got an unusable one" differ.
             val reasons =
                 processors
                     .snapshot()
@@ -276,16 +208,13 @@ class ProbeDeadlineTest {
                 ConsistencyPass.Unmeasured.ABANDONED.reason in reasons,
                 "the abandoned url must be named as abandoned, not as a probe failure: $reasons",
             )
-            // …and nothing was learned about it either way, so the next pass
-            // asks again rather than inheriting our timeout as a verdict.
             assertEquals(emptySet<NormalizedRelayUrl>(), consistency.unusable(listOf(wedged)).toSet())
         }
 
     @Test
     fun `a fold pass ends, and publishes nothing about the host it could not fingerprint`() =
         runBlocking {
-            // Two urls on ONE host: a group, which is the fold's unit of work.
-            // Both hang, so the group has no yardstick and must end undecided.
+            // Two urls on one host: a group, the fold's unit of work. Both hang, so the group has no yardstick.
             val a = RelayUrlNormalizer.normalize("wss://wedged.example/one")
             val b = RelayUrlNormalizer.normalize("wss://wedged.example/two")
             val aliases = RelayAliases()
@@ -314,9 +243,7 @@ class ProbeDeadlineTest {
 
             assertEquals(0, learned, "a fold that never got a fingerprint must learn nothing")
             assertTrue(hits.get() > 0, "the pass has to have actually dialled, or this proves nothing")
-            // Nothing written down means the group comes back next pass — which
-            // is the correct outcome and the one thing a published `same-as`
-            // signed off our own timeout would have destroyed for a month.
+            // Nothing written means the group comes back next pass; a `same-as` signed off our timeout would stand for a month.
             assertTrue(aliases.unresolved(listOf(a, b)).isNotEmpty())
         }
 
@@ -334,9 +261,7 @@ class ProbeDeadlineTest {
                     inconsistent = { emptySet() },
                     progress = handle,
                 )
-            // The held set is what made the 74-minute stall diagnosable at all:
-            // the url was recoverable only from OkHttp thread names, because a
-            // suspended coroutine has no stack frame to dump.
+            // A suspended coroutine has no stack frame to dump, so the held set is how a stall is diagnosed.
             val seen = mutableListOf<Processors.Holding.Held>()
             val watcher =
                 Thread {
@@ -361,41 +286,18 @@ class ProbeDeadlineTest {
             val named = seen.firstOrNull { it.relay == wedged.url }
             assertNotNull(named, "a held url must be nameable from the snapshot; that is the whole point of the set")
             assertEquals(FitnessPass.STAGE_LADDER, named.stage, "…and it must say which step it is on")
-            // And the row goes with the job. A row that outlived its pass would
-            // be a fault report about a leg that is not there.
             assertNull(processors.snapshot().single().inFlight)
         }
 
     @Test
     fun `a relay that connects and then says nothing is graded NOTHING AT ALL`() =
         runBlocking {
-            // MEASURED ON `quietplace.xyz`, one of the urls a stalled pass was
-            // holding: it accepts a websocket, serves a NIP-11 document, and
-            // then answers no REQ on any of the three rungs and no NEG-OPEN
-            // either — every window simply lapses.
-            //
-            // This graded `silent` (and `restricted` before that), and BOTH
-            // were claims this router cannot make. The state has no terminal
-            // reason of any kind, which is exactly what our OWN socket layer
-            // produces when it is the broken thing — measured on staging, where
-            // one pass signed `silent` about 3,945 relays and a re-dial found
-            // more than half answering in under two seconds, most with an
-            // immediate CLOSED. From inside the pass those two situations are
-            // one picture.
-            //
-            // So the rule is [AliasProbe.deadlineMs]'s, one branch over:
-            // nothing is published when the instrument came back with nothing.
-            // A genuinely mute relay is simply never graded, which keeps it off
-            // every roster — the outcome `silent` was wanted for — without
-            // signing a false claim about the relays that were merely behind a
-            // broken dialler.
+            // A window that lapses with no terminal reason is also what our own socket layer produces when it
+            // is the broken thing, so nothing is published; a genuinely mute relay is simply never graded.
             val store = newStore()
             val pass =
                 FitnessPass(
                     record = RelayVerdictRecord(store, signer),
-                    // A window that lapses: no events, and no terminal reason
-                    // either, which is what quartz reports when its idle clock
-                    // fires with the relay still pending.
                     probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = null) },
                     client = EmptyNostrClient(),
                     foldedAway = { emptyMap() },
@@ -405,13 +307,8 @@ class ProbeDeadlineTest {
             pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
             assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
-            // …AND THE OTHER SIDE OF THE SWAP HAS NO PATH TO IT. A relay that
-            // CLOSES every rung has SPOKEN as far as the probe is concerned, so
-            // it comes back as an empty window — which this pass reads as a
-            // drain, not a refusal — and grades `prime`. Pinned so the state is
-            // recorded rather than assumed: `restricted` is currently
-            // unreachable, and reaching it needs a signal `AliasProbe.Page`
-            // does not carry.
+            // A relay that closes every rung has spoken, comes back as an empty window, and is read as a drain.
+            // Pinned so the state is recorded: `restricted` is unreachable without a signal `AliasProbe.Page` lacks.
             val refusing = newStore()
             FitnessPass(
                 record = RelayVerdictRecord(refusing, signer),
@@ -425,14 +322,9 @@ class ProbeDeadlineTest {
         }
 
     /**
-     * The fitness grade the store now carries for [url], or null for NO RECORD
-     * AT ALL — which is the distinction both fitness assertions rest on.
-     *
-     * Read off the record the pass signed rather than through [RelayDiscovery],
-     * because "admitted" and "graded" are different questions: a `dead` verdict
-     * is absent from a roster exactly as a missing record is, and the whole
-     * claim here is that the deadline wrote nothing rather than that it wrote
-     * something unadmitting.
+     * The fitness grade the store carries for [url], or null for no record at all.
+     * Read off the signed record rather than through [RelayDiscovery]: a `dead`
+     * verdict is absent from a roster exactly as a missing record is.
      */
     private suspend fun gradeOf(
         store: NostrSemanticsStore,

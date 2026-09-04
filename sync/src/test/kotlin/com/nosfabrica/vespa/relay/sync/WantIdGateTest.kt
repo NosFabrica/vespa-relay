@@ -33,38 +33,20 @@ import kotlin.test.assertTrue
 
 /**
  * The predicate the router hands quartz to decline an id before the download
- * REQ — the one hook on the negentropy path that saves the bytes rather than
- * the CPU.
- *
- * Two properties, and the first is the one that would rot quietly. Quartz's
- * `NeedGate` hands a batch straight back when the predicate is ABSENT — same
- * list instance, no copy — so passing a lambda that always answers true is not
- * equivalent to passing none. It is the same work plus an allocation per batch,
- * forever, for every deployment that never opted in.
+ * REQ. Quartz's `NeedGate` returns the batch uncopied only when it is absent.
  */
 class WantIdGateTest {
     private fun dir() = Files.createTempDirectory("wantid").toFile().also { it.deleteOnExit() }
 
     /**
-     * Real SHA-256 hex, not `"%064x".format(n)`.
-     *
-     * The filter takes its bucket from the id's first 16 hex characters and its
-     * fingerprint from the next 8, with no hashing of its own — an event id is
-     * already a uniform hash. Sequential ids are all zeros across both of those
-     * slices, so `...0001` and `...0002` land in the same bucket with the same
-     * fingerprint and every one of them is a "hit". That is a property of the
-     * test data, not of the filter, and it is why `CuckooFilterTest` feeds it
-     * real digests too.
+     * Real SHA-256 hex: the filter buckets on the id's leading hex with no
+     * hashing of its own, so sequential ids all collide.
      */
     private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("want-$n".toByteArray()))
 
     private val window = Filter(kinds = listOf(1), since = 1_779_000_000L, until = 1_781_000_000L)
 
-    /**
-     * The same expression the three call sites use. Kept here rather than
-     * reached into: they are private by design, and what is being pinned is the
-     * SHAPE — null when off, a real predicate when on.
-     */
+    /** The expression the three call sites use, private there; what is pinned is the shape: null when off. */
     private fun wantIdFor(
         refused: RefusedIds,
         window: Filter,
@@ -77,11 +59,7 @@ class WantIdGateTest {
 
     @Test
     fun `suppression off hands quartz no predicate at all`() {
-        // NOT a lambda returning true. `NeedGate.keep` returns the batch
-        // unchanged and uncopied only when wantId is null, so a
-        // trivially-permissive predicate would cost every un-opted-in
-        // deployment a filter pass and an ArrayList per reconcile batch and
-        // save nothing.
+        // Not a lambda returning true: `NeedGate.keep` returns the batch uncopied only when wantId is null.
         assertNull(wantIdFor(RefusedIds.disabled(), window))
     }
 
@@ -102,9 +80,7 @@ class WantIdGateTest {
 
     @Test
     fun `one refusal is not enough to decline an id`() {
-        // The two-refusal gate, seen from the wire side: a single sighting must
-        // still be downloadable, or one false positive upstream of here would
-        // cost an event permanently.
+        // A single sighting must still be downloadable, or one false positive costs an event permanently.
         val refused = RefusedIds(dir(), 86_400L, 10_000)
         val once = id(3)
         refused.record(once, 1_780_000_000L)
@@ -116,10 +92,7 @@ class WantIdGateTest {
 
     @Test
     fun `the predicate is keyed on the window, because an id is all the reconcile gives us`() {
-        // A reconcile names ids; no body has arrived, so there is no
-        // `created_at` to key on. A window that does not cover the id's epoch
-        // must therefore not decline it — being wrong in that direction skips
-        // an event we wanted.
+        // A reconcile names ids with no `created_at`, so a window that does not cover the id's epoch must not decline it.
         val refused = RefusedIds(dir(), 86_400L, 10_000)
         val stale = id(4)
         val at = 1_780_000_000L

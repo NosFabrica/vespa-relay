@@ -35,33 +35,19 @@ import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 
 /**
- * The gate: one store refusal in, a repair and at most one filter row out.
+ * One store refusal in, a repair and at most one filter row out.
  *
- * **Heal first, then remember.** The enqueue happens before the recording, so
- * every (relay, address) pair gets its repair attempted before the id can reach
- * the suppress filter — and once an id IS suppressed it is never downloaded
- * again, so it can never re-trigger. Churn keeps the healer fed anyway: each
- * new stale version the relay mints is downloaded once, refused once, and
- * queues its repair before its own id is ever recorded.
- *
- * **This is also the whole amplitude guard.** The only way into the heal queue
- * is a store refusal of an event a relay actually served us, so a relay that
- * has never seen an author can never appear here. That is what makes the push
- * incapable of introducing anyone to a new relay, and it is the same fact the
- * consent argument rests on.
+ * The enqueue happens before the recording: a suppressed id is never
+ * downloaded again, so the repair must be queued before the id can reach the
+ * filter. The only way into the heal queue is a refusal of an event a relay
+ * actually served, which is what keeps the push from ever introducing an
+ * author to a new relay.
  */
 class RouterRefusalSink(
     private val refused: RefusedIds,
     private val queue: HealQueue,
     private val suppressionEnabled: Boolean,
-    /**
-     * Whether ANY configured stream may heal. Origins exist only to answer
-     * "which relay served this, and what is that stream allowed to do about
-     * it" — so with every `healContent`/`healRetractions` switch off there is
-     * nothing to answer and the pipeline can skip carrying them. Defaults true
-     * so a caller that forgets it errs towards doing the work rather than
-     * silently dropping the heal path.
-     */
+    /** Whether any configured stream may heal; with every heal switch off the pipeline need not carry origins. */
     healingPossible: Boolean = true,
 ) : RefusalSink {
     override val tracksOrigins: Boolean = healingPossible
@@ -75,9 +61,7 @@ class RouterRefusalSink(
     ) {
         if (!PermanentRefusals.isPermanent(reason)) return
 
-        // Bound to a local rather than smart-cast: `origin` is another
-        // module's type now, so the compiler cannot prove the property does not
-        // change between the check and the use.
+        // A local, not a smart cast: `origin` is another module's type.
         val from = origin.url
         if (from != null && PermanentRefusals.isHealable(reason)) {
             healKeyFor(event, reason, origin)?.let { key ->
@@ -89,12 +73,10 @@ class RouterRefusalSink(
     }
 
     /**
-     * What repair this refusal asks for, or null when the stream's switches
-     * forbid it. The two content kinds and the two retraction kinds are
-     * separately switchable because they differ in whether the author asked:
-     * a kind 5 and an `ALL_RELAYS` kind 62 are instructions the author already
-     * addressed to every relay, while a newer profile is a version update to a
-     * relay that already carries them.
+     * The repair this refusal asks for, or null when the stream's switches
+     * forbid it. Content and retractions are switched separately: a kind 5 or
+     * an `ALL_RELAYS` kind 62 is an instruction the author addressed to every
+     * relay, while a newer profile is a version update.
      */
     private fun healKeyFor(
         event: Event,

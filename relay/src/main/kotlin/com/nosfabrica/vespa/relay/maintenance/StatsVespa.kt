@@ -36,16 +36,8 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * Somewhere to send a [StatsYql] pipeline — the seam [StatsRollup] depends on
- * rather than on the engine.
- *
- * One method, because that is the whole of the rollup's vocabulary. It exists
- * for the one thing about the rollup a test can otherwise not reach: WHICH
- * queries each cadence asks. The tiering in [StatsTier] is a claim about cost —
- * that the counters never ask the question that materialises a pubkey set over
- * the whole corpus — and against a concrete [StatsVespa] that claim is only
- * checkable by owning a 90M-document corpus and a stopwatch. Against this it is
- * an assertion over a recorded list of pipelines.
+ * Somewhere to send a [StatsYql] pipeline; the seam [StatsRollup] depends on
+ * instead of the engine, so a test can assert which queries a cadence asks.
  */
 internal interface StatsQueries {
     /** Run [pipeline] over the [source] documents [where] selects and return Vespa's `root`. */
@@ -58,12 +50,8 @@ internal interface StatsQueries {
 
 /**
  * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to
- * `/search/`, refuse a degraded answer, hand back the parsed root.
- *
- * POST rather than GET for the same reason the store POSTs — a grouping
- * pipeline plus its parameters outgrows a sane URL — and on the JDK's own
- * client rather than Ktor's so the rollup adds no dependency to a module whose
- * Ktor artifacts are all server-side.
+ * `/search/`, refuse a degraded answer, hand back the parsed root. On the
+ * JDK's client so the relay module gains no client-side Ktor dependency.
  */
 internal class StatsVespa(
     vespaUrl: String,
@@ -76,13 +64,8 @@ internal class StatsVespa(
     private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
 
     /**
-     * Run [pipeline] over the [source] documents [where] selects and return
-     * Vespa's `root`.
-     *
-     * Throws on anything that is not a complete answer — an HTTP error, a
-     * degraded response, a body without a root. A thrown aggregation shows up
-     * on the page as a named failure; a swallowed one shows up as a chart that
-     * is simply wrong, and no reader could tell which.
+     * Throws on anything that is not a complete answer: a thrown aggregation
+     * shows on the page as a named failure, a swallowed one as a wrong chart.
      */
     // The defaults are on [StatsQueries.group]; an override may not restate them.
     override suspend fun group(
@@ -101,20 +84,14 @@ internal class StatsVespa(
 
         val response =
             withContext(Dispatchers.IO) {
-                // Blocking send on an IO thread rather than sendAsync: this runs
-                // on a background timer, and one aggregation is a single round
-                // trip. Nothing is waiting on the thread.
+                // Blocking send: one round trip on a background timer.
                 http.send(
                     HttpRequest
                         .newBuilder(searchUrl)
                         .header("Content-Type", "application/json")
-                        // No client-side read timeout on purpose. The bundled
-                        // query profile puts Vespa's own deadline at its maximum
-                        // with soft timeout OFF, precisely so a slow aggregation
-                        // finishes instead of returning a quiet half-answer; a
-                        // timeout here would reintroduce the truncation one
-                        // layer up, as a retry that keeps failing on a corpus
-                        // that has simply grown.
+                        // No read timeout: the query profile puts Vespa's own
+                        // deadline at its maximum so a slow aggregation
+                        // finishes rather than answering by halves.
                         .POST(HttpRequest.BodyPublishers.ofString(body))
                         .build(),
                     HttpResponse.BodyHandlers.ofString(),
@@ -129,23 +106,9 @@ internal class StatsVespa(
     }
 
     /**
-     * Refuse a partial answer, asking Vespa's own `isDegraded()` question —
-     * `coverage` at 100 with no `degraded` block — rather than its `full` flag.
-     *
-     * This mirrors `SearchCoverage.undegraded` in the store, and the reasoning
-     * there is worth not re-deriving: `full` and `coverage` are computed from
-     * DIFFERENT denominators and disagree at both boundaries. `full` is
-     * `docs == active`, an exact equality; `coverage` rounds `docs/targetActive`.
-     * A node a hair short of its target is `full: false` at 100% — harmless, and
-     * refusing it refuses every query while the node settles. A node holding
-     * documents not yet active anywhere is `full: true` at any percentage at all
-     * — genuinely short, and keying on `full` waves it through. One question
-     * answers both spellings; `full` answers neither.
-     *
-     * A statistic is exactly the kind of number nobody can sanity-check by
-     * looking at it, so the residual matters here more than on a feed: at 100%
-     * at most 0.5% of the target went unsearched, and that is the accuracy this
-     * page can claim.
+     * Refuse a partial answer by Vespa's own `isDegraded()` test, `coverage` at
+     * 100 with no `degraded` block, not by the `full` flag: the two use
+     * different denominators and disagree at both boundaries.
      */
     private fun JsonObject.requireUndegraded(yql: String) {
         val coverage = this["coverage"]?.jsonObject ?: return
@@ -157,21 +120,9 @@ internal class StatsVespa(
     }
 
     /**
-     * Log the whole failure, throw a message safe to publish.
-     *
-     * The distinction is the point. `/stats.json` is PUBLIC and unauthenticated,
-     * and `StatsRollup` copies an exception's message straight into the document
-     * a failed section carries — so anything in that message is served to the
-     * internet. Vespa's response body is the part that must not go: it names
-     * content nodes, container hostnames and internal ports, none of which is
-     * anyone else's business, and all of which used to ride out on the first
-     * failed aggregation.
-     *
-     * The YQL stays in the published message, deliberately. It is our own
-     * pipeline, it is in this repo already, and it is the whole diagnostic value
-     * of the field — an operator reading "which query broke" without knowing
-     * which query is reading nothing. Detail without disclosure: the pipeline
-     * and the status code are public, the engine's own words are for the log.
+     * Log the whole failure, throw a message safe to publish. The message
+     * lands in the public `/stats.json`; Vespa's body names hosts and ports
+     * and stays in the log. The YQL is our own and is the diagnostic.
      */
     private fun failed(
         summary: String,

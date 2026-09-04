@@ -36,25 +36,22 @@ import java.time.Duration
 internal fun isOnion(url: NormalizedRelayUrl): Boolean = RelayUrlNormalizer.isOnion(url.url)
 
 /**
- * Static `urls` this deployment cannot dial without Tor, as
- * `stream: url` strings. Reported by [SyncMain] rather than skipped: a
- * `.onion` in `urls` was typed by hand, and a relay that silently mirrors
- * nothing looks exactly like a relay that is failing.
+ * Static `urls` this deployment cannot dial without Tor, as `stream: url`
+ * strings. Reported by [SyncMain] rather than skipped: a relay that silently
+ * mirrors nothing looks exactly like a relay that is failing.
  */
 fun onionUpstreams(streams: List<SyncStream>): List<String> = streams.flatMap { s -> s.urls.filter(::isOnion).map { "${s.name}: ${it.url}" } }
 
 /**
- * Where the SOCKS5 proxy is and how hard to lean on it. Null — `SYNC_TOR_SOCKS`
- * unset — is the no-Tor deployment, and every path that could dial a `.onion`
- * says so out loud instead of timing out.
+ * Where the SOCKS5 proxy is and how hard to lean on it. Null (`SYNC_TOR_SOCKS`
+ * unset) is the no-Tor deployment, and every path that could dial a `.onion`
+ * says so instead of timing out.
  */
 data class TorSettings(
     val socksHost: String,
     val socksPort: Int,
-    // SYNC_TOR_ALL: send EVERY upstream through Tor, not only .onion ones. A
-    // different deployment (nothing learns our address), not a better default:
-    // a 20k-relay dynamic cycle over Tor is a fraction of the throughput, and
-    // several large relays refuse exit traffic outright.
+    // SYNC_TOR_ALL: every upstream through Tor, not only .onion ones. A
+    // different deployment (nothing learns our address), not a better default.
     val routeAll: Boolean,
     val connectTimeoutSec: Long,
     val maxSockets: Int,
@@ -62,19 +59,10 @@ data class TorSettings(
     val socksAddress: String get() = "$socksHost:$socksPort"
 
     companion object {
-        /**
-         * A circuit plus a rendezvous is seconds of work before the first byte,
-         * where the clearnet default (`connectionTimeout = 20`) sizes a TCP
-         * handshake. This is a connect timeout — the idle windows that govern
-         * transfers ([NEG_IDLE_MS]) already reset per message and need no
-         * Tor-specific value.
-         */
+        /** A circuit plus a rendezvous is seconds of work before the first byte; a connect timeout, not an idle window. */
         const val DEFAULT_CONNECT_TIMEOUT_SEC = 90L
 
-        /**
-         * Tor builds a circuit per stream and is not the router's 1024-socket
-         * clearnet budget. Onion relays are a handful, not a fan-out.
-         */
+        /** Tor builds a circuit per stream; onion relays are a handful, not a fan-out. */
         const val DEFAULT_MAX_SOCKETS = 32
 
         /** How long a SOCKS probe may hang before we call our own proxy down. */
@@ -84,18 +72,14 @@ data class TorSettings(
         const val PROBE_TTL_MS = 30_000L
 
         /**
-         * `SYNC_TOR_SOCKS=tor:9050` (a `socks5://` prefix is tolerated — it is
-         * what operators type). Malformed is a hard error, not a fallback to
-         * "no Tor": the value exists to turn something on.
+         * `SYNC_TOR_SOCKS=tor:9050` (a `socks5://` prefix is tolerated).
+         * Malformed is a hard error, not a fallback to "no Tor".
          */
         fun fromEnv(env: Map<String, String>): TorSettings? {
             val raw = env["SYNC_TOR_SOCKS"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val hostPort = raw.substringAfter("://")
-            // `[::1]:9050` — the brackets exist to separate the colons of an
-            // IPv6 literal from the port's, and only the port parse needs
-            // them. InetSocketAddress wants the address without: left on, the
-            // host never resolves and every dial fails on a value that looks
-            // exactly right in the log.
+            // `[::1]:9050`: the brackets separate an IPv6 literal's colons from
+            // the port's; InetSocketAddress wants the address without them.
             val host =
                 hostPort
                     .substringBeforeLast(':', "")
@@ -121,53 +105,12 @@ data class TorSettings(
 }
 
 /**
- * How long the alias fold's fingerprint may sit silent on this url before it
- * gives up — the clearnet budget for a clearnet relay, and the Tor one on top
- * for anything dialled through the proxy.
- *
- * **Quartz's `idleTimeoutMs` is measured from the START of the fetch**, not
- * from the connection: `IdleClock` is constructed with the walk and nothing has
- * bumped it yet, so the window covers the connect as well as the answer. The
- * value [AliasProbe] was given is `connectionTimeout` — the number that sizes a
- * clearnet TCP handshake, 20s by default — and a hidden service is allowed
- * [TorSettings.connectTimeoutSec] (90s) for the circuit and the rendezvous
- * ALONE, precisely because 20s is the wrong size for that. The two disagreeing
- * is not a slow probe, it is a probe that cannot finish: [fetchAll] returns
- * whatever it collected when the window lapses, and what it collected is
- * nothing — which arrives at [RelayAliases] as an EMPTY window, indistinguishable
- * from a relay that holds no events. An empty window folds nothing and clears
- * nothing, so every url on that host stays unmeasured and the fan-out goes on
- * dialling all of them, pass after pass, forever.
- *
- * Summed rather than maxed, because the two budgets buy different things: the
- * Tor one gets us connected, and the clearnet one is the silence every other
- * relay is allowed while ANSWERING. Under `SYNC_TOR_ALL` clearnet urls route
- * through the proxy too and get the same window, for the same reason.
- *
- * **This is the MONITOR plane's silence budget, and it is not [NEG_IDLE_MS].**
- * The sync plane's transfers are allowed 30s of silence apiece; a probe gets
- * `connectionTimeout` (20s) plus a circuit where it needs one. Two planes with
- * two budgets under similar-sounding names is deliberate rather than drift —
- * see [NEG_IDLE_MS] for which is sizing what — and a probe pass puts a hard
- * wall clock on top of this window that no transfer has, because a probe that
- * never returns holds the roster every stream is built from. See
- * [AliasProbe.deadlineMs].
- *
- * What it costs is paid only by hosts that do not answer: a leader that never
- * speaks is asked four times a pass (bare filter then [AliasProbe.FALLBACK_KINDS],
- * each retrying once at the smaller page), so a dead onion group occupies a
- * permit for minutes rather than seconds. The alternative is what it replaces:
- * never folding a hidden service at all.
- *
- * **WHOSE permit is the part of that argument that has been corrected.** It was
- * written when the fold's gate was 16 undifferentiated permits and Tor was "the
- * handful of relays Tor reaches" — true of the population and not of the
- * occupancy. Measured on staging at `dialConcurrency = 100`, `.onion` was 10% of
- * the candidate urls and held 60-74% of a saturated gate, with 30-40 of those
- * permits waiting on a Tor dispatcher only [TorSettings.maxSockets] wide. The
- * budget below is still right; what was wrong was charging it to the clearnet
- * fan-out. The passes now gate the two transports separately — see [DialGate],
- * which carries the readings.
+ * How long a probe's fetch may sit silent on this url: the clearnet budget,
+ * plus the Tor connect budget on top for anything routed through the proxy.
+ * Summed, not maxed: quartz's `idleTimeoutMs` runs from the start of the
+ * fetch, so it covers the circuit as well as the answer, and a window that
+ * lapses during the connect returns an empty result indistinguishable from
+ * an empty relay. This is the monitor's budget, not [NEG_IDLE_MS].
  */
 fun probeIdleMs(
     url: NormalizedRelayUrl,
@@ -178,36 +121,22 @@ fun probeIdleMs(
 /**
  * The second websocket client: the one whose connections go through Tor.
  *
- * The mechanism is OkHttp's, not ours. Given a SOCKS proxy, `RouteSelector`
- * builds an `InetSocketAddress.createUnresolved(host, port)` instead of
- * calling `Dns.lookup`, and `ConnectPlan` opens a `Socket(proxy)` — so the
- * hostname travels to the proxy and is resolved INSIDE Tor. That is what makes
- * `.onion` work at all (there is nothing for a resolver to answer) and it is
- * also what stops the name of every hidden service we sync with from being
- * broadcast to whatever DNS this box uses. Never give this client a `Dns`:
- * that is the one change that would quietly move resolution back out here.
- *
- * Which client a relay gets is chosen per url, because quartz's
- * `BasicOkHttpWebSocket.Builder` takes `(NormalizedRelayUrl) -> OkHttpClient`.
- * Clearnet keeps the direct client: routing 20,000 discovered relays through
- * Tor to reach the handful on it would trade the fan-out for the exception.
+ * Given a SOCKS proxy, OkHttp sends the hostname unresolved to the proxy, so
+ * resolution happens inside Tor. That is what makes `.onion` work and what
+ * keeps hidden-service names off this box's DNS. Never give this client a
+ * `Dns`: that is the one change that would move resolution back out here.
+ * Which client a url gets is chosen per url; clearnet keeps the direct one.
  */
 class TorTransport(
     val settings: TorSettings,
     private val direct: OkHttpClient,
 ) {
     /**
-     * Built from [direct] so the ping interval and the rest of its tuning
-     * carry over — but the dispatcher and the connect timeout are REPLACED,
-     * not inherited. `newBuilder()` shares the dispatcher object, and sharing
-     * it would have let onion dials draw down the 1024-socket budget the
-     * clearnet fan-out is sized against while queueing behind it.
-     *
-     * The proxy is a [ProxySelector] rather than a fixed `proxy(...)` because
-     * `InetSocketAddress(host, port)` resolves ONCE, at construction: a Tor
-     * container that restarts on a new address would leave this process
-     * dialling the old one until someone restarted the router. Resolved per
-     * connection, a restart costs one failed cycle.
+     * Built from [direct] so its tuning carries over, but the dispatcher and
+     * connect timeout are replaced: `newBuilder()` shares the dispatcher
+     * object, which would let onion dials draw down the clearnet budget. The
+     * proxy is a [ProxySelector] so the SOCKS host resolves per connection
+     * rather than once at construction.
      */
     private val client: OkHttpClient =
         direct
@@ -225,8 +154,8 @@ class TorTransport(
             ).dispatcher(
                 Dispatcher().apply {
                     maxRequests = settings.maxSockets
-                    // Every onion url is a different "host" to OkHttp, so the
-                    // per-host cap only bites on a relay serving several urls.
+                    // Every onion url is its own host to OkHttp, so the per-host
+                    // cap only bites on a relay serving several urls.
                     maxRequestsPerHost = settings.maxSockets
                 },
             ).connectTimeout(Duration.ofSeconds(settings.connectTimeoutSec))
@@ -234,7 +163,7 @@ class TorTransport(
 
     fun routes(url: NormalizedRelayUrl): Boolean = settings.routeAll || isOnion(url)
 
-    /** The client to dial [url] with — the whole point of the per-url builder. */
+    /** The client to dial [url] with. */
     fun clientFor(url: NormalizedRelayUrl): OkHttpClient = if (routes(url)) client else direct
 
     @Volatile private var probedAt = 0L
@@ -242,46 +171,26 @@ class TorTransport(
     @Volatile private var probeSaid = false
 
     /**
-     * One prober at a time. The gate is asked once per relay in a fan-out that
-     * launches a coroutine per discovered relay, so the moment the TTL expires
-     * every runnable thread reaches the check together — without this, each of
-     * them opens its own connection and the answer to "is our proxy healthy?"
-     * is a burst of connections to it. The loser of the race takes the
-     * previous answer rather than waiting: it is at most [TorSettings.PROBE_TTL_MS]
-     * stale, and the alternative is blocking IO threads on someone else's
-     * connect timeout.
+     * One prober at a time: when the TTL expires every fan-out thread reaches
+     * the check together. The loser takes the previous answer rather than
+     * waiting; it is at most [TorSettings.PROBE_TTL_MS] stale.
      */
     private val probing =
         java.util.concurrent.atomic
             .AtomicBoolean(false)
 
     /**
-     * Is our own proxy answering? Asked before a cycle dials any hidden
-     * service, and it is a question about US.
-     *
-     * When the Tor container is down or its name does not resolve, every onion
-     * dial fails with an exception indistinguishable from the relay being
-     * gone — `UnknownHostException` among them, which [Unreachability] accepts
-     * as proof and would publish, signed, about someone else's server. One
-     * cheap connect to the SOCKS port separates "we have no transport" from
-     * "that service is unreachable", and only the second is anyone else's
-     * business.
-     *
-     * A connect proves the port answers, not that Tor has bootstrapped; a
-     * still-bootstrapping Tor refuses the stream and the relay is retried next
-     * cycle, which is the same shape as any other transient upstream failure.
+     * Is our own proxy answering? When it is not, every onion dial fails with
+     * an exception indistinguishable from the relay being gone, and
+     * [Unreachability] would publish that, signed, about someone else's
+     * server. A connect proves the port answers, not that Tor has bootstrapped.
      */
     fun socksAnswers(nowMs: Long = System.currentTimeMillis()): Boolean {
         if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
         if (!probing.compareAndSet(false, true)) return probeSaid
         try {
-            // The same question again, now that we hold the flag. Reading the
-            // TTL and taking the flag are two steps, and a caller descheduled
-            // between them can be handed the flag by a prober that has since
-            // finished — arriving here with a fresh answer already in
-            // [probedAt] and about to open a second connection for it. Losing
-            // the CAS is not the only way to lose the race; winning it late is
-            // the other, and it is the one that costs a connection.
+            // Re-checked under the flag: a caller descheduled between the TTL
+            // read and the CAS can win it after another prober has finished.
             if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
             probeSaid =
                 runCatching {
@@ -294,8 +203,7 @@ class TorTransport(
                     true
                 }.getOrDefault(false)
             // After the answer, never before: a reader that saw the new
-            // timestamp with the old verdict would hold a stale answer for a
-            // whole TTL, which is the one outcome the probe exists to avoid.
+            // timestamp with the old verdict would hold it for a whole TTL.
             probedAt = nowMs
         } finally {
             probing.set(false)

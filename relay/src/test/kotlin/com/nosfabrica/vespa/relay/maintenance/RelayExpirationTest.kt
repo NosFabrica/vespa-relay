@@ -37,10 +37,7 @@ class RelayExpirationTest {
     @Test
     fun `sweepOnce prunes without touching live events`() =
         runBlocking {
-            // The store refuses already-expired inserts, so the sweeper's job is
-            // events that expire while stored (the store's own deletion logic is
-            // tested upstream). Here we verify the sweeper drives that path
-            // cleanly and never over-deletes a live, non-expiring event.
+            // The store refuses already-expired inserts, and its own deletion is tested upstream.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             val kept = signer.sign<Event>(1_700_000_000L, 1, emptyArray(), "stays")
             store.insert(kept)
@@ -53,7 +50,7 @@ class RelayExpirationTest {
     @Test
     fun `a non-positive interval never starts the loop`() {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-        // Should not throw, and close() is safe even though nothing was launched.
+        // close() is safe with nothing launched.
         ExpirationSweeper(store, intervalSeconds = 0).start().close()
     }
 }

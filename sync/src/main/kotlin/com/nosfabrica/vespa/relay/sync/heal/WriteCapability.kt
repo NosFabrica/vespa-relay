@@ -24,26 +24,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Which relays will take our repairs, learned by asking.
- *
- * This is what makes pushing to a 16k-relay fan-out affordable: the cost is
- * **one-time per relay**, not per cycle. Probe until the relay says no on
- * policy (once is enough — that is its configuration speaking) or stays silent
- * across enough separate passes, mark it, and never spend another publish on
- * it.
- *
- * The silence rule is deliberately slow. An unanswered `EVENT` is ambiguous —
- * quartz reports it as a transport failure, which covers a relay that never
- * connected, one that dropped, and one that simply ignores writes — so strikes
- * must accumulate across **at least two separate drain passes** before they
- * close anything. One bad session cannot close a relay, which is the same
- * conservatism the NIP-45 idle-window trap in AGENTS.md teaches: a relay
- * steadily answering can look exactly like one refusing if the window is sized
- * off the queue instead of the slowest single answer.
- *
- * Write-closed gates only the PUSH. The refused-ids filter still suppresses
- * that relay's stale offers, which is precisely why the two structures are
- * separate.
+ * Which relays will take our repairs, learned once per relay. A policy
+ * refusal closes the relay at once; silence closes it only after
+ * [strikeThreshold] unanswered publishes spread over at least
+ * [MIN_DISTINCT_PASSES] drain passes, because one bad session must not close
+ * a relay. Closed gates only the push; the refused-ids filter still
+ * suppresses the relay's stale offers.
  */
 class WriteCapability(
     private val strikeThreshold: Int = DEFAULT_STRIKES,
@@ -64,18 +50,10 @@ class WriteCapability(
 
     fun closedCount(): Int = relays.values.count { it.closed }
 
-    /**
-     * Relays we have actually pushed to and heard something back from.
-     *
-     * The health line prints `closedCount/probedCount`, and this used to count
-     * only relays that had struck or closed — so a fan-out where every relay
-     * accepted its repairs read `0/0`, which is what a healer that never ran
-     * also prints. [succeeded] therefore records a clean state rather than
-     * only clearing an existing one.
-     */
+    /** Relays pushed to and heard back from; the health line prints `closed/probed`. */
     fun probedCount(): Int = relays.size
 
-    /** A policy refusal. One is enough: it is their configuration, not their mood. */
+    /** A policy refusal. One is enough: it is the relay's configuration, not its mood. */
     fun close(
         url: NormalizedRelayUrl,
         reason: String,
@@ -87,23 +65,17 @@ class WriteCapability(
     }
 
     /**
-     * The relay answered. Clears any accumulated doubt and records that we
-     * have reached it at all.
-     *
-     * One `compute` rather than a read-then-write: the old version could drop
-     * a [strike] that landed between the two, and it recorded nothing for a
-     * relay that had never struck — which is what left [probedCount] reading
-     * zero on a healthy fan-out. A closed relay stays closed; policy is not
-     * undone by a later answer.
+     * The relay answered: clears any strikes and records the relay as probed.
+     * One `compute`, so a concurrent [strike] is not lost. A closed relay
+     * stays closed.
      */
     fun succeeded(url: NormalizedRelayUrl) {
         relays.compute(url) { _, before -> if (before?.closed == true) before else State() }
     }
 
     /**
-     * An unanswered publish in drain pass [passId]. Closes the relay only once
-     * the strikes have come from at least [MIN_DISTINCT_PASSES] different
-     * passes AND reached the threshold.
+     * An unanswered publish in drain pass [passId]. Closes the relay once the
+     * strikes reach the threshold and span at least [MIN_DISTINCT_PASSES] passes.
      */
     fun strike(
         url: NormalizedRelayUrl,
@@ -127,10 +99,7 @@ class WriteCapability(
     companion object {
         private const val DEFAULT_STRIKES = 3
 
-        /**
-         * Strikes must span this many drain passes. Two is the smallest number
-         * that makes "one bad session closed a relay forever" impossible.
-         */
+        /** Strikes must span this many drain passes, so one bad session cannot close a relay. */
         private const val MIN_DISTINCT_PASSES = 2
     }
 }

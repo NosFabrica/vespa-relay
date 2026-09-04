@@ -36,13 +36,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * What a reader is told when they sign in, and — the half that is easy to lose
- * — what they are NOT told.
- *
- * The decision is asserted here rather than over the wire because silence is
- * one of its answers: `RelayProtocolTest` can prove a NOTICE arrived, but
- * "nothing was said" is only ever a wait that has not finished yet. This runs
- * the walk to completion and looks at the list.
+ * What a reader is told at sign-in, and what they are not. Asserted over the
+ * finished walk rather than the wire, because silence is one of the answers.
  */
 class TrustNoticeTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -64,7 +59,7 @@ class TrustNoticeTest {
         tags: List<Array<String>>,
     ): Event = by.sign(1_700_000_000L, 10040, tags.toTypedArray(), "")
 
-    /** One of [by]'s score cards. Its `d` is whoever it is about; what ranks is who SIGNED it. */
+    /** One of [by]'s score cards. Its `d` is whoever it is about; what ranks is who signed it. */
     private suspend fun scoreCard(
         by: NostrSignerSync = service,
         about: String = stranger.pubKey,
@@ -91,12 +86,7 @@ class TrustNoticeTest {
             assertEquals(emptyList(), notice.notices(reader.pubKey), "the failure mode of a status channel is nagging people who are fine")
         }
 
-    /**
-     * The assertion the whole chain rests on: it is the SIGNER of a card that
-     * ranks, not its subject. A relay holding a million cards from services
-     * this reader never named can rank nothing for them, and a filter keyed on
-     * anything but the `30382:rank` service would call that ready.
-     */
+    /** It is the signer of a card that ranks, not its subject. */
     @Test
     fun `another service's cards are not this reader's scores`() =
         runBlocking {
@@ -110,10 +100,8 @@ class TrustNoticeTest {
         }
 
     /**
-     * Three ways a stored 10040 still names nothing this relay can rank
-     * through, told apart from having no list at all because the reader's fix
-     * is different — and read the same way the store's own provider map reads
-     * it, off the public tag array.
+     * Told apart from having no list because the reader's fix is different, and
+     * read off the public tag array the way the store's provider map reads it.
      */
     @Test
     fun `a list that names no usable rank service is its own answer`() =
@@ -135,13 +123,7 @@ class TrustNoticeTest {
             }
         }
 
-    /**
-     * A 10040 may name more than one rank service, and the store's provider
-     * map credits the reader through EVERY one of them — so either service's
-     * cards being here means ranking works. Reading only the first told a
-     * reader whose second provider is fully mirrored that their scores were
-     * missing, on every login.
-     */
+    /** The store's provider map credits the reader through every named rank service, so either one's cards mean ranking works. */
     @Test
     fun `either of two named rank services is enough`() =
         runBlocking {
@@ -162,8 +144,7 @@ class TrustNoticeTest {
                 "neither one's cards are here, and the notice names both",
             )
 
-            // Only the SECOND is mirrored, which is the case a first-tag-only
-            // read reported as missing forever.
+            // Only the second is mirrored.
             store.insert(scoreCard(by = second))
             assertEquals(emptyList(), notice.notices(reader.pubKey))
         }
@@ -176,12 +157,7 @@ class TrustNoticeTest {
             assertEquals(listOf(TrustNotice.NO_PROVIDER), notice.notices(reader.pubKey))
         }
 
-    /**
-     * A store that cannot answer is not a store that answered "no". A notice
-     * here tells a reader their own list is missing and sends them off to
-     * republish it; only the store may make that claim, and a Vespa that is
-     * briefly unreachable has made none.
-     */
+    /** A notice sends a reader off to republish their list; only the store may claim it is missing, and an unreachable one has not. */
     @Test
     fun `an unanswerable check says nothing rather than guessing`() =
         runBlocking {
@@ -189,8 +165,7 @@ class TrustNoticeTest {
             val blindToLists = TrustNotice(FailingKind(store, kind = 10040), CoroutineScope(SupervisorJob()))
             assertEquals(emptyList(), blindToLists.notices(reader.pubKey), "the 10040 read threw; nothing is claimed about it")
 
-            // The second leg the same way: the list was read, the cards were
-            // not, and "your provider has not been mirrored" is unsupported.
+            // The second leg the same way: the list was read, the cards were not.
             val blindToCards = TrustNotice(FailingKind(store, kind = 30382), CoroutineScope(SupervisorJob()))
             assertEquals(emptyList(), blindToCards.notices(reader.pubKey))
         }

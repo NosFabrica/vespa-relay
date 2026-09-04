@@ -25,12 +25,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The output an operator reads to decide whether to wait or intervene. The two
- * failures worth testing are the ones seen in production: a stream that is
- * working but reports nothing, and a stream that is absent from the report
- * entirely — which reads as "not configured" rather than "not started".
- */
+/** The per-stream lines an operator reads to decide whether to wait or intervene. */
 class StreamPhasesTest {
     private fun rotating(
         relays: Int,
@@ -64,9 +59,6 @@ class StreamPhasesTest {
 
     @Test
     fun `the rotation reports both of its numbers, and zero is one of them`() {
-        // A stream riding four hundred relays and one riding none both read
-        // `rotating for 58m` before this pair was published — and the second is
-        // the state worth seeing, a stream that looks busy and dials nothing.
         val p = StreamPhases()
         p.set("content", rotating(412, 128))
         assertTrue(p.report().single().contains("412 relay(s)"))
@@ -80,9 +72,6 @@ class StreamPhasesTest {
 
     @Test
     fun `the elapsed clock survives progress within one phase`() {
-        // The rotation is one phase for the life of the process and its numbers
-        // move constantly; restarting the clock on each would hide the only
-        // duration worth seeing.
         val p = StreamPhases()
         p.set("s", rotating(10, 1))
         Thread.sleep(1100)
@@ -112,11 +101,7 @@ class StreamPhasesTest {
 
     @Test
     fun `a stuck leg is named on every line until it lets go`() {
-        // The logs here rotate inside the hour and the diagnostic line only ever
-        // fires for the one stream SYNC_DIAGNOSE points at, so a leg holding a
-        // slot since the small hours left nothing at all to find. The phase
-        // cannot say it — a stream is rotating whether its pool is turning over
-        // or wedged on one relay — so it is appended to whatever the phase says.
+        // The phase cannot say it: a stream is rotating whether its pool turns over or is wedged on one relay.
         val p = StreamPhases()
         p.set("content", rotating(5, 5))
         p.names("content", inFlight = {
@@ -132,8 +117,6 @@ class StreamPhasesTest {
 
     @Test
     fun `an ordinary leg in flight says nothing`() {
-        // Every healthy rotation has relays in flight. A line on each is the log
-        // rather than a finding, which is how a warning stops being read.
         val p = StreamPhases()
         p.set("content", rotating(5, 4))
         p.names("content", inFlight = {

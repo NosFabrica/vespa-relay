@@ -26,34 +26,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * `router.conf.example` is what a new operator copies, and it is only worth
- * shipping if it produces the sync a real deployment runs. Two files describing
- * the same thing drift, and the drift is invisible: the example still parses,
- * still looks right, and quietly mirrors something else.
- *
- * So this asserts they parse to the same streams. Comments, key order and
- * whitespace are free to differ — the parsed result is not.
- *
- * A LOCAL check, and it cannot be anything else. `router.conf` is gitignored on
- * purpose — it is machine-local, holding one operator's relay list and filters —
- * so a clean checkout has nothing to compare against and CI never will. Written
- * without noticing that, it failed CI on the file's absence, which is a test
- * reporting the repository's design as a defect.
- *
- * Where there is no `router.conf` this is SKIPPED rather than passed. A test
- * that returns green having compared nothing is the more expensive mistake: it
- * says the example was verified when the run never looked at it.
+ * `router.conf.example` must parse to the same streams as the operator's
+ * gitignored `router.conf`. Skipped, never passed, where there is no local one.
  */
 class ExampleMatchesLiveConfTest {
-    /**
-     * Everything about a stream that decides what it syncs.
-     *
-     * Spelled out rather than comparing [SyncStream] directly: `Filter` has no
-     * `equals`, so a data-class comparison falls back to identity and fails on
-     * two filters that are the same filter. Its json is what [SyncBands]
-     * already keys bands on, so it is this codebase's own definition of "the
-     * same ask".
-     */
+    /** The fields that decide what a stream syncs, as text: `Filter` has no `equals`, so its json stands in. */
     private fun shape(s: SyncStream) =
         listOf(
             s.name,

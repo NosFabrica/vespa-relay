@@ -39,34 +39,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * SEED A LOCAL RELAY WITH A MONITOR CORPUS, so the stats page's verdicts panel
- * can be driven against a real store instead of a fixture.
- *
- * The panel is the one part of `stats.html` that speaks the protocol: it pages
- * kind 30166 off the relay's own websocket, scoped to the relay's own key, and
- * renders whatever comes back. Every unit test of it hands the parser events
- * from an array — which is exactly the shape that has been wrong twice, because
- * what breaks a panel at scale is the record it did not expect on page nine.
- *
- * So this writes the corpus a monitor would: [count] urls across a realistic
- * spread of hosts, each carrying a NIP-32 grade under
- * [RelayVerdictRecord.FITNESS_NAMESPACE], the descriptive facts a fitness pass
- * publishes beside it, and — for [legacyShare] of them — the OLD grade still on
- * `s`, which is what a store looks like before the boot migration has run.
- *
- * It publishes THROUGH THE RELAY'S OWN WEBSOCKET rather than writing to the
- * store directly, so the seed also exercises the accept path the records really
- * arrive by.
- *
- * ```bash
- * ./gradlew :sync:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
- *   -DseedVerdictsNsec=nsec1… --rerun -i
- * ```
- *
- * The nsec must be the relay's own `RELAY_NSEC`: the panel scopes its read to
- * the key the relay publishes as `self` in its NIP-11 document, so records
- * signed by anything else are correctly counted as another monitor's and drawn
- * on no row at all. Asserts nothing — the page is the verdict.
+ * Seeds a local relay with a monitor corpus, through its own websocket, so the
+ * stats page's verdicts panel can be driven against a real store. Asserts
+ * nothing; the page is the verdict. Selected by `-DseedVerdicts=true`, signed
+ * with `-DseedVerdictsNsec=` (the relay's own `RELAY_NSEC`, or the panel counts
+ * the records as another monitor's).
  */
 class VerdictPanelSeedProbe {
     @Test
@@ -78,9 +55,6 @@ class VerdictPanelSeedProbe {
         val target = RelayUrlNormalizer.normalize(System.getProperty("seedVerdictsUrl") ?: "ws://localhost:7777")
         val count = System.getProperty("seedVerdictsCount")?.toIntOrNull() ?: 600
         val legacyShare = System.getProperty("seedVerdictsLegacy")?.toIntOrNull() ?: 15
-        // The relay's OWN key, through the same decoder the relay reads
-        // RELAY_NSEC with — a seed signed by anything else is correctly drawn
-        // as another monitor's and lands on no row.
         val signer =
             System.getProperty("seedVerdictsNsec")?.let { RelayIdentity.signerFor(it) }
                 ?: NostrSignerInternal(KeyPair()).also {
@@ -109,20 +83,13 @@ class VerdictPanelSeedProbe {
         }
     }
 
-    /**
-     * One record, in the shape the fitness pass writes — grade, evidence, the
-     * measured facts — with the host spread and the path shapes a real corpus
-     * has: a few hosts wearing dozens of minted paths, most wearing one.
-     */
+    /** One record in the shape the fitness pass writes, with a few crowded hosts and a long tail of single ones. */
     private suspend fun record(
         signer: NostrSignerInternal,
         i: Int,
         now: Long,
         legacy: Boolean,
     ): Event {
-        // A handful of crowded hosts, then a long tail — the distribution the
-        // panel's grouping exists for, and the one that makes a group box worth
-        // drawing at all.
         val host = if (i % 5 == 0) "crowded${i % 4}.example" else "relay$i.example"
         val url = if (i % 5 == 0) "wss://$host/minted-$i" else "wss://$host/"
         val grade = GRADES[i % GRADES.size]
@@ -141,8 +108,7 @@ class VerdictPanelSeedProbe {
             buildList {
                 add(arrayOf("d", url))
                 if (legacy) {
-                    // What a record signed BEFORE the grade move looks like:
-                    // the grade squatting the software field, no label at all.
+                    // A record signed before the grade move: the grade on the software field, no label.
                     add(arrayOf(RelayVerdictRecord.LEGACY_STATUS_TAG, if (grade == "prime") "syncable" else grade, "an older build", at, "1"))
                 } else {
                     add(
@@ -158,15 +124,11 @@ class VerdictPanelSeedProbe {
                     add(arrayOf(RelayVerdictRecord.LABEL_NAMESPACE_TAG, RelayVerdictRecord.FITNESS_NAMESPACE))
                     addAll(facts.tags())
                 }
-                // A foreign labeller on the same record — the case the namespace
-                // check exists for, and the one a panel matching on tag NAME
-                // would draw as a grade.
+                // A foreign labeller on the same record, which a panel matching on tag name would draw as a grade.
                 if (i % 7 == 0) {
                     add(arrayOf("l", "CA", "countryCode"))
                     add(arrayOf("L", "countryCode"))
                 }
-                // Some urls also carry the fold's verdict, so the panel's three
-                // verdicts are drawn together the way they are in production.
                 if (i % 5 == 0 && i % 10 != 0) {
                     add(arrayOf(RelayVerdictRecord.SAME_AS_TAG, "wss://$host/", "500 newest events, 498 shared", at, RelayVerdictRecord.FOLD_EPOCH))
                 }
@@ -181,8 +143,7 @@ class VerdictPanelSeedProbe {
                         ),
                     )
                 }
-                // A tag no reader here knows, so the panel's "+N other tag(s)"
-                // counter has something honest to count.
+                // A tag no reader knows, so the panel's "+N other tag(s)" counter has something to count.
                 if (i % 23 == 0) add(arrayOf("something-new", "42"))
             }.toTypedArray()
         return signer.sign(now - (i % 20) * 3600, 30166, tags, "")

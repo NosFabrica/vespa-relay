@@ -40,23 +40,9 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 
-/**
- * Compression and CORS, on the terms every page this repo serves wants them.
- *
- * One function rather than a block in each service, because these two were
- * arrived at with evidence and a service that quietly omitted one would be
- * slower or broken in a way nobody would think to look for.
- */
+/** Compression and CORS, on the terms every page this repo serves wants them. */
 fun Application.installPageDefaults() {
-    // The pages are ~117KB of text — html, ES modules, css — and none of it
-    // was compressed. Measured over a Cloudflare tunnel, a cold load was
-    // 1,513ms for 13 requests; text of this shape gives back roughly 4x to
-    // gzip, and the saving lands entirely on the link, which is where the
-    // time goes for anyone not on localhost.
-    //
-    // Text only, and above a threshold: the websocket path is untouched
-    // (its frames are already small and latency-sensitive), and compressing
-    // a 200-byte NIP-11 document costs more than it saves.
+    // Text above a threshold only: websocket frames are untouched and a small NIP-11 document is not worth it.
     install(Compression) {
         gzip { priority = 1.0 }
         deflate { priority = 0.9 }
@@ -64,11 +50,7 @@ fun Application.installPageDefaults() {
     }
 
     install(CORS) {
-        // NIP-11 is consumed by browser clients and NIP-86 by browser admin
-        // tools; both need CORS, and a stats document a dashboard charts needs
-        // it for the same reason. anyHost is correct here — the endpoints are
-        // public by design, and the admin RPC's security is the NIP-98 token,
-        // not the Origin.
+        // The endpoints are public by design; the admin rpc's security is the NIP-98 token, not the Origin.
         anyHost()
         allowMethod(HttpMethod.Post)
         allowHeader(HttpHeaders.Authorization)
@@ -76,12 +58,7 @@ fun Application.installPageDefaults() {
     }
 }
 
-/**
- * `GET /stats.json` — the document a status page charts.
- *
- * Its own function so a test can mount it without standing up the service that
- * writes it.
- */
+/** `GET /stats.json`, the document a status page charts. Its own function so a test can mount it without the writer. */
 fun Route.statsDocument(
     snapshot: StatsSnapshot?,
     path: String = "/stats.json",
@@ -90,9 +67,7 @@ fun Route.statsDocument(
     get(path) {
         val doc = snapshot.served()
         if (doc == null) {
-            // 503, not an empty document: "no statistics yet" is a state a
-            // poller should retry, and a 200 carrying zeros is
-            // indistinguishable from a service that genuinely holds nothing.
+            // 503, not an empty document: a poller should retry, and a 200 of zeros looks like a service holding nothing.
             call.respondText(
                 """{"error":"no statistics computed yet"}""",
                 ContentType.Application.Json,
@@ -105,37 +80,17 @@ fun Route.statsDocument(
 }
 
 /**
- * A background service's own status site: one page, the document it charts, and
- * the assets both need.
- *
- * ## Why a service serves its own page rather than writing one for the relay
- *
- * The mirror used to publish its state as JSON files on a volume the serving
- * relay read back, re-parsed and re-narrated. That cost ~2,500 lines on the
- * relay's side whose only job was to re-derive what the writer already knew,
- * and it could not answer the question an operator actually asks. A file cannot
- * say whether the process that writes it is alive — the mirror had to stamp a
- * `writtenAt` heartbeat and the reader had to turn it into a `staleForSec`,
- * because "a mirror that has been down for a day used to publish exactly the
- * same card as one mid-cycle". An HTTP request answers that by whether it
- * answers.
- *
- * So each service binds its own port. The state stays in memory where it is
- * produced, the page reads it directly, and liveness is the connection.
- *
- * [wait] is false by default, the opposite of the relay's own server: this is
- * never the thing keeping a process alive — the engine's threads are — and a
- * status site that blocked its caller would have to be started last, which is
- * exactly when it is least useful.
+ * A background service's own status site: one page, the document it charts,
+ * and the assets both need. Each service binds its own port so the state stays
+ * where it is produced and liveness is the connection. [wait] is false by
+ * default: this is never what keeps a process alive.
  */
 fun serveStatusSite(
     port: Int,
     page: String,
     snapshot: StatsSnapshot?,
-    // The icon an operator set, when there is one. Null keeps the page's own
-    // markup byte-identical to the classpath's — see [pageWithIcon].
+    // Null keeps the page's markup byte-identical to the classpath's. See [pageWithIcon].
     icon: String? = null,
-    // Anything this particular service adds — a health line, a probe endpoint.
     routes: Route.() -> Unit = {},
     wait: Boolean = false,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {

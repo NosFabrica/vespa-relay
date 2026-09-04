@@ -23,40 +23,20 @@ package com.nosfabrica.vespa.relay.peers
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * The stream's socket bookkeeping, because a fingerprint opens a websocket
- * and NOTHING in quartz ever closes one.
- *
- * `fetchAll` unsubscribes when it returns — it sends a CLOSE — and leaves
- * the connection in the pool; the client's own keep-alive only ever
- * RECONNECTS. So a pass used to leave one open socket per url it
- * fingerprinted, against a router whose whole dispatcher budget is 1024 and
- * whose per-HOST budget is 20 — and the fold probes widest group first,
- * i.e. the hosts wearing 55 urls. Every one of those sockets is a slot the
- * fan-out cannot have. That is what makes this refcount load-bearing rather
- * than tidy: with the per-pass cap gone, the number of urls a single pass
- * touches is the whole candidate set, so a leak here would be unbounded
- * where it used to be merely large.
- *
- * It is the STREAM's, not this component's, for the reason
- * `DynamicSync.releaseSocket` exists at all: two streams routinely land on
- * one relay, so closing a socket is only safe behind a refcount, and this
- * pass runs alongside a fan-out that may be holding the same url. Claiming
- * before the dial is what puts the probe INTO that count instead of
- * decrementing somebody else's.
+ * The stream's socket refcount. Quartz never closes a connection it opened,
+ * so whoever dials a url claims it first and releases it after; the socket
+ * closes when the last holder lets go. Claim before the dial, or the probe
+ * decrements somebody else's count.
  */
 interface Sockets {
     /** Take a share of this url's socket before dialling it. */
     fun claim(url: NormalizedRelayUrl)
 
-    /** Give it back — and close the socket if nothing else holds one. */
+    /** Give it back, closing the socket if nothing else holds one. */
     fun release(url: NormalizedRelayUrl)
 
     companion object {
-        /**
-         * Leaves every socket where it is. The honest default for a caller
-         * with no refcount to offer: leaking a connection is recoverable,
-         * closing one out from under a live transfer is not.
-         */
+        /** Leaves every socket where it is: a leaked connection is recoverable, one closed under a live transfer is not. */
         val NONE =
             object : Sockets {
                 override fun claim(url: NormalizedRelayUrl) = Unit

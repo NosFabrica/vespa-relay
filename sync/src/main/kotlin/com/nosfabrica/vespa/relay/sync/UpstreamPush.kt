@@ -38,21 +38,16 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `up` direction: push our matching events to an upstream that lacks
- * them, repeating every [intervalSec] to carry newly-arrived local events.
- *
- * Each pass negentropy-reconciles the store against the upstream a few rounds
- * until the upstream reports nothing more is missing. Reconciliation gives
- * echo-suppression for free: an event we just pulled down from a relay is one
- * that relay already has, so it is never pushed back.
+ * The `up` direction: pushes our matching events to an upstream that lacks
+ * them, every [intervalSec]. Each pass negentropy-reconciles the store against
+ * the upstream until nothing more is missing, which also suppresses echo: an
+ * event just pulled from a relay is one that relay already has.
  */
 internal class UpstreamPush(
     private val client: NostrClient,
     private val store: IEventStore,
     private val intervalSec: Long,
-    // The engine-wide one-snapshot-at-a-time gate, shared with the static
-    // and dynamic streams. An id snapshot of a broad filter is gigabytes;
-    // the gate is what keeps two of them from being resident at once.
+    /** The engine-wide one-snapshot-at-a-time gate; an id snapshot of a broad filter is gigabytes. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
 ) {
@@ -65,10 +60,7 @@ internal class UpstreamPush(
                 var pushedThisRound = 0L
                 var pushedThisPass = 0L
                 streamGate.withPermit {
-                    // One snapshot per pass, reused across the rounds: a
-                    // round changes the UPSTREAM's set (it gains what we
-                    // push), never ours — re-reading gigabytes of ids per
-                    // round bought nothing.
+                    // One snapshot per pass: a round changes the upstream's set, never ours.
                     val local: List<IdAndTime> =
                         storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(up.filter)) {
                             store.snapshotIdsForNegentropy(listOf(up.filter))
@@ -81,9 +73,7 @@ internal class UpstreamPush(
                             localEntries = local,
                             idleTimeoutMs = NEG_IDLE_MS,
                             onHaveIds = { ids ->
-                                // Chunked: a reconcile diff can be arbitrarily
-                                // large, and the store should not have to
-                                // materialize it as one query.
+                                // Chunked so the store never materialises a whole reconcile diff as one query.
                                 for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
                                     val events: List<Event> =
                                         storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {
@@ -97,7 +87,7 @@ internal class UpstreamPush(
                                     }
                                 }
                             },
-                            onNeedIds = { /* up-only: the down tail pulls, not this */ },
+                            onNeedIds = { /* up-only: nothing is pulled here */ },
                         )
                         pushedThisPass += pushedThisRound
                         rounds++
@@ -107,7 +97,7 @@ internal class UpstreamPush(
                     "router: up ${up.url.url} pushed $pushedThisPass event(s) upstream ($rounds round(s))",
                 )
             } catch (e: CancellationException) {
-                // Shutdown, not a failed push — the log must not cry wolf.
+                // Shutdown, not a failed push.
                 throw e
             } catch (e: Exception) {
                 System.err.println("router: up ${up.url.url} failed: ${e.message}")

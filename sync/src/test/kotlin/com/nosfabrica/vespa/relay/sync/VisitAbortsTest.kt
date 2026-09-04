@@ -31,8 +31,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The abort instrument: that the partition closes, that the line names what an
- * operator needs, and that every counter it publishes has a definition.
+ * The abort instrument: the reasons partition the total, the line names what
+ * an operator needs, and every counter it publishes has a definition.
  */
 class VisitAbortsTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.nostr.build")
@@ -44,10 +44,8 @@ class VisitAbortsTest {
 
     @Test
     fun `the line carries what the relay SENT, which is the third thing an abort needs`() {
-        // #187. `asked` is what we sent, `said` is what the relay answered in
-        // words, and neither could explain an `unpageable`: the abort fires on
-        // `downloaded == 0`, so the events that would say why were discarded by
-        // the match that produced it. See [RelayPages].
+        // `asked` is what we sent and `said` what the relay answered; only `sent`, what the
+        // socket carried, can explain an `unpageable`. See [RelayPages].
         val a = VisitAborts()
         val line =
             assertNotNull(
@@ -67,9 +65,7 @@ class VisitAbortsTest {
 
     @Test
     fun `a sample nobody took is simply absent from the line`() {
-        // Another walk held the sampler, the socket carried nothing, or this
-        // pool has none. An empty clause would read as "the relay sent
-        // nothing", which is a claim this did not make.
+        // An empty clause would read as "the relay sent nothing", a claim this did not make.
         val a = VisitAborts()
         val line = assertNotNull(a.record("content", url, VisitAborts.Reason.QUIET, asked = "kinds 141", said = null))
 
@@ -78,12 +74,6 @@ class VisitAbortsTest {
 
     @Test
     fun `the reasons partition the total, exactly`() {
-        // THE PROPERTY THE ROW IS READ BY. `abortedVisits` is the number that
-        // says whether the resync converges, and the split is the only thing
-        // that says what would fix it — so a reason that did not sum back into
-        // the total would be a card reporting an arithmetic error against a
-        // pool that is working, which is the failure the fold's `undecided`
-        // rows already taught this repository to avoid.
         val a = VisitAborts()
         a.record("content", url, VisitAborts.Reason.AUTH_REQUIRED, "139 kinds", null)
         a.record("content", url, VisitAborts.Reason.AUTH_REQUIRED, "139 kinds", null)
@@ -98,17 +88,13 @@ class VisitAbortsTest {
             VisitAborts.Reason.entries.sumOf { counts.getValue(it.count) },
             "the reasons must add up to the total they are a split of",
         )
-        // Every reason is published even at zero: a wall this deployment has
-        // never met is a fact about it, and an absent row reads as a counter
-        // somebody forgot to wire.
+        // Every reason is published at zero; an absent row reads as a counter nobody wired.
         assertEquals(VisitAborts.Reason.entries.size + 1, counts.size)
     }
 
     @Test
     fun `every abort counter the row publishes has a definition`() {
-        // The same rule StatusVocabularyTest holds for the document as a whole,
-        // held here at the source: these names are chosen in an enum, so the
-        // glossary can rot without the document changing shape.
+        // The names are chosen in an enum, so the glossary can rot without the document changing shape.
         for (reason in VisitAborts.Reason.entries) {
             assertTrue(
                 StatusVocabulary.TERMS.containsKey(reason.count),
@@ -119,8 +105,6 @@ class VisitAbortsTest {
 
     @Test
     fun `the line names the relay, the stream, the ask and what the relay said`() {
-        // The whole complaint in one assertion: the `!clean` path used to
-        // return naming NONE of these, and it is ~90% of every abort counted.
         val said =
             VisitAborts().record(
                 "contentViaOutbox",
@@ -138,35 +122,25 @@ class VisitAbortsTest {
 
     @Test
     fun `one line per pair per re-say window, and the counting never stops`() {
-        // A relay that is refusing is refusing on every visit, so at one line
-        // per abort this deployment would write four a second and bury the
-        // health line beside it. The counters are the continuous record; the
-        // lines are the index into them.
+        // The counters are the continuous record; the lines are the index into them.
         var nowMs = 1_000L
         val a = aborts(resayAfterMs = 30_000) { nowMs }
         assertNotNull(a.record("content", url, VisitAborts.Reason.CLOSED, "139 kinds", null), "the first sighting is always said")
         assertNull(a.record("content", url, VisitAborts.Reason.CLOSED, "139 kinds", null))
-        // A DIFFERENT reason on the same relay is a different finding and is
-        // said at once — the window is per (stream, relay, reason), not per
-        // relay, because a relay that starts refusing on auth after refusing on
-        // width is news.
+        // The window is per (stream, relay, reason): auth after width is news.
         assertNotNull(a.record("content", url, VisitAborts.Reason.AUTH_REQUIRED, "139 kinds", null))
         assertNotNull(a.record("indexers", url, VisitAborts.Reason.CLOSED, "kinds 30166", null))
 
         nowMs += 30_000
         assertNotNull(a.record("content", url, VisitAborts.Reason.CLOSED, "139 kinds", null), "and again once the window is up")
 
-        // Silence is never lost accounting: everything above is counted
-        // whether or not it was spoken.
+        // Everything above is counted whether or not it was spoken.
         assertEquals(5L, a.counts().first { it.name == "abortedVisits" }.value)
     }
 
     @Test
     fun `a stall of our own is counted and spoken, and never written on the relay's row`() {
-        // The row answers "what is wrong with THIS relay". A hook of ours parked
-        // in a full ingest queue is not an answer to that: on staging it marked
-        // every relay on the roster `refused` and at fault for the life of the
-        // process, on relays the monitor had correctly graded `prime`.
+        // The row answers "what is wrong with this relay"; a stall of ours is not an answer.
         val a = VisitAborts()
         val line = a.record("content", url, VisitAborts.Reason.BACKPRESSURED, "139 kinds, since 1765993162", null)
         assertNotNull(line, "it is still said, once per re-say window, so the log shows the stall")
@@ -177,35 +151,28 @@ class VisitAbortsTest {
         assertEquals(1L, counts["abortedVisits"])
         assertEquals(1L, counts["abortedBackpressured"])
         assertEquals(0L, counts["abortedUnpageable"])
-        // …AND WHAT THE RELAY LAST SAID FOR ITSELF STILL STANDS. A stall of
-        // ours neither writes the row nor clears it.
+        // What the relay last said for itself still stands: a stall of ours neither writes nor clears.
         a.record("content", url, VisitAborts.Reason.CLOSED, "139 kinds", "blocked: policy")
         a.record("content", url, VisitAborts.Reason.BACKPRESSURED, "139 kinds", null)
         assertEquals(VisitAborts.Reason.CLOSED, a.last("content", url)?.reason)
-        // The marker is the enum's, so a second reason of ours cannot be added
-        // without deciding this.
+        // The marker is the enum's, so a second reason of ours is a decision here.
         assertEquals(listOf(VisitAborts.Reason.BACKPRESSURED), VisitAborts.Reason.entries.filter { it.ours })
     }
 
     @Test
     fun `a clean visit forgets the wall the last one met`() {
-        // The row is about where a pair stands NOW. Without this it never
-        // stopped being about where it once stood: a pair that met a transient
-        // refusal at boot and has written no band since — a relay that is
-        // simply empty for this filter is the ordinary case — read `refused`
-        // with a stale sentence at the top of a worst-first table for the life
-        // of the process.
+        // The row is about where a pair stands now; a transient refusal at boot must
+        // not read `refused` for the life of the process.
         val a = VisitAborts()
         a.record("content", url, VisitAborts.Reason.UNREACHABLE, "139 kinds", null)
         assertNotNull(a.last("content", url))
 
         a.cleared("content", url)
         assertNull(a.last("content", url), "the visit came back clean, so there is no wall to report")
-        // THE COUNTERS ARE THE LIFETIME RECORD and are untouched: the abort
-        // happened, and a row going quiet must not un-count it.
+        // The counters are the lifetime record and are untouched.
         assertEquals(1L, a.counts().first { it.name == "abortedVisits" }.value)
         assertEquals(1L, a.counts().first { it.name == "abortedUnreachable" }.value)
-        // …and one stream clearing does not speak for another's.
+        // One stream clearing does not speak for another's.
         a.record("indexers", url, VisitAborts.Reason.CLOSED, "kinds 30166", null)
         a.cleared("content", url)
         assertNotNull(a.last("indexers", url), "the unit is the pair; clearing one is not clearing the relay")
@@ -213,11 +180,7 @@ class VisitAbortsTest {
 
     @Test
     fun `each walk ending quartz can refuse with maps to a reason of its own`() {
-        // Distinct, because a lump is what `abortedVisits` already was: an auth
-        // wall wants a key the relay accepts, a CLOSED wants its own sentence
-        // read, and silence wants neither. `DRAINED` and `LIMIT_REACHED` are
-        // not refusals and never reach here — see VisitPool.refusedOutright,
-        // whose own test pins that.
+        // DRAINED and LIMIT_REACHED are not refusals and never reach here; see VisitPool.refusedOutright.
         val refusals =
             listOf(
                 PagedFetchResult.End.AUTH_REQUIRED,

@@ -41,30 +41,12 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `deleteMissing` comparison, ON THE AUDIT'S CLOCK — the pool's port of
- * [DeleteMissingSync]'s core. The upstream is the source of truth for its own
- * records (a NIP-85 provider's relay for its own scores), so the ask's audit
- * goes both ways: download what it has and we lack, delete what we hold and
- * it no longer serves. Nothing is ever published upstream.
- *
- * ## What did NOT come across, and why
- *
- * The legacy class also paged — the attached kinds it cascaded, and any ask
- * whose reconcile failed — because in the cycle model this call was the ask's
- * only visit. In
- * the pool the CATCH-UP has already paged the ask's whole filter before the
- * audit runs, so the mirror side is covered whatever happens here, and a
- * failed reconcile simply decides nothing: the events are in, the deletion
- * waits for a reconcile that completes. That asymmetry is the point — the
- * download must never depend on the comparison, and the comparison must never
- * be inferred from the download.
- *
- * ## The cadence
- *
- * `negentropySyncThePastSeconds`, the same knob that schedules every other ask's history
- * audit — a deletion decision deserves the audited full-history comparison,
- * not a quick pass, and each `(relay, provider)` band ages on its own clock
- * so the reconciles stagger themselves.
+ * The `deleteMissing` comparison, run in a retracting ask's audit slot. The
+ * upstream is the source of truth for the kinds it owns, so the audit goes
+ * both ways: download what it has and we lack, delete what we hold and it no
+ * longer serves. The catch-up has already paged the ask, so a failed
+ * reconcile decides nothing; the download never depends on the comparison
+ * and the comparison is never inferred from the download.
  */
 internal class RetractionAudit(
     private val client: NostrClient,
@@ -73,20 +55,12 @@ internal class RetractionAudit(
     private val ingest: IngestPipeline,
     private val refusedIds: RefusedIds,
 ) {
-    /**
-     * Records dropped because the upstream that owns them stopped serving
-     * them — the only number in the router that goes DOWN, so it is reported
-     * on the health line rather than buried in a sync's rounding.
-     */
+    /** Records dropped because their owning upstream stopped serving them; the one counter that goes down. */
     val deleted = AtomicLong()
 
     /**
-     * The ask's owned-kind projection — the filter the audit clock, the
-     * reconcile and the deletes all run on. Derived HERE and only here: the
-     * clock that schedules the comparison and the band the comparison stamps
-     * must read one filter, and two derivations in two files is how they
-     * drift apart. Null when the ask carries no owned kind at all — nothing
-     * to compare, nothing to schedule.
+     * The ask's owned-kind projection: the one filter the audit clock, the
+     * reconcile and the deletes all run on. Null when the ask carries no owned kind.
      */
     private fun ownedAskOf(
         stream: SyncStream,
@@ -98,23 +72,9 @@ internal class RetractionAudit(
     }
 
     /**
-     * WHEN THIS ASK'S COMPARISON NEXT COMES DUE — read-only, stamping nothing.
-     *
-     * [claimAudit] answers the same question and TAKES the attempt clock as it
-     * does, so it cannot be used to look before spending a workload permit.
-     * This can: same [ownedAskOf] derivation, same band, no side effect.
-     *
-     * On the OWNED projection, which is the point of it living here: the clock
-     * a reconcile advances is keyed by the filter it ran, so reading the full
-     * ask's filter finds a key nothing ever stamps and falls back to a band
-     * `fullAt` no reconcile moves — a schedule permanently in arrears while
-     * the audits run perfectly well.
-     *
-     * Returns an [AuditClock] rather than a boolean because the two extreme
-     * answers mean opposite things and both have to reach the status row:
-     * never compared yet is due by definition, and an ask this stream owns no
-     * kind of is compared by nothing and scheduled by nothing — counted as due
-     * it would be a backlog that can never drain.
+     * When this ask's comparison next comes due, read-only. On the owned
+     * projection, because that is the filter the reconcile stamps. An ask
+     * with no owned kind is [AuditClock.NOT_SCHEDULED], not due.
      */
     fun auditClock(
         stream: SyncStream,
@@ -126,14 +86,7 @@ internal class RetractionAudit(
         return AuditClock.of(bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds))
     }
 
-    /**
-     * Claim this ask's comparison if it is due — [SyncBands.claimAudit] on
-     * the OWNED ask, the same filter [reconcileAndDelete]'s band record
-     * advances, derived by the same [ownedAskOf]. True commits the caller
-     * to running the reconcile: the claim is the spacing that keeps a
-     * failing one from retrying on every revisit at the cost of a full
-     * [IEventStore.snapshotIdsForNegentropy] walk each time.
-     */
+    /** [SyncBands.claimAudit] on the owned ask. True commits the caller to running the reconcile. */
     fun claimAudit(
         stream: SyncStream,
         url: NormalizedRelayUrl,
@@ -145,32 +98,11 @@ internal class RetractionAudit(
     }
 
     /**
-     * Reconcile one ask's OWNED kinds both ways, and act on the difference.
-     *
-     * The ids are read for THIS ask alone — this is the one place in the
-     * router where a wrong filter destroys data, so they are derived from the
-     * ask itself and there is no parameter to pass the wrong thing in. Kinds
-     * outside [SyncStream.ownedKinds] are not touched here AT ALL, by anything:
-     * this class deletes what a completed reconcile says the provider stopped
-     * serving, and nothing else.
-     *
-     * It used to CASCADE as well — a wholly retracted service's own kind 0 and
-     * 10002 went with its scores, on the reasoning that a service key which
-     * signs nothing describes a provider kept alive by our own copy alone.
-     * That copy was never ours: a provider relay serves no kind 0 or 10002
-     * (measured, 12 (service, relay) pairs), so every one we hold came from the
-     * profile streams, which mirror them from relays that do — and re-mirror
-     * them, over a live tail, right after the cascade deleted them. It was a
-     * delete that could not survive its own next walk, against records another
-     * stream owns.
-     *
-     * [sharedAuthors] are authors the roster found at more than one relay.
-     * One relay's empty answer does not retract what a sibling relay may
-     * still be serving, so their asks are never judged here.
-     *
-     * [onActivity] ticks on any sign of life (the reconcile's long silence is
-     * computation, not a hang) and [onEvent] sees every downloaded event —
-     * the pool's counters and quiet clocks.
+     * Reconcile one ask's owned kinds both ways and act on the difference.
+     * The ids are read for this ask alone; kinds outside
+     * [SyncStream.ownedKinds] are never touched. [sharedAuthors] are found at
+     * more than one relay, so their asks are never judged: one relay's empty
+     * answer does not retract what a sibling still serves.
      */
     suspend fun reconcileAndDelete(
         stream: SyncStream,
@@ -181,11 +113,8 @@ internal class RetractionAudit(
         onEvent: suspend (Event) -> Unit = {},
     ) {
         val ownedAsk = ownedAskOf(stream, ask) ?: return
-        // NEVER an unbound ask. The loader refuses configs that could produce
-        // one, but this is the line where a wrong filter destroys data, so
-        // the boundary is enforced where the deletion happens too: an ask
-        // with no authors would reconcile EVERY provider's owned records
-        // against this one relay and delete whatever it happens not to hold.
+        // Enforced where the deletion happens, not only in the loader: an
+        // unbound ask would judge every provider against this one relay.
         val bound = ask.authors
         if (bound.isNullOrEmpty()) {
             System.err.println(
@@ -193,29 +122,18 @@ internal class RetractionAudit(
             )
             return
         }
-        // A relay this author is not alone at cannot prove a retraction; the
-        // catch-up keeps mirroring it, this decides nothing from it.
         if (bound.any { it in sharedAuthors }) return
 
         val mine =
             storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(ownedAsk)) {
                 store.snapshotIdsForNegentropy(listOf(ownedAsk))
             }
-        // NOT an early return when we hold nothing: an ask we have no records
-        // for is exactly a service we have never fetched, and reconciling
-        // against an empty local set is precisely "give me everything"; the
-        // delete side then no-ops on its own.
+        // No early return on an empty local set: that is "give me everything", and the delete side no-ops.
 
-        // Stamped BEFORE the comparison, never after: the band below claims
-        // coverage through this moment, and anything the provider published
-        // while the reconcile ran is outside what was compared.
+        // Stamped before the comparison: the band claims coverage through this moment.
         val startedAt = nowSeconds()
 
-        // A COMPLETED reconcile is the whole licence to delete. quartz throws
-        // rather than falling back, so a normal return means every window was
-        // compared and an empty answer is the relay's answer, not its
-        // silence. Failing that, nothing is decided — the catch-up already
-        // mirrored the ask, and the deletion waits for a clean comparison.
+        // A completed reconcile is the whole licence to delete; quartz throws rather than falling back.
         val diff =
             try {
                 client.negentropyReconcileIds(url, ownedAsk, mine, idleTimeoutMs = NEG_IDLE_MS)
@@ -227,18 +145,12 @@ internal class RetractionAudit(
             }
         onActivity()
 
-        // Whether this reconcile compared a RANGE at all — the one licence
-        // both the band and the delete run on, named once so they cannot
-        // drift apart.
+        // The one licence both the band and the delete run on.
         val compared = diff.windows >= 1
 
         val observed = mirrorNeeded(stream, url, ownedAsk, diff.needIds, onEvent)
 
-        // The comparison itself proves the two sides are level, so the claim
-        // rests on `reconciledThrough` rather than on event times — which is
-        // what schedules the NEXT audit of this ask on `negentropySyncThePastSeconds`, and
-        // why an empty reconcile records this where an empty page records
-        // nothing.
+        // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records.
         if (compared) {
             bands.record(
                 stream.name,
@@ -269,13 +181,9 @@ internal class RetractionAudit(
     }
 
     /**
-     * THE DOWNLOAD HALF: fetch what the provider has that we lack, and ingest
-     * it. Runs whatever the delete half later decides — the file's KDoc calls
-     * that independence the point, and a private seam is what makes it
-     * structural. fetchAll, not fetchAllPages: an id set is not a time range,
-     * and paging it by `until` re-asks for events it just received. The
-     * suppression saves BANDWIDTH: the diff names ids before anything is
-     * fetched, so a twice-refused id never becomes a REQ.
+     * The download half: fetch what the provider has that we lack and ingest
+     * it. fetchAll, not fetchAllPages: an id set is not a time range. Twice
+     * refused ids are dropped before any REQ is sent.
      */
     private suspend fun mirrorNeeded(
         stream: SyncStream,
@@ -294,10 +202,7 @@ internal class RetractionAudit(
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 onEvent(event)
-                // The OWNED ask's scope, not the stream's whole filter: the
-                // ids came from this ask's reconcile, and a buggy relay that
-                // answers a by-id REQ with extras must not widen what a
-                // trusted stream ingests past the ask's author binding.
+                // Matched against the owned ask, so a relay answering a by-id REQ with extras cannot widen a trusted ingest.
                 if (ownedAsk.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
@@ -311,11 +216,7 @@ internal class RetractionAudit(
         return observed
     }
 
-    /**
-     * THE DELETE HALF: act on what we hold that a completed reconcile says
-     * the provider no longer serves — dry-run or enforce. Only ever called
-     * after `compared` held; never feeds the download.
-     */
+    /** The delete half, dry-run or enforce. Only called after `compared` held. */
     private suspend fun deleteRetracted(
         stream: SyncStream,
         url: NormalizedRelayUrl,
@@ -324,11 +225,7 @@ internal class RetractionAudit(
         mine: Int,
         diff: NegentropyIdDiff,
     ) {
-        // NO SIZE GUARD, deliberately. A provider that retracts a subject
-        // usually does it because the subject turned out to be a scammer —
-        // exactly the score that must not survive — and a mass retraction is
-        // precisely the case that matters. The completed reconcile above is
-        // what makes "empty" trustworthy enough to act on.
+        // No size guard: a mass retraction is precisely the case that matters, and the completed reconcile is what makes it trustworthy.
         val share = diff.haveIds.size.toDouble() / mine
         if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
             System.err.println(
@@ -337,9 +234,7 @@ internal class RetractionAudit(
             )
             return
         }
-        // Deleted BY ID and inside the ask: the filter that found them is the
-        // filter that removes them, so a delete can never reach past the
-        // records this reconcile actually compared.
+        // Deleted by id and inside the ask, so a delete can never reach past what this reconcile compared.
         for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
             storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_DELETE, StoreCalls.ids(chunk.size)) {
                 store.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))

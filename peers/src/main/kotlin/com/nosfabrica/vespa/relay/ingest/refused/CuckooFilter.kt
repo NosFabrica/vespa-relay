@@ -32,52 +32,24 @@ internal enum class AddResult {
     PRESENT,
     ADDED,
 
-    /**
-     * The table is full — the relocation chain gave up. NOT a soft failure to
-     * shrug at: the caller must open a new generation or stop suppressing.
-     * See [RefusedIds].
-     */
+    /** The relocation chain gave up. The caller must open a new generation or stop suppressing. */
     FULL,
 }
 
 /**
- * A fixed-size cuckoo filter over Nostr event ids, mmap'd to one file.
+ * A fixed-size cuckoo filter over Nostr event ids, mmap'd to one file. It
+ * refuses an insert ([AddResult.FULL]) rather than saturating silently, and
+ * its false-positive rate is fixed by the 32-bit fingerprint, not by load;
+ * a false positive is a wanted event skipped forever.
  *
- * Chosen over a Bloom filter for one property above all: **it cannot saturate
- * silently.** A Bloom filter sized for 50M holding 500M keeps answering, with a
- * false-positive rate in the double digits, discarding a sixth of everything and
- * logging nothing. This one refuses the insert instead ([AddResult.FULL]) once
- * the relocation chain gives up around 95% load, which is both the alarm and an
- * exact signal that the partition is done. Its accuracy is also
- * load-INDEPENDENT — `ε ≈ 2b/2^f`, fixed by the fingerprint width — so a
- * half-full table answers exactly as well as a nearly-full one, and
- * over-provisioning costs space and nothing else.
- *
- * With `b = 4` slots and a 32-bit fingerprint, `ε ≈ 8/2^32 ≈ 1.9e-9`: at that
- * rate a 100M-event backfill is expected to lose ~0.2 events to false
- * positives. That number is the whole safety argument, because **a false
- * positive here is silent, permanent data loss** — we skip an event we wanted,
- * nothing logs it, and the same id hits the same bits forever. It is why the
- * fingerprint is 32 bits and not the 8 or 16 a textbook uses, and why the caller
- * still demands two independent refusals before an id is allowed in
- * ([RefusedIds]).
- *
- * **No hash function.** An event id is already a 32-byte cryptographic hash, so
- * the bucket index and the fingerprint are disjoint bit-fields sliced straight
- * out of its hex. There is nothing to choose, tune, or get wrong. Only the
- * alternate-bucket displacement needs mixing, and that is a fixed finalizer.
- *
- * **One writer.** The gate only ever records refusals observed on the sync
- * path, so the sync process is the sole writer and cross-process coordination
- * does not arise. Inside it, [add] is synchronized (relocation moves other
- * fingerprints, so concurrent adds would corrupt each other) while [contains]
- * is deliberately lock-free: the worst a read racing a relocation can see is a
- * fingerprint mid-move, which reports absent, which costs one re-download.
- * Never a wrong suppression.
+ * No hash function: an id is already a hash, so the bucket index and the
+ * fingerprint are disjoint bit-fields of its hex. [add] is synchronized
+ * because relocation moves other fingerprints; [contains] is lock-free, since
+ * the worst a racing read can see is a fingerprint mid-move, which reports absent.
  */
 internal class CuckooFilter private constructor(
     private val buffer: ByteBuffer,
-    /** Always a power of two — the xor displacement below depends on it. */
+    /** Always a power of two; the xor displacement depends on it. */
     val buckets: Int,
     initialCount: Int,
 ) : AutoCloseable {
@@ -86,7 +58,7 @@ internal class CuckooFilter private constructor(
     /** How many ids are in the table. */
     val count: Int get() = entries
 
-    /** Slots in use over slots available. The number that says "rotate soon". */
+    /** Slots in use over slots available. */
     val load: Double get() = entries.toDouble() / (buckets.toLong() * SLOTS).toDouble()
 
     private val mask = buckets - 1
@@ -112,8 +84,7 @@ internal class CuckooFilter private constructor(
         }
 
         // Both buckets are full: evict a resident and re-home it, repeatedly.
-        // Deterministic PRNG seeded from the fingerprint so a failing insert is
-        // reproducible in a test rather than "sometimes".
+        // The PRNG is seeded from the fingerprint so a failing insert is reproducible.
         var rng = (fp.toLong() and 0xFFFFFFFFL) or 1L
         var bucket = if (rng and 1L == 0L) i1 else i2
         var carried = fp
@@ -130,19 +101,12 @@ internal class CuckooFilter private constructor(
                 return AddResult.ADDED
             }
         }
-        // The chain gave up. `carried` is now homeless and has REPLACED a
-        // fingerprint that was legitimately stored — so the table has lost one
-        // entry, which can only ever cause a false negative (one extra
-        // download), never a false positive. Report FULL and let the caller
-        // stop feeding this partition.
+        // `carried` is homeless and has replaced a stored fingerprint, so the
+        // table lost one entry: a possible false negative, never a false positive.
         return AddResult.FULL
     }
 
-    /**
-     * Force every mapped page to disk. Called on close and on the periodic
-     * flush; a lost page costs re-downloads, never correctness, so this does
-     * not need to be on the insert path.
-     */
+    /** Force every mapped page to disk. A lost page costs re-downloads, never correctness. */
     fun flush() {
         runCatching { (buffer as? MappedByteBuffer)?.force() }
     }
@@ -154,10 +118,8 @@ internal class CuckooFilter private constructor(
     // ---- id → (bucket, fingerprint), with no hashing ------------------------
 
     /**
-     * The low 32 bits of the id's second 8 hex characters, never zero (zero is
-     * the empty slot). A non-hex id falls back to the string hash, so a
-     * malformed id is still answerable rather than an exception on the ingest
-     * path.
+     * The id's second 8 hex characters, never zero (zero is the empty slot).
+     * A non-hex id falls back to the string hash rather than throwing on the ingest path.
      */
     private fun fingerprint(id: String): Int {
         val raw = hexToLong(id, 16, 8)?.toInt() ?: id.hashCode()
@@ -170,10 +132,8 @@ internal class CuckooFilter private constructor(
     }
 
     /**
-     * The partner bucket. Derived from the fingerprint alone — that is what
-     * makes relocation possible without holding the original id — and forced
-     * non-zero so an unlucky fingerprint cannot collapse both choices onto one
-     * bucket and halve its capacity.
+     * The partner bucket, derived from the fingerprint alone so relocation
+     * needs no id, and forced non-zero so both choices cannot collapse onto one bucket.
      */
     private fun alt(
         bucket: Int,
@@ -220,26 +180,17 @@ internal class CuckooFilter private constructor(
     private fun writeCount() = buffer.putInt(OFFSET_COUNT, entries)
 
     companion object {
-        /** Slots per bucket. Four is the cuckoo-filter sweet spot for load factor. */
+        /** Slots per bucket. */
         const val SLOTS = 4
 
-        /**
-         * Relocations before an insert is declared impossible. 500 is the
-         * figure from the original paper; past ~95% load it is reached almost
-         * immediately, which is what makes FULL a prompt signal rather than a
-         * slow degradation.
-         */
+        /** Relocations before an insert is declared impossible. */
         private const val MAX_KICKS = 500
 
         private const val HEADER_BYTES = 32
         private const val OFFSET_COUNT = 16
         private val MAGIC = byteArrayOf('V'.code.toByte(), 'R'.code.toByte(), 'C'.code.toByte(), 'F'.code.toByte(), 1, 0, 0, 0)
 
-        /**
-         * Bytes per id at ~95% load: 4 slots × 4 bytes ÷ 0.95. Used to turn a
-         * configured capacity into a table size, and quoted in the proposal as
-         * ~4.3 B/id at ε = 1e-9.
-         */
+        /** Buckets for [capacity] ids at [TARGET_LOAD], rounded up to a power of two and clamped to [MAX_BUCKETS]. */
         fun bucketsFor(capacity: Int): Int {
             val needed = (capacity / (SLOTS * TARGET_LOAD)).toLong().coerceAtLeast(1L)
             var b = 1L
@@ -248,42 +199,22 @@ internal class CuckooFilter private constructor(
         }
 
         /**
-         * The largest table a `ByteBuffer` can actually address.
-         *
-         * At 4 slots × 4 bytes this is 1 GiB plus the header, and the next
-         * power of two would be 2 GiB + 32 — past `Int.MAX_VALUE`, where
-         * `FileChannel.map` throws "Size exceeds Integer.MAX_VALUE" and
-         * `allocateDirect` gets a negative size from the truncating `toInt()`.
-         * The slot offsets in [readSlot] overflow at the same point. The cap
-         * used to be `1 shl 28`, which promised four times what either could
-         * hold and turned a large `SYNC_REFUSED_EPOCH_CAPACITY` into a crash
-         * on the first refusal rather than a bigger table.
-         *
-         * Clamping rather than throwing is deliberate: an oversized capacity
-         * is an operator asking for more headroom than one partition can give,
-         * and the honest response is the biggest partition we can build plus
-         * the SEALED warning when it fills — not a dead router.
+         * The largest table a `ByteBuffer` can address: the next power of two
+         * exceeds `Int.MAX_VALUE`, where `FileChannel.map` throws and the slot
+         * offsets in [readSlot] overflow. Clamped rather than thrown so an
+         * oversized capacity yields the biggest partition we can build.
          */
         const val MAX_BUCKETS = 1 shl 26
 
-        /**
-         * Ids one table of [bucketsFor] buckets holds before the relocation
-         * chain starts failing. Worth asking for rather than assuming
-         * [bucketsFor]'s input: rounding the bucket count up to a power of two
-         * routinely leaves the real ceiling well above the requested capacity
-         * (8M asked for, ~15.9M available), and quoting the request in a
-         * "table full" warning would understate it by up to 2×.
-         */
+        /** Ids a table of [buckets] holds before relocation starts failing; larger than the requested capacity after rounding. */
         fun capacityOf(buckets: Int): Int = (buckets.toLong() * SLOTS * TARGET_LOAD).toInt()
 
         private const val TARGET_LOAD = 0.95
 
         /**
-         * Map [file], creating it at the size [capacity] implies. An existing
-         * file whose header disagrees with the requested geometry is REBUILT
-         * rather than reinterpreted: reading a table with the wrong bucket
-         * count would scatter every lookup, which is the one way this structure
-         * could produce confident wrong answers.
+         * Map [file], creating it at the size [capacity] implies. A file whose
+         * header disagrees with the requested geometry is rebuilt, never
+         * reinterpreted: the wrong bucket count scatters every lookup.
          */
         fun open(
             file: File?,
@@ -292,8 +223,7 @@ internal class CuckooFilter private constructor(
             val buckets = bucketsFor(capacity)
             val bytes = HEADER_BYTES + buckets.toLong() * SLOTS * 4
             if (file == null) {
-                // Memory-only: same geometry, same header, so the two paths
-                // cannot drift in behaviour.
+                // Memory-only: same geometry and header as the mapped path.
                 val buf = ByteBuffer.allocateDirect(bytes.toInt())
                 writeHeader(buf, buckets)
                 return CuckooFilter(buf, buckets, 0)
@@ -358,7 +288,7 @@ internal class CuckooFilter private constructor(
             return v
         }
 
-        /** murmur3's 32-bit finalizer: cheap, and enough to scatter the displacement. */
+        /** murmur3's 32-bit finalizer, enough to scatter the displacement. */
         private fun mix32(x: Int): Int {
             var h = x
             h = h xor (h ushr 16)

@@ -24,23 +24,14 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Whether a probe is still earning its round trip, learned from what it has
- * been dropping rather than declared.
- *
- * The alternative was to tell ingest which phase a stream is in — catch-up
- * versus live tail — and probe only while backfilling. This measures the thing
- * that phase was a proxy for. It needs no flag threaded through seven submit
- * sites, it is right about legs nobody classified (a negentropy reconcile
- * delivers only events we are known to LACK, so both probes are dead weight
- * there and this notices), and it cannot be wrong about a stream whose
- * behaviour changed since someone labelled it.
+ * been dropping rather than declared by the stream's phase.
  *
  * Never latches off: past the threshold it still samples one batch in
- * [RESAMPLE_EVERY], so a stream that starts producing duplicates again is
- * picked back up. The counters decay so that a backfill's 94% cannot keep a
- * probe switched on through the quiet months that follow it.
+ * [RESAMPLE_EVERY], and the counters halve above [DECAY_ABOVE] so the rate
+ * tracks the present rather than a finished backfill.
  */
 internal class ProbeGate(
-    /** Drop rate below which the round trip stops paying — see each caller for the arithmetic. */
+    /** Drop rate below which the round trip stops paying. */
     private val minHitRate: Double,
 ) {
     private val judged = AtomicLong()
@@ -59,25 +50,23 @@ internal class ProbeGate(
         droppedNow: Int,
     ) {
         dropped.addAndGet(droppedNow.toLong())
-        // Halving both keeps the RATE and forgets the age, so the window
-        // slides without holding a ring buffer. Racy at the boundary by a
-        // batch or two, which a heuristic can afford.
+        // Halving both keeps the rate and forgets the age. Racy at the
+        // boundary by a batch or two, which a heuristic can afford.
         if (judged.addAndGet(judgedNow.toLong()) > DECAY_ABOVE) {
             judged.set(judged.get() / 2)
             dropped.set(dropped.get() / 2)
         }
     }
 
-    /** Drop rate so far, for the stats line — an operator reading "probe off" wants to see why. */
+    /** Drop rate so far, for the stats line. */
     fun hitRate(): Double = judged.get().takeIf { it > 0 }?.let { dropped.get().toDouble() / it } ?: 0.0
 
-    /** Whether this gate has any evidence yet, so a status line can stay quiet rather than print 0%. */
+    /** Whether there is any evidence yet, so a status line can stay quiet rather than print 0%. */
     fun hasJudged(): Boolean = judged.get() > 0
 
     /**
      * [worthIt] without the side effect. Reporting must never call [worthIt]:
-     * it advances the resample counter, so a status line printed once a minute
-     * would quietly change which batches get probed.
+     * it advances the resample counter and would change which batches get probed.
      */
     fun paying(): Boolean {
         val seen = judged.get()
@@ -85,13 +74,13 @@ internal class ProbeGate(
     }
 
     private companion object {
-        /** Events judged before the rate is trusted — one batch's worth is noise. */
+        /** Events judged before the rate is trusted. */
         const val LEARN_EVENTS = 50_000L
 
         /** Batches skipped per sampled one once a probe is judged not to pay. */
         const val RESAMPLE_EVERY = 32L
 
-        /** Judged events after which the window halves, so the rate tracks the present. */
+        /** Judged events after which the window halves. */
         const val DECAY_ABOVE = 1_000_000L
     }
 }

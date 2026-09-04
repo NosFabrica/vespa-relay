@@ -37,55 +37,13 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Why a `.onion` host's urls are still being dialled one per path — asked of the
- * hidden service, through a real Tor proxy, rather than reasoned about.
- *
- * Three urls of one onion host turned up together in the coverage card's
- * *Running now* line, which means the fold had removed none of them. The fold
- * can only remove a url when a fingerprint pass proved something about it, and
- * for a hidden service there are three quite different ways that can fail to
- * happen — indistinguishable from the outside, opposite responses:
- *
- *  1. **the window was too short.** Quartz's `idleTimeoutMs` runs from the start
- *     of the fetch, so it pays for the circuit as well as the answer, and the
- *     probe used to be handed `connectionTimeout` — the number that sizes a
- *     clearnet TCP handshake. A dial that needs longer returns EMPTY, which is
- *     not a verdict, so the group is re-probed and re-dialled forever. That is
- *     what `probeIdleMs` now fixes, and this probe is how the fix is checked
- *     against the relay it was written for.
- *  2. **the relay will not answer a fingerprint at all** — AUTH-gated, refusing
- *     both the bare filter and [AliasProbe.FALLBACK_KINDS], or holding fewer
- *     than [RelayAliases.DEFAULT_MIN_SAMPLE] events. Then no window is usable,
- *     the fold is correct to keep every url, and no timeout will change it.
- *  3. **the paths really are different endpoints.** Then the urls fold onto
- *     nothing because they are not duplicates, and the fan-out is right.
- *
- * It walks every url twice — once at the old clearnet window and once at the
- * budget [probeIdleMs] now hands a Tor-routed url — so the three cases separate
- * on the printout instead of on a theory.
- *
- * OFF by default, dials the real network through the operator's own Tor, and
- * asserts NOTHING: a hidden service being down is not a code regression, and
- * "these are genuinely three relays" is a legitimate answer.
- *
- * ```
- * ./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
- *   -DonionFoldSocks=127.0.0.1:9050 --rerun -i
- * # …and for a different host:
- * #  -DonionFoldUrls=ws://abc.onion/one,ws://abc.onion/two
- * ```
- *
- * The other half of the question lives in the store and needs no probe: the
- * verdict is a signed kind-30166 record addressed by the url, so ask this relay
- * what it already decided about each one —
- * `["REQ","v",{"kinds":[30166],"authors":["<this relay's pubkey>"],"#d":[<the urls>]}]`.
- * A record whose `same-as` points elsewhere means the fold DID remove the url
- * and the sighting was a leg that outlived the pass which dialled it; a
- * `same-as` pointing at itself means it was measured and kept; no record at all
- * means it was never measured, which is what this probe is for.
+ * Walks one `.onion` host's urls through a real Tor SOCKS proxy at the clearnet
+ * window and at the [probeIdleMs] window, so a group that will not fold can be
+ * told apart: too short a window, a relay refusing every fingerprint, or paths
+ * that are distinct relays. Asserts nothing. Selected by `-DonionFoldProbe=true`
+ * with `-DonionFoldSocks=host:port`; `-DonionFoldUrls=a,b` picks the urls.
  */
 class AliasFoldOnionProbe {
-    /** The three urls the coverage card showed running at once, unless told otherwise. */
     private val urls: List<NormalizedRelayUrl> =
         (
             System.getProperty("onionFoldUrls")
@@ -103,8 +61,7 @@ class AliasFoldOnionProbe {
             println("[skip] AliasFoldOnionProbe — set -DonionFoldProbe=true to dial a hidden service")
             return
         }
-        // Before anything is built: `-DonionFoldUrls` is free text, and a value
-        // that normalises to nothing would otherwise reach `urls.first()`.
+        // `-DonionFoldUrls` is free text; a value normalising to nothing must not reach `urls.first()`.
         if (urls.size < 2) {
             println("[skip] AliasFoldOnionProbe — need at least two urls to compare, got ${urls.size}")
             return
@@ -115,9 +72,7 @@ class AliasFoldOnionProbe {
             println("[skip] AliasFoldOnionProbe — no SOCKS proxy given")
             return
         }
-        // The router's own clearnet client, so the Tor one is built from it the
-        // way the engine builds it — the dispatcher and the connect timeout are
-        // what TorTransport replaces, and inheriting the rest is the point.
+        // The Tor client is derived from the clearnet one the way the engine derives it.
         val okhttp =
             OkHttpClient
                 .Builder()
@@ -131,8 +86,7 @@ class AliasFoldOnionProbe {
         println("=".repeat(78))
         println("Can the fold measure these ${urls.size} url(s)? (through ${settings.socksAddress})")
         println("=".repeat(78))
-        // A question about US before any about them: with the proxy down every
-        // dial fails in a way that looks exactly like the relay being gone.
+        // With the proxy down every dial fails the way a gone relay does, so ask about the proxy first.
         if (!tor.socksAnswers()) {
             println("  the SOCKS proxy at ${settings.socksAddress} is NOT answering — nothing below would mean anything")
             scope.cancel()
@@ -161,10 +115,8 @@ class AliasFoldOnionProbe {
     }
 
     /**
-     * One full fingerprint pass at one window, run the way [AliasFolding.measure]
-     * runs it: a fresh set of verdicts, ONE anchor shared by the whole group,
-     * the leader alone first — it decides the filter and whether to ask the rest
-     * at all — and then every member against it.
+     * One fingerprint pass at one window, run the way [AliasFolding.measure] runs
+     * it: one anchor for the group, the leader first, then every member against it.
      */
     private fun walk(
         client: NostrClient,
@@ -191,9 +143,7 @@ class AliasFoldOnionProbe {
             return
         }
         println("    leader ${short(leader)}: ${lead.ids.size} id(s) in ${leadMs}ms, via $asked")
-        // Against the floor for the filter the leader had to be asked, which is
-        // what the real pass does — a group-metadata window is held to
-        // [RelayAliases.DEFAULT_GROUP_METADATA_MIN_SAMPLE] instead.
+        // Held to the floor for the filter the leader answered, as the real pass does.
         if (!aliases.usableWindow(lead.ids, lead.kinds)) {
             println("    → under the floor for $asked; a window this thin proves nothing either way")
             return
@@ -209,9 +159,7 @@ class AliasFoldOnionProbe {
                 continue
             }
             prints[url] = print
-            // The containment the fold actually decides on: the SMALLER window's
-            // share of the larger, which is what survives one side being
-            // truncated by the peer's own default limit.
+            // The smaller window's share of the larger, which is what the fold decides on.
             val shared = print.count { it in lead.ids }
             val smaller = minOf(print.size, lead.ids.size)
             val containment = if (smaller == 0) 0.0 else shared.toDouble() / smaller
@@ -226,15 +174,11 @@ class AliasFoldOnionProbe {
         for (url in undecided) println("      NO VERDICT ${short(url)} — dialled again next cycle, and the one this probe is about")
     }
 
-    /** The path, which is the only part that differs across one host's urls. */
+    /** The path, the only part that differs across one host's urls. */
     private fun short(url: NormalizedRelayUrl): String = "/" + RelayAliases.pathOf(url.url)
 
     companion object {
-        /**
-         * `router.conf`'s own default. It is what the probe was handed before
-         * [probeIdleMs], and it is kept here as the control: the interesting
-         * printout is the one where the two windows disagree.
-         */
+        /** `router.conf`'s default connect timeout, kept as the control window. */
         private const val CLEARNET_TIMEOUT_SEC = 20L
     }
 }

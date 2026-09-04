@@ -28,15 +28,13 @@ import kotlin.test.assertEquals
 import kotlin.test.fail
 
 /**
- * The poller's contract is the PROPERTY, not the log lines: a live feed's mean
- * reaches the pressure instance, and a feed that dies — or never connects —
- * resets it rather than throttling forever on a number from the past.
+ * A live feed's mean reaches the pressure instance, and a feed that dies or
+ * never connects resets it rather than throttling on a number from the past.
  */
 class PressurePollerTest {
     private fun awaitTrue(
         what: String,
-        // Generous: a miss can cost the poller's full 5s request timeout when
-        // the environment stalls instead of refusing, and three are needed.
+        // A miss can cost the poller's full 5s request timeout, and three are needed.
         timeoutMs: Long = 30_000,
         condition: () -> Boolean,
     ) {
@@ -73,8 +71,7 @@ class PressurePollerTest {
 
             server.stop(0)
 
-            // Three consecutive misses must clear it — a relay that is down
-            // has no clients to protect.
+            // Three consecutive misses clear it: a relay that is down has no clients to protect.
             awaitTrue("the reset after the feed died") {
                 pressure.backoffMs() == 0L && pressure.sampleCount() == 0L
             }
@@ -86,12 +83,8 @@ class PressurePollerTest {
 
     @Test
     fun `a feed that never yields a sample resets instead of standing on a stale claim`() {
-        // A server that answers but never validly — a 503 every time. Not a
-        // closed port on purpose: whether a dead port refuses instantly or
-        // stalls to the request timeout is the environment's choice (a
-        // transparent proxy turns refusals into hangs), while a non-200 is a
-        // deterministic miss everywhere. The property under test is the same:
-        // no valid sample ever arrives, and the throttle must still clear.
+        // A 503 rather than a closed port: a dead port refuses instantly or stalls depending on
+        // the environment, while a non-200 is a deterministic miss everywhere.
         val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/pressure") { exchange ->
@@ -101,8 +94,7 @@ class PressurePollerTest {
                 start()
             }
         val pressure = ServingPressure(thresholdMs = 2_000)
-        // Pre-load pressure, as if something once claimed the relay was slow:
-        // the never-fed path must actively clear it, not merely fail to add.
+        // Pre-loaded, so the never-fed path must actively clear it.
         pressure.adopt(10_000, 100)
         val poller = PressurePoller("http://127.0.0.1:${server.address.port}/pressure", pressure, intervalMs = 25).start()
         try {

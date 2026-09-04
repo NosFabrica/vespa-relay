@@ -33,26 +33,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The coverage card, drawn from the same state file before and after the prune.
- *
- * This is the half of the change a router-side test cannot show. The symptom
- * in the issue is not "the file is big" — it is three groups on `/stats.json`
- * with no name, `reconciled=0`, and a `max` that has not moved in days, which a
- * reader cannot tell from streams that are failing to reconcile. So the
- * question this answers is the reader's: what does the card say afterwards, and
- * did any of the four real streams move while the unnamed ones went?
- *
- * Run the router-side probe FIRST — it writes the two files this reads:
- *
- * ```bash
- * D=$(mktemp -d)
- * ./gradlew :sync:test  --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
- * ./gradlew :relay:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
- * ```
- *
- * They meet on disk rather than in a shared fixture because that is how the
- * relay and the router meet in production: two processes, one bind mount, and
- * no API between them.
+ * Builds the coverage card from the `before.json` and `after.json` that
+ * `SyncBandsProdScaleProbe` writes, and asserts the prune removed the unnamed
+ * groups and moved no named stream by a single row. Selected by
+ * `-DprodScaleProbe=true` with the same `-DprodScaleDir`; run the :sync probe first.
  */
 class SyncCoverageReportProdScaleProbe {
     companion object {
@@ -87,8 +71,6 @@ class SyncCoverageReportProdScaleProbe {
                 reconciled = g["reconciled"]?.jsonPrimitive?.longOrNull ?: 0,
                 paged = g["paged"]?.jsonPrimitive?.longOrNull ?: 0,
             ).also { r ->
-                // The member the card adds so an unnamed group announces
-                // itself rather than leaving the reader to infer it.
                 if (r.name == null) assertTrue(g["unnamed"]?.jsonPrimitive?.booleanOrNull == true, "an unnamed group must say so")
             }
         }
@@ -110,12 +92,7 @@ class SyncCoverageReportProdScaleProbe {
         val beforeText = before.readText()
         val afterText = after.readText()
 
-        // Timed WARM, over several rounds, and reported as the best of them.
-        // The relay builds this on every rollup inside a long-lived JVM, so a
-        // single cold call measures the JIT more than the parser: the first
-        // pass over this corpus came out at 765ms against 191ms for the second
-        // input, which reads as a 4x win and is mostly warm-up. Interleaved so
-        // neither input gets all the cold rounds.
+        // Interleaved warm rounds: a single cold call measures the JIT, not the parser.
         var cardBefore = SyncCoverageReport.build(beforeText, null, now)!!
         var cardAfter = SyncCoverageReport.build(afterText, null, now)!!
         var msBefore = Long.MAX_VALUE
@@ -144,22 +121,15 @@ class SyncCoverageReportProdScaleProbe {
         println("  rows under them      ${unnamedBefore.sumOf { it.relays }} -> ${unnamedAfter.sumOf { it.relays }}")
         println("  report build (warm)  ${msBefore}ms -> ${msAfter}ms   best of $ROUNDS")
 
-        // The symptom, reproduced: three groups with no name, none of them
-        // reconciled for anything.
         assertEquals(3, unnamedBefore.size, "the corpus must reproduce the three unnamed groups first")
         unnamedBefore.forEach { assertEquals(0, it.reconciled, "an unnamed group reconciles nothing — that is what made it unreadable") }
 
-        // …and gone afterwards.
         assertEquals(emptyList(), unnamedAfter, "no unnamed group survives the prune")
 
-        // The part that matters more: NOTHING ELSE MOVED. Compared as whole
-        // rows, so a stream that gained or lost a single relay, or flipped one
-        // band from paged to reconciled, fails here.
+        // Whole rows, so a stream that gained or lost one relay or flipped one band fails here.
         assertEquals(rowsBefore.filter { it.name != null }, rowsAfter, "every named stream is untouched, row for row")
 
-        // The document-level totals fall by exactly the rows that went, and by
-        // nothing else — `relays` is deduplicated across groups, so this also
-        // catches a prune that took a url some real stream was sharing.
+        // `relays` is deduplicated across groups, so this also catches a prune that took a shared url.
         fun total(
             o: JsonObject,
             k: String,
@@ -169,13 +139,8 @@ class SyncCoverageReportProdScaleProbe {
         println("  document relays      ${total(cardBefore, "relays")} -> ${total(cardAfter, "relays")}")
         assertEquals(unnamedBefore.sumOf { it.relays }, lostRows, "the rows lost are exactly the unnamed ones")
 
-        // The FRAME is the one thing the prune is allowed to move, and it is
-        // worth printing rather than asserting away. `from` is "as deep as
-        // anything here reaches", taken from the data — so if the deepest floor
-        // in the file belonged to a stale flat band, removing it raises the
-        // frame once and every bar on the card is drawn against a slightly
-        // different span from that rollup on. Benign, one-time, and invisible
-        // unless someone is diffing rollups.
+        // The frame is the one thing the prune may move: `from` is the deepest floor in the data,
+        // so removing a stale flat band can raise it once.
         val frameBefore = total(cardBefore, "from")
         val frameAfter = total(cardAfter, "from")
         println("  frame `from`         $frameBefore -> $frameAfter  (${if (frameBefore == frameAfter) "unmoved" else "+${frameAfter - frameBefore}s, a one-time shift"})")

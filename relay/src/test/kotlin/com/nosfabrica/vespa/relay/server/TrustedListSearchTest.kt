@@ -34,27 +34,8 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * A Trusted List's TITLE is searchable, and the pin pair is what decides it.
- *
- * Store `eaee359357` makes kinds 30392-30395 searchable without a line of store
- * code: `SearchExtractors` mirrors Quartz's searchable set, so the mechanism is
- * entirely `TrustedListEvent : SearchableEvent` upstream. This repo FORCES its
- * own quartz on every module (`resolutionStrategy { force(libs.quartz) }`), so
- * the store gets the jar THIS catalog names, not the one it asked for — and a
- * quartz older than `509075abde` has no `EventFactory` branch for these kinds
- * at all. The failure that would cause is silent: `toEvent()` hands back a base
- * `Event`, the `is SearchableEvent ->` mirror never fires, the list stores
- * cleanly with empty search text, and nothing anywhere throws. Only a query
- * notices. Hence this test: it fails the moment the two pins drift apart in
- * that direction — checked, not assumed. Run against quartz 159afc0423, the pin
- * this repo carried before the store asked for 98f09f29c0, the title case times
- * out waiting for its EVENT while the storage case below still passes.
- *
- * Driven over the wire so the typing is the REAL one — the relay parses an
- * incoming EVENT through Quartz's `EventFactory`, which is exactly the step an
- * under-pinned quartz breaks. The in-memory index matches search text by
- * substring over the same derived columns Vespa indexes, so what is asserted
- * here is which fields the extractor filled, not how Vespa ranks them.
+ * A Trusted List's title is searchable, which holds only while the quartz this repo forces on the store
+ * carries the `EventFactory` branch for kinds 30392-30395; an older pin fails here and nowhere else.
  */
 class TrustedListSearchTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -92,19 +73,13 @@ class TrustedListSearchTest {
                 session.receive("""["EVENT",${list.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${list.id}",true""") }
 
-                // The whole point of the bump: a list published as "Podcaster
-                // Trust List" is reachable by its label instead of only by
-                // already knowing its address.
                 session.receive("""["REQ","title",{"kinds":[30392],"search":"podcaster include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EVENT","title",""") && list.id in it }
 
-                // `metric` names a computation, so a search for a common word
-                // must not return every list that ran the same job. Deliberately
-                // out of indexableContent(), and this is the control.
+                // `metric` names a computation; a common word must not return every list that ran the same job.
                 assertNoEventBeforeEose(session, out, "metric", """{"kinds":[30392],"search":"influence include:spam"}""")
 
-                // The membership is hex ids and a JSON echo of the same set:
-                // out of the search text, and served by tag recall instead.
+                // The membership is hex ids and a JSON echo of them: out of the search text, served by tag recall.
                 assertNoEventBeforeEose(session, out, "hex", """{"kinds":[30392],"search":"$member include:spam"}""")
                 session.receive("""["REQ","tag",{"kinds":[30392],"#p":["$member"],"search":"include:spam"}]""")
                 val byTag = awaitMessage(out) { it.startsWith("""["EVENT","tag",""") }
@@ -120,8 +95,7 @@ class TrustedListSearchTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // `indexableContent()` runs inside the insert path, so a list
-                // with no title must index "" rather than fail the write.
+                // `indexableContent()` runs on the insert path, so a titleless list must index "" rather than fail the write.
                 val untitled = signer.sign<Event>(1_700_000_100L, 30393, arrayOf(arrayOf("d", "untitled")), "")
                 session.receive("""["EVENT",${untitled.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${untitled.id}",true""") }
@@ -134,7 +108,7 @@ class TrustedListSearchTest {
             }
         }
 
-    /** A search that must match NOTHING: the EOSE has to arrive with no EVENT on that subscription before it. */
+    /** Asserts the EOSE arrives with no EVENT on [subId] before it. */
     private suspend fun assertNoEventBeforeEose(
         session: RelaySession,
         out: List<String>,

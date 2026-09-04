@@ -1,52 +1,23 @@
-// Is this relay ready to rank for the reader who just signed in — and if not,
-// which link of the chain is missing?
-//
-// Signing in switches search to YOUR web of trust, and the store treats that
-// lens as a filter: a reader whose trust chain has not been mirrored here gets
-// an EMPTY ranked search, not a degraded one. Before this module the page said
-// nothing about that, so "search is broken" and "search has not reached you
-// yet" looked identical from the outside.
-//
-// The chain is real, and it is a chain — each link is how the router finds the
-// next one:
-//
-//   your kind 10002  ─ the router discovers write relays out of stored relay
-//                      lists, so with none of yours, nothing about you is ever
-//                      fetched. This is the only link that cannot fix itself.
-//   your kind 10040  ─ read from those write relays; it names the service whose
-//                      scores you trust
-//   its kind 30382s  ─ the `assertions` stream syncs the named service's cards
-//   ranked search    ─ works once those cards are here AND projected
-//
-// This module is the DECISION only: which state, which numbers, which link
-// broke. The words live in readiness.js, so a test can hold the ordering — the
-// property that matters — without being rewritten every time a sentence is.
-// The one ordering rule: the FIRST unmet link wins, and every link below it
-// reports `waiting`, never a second failure. A column of red crosses would say
-// four things are wrong when one is.
+// Is this relay ready to rank for the reader who just signed in, and if not,
+// which link of the chain is missing? The store treats the trust lens as a
+// filter, so an unmirrored chain gives an empty ranked search. Each link finds
+// the next: kind 10002 names the write relays, kind 10040 (read from those)
+// names the scoring service, the `assertions` stream syncs its kind 30382
+// cards, and ranked search works once they are here and projected. The
+// decision only; the words live in web/readiness.js. The first unmet link
+// wins, and every link below it reports `waiting`, never a second failure.
 
-// The two non-answers a count can come back as. They live with the client
-// because they are facts about a CONNECTION — it declined, or it went quiet —
-// and re-exported here because this is where the difference gets decided.
+// Facts about a connection (it declined, or it went quiet), re-exported
+// because this is where the difference gets decided.
 export { REFUSED, TIMED_OUT } from "./relay.js";
 
-/**
- * A real count, as opposed to a reason there isn't one.
- *
- * The no-answer sentinels are objects, so they are TRUTHY — the same trap
- * observer_stats.html documents. Every comparison goes through here.
- */
+/** A real count. The no-answer sentinels are objects and therefore truthy. */
 export const counted = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 
 /**
  * here/there as a 0..1 fraction, or null when there is no honest denominator.
- *
- * Null is a supported answer and the caller must draw nothing rather than
- * estimate: NIP-45 COUNT is optional and widely unimplemented — measured,
- * nip85.brainstorm.world answers none of the 45 (relay, service) pairs it
- * serves — and a bar drawn on a guess would put a number on screen that no
- * relay ever stated. Capped at 1: we can hold MORE than an upstream serves
- * (it deleted, we did not), and 118% reads as a bug.
+ * Null means draw nothing: a bar on a guess puts a number on screen no relay
+ * stated. Capped at 1 because we can hold more than an upstream serves.
  */
 export function fraction(here, there) {
   if (!counted(here) || !counted(there) || there <= 0) return null;
@@ -54,20 +25,10 @@ export function fraction(here, there) {
 }
 
 /**
- * How much of a provider's scores counts as all of them.
- *
- * The last few per cent of an import buy a reader almost nothing — the cards
- * still to come are the tail of the service's own ranking, the accounts it
- * scored lowest — while a panel saying "Importing your provider's scores —
- * 99%" is a warning about a search that is, for any result they will actually
- * look at, already complete. The failure mode of a status panel is nagging
- * people who are fine, so the last stretch is treated as done: search is
- * ranked, nothing is theirs to fix, and the panel stays down.
- *
- * Compared against the ROUNDED percentage, the one the words print. Straight
- * against the fraction, an import at 0.897 is short and would draw a panel
- * headlined "90%" — a number the reader was told is not worth showing. This
- * way the rule and the sentence agree: no panel ever prints 90% or more.
+ * How much of a provider's scores counts as all of them. The tail of an import
+ * is the accounts the service scored lowest, and a panel that nags at 99% is
+ * a warning about a search that is already complete for any visible result.
+ * Compared against the rounded percentage, so no panel ever prints 90% or more.
  */
 const SCORES_ENOUGH_PCT = 90;
 
@@ -86,24 +47,19 @@ const shortOfEnough = (pct) => pct != null && Math.round(pct * 100) < SCORES_ENO
  *   probe         {authed, anon} | null             rows each socket returned
  *   posts         {here, there, relay, kinds, newestHere, newestThere} | null
  *
- * Anything not yet asked is null, which is why `checking` is a state rather
- * than a blank.
+ * Anything not yet asked is null, which is why `checking` is a state.
  */
 export function assess(facts) {
   const f = facts || {};
   const chain = [];
   const link = (key, status, detail) => { chain.push({ key, status, detail }); return status; };
 
-  // --- link 1: do we know where you post? ---------------------------------
+  // Link 1: do we know where you post?
   if (f.relayList == null) return checking(chain);
   const writes = f.relayList.writeRelays || [];
   if (!writes.length) {
-    // Two different facts, and telling a reader the wrong one is telling them
-    // to fix something that is not broken. NO list is the permanent failure —
-    // nothing will ever discover them. A list we cannot USE (every write relay
-    // in it is `ws://` on an https page, or loopback) is their list being
-    // unreachable from a browser, which is a different sentence and the same
-    // next step.
+    // No list is the permanent failure; a list we cannot use from a browser
+    // (`ws://` on an https page, loopback) is a different sentence.
     const seen = !!f.relayList.seen;
     link("relayList", "broken", { seen, declared: f.relayList.declared || 0, writeRelays: 0 });
     waitingBelow(chain, ["scoreList", "scores", "ranked"]);
@@ -111,7 +67,7 @@ export function assess(facts) {
   }
   link("relayList", "ok", { writeRelays: writes.length });
 
-  // --- link 2: do you name a service whose scores rank? -------------------
+  // Link 2: do you name a service whose scores rank?
   if (f.scoreListSeen == null) return checking(chain);
   if (!f.scoreListSeen) {
     link("scoreList", "broken", { reason: "absent" });
@@ -120,34 +76,24 @@ export function assess(facts) {
   }
   if (!f.rankService || !f.rankService.service) {
     // A 10040 declaring only `30382:followers` can order a list but cannot
-    // rank one, so it is a broken link rather than a missing one — the same
-    // distinction observer_stats.html makes by dropping those rows and
-    // counting them in its footer instead of showing four dashes.
+    // rank one: a broken link rather than a missing one.
     link("scoreList", "broken", { reason: "no-rank-dimension" });
     waitingBelow(chain, ["scores", "ranked"]);
     return { state: "no-rank-service", tone: "blocked", percent: null, chain };
   }
   link("scoreList", "ok", { service: f.rankService.service, relay: f.rankService.relay });
 
-  // --- link 3: have the scores arrived? -----------------------------------
+  // Link 3: have the scores arrived?
   const scores = f.scores || {};
   if (scores.here == null) return checking(chain);
-  // A sentinel here is the count ASKED and not answered — REFUSED and
-  // TIMED_OUT ride in `here` exactly as they do in `there` (the facts
-  // contract above: "counts, or a sentinel each"). Folded into the
-  // answered-zero branch below, a 20s COUNT timeout raised the blocked
-  // panel — "none of your provider's scores have reached this relay yet" —
-  // for a reader whose scores may be fully mirrored: a claim from a
-  // non-answer, the one conflation every sentinel in this module exists to
-  // prevent. No answer is no claim; keep checking and let a later count
-  // settle it.
+  // A sentinel in `here` is a count asked and not answered. No answer is no
+  // claim, so keep checking rather than fall into the answered-zero branch.
   if (!counted(scores.here)) return checking(chain);
   const pct = fraction(scores.here, scores.there);
   const here = scores.here;
   if (here === 0) {
-    // Zero here IS a claim — this relay answered, and it holds none of that
-    // service's cards. Ranked search returns nothing, so this is blocked, not
-    // partial, whatever the upstream says.
+    // Zero here is a claim: this relay answered and holds none of that
+    // service's cards, so ranked search returns nothing whatever upstream says.
     link("scores", "broken", { here: 0, there: scores.there });
     waitingBelow(chain, ["ranked"]);
     return { state: "no-scores-yet", tone: "blocked", percent: 0, chain };
@@ -155,13 +101,10 @@ export function assess(facts) {
   const short = shortOfEnough(pct);
   link("scores", short ? "partial" : "ok", { here, there: scores.there, percent: pct });
 
-  // --- link 4: does a ranked read actually come back? ---------------------
-  //
-  // The end-to-end check, and the only one that can catch what the three above
-  // cannot see: cards can be HERE and not yet projected, because the trust
-  // projection is per service and a service new to this relay is derived by a
-  // reconcile that runs at startup. Both sockets are asked the same thing, so
-  // an empty corpus (both zero) is never read as a broken lens.
+  // Link 4: does a ranked read actually come back? Cards can be here and not
+  // yet projected, since the trust projection is derived per service by a
+  // reconcile at startup. Both sockets are asked the same thing, so an empty
+  // corpus is never read as a broken lens.
   const probe = f.probe;
   if (probe == null) return checking(chain);
   if (probe.anon > 0 && probe.authed === 0) {
@@ -173,24 +116,15 @@ export function assess(facts) {
   if (short) {
     return { state: "importing", tone: "partial", percent: pct, chain, counts: scores };
   }
-  // Importing with no denominator: we hold cards and cannot say what fraction
-  // that is. Still worth saying — "3,197 here" is the reader's own answer to
-  // "is anything happening" — but it is not a bar.
+  // Importing with no denominator: worth saying, but not a bar.
   if (pct == null && !counted(scores.there)) {
     return { state: "importing", tone: "partial", percent: null, chain, counts: scores };
   }
 
-  // --- your own posts: downstream, and NOT in the chain -------------------
-  //
-  // Deliberately last and deliberately separate. It hangs off the relay list
-  // like everything else, but nothing above depends on it: ranking is complete
-  // without it, and folding it in would tell a reader whose lens is perfectly
-  // healthy that their search is broken. The fix for it is nothing at all.
-  //
-  // Absent is a supported answer, and one of the ways it happens is deliberate:
-  // this relay's mirrored kinds are what make our count and the write relay's
-  // comparable, and where they cannot be read the caller asks neither side
-  // rather than handing this function two numbers about different things.
+  // Your own posts: downstream, and not in the chain. Ranking is complete
+  // without it, and folding it in would tell a reader with a healthy lens
+  // that search is broken. Absent is a supported answer: where this relay's
+  // mirrored kinds cannot be read the caller asks neither side.
   const posts = f.posts;
   if (posts == null) return { state: "ready", tone: "ok", percent: null, chain };
   const postPct = fraction(posts.here, posts.there);
@@ -207,7 +141,7 @@ export function assess(facts) {
   return { state: "ready", tone: "ok", percent: null, chain };
 }
 
-/** Every link below the one that broke — waiting on it, not failing itself. */
+/** Every link below the one that broke: waiting on it, not failing itself. */
 function waitingBelow(chain, keys) {
   for (const key of keys) chain.push({ key, status: "waiting", detail: null });
 }
@@ -218,11 +152,7 @@ function checking(chain) {
 }
 
 /**
- * Does this verdict deserve the reader's attention at all?
- *
- * The failure mode of a status panel is nagging people who are fine, so this
- * is asked before anything is drawn — and `checking` is included, because a
- * spinner for a check that is about to say "ready" is the same nag one beat
- * earlier. readiness.js only reveals the panel once the state is worth it.
+ * Does this verdict deserve the reader's attention at all? `checking` is
+ * excluded too: a spinner for a check about to say "ready" is the same nag.
  */
 export const worthShowing = (v) => !!v && v.state !== "ready" && v.state !== "checking";

@@ -1,55 +1,25 @@
-// What the monitor has DECIDED about a relay url, read back off the wire.
-//
-// The router signs its fold and stability answers as NIP-66 kind 30166 records
-// in this very store (`RelayAliasRecord`, Kotlin side), one per url, addressed
-// on `d`. Everything else on `/stats.json` is a rollup: counts, and the fold's
-// own summary of how many urls collapsed onto how many relays. None of it can
-// answer the question an operator actually has when a duplicate is still being
-// dialled — **what does this store say about THIS url, and when was it
-// measured?**
-//
-// So this reads the records themselves, as a plain NIP-01 REQ over the relay's
-// own websocket. That is deliberate on two counts:
-//
-//  * it is the same path a client takes, so a verdict that cannot be read here
-//    cannot be read by anyone, and the panel is a protocol check as much as a
-//    view. The kind histogram used to do exactly this with NIP-45 COUNTs and
-//    the page lost it when that page was replaced — the note at the top of
-//    stats.html said the check "wants to be a test, not a page". That was right
-//    about counts, which have a rollup. It is wrong about verdicts, which have
-//    no other reader at all.
-//  * it needs no new endpoint. The records are already served; the only thing
-//    missing was something that asked for them.
-//
-// This module is the parsing half and is PURE — no websocket, no DOM — because
-// the tag semantics are the part that can silently be wrong, and they are the
-// part worth testing. The page supplies the events.
+// What the monitor has decided about a relay url, read back off the wire. The
+// router signs its fold and stability answers as NIP-66 kind 30166 records in
+// this store (`RelayAliasRecord`, Kotlin side), one per url, addressed on `d`.
+// The rollup on `/stats.json` cannot say what the store holds about one url or
+// when it was measured, so the panel reads the records themselves with a plain
+// NIP-01 REQ over the relay's own websocket: the same path a client takes, so
+// a verdict unreadable here is unreadable by anyone. This module is the
+// parsing half and is pure (no websocket, no DOM); the page supplies the events.
 
 /** NIP-66's relay-discovery record. `d` is the relay url. */
 export const MONITOR_KIND = 30166;
 
-/**
- * The fold verdict, in both its forms. Not a NIP-66 tag — this monitor defines
- * it — so every other consumer skips it as unknown.
- */
+/** The fold verdict, in both its forms. Not a NIP-66 tag; every other consumer skips it as unknown. */
 export const SAME_AS = "same-as";
 
 /** The stability verdict: did this url answer one filter the same way twice? */
 export const SELF_CONSISTENT = "self-consistent";
 
 /**
- * NIP-32's label, which is where the monitor's FITNESS GRADE lives, and the
- * namespace that says the grade is ours to read.
- *
- * It used to be spelled `["s", "prime"]`, and that was a straight collision:
- * `s` is the relay's SOFTWARE to every other monitor on the network — sampled
- * live off `relay.nostr.watch` and `nos.lol`, 12 monitors, and every `s` value
- * is a repository url. So this panel drew our own grade in the software column
- * and had no way to draw the software at all.
- *
- * The namespace is what makes `l` safe to share. The same record carries
- * country, ISP and ASN labels from other monitors, all on `l`, so a reader
- * matching the tag NAME would read a country code as a fitness grade.
+ * NIP-32's label, where the monitor's fitness grade lives. The same record
+ * carries other monitors' country, ISP and ASN labels on `l`, so a reader must
+ * match the namespace, never the tag name alone.
  */
 export const LABEL = "l";
 
@@ -60,23 +30,13 @@ export const FITNESS_NAMESPACE = "relay.fitness";
 /** The one grade that admits a relay to a stream's roster. */
 export const PRIME = "prime";
 
-/**
- * NIP-66's value for a url this router reached over a circuit — written on `n`
- * by the fitness pass, which is the same pass that writes the grade, so the two
- * are always one dial's reading of one url.
- */
+/** NIP-66's value for a url reached over a circuit, written on `n` by the same pass that writes the grade. */
 export const NETWORK_TOR = "tor";
 
 /**
- * Did this url's measurement go over Tor?
- *
- * The record's own `n` is the answer whenever it has one: it is what the pass
- * actually did, which on a deployment routing everything through a circuit
- * includes clearnet hosts. A `.onion` with no `n` still counts, and that is not
- * a guess — an onion address has no other transport, so a record about one was
- * taken over Tor or was not taken at all. Records signed before the fitness
- * pass wrote facts are exactly that case, and reading the host is the only way
- * they are counted at all rather than silently landing in "clearnet".
+ * Did this url's measurement go over Tor? The record's own `n` answers when
+ * present; a `.onion` with no `n` still counts, since an onion address has no
+ * other transport.
  */
 export function onTor(rec) {
   if (rec.network) return rec.network === NETWORK_TOR;
@@ -84,35 +44,11 @@ export function onTor(rec) {
 }
 
 /**
- * The tags this reader RENDERS besides the verdicts — the NIP-66 payload
- * proper, which the monitor's fitness pass now writes on every record it
- * grades.
- *
- * They are here because they are the other half of a diagnosis. `R: auth` says
- * the relay gates reads behind NIP-42, which is worth checking when a url will
- * not fold — though it is not proof: a NIP-29 host challenges every connection
- * and still serves its group metadata to anyone, and a whole row of `auth` pills
- * beside `not folded` turned out to be the fold's filter ladder rather than the
- * gate (see AGENTS.md). `n: tor` says a fingerprint had to go through a circuit
- * and is given a different idle budget; `rtt-open` says whether a probe's
- * silence was the relay being slow or being absent.
- *
- * Drawing them is also the live check on something the Kotlin side can only
- * test in isolation. A replaceable record has one address and several writers,
- * so `RelayVerdictRecord.edit` must carry forward every tag it does not own — a
- * writer that rebuilds instead silently deletes the others, and the result is
- * still a valid signed record that simply says less. That regression has
- * happened once (`[d, n, rtt-open]` became `[d, same-as]`). Seeing `n` and
- * `rtt-open` beside `same-as` on one row is what says the merge still works in
- * production and not only in a unit test.
- *
- * **`v`, `g` and `T` are NOT here, and their absence is the finding.** This map
- * used to list all three, which made the panel look like it was reporting a
- * version, a geohash and a relay type that nothing has ever written: NIP-66
- * defines no `v` at all, and `g`/`T` come from IP geolocation and a classifier
- * this monitor does not run — see `RelayFacts` for why they stay unwritten
- * rather than guessed. A column that is always empty reads as a relay that
- * declined to answer, which is a different and false claim.
+ * The NIP-66 tags this reader renders besides the verdicts. Seeing `n` and
+ * `rtt-open` beside `same-as` on one row is the live check that
+ * `RelayVerdictRecord.edit` still carries forward the tags it does not own.
+ * `v`, `g` and `T` are deliberately absent: nothing writes them (see `RelayFacts`),
+ * and an always-empty column reads as a relay that declined to answer.
  */
 const RENDERED = {
   n: "network",
@@ -124,19 +60,14 @@ const RENDERED = {
   s: "software",
 };
 
-/** Tags this panel accounts for. Anything else is COUNTED, never dropped silently. */
+/** Tags this panel accounts for. Anything else is counted, never dropped silently. */
 const OWNED = new Set([
   "d",
   SAME_AS,
   SELF_CONSISTENT,
   LABEL,
   LABEL_NAMESPACE,
-  // The fitness pass's measured facts. They were in neither list before, so
-  // the panel counted the monitor's OWN writes as tags it had never heard of
-  // and reported `+2 other tag(s)` on every graded row — and `compliant` was
-  // added to the record without being added here, which would have made it
-  // `+1` on every graded row all over again. A tag this pass WRITES is never
-  // an unknown tag.
+  // The fitness pass's measured facts. A tag that pass writes is never an unknown tag.
   "pageable",
   "nip77",
   "compliant",
@@ -144,30 +75,22 @@ const OWNED = new Set([
 ]);
 
 /**
- * How long a verdict stands: thirty days, matching
- * `RelayAliasRecord.DEFAULT_TTL_SECONDS`.
- *
- * Duplicated from the Kotlin rather than fetched, and that is a real risk —
- * so the panel reports the AGE next to the verdict and marks what this number
- * says is expired, rather than hiding it. A reader can then see a stale verdict
- * and its age even if this constant has drifted, which is the failure mode a
- * silently-copied threshold usually hides.
+ * How long a verdict stands, matching `RelayAliasRecord.DEFAULT_TTL_SECONDS`.
+ * Duplicated rather than fetched, so the panel shows the age next to the
+ * verdict and a drifted copy is visible rather than hidden.
  */
 export const TTL_SECONDS = 30 * 24 * 60 * 60;
 
-/** Where a verdict tag carries the unix second it was MEASURED. */
+/** Where a verdict tag carries the unix second it was measured. */
 const MEASURED_AT_INDEX = 3;
 
 /** Where it carries the version of the rules that measured it. */
 const EPOCH_INDEX = 4;
 
 /**
- * The same three positions on a NIP-32 label, each one to the right: the spec
- * fixes index 2 as the namespace, so the grade's evidence starts at 3.
- *
- * Spelled out rather than derived from the pair above, because the two shapes
- * are set by different specs and a change to either must not silently move the
- * other.
+ * The same positions on a NIP-32 label, each one to the right: the spec fixes
+ * index 2 as the namespace. Spelled out rather than derived, because the two
+ * shapes are set by different specs.
  */
 const LABEL_NAMESPACE_INDEX = 2;
 
@@ -177,25 +100,14 @@ const LABEL_MEASURED_AT_INDEX = 4;
 
 const LABEL_EPOCH_INDEX = 5;
 
-/**
- * The fitness pass's rules version — `RelayVerdictRecord.FITNESS_EPOCH`.
- *
- * Same duplication and the same mitigation as the two below: an out-of-epoch
- * grade is drawn as expired WITH its evidence and age, never hidden.
- */
+/** The fitness pass's rules version, `RelayVerdictRecord.FITNESS_EPOCH`. An out-of-epoch grade draws as expired, with its evidence. */
 export const FITNESS_EPOCH = "2";
 
 /**
- * The rule versions the router currently acts on — `RelayAliasRecord.FOLD_EPOCH`
- * and `CONSISTENCY_EPOCH`.
- *
- * A verdict measured under an older set of rules is not a stale reading of
- * today's rule, it is a reading of a different one, so the router discards it
- * and re-measures. This panel has to agree, or it would draw a url as folded
- * that the fan-out is dialling — the one thing it exists to make impossible.
- * Duplicated from the Kotlin for the same reason `TTL_SECONDS` is, and the same
- * mitigation: an out-of-epoch verdict is drawn as expired WITH its evidence and
- * age, never hidden.
+ * The rule versions the router acts on, `RelayAliasRecord.FOLD_EPOCH` and
+ * `CONSISTENCY_EPOCH`. A verdict under older rules is discarded and
+ * re-measured by the router, so this panel must agree or it would draw a url
+ * as folded that the fan-out is dialling.
  */
 export const FOLD_EPOCH = "2";
 
@@ -210,12 +122,9 @@ function afterScheme(url) {
 }
 
 /**
- * The hostname a url reaches — no port, no path, lowercased.
- *
- * Must match `RelayAliases.hostOf` exactly, because that is what decides which
- * urls are one GROUP: grouping differently here would draw a host as unfolded
- * that the router never considered a group at all. An IPv6 literal keeps its
- * brackets, so only a colon AFTER the bracket is the port separator.
+ * The hostname a url reaches: no port, no path, lowercased. Must match
+ * `RelayAliases.hostOf`, which decides which urls are one group. An IPv6
+ * literal keeps its brackets, so only a colon after the bracket is the port.
  */
 export function hostOf(url) {
   const authority = afterScheme(url).split("/")[0];
@@ -224,21 +133,16 @@ export function hostOf(url) {
 }
 
 /**
- * Are these two strings the same relay url?
- *
- * Compared after normalising, NEVER by string. `wss://nos.lol` and
- * `wss://nos.lol/` are one url, and telling the two forms apart by `===` is how
- * a CLEARED verdict — whose `same-as` points at the record's own url — reads as
- * a fold of a url onto itself. The Kotlin reader has the same rule for the same
- * reason; getting it wrong here would draw the fold's two answers swapped.
+ * Are these two strings the same relay url? Compared after normalising, never
+ * by string: a cleared verdict's `same-as` points at the record's own url,
+ * possibly spelled with a trailing slash.
  */
 export function sameUrl(a, b) {
   const norm = (u) => {
     const rest = afterScheme(u);
     const slash = rest.indexOf("/");
     const authority = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
-    // Path case is preserved — a path is opaque and `/Inbox` need not be
-    // `/inbox` — but a lone trailing slash is not a path.
+    // Path case is preserved (a path is opaque), but a lone trailing slash is not a path.
     const path = (slash < 0 ? "" : rest.slice(slash)).replace(/\/+$/, "");
     return authority + path;
   };
@@ -246,13 +150,9 @@ export function sameUrl(a, b) {
 }
 
 /**
- * One record, read into what it actually claims — or null when it claims
- * nothing this panel can draw.
- *
- * Both verdicts are read INDEPENDENTLY. A url may carry a fold, a stability
- * answer, both or neither, and an early return for a missing `same-as` would
- * hide every stability verdict on a url that was never folded. That exact bug
- * was fixed on the Kotlin side; the reader must not reintroduce it.
+ * One record, read into what it claims, or null when it claims nothing this
+ * panel can draw. The three verdicts are read independently: a url may carry
+ * any subset of them.
  */
 export function readRecord(event) {
   const tags = event.tags || [];
@@ -264,9 +164,8 @@ export function readRecord(event) {
     url,
     host: hostOf(url),
     author: event.pubkey,
-    // The RECORD's clock, which is not the verdict's — quartz's own monitor
-    // rewrites this record every time we connect to the relay, so this tracks
-    // the last time we TALKED to it. Kept only to date the record itself.
+    // The record's clock, not the verdict's: the monitor rewrites the record
+    // on every connect. Kept only to date the record itself.
     recordAt: event.created_at,
     fold: null,
     cleared: false,
@@ -277,46 +176,31 @@ export function readRecord(event) {
     stableEvidence: null,
     stableMeasuredAt: null,
     stableEpoch: null,
-    // The fitness grade, which is a THIRD verdict and was never drawn at all —
-    // it lived on `s` and this panel rendered it as the relay's software.
     grade: null,
     gradeEvidence: null,
     gradeMeasuredAt: null,
     gradeEpoch: null,
-    // Everything the OTHER writers put on this record. `requirements` is a list
-    // because a relay can be both auth-gated and paid, and `extra` is a count
-    // of tag names this reader does not know — reported rather than dropped, so
-    // a record carrying something new is visible as such instead of looking
-    // like a record that carries nothing.
+    // `extra` counts tag names this reader does not know, so a record carrying
+    // something new is visible as such.
     requirements: [],
     supportedNips: [],
     extra: 0,
-    // The NIP-11-ish document the monitor carries in the content. Kept as a
-    // flag, not parsed: this panel is about verdicts, and it should not grow a
-    // second job quietly.
+    // The NIP-11-ish document in the content, kept as a flag and not parsed.
     hasDoc: !!(event.content && event.content.length),
   };
   for (const t of tags) {
-    // The two tags a relay may carry SEVERAL of. Everything else in RENDERED is
-    // one value, so it is assigned; these are collected, and flattening them
-    // would draw a relay that is both auth-gated and paid as only the last one.
+    // `R` and `N` may appear several times; a relay can be both auth-gated and paid.
     if (t[0] === "R") out.requirements.push(t[1]);
     else if (t[0] === "N") out.supportedNips.push(t[1]);
     else if (RENDERED[t[0]]) out[RENDERED[t[0]]] = t[1];
     else if (!OWNED.has(t[0])) out.extra++;
   }
-  // OUR namespace's label, not any label carrying a value we recognise. A
-  // monitor labelling this relay `["l", "CA", "countryCode"]` is not grading it.
+  // Our namespace's label only: `["l", "CA", "countryCode"]` is not a grade.
   const graded = tags.find(
     (t) => t.length > LABEL_NAMESPACE_INDEX && t[0] === LABEL && t[LABEL_NAMESPACE_INDEX] === FITNESS_NAMESPACE,
   );
   if (graded) {
     out.grade = graded[1] || null;
-    // NIP-32 spends index 2 on the namespace, so the house shape — evidence,
-    // measured-at, epoch — sits one place right of where the fold and the
-    // stability tag carry it. Reading it at the fold's offsets would date every
-    // grade by its own evidence string, which parses to null and draws as "this
-    // record does not say".
     out.gradeEvidence = graded[LABEL_EVIDENCE_INDEX] || null;
     out.gradeMeasuredAt = Number(graded[LABEL_MEASURED_AT_INDEX]) || null;
     out.gradeEpoch = graded[LABEL_EPOCH_INDEX] || null;
@@ -324,12 +208,8 @@ export function readRecord(event) {
   const sameAs = tag(SAME_AS);
   if (sameAs) {
     out.foldEvidence = sameAs[2] || null;
-    // The verdict's OWN clock, and NOT the event's when it is missing. The
-    // record's clock is bumped every time we connect, so falling back to it
-    // dated a pre-stamp verdict as measured minutes ago and drew it as current
-    // forever — the same trap the Kotlin reader had, removed on both sides
-    // together. Null here means "this record does not say", which is what
-    // `isCurrent` refuses.
+    // The verdict's own clock, never the event's as a fallback: null means
+    // "this record does not say", which is what `isCurrent` refuses.
     out.foldMeasuredAt = Number(sameAs[MEASURED_AT_INDEX]) || null;
     out.foldEpoch = sameAs[EPOCH_INDEX] || null;
     if (sameUrl(sameAs[1], url)) out.cleared = true;
@@ -340,9 +220,7 @@ export function readRecord(event) {
     out.stableEvidence = consistent[2] || null;
     out.stableMeasuredAt = Number(consistent[MEASURED_AT_INDEX]) || null;
     out.stableEpoch = consistent[EPOCH_INDEX] || null;
-    // Anything this reader does not recognise is NOT a verdict. Ignored rather
-    // than guessed at — guessing "unstable" would draw a relay as refused on a
-    // tag we cannot read.
+    // A value this reader does not recognise is not a verdict; it is ignored, not guessed at.
     if (consistent[1] === "true") out.stable = true;
     else if (consistent[1] === "false") out.stable = false;
   }
@@ -351,34 +229,19 @@ export function readRecord(event) {
 
 /**
  * Is a verdict still one the router would act on: measured under the rules it
- * applies TODAY ([want]), and inside the TTL?
- *
- * Both halves, because they fail differently and the panel is where the
- * difference is read. An aged-out verdict will be re-taken when the url's turn
- * comes round; an out-of-epoch one was re-taken the moment the new build's
- * first pass reached it, and if it is still here that pass has not got to this
- * host yet.
+ * applies today ([want]) and inside the TTL? An aged-out verdict is re-taken
+ * on the url's next turn; an out-of-epoch one shows the new build's first
+ * pass has not reached this host yet.
  */
 export function isCurrent(at, nowSec, epoch, want) {
   return at != null && at >= nowSec - TTL_SECONDS && epoch === want;
 }
 
 /**
- * The records grouped the way the fold groups urls: by HOST.
- *
- * That is the whole point of the panel. A duplicate is not a property of a url,
- * it is a property of a url next to another one, so "why is this still being
- * dialled" is only answerable with the host's other urls in view — which
- * survived, which folded onto it, which were measured and kept, and which carry
- * no verdict at all.
- *
- * A record whose newest copy is the one to read: 30166 is addressable, so a
- * store may serve more than one version of an address across a paged read.
- * Keyed by url with the newest `created_at` winning, or a stale copy could draw
- * over the current verdict.
- *
- * Sorted by how much there is to explain — most urls first — because a host
- * wearing twenty urls is the one an operator opened this for.
+ * The records grouped the way the fold groups urls: by host, most urls first.
+ * A duplicate is a property of a url next to another one, so the host's other
+ * urls must be in view. 30166 is addressable and a paged read may serve more
+ * than one version of an address; the newest `created_at` per url wins.
  */
 export function groupByHost(events, nowSec) {
   const newest = new Map();
@@ -396,56 +259,26 @@ export function groupByHost(events, nowSec) {
     const group = hosts.get(rec.host);
     const current = isCurrent(rec.foldMeasuredAt, nowSec, rec.foldEpoch, FOLD_EPOCH);
     const gradeCurrent = isCurrent(rec.gradeMeasuredAt, nowSec, rec.gradeEpoch, FITNESS_EPOCH);
-    // The THIRD verdict's currency, asked exactly like the other two. It was
-    // not asked at all: `unstable` counted every `self-consistent: false` ever
-    // written, so a refusal past its TTL — or every refusal at once, the
-    // moment CONSISTENCY_EPOCH bumps — kept drawing as "refused as
-    // inconsistent" while the router was already re-dialling the relay. The
-    // same omission this file fixed twice before, for the cleared form and
-    // for the grade.
     const stableCurrent = isCurrent(rec.stableMeasuredAt, nowSec, rec.stableEpoch, CONSISTENCY_EPOCH);
     group.urls.push({ ...rec, foldCurrent: current, gradeCurrent, stableCurrent });
     if (rec.grade && gradeCurrent) group.graded++;
     if (rec.grade === PRIME && gradeCurrent) {
       group.prime++;
-      // The SAME grade, narrowed by transport. Counted here rather than derived
-      // from the rows later because `prime` is already counted here and the two
-      // must not be able to disagree: a tile saying more urls are prime over
-      // Tor than are prime at all is the one arithmetic a reader cannot recover
-      // from.
+      // Counted beside `prime` so the two cannot disagree.
       if (onTor(rec)) group.primeTor++;
     }
-    // Counted on what the router would ACT on. A fold whose verdict has aged
-    // out is not folding anything today, and counting it would draw a host as
-    // collapsed while every url of it is back in the fan-out.
-    //
-    // **`expired` counts BOTH forms, which it did not.** It tested `fold` only,
-    // so a CLEARED verdict past its TTL fell out of every counter on this page
-    // — not folded, not cleared, not expired, and not silent either, since the
-    // row does carry a verdict tag. That was survivable while the only way to
-    // expire was to wait a month. It stopped being survivable with the rules
-    // epoch: bumping it retires every verdict in the store at once, and the
-    // cleared half is the majority of them.
+    // Every counter is on what the router would act on today; `expired`
+    // covers both the fold and the cleared form.
     if (rec.fold && current) group.folded++;
     else if (rec.cleared && current) group.cleared++;
     else if (rec.fold || rec.cleared) group.expired++;
     if (rec.stable === false && stableCurrent) group.unstable++;
   }
   for (const group of hosts.values()) {
-    // THE SURVIVOR USUALLY HAS NO RECORD OF ITS OWN, and leaving it off the
-    // list drew the host as having nothing left to dial.
-    //
-    // A url everything folded ONTO is a canonical, and `RelayAliases.learn`
-    // clears — i.e. publishes a verdict about — only a leader that nothing
-    // folded onto. So the very url the group collapsed to is the one url with
-    // no `same-as` to find, and a group read purely from records showed
-    // "23 urls · 0 dialled" for a host that is dialled exactly once. Synthesised
-    // from what the folds point AT, and flagged, because "we inferred this from
-    // the other records" and "the monitor said this" are different claims.
-    //
-    // Only when the target really is on this host: a hand-edited or malformed
-    // record could point anywhere, and inventing a row for it here would put
-    // one host's url inside another host's group.
+    // The survivor usually has no record of its own: `RelayAliases.learn`
+    // clears only a leader nothing folded onto, so the url a group collapsed
+    // to is the one with no `same-as`. It is synthesised from what the folds
+    // point at, and flagged, and only when the target is on this host.
     const known = new Set(group.urls.map((u) => u.url));
     for (const u of [...group.urls]) {
       if (!u.fold || !u.foldCurrent) continue;
@@ -455,9 +288,6 @@ export function groupByHost(events, nowSec) {
         url: u.fold,
         host: group.host,
         synthetic: true,
-        // Nobody signed this row — it is inferred from the folds that point at
-        // it — so the two fields that come from an event are explicitly empty
-        // rather than absent.
         author: null,
         recordAt: null,
         fold: null,
@@ -471,12 +301,7 @@ export function groupByHost(events, nowSec) {
         stableEvidence: null,
         stableMeasuredAt: null,
         stableEpoch: null,
-        // The same SHAPE a read record has, every field of it. A synthesised
-        // row that omits the collection fields is one `for…of` away from
-        // throwing inside the renderer, which is how a panel that had drawn
-        // 4,000 rows correctly died on the 4,001st and left its own filter
-        // hidden. The fixture rule again: a stand-in that does not have the
-        // shape of the thing it stands in for tests the stand-in.
+        // Every field a read record has, so the renderer can iterate it.
         requirements: [],
         supportedNips: [],
         extra: 0,
@@ -488,9 +313,7 @@ export function groupByHost(events, nowSec) {
       });
       group.inferred = (group.inferred || 0) + 1;
     }
-    // Survivors first, then shortest — the fold's own preference order is the
-    // router's opinion and not knowable here, but the url everything points at
-    // is, and it belongs at the top of its own group.
+    // Survivors first, then shortest.
     group.urls.sort((a, b) => {
       const survivor = (u) => (!u.fold || !u.foldCurrent ? 0 : 1);
       return survivor(a) - survivor(b) || a.url.length - b.url.length || a.url.localeCompare(b.url);
@@ -503,33 +326,13 @@ export function groupByHost(events, nowSec) {
 /**
  * Every record of this kind the relay holds, paged newest-first.
  *
- * **A PAGE THAT IS ENTIRELY ONE `created_at` CANNOT MOVE THE CURSOR, and
- * stepping below it loses everything in that second we have not seen.** This is
- * not hypothetical: quartz's monitor flushes its reachability records in
- * batches, so on this store 5 timestamps carry more than 500 records each — the
- * largest 879. Measured against that store, a fixed 500-event page returned
- * **4,595 records and reported the read complete**; the same walk at 1,000
- * returned **5,296**. 701 records missing, silently, with a completeness claim
- * on top.
- *
- * So the page GROWS while it is entirely one timestamp, which is exactly what
- * `RelayDiscovery.scan` does on the Kotlin side and for exactly this reason.
- * The growth is capped by what the relay says it will serve ([maxPage], from
- * its own NIP-11 `limitation.max_limit`) — asking over a relay's cap risks an
- * outright refusal rather than a truncation, which would arrive here as
- * silence.
- *
- * If a run is longer than the relay will serve in one ask, the walk CANNOT be
- * completed and says so rather than stepping over the remainder. `complete` is
- * true only when a page came back empty AND the relay ended it — an EOSE, not
- * our timeout. [Relay.reqOnce] marks a timed-out page (`events.complete ===
- * false`) precisely so a caller does not cache a fact the relay never stated,
- * and this walk used to do exactly that: on a loaded relay an ask that
- * delivered nothing before the timeout read as "the store is exhausted", and
- * the panel drew all-zero tallies with no partial-read warning.
- *
- * [ask] is `(limit, until) -> events` so the walk can be tested without a
- * relay, the same shape `AliasProbe` takes its `fetch` in.
+ * A page that is entirely one `created_at` cannot move the cursor, and
+ * stepping below it loses the rest of that second, so the page grows while
+ * that holds, up to [maxPage] (the relay's NIP-11 `max_limit`), as
+ * `RelayDiscovery.scan` does. A run longer than the relay will serve ends the
+ * walk with `complete` false. `complete` is true only when an empty page came
+ * back on an EOSE, not on our timeout. [ask] is `(limit, until) -> events` so
+ * the walk can be tested without a relay.
  */
 export async function walkRecords({
   ask,
@@ -549,8 +352,8 @@ export async function walkRecords({
     let size = pageSize;
     let events = await ask(size, until);
     pages++;
-    // Saturated AND all one second: the cursor has nowhere to go. Double the
-    // ask until the page spans two, or until the relay's own ceiling.
+    // Saturated and all one second: double the ask until the page spans two,
+    // or until the relay's own ceiling.
     while (events.length >= size && size < maxPage && oneSecond(events)) {
       size = Math.min(size * 2, maxPage);
       events = await ask(size, until);
@@ -570,16 +373,12 @@ export async function walkRecords({
       stalls = 0;
       continue;
     }
-    // Nothing new, and we are already asking as much as this relay will serve.
-    // Stepping below the boundary now would skip whatever is left in that
-    // second — so stop, and let the caller say the read is partial rather than
-    // draw a number that quietly excludes them.
+    // Nothing new at the relay's ceiling: stepping below would skip the rest
+    // of that second, so the read ends partial.
     if (events.length >= size && size >= maxPage && oneSecond(events)) break;
-    // A page the TIMEOUT cut is not the relay's answer about what lies below
-    // `oldest` — a cut page that held only already-seen duplicates would step
-    // the cursor past the remainder the cut withheld. Hold the cursor and ask
-    // again; a second short answer ends the walk through the stall break
-    // below, with `complete` still false.
+    // A page the timeout cut says nothing about what lies below `oldest`;
+    // hold the cursor and ask again. A second short answer ends the walk
+    // through the stall break, with `complete` still false.
     if (events.complete !== false) until = oldest - 1;
     if (++stalls >= 2) break;
   }
@@ -599,19 +398,9 @@ function oneSecond(events) {
 }
 
 /**
- * The totals a reader needs before reading any row: how many records answered,
- * and how many of them say anything at all.
- *
- * `silent` is the number worth having on screen: a url no pass has reached at
- * all. A store full of those next to zero grades is a completely different
- * diagnosis from a store with no records — the first says the monitor is
- * running and has not got here yet, the second says nothing is running.
- *
- * **It is NOT "not folded", which is what the tile above it used to be called.**
- * The fold's own pill wears those two words on every row it has not folded, and
- * on a live store that is most of them: measured here, 77 urls carried no
- * verdict of any kind while 540 rows were drawn `not folded`, 510 of them
- * graded by the fitness pass. One phrase, two meanings, on one card.
+ * The totals a reader needs before any row: how many records answered and how
+ * many say anything at all. `silent` is a url no pass has reached, which is
+ * not "not folded": the fold's pill wears those words on most rows.
  */
 export function summarise(groups, nowSec) {
   let urls = 0;
@@ -624,10 +413,8 @@ export function summarise(groups, nowSec) {
   let inferred = 0;
   let graded = 0;
   let prime = 0;
-  // The tile the operator of a hidden-service deployment opens this for: how
-  // much of what we admit is reachable over a circuit. `prime` alone cannot
-  // answer it — a roster of a thousand clearnet relays and a roster of a
-  // thousand onions are the same number there.
+  // How much of what we admit is reachable over a circuit; `prime` alone
+  // cannot tell a clearnet roster from an onion one.
   let primeTor = 0;
   for (const group of groups) {
     urls += group.urls.length;
@@ -640,21 +427,11 @@ export function summarise(groups, nowSec) {
     prime += group.prime;
     primeTor += group.primeTor;
     for (const u of group.urls) {
-      // A synthesised survivor carries no verdict BY CONSTRUCTION — it is the
-      // url the others point at. Counting it as silent would inflate the one
-      // number that is supposed to mean "the monitor has not looked at this".
+      // A synthesised survivor carries no verdict by construction.
       if (u.synthetic) continue;
-      // **A GRADE COUNTS AS HAVING BEEN LOOKED AT, and it did not.** This
-      // tested the fold and the stability tag only, so every url the fitness
-      // pass had measured — the pass that dials the whole corpus, and the only
-      // one most urls ever get — landed in the number that means "nothing has
-      // looked at this". A store mid-sweep read as a store with no monitor
-      // running, which is the exact confusion the tile exists to end.
+      // A grade counts as having been looked at.
       if (!u.fold && !u.cleared && u.stable == null && !u.grade) silent++;
-      // Only what the router would act on — a "consistent" past its TTL or
-      // epoch is re-measured, not trusted, and the tile must not claim more
-      // measured stability than the fan-out actually has. `unstable` gets the
-      // same gate where the groups are counted.
+      // Only what the router would act on, like `unstable` in the groups.
       if (u.stable === true && u.stableCurrent) stable++;
     }
   }

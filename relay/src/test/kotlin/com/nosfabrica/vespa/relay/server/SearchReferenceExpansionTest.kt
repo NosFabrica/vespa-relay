@@ -43,46 +43,15 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * THE SUBJECT COMES BACK WITH THE POINTER — for the reader who asked for it. A
- * NIP-50 search that matches a Trusted List, a NIP-85 Trusted Assertion or a
- * NIP-32 label answers with the record that pointer is about, spliced in at
- * the pointer's own position; and for the two provider-published families that
- * happens only when the reader's own kind-10040 named the signer.
- *
- * Every case here rests on the same setup, and it is the setup that makes the
- * assertions mean anything:
- *
- *  - the subjects carry NONE of the words being searched for. Ada's profile
- *    says "Ada Bramble", the labelled note says "the third episode is up" — so
- *    a hit on "podcaster" or on "medical" cannot be the search finding them.
- *  - `reader` publishes a kind-10040 naming `curator` as a `30382:rank`
- *    service, and nothing else. `stranger` is a signer with the same corpus
- *    shape whom nobody named — the control for the enrolment gate, exactly as
- *    the `expansion off` relay is the control for the feature as a whole.
- *
- * Driven over the wire like [RelayProtocolTest] and [TrustedListSearchTest],
- * because the ORDER of the frames is half of what is being asserted and the
- * frame stream is the only place that order exists. The in-memory index
- * matches search text by substring over the same derived columns Vespa
- * indexes, so what is pinned here is which records are admitted and where they
- * land, not how Vespa ranks them.
- *
- * The pointers are built as PLAIN SIGNED EVENTS, tags and all, rather than
- * through Quartz's builders — the same reason the store's `SearchReferences`
- * dispatches on the kind: a quartz without an `EventFactory` branch for these
- * kinds must still be caught by this test rather than have it compile against
- * types the relay would never see.
+ * A search hit on a Trusted List, a NIP-85 assertion or a NIP-32 label answers with the record it points at, spliced in
+ * behind the pointer; the provider-published families only when the reader's kind-10040 named the signer. Driven over the wire.
  */
 class SearchReferenceExpansionTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
     /**
-     * Counts the store recalls a REQ costs, so "not expanded" can be told from
-     * "expanded to nothing" — and records the queries, because
-     * [InMemoryEventIndex] documents that it IGNORES the observer gate
-     * (`minRank`/`observer`). The lens a lookup is made under therefore cannot
-     * be seen in what comes back on the wire; it can only be seen in what was
-     * asked. Same seam [RelayProtocolTest] asserts its NIP-50 extensions on.
+     * Counts and records the queries a REQ costs. [InMemoryEventIndex] ignores the observer gate,
+     * so the lens a lookup is made under shows only in what was asked, never on the wire.
      */
     private class CountingIndex : EventIndex {
         val inner = InMemoryEventIndex()
@@ -111,23 +80,17 @@ class SearchReferenceExpansionTest {
     private val index = CountingIndex()
 
     /**
-     * The stack the front door assembles, because the gate is part of it: a
-     * store over [TrustProjection] is the only shape where a 10040 write
-     * invalidates the delegation map the expansion reads. The counting index
-     * sits UNDER the projection, so it still sees every query either makes.
+     * A store over [TrustProjection], the only shape where a 10040 write invalidates the delegation
+     * map the expansion reads. The counting index sits under the projection and sees every query.
      */
     private val projection = TrustProjection(index, InMemoryReputationIndex())
     private val store = NostrSemanticsStore(projection, relay = relayUrl)
     private val server = NostrRelayServer(store, relayUrl)
 
-    /**
-     * The same corpus under different splice limits — the knob moved to the
-     * store when the expansion did, so a control is a second store over the
-     * SAME index rather than a second relay over the same store.
-     */
+    /** The splice limits live on the store, so a control is a second store over the same index. */
     private fun storeWith(limits: SearchExpansionLimits) = NostrSemanticsStore(projection, relay = relayUrl, searchExpansion = limits)
 
-    /** The same corpus, read with the expansion off — the control for the feature itself. */
+    /** The control: the same corpus with the expansion off. */
     private val plainServer = NostrRelayServer(storeWith(SearchExpansionLimits.Off), relayUrl)
 
     private val reader = NostrSignerSync()
@@ -145,15 +108,8 @@ class SearchReferenceExpansionTest {
     }
 
     /**
-     * The reader's Treasure Map: `curator` computes for them, and nobody else
-     * does.
-     *
-     * FOUR ENTRIES FOR ONE PUBLISHER, because the gate is keyed by the kind of
-     * the declaration it is about to unpack, and each entry appoints exactly
-     * one kind. The NIP-85 shape names a kind AND metric; the three Trusted
-     * List kinds take the ADR's generic bare-kind shape. A Map carrying only
-     * the first would open the contact card below and leave all three lists
-     * shut — which is a case of its own further down.
+     * The reader's 10040: `curator` computes for them and nobody else does. One entry per kind, because the
+     * gate is keyed by the kind it unpacks; NIP-85 names kind and metric, the Trusted List kinds take the bare-kind shape.
      */
     private val providerList =
         reader.sign<Event>(
@@ -168,11 +124,11 @@ class SearchReferenceExpansionTest {
             "",
         )
 
-    /** Ada's profile. Note what it does NOT say: "podcaster", or anything else searched for below. */
+    /** Ada's profile. It carries none of the words searched for below, so a hit on it is the splice. */
     private val profile =
         podcaster.sign<Event>(1_700_000_000L, 0, emptyArray(), """{"name":"Ada Bramble","about":"makes things"}""")
 
-    /** The note a label points at. Again: none of the searched words are in it. */
+    /** The note a label points at; none of the searched words are in it. */
     private val note = podcaster.sign<Event>(1_700_000_100L, 1, emptyArray(), "the third episode is up")
 
     /** A kind-30392 Trusted List of pubkeys. `title` is the only indexed field; `p` is the membership. */
@@ -194,7 +150,7 @@ class SearchReferenceExpansionTest {
             "",
         )
 
-    /** A NIP-85 kind-30382 contact card. Its `d` IS the subject pubkey; `petname` is indexed. */
+    /** A NIP-85 kind-30382 contact card. Its `d` is the subject pubkey; `petname` is indexed. */
     private val assertion =
         curator.sign<Event>(
             1_700_000_400L,
@@ -247,9 +203,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // "Podcaster Trust List" is the only text with the word in it.
-                // The profile it names carries none of it — so if Ada comes
-                // back, she came back BECAUSE the list named her.
+                // Only the list's title carries the word, so Ada can come back only because the list named her.
                 val page = page(session, out, "members", """{"kinds":[0,30392],"search":"podcaster $lens"}""")
                 assertEquals(listOf(list.id, profile.id), page, "the member's profile must follow the list that names it")
             } finally {
@@ -265,9 +219,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Same store, same corpus, same filter — only the knob differs.
-                // This is what pins the profile above on the expansion rather
-                // than on anything the search could have done by itself.
+                // Same store, same corpus, same filter; only the knob differs.
                 val page = page(session, out, "members", """{"kinds":[0,30392],"search":"podcaster $lens"}""")
                 assertEquals(listOf(list.id), page, "a relay with the expansion off answers with its own hits only")
             } finally {
@@ -283,12 +235,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Identical in every way to the list above — same kind, same
-                // membership, same shape of title — except that the reader's
-                // 10040 does not name its signer. A Trusted List is a
-                // provider's computed output, and splicing a stranger's
-                // computation into this reader's feed would put it in front of
-                // them as if they had enrolled it.
+                // The same list in every way, except that the reader's 10040 does not name its signer.
                 assertEquals(
                     listOf(strangerList.id),
                     page(session, out, "stranger", """{"kinds":[0,30392],"search":"strangercast $lens"}"""),
@@ -307,9 +254,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // "or by the observer himself": a reader computing their own
-                // lists needs no 10040 entry naming themselves, and would have
-                // no way to publish a sensible one.
+                // A reader computing their own lists needs no 10040 entry naming themselves.
                 val own = reader.trustedList(1_700_000_260L, "mine", "Readercast Picks")
                 publish(session, out, own)
 
@@ -331,18 +276,14 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // `include:spam` with no observer is a legitimate ask here —
-                // the whole corpus, unranked. There is then nobody whose
-                // services to check, so the provider-published families cannot
-                // expand at all...
+                // No observer means nobody's services to check, so the provider-published families cannot expand.
                 assertEquals(
                     listOf(list.id),
                     page(session, out, "anon-list", """{"kinds":[0,30392],"search":"podcaster include:spam"}"""),
                     "with no observer there is no enrolment to check, so no list expands",
                 )
 
-                // ...while a NIP-32 label is not a provider's machinery and is
-                // deliberately not gated this way.
+                // A NIP-32 label is not a provider's machinery and is not gated this way.
                 assertEquals(
                     listOf(label.id, note.id),
                     page(session, out, "anon-label", """{"kinds":[1,1985],"search":"medical include:spam"}"""),
@@ -361,9 +302,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // A reader who has enrolled nobody. Their first search resolves
-                // that — and it is the answer a cache is most tempted to keep,
-                // since most readers have no provider list at all.
+                // A reader who has enrolled nobody: the answer a cache is most tempted to keep.
                 val newcomer = NostrSignerSync()
                 val newLens = "include:spam observer:${newcomer.pubKey}"
                 assertEquals(
@@ -372,10 +311,7 @@ class SearchReferenceExpansionTest {
                     "a reader who has enrolled nobody expands nothing",
                 )
 
-                // Publishing the list HERE is the one exact invalidation signal
-                // the relay has, and this is what makes it worth taking: enrol a
-                // service and the very next search unpacks it, rather than the
-                // next one after the TTL.
+                // The 10040 write is the one exact invalidation signal the relay has.
                 publish(
                     session,
                     out,
@@ -393,7 +329,7 @@ class SearchReferenceExpansionTest {
                     "the enrolment must apply on the next search, not after a cache expiry",
                 )
 
-                // And it is per reader: enrolling one must not enrol everybody.
+                // Per reader: enrolling one must not enrol everybody.
                 val bystander = NostrSignerSync()
                 assertEquals(
                     listOf(list.id),
@@ -418,11 +354,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // ONE ENTRY, ONE KIND. This reader appointed `curator` to rank
-                // users and nothing else — so `curator`'s contact card is a
-                // computation they asked for, and `curator`'s Trusted List of
-                // those same users is not. Same publisher, same subject, two
-                // different things to have delegated.
+                // One entry, one kind: the curator's contact card is a computation this reader asked for,
+                // the curator's Trusted List of the same users is not.
                 val ranksOnly = NostrSignerSync()
                 val ranksOnlyLens = "include:spam observer:${ranksOnly.pubKey}"
                 publish(
@@ -459,12 +392,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // The OTHER delegation shape. NIP-85 names a kind AND metric
-                // (`30382:rank`); Tapestry's Trusted Lists are delegated by a
-                // generic bare-kind entry, one of which covers every list of
-                // that kind. It has no `:`, so NIP-85's parser has never
-                // returned it — read only that side, this reader enrols nobody
-                // and their Trusted List gate stays shut.
+                // The bare-kind entry has no `:`, so NIP-85's parser never returns it; read only that side,
+                // this reader enrols nobody.
                 val subscriber = NostrSignerSync()
                 val subscriberLens = "include:spam observer:${subscriber.pubKey}"
                 publish(
@@ -484,9 +413,7 @@ class SearchReferenceExpansionTest {
                     "a bare-kind Map entry must enrol the publisher it delegates to",
                 )
 
-                // And it delegates that KIND, not the whole family: the entry
-                // above says 30392, so it cannot vouch for a signer nobody
-                // named on any kind.
+                // The entry delegates a kind, not the whole family; it vouches for nobody else.
                 assertEquals(
                     listOf(strangerList.id),
                     page(session, out, "bare-kind-stranger", """{"kinds":[0,30392],"search":"strangercast $subscriberLens"}"""),
@@ -505,10 +432,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // `30392:<name>` is RESERVED by the ADR — parsed so a client can
-                // display it, explicitly not something to act on until the spec
-                // defines it. A gate is the last place to act on a reservation,
-                // so this reader is still enrolled in nothing.
+                // `30392:<name>` is reserved by the ADR: parsed for display, not acted on.
                 val reserved = NostrSignerSync()
                 publish(
                     session,
@@ -548,8 +472,7 @@ class SearchReferenceExpansionTest {
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
 
-                // No `observer:` token anywhere: the connection's own pubkey is
-                // the lens, and so it is the 10040 that decides what unpacks.
+                // No `observer:` token: the connection's own pubkey is the lens.
                 assertEquals(
                     listOf(list.id, profile.id),
                     page(session, out, "signed-in", """{"kinds":[0,30392],"search":"podcaster include:spam"}"""),
@@ -580,8 +503,7 @@ class SearchReferenceExpansionTest {
                     "the labelled note must follow its label",
                 )
 
-                // An assertion's subject is its `d` tag, and a pubkey resolves
-                // to that author's kind-0 rather than to an event id.
+                // An assertion's subject is its `d` tag; a pubkey resolves to that author's kind-0.
                 assertEquals(
                     listOf(assertion.id, profile.id),
                     page(session, out, "card", """{"kinds":[0,30382],"search":"bramblecast $lens"}"""),
@@ -600,18 +522,14 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // The kinds case, and the one that surprises people: a REQ that
-                // asks only for lists gets only lists. `kinds` is the client
-                // saying what it is prepared to receive, and the expansion does
-                // not get to overrule it.
+                // `kinds` is what the client is prepared to receive; the expansion does not overrule it.
                 assertEquals(
                     listOf(list.id),
                     page(session, out, "kinds", """{"kinds":[30392],"search":"podcaster $lens"}"""),
                     "a kinds-constrained REQ must not be answered with another kind",
                 )
 
-                // The authors case: Ada's profile is authored by Ada, not by
-                // the curator whose lists this REQ asked for.
+                // Ada's profile is authored by Ada, not by the curator this REQ asked for.
                 assertEquals(
                     listOf(list.id),
                     page(
@@ -623,8 +541,7 @@ class SearchReferenceExpansionTest {
                     "a subject by another author must not slip past an authors filter",
                 )
 
-                // The window case: the profile predates the `since` this REQ
-                // named, and `since` is part of every-filter-but-the-search.
+                // The profile predates the REQ's `since`.
                 assertEquals(
                     listOf(list.id),
                     page(
@@ -648,10 +565,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // "bramble" is in Ada's own profile AND in the card's petname,
-                // so the profile is both a hit of this search and a subject of
-                // one. NIP-01 says a subscription must not be sent the same
-                // event twice; the splice is what has to give way.
+                // "bramble" is in Ada's profile and in the card's petname, so the profile is both a hit and a subject.
                 val page = page(session, out, "both", """{"kinds":[0,30382],"search":"bramble $lens"}""")
                 assertEquals(1, page.count { it == profile.id }, "the profile must appear exactly once: $page")
                 assertTrue(assertion.id in page, "the card is still a hit of its own search: $page")
@@ -668,11 +582,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // A kind-30393 list carries its membership in `e`. Its `p` is
-                // the observer the list was computed UNDER — metadata, and the
-                // whole reason the reader dispatches on the kind instead of
-                // sweeping every reference tag it can find. Ada's profile is
-                // reachable (this REQ admits kind 0) and must still not come.
+                // A kind-30393 list's membership is `e`; its `p` is the observer it was computed under, metadata.
+                // Ada's profile is admissible here and must still not come.
                 val episodes =
                     curator.sign<Event>(
                         1_700_000_700L,
@@ -705,10 +616,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // A kind-30394 list names addressable events by `kind:pubkey:d`
-                // rather than by id — a different lookup shape from both of the
-                // others, and the one that has to reassemble the coordinate to
-                // recognize what came back.
+                // A kind-30394 list names addressable events by `kind:pubkey:d`, not by id.
                 val article =
                     podcaster.sign<Event>(
                         1_700_000_800L,
@@ -747,16 +655,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Two filters, ORed as NIP-01 says. The FIRST searches, and it
-                // admits pointer kinds — so the REQ as a whole is a search and
-                // reaches the expansion. But the list comes back from the
-                // SECOND, which is a plain recall of the curator's lists and
-                // asks no question the expansion has any business answering.
-                //
-                // The distinction is real rather than academic: Ada's profile
-                // WOULD be admitted here (it is a kind 0 by podcaster, which
-                // the first filter accepts), so without the per-row test it
-                // would be spliced in behind a list the search never found.
+                // The first filter searches; the list comes back from the second, a plain recall. Ada's profile
+                // passes the first filter, so without a per-row test it would be spliced behind a list the search never found.
                 val page =
                     page(
                         session,
@@ -780,13 +680,8 @@ class SearchReferenceExpansionTest {
                 seed(session, out)
                 index.queries.clear()
 
-                // The searching filter asks to be ranked through the reader.
-                // The sibling is a plain recall that waives a lens, which is
-                // what every reference read the page makes looks like. Pooling
-                // a subscription's lenses would recall the FIRST filter's
-                // subjects with the trust floor off — a search that asked for
-                // the reader's web of trust answered with records that web of
-                // trust excludes.
+                // The search asks for the reader's lens; the sibling recall waives one. Pooling a subscription's
+                // lenses would recall the first filter's subjects with the trust floor off.
                 page(
                     session,
                     out,
@@ -795,11 +690,8 @@ class SearchReferenceExpansionTest {
                         """{"kinds":[1],"search":"include:spam"}""",
                 )
 
-                // The subject lookups, by their shape: recalls keyed on an id
-                // or on (kind 0, author), which no filter of this REQ asks for.
-                // The REQ's OWN second filter legitimately carries the waiver —
-                // it is the client's plain recall — and the 10040 lookup
-                // deliberately does; neither is what this is about.
+                // Subject lookups by shape: recalls keyed on an id or on (kind 0, author), which no filter of this
+                // REQ asks for. The REQ's own second filter and the 10040 lookup legitimately carry the waiver.
                 val subjectLookups =
                     synchronized(index.queries) {
                         index.queries.filter { it.ids.isNotEmpty() || (it.kinds == listOf(0) && it.authors.isNotEmpty()) }
@@ -822,11 +714,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // The SEARCH declares no lens, so it has no enrolment to check
-                // and must expand no list. That the sibling recall names an
-                // observer is neither here nor there: it is not the filter that
-                // found the list. The sibling is aimed at an author with
-                // nothing published so its own hits cannot muddy the page.
+                // The search declares no lens, so it has no enrolment to check; the sibling that names an observer
+                // is not the filter that found the list. It is aimed at an author with nothing published.
                 assertEquals(
                     listOf(list.id),
                     page(
@@ -851,12 +740,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Nostr hex is lower-case by convention and the store holds it
-                // that way, but nothing stops a publisher writing the member
-                // with an upper-case pubkey — `Address.parse` accepts it, and
-                // an unnormalized reader recalls the article and then drops it
-                // for failing to equal its own raw tag string. Same shape as an
-                // `naddr1…` member, which `Address.parse` also decodes.
+                // The store holds hex lower-case, but `Address.parse` accepts an upper-case pubkey (and an `naddr1`);
+                // an unnormalized reader recalls the article and drops it for not equalling the raw tag string.
                 val article =
                     podcaster.sign<Event>(
                         1_700_001_000L,
@@ -896,11 +781,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Dated BEFORE the kind-30392 list and read back with
-                // `sort:recent`, so the ORDER is pinned rather than left to
-                // whatever the engine ranks first: the pubkey-naming list is
-                // seen before the event-naming one, which is the only order in
-                // which the bug can show at all.
+                // Dated before the kind-30392 list and read with `sort:recent`, so the pubkey-naming list is
+                // seen first: the only order in which the bug can show.
                 val episodes =
                     curator.sign<Event>(
                         1_700_000_150L,
@@ -910,11 +792,8 @@ class SearchReferenceExpansionTest {
                     )
                 publish(session, out, episodes)
 
-                // One subject of budget for the whole REQ. The list comes first
-                // and names a PUBKEY — which this REQ, admitting no kind 0, can
-                // never be answered with. Charging the budget for it anyway
-                // leaves nothing for the note the 30393 list names, which the
-                // REQ very much does admit.
+                // One subject of budget for the REQ. The first list names a pubkey this REQ (no kind 0) can never
+                // be answered with; charging for it would leave nothing for the note the 30393 list names.
                 val page = page(session, out, "budget", """{"kinds":[1,30392,30393],"search":"podcaster sort:recent $lens"}""")
                 assertEquals(list.id, page.first(), "the order this test rests on: the pubkey list is seen first")
                 assertTrue(note.id in page, "the event subject must still be reachable: $page")
@@ -932,19 +811,9 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // 30385 and 30395 are the NIP-73 external-id pair: their
-                // subjects are urls and ISBNs, not nostr events, so they can
-                // never expand. Since the store's conversion recall
-                // (vespa-eventstore#88) the read is still not one query: a
-                // kind-restricted search also fetches the pointer kinds that
-                // could NAME a 30395 — labels for everyone, the event- and
-                // addressable-shaped declaration families from the reader's
-                // enrolled signers only. What this pins is the cost's SHAPE:
-                // the recall is all there is. Every query carries the terms
-                // (the 10040 pass was paid on the write path, not per REQ),
-                // the declaration companions name nobody the reader did not
-                // enrol, and no lookup follows the page — a roster of ISBNs
-                // still has nothing to unpack.
+                // 30385 and 30395 are the NIP-73 external-id pair; their subjects are urls and ISBNs, so they never
+                // expand. A kind-restricted search still fetches the pointer kinds that could name a 30395: labels for
+                // everyone, the declaration families from enrolled signers only. What is pinned is that the recall is all there is.
                 val external =
                     curator.sign<Event>(
                         1_700_002_000L,
@@ -986,12 +855,7 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // Five labels, one note. This is not a corner case: in a
-                // production sample 76 targets are named by more than one
-                // label and ten of them by ten labels each, so a page of
-                // labels on a busy topic converges on the same handful of
-                // notes. Without the `sent` set that is five copies of one
-                // note on one subscription.
+                // Five labels, one note: a page of labels on a busy topic converges on the same handful of notes.
                 val many =
                     (0 until 5).map { i ->
                         curator.sign<Event>(
@@ -1003,13 +867,10 @@ class SearchReferenceExpansionTest {
                     }
                 publish(session, out, *many.toTypedArray())
 
-                // page() asserts distinctness for every case in this file, so
-                // the duplicate would fail here even without the count below —
-                // this states the property the file is being asked about.
+                // page() already rejects duplicates; the count states the property.
                 val page = page(session, out, "dup", """{"kinds":[1,1985],"search":"duplikat $lens"}""")
                 assertEquals(1, page.count { it == note.id }, "the note must be sent exactly once: $page")
-                // The first label in PAGE order, which is the search's order —
-                // not the order they were written here.
+                // The first label in page order, the search's order, not the order they were written.
                 val firstLabel = page.indexOfFirst { id -> many.any { it.id == id } }
                 assertEquals(
                     firstLabel + 1,
@@ -1030,12 +891,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // The note carries the searched word itself, so it is a HIT of
-                // this search as well as the subject of the label above it.
-                // The row wins: it goes where the search ranked it, and the
-                // splice gives way. The reverse — splicing it early and
-                // dropping the row — would move an event the client ordered by
-                // relevance to a position relevance did not choose.
+                // The note carries the searched word, so it is a hit as well as the label's subject. The row
+                // wins: it stays where the search ranked it, and the splice gives way.
                 val labelled = podcaster.sign<Event>(1_700_004_000L, 1, emptyArray(), "duplikato in the note itself")
                 val label =
                     curator.sign<Event>(
@@ -1065,12 +922,8 @@ class SearchReferenceExpansionTest {
                 session.close()
             }
 
-            // The other half of this contract — that the EXPANSION itself
-            // refuses to emit a row twice, even over a store that hands the
-            // same row back twice — moved into vespa-eventstore with the
-            // expansion, where `SearchExpansionTest` states it against a
-            // doubling index. It cannot be stated from here any more: there is
-            // no wrapper left to put between the relay and its store.
+            // The expansion's own refusal to emit a row twice over a doubling store is stated in
+            // vespa-eventstore's `SearchExpansionTest`; no wrapper is left here to state it from.
         }
 
     @Test
@@ -1081,12 +934,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // `include:spam` makes `search` NON-EMPTY on every anonymous
-                // read — a mirror's paging, a NIP-77 catch-up, and the dozen
-                // plain reference reads `shared/lens.js` stamps. Gating on
-                // non-empty would put all of that behind the expansion; gating
-                // on TEXT leaves it exactly where it was. This filter is a
-                // recall carrying a lens token, and it stays a recall.
+                // `include:spam` makes `search` non-empty on every anonymous read; the gate is on search
+                // text, so a recall carrying a lens token stays a recall.
                 val before = index.searches.get()
                 val page =
                     page(
@@ -1110,18 +959,8 @@ class SearchReferenceExpansionTest {
             try {
                 seed(session, out)
 
-                // A publisher orders a Trusted List's members by the score it
-                // computed for them — every one of the eleven real lists on
-                // staging does, all 180 members scored and every list sorted
-                // descending. The relay reads the KEY and never the score, so
-                // this ordering is the ONLY thing that makes a spliced member's
-                // position mean its rank. If the splice followed store order
-                // instead, the position would mean whatever the mirror had
-                // caught up on.
-                //
-                // Published back to front on purpose: recall order and tag
-                // order disagree here, so only one of them can produce the
-                // assertion below.
+                // The relay reads a member's key and never its score, so the publisher's tag order is what makes
+                // a spliced member's position mean its rank. Published back to front so recall order and tag order disagree.
                 val one = NostrSignerSync()
                 val two = NostrSignerSync()
                 val three = NostrSignerSync()
@@ -1180,15 +1019,8 @@ class SearchReferenceExpansionTest {
                     )
                 publish(session, out, secondProfile, pair)
 
-                // Two members, room for one — and the one is the FIRST the
-                // list names, not whichever the store answered with. That is
-                // the whole point of capping the lookup rather than the
-                // result: a publisher orders members by the score it computed,
-                // so a truncated splice is the top of its own ranking.
-                //
-                // The list itself is never the thing dropped — a truncated
-                // splice still leaves the client the member tags and the `#p`
-                // recall that serves them.
+                // Two members, room for one: the first the list names, not whichever the store answered with.
+                // The list itself is never dropped; a truncated splice still leaves the client the member tags.
                 val page = page(session, out, "capped", """{"kinds":[0,30392],"search":"duocast $lens"}""")
                 assertEquals(listOf(pair.id, profile.id), page, "the list, then the first member it names")
                 assertTrue(secondProfile.id !in page, "the member past the cap is not looked up at all")
@@ -1198,10 +1030,7 @@ class SearchReferenceExpansionTest {
             }
         }
 
-    /**
-     * Runs [filter] as subscription [subId] and returns the ids of the EVENT
-     * frames it produced, in the order they went out, up to its EOSE.
-     */
+    /** Runs [filter] as subscription [subId] and returns the ids of its EVENT frames in order, up to EOSE. */
     private suspend fun page(
         session: RelaySession,
         out: List<String>,
@@ -1215,11 +1044,8 @@ class SearchReferenceExpansionTest {
             synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
                 ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
             }
-        // EVERY page this suite reads, checked for duplicates. NIP-01 asks a
-        // relay not to send one event twice on a subscription, and a feature
-        // whose whole job is to ADD events to a page is the one most likely to
-        // break that — so the check lives here rather than in a test of its
-        // own, and every case in the file pays for it.
+        // Every page this suite reads is checked for duplicates: a feature that adds events to a page is
+        // the one most likely to break NIP-01's rule against sending an event twice.
         val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
         assertEquals(emptySet(), twice, "sent twice on \"$subId\": $twice")
         return ids
@@ -1238,7 +1064,7 @@ class SearchReferenceExpansionTest {
     }
 
     private companion object {
-        /** The `id` of the event object inside an EVENT frame — the first `"id":"…"` in it. */
+        /** The `id` of the event object inside an EVENT frame: the first `"id":"…"` in it. */
         val ID = Regex("\"id\":\"([0-9a-f]{64})\"")
     }
 }

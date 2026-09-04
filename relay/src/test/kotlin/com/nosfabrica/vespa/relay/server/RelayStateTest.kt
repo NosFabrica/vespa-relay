@@ -41,7 +41,6 @@ class RelayStateTest {
             first.disallowKind(4)
             assertTrue(file.exists(), "a mutation should have written the state file")
 
-            // A fresh store seeded from the same file must see the same state.
             val second = openBanStore(file.path)
             assertTrue(second.isBanned(a))
             assertFalse(second.isBanned(b))
@@ -61,17 +60,11 @@ class RelayStateTest {
 
     @Test
     fun `a corrupt state file starts empty instead of taking the relay down`() {
-        // Not one shape of corruption but three, because they used to fail in
-        // two different places: only the first was caught, and the other two
-        // threw out of openBanStore and out of RelayMain — the relay refused to
-        // BOOT because its moderation file was malformed. Coming up with empty
-        // lists is the documented behaviour and the survivable one; refusing to
-        // start over a cache of bans is not.
+        // Three shapes, because they throw from different places.
         for ((label, text) in listOf(
             "not json at all" to "{ this is not json",
             "json, but not an object" to """["bannedPubkeys"]""",
-            // The one that got through: a valid object whose fields are the
-            // wrong shape, so every accessor throws on its own.
+            // A valid object whose fields are the wrong shape throws from every accessor.
             "an object with the wrong field types" to """{"bannedPubkeys":"nope","allowedKinds":{"a":1}}""",
         )) {
             val file = File.createTempFile("relay-state-corrupt", ".json")
@@ -79,8 +72,7 @@ class RelayStateTest {
                 file.writeText(text)
                 val store = openBanStore(file.path)
                 assertFalse(store.isBanned(a), "$label: should start with empty lists")
-                // …and the store is still USABLE, so the next admin RPC
-                // rewrites the file rather than inheriting the damage.
+                // Still usable, so the next admin rpc rewrites the file.
                 store.banPubkey(a, "spam")
                 assertTrue(openBanStore(file.path).isBanned(a), "$label: the file should have been rewritten")
             } finally {
