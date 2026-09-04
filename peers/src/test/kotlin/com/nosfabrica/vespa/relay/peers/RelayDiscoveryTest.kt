@@ -392,6 +392,58 @@ class RelayDiscoveryTest {
             assertEquals(12, found.size)
         }
 
+    // ---- when the engine's aggregate may answer ----------------------------
+
+    /**
+     * A MISS HERE IS NOT AN ERROR, IT IS A BIGGER SET. The aggregate reads
+     * `tag_index`, lossy three ways at once, so it answers exactly one
+     * question: every url of one single-letter tag, unconditionally. Each case
+     * below is a way the source stops asking that, and each must fall back to
+     * the walk rather than quietly widen.
+     */
+    @Test
+    fun `only an unconditional single-letter select may be aggregated`() {
+        val plain = source(10002, selects = listOf(select(tag = "r")))
+        assertTrue(
+            RelayDiscovery.aggregable(dynamic(plain), plain),
+            "a bare `r` select at position 1 is exactly what the aggregate answers",
+        )
+
+        // A per-list cap drops the EVENT, and an aggregate has no events to
+        // drop — this deployment's ~9k-entry synthetic lists would return.
+        assertFalse(
+            RelayDiscovery.aggregable(dynamic(plain, maxRelaysPerList = 50), plain),
+            "a per-list cap must keep the walk",
+        )
+
+        // NIP-65's write marker is a condition on the tag's THIRD element,
+        // which `tag_index` does not carry.
+        val marked = source(10002, selects = listOf(select(tag = "r", where = marker("write"))))
+        assertFalse(RelayDiscovery.aggregable(dynamic(marked), marked), "a positional condition must keep the walk")
+
+        // The url is at 2 for NIP-85 service tags and relay hints;
+        // `tag_index` keeps the first value only.
+        val atTwo = source(10040, selects = listOf(select(tag = "p", index = 2)))
+        assertFalse(RelayDiscovery.aggregable(dynamic(atTwo), atTwo), "a position-2 read must keep the walk")
+
+        // "30382:rank" is not a single-letter name and is not in `tag_index`.
+        val multi = source(10040, selects = listOf(select(tag = "30382:rank", index = 2)))
+        assertFalse(RelayDiscovery.aggregable(dynamic(multi), multi), "a multi-character tag must keep the walk")
+
+        // A source with no selects has nothing to aggregate.
+        val none = source(10002, selects = emptyList())
+        assertFalse(RelayDiscovery.aggregable(dynamic(none), none), "no selects, nothing to aggregate")
+
+        // EVERY select must qualify: one that does not drags the source back
+        // to the walk, because the walk answers all of them in one pass.
+        val mixed =
+            source(
+                10002,
+                selects = listOf(select(tag = "r"), select(tag = "r", where = marker("write"))),
+            )
+        assertFalse(RelayDiscovery.aggregable(dynamic(mixed), mixed), "one conditional select disqualifies the source")
+    }
+
     // ---- bindings ----------------------------------------------------------
 
     @Test
