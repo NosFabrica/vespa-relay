@@ -45,6 +45,33 @@ await assert.rejects(() => t.r.req({}), /auth-required/);
 assert.strictEqual(t.calls, 1);
 
 // publish(): the relay's OK verdict decides, and both verdicts surface.
+// An abort ends a REQ the way its timeout does: CLOSE to the relay, what
+// arrived resolved, `complete` false — so the page can close a type-ahead the
+// reader has typed past instead of leaving the relay to finish it for nobody.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(m) };
+  const ctl = new AbortController();
+  const asked = r.req({ kinds: [1], search: "bitco include:spam" }, 5000, { signal: ctl.signal });
+  await new Promise((res) => setTimeout(res, 0));
+  const id = JSON.parse(sent[0])[1];
+  r.handle(["EVENT", id, { id: "partial" }]);
+  ctl.abort();
+  const got = await asked;
+  assert.deepStrictEqual([...got], [{ id: "partial" }], "what arrived before the abort is handed back");
+  assert.strictEqual(got.complete, false, "…marked incomplete, so nothing caches it as the answer");
+  assert.strictEqual(sent.length, 2, "one REQ, one CLOSE");
+  assert(sent[1].startsWith(`["CLOSE","${id}"`), "the relay is told to stop");
+  r.handle(["EOSE", id]);
+  assert.strictEqual(sent.length, 2, "a late EOSE for a closed ask does nothing");
+  // Already aborted before it was sent: nothing goes to the relay at all.
+  const dead = new AbortController(); dead.abort();
+  const never = await r.req({ kinds: [1] }, 5000, { signal: dead.signal });
+  assert.strictEqual(never.complete, false);
+  assert.strictEqual(sent.length, 2, "an ask aborted before it was sent sends nothing");
+}
 {
   const r = new Relay("ws://unused/");
   r.connect = async () => {};

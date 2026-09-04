@@ -224,9 +224,9 @@ export class Relay {
    * REQ. Sending them as separate REQs would mean two EOSEs, two timeouts and
    * two `limit`s to reconcile before anything could render.
    */
-  async req(filter, timeoutMs = REQ_TIMEOUT_MS) {
+  async req(filter, timeoutMs = REQ_TIMEOUT_MS, { signal } = {}) {
     try {
-      return await this.reqOnce(filter, timeoutMs);
+      return await this.reqOnce(filter, timeoutMs, signal);
     } catch (e) {
       // NIP-42's second half, the part that is easy to forget: a relay
       // answers an unauthenticated REQ with CLOSED "auth-required:", and the
@@ -241,7 +241,7 @@ export class Relay {
       if (this.onAuthRequired && !this.authed &&
           String((e && e.message) || "").startsWith("auth-required")) {
         await this.onAuthRequired();
-        return await this.reqOnce(filter, timeoutMs);
+        return await this.reqOnce(filter, timeoutMs, signal);
       }
       throw e;
     }
@@ -253,20 +253,32 @@ export class Relay {
    * timeout fired first. The two used to be indistinguishable, and a caller
    * caching "this pubkey has no profile" off a timed-out read was recording
    * a fact the relay never stated.
+   *
+   * [signal] — an AbortSignal — ends the ask the same way the timeout does:
+   * CLOSE goes to the relay, what arrived is resolved, `complete` is false.
+   * It exists for the one ask the page abandons on purpose: a type-ahead
+   * still in flight when Enter submits a different text. Left open, that
+   * subscription held the connection's one ranked-read lane at the relay
+   * (SearchGate) and the submit queued behind an answer nobody would draw;
+   * closed, the relay cancels the read and the submit takes the lane.
    */
-  async reqOnce(filter, timeoutMs) {
+  async reqOnce(filter, timeoutMs, signal) {
     await this.connect();
     const id = "sot" + this.nextId++;
     const events = [];
+    if (signal?.aborted) { events.complete = false; return events; }
     return await new Promise((resolve, reject) => {
       const finish = (err, complete = true) => {
         if (!this.subs.delete(id)) return;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         try { this.ws && this.ws.send(JSON.stringify(["CLOSE", id])); } catch (e) {}
         if (err) { reject(err); return; }
         events.complete = complete;
         resolve(events);
       };
+      const onAbort = () => finish(null, false);
+      signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => finish(null, false), timeoutMs);
       this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
       const asked = this.lensless ? withoutLensAll(filter) : filter;

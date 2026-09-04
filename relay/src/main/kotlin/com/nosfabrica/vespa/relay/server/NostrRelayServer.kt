@@ -116,6 +116,13 @@ class NostrRelayServer(
     // Only recorded into here; the consumer is the sync process, which polls
     // the mean over GET /pressure and yields its ingest on it.
     private val servingPressure: ServingPressure? = null,
+    // Ranked reads one connection may run at once; the rest queue behind them
+    // in arrival order. See [SearchGate] for the measurement. 0 turns it off.
+    searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
+    // A default parameter rather than a property so the gate exists before the
+    // super constructor runs: it is also the listener that drops a
+    // connection's lane, and the server takes ONE listener.
+    private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
 ) : RelayServerBase(
         // Cheap rejections (bans, allow/deny lists, future-dated events) run
         // first; only the policies an operator configured are installed.
@@ -134,7 +141,7 @@ class NostrRelayServer(
         },
         parentContext = parentContext,
         negentropySettings = negentropySettings,
-        listener = listener,
+        listener = searchGate.listening(listener),
         limits = limits,
     ) {
     /**
@@ -154,7 +161,10 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate)
+
+    /** Connections holding a search lane right now — see [SearchGate.lanesOpen]. */
+    val searchLanesOpen: Int get() = searchGate.lanesOpen
 
     override fun close() {
         closeConnections()
@@ -209,13 +219,20 @@ internal class ObserverBackend(
      * sample there is.
      */
     private val pressure: ServingPressure? = null,
+    /**
+     * The per-connection lane a ranked read runs in. Taken INSIDE the timed
+     * span on purpose: a read that queued behind the connection's previous
+     * search took that long to answer from where the client sits, and the
+     * pressure figure exists to describe what a client sees.
+     */
+    private val gate: SearchGate = SearchGate(0),
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.query(ctx, filters, onEach, timedEose(onEose)) }
+    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> inner.query(ctx, filters, onEach, eose) } }
 
     override suspend fun queryRaw(
         ctx: RequestContext,
@@ -223,17 +240,17 @@ internal class ObserverBackend(
         onEachStored: (RawEvent) -> Unit,
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose)) }
+    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> inner.queryRaw(ctx, filters, onEachStored, onEachLive, eose) } }
 
     override suspend fun count(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): Int = ranked(ctx) { timed { inner.count(ctx, filters) } }
+    ): Int = ranked(ctx) { timed { gate.throughPrompt(ctx, filters) { inner.count(ctx, filters) } } }
 
     override suspend fun countResult(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): CountResult = ranked(ctx) { timed { inner.countResult(ctx, filters) } }
+    ): CountResult = ranked(ctx) { timed { gate.throughPrompt(ctx, filters) { inner.countResult(ctx, filters) } } }
 
     override suspend fun submit(
         event: Event,

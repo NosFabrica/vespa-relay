@@ -24,21 +24,28 @@ const many = (n, from = 0) => Array.from({ length: n }, (_, i) => ev(from + i));
 
 // ---- the two asks ----------------------------------------------------------
 //
-// The ask in front of the reader must stay ONE PAGE. This is the whole claim
-// of the feature: three pages are fetched ahead, and the reader waits for none
-// of them — so a first ask that had quietly become four pages long would have
-// moved the cost of the preload back in front of the very answer it exists to
-// keep fast.
-assert.strictEqual(firstAsk(0), PAGE_SIZE, "the first ask of a search is one page and no more");
-assert.strictEqual(askLimit(0), PAGE_SIZE * (1 + PRELOAD_PAGES), "…and the preload behind it covers three more");
+// The ask in front of the reader is the page AND its preload, in ONE ask. The
+// claim used to be the opposite — one page first, three more behind it — on
+// the belief that a shorter ask answers sooner. Measured false against this
+// relay: the cost of a ranked search is its match set, and `limit: 1` took as
+// long as `limit: 200` (staging, 2026-09-03). Two asks for one answer were two
+// full searches, run together on one engine, each slowing the other. So the
+// first ask IS the preload's width, and preload() has nothing to fetch until
+// the reader turns past what it holds.
+assert.strictEqual(firstAsk(0), askLimit(0), "the first ask of a search already covers the preload");
+assert.strictEqual(askLimit(0), PAGE_SIZE * (1 + PRELOAD_PAGES), "…which is the page and three more");
 assert.strictEqual(PRELOAD_PAGES, 3, "three pages ahead is the promise the pager makes");
+// The type-ahead asks at this same width so Enter can reuse its answer
+// (shared/asks.js reuses only at an identical width). Held against app.js's
+// source, since that is where the ask is made.
+assert.ok(/search\(text, askLimit\(0\), false, abort\.signal\)/.test(app), "the popup asks at the results view's first-ask width");
 
 // A restored `?q=cats&page=4` is the exception, and it is not an exception to
 // the rule above: the page being restored IS the one in front of the reader,
 // so the first ask has to reach it or the restore draws a skeleton over a page
 // that arrives a round trip later.
-assert.strictEqual(firstAsk(3), PAGE_SIZE * 4, "a deep-linked page is reached by the FIRST ask");
-assert.strictEqual(askLimit(3), PAGE_SIZE * 7, "…and three more are still fetched behind it");
+assert.strictEqual(firstAsk(3), PAGE_SIZE * 7, "a deep-linked page is reached by the FIRST ask, with its three ahead");
+assert.strictEqual(askLimit(3), PAGE_SIZE * 7, "…and nothing is left to fetch behind it");
 
 // The ceiling binds both, or the deep link is a way around it.
 assert.strictEqual(firstAsk(999), MAX_ASK, "no ask goes past the ceiling");

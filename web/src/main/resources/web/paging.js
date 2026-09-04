@@ -57,16 +57,26 @@ export const MAX_ASK = 400;
 export const MAX_PAGES = Math.floor(MAX_ASK / PAGE_SIZE);
 
 /**
- * The FIRST ask of a search that opens on [page] — enough for that page, and
- * not one event more.
+ * The FIRST ask of a search that opens on [page] — the page AND the three
+ * behind it, in one ask.
  *
- * Nearly always page 0 and therefore one page: the ask in front of the reader
- * stays exactly what it was before any of this existed, and the three pages
- * ahead are fetched behind the answer rather than in front of it. Bigger only
- * for `?q=cats&page=4` pasted cold, where the page being restored is the one
- * that has to be drawable when the answer lands.
+ * It used to be one page, on the reasoning that a shorter ask answers sooner
+ * and the preload could follow behind it. That reasoning is wrong for this
+ * relay, and was measured wrong (staging, 2026-09-03, `bitcoin`, kind 1):
+ * `limit: 1` answered in 4.4s, `limit: 200` in 4.0s. The relay's cost is the
+ * match set it ranks, not the rows it returns — so "one page now, three more
+ * behind it" was two full searches for one answer, and the second of them
+ * landed while the first was still being read, on the same engine, slowing
+ * both (three concurrent asks of that word took 5.0s EACH against 3.8s for
+ * one). One ask at the preload's width costs the same as one page and leaves
+ * nothing to fetch behind it: the pager's preload() finds `want <= asked`
+ * and stands down until the reader turns past what it holds.
+ *
+ * It is also the width the type-ahead asks at, on purpose: shared/asks.js
+ * reuses an answer only at the SAME width, and that agreement is what lets
+ * Enter reuse the popup's answer instead of asking the relay again.
  */
-export const firstAsk = (page = 0) => Math.min(MAX_ASK, PAGE_SIZE * (page + 1));
+export const firstAsk = (page = 0) => askLimit(page);
 
 /** The prefix that covers [page] and the [PRELOAD_PAGES] behind it. */
 export const askLimit = (page = 0) => Math.min(MAX_ASK, PAGE_SIZE * (page + 1 + PRELOAD_PAGES));

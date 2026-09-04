@@ -1,0 +1,468 @@
+From 8797543cb931c408fa8b8bd2ba8aa063d0489a3c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 22:45:07 +0000
+Subject: [PATCH] Bound a relevance search's match set: the newest-N cut, as
+ query parameters
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A NIP-50 search for a common word costs seconds on the production relay
+(`bitcoin` 4.4s, `nostr` and `the` 16s on 2026-09-03, at limit 1 and limit
+200 alike) because the relevance profile matches and scores every posting the
+word touches; benchmark/README.md §5 said the only thing that beats that stops
+being exact, and the relay has now asked for a 200ms page. So the first option
+on that list is taken, on the terms it was excluded for: the answer changes,
+and the change is measured (§6).
+
+EventYql.build sends `ranking.matchPhase.attribute=created_at`, descending,
+`maxHits=VESPA_SEARCH_MATCH_PHASE_MAX_HITS` (default 10,000) on the relevance
+profiles — search, text, rank_desc, rank_asc, sort_followers — and on nothing
+else: not the keyed lookups the expansion makes, not plain recall or the
+recency pair (whose schema-side cut this client mirrors), and never a COUNT,
+whose totalCount a capped match phase would cap. VespaEventIndex.searchRoot
+accepts the match-phase degradation on a query that asked for it, and
+recallRoot widens a SHORT cut page ten-fold once before running exact, so a
+sparse lens cannot end a pager early. No schema change: under the depth every
+page and every count is byte-identical, and `…=0` is the old store.
+
+Measured on 1.31M real staging events with the observer's real lens (README
+§6): where the cut engages the cost is the cut rather than the corpus (`the`
+331ms uncut, 69ms at 10,000; the same cut is what `sort:recent` already rides
+at 0.5s on production against 19s uncut), and the page becomes the
+best-ranked of the newest N — 0-5 of the exact top-10 survive for `the`,
+`nostr`, `bitcoin` at cuts that engaged. Stated in the constant's KDoc so the
+number is read as the trade it is.
+
+MockVespaEngine cuts a relevance search that asks for it (below a depth a
+test sets) and logs every search's parameters, which is how the ladder —
+cut, widened, exact — is pinned by VespaEventIndexTest.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BwwxZfvkKXR75bn9i5kcs3
+---
+ benchmark/README.md                           |  64 +++++++++++
+ .../engine/client/VespaEventIndex.kt          |  27 ++++-
+ .../vespa/eventstore/engine/query/EventYql.kt | 104 +++++++++++++++++-
+ .../vespa/eventstore/engine/EventYqlTest.kt   |  42 +++++++
+ .../eventstore/engine/VespaEventIndexTest.kt  |  43 ++++++++
+ .../eventstore/engine/MockVespaEngine.kt      |  19 +++-
+ 6 files changed, 295 insertions(+), 4 deletions(-)
+
+diff --git a/benchmark/README.md b/benchmark/README.md
+index bba52fb..f4648c6 100644
+--- a/benchmark/README.md
++++ b/benchmark/README.md
+@@ -754,6 +754,70 @@ exact —
+   the query that is text ranking. Worth its own diff, its own integration gate,
+   and a measurement of what share of a real match set the floor actually drops.
+ 
++### 6. What was taken after all: the newest-N cut (2026-09-03)
++
++The relay asked for a 200ms page, and section 5 is right that no exact answer
++gets there: the floor is the posting walk, and `nostr` is 14.5s of it at one
++thread. So the first option in that list is now taken, on the terms it was
++excluded for — **it changes the answer, and the change is measured**.
++
++`EventYql.build` sends `ranking.matchPhase.attribute=created_at`, descending,
++`maxHits=VESPA_SEARCH_MATCH_PHASE_MAX_HITS` (default 10,000) as QUERY
++PARAMETERS on the relevance profiles — `search`, `text`, `rank_desc`,
++`rank_asc`, `sort_followers` — and on nothing else: not the keyed lookups
++(the expansion's, whose match set the query named itself), not plain recall or
++the recency pair (their own schema-side cut, whose per-node depth this client
++mirrors), and never a COUNT (a capped match phase caps `totalCount`, the trap
++`countProfileOf` already documents). `VespaEventIndex.searchRoot` accepts the
++match-phase degradation on a query that asked for it, and `recallRoot` widens
++a SHORT cut page ten-fold once before running exact, so a sparse lens never
++ends a pager early. No schema change: the same profiles keep serving exact
++answers wherever the cut does not engage, and `…=0` is the old store.
++
++Measured on **1.31M real staging events** captured read-only on 2026-09-03 —
++1.19M kind 1 (the newest ~35 days), 100k kind 0, all 367 kind-10040s and the
++provider `7d7ffd72…`'s 30382 cards for every author in the slice (11.2k cards
++for 190k distinct authors; the trust gate deletes the other 94%). The store's
++own YQL (`searchTrace`, `SEARCH_YQL=1`), re-sent with the cut as parameters;
++`min_rank 2`, kind 1, limit 40, 4 match threads, p50 of 5 by Vespa's own
++`searchtime`; the cut page's top-40 compared with the exact page's:
++
++| word | uncut | served | cut 2,000 | 5,000 | 10,000 | 20,000 | 50,000 |
++|---|---:|---:|---:|---:|---:|---:|---:|
++| `the` | 331 ms | 30.5k | 36 ms · 0/10 | 50 ms · 0/10 | 69 ms · 0/10 | 165 ms · 2/10 | 319 ms · exact |
++| `nostr` | 186 ms | 23.8k | 88 ms · 1/10 | 91 ms · 4/10 | 127 ms · 5/10 | 234 ms · exact | 205 ms · exact |
++| `bitcoin` | 145 ms | 6.9k | 42 ms · 1/10 | 83 ms · 2/10 | 71 ms · exact | 94 ms · exact | 134 ms · exact |
++| `bitc` | 85 ms | 7.2k | 36 ms · 2/10 | 52 ms · 3/10 | exact | exact | exact |
++| `love` | 118 ms | 1.7k | 70 ms · 5/10 | exact | exact | exact | exact |
++| `lightning` | 55 ms | 861 | exact | exact | exact | exact | exact |
++| `zap` | 35 ms | 1.2k | exact | exact | exact | exact | exact |
++
++("served" is the uncut `totalCount`, net of the gate; "n/10" how many of the
++exact top-10 the cut page keeps; "exact" — the cut did not engage, count and
++page byte-identical, `degraded` false. One thread: `the` uncut 629ms, at
++10,000 53ms; `nostr` 423 / 227ms — the threads help the uncut shape and not
++the cut one.)
++
++- **The cost is the cut, not the corpus.** Behind a cut of N is the newest
++  window holding N matches, walked against every matcher — N over the word's
++  selectivity, whatever the corpus. The same cut on the production corpus is
++  what `sort:recent` already rides: 0.46-0.50s there at one thread WITH the
++  relay's floor (section 1), against 4.9-19.2s uncut.
++- **Where it does not engage, nothing changes.** Under the depth every page
++  and every count is byte-identical. Only words in a few percent of the corpus
++  are cut, and those are exactly the words that cost seconds.
++- **Where it engages, the page is a different page** — the best-ranked of the
++  newest N, not of the corpus. The trust-ranked top-10 for `the` or `nostr` is
++  spread across the month and the newest few thousand matches hold 0-5 of it.
++  That is the trade `sort:recent` already makes, made the default for the one
++  shape nothing else can bound, and stated in the constant's KDoc so nobody
++  reads a 69ms `the` as a free lunch.
++
++The harness that produced the table is a plain-node script over `/search/`
++(the store's YQL plus `ranking.matchPhase.*`), kept with the relay-side
++write-up (`vespa-relay` `docs/search-latency.md`); `searchTrace` prints the
++YQL it needs.
++
+ ## What a NIP-45 COUNT was really doing (2026-09-01)
+ 
+ Measured while pricing the search above, and it inverted the expected order: on
+diff --git a/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/client/VespaEventIndex.kt b/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/client/VespaEventIndex.kt
+index ac7ef78..9564f04 100644
+--- a/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/client/VespaEventIndex.kt
++++ b/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/client/VespaEventIndex.kt
+@@ -546,6 +546,19 @@ class VespaEventIndex(
+     private suspend fun recallRoot(q: EventQuery): SearchRoot? {
+         val vq = EventYql.build(q) ?: return null
+         val root = searchRoot(vq, hits = hitsFor(q))
++        // A relevance search under the newest-N cut, come back SHORT: the cut
++        // kept N raw matches and the trust gate deleted most of them. Served
++        // as is, a pager reads a short page as the end of the results while
++        // the corpus holds more, so it widens once (bounded still) and only
++        // then runs exact — see EventYql.MATCH_PHASE_WIDEN. A short page that
++        // is NOT degraded is the corpus's own answer and stays.
++        if (EventYql.MATCH_PHASE_MAX_HITS_PARAM in vq.params && root.coverage.matchPhaseDegraded && root.children.size < (q.limit ?: 0)) {
++            val wider = EventYql.build(q, cutDepth = EventYql.SEARCH_MATCH_PHASE_MAX_HITS * EventYql.MATCH_PHASE_WIDEN) ?: return root
++            val widened = searchRoot(wider, hits = hitsFor(q))
++            if (!widened.coverage.matchPhaseDegraded || widened.children.size >= (q.limit ?: 0)) return widened
++            val exact = EventYql.build(q, boundMatchSet = false) ?: return widened
++            return searchRoot(exact, hits = hitsFor(q))
++        }
+         val matchPhased = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED
+         if (matchPhased && root.coverage.matchPhaseDegraded) {
+             // A FULL page proves exactness only on ONE content node: max-hits
+@@ -1000,7 +1013,9 @@ class VespaEventIndex(
+                     val root = EventYql.buildCount(q)?.let { queryRoot(it, hits = 0) }
+                     root?.let { GroupingResults.firstCount(it) } ?: 0
+                 } else {
+-                    val vq = EventYql.build(q.copy(ranking = ranked)) ?: return@withProfileFallback 0
++                    // No newest-N cut on a count: a capped match phase caps
++                    // `totalCount`, and a count is the size of the served set.
++                    val vq = EventYql.build(q.copy(ranking = ranked), boundMatchSet = false) ?: return@withProfileFallback 0
+                     searchRoot(vq, hits = 0).fields.totalCount
+                 }
+             }
+@@ -1057,7 +1072,15 @@ class VespaEventIndex(
+         VESPA_JSON
+             .decodeFromString<SearchEnvelope>(queryBody(vq, hits))
+             .root
+-            .also { it.coverage.requireComplete(allowMatchPhase = vq.ranking == EventYql.RANK_RECENCY || vq.ranking == EventYql.RANK_RECENCY_GATED) }
++            .also { it.coverage.requireComplete(allowMatchPhase = vq.asksForMatchPhase()) }
++
++    /**
++     * Whether [this] ASKED for a match-phase cut — the recency profiles by
++     * their schema, a relevance search by the parameters [EventYql.build]
++     * sends — which is the one degradation a response may carry and still be
++     * the answer. A cut nobody asked for is still refused.
++     */
++    private fun VespaQuery.asksForMatchPhase(): Boolean = ranking == EventYql.RANK_RECENCY || ranking == EventYql.RANK_RECENCY_GATED || EventYql.MATCH_PHASE_MAX_HITS_PARAM in params
+ 
+     /** The grouping/count paths need the full tree; [searchRoot] does not (it decodes hits directly). */
+     private suspend fun queryRoot(
+diff --git a/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/query/EventYql.kt b/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/query/EventYql.kt
+index c69bcfc..9e89c9b 100644
+--- a/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/query/EventYql.kt
++++ b/engine/src/main/kotlin/com/nosfabrica/vespa/eventstore/engine/query/EventYql.kt
+@@ -219,6 +219,97 @@ object EventYql {
+      */
+     private val SINGLE_THREADED_PROFILES = setOf(RANK_UNRANKED, RANK_RECENCY, RANK_RECENCY_GATED)
+ 
++    /**
++     * THE NEWEST-N CUT A RELEVANCE SEARCH ASKS FOR — Vespa's match phase, sent
++     * as query parameters rather than declared on the profile, so the same
++     * profiles keep serving exact answers wherever the cut does not engage.
++     *
++     * A relevance search is the one shape whose cost nothing about the request
++     * can bound: a common word matches millions of postings and every one is
++     * matched and then scored (benchmark/README.md, "Where a common word's
++     * seconds go" — `bitcoin` 4.9s, `nostr` 19.2s on the production relay, at
++     * ANY limit). Spreading that over the match threads halved it and no more,
++     * because the work is the match set. The match phase is the engine's own
++     * answer to that shape: when a query's ESTIMATED match set exceeds
++     * `maxHits`, matching keeps only the `maxHits` newest candidates — by
++     * `created_at`, the attribute the recency profiles already cut on — and
++     * the rank profile scores those. Under the threshold nothing changes and
++     * the answer is exact; over it the answer is "the best of the newest N",
++     * which for a live social corpus is the page a reader means, and the
++     * profile already carried a freshness multiplier saying so.
++     *
++     * MEASURED against a real slice of the staging corpus, see the README
++     * section beside this one: the cut engages only where it must, the page
++     * is byte-identical everywhere it does not, and where it does the query
++     * costs what N costs rather than what the corpus costs.
++     *
++     * NOT on the keyed lookups (a match set the query named itself has nothing
++     * to cut), not on plain recall or the recency pair (their own cut, with a
++     * per-node depth this client mirrors), and not on a COUNT — a count is
++     * the size of the served set and a capped match phase caps `totalCount`
++     * (the same trap [countProfileOf] documents for the recency profiles), so
++     * [build] takes `boundMatchSet = false` there.
++     *
++     * The client ACCEPTS the match-phase degradation on these profiles
++     * (VespaEventIndex.searchRoot), and only that one; every other
++     * degradation is still refused as the partial answer it is.
++     */
++    const val MATCH_PHASE_ATTRIBUTE = "ranking.matchPhase.attribute"
++    const val MATCH_PHASE_ASCENDING = "ranking.matchPhase.ascending"
++    const val MATCH_PHASE_MAX_HITS_PARAM = "ranking.matchPhase.maxHits"
++
++    /** What the cut keeps, per content node. `VESPA_SEARCH_MATCH_PHASE_MAX_HITS` overrides; 0 turns the cut off. */
++    val SEARCH_MATCH_PHASE_MAX_HITS: Int =
++        System.getenv("VESPA_SEARCH_MATCH_PHASE_MAX_HITS")?.toIntOrNull()?.coerceAtLeast(0) ?: DEFAULT_SEARCH_MATCH_PHASE_MAX_HITS
++
++    /**
++     * 10,000. The work behind the cut is the newest window that holds N
++     * matches — N over the word's selectivity — walked against every matcher
++     * in the word group, so the cost is a straight function of N and of
++     * nothing about the corpus: measured on a 1.3M-event staging slice, 4
++     * match threads, `the` (the widest word tried) cost 36ms at 2,000, 69ms at
++     * 10,000, 165ms at 20,000 and 331ms uncut; `nostr` 88 / 127 / 234 / 186ms.
++     * 10,000 keeps a common word near 100ms of engine time, which with the
++     * relay's own floor (~150-200ms: the expansion's companion reads, the
++     * splice, the wire) is the 200ms page the store was asked for; 20,000 —
++     * the recency profiles' depth — buys twice the window at twice the cost.
++     * At a common word's selectivity on the production corpus (`bitcoin` ~2%
++     * of 149M kind 1, ~8k a day) 10,000 is the newest day or so, scored in
++     * full; a rarer word never reaches it and stays exact.
++     *
++     * WHAT THE CUT CHANGES, measured on the same slice: nothing at all where
++     * it does not engage (byte-identical pages), and where it does, the page
++     * becomes the best-ranked of the newest N rather than of the corpus —
++     * top-10 overlap with the exact page 0-5 of 10 for `the`, `nostr`,
++     * `bitcoin` at cuts that engaged. That is the trade, stated plainly: an
++     * exact top-K over millions of matches cannot be had in under a second
++     * (benchmark/README.md), so a deployment picks the depth it can afford
++     * and a page that is "the best of the newest N". 0 asks for exact answers
++     * and the seconds that come with them.
++     */
++    const val DEFAULT_SEARCH_MATCH_PHASE_MAX_HITS = 10_000
++
++    /**
++     * How much deeper a SHORT cut page reruns before falling to exact. A cut
++     * keeps N raw matches, and the trust gate then deletes the untrusted ones
++     * — under a sparse lens a page can come back shorter than its limit while
++     * the corpus holds plenty more, which a pager would read as the end of the
++     * results. So a short degraded page widens the cut ten-fold once, and
++     * only then runs exact: the widened query is still bounded (measured
++     * ~10x the cost of the first), and the exact one is paid only by a lens
++     * too sparse for a hundred thousand candidates to fill a page.
++     */
++    const val MATCH_PHASE_WIDEN = 10
++
++    /** The profiles that rank text over a match set the caller cannot bound — the ones the cut is for. */
++    private val RELEVANCE_PROFILES = setOf(RANK_SEARCH, RANK_TEXT, RANK_DESC, RANK_ASC, RANK_FOLLOWERS)
++
++    /** Whether [build] sends the newest-N cut with [q] on [ranking]. */
++    fun boundsMatchSet(
++        q: EventQuery,
++        ranking: String,
++    ): Boolean = SEARCH_MATCH_PHASE_MAX_HITS > 0 && ranking in RELEVANCE_PROFILES && !singleMatchThread(q, ranking)
++
+     /**
+      * Whether [q] asks for one match thread — the profile says so, or the query
+      * has already bounded its own match set by NAMING the documents it wants.
+@@ -416,7 +507,13 @@ object EventYql {
+             else -> profile
+         }
+ 
+-    fun build(q: EventQuery): VespaQuery? {
++    fun build(
++        q: EventQuery,
++        /** Send the newest-N cut where the shape qualifies ([boundsMatchSet]); a COUNT passes false. */
++        boundMatchSet: Boolean = true,
++        /** The cut's depth — [SEARCH_MATCH_PHASE_MAX_HITS] unless a short page is widening it (VespaEventIndex.recallRoot). */
++        cutDepth: Int = SEARCH_MATCH_PHASE_MAX_HITS,
++    ): VespaQuery? {
+         val params = LinkedHashMap<String, String>()
+         val clauses = filterClauses(q, params) ?: return null
+ 
+@@ -475,6 +572,11 @@ object EventYql {
+         }
+ 
+         if (singleMatchThread(q, ranking)) params[MATCH_THREADS] = SINGLE_MATCH_THREAD
++        if (boundMatchSet && boundsMatchSet(q, ranking)) {
++            params[MATCH_PHASE_ATTRIBUTE] = "created_at"
++            params[MATCH_PHASE_ASCENDING] = "false"
++            params[MATCH_PHASE_MAX_HITS_PARAM] = cutDepth.toString()
++        }
+ 
+         val where = whereOf(clauses)
+         // Plain recall orders newest first; anything ranked keeps Vespa's
+diff --git a/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/EventYqlTest.kt b/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/EventYqlTest.kt
+index c8db64c..61b2e2f 100644
+--- a/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/EventYqlTest.kt
++++ b/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/EventYqlTest.kt
+@@ -768,6 +768,48 @@ class EventYqlTest {
+         )
+     }
+ 
++    /**
++     * WHICH SHAPES ASK FOR THE NEWEST-N CUT. The same list as the match-thread
++     * headroom, for the same reason: a relevance search over a match set the
++     * caller cannot bound is the one shape whose cost is the corpus, and the
++     * cut is what makes it the cost of N instead. Everything with a bounded
++     * match set — keyed lookups, plain recall, the recency pair with their own
++     * schema-side cut — sends nothing, and a COUNT sends nothing on any shape,
++     * because a capped match phase caps the `totalCount` a count IS.
++     */
++    @Test
++    fun `only a relevance search over an unbounded match set asks for the newest-N cut`() {
++        fun cut(
++            q: EventQuery,
++            boundMatchSet: Boolean = true,
++        ) = EventYql.build(q, boundMatchSet)!!.params[EventYql.MATCH_PHASE_MAX_HITS_PARAM]
++        val n = EventYql.SEARCH_MATCH_PHASE_MAX_HITS.toString()
++
++        val ranked = EventYql.build(EventQuery(search = "bitcoin", observer = hexA))!!
++        assertEquals("created_at", ranked.params[EventYql.MATCH_PHASE_ATTRIBUTE], "the cut keeps the NEWEST candidates")
++        assertEquals("false", ranked.params[EventYql.MATCH_PHASE_ASCENDING])
++        assertEquals(n, ranked.params[EventYql.MATCH_PHASE_MAX_HITS_PARAM])
++
++        assertEquals(n, cut(EventQuery(search = "bitcoin")), "text relevance")
++        assertEquals(n, cut(EventQuery(phrases = listOf("bitcoin standard"))), "a phrase is search text")
++        assertEquals(n, cut(EventQuery(search = "bitcoin", ranking = EventYql.RANK_DESC)), "sort:rank")
++        assertEquals(n, cut(EventQuery(search = "bitcoin", ranking = EventYql.RANK_FOLLOWERS)), "sort:followers")
++        assertEquals(n, cut(EventQuery(kinds = listOf(1), search = "bitcoin", limit = 40, observer = hexA)), "the relay's own shape")
++
++        assertNull(cut(EventQuery(kinds = listOf(1), limit = 50)), "plain recall has the recency profile's own cut")
++        assertNull(cut(EventQuery(kinds = listOf(1))), "unbounded recall is exact by contract")
++        assertNull(cut(EventQuery(kinds = listOf(1), limit = 50, observer = hexA, ranking = EventYql.RANK_RECENCY_GATED)), "the gated cut is the schema's")
++        assertNull(cut(EventQuery(search = "bitcoin", ranking = EventYql.RANK_RECENCY_GATED_EXACT)), "the full-scan variant is asked for BECAUSE it is exact")
++        assertNull(cut(EventQuery(ids = listOf(hexB), observer = hexA)), "a keyed lookup names its own match set")
++        assertNull(
++            cut(EventQuery(kinds = listOf(0), authorWeights = mapOf(hexB to 80), ranking = EventYql.RANK_SPLICED_MEMBER, observer = hexA)),
++            "a Trusted List's members are a keyed lookup on a relevance profile — no cut",
++        )
++
++        assertNull(cut(EventQuery(search = "bitcoin", observer = hexA), boundMatchSet = false), "a count sends no cut, whatever the shape")
++        assertNull(EventYql.buildCount(EventQuery(search = "bitcoin"))!!.params[EventYql.MATCH_PHASE_MAX_HITS_PARAM])
++    }
++
+     /** The always-unranked builders ask for one thread too — same reasoning, no profile to read it off. */
+     @Test
+     fun `the aggregation and projection builders stay single-threaded`() {
+diff --git a/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/VespaEventIndexTest.kt b/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/VespaEventIndexTest.kt
+index bebd84c..e62b0d1 100644
+--- a/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/VespaEventIndexTest.kt
++++ b/engine/src/test/kotlin/com/nosfabrica/vespa/eventstore/engine/VespaEventIndexTest.kt
+@@ -586,6 +586,49 @@ class VespaEventIndexTest {
+             }
+         }
+ 
++    /**
++     * A relevance search rides its own newest-N cut, and a SHORT cut page is
++     * never the end of the results: it widens the cut once, and if still
++     * short runs exact. Each rung is pinned by telling the mock where to stop
++     * cutting — the mock's matcher does not emulate the trust gate that makes
++     * real pages short, so what this pins is the plumbing: which depth each
++     * query asked for, and that the served page is the complete one.
++     */
++    @Test
++    fun `a short cut page widens once, then runs exact`() =
++        runBlocking {
++            seed(*(1..8).map { doc(kind = 1, content = "bitcoin fixes this") }.toTypedArray())
++            val q = EventQuery(kinds = listOf(1), limit = 6, search = "bitcoin")
++            val exact = reference.search(q).map { it.id }
++            mock.matchPhaseUnderdeliver = 2
++            try {
++                // The first cut is short, the widened one fills the page.
++                mock.relevanceCutUnderdeliverUpTo = EventYql.SEARCH_MATCH_PHASE_MAX_HITS
++                val before = mock.searchRequests.size
++                assertEquals(exact, index.search(q).map { it.id }, "the widened cut serves the whole page")
++                val depths = mock.searchRequests.drop(before).map { it["ranking.matchPhase.maxHits"] }
++                assertEquals(
++                    listOf(EventYql.SEARCH_MATCH_PHASE_MAX_HITS, EventYql.SEARCH_MATCH_PHASE_MAX_HITS * EventYql.MATCH_PHASE_WIDEN).map { it.toString() },
++                    depths,
++                    "the cut, then the cut widened ten-fold — and nothing exact",
++                )
++
++                // Both cuts short: the exact query follows, with no cut at all.
++                mock.relevanceCutUnderdeliverUpTo = Int.MAX_VALUE
++                val again = mock.searchRequests.size
++                assertEquals(exact, index.search(q).map { it.id }, "a lens too sparse for the widened cut is served exact")
++                val ladder = mock.searchRequests.drop(again).map { it["ranking.matchPhase.maxHits"] }
++                assertEquals(
++                    listOf(EventYql.SEARCH_MATCH_PHASE_MAX_HITS.toString(), (EventYql.SEARCH_MATCH_PHASE_MAX_HITS * EventYql.MATCH_PHASE_WIDEN).toString(), null),
++                    ladder,
++                    "cut, widened, exact",
++                )
++            } finally {
++                mock.matchPhaseUnderdeliver = 0
++                mock.relevanceCutUnderdeliverUpTo = 0
++            }
++        }
++
+     /**
+      * A serving schema that predates the observer gate answers 400 to both
+      * gated profiles — the client must demote the query to plain ranking-free
+diff --git a/engine/src/testFixtures/kotlin/com/nosfabrica/vespa/eventstore/engine/MockVespaEngine.kt b/engine/src/testFixtures/kotlin/com/nosfabrica/vespa/eventstore/engine/MockVespaEngine.kt
+index 3cdd9cb..1927bd7 100644
+--- a/engine/src/testFixtures/kotlin/com/nosfabrica/vespa/eventstore/engine/MockVespaEngine.kt
++++ b/engine/src/testFixtures/kotlin/com/nosfabrica/vespa/eventstore/engine/MockVespaEngine.kt
+@@ -159,6 +159,9 @@ class MockVespaEngine {
+      */
+     val searchRankings: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+ 
++    /** Every `/search/` request's parameters, in order — a test reads the depth each query of a rerun ladder asked for. */
++    val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
++
+     /**
+      * Refuse queries carrying `presentation.summary=dedup` the way a schema
+      * deployed before the attribute-only existence summary does — real Vespa
+@@ -186,6 +189,16 @@ class MockVespaEngine {
+      */
+     @Volatile var matchPhaseNodes: Int = 1
+ 
++    /**
++     * The relevance search's OWN cut (`ranking.matchPhase.maxHits`, sent by
++     * EventYql on the relevance profiles): under-deliver, as
++     * [matchPhaseUnderdeliver] does, only when the requested depth is at most
++     * this. The client widens a short cut page ten-fold before running exact,
++     * and a test pins each rung by setting where the mock stops cutting.
++     * Int.MAX_VALUE cuts at every depth; 0 never cuts a relevance search.
++     */
++    @Volatile var relevanceCutUnderdeliverUpTo: Int = 0
++
+     /**
+      * Serve recall hits with the id order REVERSED within each equal-created_at
+      * group — the engine's single-key sort leaves tie order ARBITRARY, and the
+@@ -356,6 +369,7 @@ class MockVespaEngine {
+         }
+         val yql = params["yql"] ?: return Reply(400, """{"message":"missing yql"}""")
+         params["ranking"]?.let { searchRankings += it }
++        searchRequests += params
+         // The existence check rides a dedicated attribute-only summary class; a
+         // schema deployed before it 400s naming the class (verified against
+         // real Vespa: `Summary 'dedup' does not exist`).
+@@ -397,7 +411,10 @@ class MockVespaEngine {
+                 }.let { ordered -> query.limit?.let { ordered.take(it) } ?: ordered }
+         // Simulated match-phase under-delivery: fewer hits than the limit, with
+         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
+-        val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
++        val cutDepth = params["ranking.matchPhase.maxHits"]?.toIntOrNull()
++        val underdeliver =
++            matchPhaseUnderdeliver > 0 && !grouped &&
++                (params["ranking"] == "recency" || params["ranking"] == "recency_gated" || (cutDepth != null && cutDepth <= relevanceCutUnderdeliverUpTo))
+         val served = if (underdeliver) minOf(matchPhaseUnderdeliver, hits) else hits
+         val children =
+             when {
+-- 
+2.43.0
+

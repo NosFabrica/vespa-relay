@@ -229,6 +229,7 @@ turning the gate off there, or by giving the mirroring key a real lens.
 | `SEARCH_EXPAND_REFERENCES` | a NIP-50 search also answers with the records its hits point at. `false`/`0`/`no`/`off` turns it off | on |
 | `SEARCH_EXPAND_MAX_PER_EVENT` | how many subjects one hit may bring with it | `100` |
 | `SEARCH_EXPAND_MAX_TOTAL` | how many subjects a whole REQ may collect | `1000` |
+| `SEARCH_CONCURRENCY_PER_CONNECTION` | how many ranked reads (a NIP-50 search, a `sort:` order, or a COUNT of either) one connection may run at once; the rest queue behind them in arrival order. Ranked reads share the engine's match threads, so two on one socket both finish later than one — measured on staging, `bitcoin` alone 3.8s, three at once 5.0s each, six 6.8s each. Plain NIP-01 reads and lens-only (`include:spam`, `observer:`) filters are never held. `0` turns the gate off | `1` |
 
 Three families of event carry text that is **about something else**: a Tapestry
 Trusted List (kinds 30392-30395) is found by its `title`, a NIP-85 Trusted

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
+import com.nosfabrica.vespa.relay.server.SearchGate
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -174,6 +175,18 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
         maxPerRequest = env.capOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest),
     )
 }
+
+/**
+ * How many ranked reads — NIP-50 searches, `sort:` orders, and the COUNTs of
+ * either — one connection may run at once (`SEARCH_CONCURRENCY_PER_CONNECTION`);
+ * the rest queue behind them in arrival order. Default 1; 0 turns the gate
+ * off. See `SearchGate` for why one is the number: two ranked reads on one
+ * socket share the engine's match threads and both finish later.
+ *
+ * Unparseable is the default, not off: a typo that silently removed the gate
+ * would look exactly like the relay working, on a page that got slower.
+ */
+fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
 
 /**
  * Reject events dated more than `REJECT_FUTURE_SECONDS` in the future.
