@@ -191,19 +191,23 @@ states its own admission rule:
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i
 
 # DO #187'S RELAYS WORK ON EVERY STREAM: the real VisitPool, both outbox ask
-# shapes (141 kinds and 3), real relays, a real Vespa. The issue's 109 failed on
-# ONE stream and the same relay served the other, which cannot be a cursor fault
-# — the ask is the only thing that differs. Measured 2026-09-03 over 16 of them:
-# 103 visits, 65,961 events into the engine, ZERO abortedUnpageable, and the
-# only aborts were two relays that would not connect, identically on both
-# streams. Note what it does NOT yet stage: a declared-`urls` stream binds no
-# authors, so this is the width and the relay, not the outbox pairing.
+# shapes (141 kinds and 3), ALL 137 relays the issue names, a real Vespa, and a
+# store seeded first with real kind-10002 relay lists off the deployment's own
+# relay. The issue's 109 failed on ONE stream and served the other, which cannot
+# be a cursor fault — the ask is the only thing that differs. Measured
+# 2026-09-04: 1,065 visits, 2,488 relay lists seeded, ZERO abortedUnpageable,
+# 58 of 137 clean, 77 failing on BOTH streams and only 2 on one. What failed
+# went QUIET (End.IDLE), 71/71 across the two widths. Run it with the
+# deployment's own nsec before believing any of it — a throwaway key reads a
+# relay's policy as its behaviour.
 DOCKER_MIN_API_VERSION=1.24 dockerd &
 VESPA_MEM_LIMIT=6g docker compose up -d vespa
 until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
 ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCensusLiveProbe*' --rerun -i
 #   …relays of your own: -DabortCensusUrls='wss://a.example,wss://b.example'
 #   …and longer, since a revisit is five minutes: -DabortCensusMinutes=15
+#   …AND THE DEPLOYMENT'S OWN KEY, which is the one relays allowlist:
+#   -DabortCensusNsec=nsec1…
 
 # THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
 # that refuse us, and a real Vespa the events have to land in. Everything else
@@ -3570,30 +3574,48 @@ what differs — `contentViaOutbox` carries 141 kinds, `profileViaOutbox` carrie
 3. A fault that follows the STREAM is the filter's; one that follows the RELAY
 is the relay's; and they want opposite fixes.
 
-`AbortCensusLiveProbe` runs both streams over relays from that list through the
-real `VisitPool`, the real client and a real Vespa. Sixteen relays, eight
-minutes, **103 visits**, 65,961 events into the engine:
+`AbortCensusLiveProbe` runs both streams over **all 137** through the real
+`VisitPool`, the real client and a real Vespa, seeded first with 2,488 real
+kind-10002 relay lists pulled off `search-staging.brainstorm.world` — the
+deployment's own corpus, through its NIP-42 and its trust lens. Twenty minutes,
+**1,065 visits**:
 
 | | |
 |---|---|
 | `abortedUnpageable` | **0** |
-| `abortedUnreachable` | 6 — two relays, on BOTH streams |
-| every other abort counter | 0 |
-| relays completing both streams | 14 of 16 |
+| `abortedQuiet` | 417 |
+| `abortedUnreachable` | 4 |
+| relays that never aborted | 58 of 137 |
+| aborted on BOTH streams | 77 |
+| aborted on ONE stream | **2** — `nostr.bitcoiner.social`, `relay.nmail.li` |
 
-So the fault does not follow the stream here: the only relays that aborted
-(`relay.nostrcheck.me`, `nostr.hifish.org`) failed to connect at all, identically
-on both. Nothing reproduced the split the 109 describe.
+**The fault does not follow the stream, and it is not `unpageable`.** The quiet
+aborts split 71 / 71 between the 141-kind ask and the 3-kind one — identical
+counts, so width discriminates nothing — and 77 of the 79 failing relays failed
+on both. #187's "109 failed on ONE stream" did not reproduce: two did.
 
-**What that run is still NOT, and the gap is specific.** A declared-`urls`
-stream binds no authors — `RosterBuilder.asksOf` splits one ask per bound author
-and returns the stream's whole filter unbound when there are none — so this
-tested the WIDTH and the relay, not the outbox pairing. Production also walks
-with accumulated band state, where an older leg's FIRST page carries an `until`
-off the band's floor; every leg here was a first walk against a fresh store. And
-it ran 4 workers over 16 relays, not 96 over 1,131 with 500 live tails. Closing
-the first gap needs kind-30382 pairings seeded into the store, which is the next
-thing to do to this probe.
+**What DID fail is a relay that connects and then never EOSEs**, which is
+`PagedFetchResult.End.IDLE`, not the cursor. Every one of those lines carries no
+page sample — correctly, since a silent relay sends nothing to sample and the
+instrument says nothing rather than "sent 0 events". A relay serving the wrong
+events would have shown its page there, which is the point of having it.
+
+**A CORRECTION, because an earlier note here had it backwards.** The outbox
+streams do NOT bind authors. Both `relaySource` blocks are a bare
+`{"kinds":[30166],"#l":["prime"]}` with no `select`, so `bindings` is empty and
+`RosterBuilder.asksOf` returns ONE unbound ask carrying the stream's whole
+filter. The per-author split belongs to the `assertions` stream, whose select
+binds `authors = 1` off a 30382 tag. So the census above sent exactly the ask
+production sends, and there is no author gap to close.
+
+**What is still missing is the IDENTITY.** This ran under a throwaway key, and
+`RelayReachLiveProbe` already measured what that costs: sixteen of #185's fifty
+"unreadable" relays served us once NIP-42 was answered, and the key relays
+allowlist is the deployment's own. A run without it reads a relay's POLICY as
+its behaviour, which is very likely what the 417 quiet aborts are. Re-run with
+`-DabortCensusNsec=nsec1…` before concluding anything about a particular relay
+on the list — that, and the deployment's 96-way concurrency with 500 live tails,
+are the two differences left.
 
 **The seam was verified against a real relay before being believed**, because
 the unit suite structurally cannot: it builds the sample by hand and gives the

@@ -65,6 +65,7 @@ tasks.test {
     // one does not fail — the probe skips itself with its own "[skip]" line, which
     // reads exactly like a probe that was never asked for.
     System.getProperty("abortCensusMinutes")?.let { systemProperty("abortCensusMinutes", it) }
+    System.getProperty("abortCensusNsec")?.let { systemProperty("abortCensusNsec", it) }
     System.getProperty("abortCensusUrls")?.let { systemProperty("abortCensusUrls", it) }
     System.getProperty("enforceLocalRelay")?.let { systemProperty("enforceLocalRelay", it) }
     System.getProperty("enforceProbe")?.let { systemProperty("enforceProbe", it) }

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
@@ -44,6 +45,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -96,22 +99,175 @@ import kotlin.test.Test
  * ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCensusLiveProbe*' --rerun -i
  * #   …relays of your own: -DabortCensusUrls='wss://a.example,wss://b.example'
  * #   …and longer, since a revisit is five minutes: -DabortCensusMinutes=15
+ * #   …AND THE DEPLOYMENT'S OWN KEY, which is the one relays allowlist:
+ * #   -DabortCensusNsec=nsec1…
  * ```
+ *
+ * ## What it answered, 2026-09-04 — all 137, both streams, 20 minutes
+ *
+ * ```
+ * visitsRun 1065   abortedVisits 421   abortedQuiet 417   abortedUnreachable 4
+ * abortedUnpageable 0
+ *
+ * 58 relay(s) never aborted
+ * 77 relay(s) aborted on BOTH streams
+ *  2 relay(s) aborted on ONE stream — nostr.bitcoiner.social, relay.nmail.li
+ * ```
+ *
+ * **The fault does not follow the stream, and it is not `unpageable`.** The
+ * quiet aborts split 71 / 71 between the 141-kind ask and the 3-kind one —
+ * identical counts, so width discriminates nothing — and 77 of the 79 failing
+ * relays failed on both. #187's "109 failed on ONE stream" did not reproduce:
+ * two did.
+ *
+ * **And what DID fail is a relay that connects and then never EOSEs**, which is
+ * `PagedFetchResult.End.IDLE` and not the cursor at all. Every one of those
+ * lines carries no page sample — correctly, because a silent relay sends
+ * nothing to sample, and the instrument says nothing rather than "sent 0
+ * events". A relay serving the wrong events would have shown its page here.
+ *
+ * So this environment does not reproduce production's 49%-unpageable, and the
+ * likeliest missing ingredient is the identity above: run it with the
+ * deployment's own nsec before drawing a conclusion about any relay on the
+ * list.
  */
 class AbortCensusLiveProbe {
     /**
-     * Relays from #187's "failed on ONE stream" list — the important ones, and
-     * the ones whose split between streams is the finding.
+     * ALL 137 RELAYS #187 NAMES — the 28 that failed on both outbox streams and
+     * the 109 that failed on one, verbatim, as a resource rather than a literal
+     * so the list is diffable against the issue.
      */
     private val urls: List<String> =
-        (
-            System.getProperty("abortCensusUrls")
-                ?: "wss://relay.primal.net,wss://nostr.mom,wss://eden.nostr.land,wss://nostr.land," +
-                "wss://relay.nostr.net,wss://nostr.bitcoiner.social,wss://relay.nostrcheck.me," +
-                "wss://nostr.azzamo.net,wss://relay.azzamo.net,wss://nostrrelay.win," +
-                "wss://relay.wisp.talk,wss://freelay.sovbit.host,wss://nostr.hifish.org," +
-                "wss://relay.nostr.info,wss://news.utxo.one,wss://nostr.slothy.win"
-        ).split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        System
+            .getProperty("abortCensusUrls")
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?: javaClass.classLoader
+                .getResourceAsStream("issue187-relays.txt")!!
+                .bufferedReader()
+                .readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+
+    /**
+     * REAL RELAY LISTS FROM PRODUCTION, so the run starts from a store that has
+     * seen this network rather than an empty one.
+     *
+     * Kind 10002s naming these relays in an `r` tag, pulled off the deployment's
+     * own relay and inserted here. Two things it buys, and neither is the ask
+     * shape — both outbox streams bind no authors (`RosterBuilder.asksOf`
+     * returns one unbound ask when a source `select` binds nothing, and neither
+     * stream's `relaySource` has one), so the REQ is identical either way:
+     *
+     *  - the ingest path behaves as production's does, refusing what the store
+     *    already holds instead of accepting everything as new; and
+     *  - the corpus is the one these relays actually serve, so what comes back
+     *    is what a real visit would find.
+     *
+     * NIP-42 AND THE TRUST LENS, both handled the way `RelayListLiveProbe`
+     * documents: the deployment answers a stranger's REQ with `auth-required`
+     * naming the way out verbatim, so this signs a throwaway 22242 and, if the
+     * ranked answer is still empty, re-asks with the NIP-50 `include:spam`
+     * token the relay's own notice tells you to use.
+     */
+    private suspend fun seedRelayLists(
+        store: com.vitorpamplona.quartz.nip01Core.store.IEventStore,
+        chunks: List<List<String>>,
+    ): Int {
+        val okhttp = OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(20)).build()
+        val signer = NostrSignerInternal(KeyPair())
+        var stored = 0
+        for ((n, chunk) in chunks.withIndex()) {
+            val got = java.util.concurrent.CountDownLatch(1)
+            val seen = java.util.Collections.synchronizedList(mutableListOf<com.vitorpamplona.quartz.nip01Core.core.Event>())
+            val unranked =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(false)
+            val rs = chunk.joinToString(",") { "\"${it.replace("\"", "")}\"" }
+            val socket =
+                okhttp.newWebSocket(
+                    okhttp3.Request
+                        .Builder()
+                        .url(SEED_RELAY)
+                        .build(),
+                    object : okhttp3.WebSocketListener() {
+                        fun req(
+                            ws: okhttp3.WebSocket,
+                            spam: Boolean,
+                        ) {
+                            val search = if (spam) ",\"search\":\"include:spam\"" else ""
+                            ws.send("[\"REQ\",\"seed$n\",{\"kinds\":[10002],\"#r\":[$rs],\"limit\":500$search}]")
+                        }
+
+                        override fun onOpen(
+                            ws: okhttp3.WebSocket,
+                            response: okhttp3.Response,
+                        ) = req(ws, false)
+
+                        override fun onMessage(
+                            ws: okhttp3.WebSocket,
+                            text: String,
+                        ) {
+                            val frame =
+                                runCatching {
+                                    kotlinx.serialization.json.Json
+                                        .parseToJsonElement(text)
+                                        .jsonArray
+                                }.getOrNull() ?: return
+                            when (frame.firstOrNull()?.jsonPrimitive?.content) {
+                                "EVENT" -> {
+                                    runCatching {
+                                        com.vitorpamplona.quartz.nip01Core.core.Event
+                                            .fromJson(frame[2].toString())
+                                    }.getOrNull()?.let(seen::add)
+                                }
+
+                                "AUTH" -> {
+                                    val challenge = frame.getOrNull(1)?.jsonPrimitive?.content ?: return
+                                    val auth =
+                                        signer.signerSync.sign<com.vitorpamplona.quartz.nip01Core.core.Event>(
+                                            System.currentTimeMillis() / 1000,
+                                            22242,
+                                            arrayOf(arrayOf("relay", SEED_RELAY), arrayOf("challenge", challenge)),
+                                            "",
+                                        )
+                                    ws.send("[\"AUTH\",${auth.toJson()}]")
+                                    req(ws, unranked.get())
+                                }
+
+                                // An empty first answer is the trust lens, not
+                                // an empty corpus — one retry, unranked.
+                                "EOSE" -> {
+                                    if (seen.isEmpty() && unranked.compareAndSet(false, true)) {
+                                        req(ws, true)
+                                    } else {
+                                        got.countDown()
+                                    }
+                                }
+
+                                else -> {
+                                    Unit
+                                }
+                            }
+                        }
+
+                        override fun onFailure(
+                            ws: okhttp3.WebSocket,
+                            t: Throwable,
+                            response: okhttp3.Response?,
+                        ) = got.countDown()
+                    },
+                )
+            got.await(SEED_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            runCatching { socket.close(1000, null) }
+            for (event in seen.toList()) {
+                runCatching { store.insert(event) }.onSuccess { stored++ }
+            }
+            println("  seeded chunk ${n + 1}/${chunks.size}: ${seen.size} relay list(s)")
+        }
+        return stored
+    }
 
     @Test
     fun doTheseRelaysWorkOnEveryStream() {
@@ -132,7 +288,21 @@ class AbortCensusLiveProbe {
                         .pingInterval(Duration.ofSeconds(120))
                         .build()
                 val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-                val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(NostrSignerInternal(KeyPair()).sign(template)) }
+                // THE DEPLOYMENT'S OWN IDENTITY IF IT IS OFFERED, and this is
+                // not a nicety: `RelayReachLiveProbe` measured sixteen of
+                // #185's fifty "unreadable" relays serving us once NIP-42 was
+                // answered, and the key relays ALLOWLIST is the deployment's,
+                // not a throwaway. A run without it reads a relay's policy as
+                // its behaviour.
+                val identity =
+                    System
+                        .getProperty("abortCensusNsec")
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { RelayIdentity.signerFor(it) }
+                        ?: NostrSignerInternal(KeyPair())
+                println("  identity: ${if (System.getProperty("abortCensusNsec").isNullOrBlank()) "a THROWAWAY key" else "the nsec given"}")
+                val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(identity.sign(template)) }
                 val complaints = ClientRelayComplaints(client)
                 // THE INSTRUMENT UNDER TEST as much as the relays are: this is
                 // the first time it runs inside the real pool.
@@ -159,6 +329,11 @@ class AbortCensusLiveProbe {
                             trusted = false,
                         ),
                     )
+                println("SEEDING from $SEED_RELAY — kind 10002s naming these ${normalized.size} relays")
+                val seeded = seedRelayLists(store, urls.chunked(SEED_CHUNK))
+                println("  $seeded relay list(s) into the engine")
+                println()
+
                 val ingest = IngestPipeline(store, IngestTuning(concurrency = 2, batch = 64), null, null, scope, null, null)
                 ingest.start()
                 val processors = Processors()
@@ -183,7 +358,7 @@ class AbortCensusLiveProbe {
                         rosterBuilder = RosterBuilder(store = store, streams = streams, bands = bands),
                         streams = streams,
                         progress = processors.of("visits"),
-                        workers = 4,
+                        workers = WORKERS,
                         widths = widths,
                     )
                 client.connect()
@@ -226,6 +401,42 @@ class AbortCensusLiveProbe {
                 }
                 println("  %-22s %d".format("visitsRun", counts["visitsRun"] ?: 0))
                 println()
+                // THE CENSUS PER RELAY, which is the deliverable at this size:
+                // a list of 137 relays is unreadable as a log and the question
+                // is per (relay, stream) anyway.
+                val abortedUnits =
+                    aborts
+                        .mapNotNull { line ->
+                            val parts =
+                                line
+                                    .substringAfter("router: visit ")
+                                    .substringBefore(" aborted —")
+                                    .trim()
+                                    .split(" ")
+                            if (parts.size >= 2) parts[1] to parts[0] else null
+                        }.toSet()
+                val bad = abortedUnits.map { it.first }.toSet()
+                println("  %-4d relay(s) aborted on at least one stream".format(bad.size))
+                println("  %-4d relay(s) aborted on BOTH streams".format(bad.count { r -> abortedUnits.count { it.first == r } > 1 }))
+                println("  %-4d relay(s) aborted on ONE stream only — #187's shape".format(bad.count { r -> abortedUnits.count { it.first == r } == 1 }))
+                println("  %-4d relay(s) never aborted".format(normalized.size - bad.size))
+                println()
+                if (bad.isNotEmpty()) {
+                    println("  PER RELAY, the streams it aborted on:")
+                    for (relay in bad.sorted()) {
+                        println(
+                            "    %-52s %s".format(
+                                relay,
+                                abortedUnits
+                                    .filter { it.first == relay }
+                                    .map { it.second }
+                                    .sorted()
+                                    .joinToString(),
+                            ),
+                        )
+                    }
+                    println()
+                }
                 if (aborts.isEmpty()) {
                     println("  NO ABORTS. Every relay was served on both streams — which for the 109 is the")
                     println("  outcome to record and NOT the outcome to assume: this ran a few visits over a")
@@ -242,6 +453,24 @@ class AbortCensusLiveProbe {
     companion object {
         private const val POLL_MS = 15_000L
         private const val DEFAULT_MINUTES = 8L
+
+        /** The deployment's own relay — where the real relay lists come from. */
+        private const val SEED_RELAY = "wss://search-staging.brainstorm.world"
+
+        /** Urls per `#r` ask. Wide enough to be few round trips, narrow enough to be served. */
+        private const val SEED_CHUNK = 20
+
+        private const val SEED_WAIT_MS = 30_000L
+
+        /**
+         * Workers, and it is 274 units of work — 137 relays on two streams.
+         *
+         * Nowhere near the deployment's 96 per stream, and deliberately: this
+         * shares one box with a Vespa and the point is to reach every relay
+         * once, not to reproduce the pool's own contention. What that costs is
+         * stated in the census output rather than hidden.
+         */
+        private const val WORKERS = 16
 
         /** Bounded for [WidthRescueLiveProbe]'s reason — a relay decides on the REQ, not on the events. */
         private const val EVENTS_PER_ASK = 200
