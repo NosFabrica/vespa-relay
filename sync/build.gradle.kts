@@ -78,6 +78,8 @@ tasks.test {
     System.getProperty("reachNoAuth")?.let { systemProperty("reachNoAuth", it) }
     System.getProperty("reachNsec")?.let { systemProperty("reachNsec", it) }
     System.getProperty("reachUrls")?.let { systemProperty("reachUrls", it) }
+    System.getProperty("unpageableLegs")?.let { systemProperty("unpageableLegs", it) }
+    System.getProperty("unpageableProbe")?.let { systemProperty("unpageableProbe", it) }
     System.getProperty("relayReachProbe")?.let { systemProperty("relayReachProbe", it) }
     // …and the env the end-to-end probe reads. Gradle hides env vars from the
     // forked JVM the same way it hides properties, and this one names a live

@@ -92,8 +92,9 @@ internal class VisitAborts(
      *
      * Five of them are quartz's own walk endings, believed and passed through
      * ([VisitPool.refusedOutright] decides which endings abort at all); the
-     * other two are this pool's — the sequence-level quiet give-up, and an
-     * exception escaping the visit.
+     * other three are this pool's — the sequence-level quiet give-up, an
+     * exception escaping the visit, and a walk our own ingest queue stalled,
+     * which quartz can only report as one of the first five.
      *
      * The counter NAMES are a wire contract like the pool words: the status
      * document publishes them and the glossary defines each one, so renaming a
@@ -103,6 +104,12 @@ internal class VisitAborts(
     enum class Reason(
         val count: String,
         val says: String,
+        /**
+         * The abort is OURS — it describes this mirror's state, not the
+         * relay's — so it is counted and spoken but never written on the
+         * relay's row. See [BACKPRESSURED], the only one so far.
+         */
+        val ours: Boolean = false,
     ) {
         /**
          * The relay refused with `auth-required:` and the NIP-42 exchange did
@@ -143,6 +150,21 @@ internal class VisitAborts(
 
         /** The visit threw. The class and message are on the line. */
         FAILED("abortedFailed", "the visit failed"),
+
+        /**
+         * A hook of OURS was suspended in the full ingest queue when the walk
+         * gave up, so the ending quartz reported — silence, or a page received
+         * and not delivered — was manufactured on our side of the socket. See
+         * `VisitPool.holding` for the mechanism. Before this reason existed,
+         * every one of these was `abortedQuiet` or `abortedUnpageable`, with a
+         * sentence blaming the relay's cursor; on staging that was 90% of all
+         * aborts, on relays the monitor had correctly graded `prime`.
+         *
+         * Nothing to fix at the relay, so nothing is written on its row. The
+         * number to read beside this one is the ingest processor's `queued`
+         * against its `capacity`.
+         */
+        BACKPRESSURED("abortedBackpressured", "our own ingest queue held the socket — nothing the relay did", ours = true),
     }
 
     private val counters = Reason.entries.associateWith { AtomicLong() }
@@ -243,7 +265,13 @@ internal class VisitAborts(
         // abort was inside a re-say window would report a relay as never
         // visited while the log said otherwise.
         val key = unitKey(stream, url)
-        if (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN) {
+        // OUR OWN STALLS NEVER REACH THE ROW. The row answers "what is wrong
+        // with THIS relay", and a stall of ours is not an answer to that: it
+        // would mark a healthy relay `refused` and at fault for as long as the
+        // queue stays full, which on staging was every relay on the roster for
+        // the life of the process. Neither is the previous entry cleared —
+        // whatever the relay last said for itself still stands.
+        if (!reason.ours && (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN)) {
             lastByUnit[key] = Last(reason, said, at / 1000)
         }
         if (!worthSaying(key, reason, at)) return null

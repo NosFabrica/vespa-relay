@@ -209,6 +209,17 @@ ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCen
 #   …AND THE DEPLOYMENT'S OWN KEY, which is the one relays allowlist:
 #   -DabortCensusNsec=nsec1…
 
+# THE MIRROR'S CATCH-UP LEG THROUGH QUARTZ'S OWN PAGER, against relays the
+# staging mirror files as `abortedUnpageable` on every visit: the stream's kinds
+# with `since` at the band's own edge, exactly what `SyncCoverage.legs` hands a
+# complete band. Prints each page's cursor and the ending. Measured 2026-09-04
+# on five of them: every one DRAINED with ONE event downloaded — the band-edge
+# event, served, matched, and stepped past in three pages. The abort the mirror
+# reports for that same leg cannot come from the relay; see the backpressure
+# section below for where it does come from. Asserts nothing.
+./gradlew :sync:test --tests '*UnpageableLegLiveProbe*' -DunpageableProbe=true --rerun -i
+#   …or pairs of your own: -DunpageableLegs='wss://relay.example=1765993162,wss://other.example=1736768033'
+
 # THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
 # that refuse us, and a real Vespa the events have to land in. Everything else
 # written for that issue is a unit test over a fake, a browser probe over a
@@ -766,11 +777,13 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the past, heal drain), earned live tails,
                           yield-paced revisits
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
-    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split seven
+    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split eight
                           ways and said once per (stream, relay, reason), with
                           the ask and whatever the relay said for itself. An
                           abort leaves its relay unreconciled, so this number
-                          IS whether the resync converges
+                          IS whether the resync converges. One of the eight
+                          (`abortedBackpressured`) is OURS — the mirror's own
+                          full ingest queue — and never touches a relay's row
     RelayComplaints.kt    what a relay SAID when it would not answer — the
                           NOTICE/CLOSED text quartz's PagedFetchResult has no
                           room for, kept per relay and dated so a walk can only
@@ -1789,16 +1802,79 @@ the `!clean` path returned naming neither the relay, the stream, the ask nor the
 reason, and the refusals an operator COULD see were the relay client's own
 connection logging, undercounting by ~10x. `abortedVisits` said a problem
 existed and no instrument in the process could name it, which is the same shape
-as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: seven
+as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: eight
 counters that partition the total exactly (`abortedAuthRequired`,
 `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
-`abortedGaveUp`, `abortedFailed`), plus one line per (stream, relay, reason)
-per half hour carrying the ask and — through `RelayComplaints` — the sentence
-the relay refused with. **The sentence is the half that could not be
+`abortedGaveUp`, `abortedFailed`, `abortedBackpressured`), plus one line per
+(stream, relay, reason) per half hour carrying the ask and — through
+`RelayComplaints` — the sentence the relay refused with. **The sentence is the half that could not be
 inferred**: quartz reports how a walk ENDED, which is the right shape for the
 one decision it exists for (a `CLOSED` licenses no coverage claim whatever
 caused it), and a policy refusal, a rate limit and a filter the relay thinks is
 too wide are one ending with three different remedies.
+
+**AND NINETY PERCENT OF THE ABORTS WERE THE MIRROR DESCRIBING ITSELF IN THE
+RELAY'S WORDS.** Staging, 2026-09-04, one 8-hour process: `visitsRun` 81,868,
+`abortedVisits` 76,485, of which `abortedUnpageable` 46,104 and `abortedQuiet`
+23,041 — and 487 of the 1,000 rows on the mirror's page reading `the relay
+ignored the paging cursor`, most of them `complete` with a band edge in 2024 or
+2025, on relays the monitor had graded `prime`. That reads as the two planes
+disagreeing about the relays. They were not: every one of those relays, dialled
+by hand with the mirror's exact leg (`kinds` at `since = coveredTo`), answered
+inside two seconds with exactly ONE event — the band-edge event, which `since`
+includes — and `UnpageableLegLiveProbe` puts the same leg through quartz's own
+`fetchAllPages`: `DRAINED`, one downloaded, three pages, every relay. The
+relays the page called quiet EOSE in under two seconds too.
+
+What was actually happening is on the same page, one row up: the ingest
+processor at `queued: 16520` against `capacity: 16384` for the whole hour of
+samples, `eventsPerSec` at 0 between bursts, `ingest.write` calls 116s
+outstanding, `bottleneck: ingest`. The pool's hooks hand every event to
+`IngestPipeline.submit`, which suspends on a full queue — that is the
+backpressure working, and it is deliberate (#167). What nobody had followed
+through is HOW that suspension reaches quartz's pager. quartz drains each
+socket through ONE consumer coroutine (`BasicOkHttpWebSocket`: an unbounded
+channel and `for (message in incomingMessages) out.onMessage(message)`), which
+awaits every listener before reading the next frame. So one hook of ours
+parked in the queue — a walk's, a tail's, an audit's, on any subscription of
+that socket — stops every subscription on the socket: no EOSE, no events, no
+CLOSED. `fetchAllPages` then reports the only two things it can see. A walk
+whose own first event went into the parked hook has `received = 1` and
+`delivered = 0` (delivered is counted AFTER the hook returns), and on a first
+page that is a `break` with `end` still at its initial `UNPAGEABLE` and
+`downloaded = 0`. A walk on a socket some OTHER hook is holding sees nothing at
+all inside its 30s window: `IDLE`, `downloaded = 0`. Both satisfy
+`refusedOutright`, both were filed against the relay, and the status row marked
+it `refused` and at fault for as long as the queue stayed full — which was the
+life of the process. The visits kept coming at full rate (one per unit every
+seven minutes, 96 at a time), each re-dialling a healthy relay to park one
+event and blame it.
+
+So `VisitPool.holding` counts, per relay, the hooks of ours currently suspended
+in `submit` (every hand-off goes through `handOff`, which is the invariant), and
+a walk that comes back refused is re-read at that instant: an `IDLE` or an
+`UNPAGEABLE` while a hook of ours is parked on that socket is
+`abortedBackpressured` — ours, counted and spoken like the others, and NEVER
+written on the relay's row (`VisitAborts.Reason.ours`), nor does it clear what
+the relay last said. Only those two endings are re-read: a `CLOSED`, an
+`AUTH_REQUIRED` or a `CANNOT_CONNECT` came through the same consumer, so the
+consumer was not parked when it was said. Nothing else about the abort changes
+— no band, no tail, the leg stays outstanding — because the walk really did not
+happen. `VisitPoolBackpressureTest` stages it against a pipeline filled to
+capacity and never started.
+
+**Two things this does NOT do, and one it found.** It does not slow the visits
+down while the queue is full; the pool still burns a dial per unit per revisit
+to park one event, and a visit rate that reads the ingest queue is the next
+thing to want. It does not fix the ingest: the store was accepting a 2-worker
+batch every two minutes with `lock.ingest.wait` at 25 hours cumulative, which
+is #167's territory and the store's. And the monitor's four processors on the
+same page read `starting` for the whole 28,591 seconds of that process — the
+passes wait on `retireOwnStaleVerdicts`, a paged walk of the graded corpus
+through the same store, and `monitor.publish` showed 3,493 of 4,133 calls
+cancelled — so every `prime` the streams were selecting on came from an
+earlier process. The verdicts were still right; the plane that signs them was
+not running.
 
 **One of those refusals the pool can take down itself: filter WIDTH.**
 `contentViaOutbox` asks for 139 kinds in one filter, and relays that cap width
@@ -4792,11 +4868,14 @@ Reach for it first.
 - **the abort partition on the visits row, and the `visit … aborted` lines
   beside it** — WHY visits are ending early, which on a mirror that has stopped
   converging is the only question. `abortedVisits` is a total and unactionable
-  on its own; the seven counters that split it (`abortedAuthRequired`,
+  on its own; the eight counters that split it (`abortedAuthRequired`,
   `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
-  `abortedGaveUp`, `abortedFailed`) sum back to it exactly, and each has a
-  different remedy — a key the relay accepts, its own CLOSED sentence read, a
-  slower revisit, nothing at all. Reach for it the moment `contentViaOutbox`
+  `abortedGaveUp`, `abortedFailed`, `abortedBackpressured`) sum back to it
+  exactly, and each has a different remedy — a key the relay accepts, its own
+  CLOSED sentence read, a slower revisit, nothing at all. Read
+  `abortedBackpressured` FIRST: it is the one that is about this mirror rather
+  than about any relay, and before it existed its share sat inside `Quiet` and
+  `Unpageable` — 90% of all aborts on staging, blamed on relays that were fine. Reach for it the moment `contentViaOutbox`
   stops reconciling: 92.5% aborting says the resync cannot converge, and only
   the split says what would fix it. The log half is one line per
   (stream, relay, reason) per half hour, carrying the ask and — where the relay

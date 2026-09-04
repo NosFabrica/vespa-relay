@@ -485,6 +485,7 @@ class AbortCensusLiveProbe {
                 "abortedUnpageable",
                 "abortedGaveUp",
                 "abortedFailed",
+                "abortedBackpressured",
             )
 
         /**

@@ -162,6 +162,32 @@ class VisitAbortsTest {
     }
 
     @Test
+    fun `a stall of our own is counted and spoken, and never written on the relay's row`() {
+        // The row answers "what is wrong with THIS relay". A hook of ours parked
+        // in a full ingest queue is not an answer to that: on staging it marked
+        // every relay on the roster `refused` and at fault for the life of the
+        // process, on relays the monitor had correctly graded `prime`.
+        val a = VisitAborts()
+        val line = a.record("content", url, VisitAborts.Reason.BACKPRESSURED, "139 kinds, since 1765993162", null)
+        assertNotNull(line, "it is still said, once per re-say window, so the log shows the stall")
+        assertTrue(line.contains("our own ingest queue"), line)
+        assertNull(a.last("content", url), "nothing the relay did, so nothing on its row")
+        // COUNTED, and inside the partition like every other reason.
+        val counts = a.counts().associate { it.name to it.value }
+        assertEquals(1L, counts["abortedVisits"])
+        assertEquals(1L, counts["abortedBackpressured"])
+        assertEquals(0L, counts["abortedUnpageable"])
+        // …AND WHAT THE RELAY LAST SAID FOR ITSELF STILL STANDS. A stall of
+        // ours neither writes the row nor clears it.
+        a.record("content", url, VisitAborts.Reason.CLOSED, "139 kinds", "blocked: policy")
+        a.record("content", url, VisitAborts.Reason.BACKPRESSURED, "139 kinds", null)
+        assertEquals(VisitAborts.Reason.CLOSED, a.last("content", url)?.reason)
+        // The marker is the enum's, so a second reason of ours cannot be added
+        // without deciding this.
+        assertEquals(listOf(VisitAborts.Reason.BACKPRESSURED), VisitAborts.Reason.entries.filter { it.ours })
+    }
+
+    @Test
     fun `a clean visit forgets the wall the last one met`() {
         // The row is about where a pair stands NOW. Without this it never
         // stopped being about where it once stood: a pair that met a transient

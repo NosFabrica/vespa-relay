@@ -190,7 +190,8 @@ class StatusVocabularyTest {
                         "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
                         "visitsRun": 90, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "negentropyRefused": 2, "retracted": 2, "liveEvicted": 1, "poolReceived": 4000,
                         "narrowedRelays": 9, "abortedVisits": 2, "abortedAuthRequired": 1, "abortedClosed": 1, "abortedQuiet": 0,
-                        "abortedUnreachable": 0, "abortedUnpageable": 0, "abortedGaveUp": 0, "abortedFailed": 0},
+                        "abortedUnreachable": 0, "abortedUnpageable": 0, "abortedGaveUp": 0, "abortedFailed": 0,
+                        "abortedBackpressured": 0},
                        {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
                      "store": {"outstanding": 3, "slowAfterSec": 60, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
                                "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
@@ -377,6 +378,7 @@ class StatusVocabularyTest {
                     "abortedUnpageable",
                     "abortedGaveUp",
                     "abortedFailed",
+                    "abortedBackpressured",
                     "narrowedRelays",
                     "negentropyRefused",
                     // …and the per-relay table's own vocabulary. `relays` and

@@ -344,6 +344,64 @@ internal class VisitPool(
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
     /**
+     * HOOKS OF OURS SUSPENDED INSIDE THE INGEST QUEUE, per relay — the one
+     * fact that tells a relay's silence apart from our own.
+     *
+     * Every event a socket carries reaches this pool through quartz's ONE
+     * consumer coroutine per socket, which awaits each listener before it
+     * reads the next frame. Our hooks hand the event to [IngestPipeline.submit],
+     * which suspends when the queue is full. So while one of them is
+     * suspended — a walk's, a tail's, an audit's, on ANY subscription of that
+     * socket — nothing else on the socket is delivered: not the EOSE that
+     * would end a page, not the events behind it. quartz's pager then reports
+     * what it can see, which is silence (`IDLE`, nothing received) or a first
+     * page with an event received and nothing delivered (`UNPAGEABLE` —
+     * `delivered` is counted AFTER the hook returns, and it has not). Both
+     * were being filed against the relay: `abortedQuiet` and
+     * `abortedUnpageable`, each with a sentence blaming its cursor or its
+     * silence, and the status row marked the relay at fault.
+     *
+     * Measured on staging (2026-09-04): 69,145 of 76,485 aborts in those two
+     * counters over an 8-hour process whose ingest queue sat at capacity for
+     * the whole hour of samples; every relay dialled by hand answered the
+     * same leg inside two seconds with exactly the band-edge event, and
+     * quartz alone ends that leg `DRAINED` with one event downloaded
+     * (`UnpageableLegLiveProbe`). The monitor was right and the mirror was
+     * describing itself in the relay's words.
+     *
+     * A count, not a flag, because several hooks on one socket can be parked
+     * at once; and per url rather than per visit because the hook that stalls
+     * a walk is as often a tail's. Read at the one instant it matters — when
+     * a walk comes back refused — by [heldByUs].
+     */
+    private val holding = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+
+    /**
+     * Hand one event to the ingest, counted while the hand-off is suspended.
+     *
+     * Every submit this pool makes goes through here, and that is the
+     * invariant [heldByUs] rests on: a hand-off that bypassed it would be a
+     * stall the classification could not see, filed against the relay again.
+     */
+    private suspend fun handOff(
+        url: NormalizedRelayUrl,
+        event: Event,
+        trusted: Boolean,
+        origin: IngestOrigin,
+    ) {
+        val held = holding.getOrPut(url) { AtomicInteger() }
+        held.incrementAndGet()
+        try {
+            ingest.submit(event, trusted, origin)
+        } finally {
+            held.decrementAndGet()
+        }
+    }
+
+    /** Is one of our hooks suspended on this relay's socket right now? See [holding]. */
+    private fun heldByUs(url: NormalizedRelayUrl): Boolean = (holding[url]?.get() ?: 0) > 0
+
+    /**
      * ONE ROW'S WORKLOAD, as the pair that must never come apart: the pool a
      * reader groups by, and the sentence a reader reads.
      *
@@ -1052,9 +1110,12 @@ internal class VisitPool(
                         .record(
                             key.stream,
                             url,
-                            VisitAborts.of(refusal.end),
+                            refusal.reason,
                             asked = VisitAborts.asked(refusal.filter),
-                            said = complaints.awaitSince(url, refusal.askedAtMs),
+                            // A stall of ours has no sentence from the relay to
+                            // wait for, and waiting would cost the visit one
+                            // more idle window on a socket we are holding.
+                            said = if (refusal.ours) null else complaints.awaitSince(url, refusal.askedAtMs),
                             sent = refusal.sent,
                         )?.let(System.err::println)
                     return
@@ -1105,7 +1166,18 @@ internal class VisitPool(
         val askedAtMs: Long,
         /** What the socket carried while this ask was out — see [RelayPages]. */
         val sent: String? = null,
-    )
+        /**
+         * The ending was manufactured by OUR side of the socket — a hook of
+         * ours was suspended in the ingest queue when the walk gave up — and
+         * says nothing about the relay. See [holding] for the mechanism and
+         * [VisitAborts.Reason.BACKPRESSURED] for what it is filed under.
+         */
+        val ours: Boolean = false,
+    ) {
+        /** Which counter this refusal belongs to — the relay's ending, or our own stall. */
+        val reason: VisitAborts.Reason
+            get() = if (ours) VisitAborts.Reason.BACKPRESSURED else VisitAborts.of(end)
+    }
 
     /**
      * The catch-up: walk what the band says is outstanding. Returns the refusal
@@ -1181,7 +1253,8 @@ internal class VisitPool(
                     // is a race the narrowing loses at random. See
                     // [RelayComplaints.awaitSince], which was written after
                     // watching it stop a real relay one halving short.
-                    if (narrowings < MAX_NARROWINGS &&
+                    if (!refusal.ours &&
+                        narrowings < MAX_NARROWINGS &&
                         widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
                     ) {
                         narrowings++
@@ -1253,7 +1326,7 @@ internal class VisitPool(
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    handOff(url, event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
             // READ BEFORE THE REQ GOES OUT, and that ordering is the whole
@@ -1280,7 +1353,22 @@ internal class VisitPool(
                 // No band for the refused chunk: nothing was observed, nothing
                 // drained, and a record would re-stamp a walk that never
                 // happened. Same rule as the legacy engine's.
-                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded))
+                //
+                // WHOSE REFUSAL, decided HERE and now, because the fact it
+                // rests on is momentary: a hook of ours still suspended on
+                // this socket at the instant quartz gave up on the page. Only
+                // the two endings a stalled socket can manufacture are
+                // re-read — silence, and a first page received but not
+                // delivered. A CLOSED, an auth wall or a failed dial is the
+                // relay's own word, delivered through the same consumer, so
+                // that consumer was not stuck when it was said.
+                return Refusal(
+                    walked.end,
+                    chunk,
+                    askedAtMs,
+                    pages.render(sampling, walked.downloaded),
+                    ours = stalledByUs(walked.end) && heldByUs(url),
+                )
             }
             bands.record(
                 stream.name,
@@ -1416,7 +1504,7 @@ internal class VisitPool(
                 received++
                 arrived(url, ongoingVisit)
                 if (ask.filter.match(event)) {
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    handOff(url, event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
         auditsRun.incrementAndGet()
@@ -1597,7 +1685,7 @@ internal class VisitPool(
                     healContent = healContent || ask.stream.healContent
                     healRetractions = healRetractions || ask.stream.healRetractions
                 }
-                if (any) ingest.submit(event, allTrusted, IngestOrigin(url, healContent, healRetractions))
+                if (any) handOff(url, event, allTrusted, IngestOrigin(url, healContent, healRetractions))
             }
         } catch (e: CancellationException) {
             abandon()
@@ -1739,6 +1827,25 @@ internal class VisitPool(
                     PagedFetchResult.End.UNPAGEABLE,
                     -> true
                 }
+
+        /**
+         * Could a socket whose consumer is parked in one of OUR hooks have
+         * produced this ending? Two can: `IDLE` (nothing was delivered to the
+         * pager, because nothing was read) and `UNPAGEABLE` on a first page
+         * (an event was received and the hook it went into never returned,
+         * so nothing counted as delivered). Everything else is a message the
+         * relay or the dial sent, through the same consumer, which was
+         * therefore not parked. Exhaustive so a new ending is a decision.
+         */
+        internal fun stalledByUs(end: PagedFetchResult.End): Boolean =
+            when (end) {
+                PagedFetchResult.End.IDLE, PagedFetchResult.End.UNPAGEABLE -> true
+
+                PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED,
+                PagedFetchResult.End.CLOSED, PagedFetchResult.End.AUTH_REQUIRED,
+                PagedFetchResult.End.CANNOT_CONNECT,
+                -> false
+            }
 
         /**
          * The tail subscription's filters: every ask the roster wants at the
