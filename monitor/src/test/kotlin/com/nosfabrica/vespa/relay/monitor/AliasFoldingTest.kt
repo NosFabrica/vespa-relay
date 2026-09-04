@@ -382,39 +382,25 @@ class AliasFoldingTest {
     @Test
     fun `a url that arrives alone on a measured host folds against the stored world`() =
         runBlocking {
-            // THE CANDIDATE SET IS NOT THE NEIGHBOURHOOD. A url's siblings drop
-            // out of it for reasons that have nothing to do with the fold — held
-            // out as known dead, gone from the relay list that named them — and
-            // grouped from candidates alone the newcomer is a group of ONE,
-            // which `unresolved` drops for being a group of one. It was then
-            // dialled as its own relay for as long as it was discovered, while a
-            // signed record naming the very url it folds onto sat in the store
-            // unread.
+            // Grouped from the candidates alone the newcomer is a group of one; the
+            // host's history is in the store and has to be read.
             val store = newStore()
             folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
 
-            // A new path on the same host, arriving by itself — and a fresh
-            // RelayAliases, so the only place the host's history exists is the
-            // store. This is the next sweep, or another router entirely.
+            // A fresh RelayAliases: the host's history exists only in the store.
             val newcomer = RelayUrlNormalizer.normalize("wss://nos.lol/delta-new")
             val up = upstreams()
             val fold = folding(store, up)
 
             assertEquals(1, fold.measure("t", listOf(newcomer), canDial = { true }), "the newcomer had a canonical to measure against")
-            // The verdict is the lasting part: the next caller holding both urls
-            // dials one relay, and never pays a probe to find that out. Holding
-            // the newcomer ALONE it is dialled as it stands — a fold is only
-            // applied where its survivor is in the set, see `collapse`.
+            // A fold is applied only where its survivor is in the set, see `collapse`.
             assertEquals(
                 listOf(canonical),
                 fold.applyVerdicts(listOf(canonical, newcomer)).dial,
                 "one new url, measured against the host's history, and the fan-out dials the survivor",
             )
             assertEquals(mapOf(newcomer to canonical), fold.applyVerdicts(listOf(canonical, newcomer)).aliases)
-            // The urls pulled in for context are already decided, so they are
-            // the group's yardstick and nothing else: the canonical is dialled
-            // because every group dials its leader, and the url that folded onto
-            // it last time is not dialled at all.
+            // The urls pulled in for context are the yardstick: the leader is dialled, the settled alias is not.
             assertTrue(canonical in up.contacted, "the survivor is the yardstick and has to answer for itself")
             assertTrue(alias !in up.contacted, "a url that already carries a verdict must not cost a dial")
         }
@@ -422,25 +408,16 @@ class AliasFoldingTest {
     @Test
     fun `a fold whose survivor is not in the set is not applied to it`() =
         runBlocking {
-            // **DROPPING AN ALIAS IS ONLY SAFE WHEN THE SURVIVOR IS THERE TO
-            // TAKE OVER.** Every live consumer applies the map by dropping —
-            // `RosterBuilder` filters the alias out of the discovered list,
-            // `FitnessPass` stamps it `alias` — and neither puts the canonical
-            // back, because until the fold grouped the recorded world the
-            // canonical was in the same list by construction. It no longer is:
-            // fold X onto a survivor this caller never asked about and the relay
-            // leaves the fan-out with nothing dialled in its place, for the
-            // record's whole TTL.
+            // Every consumer applies the map by dropping the alias and none puts the
+            // canonical back, so a fold whose survivor is absent would empty the fan-out.
             val store = newStore()
             folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
 
             val fold = folding(store, upstreams())
-            // The survivor is present: the fold applies, which is the whole
-            // point and must keep working.
+            // The survivor is present, so the fold applies.
             assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
 
-            // …and now a caller that holds the alias alone — the canonical held
-            // out as dead this round, or gone from the relay list that named it.
+            // The alias alone: the canonical held out as dead, or gone from the relay list.
             val stranded = fold.applyVerdicts(listOf(alias))
             assertEquals(listOf(alias), stranded.dial, "the only live address we have must still be dialled")
             assertTrue(stranded.aliases.isEmpty(), "a drop-only consumer would take the relay out of the fan-out")
@@ -450,22 +427,12 @@ class AliasFoldingTest {
     @Test
     fun `a group whose survivor is held out folds onto the best url still present`() =
         runBlocking {
-            // **`relay.typedcypher.com`, measured.** Four minted paths each
-            // folded onto the bare host at containment 1.000; the bare host then
-            // stopped upgrading the websocket and was graded `dead`, which holds
-            // it out of `StreamWorld.candidates` for 24h. The group arrived at
-            // `collapse` with its canonical missing, every member unfolded, and
-            // the fitness pass dialled and graded all four `prime` — four
-            // sockets, four bands and four cursors onto one server, and four
-            // relays published to the network where there is one.
-            //
-            // Unfolding is the right answer for a group of ONE — the test above
-            // — and the opposite of the records for a group of four.
+            // The bare host went dead after its paths folded onto it. Unfolding is
+            // right for a group of one and wrong for a group of four.
             val store = newStore()
             val host = "wss://typedcypher.example"
             val root = RelayUrlNormalizer.normalize(host)
-            // Deliberately not in preference order, so the assertion below is
-            // about the ORDER and not about which url happens to be first.
+            // Not in preference order, so the assertion below is about the order.
             val paths = listOf("$host/tango-jade", "$host/onyx", "$host/ember-november").map { RelayUrlNormalizer.normalize(it) }
             val fold = folding(store, upstreams())
 
@@ -487,21 +454,13 @@ class AliasFoldingTest {
             )
             assertTrue(stranded.unmeasured.isEmpty(), "every one of them is measured — re-election is not a reason to re-probe")
 
-            // **AND `aliases` IS EMPTY, WHICH IS THE SAFETY PROPERTY.**
-            // `FitnessPass` signs a 30166 for every entry it is handed —
-            // `l=alias`, `folds onto <url>`, on a tag `publishFitness` OWNS and
-            // therefore replaces. These three paths were each measured against
-            // the bare host and never against each other, so a stand-in
-            // arriving on that map would publish a pairing no probe took, and
-            // would overwrite the elected member's own `prime` on whichever
-            // sibling preference happened to rank first. Routing may infer;
+            // `FitnessPass` signs an `l=alias` record for every entry in `aliases`, and
+            // these paths were never measured against each other. Routing may infer;
             // publishing may not.
             assertTrue(stranded.aliases.isEmpty(), "an inferred pairing must never reach the map a verdict is signed from")
 
-            // NOTHING WAS PUBLISHED. The stand-in is this call's routing
-            // decision, not a new claim: the records still name the bare host,
-            // so the moment it answers again the group goes back to it with no
-            // re-probe and nothing to retract.
+            // The stand-in is routing only: the records still name the bare host, so it
+            // is picked back up with no re-probe and nothing to retract.
             val recovered = fold.applyVerdicts(listOf(root) + paths)
             assertEquals(
                 paths.associateWith { root },
@@ -514,13 +473,8 @@ class AliasFoldingTest {
     @Test
     fun `a host that cannot repeat itself leaves the store's other verdicts alone`() =
         runBlocking {
-            // The reproducibility guard forgot the whole GROUP, which since the
-            // world is grouped includes urls it merely adopted moments earlier —
-            // still in the store, still perfectly good. The fan-out then saw a
-            // settled host's duplicates as separate relays until the next
-            // `apply`, and the row counted them as urls that arrived decided and
-            // left undecided, which the card can only draw as `0 of N checked`
-            // on a pass that decided plenty.
+            // A guard that forgets the whole group also drops the verdicts adopted
+            // from the store moments earlier, still perfectly good.
             val store = newStore()
             val host = "wss://shuffles.example"
             val settled = listOf("$host/a", "$host/b").map { RelayUrlNormalizer.normalize(it) }
@@ -528,8 +482,8 @@ class AliasFoldingTest {
             folding(store, upstreams()).measure("t", settled, canDial = { true })
             assertEquals(1, folding(store, upstreams()).applyVerdicts(settled).aliases.size, "the fixture needs a stored fold")
 
-            // Now the same host serves a DIFFERENT window on every ask, which is
-            // what `reproducible` refuses to publish a negative claim against.
+            // The same host now serves a different window on every ask, which
+            // `reproducible` refuses to publish a negative claim against.
             val shuffling = AtomicInteger()
             val up =
                 Upstreams { _ ->
@@ -547,7 +501,7 @@ class AliasFoldingTest {
             val newcomer = RelayUrlNormalizer.normalize("$host/c")
             fold.measure("t", settled + newcomer, canDial = { true })
 
-            // The group was abandoned, and what the STORE says about it survives.
+            // The group was abandoned; what the store says about it survives.
             val after = fold.applyVerdicts(settled + newcomer)
             assertEquals(1, after.aliases.size, "an adopted verdict is the store's, not this pass's to drop")
             val work =
@@ -565,12 +519,8 @@ class AliasFoldingTest {
     @Test
     fun `the pass counts the urls that arrived undecided, not the whole candidate set`() =
         runBlocking {
-            // What the card draws its position against — see
-            // [Processors.Work.newUrls]. Two urls fold on the first pass; on the
-            // second they carry verdicts, so a set of the same size arrives with
-            // nothing new in it and the row has to say so. Counted against
-            // `candidates` this read `2 of 2 checked` on a pass that checked
-            // nothing.
+            // [Processors.Work.newUrls] is what the card draws its position against;
+            // counted against `candidates`, a settled pass read as fully checked.
             val store = newStore()
             val processors = Processors()
             val handle = processors.of("aliasFold")
@@ -608,18 +558,7 @@ class AliasFoldingTest {
             )
         }
 
-    /**
-     * A read that FAILED is not a store saying "no verdict", and the difference
-     * is a whole fan-out.
-     *
-     * `adopt` forgets every verdict it holds before adopting what the store
-     * hands back, so the store stays authoritative and the 30-day TTL means
-     * something. That is only safe while a failure arrives AS a failure —
-     * `load` used to swallow a failed chunk into an empty result, which turned
-     * one unlucky query into up to 500 urls silently unfolded for that cycle:
-     * dialled as their own relays, re-probed for verdicts already published,
-     * with nothing anywhere saying so.
-     */
+    /** `adopt` forgets every verdict before re-adopting from the store, so a failed read must arrive as a failure. */
     @Test
     fun `a store that cannot be read leaves the verdicts already held alone`() =
         runBlocking {
@@ -629,8 +568,7 @@ class AliasFoldingTest {
             assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
             assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
 
-            // The same verdicts in memory, in front of a store that has stopped
-            // answering. The fold must go on folding.
+            // The same verdicts in memory, in front of a store that has stopped answering.
             val blind =
                 AliasFolding(
                     aliases = aliases,
@@ -645,8 +583,7 @@ class AliasFoldingTest {
     fun `measure honours the caller's transport guard`() =
         runBlocking {
             val up = upstreams()
-            // The leader is refused, so its group can never be compared — and
-            // dialling the members anyway would be pure waste.
+            // The leader is refused, so nothing in its group can be compared.
             val learned = folding(newStore(), up).measure("t", listOf(canonical, alias), canDial = { false })
 
             assertEquals(0, learned)
@@ -654,17 +591,8 @@ class AliasFoldingTest {
         }
 
     /**
-     * A fingerprint is a websocket and quartz closes none of its own, so the
-     * pass has to hand every connection back to the stream that lent it.
-     *
-     * Unreleased, a pass leaves one socket per url it measured — and a pass
-     * measures its whole candidate set — against a router whose dispatcher
-     * budget is 1024 for the whole process and 20 per HOST. The fold probes widest group
-     * first, so the 55-url host is exactly where it bites: the fan-out queues
-     * behind connections nothing will ever close.
-     *
-     * Balance, not order: the claims and the releases are per url and the
-     * whole point is that none is left outstanding when the pass returns.
+     * A fingerprint is a websocket quartz never closes, so every claim the pass
+     * makes must be released before it returns. Balance, not order.
      */
     @Test
     fun `every url the pass dials is handed back to the stream's refcount`() =
@@ -689,11 +617,7 @@ class AliasFoldingTest {
             assertTrue(held.isEmpty(), "the pass returned holding ${held.keys}, so those sockets can never be closed")
         }
 
-    /**
-     * The guard runs BEFORE the claim: a url the stream refuses to dial must not
-     * be counted as holding a connection it never opened, or the refcount never
-     * reaches zero and the fan-out's own release stops closing anything.
-     */
+    /** The guard runs before the claim, or a refused url holds a refcount it can never release. */
     @Test
     fun `a url the transport guard refuses is never claimed`() =
         runBlocking {
@@ -714,22 +638,9 @@ class AliasFoldingTest {
         }
 
     /**
-     * A relay that cannot repeat itself must produce NO verdict — not a fold,
-     * and above all not a signed "these are different relays".
-     *
-     * Measured on `fiatjaf.com`, which serves an arbitrary ten events per REQ
-     * whatever limit is asked: one url walked twice from a single anchor,
-     * seconds apart, shared NONE of its ten ids, and over a paged walk it
-     * self-scored 0.694-0.720 while its two sibling paths scored 0.592 and 0.775
-     * against EACH OTHER. The cross-url number sits inside the band the url
-     * scores against itself, so which side of the 0.5 fold threshold a pass
-     * lands on is chance — and the losing side publishes two urls of one relay
-     * as separate relays for thirty days, during which `measured()` answers true
-     * and nothing re-probes them. The duplicate stays in the fan-out for the
-     * whole TTL on evidence that contradicts itself.
-     *
-     * The corpus here rotates per dial the way that relay's does, so the second
-     * leader walk cannot match the first.
+     * A relay whose window changes on every ask lands on either side of the fold
+     * bar by chance, so neither a fold nor a signed "distinct" may be published.
+     * The corpus rotates per dial, so the second leader walk cannot match the first.
      */
     @Test
     fun `a relay that cannot reproduce its own window publishes nothing`() =
@@ -737,8 +648,7 @@ class AliasFoldingTest {
             val store = newStore()
             val a = RelayUrlNormalizer.normalize("wss://shuffling.example")
             val b = RelayUrlNormalizer.normalize("wss://shuffling.example/ember")
-            // Every dial hands back a fresh, disjoint 40 events — the extreme of
-            // what that relay does, so no walk can ever agree with another.
+            // A fresh, disjoint 40 events on every dial, so no walk can agree with another.
             val served = AtomicInteger()
             val shuffling =
                 Upstreams {
@@ -749,24 +659,18 @@ class AliasFoldingTest {
 
             assertEquals(0, fold.measure("t", listOf(a, b), canDial = { true }), "nothing may be folded on this evidence")
 
-            // The negative claim is the one that used to be published here: two
-            // urls of one host, cleared as separate relays, for 30 days.
+            // The negative claim: two urls of one host cleared as separate relays for 30 days.
             val held = RelayVerdictRecord(store, signer).load(listOf(a, b))
             assertTrue(held.aliases.isEmpty(), "a fold was published against a yardstick that cannot repeat itself")
             assertTrue(held.distinct.isEmpty(), "published ${held.distinct.size} url(s) as their own relay on unreproducible evidence")
-            // And nothing is held in memory either, so the next pass re-measures
-            // rather than resuming from half a verdict.
+            // Nothing is held in memory either, so the next pass re-measures rather than resuming from half a verdict.
             assertEquals(listOf(a, b), fold.applyVerdicts(listOf(a, b)).dial)
         }
 
     @Test
     fun `a second process does not re-probe urls a previous pass cleared`() =
         runBlocking {
-            // The reason the cleared verdict is persisted at all. Two paths on
-            // one host that are NOT duplicates: the first pass fingerprints
-            // them and folds nothing, and without a stored verdict every later
-            // boot pays for that same discovery again — 59 fingerprints against
-            // a store already holding 128 folds, measured.
+            // Two paths that are not duplicates; without a stored cleared verdict every boot re-fingerprints them.
             val store = newStore()
             val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
             val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
@@ -783,11 +687,8 @@ class AliasFoldingTest {
     @Test
     fun `a fully folded host stops being probed at all`() =
         runBlocking {
-            // The leader everything folded ONTO has a verdict — it is the class
-            // representative — but it is nobody's alias and nobody's singleton.
-            // A group left open on that basis costs one fingerprint per pass in
-            // perpetuity, learning nothing, because there is no longer anything
-            // in the group to compare it against.
+            // The leader everything folded onto has a verdict but is nobody's alias and
+            // nobody's singleton; `unresolved` must not hand it back on that basis.
             val store = newStore()
             val first = upstreams()
             assertEquals(1, folding(store, first).measure("t", listOf(canonical, alias), canDial = { true }))
@@ -801,9 +702,7 @@ class AliasFoldingTest {
     @Test
     fun `a new url on a settled host still gets measured`() =
         runBlocking {
-            // The other side of that: persisting "cleared" must not freeze the
-            // host. A url with no verdict leaves the group unresolved however
-            // many of its neighbours are settled.
+            // A url with no verdict leaves the group unresolved however many neighbours are settled.
             val store = newStore()
             val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
             val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
@@ -819,17 +718,8 @@ class AliasFoldingTest {
     @Test
     fun `a group's verdict is written while the pass is still running`() =
         runBlocking {
-            // A pass is background work that yields to the fan-out, so on a cold
-            // store — nothing folded, mirror at its widest — it can run for a
-            // quarter of an hour. Measured: 13 minutes with zero verdicts in the
-            // store, because they used to be held until the whole pass ended.
-            // Anything that ends the process in that window — a restart, an OOM,
-            // a redeploy — threw away every fingerprint the pass had taken, and
-            // a cold store is exactly when that work is most expensive to redo.
-            //
-            // A pass cannot be killed from inside a test, so this asserts the
-            // property that makes the kill survivable: the first group's verdict
-            // is readable from the store while a second group is still probing.
+            // A pass cannot be killed from inside a test; what makes a kill survivable
+            // is that the first group's verdict is readable while the second still probes.
             val store = newStore()
             val fast = RelayUrlNormalizer.normalize("wss://nos.lol")
             val fastAlias = RelayUrlNormalizer.normalize("wss://nos.lol/cipher-zulu")
@@ -854,11 +744,8 @@ class AliasFoldingTest {
                 assertTrue(pass.isActive, "the pass ended before the assertion, so this proves nothing")
                 assertEquals(mapOf(fastAlias to fast), reader.load(listOf(fast, fastAlias)).aliases)
             } finally {
-                // Unconditionally, or a FAILING run leaves the pass parked on
-                // this forever and `runBlocking` waits for it — the assertion
-                // error never surfaces and the suite hangs instead of failing.
-                // Which is exactly what happened when this was checked against
-                // the unfixed code.
+                // Unconditionally: a failed assertion would otherwise park the pass
+                // forever and `runBlocking` would hang the suite instead of failing it.
                 release.complete(Unit)
                 pass.join()
             }
@@ -867,10 +754,8 @@ class AliasFoldingTest {
     @Test
     fun `a leader too thin to be a yardstick does not drag its group onto the wire`() =
         runBlocking {
-            // A leader that hands over three ids is under minSample: nothing can
-            // fold onto it, and since the thin-window guard nothing can be
-            // cleared against it either. Dialling its members decides nothing —
-            // and did it again every pass, forever.
+            // Three ids is under minSample: nothing can fold onto the leader or be
+            // cleared against it, so dialling its members decides nothing.
             val store = newStore()
             val a = RelayUrlNormalizer.normalize("wss://quiet.example")
             val b = RelayUrlNormalizer.normalize("wss://quiet.example/alpha")
@@ -880,20 +765,15 @@ class AliasFoldingTest {
 
             folding(store, up).measure("t", listOf(a, b, c), canDial = { true })
 
-            // The leader itself still costs a probe every pass — that is the
-            // price of noticing it has recovered — but nothing behind it does.
+            // The leader still costs one probe per pass, the price of noticing it has recovered.
             assertEquals(setOf(a), up.contacted, "members were dialled behind a leader that could decide nothing")
         }
 
     @Test
     fun `a leader too thin to measure with still decides its own scheme twin`() =
         runBlocking {
-            // The other half of that rule. A three-event window can measure
-            // nothing, so the group is correctly left alone — but `ws://x` and
-            // `wss://x` are not decided by a window at all, and both of them
-            // answering is the entire verdict. Left as it was, a small relay
-            // reachable on both schemes was permanently undecidable: abandoned
-            // here at the front of every pass, for a fold that costs one dial.
+            // A three-event window measures nothing, but `ws://x` and `wss://x` are
+            // decided by both answering, not by a window.
             val store = newStore()
             val secure = RelayUrlNormalizer.normalize("wss://quiet.example")
             val plain = RelayUrlNormalizer.normalize("ws://quiet.example")
@@ -903,11 +783,9 @@ class AliasFoldingTest {
 
             assertEquals(1, folding(store, up).measure("t", listOf(secure, plain, other), canDial = { true }))
 
-            // The twin, and nothing else: the third url still has nothing it
-            // could be measured against.
+            // The twin and nothing else: the third url still has nothing to be measured against.
             assertEquals(setOf(secure, plain), up.contacted)
-            // Signed, so the next boot and every other router reading this
-            // monitor's records fold it without paying for the dials again.
+            // Signed, so every router reading this monitor's records folds it without the dials.
             val reader = folding(store, upstreams()).applyVerdicts(listOf(secure, plain, other))
             assertEquals(mapOf(plain to secure), reader.aliases)
             assertEquals(listOf(secure, other), reader.dial)
@@ -916,10 +794,8 @@ class AliasFoldingTest {
     @Test
     fun `the fold published for a scheme twin quotes the pairing, not a containment`() =
         runBlocking {
-            // These pairs are folded precisely where the windows could not
-            // decide, so a "9 shared" beside the `same-as` would offer as the
-            // reason a number the verdict was never based on — in a signed,
-            // month-long statement about somebody else's server.
+            // The pairing was decided where the windows could not, so a shared count
+            // would quote a number the verdict never rested on.
             val store = newStore()
             val secure = RelayUrlNormalizer.normalize("wss://quiet.example")
             val plain = RelayUrlNormalizer.normalize("ws://quiet.example")
@@ -939,11 +815,7 @@ class AliasFoldingTest {
     @Test
     fun `a ws url serving what its wss twin does not is left in the fan-out`() =
         runBlocking {
-            // "Both work, keep the secure one" is not "prefer wss whatever it
-            // serves". A plain url holding events its secure twin never returned
-            // is a url that cannot be folded away without losing them, and the
-            // fold's whole failure mode is silently ceasing to mirror a relay
-            // nobody will notice is missing.
+            // A plain url holding events its secure twin never returned cannot be folded away without losing them.
             val store = newStore()
             val secure = RelayUrlNormalizer.normalize("wss://lopsided.example")
             val plain = RelayUrlNormalizer.normalize("ws://lopsided.example")
@@ -957,9 +829,7 @@ class AliasFoldingTest {
     @Test
     fun `hosts are never compared across domains`() =
         runBlocking {
-            // Two different relays that happen to serve identical events. The
-            // fold groups by hostname first, so this can never collapse however
-            // well the fingerprints match.
+            // Two relays serving identical events; the fold groups by hostname first.
             val store = newStore()
             val fold = folding(store, upstreams())
 
@@ -968,27 +838,16 @@ class AliasFoldingTest {
         }
 
     /**
-     * A host that never answers: our transport gives up and no page comes back,
-     * so nothing can be decided about it and a pass writes NOTHING down.
-     *
-     * **Not the same fixture as [unreadableUpstreams], and the tests below turn
-     * on the difference.** This one returns NULL — "we do not know" — while the
-     * other ANSWERS and serves nothing, which since
-     * [AliasFolding.DEFAULT_FOLD_UNREADABLE_GROUPS] is a fold. It used to be one
-     * fixture returning an empty list for both jobs, and the policy inversion is
-     * what made that ambiguity untenable: the cooldown and the bounded yardstick
-     * walk belong to silence alone now.
+     * A host our transport gives up on: a null page, so a pass writes nothing down.
+     * Not [unreadableUpstreams], which answers and serves nothing, and so folds.
      */
     private fun silentUpstreams(): Upstreams = Upstreams(answers = { false }) { emptyList() }
 
     @Test
     fun `a host that cannot be decided is not re-dialled by the very next pass`() =
         runBlocking {
-            // The starvation this fixes: nothing is published for an undecidable
-            // group, so `unresolved` hands it back every pass — widest first,
-            // and a host wearing many minted paths is exactly that shape. It was
-            // re-dialled at the front of every pass forever, learning nothing
-            // each time and spending budget a foldable host never got.
+            // Nothing is published for an undecidable group, so without the cooldown
+            // `unresolved` hands it back at the front of every pass.
             val store = newStore()
             val up = silentUpstreams()
             val fold = folding(store, up)
@@ -1005,10 +864,7 @@ class AliasFoldingTest {
     @Test
     fun `the cooldown lapses, so a host that recovers comes back`() =
         runBlocking {
-            // The other half: this is a note about OUR pass, not a verdict about
-            // their server, so it must expire on its own. A relay that was
-            // mid-restart has to be measurable again without waiting out a
-            // signed record's TTL.
+            // The cooldown is a note about our pass, not a verdict about their server, so it expires on its own.
             val store = newStore()
             val up = silentUpstreams()
             val fold = folding(store, up, undecidableCooldownMs = 0L)
@@ -1024,15 +880,11 @@ class AliasFoldingTest {
     @Test
     fun `a silent host does not stop a foldable one being measured`() =
         runBlocking {
-            // The symptom as reported: `relay.lightning.pub` folds four urls in
-            // two seconds at containment 1.000, and was not folding in
-            // production. Both hosts are in one candidate set here, the silent
-            // one first — which is where the widest-first ordering puts it.
+            // Both hosts in one candidate set, the silent one first, where widest-first ordering puts it.
             val store = newStore()
             val quietHost = RelayUrlNormalizer.normalize("wss://silent.example")
             val quietAlias = RelayUrlNormalizer.normalize("wss://silent.example/umbra")
-            // One corpus shared by every url that answers at all, so the
-            // foldable host folds; the silent one answers nothing, ever.
+            // One corpus shared by every url that answers; the silent host answers nothing, ever.
             val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
             val up =
                 Upstreams(answers = { RelayAliases.hostOf(it.url) != "silent.example" }) { corpus }
@@ -1040,20 +892,15 @@ class AliasFoldingTest {
             val urls = listOf(quietHost, quietAlias, canonical, alias)
 
             assertEquals(1, fold.measure("t", urls, canDial = { true }), "the foldable host was not measured")
-            // …and on the pass after, the silent host costs nothing at all while
-            // the fold that was already earned still stands.
+            // On the pass after, the silent host costs nothing while the earned fold still stands.
             assertEquals(listOf(quietHost, quietAlias, canonical), fold.applyVerdicts(urls).dial)
         }
 
     @Test
     fun `a host whose preferred survivor will not answer still folds onto one that will`() =
         runBlocking {
-            // AS REPORTED, and the shape both reports had in common: the group's
-            // preferred leader is the pathless url, and that is the one url on
-            // the host that says nothing. Every other url serves the identical
-            // window — measured on `asia.azzamo.net`, twelve urls all at
-            // containment 1.000 — so the host is trivially foldable and was
-            // abandoned whole, every pass, because one member of it was mute.
+            // The preferred leader is the pathless url, the one url on the host that
+            // says nothing; every other url serves the identical window.
             val store = newStore()
             val bare = RelayUrlNormalizer.normalize("wss://paths.example")
             val first = RelayUrlNormalizer.normalize("wss://paths.example/kilo-yonder")
@@ -1065,10 +912,8 @@ class AliasFoldingTest {
 
             assertEquals(1, fold.measure("t", urls, canDial = { true }), "the group was abandoned on its silent leader")
 
-            // The survivor is the best url that could actually be MEASURED, not
-            // the best url in the abstract: the bare one stays in the fan-out
-            // because nothing was ever proved about it, which is the correct
-            // reading of silence.
+            // The survivor is the best url that could be measured; the bare one stays
+            // in the fan-out because nothing was proved about it.
             assertEquals(listOf(bare, first), fold.applyVerdicts(urls).dial)
             assertEquals(mapOf(second to first), fold.applyVerdicts(urls).aliases)
         }
@@ -1076,17 +921,8 @@ class AliasFoldingTest {
     @Test
     fun `a url the transport declined mid-search is still measured as a member`() =
         runBlocking {
-            // What the yardstick search SKIPS is not what it exhausts, and
-            // conflating the two costs a url its measurement.
-            //
-            // The distinction is invisible while the transport guard answers the
-            // same way twice — a url it refuses as a yardstick it also refuses
-            // as a member, so dropping it changes nothing. It bites when the
-            // guard RECOVERS: `canDial` is `tor.socksAnswers() && tcpReachable`,
-            // both of which are live checks, so a circuit that comes back
-            // between the search and the member walk is ordinary. Marked
-            // exhausted on the refusal, that url is skipped for the rest of the
-            // pass on OUR outage rather than on its own behaviour.
+            // `canDial` is a live check that can recover between the yardstick search
+            // and the member walk; a refusal during the search is not "exhausted".
             val store = newStore()
             val flaky = RelayUrlNormalizer.normalize("wss://mixed.example")
             val first = RelayUrlNormalizer.normalize("wss://mixed.example/alpha")
@@ -1094,8 +930,7 @@ class AliasFoldingTest {
             val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
             val up = Upstreams { corpus }
             val fold = folding(store, up)
-            // Refused once — the yardstick attempt, which is the pathless url
-            // PREFERENCE puts first — and reachable from then on.
+            // Refused once, on the yardstick attempt preference puts first, and reachable from then on.
             val refusals = AtomicInteger()
             val canDial: suspend (NormalizedRelayUrl) -> Boolean = { url ->
                 url != flaky || refusals.getAndIncrement() > 0
@@ -1111,10 +946,8 @@ class AliasFoldingTest {
     @Test
     fun `the yardstick search is bounded and never re-asks a url it has already tried`() =
         runBlocking {
-            // The one place a dead url delays another dial rather than merely
-            // holding a permit, so the walk stops at YARDSTICK_ATTEMPTS — and a
-            // url that failed BOTH filters as a yardstick is not asked a third
-            // time as a member.
+            // A dead url here delays another dial rather than holding a permit, so the
+            // walk stops at YARDSTICK_ATTEMPTS and a failed yardstick is not re-asked as a member.
             val store = newStore()
             val host = "wss://mute.example"
             val urls = (listOf(host) + (0 until 5).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
@@ -1122,10 +955,8 @@ class AliasFoldingTest {
 
             assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
 
-            // Three urls, and `leaderPrint` asks each of them twice — the bare
-            // filter, then the kinds fallback — with the empty-page retry inside
-            // each. What must not happen is a fourth url being dialled, or one
-            // of the three coming round again as a member.
+            // `leaderPrint` asks each of three urls twice, bare filter then kinds
+            // fallback; no fourth url, and none of the three again as a member.
             assertEquals(
                 AliasFolding.YARDSTICK_ATTEMPTS,
                 up.contacted.size,
@@ -1136,12 +967,8 @@ class AliasFoldingTest {
     @Test
     fun `paths that duplicate each other fold even when the group's leader is a different endpoint`() =
         runBlocking {
-            // MEASURED LIVE, and the reason this exists: `haven.calva.dev` wears
-            // `/inbox` plus six minted paths. `/inbox` is a genuinely different
-            // endpoint AND the shortest url, so it leads the group; all six
-            // disagree with it correctly and were each signed as a relay in their
-            // own right for thirty days. Probed against each other they are ONE
-            // relay at containment 1.000 — seven dials for two endpoints.
+            // `/inbox` is a different endpoint and the shortest url, so it leads; the
+            // minted paths disagree with it and agree with each other.
             val store = newStore()
             val inbox = RelayUrlNormalizer.normalize("wss://haven.example/inbox")
             val paths =
@@ -1157,8 +984,7 @@ class AliasFoldingTest {
             assertEquals(inbox, RelayAliases().toProbe(urls.sortedWith(compareBy { it.url.length })).first())
             assertEquals(2, fold.measure("t", urls, canDial = { true }), "the minted paths were never compared to each other")
 
-            // Two endpoints, two dials — not four. The inbox keeps its own place;
-            // it really is a different relay and nothing here says otherwise.
+            // Two endpoints, two dials; the inbox keeps its own place.
             val cleaned = fold.applyVerdicts(urls)
             assertEquals(listOf(inbox, paths.first()), cleaned.dial)
             assertEquals(paths.drop(1).associateWith { paths.first() }, cleaned.aliases)
@@ -1167,11 +993,7 @@ class AliasFoldingTest {
     @Test
     fun `a host of genuinely distinct endpoints keeps every one of them`() =
         runBlocking {
-            // The other side of the same change, and the one a clustering bug
-            // would break silently: `lang.relays.land` partitions by language and
-            // `nostr.ac` serves 20 paths of different content. Comparing members
-            // to each other must not collapse them — every url here serves its
-            // own events, so every url has to survive.
+            // Comparing members to each other must not collapse a host whose paths each serve their own events.
             val store = newStore()
             val urls =
                 listOf("de", "fr", "ja", "la").map { RelayUrlNormalizer.normalize("wss://lang.example/$it") }
