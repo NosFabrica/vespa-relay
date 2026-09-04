@@ -331,6 +331,20 @@ fun main() {
             println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
         }
     }
+    // The store's trust descent — the exact early stop a ranked search takes
+    // over the trusted authors' documents — turns itself on once its one-time
+    // walk has written `max_rank` onto every reputation document. Until then
+    // a common word costs what it always did, so the boot log says when that
+    // ends; a walk that fails leaves the descent off and is reported by the
+    // store's own background-failures line, never as a different page.
+    maintenanceScope.launch {
+        val written =
+            runCatching { store.awaitTrustDescent() }.getOrElse { e ->
+                System.err.println("trust descent: OFF — the max_rank walk failed (${e.message?.take(200)}); ranked search stays on the full walk")
+                return@launch
+            }
+        println(if (written > 0) "trust descent: on — max_rank written onto $written reputation documents" else "trust descent: on")
+    }
 
     // The relay server measures client reads into it; the sync process polls
     // the mean over GET /pressure to decide whether its ingest should yield.

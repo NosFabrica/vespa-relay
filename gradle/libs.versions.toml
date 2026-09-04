@@ -309,7 +309,38 @@ quartz = "cecc3287b2"
 # been possible. The proof stays the resolved graph — every eventstore line
 # reads e1ecd7f23e with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-vespaEventStore = "e1ecd7f23e"
+#
+# 9f07b0b30a = vespa-eventstore main @ 2026-09-04 (PR #98, the trust descent).
+# THE BUMP THE SEARCH LATENCY WORK WAITED ON: a ranked search under an observer
+# now walks the trusted authors' documents (`author_max_rank >= T`, a rung
+# the store PROVES is the exact page from the profile's own constants) instead
+# of a common word's postings — measured on a 1.28M-note slice of staging
+# page-identical to this pin's, `the` 154ms -> 46ms, and estimated 0.5-1s on
+# staging where it is 16s. docs/search-latency.md has the whole account. On
+# the wire NOTHING moves: a REQ still answers its events in final rank order,
+# then EOSE, so no relay code changes with this line. What DOES happen at boot
+# is the store's own one-time walk writing `max_rank` onto every reputation
+# document (~340k on staging), with the descent off until it returns — the
+# `trust descent:` boot line in RelayMain says when.
+#
+# Quartz stays at cecc3287b2: the range e1ecd7f23e..9f07b0b30a touches no
+# quartz pin (one commit, the descent, plus its merge).
+#
+# The store's integration gate ran against c89ed18 — the branch head, whose
+# tree the merge commit 9f07b0b30a carries UNCHANGED (`git diff c89ed18
+# 9f07b0b30a` is empty; main was its ancestor) — 18 tests, 0 failures,
+# 16m42s, on 2026-09-04.
+#
+# DIRECTION: e1ecd7f23e is a strict ancestor of this (`git merge-base
+# --is-ancestor`).
+#
+# LEXICOGRAPHIC: '9f07…' < 'e1ec…' ('9' < 'e'), so this sorts BELOW the pin it
+# replaces — the direction that would LOSE a conflict, exactly as the note at
+# the top of this file warns a hash may. It costs nothing here for the reason
+# the previous note gives: nothing else in the graph names vespa-eventstore,
+# so there is no conflict to lose. It is written down so the next reader does
+# not take the previous bump's "safe direction" as a property of the pin.
+vespaEventStore = "9f07b0b30a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
