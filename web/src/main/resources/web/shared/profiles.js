@@ -1,5 +1,5 @@
 // Author profiles: the kind-0 cache and its batched enrichment REQ. One cache
-// for the whole page, exported as the live Map — every view reads the same
+// for the whole page, exported as the live Map, so every view reads the same
 // names and faces.
 
 import { refConn } from "./conn.js";
@@ -8,15 +8,9 @@ import { shortNpub } from "./nip19.js";
 export const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
 
 /**
- * The one name to show when there is room for one.
- *
- * `display_name` first, `name` as the fallback — and blank means blank, so a
- * profile carrying `display_name: "   "` falls through instead of rendering a
- * gap. Three call sites had this the other way round and disagreed with the
- * rest of the page about what somebody is called.
- *
- * Where BOTH are shown — the profile card — this gives the primary and the
- * other is rendered beside it.
+ * The one name to show when there is room for one: `display_name`, else
+ * `name`, and blank means blank so a whitespace value falls through. Where
+ * both are shown, this is the primary.
  */
 export const displayName = (p) => (p && (p.display_name || "").trim()) || (p && (p.name || "").trim()) || "";
 
@@ -44,35 +38,27 @@ export function seedProfiles(events) {
 }
 
 /**
- * Load the profiles for [pubkeys] that are not cached yet.
- *
- * Returns how many NEW ones it learned, so a caller that rendered before the
- * names arrived knows whether repainting would change anything — a lookup
- * that found nothing new must not cost a second render.
+ * Load the profiles for [pubkeys] that are not cached yet; returns how many
+ * new ones it learned, so a caller that rendered before the names arrived
+ * knows whether repainting would change anything.
  */
 export async function enrichProfiles(pubkeys) {
   const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
   if (!missing.length) return 0;
   let asked = false;
   try {
-    // Anonymous, like every other reference lookup. A displayed author's name
-    // and face are not a personalised question, and the authenticated socket
-    // gates kind 0 to authors the reader has scored — so with "include spam"
-    // on, results would render nameless and faceless for exactly the people
-    // you have not rated.
+    // Anonymous, like every reference lookup: the authenticated socket gates
+    // kind 0 to authors the reader has scored, which would leave exactly the
+    // unrated people nameless.
     const conn = await refConn();
     const found = await conn.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
     seedProfiles(found);
-    // EOSE, not merely "resolved": req() resolves with whatever arrived when
-    // its timeout fires, and a slow read used to count as an answer here.
+    // Only an EOSE is an answer; req() resolves with whatever arrived at its
+    // timeout.
     asked = found.complete === true;
   } catch (e) { asked = false; }
-  // Cache "no profile" ONLY when the relay actually answered. This used to
-  // record null on failure too, so one dropped lookup meant that pubkey had
-  // no face for the rest of the session — which is what made signing in
-  // appear to need a page refresh: the very first attempt poisoned the entry
-  // for your own key, and every later render read the poison. A timed-out
-  // read is the same mistake in slow motion, hence the `complete` check.
+  // "No profile" is cached only when the relay answered; a null recorded off
+  // a failed read is read before every later render.
   const learned = missing.filter((p) => profiles.get(p)).length;
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
   return learned;

@@ -1,10 +1,8 @@
 // The pointers a page needs but was not sent: the follow-up read behind the
 // provenance row. A search for `kinds:[0]` returns profiles without the lists,
-// labels and assertions they were found through, so the page asks for them the
-// way the score chip does: paint what the answer supports, fire an anonymous
-// read for the rest, repaint when it lands.
-//
-// Pure filter-building, so pointers.test.mjs can hold the shapes; only
+// labels and assertions they were found through, so the page paints what the
+// answer supports, fires an anonymous read for the rest, and repaints when it
+// lands. Pure filter-building, so pointers.test.mjs can hold the shapes; only
 // [fetchPointers] touches a socket.
 
 import { refConn } from "./conn.js";
@@ -12,15 +10,13 @@ import { addrOf } from "./nip19.js";
 import { providersFor, publishersOf } from "./providers.js";
 import { DECLARATION_KINDS } from "../provenance.js";
 
-/** The only thing an `authors` filter or an `observer:` token takes. */
 const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
- * Which tag a declaration names its subject with, by kind, and which of the
- * page's three target sets that subject is drawn from. Read off provenance.js's
- * `MEMBER_TAG`: asking with a different tag than the pill reader walks fetches
- * events that contribute nothing. 30395's members are NIP-73 identifiers, not
- * events, so it has no target here.
+ * Which tag a declaration names its subject with, and which of the page's
+ * three target sets it is drawn from. Must match provenance.js's `MEMBER_TAG`,
+ * or the fetch brings events the pill reader never walks. 30395's members are
+ * NIP-73 identifiers, not events, so it has no target here.
  */
 const ASKS = [
   { kind: 30392, tag: "#p", from: "pubkeys" },
@@ -29,14 +25,13 @@ const ASKS = [
   { kind: 30382, tag: "#d", from: "pubkeys" },
   { kind: 30383, tag: "#d", from: "ids" },
   { kind: 30384, tag: "#d", from: "addrs" },
-  // The reader's own curation, naming members in `p` like a 30392. Gated on
-  // their signer like the rest, so an anonymous reader, who is nobody, never
-  // asks for them.
+  // The reader's own curation, gated on their signer like the rest, so an
+  // anonymous reader never asks for them.
   { kind: 30000, tag: "#p", from: "pubkeys" },
   { kind: 39089, tag: "#p", from: "pubkeys" },
 ];
 
-/** NIP-32, asked by every tag that can name something on screen. */
+/** NIP-32 labels, asked by every tag that can name something on screen. */
 const LABEL_ASKS = [
   { kind: 1985, tag: "#p", from: "pubkeys" },
   { kind: 1985, tag: "#e", from: "ids" },
@@ -48,16 +43,15 @@ export const BATCH = 100;
 
 /**
  * The ceiling on an ungated read. A label filter has no `authors`, so this is
- * the only bound on the row's cost; pills collapse by value, so it buys
- * distinct values and never volume.
+ * the only bound on its cost; pills collapse by value, so it buys distinct
+ * values and never volume.
  */
 export const LABEL_LIMIT = 100;
 
 /**
  * What this page could have a pill drawn on: the three shapes provenance.js
- * matches a pointer against. `pubkeys` are the authors of the kind-0s here,
- * not every author on the page, since a pill about a person is drawn on their
- * profile card.
+ * matches a pointer against. `pubkeys` are the authors of the kind-0s only,
+ * since a pill about a person is drawn on their profile card.
  */
 export function targetsOf(events) {
   const pubkeys = new Set(), ids = new Set(), addrs = new Set();
@@ -78,17 +72,13 @@ const chunk = (xs, n) => {
 };
 
 /**
- * The filters that would fetch this page's missing pointers, or `[]` for a
- * page with nothing to ask about. NIP-01 ORs the filters within a
- * subscription, so one REQ carries them all.
- *
- * [trusted] is [trustedSigners]' `kind -> Set(signer)`; a kind it has nobody
- * for is skipped, not asked openly. `declarations` and `labels` select which
- * half is built, and they go out as separate REQs since one REQ waits for one
- * EOSE and the open half is the slow one. A declaration filter carries no lens
- * (a service key nobody follows would fall under the reader's trust floor); a
- * label filter carries the observer, written as a NIP-50 token because
- * `withoutLens` refuses to touch a filter that already declares one.
+ * The filters that would fetch this page's missing pointers, or `[]`. A kind
+ * [trusted] has nobody for is skipped, never asked openly. `declarations` and
+ * `labels` select which half is built; they go out as separate REQs because a
+ * REQ waits for one EOSE and the open half is the slow one. A declaration
+ * filter carries no lens, since a service key nobody follows would fall under
+ * the reader's trust floor; a label filter carries the observer as a NIP-50
+ * token, which `withoutLens` then leaves alone.
  */
 export function pointerFilters(targets, trusted, { labels = true, declarations = true, observer = null } = {}) {
   const out = [];
@@ -117,8 +107,7 @@ export function pointerFilters(targets, trusted, { labels = true, declarations =
 /**
  * The pointer events for [events], read as [observer]'s Map delegates them.
  * Handed back alongside the page, never instead of it; provenance.js dedupes
- * per pointer, so an event arriving both ways is one pill. A failed read is
- * `[]`, the same degradation the names and the score chips take.
+ * per pointer. A failed read is `[]`, like the names and the score chips.
  */
 export async function fetchPointers(events, observer, opts) {
   const targets = targetsOf(events);
@@ -136,13 +125,9 @@ export async function fetchPointers(events, observer, opts) {
 
 /**
  * Who may speak, per declaration kind: the Map's service keys for that kind
- * plus the observer themselves, in the shape provenance.js reads.
- *
- * Per kind, because the key a Map names for 30392 does not speak for 30382;
- * dimensions of one kind collapse, which is `publishersOf`'s union. The same
- * object serves the ask and the render, so the fetch and the row cannot come
- * to different views of whom this reader trusts. An anonymous reader gets an
- * empty set for every kind.
+ * plus the observer themselves. Per kind because a key named for 30392 does
+ * not speak for 30382. The same object serves the ask and the render, so the
+ * fetch and the row cannot disagree about whom this reader trusts.
  */
 export function trustedSigners(delegations, observer) {
   const out = new Map();

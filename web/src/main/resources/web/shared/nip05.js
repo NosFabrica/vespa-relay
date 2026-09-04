@@ -1,17 +1,7 @@
-// ---- NIP-05 verification ---------------------------------------------------
-//
-// A nip05 in a profile is a CLAIM: "this name at this domain is me". It is
-// only worth anything once the domain agrees, and until now the page rendered
-// the claim as though it were the answer.
-//
-// Checked lazily, when the profile scrolls into view — one fetch per identity
-// per session, no more. Doing it at render time would fire a request per
-// result for profiles nobody looks at, against domains that did not ask to be
-// polled by a search page.
-//
-// Three outcomes, not two. A domain that cannot be reached — offline, no CORS
-// header, bad TLS — is NOT a failed claim, and marking it invalid would
-// accuse people of lying because their web server is down.
+// NIP-05 verification. A nip05 in a profile is a claim that is only worth
+// anything once the domain agrees, so it is checked when the profile scrolls
+// into view, once per identity per session. Three outcomes, not two: a domain
+// that cannot be reached is not a failed claim.
 const nip05Cache = new Map();   // "name@domain|pubkey" -> "ok" | "bad" | "unknown"
 
 async function checkNip05(addr, pubkey) {
@@ -60,17 +50,10 @@ const nip05Watcher = new IntersectionObserver((entries) => {
 }, { rootMargin: "120px" });
 
 /**
- * Hand the currently rendered nip05 elements to the watcher.
- *
- * DISCONNECT first, then observe what is on the page now. Every caller of this
- * reaches it just after replacing a container's innerHTML wholesale, so the
- * elements observed on the previous pass are already detached — and an
- * IntersectionObserver holds a STRONG reference to each target until it is
- * unobserved, which only happened here when a target scrolled into view. A
- * session that ran forty searches was keeping every nip05 element of all forty
- * alive, none of them in the document. The old `data-watched` guard existed to
- * avoid re-observing across calls; re-observing is now the whole point, and it
- * costs nothing because a verdict is cached per identity for the session.
+ * Hand the currently rendered nip05 elements to the watcher. Disconnect first:
+ * every caller has just replaced a container's innerHTML, and an observer
+ * holds its targets strongly until they are unobserved. Re-observing is free
+ * because a verdict is cached per identity.
  */
 export function watchNip05() {
   nip05Watcher.disconnect();
