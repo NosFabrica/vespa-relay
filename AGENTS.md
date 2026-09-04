@@ -5053,11 +5053,15 @@ Reach for it first.
 
 ## Conventions
 
-**Comments say why, with evidence.** The codebase's KDoc records what actually
-happened — measured numbers, the wrong turn that motivated the current shape.
-Match that register. `// increment the counter` is noise; "this was
-`inboundCapacity = batch * 4` with no ceiling, so batch 20000 sized the queue at
-80,000 events and the heap went over" is the house style.
+**Comments are short, and the code carries the meaning.** A KDoc is one to
+three lines: what the thing is, and the one constraint a reader would otherwise
+get wrong. An inline comment marks a non-obvious invariant or ordering, in one
+or two lines, and nothing else. No history ("this used to be…"), no measured
+numbers, no capitalised emphasis, no ellipsis continuations between blocks. If
+a block needs a paragraph to explain, extract a named function or constant
+instead. The history and the measurements go to `docs/decisions/`, one short
+paragraph per decision, and to commit messages; `git log -L` finds the rest.
+`VisitPool.kt` is the reference for the register.
 
 **Tests assert the property, not the implementation.** `NIP-50 extensions
 survive the session to the engine query` passed unchanged through a wholesale
