@@ -1,8 +1,5 @@
-// The web UI's test suite: plain node, no framework, no dependencies, like the
-// pages under test. Each *.test.mjs opens with what it covers. Run from anywhere:
-//
-//     ./gradlew :web:jsTest                  # `build` depends on it
-//     node web/src/test/js/run.mjs           # every module suite, directly
+// The web UI's test suite: plain node, no framework, like the pages under
+// test. `./gradlew :web:jsTest` runs it as part of `build`.
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 

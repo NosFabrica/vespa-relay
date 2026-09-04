@@ -1,22 +1,8 @@
-// THE PROVENANCE ROW, IN A REAL BROWSER — the layer every other test on this
-// branch skips, and the one both of its bugs lived in.
-//
-// web/src/test/js covers the RULES (provenance.js, pointers.js, providers.js)
-// and it covered them while the page drew nothing at all, twice. Neither bug
-// was in a rule:
-//
-//   - hydrate() is shared by three views and seeds one global map, so the
-//     type-ahead popup — which cannot draw a pill — replaced the results
-//     view's row on every keystroke and the late fetch came back to a guard
-//     that said "stale";
-//   - the entity page cleared the row on the way in and never asked again, so
-//     a permalink drew none.
-//
-// Both are wiring, and wiring needs the wiring. So: a real Chromium, a real
-// relay, a real corpus, and the four assertions the modules cannot make.
-//
-// It is a PROBE, not part of `./gradlew build`: it needs a Vespa, a corpus
-// that is not in the repo, and a browser. Same bargain as ObserverTrustListIT.
+// The provenance row in a real Chromium against a real relay and an observer
+// corpus: the wiring the module tests cannot reach. Run by hand, never by
+// `./gradlew build`. The observer is passed as `as=` rather than signed in, so
+// a green run says nothing about the reader's own NIP-51 lists (see
+// docs/decisions/tests-web-b.md).
 //
 //   docker run -d --name vespa -m 9g -p 127.0.0.1:8080:8080 \
 //       -p 127.0.0.1:19071:19071 vespaengine/vespa
@@ -28,24 +14,7 @@
 //       relay/build/install/vespa-relay/bin/vespa-relay &
 //   node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
 //
-// The observer is passed as `as=` rather than signed in: the lens is public,
-// so `viewingAs` reaches the same code without a NIP-07 extension.
-//
-// THE READER'S OWN NIP-51 LISTS ARE NOT COVERED BY A RUN AGAINST STAGING, and
-// it is worth knowing why before reading a green probe as covering them. Since
-// store `2bc79f5f40` a people list (30000) or follow pack (39089) splices its
-// members, and provenance.js draws the pill — but only for the reader who
-// SIGNED the list, so `as=` alone cannot reach it: the lens says whom to rank
-// through, and the gate asks who signed. Exercising it needs a corpus holding
-// one of that observer's OWN lists naming somebody whose profile is also in
-// the page, on a relay built from a branch carrying that store. Staging is not
-// that relay until this pin deploys, and `fetch-observer-corpus.mjs` will
-// happily hand back a corpus with no such list in it — in which case the case
-// is silently untested rather than failing. Check the corpus for a 30000 the
-// observer signed before concluding anything about this half.
-// Playwright is not a dependency of this repo and never should be — the rest
-// of the web suite is plain node on purpose. Resolved from wherever it happens
-// to be installed, global included, rather than pinned to one machine's path.
+// Playwright is not a dependency of this repo; it is resolved from wherever it is installed.
 const { chromium } = await import("playwright").catch(async () => {
   const { execSync } = await import("node:child_process");
   const root = execSync("npm root -g", { encoding: "utf8" }).trim();
@@ -75,8 +44,7 @@ page.on("console", (m) => {
 });
 
 const pills = () => page.locator(".prov-pill").count();
-// The row lands on a late repaint by design, so every wait here is for the
-// PILLS, never a fixed sleep — a sleep is how a slow relay turns this green.
+// The row lands on a late repaint, so every wait is for the pills, never a fixed sleep.
 const waitForPills = async (ms = 30000) => {
   try { await page.waitForFunction(() => document.querySelectorAll(".prov-pill").length > 0, null, { timeout: ms }); }
   catch { /* the assertion below says it */ }
@@ -84,7 +52,6 @@ const waitForPills = async (ms = 30000) => {
 
 console.log(`\nrow.probe — ${BASE}, ranking as ${AS.slice(0, 12)}…, query ${JSON.stringify(QUERY)}`);
 
-// ---- 1. the results list draws a row at all -------------------------------
 console.log("\nthe results list");
 await page.goto(`${BASE}/?q=${encodeURIComponent(QUERY)}&tab=people&as=${AS}`, { waitUntil: "domcontentloaded" });
 await waitForPills();
@@ -93,11 +60,7 @@ ok(onResults > 0, `a People search draws the row it no longer gets for free (${o
 const firstText = onResults ? await page.locator(".prov-pill").first().innerText() : "";
 ok(!/^#[a-z]$/.test(firstText.trim()), `a pill says something a reader can read (first: ${JSON.stringify(firstText.trim())})`);
 
-// ---- 2. …and typing does not take it away ---------------------------------
-//
-// The bug: the popup's hydrate seeded the one global provenance map with its
-// own eight rows and moved the epoch, so the search's late fetch was dropped.
-// It fires on every keystroke, so this was every search.
+// The popup's hydrate shares the provenance map with the results view.
 console.log("\nthe type-ahead popup, over the same results");
 await page.click("#q").catch(() => {});
 await page.keyboard.type(" bit", { delay: 60 });   // a debounced popup search, mid-page
@@ -105,13 +68,8 @@ await page.waitForTimeout(4000);
 const afterTyping = await pills();
 ok(afterTyping > 0, `typing into the box leaves the row standing (${afterTyping} pills)`);
 
-// ---- 3. clicking through to a profile keeps the row -----------------------
-//
-// The journey the reader actually takes, and the one that was reported empty.
-// The entity view clears on the way in — a row inherited from the last search
-// would mean "how you got here" — so it has to ask again for the entity
-// itself, and `related` is appended after the card, so the answer has to land
-// in the card without taking that with it.
+// The entity view clears the row on the way in and must ask again for its
+// own subject; `related` is appended after the card, so the answer lands in the card.
 console.log("\nclicking through to a profile");
 await page.goto(`${BASE}/?q=${encodeURIComponent(QUERY)}&tab=people&as=${AS}`, { waitUntil: "domcontentloaded" });
 await waitForPills();
@@ -127,12 +85,7 @@ else {
     "and it lands in the card's slot, so `related` beneath it survives");
 }
 
-// ---- 4. …and so does the same permalink pasted cold ------------------------
-//
-// The lens is part of the URL, and this branch used to return before reading
-// it — so a pasted `/npub1…?as=…` ranked as nobody, which is no delegations,
-// which is no row. It cost the score chips their numbers here too, long before
-// the row existed.
+// The lens is part of the URL; a pasted permalink must read it before ranking.
 console.log("\nthe same permalink, pasted cold");
 if (href) {
   await page.goto(`${BASE}${href}?as=${AS}`, { waitUntil: "domcontentloaded" });
@@ -140,10 +93,6 @@ if (href) {
   ok(await pills() > 0, `a permalink carrying \`as=\` draws the row (${await pills()} pills)`);
 }
 
-// ---- 5. nothing threw on the way ------------------------------------------
-//
-// PAGE errors only. Avatars are fetched from whatever host a profile names,
-// and a sandbox that cannot reach them is not this page misbehaving.
 console.log("\nthe console");
 ok(errors.length === 0, `no page errors (${errors.length}${errors.length ? ": " + errors[0].slice(0, 120) : ""})`);
 

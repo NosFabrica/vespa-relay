@@ -23,7 +23,6 @@ const healthy = () => ({
 
 const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 
-// ---- nothing is claimed before the answer that decides it -----------------
 {
   assert.equal(assess({}).state, "checking");
   assert.equal(assess({ relayList: { writeRelays: ["wss://a.com"] } }).state, "checking");
@@ -33,7 +32,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("an unanswered stage is `checking`, and `checking` is never shown");
 }
 
-// ---- the ordering: the first unmet link wins ------------------------------
 {
   const v = assess({ relayList: { seen: false, writeRelays: [] }, scoreListSeen: false, rankService: null });
   assert.equal(v.state, "no-relay-list");
@@ -45,10 +43,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("the first unmet link is the verdict; every link below it waits");
 }
 
-// ---- a link that waits says nothing about itself --------------------------
-//
-// Two modules can break this: assess() must hand a waiting link no detail, and
-// chainHtml must not enter its detail switch for one.
+// A waiting link must carry no detail, and chainHtml must not enter its detail switch for one.
 {
   for (const facts of [
     { relayList: { seen: false, writeRelays: [] }, scoreListSeen: false, rankService: null },
@@ -91,7 +86,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("a relay list we cannot dial is not the same as no relay list");
 }
 
-// ---- each link, broken on its own -----------------------------------------
 {
   assert.equal(assess({ ...healthy(), scoreListSeen: false }).state, "no-score-list");
   const noRank = assess({ ...healthy(), rankService: null });
@@ -109,7 +103,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("no scores here is blocked, not `0%` of a working import");
 }
 
-// ---- the percentage, and when there isn't one -----------------------------
 {
   const v = assess({ ...healthy(), scores: { here: 62847, there: 145968 } });
   assert.equal(v.state, "importing");
@@ -165,7 +158,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("holding more than the upstream serves is parity, not 137%");
 }
 
-// ---- the end-to-end probe sees what the links cannot ----------------------
 {
   // The trust projection is derived per service when the relay starts, so a
   // service new to it ranks nothing until then.
@@ -176,7 +168,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("an empty ranked read is only a verdict against an anonymous control");
 }
 
-// ---- your own posts hang off the chain, not in it -------------------------
 {
   const v = assess({ ...healthy(), posts: { here: 1204, there: 1880, relay: "wss://relay.damus.io" } });
   assert.equal(v.state, "posts-behind");
@@ -186,10 +177,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("posts behind is a working state, reported beside the chain");
 }
 
-// ---- and both sides of that count ask the same question -------------------
-//
-// assess() is handed two numbers and cannot tell whether they were taken over
-// the same kinds, so the source is asserted instead.
+// assess() cannot tell whether its two numbers were taken over the same kinds, so the source is asserted.
 {
   const src = readFileSync(
     new URL("../../main/resources/web/readiness.js", import.meta.url), "utf8"
@@ -231,7 +219,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("with no counts, the newest event on each side decides — or nothing does");
 }
 
-// ---- the relay url the reader types --------------------------------------
 {
   globalThis.location = { protocol: "https:" };
   const { normalizeRelay, whyNotDialable } = await import(
@@ -266,7 +253,6 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("a typed relay url is normalised, or refused with a reason");
 }
 
-// ---- the healthy reader hears nothing -------------------------------------
 {
   const v = assess(healthy());
   assert.equal(v.state, "ready");
