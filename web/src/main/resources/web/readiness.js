@@ -1,30 +1,10 @@
-// The line under the search box that says whether this relay can rank for you
-// yet — and, when it cannot, the one thing that fixes it.
-//
-// Signing in switches search to YOUR web of trust, and the store treats that
-// lens as a filter rather than an ordering: a reader whose trust chain has not
-// reached this relay gets an EMPTY ranked search. The page used to say nothing
-// at all about that, so "this relay is broken" and "this relay has not got to
-// you yet" looked identical — and one of them has a next step.
-//
-// The DECISION is shared/readiness.js, pure and tested. This module is the two
-// halves it cannot be: the asks that produce the facts, and the words.
-//
-// Asks are the reason this is not eager. A healthy signed-in reader would
-// otherwise pay seven round trips per load to be told nothing, so:
-//
-//   * it runs once per pubkey per page, after a delay, so the first search and
-//     the first paint have the sockets to themselves;
-//   * it stops at the FIRST broken link — the counts and the probe are never
-//     sent for a reader who has no relay list;
-//   * a `ready` verdict is remembered for a WEEK, in a cookie the browser
-//     expires by itself. A complete chain has nothing left to learn — every
-//     link is an event already here — so a returning reader pays nothing at all
-//     until the next one. A verdict short of ready is never remembered: that is
-//     the one that changes, on the router's six-hour pass;
-//   * the posts count is not sent AT ALL unless this relay says which kinds it
-//     mirrors. Four asks, two of them to somebody else's relay, are skipped
-//     rather than spent on a number nobody could read — see shared/mirrors.js.
+// The line under the search box that says whether this relay can rank for
+// this reader yet and, when it cannot, the one thing that fixes it. The
+// verdict is shared/readiness.js's; this module makes the asks that feed it
+// and writes the words. The check is lazy: once per pubkey per page, after a
+// delay, stopping at the first broken link, with a `ready` verdict kept in a
+// week-long cookie and the posts count sent only when this relay says which
+// kinds it mirrors (shared/mirrors.js).
 
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
@@ -36,69 +16,39 @@ import { seedProviders } from "./shared/providers.js";
 
 const $panel = document.getElementById("readiness");
 
-/** Where a NIP-85 provider will make you a list, named in state B. */
+/** Where a NIP-85 provider will make the reader a list. */
 const PROVIDER_URL = "https://brainstorm.world";
 
-/**
- * The delay before the first ask.
- *
- * Not a guess at how long the page takes — a place in the queue. Everything
- * this module asks is background work, and every socket it uses is one the
- * search, the faces and the score chips are already on.
- */
+/** The first ask waits for the search, the faces and the score chips, which share its sockets. */
 const START_DELAY_MS = 1500;
 
 /**
- * How long a `ready` verdict is trusted — a week, in a cookie.
- *
- * A reader whose chain is complete has nothing left to learn from this check:
- * every link is an event already mirrored here, and the only way back out of
- * `ready` is their own republished list, which they will have done deliberately
- * and can force a recheck for. The check itself is seven round trips, two of
- * them to somebody else's relay, so the ceiling on how often it is worth paying
- * is set by how often the answer could change, not by the router's six-hour
- * refresh — that interval is what makes a NOT-ready verdict worth re-asking.
- *
- * A cookie rather than localStorage, matching app.js's signed-in preference:
- * same-origin, survives a page switch, and expires by itself, so the week is
- * enforced by the browser rather than by arithmetic we have to get right. It
- * rides along on requests to this relay; the relay reads no cookies at all, and
- * a signed-in reader has already named the same pubkey over NIP-42 on the
- * socket, so it tells the server nothing it was not told directly.
+ * How long a `ready` verdict is trusted, in a cookie so the browser enforces
+ * the expiry. A complete chain has nothing left to learn; only a verdict
+ * short of ready is worth re-asking on the router's next pass.
  */
 const READY_TTL_DAYS = 7;
 const READY_COOKIE = "sot_ready";
 
-/** How long a DISMISSAL is trusted. The router's own refresh interval. */
+/** How long a dismissal is trusted: the router's own refresh interval. */
 const DISMISS_TTL_MS = 6 * 60 * 60 * 1000;
 
 const fmt = (n) => Number(n).toLocaleString();
 const host = (url) => String(url || "").replace(/^wss?:\/\//, "");
-/** "1 write relay", "2 write relays" — never "2 write relay(s)". */
 const many = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 
 let checkedFor = null;   // the pubkey this page has already checked
 
 /**
- * Which check is the current one.
- *
- * Bumped by every start and by every clear, and carried by the run itself, so
- * a run whose reason has gone away paints nothing. Everything here is on a
- * timer or a socket, and both outlive the reason they were started for: sign
- * out inside the start delay and the timer still fired, still asked, and still
- * drew a panel about an account that was no longer on screen — a claim about
- * somebody who had left. Switching accounts in the extension is the same race
- * with a worse result, since the panel would be RIGHT about the wrong person.
+ * Which check is current. Bumped by every start and clear and carried by the
+ * run, so a run whose reason has gone (sign-out, an account switch in the
+ * extension) paints nothing.
  */
 let generation = 0;
 
 /**
- * Check [pubkey], once, in the background.
- *
- * Safe to call from every path that can change who is signed in — it is the
- * same shape as the login flight above it, and for the same reason: a search,
- * a sign-in click and a back/forward restore can all arrive within a beat of
- * each other and none of them should mean a second round of asks.
+ * Check [pubkey] once, in the background. Safe to call from every path that
+ * can change who is signed in; a repeat for the same pubkey costs nothing.
  */
 export function checkReadiness(pubkey, { force = false } = {}) {
   if (!pubkey) { clearReadiness(); return; }
@@ -109,7 +59,7 @@ export function checkReadiness(pubkey, { force = false } = {}) {
   setTimeout(() => { run(pubkey, gen).catch(() => {}); }, force ? 0 : START_DELAY_MS);
 }
 
-/** Signing out is a decision: take the panel down and forget the verdict. */
+/** Take the panel down and forget the verdict. */
 export function clearReadiness() {
   checkedFor = null;
   generation++;
@@ -117,22 +67,14 @@ export function clearReadiness() {
 }
 
 /**
- * One pass. [gen] is what makes it abandonable.
- *
- * The generation is the ONLY concurrency control here, deliberately: a
- * `running` flag beside it looked like belt and braces and was a hole — press
- * "Check again" while a pass is in flight and the new one returned early on the
- * flag, while the old one then suppressed its own paint for being superseded,
- * so the click did nothing at all and said nothing about it. Letting the newer
- * pass run costs one duplicated round of asks, once, per press; the older one
- * finishes into a paint that is dropped, and closes its sockets on the way out.
+ * One pass. [gen] is the only concurrency control: a newer pass runs, and
+ * the older one finishes into a paint that is dropped.
  */
 async function run(me, gen) {
   if (gen !== generation) return;
   const facts = {};
-  // Painted after every stage, so the chain fills in rather than appearing
-  // whole — but nothing is REVEALED until the verdict is worth showing, and
-  // nothing at all once this pass has been superseded.
+  // Painted after every stage so the chain fills in, but nothing is shown
+  // until the verdict is worth showing, and nothing once superseded.
   const paint = () => { if (gen === generation) render(assess(facts), me); };
 
   const anon = await refConn();
@@ -140,10 +82,8 @@ async function run(me, gen) {
   paint();
   if (!facts.relayList.writeRelays.length || !facts.rankService) return;
 
-  // Together: our own count and the provider relay's answer the same question
-  // about two different stores, and neither informs the other. Run in series,
-  // the local answer — Vespa, milliseconds — sat waiting on a stranger's relay
-  // that observer_stats measured at up to 47.6s for a single COUNT.
+  // Our count and the provider relay's answer the same question about two
+  // stores; run in series, the local answer waited on a stranger's relay.
   [facts.scores, facts.probe] = await Promise.all([
     scoreCounts(anon, facts.rankService),
     probe(anon),
@@ -153,21 +93,10 @@ async function run(me, gen) {
   // Only once ranking is complete: a reader still importing scores does not
   // need a second, quieter number about a different thing.
   if (assess(facts).state !== "ready") return;
-  // What this relay is even ASKING for decides whether the posts question can
-  // be put at all. Without the mirror's kind list our count is narrowed by the
-  // router and theirs is not, and the panel drew that as "35% mirroring" on a
-  // mirror missing nothing (shared/mirrors.js has the measurement). No scope,
-  // no facts, no panel — which is also four asks not sent. Serial rather than
-  // alongside the stage above, because it is only owed on the path that
-  // reaches here, and this is the one state where the panel usually says
-  // nothing at all.
+  // Without the mirror's kind list the two post counts are not the same
+  // question (shared/mirrors.js), so no scope means no posts stage at all.
   const scope = await readMirrorScope();
-  // Checked HERE and not only below, because this ask opened a window that did
-  // not exist before it: the posts stage used to follow the verdict with
-  // nothing awaited in between. Sign out across this fetch and the four asks
-  // still went out — two of them to somebody else's relay — on behalf of an
-  // account that had left. The paint was already guarded; the ASKS were not,
-  // which is the same hole the start delay's guard was written for.
+  // Sign-out across the await above must stop the asks, not only the paint.
   if (gen !== generation) return;
   if (scope) facts.posts = await postCounts(anon, me, facts.relayList.writeRelays, scope);
   if (gen !== generation) return;
@@ -179,18 +108,10 @@ async function run(me, gen) {
 // ---- the asks -------------------------------------------------------------
 
 /**
- * Your kind 0, 10002 and 10040 — one REQ, read ANONYMOUSLY.
- *
- * The authenticated socket is trust-gated to authors the reader has scored,
- * and this whole check exists for readers who have scored nobody: asking there
- * would answer "you do not exist" for exactly the people it is meant to
- * diagnose. Same reason the observer picker and the score chips read here.
- *
- * False when the relay did not FINISH answering. `complete` is EOSE, not
- * merely resolved — a timed-out read hands back whatever arrived, and reading
- * a gap in it as "you have no relay list" would put a red panel in front of
- * somebody whose only problem was a slow moment. The same rule profiles.js and
- * parents.js hold about caching absences.
+ * The reader's kind 0, 10002 and 10040, one REQ read anonymously: the
+ * authenticated socket is trust-gated, and this check exists for readers who
+ * have scored nobody. False unless the relay reached EOSE; a timed-out read
+ * must not become "you have no relay list".
  */
 async function readLists(anon, me, facts) {
   let evs;
@@ -202,29 +123,19 @@ async function readLists(anon, me, facts) {
     evs.filter((e) => e.kind === kind).sort((a, b) => b.created_at - a.created_at)[0] || null;
 
   const relayList = newest(10002);
-  // NIP-65: an `r` tag with no marker is both read AND write. Only the write
-  // ones matter here — they are where this reader publishes, which is where
-  // the router would go looking for everything else about them.
+  // NIP-65: an `r` tag with no marker is read and write. Only write relays
+  // matter here, being where the router would look for the rest of the reader.
   const declared = relayList
     ? (relayList.tags || []).filter((t) => t?.[0] === "r" && t[1] && (t[2] === "write" || t[2] == null))
     : [];
   const writeRelays = [...new Set(declared.map((t) => normalizeRelay(t[1])).filter(Boolean))];
-  // `seen` is not the same fact as `writeRelays.length`, and saying so cost a
-  // wrong headline. A list naming only `ws://` relays loses every one of them
-  // on an https page — the browser refuses those connections outright — and a
-  // list naming only loopback loses them too. Both left an empty array, and the
-  // panel then told a reader who HAS published a relay list that we had never
-  // seen one.
+  // `seen` is not `writeRelays.length`: a list naming only ws:// or loopback
+  // relays is a list the reader published and a browser cannot use.
   facts.relayList = { seen: !!relayList, declared: declared.length, writeRelays };
 
   const scoreList = newest(10040);
-  // The same event shared/providers.js would otherwise fetch again for the
-  // score chips and the provenance row — the reader's own Map, off the same
-  // socket, a few hundred milliseconds later. This read is the earliest one a
-  // signed-in page makes and it is already complete-gated above, which is the
-  // one condition seeding a cache has. Handing it over rather than calling in
-  // the other direction keeps this file's job unchanged: it diagnoses, and it
-  // does not become the page's Map loader.
+  // The same event shared/providers.js would fetch again for the chips and
+  // the provenance row; this read is complete-gated, which seeding requires.
   seedProviders(me, scoreList, true);
   facts.scoreListSeen = !!scoreList;
   const rank = scoreList ? (scoreList.tags || []).find((t) => t?.[0] === "30382:rank") : null;
@@ -233,13 +144,9 @@ async function readLists(anon, me, facts) {
 }
 
 /**
- * How many of your provider's score cards are here, and how many it serves.
- *
- * The same arithmetic observer_stats.html runs for every observer on the relay
- * — this is one reader's own row. `there` stays null when the 10040 named no
- * relay we can dial, and comes back as a non-answer sentinel when the relay
- * declined or went quiet; all three mean the same thing to the panel, which is
- * that there is no denominator and it must not invent one.
+ * How many of the provider's score cards are here, and how many it serves.
+ * `there` is null or a sentinel when there is no denominator to be had, and
+ * the panel must not invent one.
  */
 async function scoreCounts(anon, { service, relay: url }) {
   const filter = { kinds: [30382], authors: [service] };
@@ -251,16 +158,9 @@ async function scoreCounts(anon, { service, relay: url }) {
 }
 
 /**
- * Does a read on the authenticated socket actually come back?
- *
- * The end-to-end check, and the only one that sees what the three link checks
- * cannot: score cards can be HERE and not yet PROJECTED — the projection is
- * per service, derived by a reconcile that runs when the relay starts — so a
- * service new to this relay ranks nothing for a while after its cards land.
- *
- * Both sockets are asked the same thing on purpose. An empty answer means
- * something only against a control: on a fresh relay both come back empty, and
- * that is the store having nothing to say rather than a broken lens.
+ * Does a read on the authenticated socket come back? The one check that sees
+ * cards that are here but not yet projected. The anonymous read is the
+ * control: on a fresh relay both are empty, and that is not a broken lens.
  */
 async function probe(anon) {
   if (!relay.authed) return null;
@@ -275,39 +175,16 @@ async function probe(anon) {
 }
 
 /**
- * Your own events here, against the write relay that holds most of them.
- *
- * ONE filter, built once and sent to both sides — that is the whole shape of
- * this function, and the reason it takes a [scope]. Asked bare, the two counts
- * are not the same question: ours is narrowed to what the router pulls down and
- * theirs is not, so a mirror holding everything it was ever asked for reads as
- * a third of the way there and can never reach 100%. The kinds come off
- * `/stats.json` (shared/mirrors.js); `scopedTo` refuses to build a filter
- * without them rather than quietly building the wrong one.
- *
- * The dates carry the same bound for the same reason. A reaction or a DM newer
- * than anything we mirror is not this relay being behind — it is a kind no
- * stream asks for — and unscoped it would say "still arriving" forever.
- *
- * Falls back to those dates because a relay that does not serve NIP-45 can
- * still answer "what is the latest thing they wrote", and "we have your posts
- * up to 2 July" is a real answer where a missing bar is not.
- *
- * The bound is over a hundred kinds wide on this deployment, and a relay that
- * refuses a filter that size answers the same way it answers a COUNT it does
- * not implement — REFUSED, or nothing. That lands on the date fallback, and if
- * it takes the dates too the panel says nothing at all. Both are the safe
- * direction: what a narrower ask would buy back is precisely the number that
- * has to be wrong.
+ * The reader's own events here, against the write relay holding most of
+ * them. One filter, scoped to the kinds this relay mirrors, sent to both
+ * sides; `scopedTo` refuses to build one without a scope. The newest-event
+ * reads carry the same bound and stand in where a relay answers no COUNT.
  */
 async function postCounts(anon, me, writeRelays, scope) {
   const filter = scopedTo({ authors: [me] }, scope);
   const newest = { ...filter, limit: 1 };
   const url = writeRelays[0];
-  // All three at once. Our count, our newest and the whole remote exchange are
-  // three answers to one question, and none of them reads the others — run in
-  // series they were three waits deep, the last of them on somebody else's
-  // server.
+  // Three answers to one question, none of which reads the others.
   const [here, newestHere, answer] = await Promise.all([
     anon.count(filter).catch(() => TIMED_OUT),
     anon.req(newest).catch(() => []),
@@ -322,8 +199,8 @@ async function postCounts(anon, me, writeRelays, scope) {
     here,
     there: answer?.there ?? null,
     relay: url || null,
-    // What both sides were asked for, so the words can say so — null where the
-    // mirror asks for everything and there was no bound to apply.
+    // What both sides were asked for, so the words can say so. Null where
+    // the mirror asks for everything.
     kinds: filter.kinds || null,
     newestHere: newestHere[0]?.created_at ?? null,
     newestThere: answer?.newest ?? null,
@@ -331,20 +208,14 @@ async function postCounts(anon, me, writeRelays, scope) {
 }
 
 /**
- * One question to somebody else's relay, on a socket opened and closed for it.
- *
- * Never pooled and never left open: these are other people's servers, this is
- * a background check running on page load, and a connection we keep is a
- * connection they are holding for us.
+ * One question to somebody else's relay, on a socket opened and closed for
+ * it: a connection we keep is one they are holding for us.
  */
 async function askRemote(url, ask) {
   let conn = null;
   try {
-    // NOT `lensless`, unlike every socket this page opens to its own relay:
-    // `include:spam` is a vespa-relay's NIP-50 extension, and a relay that
-    // implements NIP-50 without it would take the token for a word and search
-    // for it — turning "how many of your posts are there" into a text query
-    // that answers nothing. A stranger's relay is asked in plain NIP-01.
+    // Not `lensless`: `include:spam` is this relay's extension, and a foreign
+    // NIP-50 relay would search for the token as a word.
     conn = new Relay(url);
     await conn.connect();
     return await ask(conn);
@@ -514,12 +385,8 @@ function words(v) {
       if (pct != null) {
         return {
           state: "mirroring",
-          // "About", and it is not modesty. Both sides now carry the same kinds
-          // — that part is exact — but the denominator is the other relay's own
-          // NIP-45 COUNT, and those do not always agree with themselves:
-          // measured on one author, kind 1 alone came back as 126,426 against
-          // 89,485 for every kind at once. A number resting on that is a
-          // reading, not a total.
+          // "About": the denominator is the other relay's NIP-45 COUNT, which
+          // need not agree with itself across filters.
           headline: `Ranking is ready. Your own posts are still arriving — about ${pct}%`,
           meter:
             `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
@@ -549,21 +416,9 @@ function words(v) {
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
 
 /**
- * What both sides of the posts figure were asked for.
- *
- * Said out loud because the number is smaller than the one a reader can check
- * for themselves: their own client shows every event they have ever signed,
- * and this compares the subset this relay mirrors. Without the sentence, a
- * reader who posts mostly reactions sees a total they cannot reconcile with
- * anything and has no way to learn why.
- *
- * "Comparison", not "count", because it is printed under both branches and one
- * of them has no count in it — the bound is on the newest-event reads too, and
- * it is doing the same work there.
- *
- * Empty where the mirror asks for every kind its upstreams serve — there is no
- * narrowing to explain, and a sentence about one would be a claim we did not
- * make.
+ * What both sides of the posts figure were asked for. Said because the
+ * number is smaller than the one the reader's own client shows. Empty where
+ * the mirror asks for every kind, since there is no narrowing to explain.
  */
 const scopeNote = (p) =>
   p.kinds
@@ -582,14 +437,8 @@ function chainHtml(chain) {
     .map((l) => {
       const d = l.detail || {};
       let sub = "";
-      // A link below the break was never asked, so it has nothing to report.
-      // Every case below reads `detail`, and a waiting link carries none — so
-      // each one fell through to its own HEALTHY branch: "Ranked search …
-      // returns results" and "Your trusted-scores list … names a service for
-      // rank", printed under a headline saying search cannot rank for you at
-      // all. The ordering rule the whole chain exists for — first break wins,
-      // everything below it waits — was right in the verdict column and
-      // contradicted one column to its left.
+      // A link below the break was never asked and has nothing to report;
+      // every case below reads `detail`, and a waiting link carries none.
       if (l.status !== "waiting") switch (l.key) {
         case "relayList":
           sub = l.status !== "broken" ? many(d.writeRelays, "write relay")
@@ -633,7 +482,7 @@ function chainHtml(chain) {
     .join("");
 }
 
-/** The relay field, which is the whole of state A and half of state B. */
+/** The relay field, for the states where naming a relay is the way out. */
 function fetchFormHtml(label, { quiet = false } = {}) {
   return `
     <div class="rdy-actions">
@@ -646,29 +495,15 @@ function fetchFormHtml(label, { quiet = false } = {}) {
 // ---- pulling your lists off a relay you name ------------------------------
 
 /**
- * Read [url] for this reader's kind 0, 10002 and 10040 and copy them here.
- *
- * This is the one path out of state A, and it does something no automatic
- * enrolment could: it supplies the EVENTS, not just a pubkey. A relay that has
- * never seen your kind 10002 has nowhere to go looking for the rest of you, so
- * "we noticed you signed in" cannot help — but three signed events, stored,
- * are what every stream downstream keys off.
- *
- * Published verbatim. Nothing is re-signed and nothing is edited: an event is
- * its signature, and the smallest change to one makes it a forgery this relay
- * would (correctly) refuse.
+ * Read [url] for the reader's kind 0, 10002 and 10040 and copy them here,
+ * verbatim: an event is its signature, and the smallest edit is a forgery
+ * this relay would refuse. The one path out of "no relay list".
  */
 async function fetchFrom(url, me, say) {
   const dial = normalizeRelay(url);
-  // ESCAPED: every other headline on this panel is a literal with escaped
-  // inserts, and this one is the exception — whyNotDialable() quotes the url
-  // back so the reader can see what was wrong with it, and that string came
-  // out of a text field. Somebody's own typing can only attack themselves, but
-  // that is the argument observer_stats.html had already accepted once before
-  // a stranger's display name went into innerHTML raw.
+  // Escaped: whyNotDialable() quotes the field's own text back.
   if (!dial) { say({ tone: "blocked", state: "refused", headline: esc(whyNotDialable(url)), form: true, value: url }); return; }
-  // The one relay this must never be pointed at is this one. Asking ourselves
-  // what we are missing is a loop, and it would answer "nothing" every time.
+  // Asking this relay what it is missing would answer "nothing" every time.
   if (dial === normalizeRelay(RELAY_URL)) {
     say({ tone: "blocked", state: "refused",
           headline: "That is this relay — the one that is missing your lists.",
@@ -679,10 +514,7 @@ async function fetchFrom(url, me, say) {
 
   say({ tone: "working", state: "dialling", headline: `Connecting to ${esc(host(dial))}…`, spin: true });
   const found = new Map();               // event id -> event
-  // Bounded, though all three kinds are replaceable and a well-behaved relay
-  // holds one of each: this is a stranger's server answering a question about
-  // us, and "it will only send three" is an assumption about somebody else's
-  // implementation rather than something we know.
+  // Bounded: a stranger's relay may send more than one of each replaceable kind.
   const first = await askRemote(dial, (c) => c.req({ kinds: [0, 10002, 10040], authors: [me], limit: 10 }));
   if (first == null) {
     say({ tone: "blocked", state: "refused", headline: `${esc(host(dial))} didn’t answer.`,
@@ -692,10 +524,8 @@ async function fetchFrom(url, me, say) {
   }
   for (const ev of first) found.set(ev.id, ev);
 
-  // One hop, and only one: if their relay list names write relays, the 10040
-  // usually lives on those rather than where the list itself was found. This
-  // is exactly the walk the router does — outbox lists are how it discovers
-  // where to read — done once, by hand, for one person.
+  // One hop only: the 10040 usually lives on the write relays the list
+  // names, which is the walk the router does, done once by hand.
   const list = [...found.values()].filter((e) => e.kind === 10002).sort((a, b) => b.created_at - a.created_at)[0];
   const writes = list
     ? [...new Set((list.tags || [])
@@ -722,19 +552,16 @@ async function fetchFrom(url, me, say) {
     return;
   }
 
-  // Newest per kind only. A relay may hand back several of a replaceable kind,
-  // and copying the superseded ones here would store events this relay would
-  // only have to replace again.
+  // Newest per kind only; a superseded replaceable copied here would only be
+  // replaced again.
   const newest = new Map();
   for (const ev of found.values()) {
     const prev = newest.get(ev.kind);
     if (!prev || prev.created_at < ev.created_at) newest.set(ev.kind, ev);
   }
   say({ tone: "working", state: "copying", spin: true, headline: "Copying them to this relay…" });
-  // Together, on one socket. Three events published in series is three full
-  // round trips for three independent OKs, and NIP-01 has never required a
-  // client to wait for one before sending the next — the client already keys
-  // its OK waiters by event id.
+  // Together, on one socket: NIP-01 never required a client to wait for one
+  // OK before sending the next event.
   const results = new Map(
     await Promise.all([...newest].map(([kind, ev]) =>
       relay.publish(ev).then(() => [kind, null], (e) => [kind, e.message || "refused"]))),
@@ -780,7 +607,7 @@ function publishedHtml(newest, results) {
   }).join("")}</ul>`;
 }
 
-/** The panel during the fetch — the same card, different contents. */
+/** The panel during the fetch: the same card, different contents. */
 function sayFetch(me, s) {
   if (!$panel) return;
   $panel.innerHTML = `
@@ -808,7 +635,7 @@ function sayFetch(me, s) {
 function wire(me, state) {
   const el = $panel.querySelector(".rdy");
   if (!el) return;
-  // A fetch panel has no verdict to dismiss — the x just puts it away.
+  // A fetch panel has no verdict to dismiss; the x only puts it away.
   el.querySelector(".rdy-x")?.addEventListener("click", () => { if (state) dismiss(me, state); hide(); });
 
   const more = el.querySelector(".rdy-more");
@@ -830,8 +657,7 @@ function wire(me, state) {
       else if (act === "signout") document.getElementById("me")?.click();
     });
   });
-  // Enter in the field is the same press as the button beside it — a url is a
-  // one-field form, and reaching for the mouse to submit one is a papercut.
+  // Enter in the field is the button beside it.
   field?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
   if (field) field.value = field.value || lastRelay();
 }
@@ -844,59 +670,39 @@ function hide() {
 
 // ---- what the page remembers ----------------------------------------------
 //
-// The verdict and the dismissal are per pubkey, because both are facts about
-// one account, and a shared key would carry one reader's dismissal to the next
-// person to sign in on the same browser. They keep different homes for
-// different reasons: the verdict is a cookie so the browser enforces its week,
-// the dismissal is localStorage because it is compared against a STATE as well
-// as a clock and a cookie holds one string.
+// Both are per pubkey, so one reader's dismissal never carries to the next
+// to sign in on the same browser. The verdict is a cookie so the browser
+// enforces its week; the dismissal is localStorage because it is keyed on a
+// state as well as a clock.
 
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { return null; } };
 const writeJson = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} };
 
 /**
- * The one that is a cookie, so the browser expires it for us.
- *
- * Still per pubkey: the value is the account the verdict was about, and a
- * different reader signing in on the same browser matches nothing and pays for
- * their own check. Signing out does NOT clear it — the verdict stays true about
- * the person it names, and they should not re-pay for it on their way back in.
+ * The cookie half. Signing out does not clear it: the verdict stays true
+ * about the person it names.
  */
 function rememberedReady(pk) {
-  // Built from the constant rather than written out, so renaming the cookie
-  // cannot leave a reader silently re-checking every load against a name that
-  // is never set any more.
   const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${READY_COOKIE}=([^;]*)`));
   return !!m && decodeURIComponent(m[1]) === pk;
 }
 function rememberReady(pk) {
-  // `secure` only on https: setting it on an http page — a local relay, or the
-  // dev server — makes the browser drop the cookie silently, so the check would
-  // run again on every load with nothing to show for it.
+  // `Secure` on an http page makes the browser drop the cookie silently.
   const secure = location.protocol === "https:" ? "; Secure" : "";
   document.cookie =
     `${READY_COOKIE}=${encodeURIComponent(pk)}; path=/; max-age=${READY_TTL_DAYS * 24 * 60 * 60}; SameSite=Lax${secure}`;
 }
 
-// Dismissal is a decision about a state, not about the feature: it is cleared
-// the moment the state changes, so a reader who dismissed "importing — 43%"
-// still hears about it when their scores stop arriving altogether.
+// A dismissal is about a state, not about the feature: the moment the state
+// changes the panel speaks again.
 const DISMISS_KEY = "sot_ready_dismissed";
 function dismiss(pk, state) { writeJson(DISMISS_KEY, { pubkey: pk, state, at: Date.now() }); }
 function dismissed(pk, state) {
   const v = readJson(DISMISS_KEY);
-  // The STATE is part of the key, which is what makes the comment above true.
-  // It was not, and the comment was the only thing saying it: one click on
-  // "importing — 43%" silenced the panel for six hours, including for the
-  // reader whose import then stopped dead or whose provider list went away —
-  // the two things they would most want to hear about, hidden by a dismissal
-  // that meant "yes, I know it is downloading".
   return !!v && v.pubkey === pk && v.state === state && Date.now() - v.at < DISMISS_TTL_MS;
 }
 
 // The relay a previous fetch worked from, offered back as the field's default.
-// Somebody who had to name their relay once should not have to remember it a
-// second time on the next device or the next state.
 const RELAY_KEY = "sot_last_relay";
 const rememberRelay = (url) => { try { localStorage.setItem(RELAY_KEY, url); } catch (e) {} };
 const lastRelay = () => { try { return localStorage.getItem(RELAY_KEY) || ""; } catch (e) { return ""; } };
