@@ -176,6 +176,7 @@ class WidthRescueLiveProbe {
                         "abortedUnpageable",
                         "abortedGaveUp",
                         "abortedFailed",
+                        "abortedBackpressured",
                         "negentropyRefused",
                         "poolReceived",
                     )) {

@@ -54,6 +54,8 @@ tasks.test {
     System.getProperty("reachNoAuth")?.let { systemProperty("reachNoAuth", it) }
     System.getProperty("reachNsec")?.let { systemProperty("reachNsec", it) }
     System.getProperty("reachUrls")?.let { systemProperty("reachUrls", it) }
+    System.getProperty("unpageableLegs")?.let { systemProperty("unpageableLegs", it) }
+    System.getProperty("unpageableProbe")?.let { systemProperty("unpageableProbe", it) }
     System.getProperty("relayReachProbe")?.let { systemProperty("relayReachProbe", it) }
     // Env vars are hidden from the forked JVM the same way.
     System.getenv("WIDTH_RESCUE_VESPA")?.let { environment("WIDTH_RESCUE_VESPA", it) }

@@ -46,12 +46,14 @@ internal class VisitAborts(
     /**
      * The ways a visit ends early, with the counter each is published under
      * and the sentence it is said in. Five are quartz's own walk endings
-     * ([VisitPool.refusedOutright] decides which abort at all); two are the
+     * ([VisitPool.refusedOutright] decides which abort at all); three are the
      * pool's. The counter names are a wire contract the glossary defines.
      */
     enum class Reason(
         val count: String,
         val says: String,
+        /** Describes this mirror, not the relay: counted and spoken, never written on the relay's row. */
+        val ours: Boolean = false,
     ) {
         /** The relay refused with `auth-required:` and would not accept the identity our signer answered with. */
         AUTH_REQUIRED("abortedAuthRequired", "the relay would not accept our NIP-42 identity"),
@@ -73,6 +75,13 @@ internal class VisitAborts(
 
         /** The visit threw. The class and message are on the line. */
         FAILED("abortedFailed", "the visit failed"),
+
+        /**
+         * A hook of ours was parked in the full ingest queue when the walk gave
+         * up, so the ending quartz reported was manufactured on our side of the
+         * socket. Read beside the ingest row's `queued` against `capacity`.
+         */
+        BACKPRESSURED("abortedBackpressured", "our own ingest queue held the socket — nothing the relay did", ours = true),
     }
 
     private val counters = Reason.entries.associateWith { AtomicLong() }
@@ -136,7 +145,8 @@ internal class VisitAborts(
         // Recorded before the narration gate: the gate rations lines, and the status row
         // must not go blank because this abort fell inside a re-say window.
         val key = unitKey(stream, url)
-        if (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN) {
+        // A stall of ours neither writes the relay's row nor clears it.
+        if (!reason.ours && (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN)) {
             lastByUnit[key] = Last(reason, said, at / 1000)
         }
         if (!worthSaying(key, reason, at)) return null

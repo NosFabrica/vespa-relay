@@ -166,6 +166,16 @@ internal class VisitPool(
 
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
+    /**
+     * Is a producer of ours parked in the full ingest queue on this relay's
+     * events? quartz drains a socket through one consumer that awaits every
+     * listener, so a parked hook silences every subscription on it.
+     */
+    private fun heldByUs(url: NormalizedRelayUrl): Boolean = ingest.parkedOn(url) > 0
+
+    /** Visits not dialled because the ingest queue was full at the claim. */
+    private val visitsHeldByIngest = AtomicLong()
+
     /** What a row is doing: the pool word the page groups by, and the sentence it prints. */
     private class Stage(
         /** One of the `POOL_` constants, or null for a visit between jobs. */
@@ -391,6 +401,7 @@ internal class VisitPool(
                 Processors.Count("visiting", queue.visiting.toLong()),
                 Processors.Count("liveHeld", tails.size.toLong()),
                 Processors.Count("visitsRun", visitsRun.get()),
+                Processors.Count("visitsHeldByIngest", visitsHeldByIngest.get()),
                 Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == POOL_NEGENTROPY }.toLong()),
                 Processors.Count("negentropyRuns", auditsRun.get()),
                 Processors.Count("negentropySkipped", auditsSkipped.get()),
@@ -527,6 +538,12 @@ internal class VisitPool(
         // One roster generation for the whole visit.
         val snapshot = currentRoster
         val wanted = asksFor(snapshot, key)
+        // A download into a full queue parks its first event and silences the
+        // socket; skipped like a refused permit, and the revisit brings it back.
+        if (ingest.isFull()) {
+            visitsHeldByIngest.incrementAndGet()
+            return
+        }
         // Taken before the socket claim, so `visitConcurrency` bounds simultaneous dials.
         val permit = limits.tryHold(key.stream, JOB_VISITING) ?: return
         visitsRun.incrementAndGet()
@@ -558,9 +575,10 @@ internal class VisitPool(
                         .record(
                             key.stream,
                             url,
-                            VisitAborts.of(refusal.end),
+                            refusal.reason,
                             asked = VisitAborts.asked(refusal.filter),
-                            said = complaints.awaitSince(url, refusal.askedAtMs),
+                            // A stall of ours has no sentence from the relay to wait for.
+                            said = if (refusal.ours) null else complaints.awaitSince(url, refusal.askedAtMs),
                             sent = refusal.sent,
                         )?.let(System.err::println)
                     return
@@ -593,7 +611,12 @@ internal class VisitPool(
         val askedAtMs: Long,
         /** What the socket carried while this ask was out. See [RelayPages]. */
         val sent: String? = null,
-    )
+        /** A hook of ours was parked in the ingest queue when the walk gave up; the relay did nothing. */
+        val ours: Boolean = false,
+    ) {
+        val reason: VisitAborts.Reason
+            get() = if (ours) VisitAborts.Reason.BACKPRESSURED else VisitAborts.of(end)
+    }
 
     /**
      * Walks the band's outstanding legs. Returns the refusal that ended the
@@ -628,7 +651,8 @@ internal class VisitPool(
                 while (true) {
                     val refusal = walkLeg(ask, url, flooredLeg, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
-                    if (narrowings < MAX_NARROWINGS &&
+                    if (!refusal.ours &&
+                        narrowings < MAX_NARROWINGS &&
                         widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
                     ) {
                         narrowings++
@@ -693,8 +717,15 @@ internal class VisitPool(
                     pages.free(sampling)
                 }
             if (refusedOutright(walked)) {
-                // No band for a refused chunk: nothing was walked.
-                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded))
+                // No band for a refused chunk: nothing was walked. Whose refusal
+                // is decided now: the parked hook is a fact of this instant.
+                return Refusal(
+                    walked.end,
+                    chunk,
+                    askedAtMs,
+                    pages.render(sampling, walked.downloaded),
+                    ours = stalledByUs(walked.end) && heldByUs(url),
+                )
             }
             bands.record(
                 stream.name,
@@ -959,6 +990,21 @@ internal class VisitPool(
                     PagedFetchResult.End.UNPAGEABLE,
                     -> true
                 }
+
+        /**
+         * The endings a socket parked in one of our hooks can manufacture:
+         * silence, and a first page received but never counted as delivered.
+         * Every other ending is a message that came through that consumer.
+         */
+        internal fun stalledByUs(end: PagedFetchResult.End): Boolean =
+            when (end) {
+                PagedFetchResult.End.IDLE, PagedFetchResult.End.UNPAGEABLE -> true
+
+                PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED,
+                PagedFetchResult.End.CLOSED, PagedFetchResult.End.AUTH_REQUIRED,
+                PagedFetchResult.End.CANNOT_CONNECT,
+                -> false
+            }
 
         /**
          * The tail's filters: the asks merged by shape, single-author asks

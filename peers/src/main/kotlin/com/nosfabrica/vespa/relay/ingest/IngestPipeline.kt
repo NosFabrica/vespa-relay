@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -132,6 +133,20 @@ class IngestPipeline(
      */
     val queued = AtomicInteger()
 
+    /**
+     * Producers suspended in a full queue, per relay. quartz drains a socket
+     * through one consumer that awaits every listener, so a parked producer
+     * silences every subscription on that relay; counted here so every
+     * producer is covered, and only while the send actually suspends.
+     */
+    private val parked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+
+    /** How many producers are suspended in a full queue on this relay's events right now. */
+    fun parkedOn(url: NormalizedRelayUrl): Int = parked[url]?.get() ?: 0
+
+    /** At capacity: the next [submit] would suspend its caller, and with it that caller's socket. */
+    fun isFull(): Boolean = queued.get() >= capacity
+
     val accepted = AtomicLong()
     val rejected = AtomicLong()
 
@@ -228,8 +243,20 @@ class IngestPipeline(
         queued.incrementAndGet()
         var handedOff = false
         try {
-            inbound.send(Inbound(event, skipVerify, origin))
-            handedOff = true
+            val inbound = Inbound(event, skipVerify, origin)
+            // The fast path first, so `parked` counts only a send that suspends.
+            if (this.inbound.trySend(inbound).isSuccess) {
+                handedOff = true
+            } else {
+                val held = origin.url?.let { parked.getOrPut(it) { AtomicInteger() } }
+                held?.incrementAndGet()
+                try {
+                    this.inbound.send(inbound)
+                    handedOff = true
+                } finally {
+                    held?.decrementAndGet()
+                }
+            }
             submitted.incrementAndGet()
         } catch (_: ClosedSendChannelException) {
             // Shutdown (closeIntake) raced this event in. Not an error.

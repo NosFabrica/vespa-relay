@@ -266,11 +266,13 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the past, heal drain), earned live tails,
                           yield-paced revisits
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
-    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split seven
+    VisitAborts.kt        WHY a visit ended early: `abortedVisits` split eight
                           ways and said once per (stream, relay, reason), with
                           the ask and whatever the relay said for itself. An
                           abort leaves its relay unreconciled, so this number
-                          IS whether the resync converges
+                          IS whether the resync converges. One of the eight
+                          (`abortedBackpressured`) is OURS — the mirror's own
+                          full ingest queue — and never touches a relay's row
     RelayComplaints.kt    what a relay SAID when it would not answer — the
                           NOTICE/CLOSED text quartz's PagedFetchResult has no
                           room for, kept per relay and dated so a walk can only

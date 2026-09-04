@@ -374,6 +374,7 @@ class AbortCensusLiveProbe {
                 "abortedUnpageable",
                 "abortedGaveUp",
                 "abortedFailed",
+                "abortedBackpressured",
             )
 
         /** `contentViaOutbox`'s kinds from `router.conf.example`; [WidthRescueLiveProbe] pins the older list issue 185 quoted. */

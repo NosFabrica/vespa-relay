@@ -1146,6 +1146,16 @@ object StatusVocabulary {
                     "the rotation rate, not beside `roster`.",
             )
             put(
+                "visitsHeldByIngest",
+                "Visits the pool declined to dial because the ingest queue was full at the moment the unit " +
+                    "came up — read beside the ingest processor's `queued` against its `capacity`. A download into " +
+                    "a queue that cannot take it parks its first event, stalls the whole socket for every " +
+                    "subscription on it, and comes back `abortedBackpressured` an idle window later, having cost " +
+                    "the relay a handshake and a REQ for nothing; declining is the cheaper of the two. Nothing is " +
+                    "recorded and the revisit timer brings the unit back, as after a refused dial permit. This " +
+                    "climbing is the pool standing still on purpose, and the number to fix is the store's.",
+            )
+            put(
                 "negentropyRunning",
                 "Negentropy syncs of the past RUNNING right now — the gauge beside `negentropyRuns`'s odometer. A deep history's audit " +
                     "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
@@ -1193,7 +1203,7 @@ object StatusVocabulary {
                 "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
                     "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +
                     "roster is the monitor's next sweep's decision, not a retry ladder's. This is a TOTAL and the " +
-                    "seven `aborted…` counters beside it partition it exactly, which is the number to read: an " +
+                    "eight `aborted…` counters beside it partition it exactly, which is the number to read: an " +
                     "abort leaves its relay unreconciled, so a high share here is a resync that is not converging " +
                     "and only the split says what would fix it. Each abort is also spoken once per " +
                     "(stream, relay, reason) in the log, with the ask and whatever the relay said for itself.",
@@ -1246,6 +1256,17 @@ object StatusVocabulary {
                 "Visits ended because the visit itself threw. The exception's class and message are on the log " +
                     "line. This was the only abort that ever emitted one, which is why the other six read as zero " +
                     "before this partition existed rather than as unmeasured.",
+            )
+            put(
+                "abortedBackpressured",
+                "Visits ended because OUR OWN ingest queue was full and a hook of ours was suspended in it when " +
+                    "the walk gave up — so the silence, or the page received and never counted as delivered, was " +
+                    "manufactured on this side of the socket. quartz drains each socket through one consumer that " +
+                    "awaits every listener, so one parked hook stops every subscription on that socket, and the " +
+                    "pager can only report what it did not see. The relay did nothing; nothing is written on its " +
+                    "row. Read beside the ingest processor's `queued` against its `capacity`: this counter climbing " +
+                    "is a mirror downloading faster than its store accepts, and the number that was `abortedQuiet` " +
+                    "and `abortedUnpageable` before the pool could tell its own stalls from a relay's.",
             )
             put(
                 "syncStatus",

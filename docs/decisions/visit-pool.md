@@ -75,3 +75,24 @@ finished.
 **Abort reasons are counted, not logged.** The one abort that had a log line
 produced two lines against ~4,400 aborts in twenty minutes, which read as a
 pool whose visits almost never failed. See `VisitAborts`.
+
+**A walk stalled by our own ingest queue is not a relay refusing us.** quartz
+drains each socket through one consumer coroutine that awaits every listener,
+and `IngestPipeline.submit` suspends when the queue is full, so a parked hook
+silences every subscription on that socket. The pager then ends `IDLE` or, on a
+first page whose event went into the parked hook, `UNPAGEABLE` with nothing
+downloaded, and both satisfied `refusedOutright`. On staging that was 90% of
+76,485 aborts in eight hours, filed as `abortedQuiet` and `abortedUnpageable`
+against relays the monitor had graded `prime` and which answered the same leg
+by hand inside two seconds. Those two endings are now re-read at the instant
+the walk returns against `IngestPipeline.parkedOn`, and filed as
+`abortedBackpressured`, which never writes the relay's row. `CLOSED`,
+`AUTH_REQUIRED` and `CANNOT_CONNECT` came through the same consumer, so it was
+not parked when they were said. See `docs/router-internals.md`.
+
+**A visit is not dialled into a full queue.** The download would park its
+first event, silence the socket, and come back `abortedBackpressured` an idle
+window later, having cost the relay a handshake and a REQ for nothing — per
+unit, per revisit, 96 at a time, for as long as the store is behind. Skipped
+like a refused dial permit and counted as `visitsHeldByIngest`; open tails stay
+open, since a tail that is not draining is honest backpressure.

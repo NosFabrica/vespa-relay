@@ -215,3 +215,12 @@ malformed profile across a multi-year backfill is what buried the real logs;
 the report file is the output. The flusher is joined on close, not merely
 interrupted, because a flusher caught mid-`writeReport` shares the temp path
 and the loser's half-written file could be renamed over the report.
+
+**Parked producers are counted in `submit`, per relay, only while the send
+suspends.** The count first lived in the visit pool as a wrapper around its
+three hooks, which missed the two producers outside it on the same shared
+sockets (`RetractionAudit`, the monitor's `StreamWorld`) and counted the fast
+path too, so a tail's hook merely passing through at the instant a genuinely
+silent relay's walk gave up read as a stall of ours. `trySend` first, then the
+count around `send`, keyed by `origin.url`; `parkedOn` and `isFull` are what
+the pool reads.
