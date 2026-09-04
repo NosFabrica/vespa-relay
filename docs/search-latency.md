@@ -286,8 +286,32 @@ every word tried), but its threshold is an ESTIMATE — kept sets held docs of
 rank 2 while excluding rank-40 ones — so no bound can be proven over it; the
 explicit range clause is what makes the proof sound, and it is as cheap.
 
+**Through this relay, on the same slice** (2026-09-04, the pinned build and
+this branch each run over the same local Vespa, one REQ at a time, p50 of 5,
+`kinds:[1]`, limit 40, the observer's lens):
+
+| word | pinned relay | this branch | page |
+|---|---:|---:|---|
+| `the` | 179 ms | 109 ms | identical |
+| `nostr` | 144 ms | 129 ms | identical |
+| `bitcoin` | 90 ms | 101 ms | identical |
+| `lightning` | 58 ms | 84 ms | identical |
+| `love` | 70 ms | 82 ms | identical |
+| `zap` | 28 ms | 45 ms | identical |
+| `bitc` | 56 ms | 60 ms | identical |
+| `xylophonist` | 23 ms | 39 ms | identical (no hits) |
+
+Every page byte-identical, and the boot log said `trust descent: on` before
+the first ask. On a slice this small the relay's own floor (the expansion's
+companion reads, the splice, the wire) is most of every number, so the
+engine-side gain (`the` 154 → 46 ms) shows as 179 → 109; what transfers to
+staging is the shape — a common word costs the trusted walk, a rare word
+pays one extra cheap rung (~15 ms here). Staging itself still runs the old
+build as of this writing (`bitcoin` 4.3 s, `nostr` and `the` 16.5 s, re-timed
+2026-09-04) and is the measurement that remains.
+
 **Where it lives now:** the store branch `claude/trust-descent-myuucz` on
-NosFabrica/vespa-eventstore — `reputation.max_rank` and its import, the
+NosFabrica/vespa-eventstore (merged as PR #98; this branch pins it) — `reputation.max_rank` and its import, the
 projection's upkeep and the one-time backfill, `EventQuery.trustFloor`, the
 descent and its bound in `TrustDescent`, the mock engine's rung support and
 the tests, and the measurement in that repo's `benchmark/README.md` §6. The
