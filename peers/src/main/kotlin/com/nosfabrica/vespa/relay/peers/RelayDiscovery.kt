@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
@@ -70,6 +71,39 @@ data class DiscoveredRelay(
  * `skip` set leave relays out.
  */
 object RelayDiscovery {
+    /**
+     * Whether the engine's aggregate may answer this source, instead of a
+     * paged walk that reads every matching event.
+     *
+     * PURE AND PUBLIC so the conditions can be tested one at a time: a miss
+     * here does not throw, it answers a SUPERSET — urls nobody named, dialled
+     * as if they had been — so each condition is worth its own case.
+     *
+     * The aggregate reads `tag_index`, which is lossy in three ways at once
+     * (single-letter names, first values only, nothing of the rest of the
+     * tag). Every clause below is a way the caller's question stops being the
+     * one that survives all three:
+     *
+     *  - `maxRelaysPerList` drops an EVENT for naming too many relays, and an
+     *    aggregate has no events to drop — the ~9k-entry synthetic lists this
+     *    deployment has seen would come straight back in.
+     *  - a `where` is a condition on another element of the tag (NIP-65's
+     *    write marker); `tag_index` does not carry one.
+     *  - `bindings` pair a url with a value from the SAME tag occurrence
+     *    (the outbox model's author); an aggregate has no occurrences.
+     *  - a multi-character tag name is not in `tag_index` at all, and
+     *    `urlIndex != 1` reads a value it does not keep.
+     */
+    fun aggregable(
+        dynamic: RelayDiscoveryConfig,
+        source: RelaySource,
+    ): Boolean =
+        dynamic.maxRelaysPerList == null &&
+            source.selects.isNotEmpty() &&
+            source.selects.all {
+                it.tag != null && it.tag.length == 1 && it.urlIndex == 1 && it.where.isEmpty() && it.bindings.isEmpty()
+            }
+
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
         store: IEventStore,
@@ -98,9 +132,66 @@ object RelayDiscovery {
             val floor = source.maxAgeSeconds?.let { now - it }
             val bounded =
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
-            // One indexed walk per source answering every select it carries;
-            // never the store's tags projection, whose cost is the corpus.
-            val stillPaged = source.selects
+            // ONE INDEXED WALK PER SOURCE, ANSWERING EVERY SELECT IT CARRIES,
+            // and never the store's tags projection — which reads ONE tag name
+            // per call off a `document/v1` visit whose selection is evaluated
+            // per document, with no index behind it.
+            //
+            // That visit's cost is the CORPUS, not the answer, so it is the one
+            // read here that gets worse for free. Measured on the staging store
+            // (#182), reading the 364 kind-10040 declarations in a 319,426,563
+            // event corpus:
+            //
+            //   /search/  yql=select id from sources * where kind=10040   0.0058s
+            //   /document/v1 …?selection=(event.kind==10040)             75.0260s
+            //
+            // 12,800x, once per tag name, and the monitor's 10040 source names
+            // 38 of them — 38 corpus walks per pass, on the document API the
+            // ingest dedup probe shares, which is the mechanism behind the
+            // wedges in #167.
+            //
+            // NO SIZE RULE DECIDES THIS, because at the scale this relay is
+            // built for there is nothing left to decide. The two costs scale
+            // differently — paging is a function of the MATCH SET, the visit of
+            // the CORPUS — so the match count at which the visit would win
+            // rises with the store: ~100k events at 319M, ~33M at 10^11.
+            // Reaching it means parking the document API for the ~6.5 hours a
+            // walk of 10^11 documents takes, which is not a price any relay
+            // list is worth. A relay-list kind is measured in millions; the
+            // corpus is heading for hundreds of billions, and the gap only
+            // widens. A rule that can only ever answer one way is not a rule.
+            //
+            // So the fork is gone, and with it the reason a BOUND select was
+            // the odd one out: a binding could never take the projection (it
+            // hands back a SET of values, and the pairing a binding exists to
+            // keep is gone by the time it returns), which quietly made
+            // `authors = 1` the fast path for reasons no operator could see.
+            // Every select of a source now rides the same walk, and
+            // [RelayDiscoveryConfig.maxRelaysPerList] always applies — it is a
+            // per-EVENT cap and this is the only path where the event is still
+            // whole, so setting it no longer costs a source its read.
+            // THE ENGINE ANSWERS IT WHERE IT CAN, and the preconditions are
+            // the whole of the safety. `tag_index` is a lossy projection —
+            // single-letter names, first values only, nothing of the rest of
+            // the tag — so an aggregate over it can answer one question:
+            // every url of one short tag, unconditionally. Each check below
+            // is a way that question stops being the one being asked, and a
+            // miss costs a SUPERSET rather than an error, which is why they
+            // are enumerated rather than summarised.
+            val aggregate = if (aggregable(dynamic, source)) (store as? VespaEventStore)?.store else null
+            val stillPaged = if (aggregate != null) emptyList() else source.selects
+            if (aggregate != null) {
+                // One grouping per select instead of a walk of the corpus:
+                // measured at ~1s against ~157s for 3.27M NIP-65 lists. The
+                // urls come back raw, so they take the SAME `normalize` the
+                // paged path applies per tag — over tens of thousands of
+                // distinct values rather than millions of documents.
+                for (select in source.selects) {
+                    aggregate
+                        .distinctTagValues(bounded, select.tag!!, unconditional = true)
+                        .forEach { raw -> normalize(raw, allowOnion)?.let { found += it } }
+                }
+            }
             if (stillPaged.isNotEmpty()) {
                 scan(store, bounded, pageSize) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
