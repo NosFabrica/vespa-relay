@@ -70,6 +70,7 @@ class SyncProgressTest {
             SyncProgress.Health(
                 bottleneck = "downloads",
                 eventsPerSec = 900,
+                arrivingPerSec = 950,
                 heapUsedMb = 1,
                 heapMaxMb = 2,
                 sockets = 1010,
@@ -82,6 +83,47 @@ class SyncProgressTest {
         assertEquals(1010L, h["socketsRunning"]!!.jsonPrimitive.long)
         assertEquals(0L, h["socketsQueued"]!!.jsonPrimitive.long, "nothing waiting is the reading, not the absence of one")
         assertEquals(1024L, h["socketCeiling"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `both ends of the ingest queue are published, zero included`() {
+        // THE READING STAGING COULD NOT GIVE. Queue pinned at its ceiling,
+        // `bottleneck: ingest`, and `eventsPerSec: 0` — which is the drain, and
+        // is the same zero for a store that has stopped answering and for a
+        // fan-out that has gone quiet. The arrival rate is what tells them
+        // apart, and a zero there is the finding, not the absence of one.
+        val stalled =
+            SyncProgress.Health(
+                bottleneck = "ingest",
+                eventsPerSec = 0,
+                arrivingPerSec = 4_100,
+                heapUsedMb = 1,
+                heapMaxMb = 2,
+                sockets = 30,
+                socketCeiling = 1024,
+                socketsRunning = 23,
+                socketsQueued = 0,
+                servingMs = null,
+            )
+        val h = SyncProgress.document(emptyList(), health = stalled, nowSeconds = 1_000)["health"]!!.jsonObject
+        assertEquals(0L, h["eventsPerSec"]!!.jsonPrimitive.long)
+        assertEquals(4_100L, h["arrivingPerSec"]!!.jsonPrimitive.long)
+
+        val quiet =
+            SyncProgress.Health(
+                bottleneck = "upstream",
+                eventsPerSec = 0,
+                arrivingPerSec = 0,
+                heapUsedMb = 1,
+                heapMaxMb = 2,
+                sockets = 30,
+                socketCeiling = 1024,
+                socketsRunning = 23,
+                socketsQueued = 0,
+                servingMs = null,
+            )
+        val q = SyncProgress.document(emptyList(), health = quiet, nowSeconds = 1_000)["health"]!!.jsonObject
+        assertEquals(0L, q["arrivingPerSec"]!!.jsonPrimitive.long, "nothing arriving is the reading, not a member left out")
     }
 
     @Test

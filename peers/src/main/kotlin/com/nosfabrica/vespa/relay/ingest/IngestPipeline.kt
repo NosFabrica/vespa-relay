@@ -196,6 +196,27 @@ class IngestPipeline(
     val rejected = AtomicLong()
 
     /**
+     * Events HANDED TO THE QUEUE since boot — the arrival side of it, where
+     * [accepted] + [rejected] is the drain side.
+     *
+     * The pair is what the health line could not say. Staging sat with the
+     * queue pinned at 16,400 of 16,400, `bottleneck: ingest`, and `0 ev/s`, and
+     * that rate is the DRAIN: every reading of it is consistent with a store
+     * that has stopped answering AND with producers that have stopped
+     * producing, because it counts what came OUT of a batch. Whether anything
+     * is still arriving — whether the downloads are backpressured or merely
+     * quiet — was the question, and nothing counted at the entrance.
+     *
+     * Counted once the send has returned, so this and [queued] agree: an event
+     * is in here exactly when it went into the channel, and a submit that lost
+     * the race with shutdown is in neither. A [suppressed] event never reaches
+     * the channel and is not here either — it has its own line, and folding it
+     * in would make an arrival rate that a suppression storm holds up while the
+     * queue sits empty.
+     */
+    val submitted = AtomicLong()
+
+    /**
      * Good events the store refused for structural reasons, which nothing
      * will re-offer. Distinct from [rejected], most of which is the protocol
      * working (duplicates, invalid signatures). A schema drift once lost 2.3M
@@ -346,6 +367,7 @@ class IngestPipeline(
         try {
             inbound.send(Inbound(event, skipVerify, origin))
             handedOff = true
+            submitted.incrementAndGet()
         } catch (_: ClosedSendChannelException) {
             // Shutdown (closeIntake) raced this event in. Not an error.
         } finally {

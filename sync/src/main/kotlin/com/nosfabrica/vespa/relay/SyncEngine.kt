@@ -696,6 +696,7 @@ class SyncEngine(
      */
     private suspend fun healthLoop() {
         var lastEvents = 0L
+        var lastSubmitted = 0L
         var lastAt = System.currentTimeMillis()
         while (scope.isActive) {
             delay(60_000)
@@ -704,9 +705,19 @@ class SyncEngine(
             val maxMb = rt.maxMemory() / 1_048_576
             val heapPct = if (maxMb > 0) usedMb * 100 / maxMb else 0
             val events = ingest.accepted.get() + ingest.rejected.get()
+            // BOTH ENDS OF THE QUEUE, over the same window. `rate` is what
+            // came OUT of a batch and `arriving` what went IN, and only the
+            // pair reads a full queue at `0 ev/s`: thousands still arriving
+            // is a store that has stopped answering, and none arriving is a
+            // fan-out that has gone quiet — staging showed the first and the
+            // line could only say the rate, which is the same for both.
+            val submitted = ingest.submitted.get()
             val now = System.currentTimeMillis()
-            val rate = ((events - lastEvents) * 1000.0 / (now - lastAt).coerceAtLeast(1)).toInt()
+            val windowMs = (now - lastAt).coerceAtLeast(1)
+            val rate = ((events - lastEvents) * 1000.0 / windowMs).toInt()
+            val arriving = ((submitted - lastSubmitted) * 1000.0 / windowMs).toInt()
             lastEvents = events
+            lastSubmitted = submitted
             lastAt = now
             val depth = ingest.queued.get()
             // Read ONCE and shared by the document and the line below. Both
@@ -723,6 +734,7 @@ class SyncEngine(
                 SyncProgress.Health(
                     bottleneck = constraint,
                     eventsPerSec = rate,
+                    arrivingPerSec = arriving,
                     heapUsedMb = usedMb,
                     heapMaxMb = maxMb,
                     sockets = open,
@@ -793,7 +805,10 @@ class SyncEngine(
                             }
                         }
                     ) +
-                    ", $rate ev/s" +
+                    // In and out, and always both: on a full queue the pair is
+                    // the diagnosis, and `0 ev/s` alone was read as "nothing
+                    // arriving" on a router whose downloads were backpressured.
+                    ", $arriving ev/s in, $rate ev/s out" +
                     ", $open connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
                     (

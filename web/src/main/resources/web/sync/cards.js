@@ -68,7 +68,15 @@ function statusRow(progress) {
   const health = progress.health || {};
   // Spelled with its own spaces: consecutive text nodes collapse into ONE
   // anonymous flex item, so the row's `gap` never lands between them.
-  if (health.eventsPerSec != null) row.append(` · ${fmt(health.eventsPerSec)} events/s into the store`);
+  // BOTH ENDS OF THE INGEST QUEUE, in then out. The row used to carry the
+  // drain alone, as "events/s into the store", and on staging with the queue
+  // pinned full it read `0 events/s` — which is what a store that has stopped
+  // answering looks like and ALSO what a fan-out that has gone quiet looks
+  // like, since the drain counts what left a batch. What is still being sent
+  // to ingest is the reading that tells them apart, so it is drawn first and
+  // the drain is named for what it is.
+  if (health.arrivingPerSec != null) row.append(` · ${fmt(health.arrivingPerSec)} events/s into ingest`);
+  if (health.eventsPerSec != null) row.append(` · ${fmt(health.eventsPerSec)} events/s out to the store`);
   // The five verdicts are different faults with different fixes, and only two
   // are a fault at all: `ingest` (full and keeping up badly) and `wedged` (full
   // and not draining) — see BOTTLENECK.
