@@ -41,39 +41,11 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * THE WHOLE FEATURE AGAINST A REAL ENGINE AND SOMEBODY ELSE'S DATA: a corpus
- * pulled off the staging relay, loaded into a real Vespa, and read back over
- * the wire protocol.
- *
- * A unit test can only ask whether the code does what it was written to do.
- * This asks the question the unit tests cannot: whether the thing it was
- * written for EXISTS in the corpus. Two of the answers below were a surprise,
- * and they are the reason this file is worth its runtime.
- *
- * Off unless both are given — it needs a live engine and a corpus that is not
- * in the repo:
- *
- *     docker run -d --name vespa -m 9g -p 127.0.0.1:8080:8080 \
- *         -p 127.0.0.1:19071:19071 vespaengine/vespa
- *     node relay/tools/fetch-corpus.mjs \
- *         wss://search-staging.brainstorm.world/ /tmp/corpus
- *     ./gradlew :relay:test --tests '*ProductionCorpusIT*' \
- *         -DitVespa=http://localhost:8080 -DitCorpus=/tmp/corpus -i
- *
- * WHAT IS REAL AND WHAT IS NOT, stated up front because it decides what each
- * assertion is worth. The labels, the notes they point at, the contact cards,
- * the provider lists and the profiles are production events signed by real
- * keys — nothing here re-signs them. The ONE synthetic thing is the Trusted
- * List in the last case, and it has to be: the family's kinds are 30392-30395,
- * production holds ZERO of them (asserted below, so the day that changes this
- * test says so), and a list must be signed BY the service key, which is not
- * ours to sign with. Its members are real pubkeys and the profiles it splices
- * are real profiles.
- *
- * Events are inserted straight into the store rather than published over the
- * wire. Signature verification is not what is under test and staging already
- * did it; what matters is that `indexableContent()` runs on put, which is the
- * step that decides whether any of this is findable at all.
+ * The whole feature against a real engine and somebody else's data: a corpus pulled off the staging
+ * relay, loaded into a live Vespa and read back over the wire. Asserts what production holds (squatters
+ * on the list kinds, textless contact cards, no reader enrolling a list publisher) and that the splice,
+ * the gate and the placement hold on it; only a kind-10040 enrolment is synthesized. Selected by
+ * `-DitVespa=<url>` and `-DitCorpus=<dir>`, a corpus written by `relay/tools/fetch-corpus.mjs`.
  */
 class ProductionCorpusIT {
     private val vespa = System.getProperty("itVespa")
@@ -87,7 +59,7 @@ class ProductionCorpusIT {
             else -> null
         }
 
-    /** The corpus as quartz parses it — the same `EventFactory` dispatch the relay's own reads take. */
+    /** The corpus as quartz parses it, through the same `EventFactory` dispatch the relay's reads take. */
     private val corpus: List<Event> by lazy {
         File(corpusDir!!, "corpus.jsonl").readLines().filter { it.isNotBlank() }.map { Event.fromJson(it) }
     }
@@ -110,14 +82,7 @@ class ProductionCorpusIT {
         }
     }
 
-    /**
-     * THE CONTROL FOR THE FEATURE ITSELF: the same Vespa, the same documents,
-     * the same query — read through a store opened with the splice OFF.
-     *
-     * A second STORE rather than a second relay, because the knob moved with
-     * the feature: it is the store that splices now. Opened once and closed
-     * with the class, since every case that wants it wants the same one.
-     */
+    /** The control: the same Vespa read through a store opened with the splice off. Opened once, closed with the class. */
     private var plainOpen: VespaEventStore? = null
 
     private fun plainRelay(): NostrRelayServer {
@@ -137,9 +102,7 @@ class ProductionCorpusIT {
     private suspend fun load(store: VespaEventStore) {
         val outcomes = store.batchInsert(corpus)
         val written = outcomes.count { it is com.vitorpamplona.quartz.nip01Core.store.IEventStore.InsertOutcome.Accepted }
-        // Re-running the IT against a warm Vespa re-offers what is already
-        // there, and a duplicate is a REJECTION rather than a failure — so
-        // "nothing was written" is only alarming on an empty engine.
+        // A warm Vespa rejects the duplicates; only an empty engine writes everything.
         println("PRODUCTION-IT corpus: ${corpus.size} events, $written newly written")
     }
 
@@ -155,14 +118,8 @@ class ProductionCorpusIT {
         val untitled = inRange - titled.toSet()
         println("PRODUCTION-IT kinds 30392-30395: ${inRange.size} events — ${titled.size} titled, ${untitled.size} untitled")
 
-        // THE REAL FAMILY, and it took a second relay to find: the search relay
-        // holds none of it, and its 54 events on these kinds are squatters —
-        // an omikuji fortune generator on 30394, WireGuard room records and
-        // `trusted-attestor:` entries on 30392, an Alexandria manifest on
-        // 30393. nos.lol, relay.damus.io, relay.primal.net, nostr.wine and
-        // purplepag.es hold the same kind of thing. The Tapestry lists live on
-        // tapestry.brainstorm.world, with `title`, `metric`, `observer`,
-        // `min-rank` and `cutoff` exactly as quartz models them.
+        // The search relay holds only squatters on these kinds; the titled family lives on
+        // tapestry.brainstorm.world, so the corpus needs both relays.
         assertTrue(titled.size > 100, "expected the tapestry relay's Trusted Lists in the corpus, got ${titled.size}")
         assertTrue(untitled.size > 10, "expected the search relay's squatters too, got ${untitled.size}")
         assertTrue(
@@ -174,25 +131,10 @@ class ProductionCorpusIT {
     @Test
     fun `a real Trusted List kind event is searchable by hashtag, and expands only for a reader who enrolled its signer`() =
         withRelay { relay, store ->
-            // THE COLLISION, DRIVEN RATHER THAN REASONED ABOUT — and the one
-            // assumption in this file that turned out to be wrong.
-            //
-            // These are REAL production kind-30392 events that are not Tapestry
-            // lists at all: `d=trusted-attestor:<hex>`, a `t` hashtag, and a
-            // `p` that our reader will take for a curated member, because
-            // `EventFactory` maps the kind and hands the relay a
-            // `UserTrustedListEvent` regardless of what the publisher meant.
-            //
-            // "No title, so it indexes the empty string, so it can never be a
-            // hit" was the argument for why that is harmless. It is WRONG: the
-            // store indexes hashtags too, so `["t","trusted-attestor"]` makes
-            // this untitled event perfectly reachable by text. What actually
-            // keeps it from splicing a stranger's profile into a stranger's
-            // feed is the ENROLMENT GATE, and this is that gate earning its
-            // keep on data nobody wrote for it.
+            // Real 30392 events that are not Tapestry lists, reachable by their indexed `t` hashtag despite
+            // having no title; the enrolment gate is what keeps them from splicing a stranger's profile.
             val profiles = corpus.filter { it.kind == 0 }.map { it.pubKey }.toSet()
-            // UNTITLED on purpose: a titled 30392 is a real Tapestry list and
-            // has its own case below. These are the collisions.
+            // Untitled on purpose: a titled 30392 is a real Tapestry list with its own case below.
             val squatters =
                 corpus.filter { e ->
                     e.kind == 30392 &&
@@ -213,9 +155,7 @@ class ProductionCorpusIT {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = relay.connect { out.add(it) }
             try {
-                // Anonymous: reachable, and expanding nothing. Nobody's
-                // services to check, so a list from a signer nobody named
-                // stays a list.
+                // Anonymous: nobody's services to check, so no list expands.
                 val anon = page(session, out, "anon", """{"kinds":[0,30392],"search":"$hashtag include:spam"}""")
                 assertTrue(
                     squatters.any { it.id in anon },
@@ -226,15 +166,8 @@ class ProductionCorpusIT {
                     "a lensless read must expand no list, whoever published it: $anon",
                 )
 
-                // Now a reader who really has named ONE of those signers as a
-                // service. Only the 10040 is ours; the list, the member and the
-                // profile are all production events.
-                //
-                // ONE ENTRY, because the ADR allows one generic entry per kind
-                // and a reader cannot delegate three publishers for 30392 —
-                // which is the rule this half now exercises against real data.
-                // A `30382:rank` entry would delegate nothing here: it appoints
-                // a service to rank USERS, and the gate is per kind.
+                // Only the 10040 is ours. One bare-kind entry: the ADR allows one generic entry per kind,
+                // and a `30382:rank` entry would delegate nothing here.
                 val delegated = squatters.first()
                 val reader = NostrSignerSync()
                 val enrolment =
@@ -269,23 +202,8 @@ class ProductionCorpusIT {
                 val at = lensed.indexOf(delegated.id)
                 assertTrue(at >= 0, "the delegated list is still a hit of its own hashtag: $lensed")
 
-                // WHAT PLACEMENT ACTUALLY PROMISES, now that a member is placed
-                // by the confidence its list expressed rather than glued behind
-                // it. This used to assert `lensed[at + 1]` — the first member
-                // directly behind its list — and that PASSED, which is the
-                // trap: it holds only when nothing else scores between the
-                // list and its top member. Across this corpus only 6 of 33
-                // member-bearing lists score their first member at 100, the one
-                // case where the tie-break guarantees adjacency, so the old
-                // assertion was luck 27 times out of 33 and would have gone red
-                // on a corpus refresh rather than on a regression.
-                //
-                // The two invariants that do hold, whatever the scores:
-                //   - a subject never passes its own pointer (its score is the
-                //     pointer's times a factor in 0..1, and a tie keeps the
-                //     reason above the result);
-                //   - members keep their confidence order among themselves,
-                //     which for a descending-sorted list is the list's order.
+                // Placement is by the list's confidence, not adjacency: a member never passes its pointer,
+                // and members keep their confidence order among themselves.
                 val memberIds =
                     delegated.tags
                         .filter { it.size > 1 && it[0] == "p" && it[1] in profiles }
@@ -312,14 +230,8 @@ class ProductionCorpusIT {
         val cards = corpus.filterIsInstance<ContactCardEvent>()
         assertTrue(cards.size > 100, "expected a real sample of kind 30382, got ${cards.size}")
 
-        // `indexableContent()` is petname + summary + topics, and the cards
-        // this relay mirrors are pure metrics: `d`, `rank`, `followers`,
-        // `hops`, `reporters`, `muters`. They index the empty string, so a
-        // NIP-85 assertion cannot BE a search hit here — which means the
-        // assertion half of the expansion is inert against today's corpus.
-        // That is a fact about the data, not a defect in the code, and it is
-        // asserted rather than assumed so the day a provider starts publishing
-        // petnames this test fails and says the feature just woke up.
+        // Production cards are pure metrics (`d`, `rank`, `followers`, `hops`) and index the empty string, so the
+        // assertion half of the expansion is inert on today's corpus; asserted so the day it wakes up this says so.
         val textful = cards.filter { it.indexableContent().isNotBlank() }
         assertEquals(emptyList(), textful.map { it.id }, "a card with indexable text appeared: the assertion path is live now")
     }
@@ -331,26 +243,16 @@ class ProductionCorpusIT {
             val lists = corpus.filterIsInstance<TrustProviderListEvent>()
             assertTrue(lists.size > 50, "expected a real sample of kind 10040, got ${lists.size}")
 
-            // The dimensions production actually uses go well past `30382:rank`
-            // — `personalizedGrapeRank_influence`, `personalizedPageRank`,
-            // `hops`. TrustNotice filters to the ranking service because
-            // ranking is ITS subject; doing that here would drop most of a real
-            // reader's providers on the floor.
+            // Production names dimensions past `30382:rank`; TrustNotice filters to the ranking service
+            // because ranking is its subject.
             val dimensions = lists.flatMap { it.tags.serviceProviders() }.map { it.service.toValue() }.distinct()
             assertTrue(
                 dimensions.count { !it.endsWith(":rank") } > 0,
                 "expected production to name non-rank dimensions; got $dimensions",
             )
 
-            // WHAT THE GATE DOES WITH THESE IS THE STORE'S TEST NOW, and it is
-            // white-box by nature: `Delegations` and `Enrolment` are internal to
-            // vespa-eventstore, where `SearchExpansionTest` asserts per-kind
-            // admission directly. What belongs HERE is the shape of the real
-            // data those rules are aimed at — that production names dimensions
-            // past `rank`, and that every entry `serviceProviders()` returns
-            // names a kind inside NIP-85's own range, which is what makes "one
-            // entry, one kind" a rule a gate can keep. `ObserverTrustListIT`
-            // asserts the consequence over the wire on one real reader's chain.
+            // Per-kind admission is the store's test (`SearchExpansionTest`); what belongs here is that every
+            // entry `serviceProviders()` returns names a kind inside NIP-85's own range.
             val kinds = lists.flatMap { it.tags.serviceProviders() }.map { it.service.kind }.distinct()
             assertTrue(
                 kinds.isNotEmpty() && kinds.all { it in 30382..30385 },
@@ -362,15 +264,7 @@ class ProductionCorpusIT {
     // The feature, end to end
     // ------------------------------------------------------------------
 
-    /**
-     * A real label, the real event it points at, and a search term taken from
-     * the label's own `l` value — chosen from whatever the corpus turned out
-     * to hold rather than hardcoded, so this keeps working as staging moves.
-     *
-     * The pair has to satisfy the thing that makes the whole feature worth
-     * having: the TARGET must not contain the searched word itself, or the
-     * search would have found it without any of this.
-     */
+    /** A real label, its real target, and a term from the label's `l` value; the target must not contain the term. */
     private fun labelPair(): Triple<LabelEvent, Event, String>? {
         val byId = corpus.associateBy { it.id }
         for (label in corpus.filterIsInstance<LabelEvent>()) {
@@ -394,12 +288,8 @@ class ProductionCorpusIT {
                 val page = page(session, out, "label", """{"kinds":[${target.kind},1985],"search":"$value include:spam"}""")
                 val at = page.indexOf(label.id)
                 assertTrue(at >= 0, "the label itself must be a hit of its own label value: $value")
-                // DIRECTLY behind, and here that is principled rather than
-                // lucky: NIP-32 has no confidence field, an unscored reference
-                // is read as FULL confidence, so the subject inherits its
-                // label's score exactly and a stable sort keeps the pair
-                // together. The Trusted List half of this file cannot assert
-                // adjacency for the opposite reason — see the comment there.
+                // Directly behind: NIP-32 has no confidence field, an unscored reference reads as full
+                // confidence, and a stable sort keeps the pair together.
                 assertTrue(
                     page.getOrNull(at + 1) == target.id,
                     "the labelled event must follow its label; page around it: ${page.drop(maxOf(0, at - 1)).take(3)}",
@@ -417,9 +307,7 @@ class ProductionCorpusIT {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = plain.connect { out.add(it) }
             try {
-                // Same engine, same corpus, same query — only the knob differs.
-                // This is what pins the event above on the expansion rather
-                // than on anything the search could have done by itself.
+                // Same engine, same corpus, same query; only the knob differs.
                 val page = page(session, out, "plain", """{"kinds":[${target.kind},1985],"search":"$value include:spam"}""")
                 assertTrue(target.id !in page, "the target carries none of the searched text and must not be recalled by it")
             } finally {
@@ -428,12 +316,7 @@ class ProductionCorpusIT {
             }
         } ?: Unit
 
-    /**
-     * A real titled Trusted List whose members this relay also holds profiles
-     * for, and whose title shares no word with any of them — the condition the
-     * whole feature rests on, since a member the search could find by itself
-     * proves nothing.
-     */
+    /** A real titled list whose members' profiles this relay holds and whose title shares no word with them. */
     private fun realList(): Chain? {
         val profiles = corpus.filter { it.kind == 0 }.associateBy { it.pubKey }
         for (list in corpus.filter { it.kind == 30392 }) {
@@ -460,11 +343,8 @@ class ProductionCorpusIT {
     fun `no reader currently enrols the Trusted List publisher, so the enrolment is the one thing synthesized`() {
         skip()?.let { return println(it) }
         val signers = corpus.filter { it.kind == 30392 && it.tags.any { t -> t.size > 1 && t[0] == "metric" } }.map { it.pubKey }.toSet()
-        // Kind 10040 is REPLACEABLE, so what counts is the newest version per
-        // author — exactly what the store keeps, and the reason this is not
-        // just `corpus.any`. Merging two relays hands you both versions, and an
-        // earlier draft of this file built a "real trust chain" out of the
-        // superseded one and then could not explain why the relay refused it.
+        // Kind 10040 is replaceable, so only the newest version per author counts; a merge of two relays
+        // hands back both.
         val current = corpus.filterIsInstance<TrustProviderListEvent>().groupBy { it.pubKey }.mapValues { (_, v) -> v.maxBy { it.createdAt } }
         val enrolling = current.values.filter { it.tags.serviceProviders().any { p -> p.pubkey in signers } }
         println("PRODUCTION-IT ${current.size} current provider lists; ${enrolling.size} of them enrol a Trusted List publisher")
@@ -481,24 +361,13 @@ class ProductionCorpusIT {
             val chain = realList() ?: return@withRelay println("PRODUCTION-IT no titled list with usable member profiles")
             println("PRODUCTION-IT list ${chain.list.id.take(12)} \"${chain.title}\" by ${chain.list.pubKey.take(12)}, ${chain.members.size} member profiles held")
 
-            // The list, its title, its members and their profiles are all
-            // production events off the tapestry relay. The ONE synthetic thing
-            // is the enrolment, and the test above says why it has to be: the
-            // only observer who ever named this publisher as a service replaced
-            // that 10040 in August with one naming somebody else, so today
-            // these lists expand for nobody. A reader who DID name them would
-            // see this.
+            // The one synthetic event: no current 10040 enrols this publisher, so today these lists expand for nobody.
             val reader = NostrSignerSync()
             val enrolment =
                 reader.sign<Event>(
                     1_700_000_000L,
                     10040,
-                    // The BARE-KIND entry, which is what delegates a Trusted
-                    // List: `30382:rank` appoints a service to rank users and
-                    // opens 30382 alone. This test used to synthesize the rank
-                    // form and passed, because the gate was one flat set of
-                    // admitted signers — it is per kind now, and this is what
-                    // the reader would actually have had to publish.
+                    // The bare-kind entry is what delegates a Trusted List; `30382:rank` opens 30382 alone.
                     arrayOf(arrayOf("30392", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
                     "",
                 )
@@ -509,9 +378,7 @@ class ProductionCorpusIT {
             try {
                 val filter = """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:${reader.pubKey}"}"""
 
-                // The control first, so the assertion below cannot be luck: on
-                // the same engine and the same query, without the expansion,
-                // none of these profiles is reachable at all.
+                // The control first: without the expansion, none of these profiles is reachable at all.
                 val without = page(plain, "plain", filter)
                 assertTrue(chain.list.id in without, "the list is a hit of its own title either way: $without")
                 assertEquals(
@@ -547,58 +414,9 @@ class ProductionCorpusIT {
         } ?: Unit
 
     /**
-     * WHERE A MEMBER ACTUALLY LANDS, on somebody else's data — and the whole
-     * point of the two store bumps behind it.
-     *
-     * `spliced_member` places a member at `max(member_rung(), pointer_floor())`.
-     * The floor arrived first and was INERT, and this case is what measured
-     * that: the two sides were in different units, because the rung was
-     * multiplied by `wot_mult(MEMBER)` while `query(pointer_rel)` is the
-     * pointer's finished relevance and carries `wot_mult(SIGNER)` — and a
-     * Trusted List is signed by a NIP-85 service key nobody follows. One side
-     * times 1, the other times up to 251 189. The rung won every time, so
-     * members were placed four orders of magnitude above the page, ordered by
-     * the READER's trust rather than by what the publisher said, and identically
-     * whether the list matched on its title or barely at all.
-     *
-     * Store PR #93 dropped the trust term from the rung. Both sides are now in
-     * the POINTER's units, so the floor binds and is bounded above by the
-     * pointer itself. What this case pins, against real confidences and real
-     * trust ranks:
-     *
-     *  - the block is ordered by what the PUBLISHER said, not by what the
-     *    reader thinks of each member;
-     *  - no member passes the list that names it;
-     *  - and turning the floor off (`subjectFloorSpan = null`) visibly changes
-     *    the answer — without that the first two could both hold for the wrong
-     *    reason, which is exactly how the inert floor hid.
-     *
-     * That control is NOT the old placement and must not be read as one: with
-     * the trust term gone from the rung, `subjectFloorSpan = null` leaves a
-     * member on the bare 550..4000 band, which is neither what b2be07e168
-     * served nor anything this relay ships. It is here to show the floor is
-     * carrying the placement, nothing more.
-     *
-     * HOW BIG THE MOVE LOOKS DEPENDS ON WHAT ELSE IS ON THE PAGE, so run this
-     * against a corpus that HAS one. On the thin fetch (~3.5k events) the top of
-     * the page is five near-identical copies of the same list and the visible
-     * move is one row, which says almost nothing. Fold in the rows the staging
-     * relay actually returns for the query and the answer is the whole point:
-     *
-     *   18 610 events, floor OFF   members at #43..#58
-     *   18 610 events, floor ON    members at #2..#21, list at #0-#1
-     *
-     * The block lands immediately behind the list that names it, ordered by the
-     * publisher\'s confidence — the gaps in that range are more copies of the
-     * same list plus members this method drops as duplicate confidences, not
-     * strangers. Buried at #43 is the shape of the complaint that started all
-     * this. The scale change underneath is measured store-side:
-     * 2.19e8..1.00e9 before, 1.70e5..2.39e5 after, against a page spanning
-     * 610..2.39e5.
-     *
-     * Everything is production: the list, its title, its members, their scores,
-     * their profiles and their trust ranks. Only the enrolment is synthesized,
-     * for the reason the case above gives.
+     * `spliced_member` places a member at `max(member_rung(), pointer_floor())`, in the pointer's units.
+     * Turning the floor off (`subjectFloorSpan = null`) must visibly change the answer, or the two
+     * ordering assertions could hold for the wrong reason. Run it against a corpus with a full page.
      */
     @Test
     fun `a member is placed by its publisher's confidence and never passes its list`() =
@@ -609,14 +427,8 @@ class ProductionCorpusIT {
                     "${scored.held.size} held profiles, confidences ${scored.held.map { it.second }}",
             )
 
-            // THE RANK PROVIDER IS PART OF THE SETUP, not a detail. Without one
-            // every member is unranked, `wot_mult()` is the same constant for
-            // all of them, and the trust term this case is about would be flat —
-            // so the old placement would look correct and the case would report
-            // a pass while meaning nothing by it. Pick the signer whose
-            // assertions actually COVER these members: one that ranks 400
-            // strangers and none of this list leaves trust flat exactly as if
-            // nobody were enrolled.
+            // The rank provider is part of the setup: without one every member is unranked and trust is
+            // flat, so the case would pass while meaning nothing. Pick the signer whose assertions cover these members.
             val wanted = scored.held.mapTo(HashSet()) { it.first.pubKey }
             val rankProvider =
                 corpus
@@ -646,8 +458,7 @@ class ProductionCorpusIT {
 
             val filter = """{"kinds":[0,30392],"search":"${scored.title} include:spam observer:${reader.pubKey}"}"""
             val floored = NostrRelayServer(store, relayUrl)
-            // The placement before the floor existed, on the same engine and the
-            // same documents — the control that says the floor is doing the work.
+            // The placement without the floor, on the same engine: the control that says the floor does the work.
             val rungOnly =
                 VespaEventStore.open(
                     vespa!!,
@@ -676,8 +487,7 @@ class ProductionCorpusIT {
                 val placed = scored.held.map { (event, conf) -> ids.indexOf(event.id) to conf }.filter { it.first >= 0 }
                 assertTrue(placed.size >= 4, "need several held members to say anything about their order: $placed")
 
-                // READ DOWN THE PAGE AND THE CONFIDENCES NEVER RISE. This is the
-                // claim the trust term used to break.
+                // Read down the page and the confidences never rise.
                 assertEquals(
                     placed.sortedBy { it.first }.map { it.second },
                     placed.map { it.second }.sortedDescending(),
@@ -690,8 +500,7 @@ class ProductionCorpusIT {
                     "no member passes the list that names it (pointer at #$pointerAt): $placed",
                 )
 
-                // And the floor is what did it — the same query without it puts
-                // the members somewhere else.
+                // And the floor is what did it.
                 assertTrue(
                     pages[0] != pages[1],
                     "turning the floor off must change the answer, or these assertions hold for some other reason: ${pages[0]}",
@@ -703,7 +512,7 @@ class ProductionCorpusIT {
             }
         } ?: Unit
 
-    /** The titled list whose members this corpus holds the most PROFILES for, with the score each carries. */
+    /** The titled list whose members this corpus holds the most profiles for, with the score each carries. */
     private fun scoredList(): Scored? {
         val profiles = corpus.filter { it.kind == 0 }.associateBy { it.pubKey }
         return corpus
@@ -716,9 +525,7 @@ class ProductionCorpusIT {
                     list.tags
                         .filter { it.size > 3 && it[0] == "p" && it[3].toIntOrNull() != null }
                         .mapNotNull { tag -> profiles[tag[1]]?.let { it to tag[3].toInt() } }
-                        // A member whose own bio carries the title is a TEXT
-                        // hit in its own right, so its placement says nothing
-                        // about the splice.
+                        // A member whose own bio carries the title is a text hit in its own right.
                         .filter { (profile, _) -> words.none { it in profile.content.lowercase() } }
                         .distinctBy { it.second }
                 Scored(list, title, held)
@@ -736,13 +543,8 @@ class ProductionCorpusIT {
     @Test
     fun `no page of the production corpus sends an event twice`() =
         withRelay { relay, _ ->
-            // The shape that makes this a real question rather than a
-            // hypothetical: in this corpus 76 labelled events are named by more
-            // than one label and ten of them by ten labels each, so a search on
-            // a busy label value converges several hits on one subject. Every
-            // page() in this file already asserts distinctness; this walks the
-            // label values that actually collide, so the assertion is aimed at
-            // the pages most likely to break it.
+            // Aimed at the label values that collide: several labels naming one subject is the page most
+            // likely to send it twice.
             val byTarget = HashMap<String, MutableSet<String>>()
             for (label in corpus.filterIsInstance<LabelEvent>()) {
                 val value = label.labels().map { it.label }.firstOrNull { it.length > 2 } ?: continue
@@ -760,9 +562,7 @@ class ProductionCorpusIT {
             println("PRODUCTION-IT checking ${minOf(contested.size, 8)} contested label values for duplicates")
 
             for (value in contested.take(8)) {
-                // page() throws on a duplicate, so reaching the end is the
-                // assertion. The kinds are wide open so the subjects are
-                // admitted and the splice actually happens.
+                // page() throws on a duplicate, so reaching the end is the assertion. Kinds are wide open so the splice happens.
                 val page = page(relay, "dup-${value.hashCode()}", """{"limit":200,"search":"$value include:spam"}""")
                 assertTrue(page.isNotEmpty(), "\"$value\" should still match its own labels")
             }
@@ -773,9 +573,7 @@ class ProductionCorpusIT {
         withRelay { relay, store ->
             val plain = plainRelay()
             try {
-                // A mirror's page: real kinds, no search text, a lens token
-                // because an anonymous read must carry one. The expansion must
-                // not change it by a single frame.
+                // A mirror's page: real kinds, no search text, a lens token because an anonymous read must carry one.
                 val filter = """{"kinds":[1985],"limit":50,"search":"include:spam"}"""
                 val withIt = page(relay, "recall-on", filter)
                 val without = page(plain, "recall-off", filter)
@@ -815,11 +613,8 @@ class ProductionCorpusIT {
             synchronized(out) { out.filter { it.startsWith(prefix) } }.map { frame ->
                 ID.find(frame)?.groupValues?.get(1) ?: fail("no id in $frame")
             }
-        // EVERY page this suite reads, checked for duplicates. NIP-01 asks a
-        // relay not to send one event twice on a subscription, and a feature
-        // whose whole job is to ADD events to a page is the one most likely to
-        // break that — so the check lives here rather than in a test of its
-        // own, and every case in the file pays for it.
+        // Every page this suite reads is checked for duplicates: a feature that adds events to a page is
+        // the one most likely to break NIP-01's rule against sending an event twice.
         val twice = ids.groupBy { it }.filterValues { it.size > 1 }.keys
         assertEquals(emptySet(), twice, "sent twice on \"$subId\": $twice")
         return ids

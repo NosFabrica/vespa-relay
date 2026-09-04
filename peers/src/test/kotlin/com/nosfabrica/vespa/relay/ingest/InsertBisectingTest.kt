@@ -31,9 +31,7 @@ import kotlin.test.assertTrue
 
 /**
  * A bulk write fails as a unit, so without isolation one event the store cannot
- * take costs its whole batch — 999 good events per bad one at the default size,
- * dropped silently and counted as a multiple of the batch rather than as a number
- * of bad events. These pin the isolation that stops that.
+ * take costs its whole batch. These pin the isolation that stops that.
  */
 class InsertBisectingTest {
     private fun event(n: Int) =
@@ -102,7 +100,6 @@ class InsertBisectingTest {
         val bad = events[37].id
         val (_, accepted, poisoned) = run(events, setOf(bad))
 
-        // This is the whole point: 63 of 64 still land.
         assertEquals(63, accepted, "every event except the poison one must still be written")
         assertEquals(1, poisoned.size)
         assertEquals(bad, poisoned.single().first.id, "the isolated event is the one that throws")
@@ -115,7 +112,7 @@ class InsertBisectingTest {
         val (writer, accepted, _) = run(events, setOf(events[500].id))
 
         assertEquals(1023, accepted)
-        // ~2*log2(n) writes, nowhere near the 1024 a per-event fallback would cost.
+        // About 2*log2(n) writes, not the 1024 a per-event fallback would cost.
         assertTrue(writer.calls.size < 32, "expected a logarithmic split, got ${writer.calls.size} writes")
     }
 
@@ -131,8 +128,7 @@ class InsertBisectingTest {
 
     @Test
     fun `a store-wide failure gives up instead of splitting all the way down`() {
-        // Everything fails — a full disk, a dead engine. Splitting to singletons
-        // would cost ~2n writes at the worst possible moment.
+        // Everything fails, as on a full disk; splitting to singletons would cost 2n writes.
         val events = (1..1024).map(::event)
         val (writer, accepted, poisoned) = run(events, events.map { it.id }.toSet())
 
@@ -141,16 +137,14 @@ class InsertBisectingTest {
             writer.calls.size < 100,
             "a store-wide failure must not cost ~2n writes; spent ${writer.calls.size}",
         )
-        // Nothing is silently lost: whatever isolation could not name is still
-        // handed back, so the caller can count it.
+        // Whatever isolation could not name is still handed back to be counted.
         assertEquals(1024, poisoned.size + gaveUp.sum(), "every event must be accounted for")
         assertTrue(gaveUp.isNotEmpty(), "the remainder should be reported as unisolated")
     }
 
     @Test
     fun `the budget is spent isolating, not hoarded`() {
-        // One bad event in 1024 must still be found — the guard bounds the
-        // pathological case without breaking the case it was built for.
+        // The guard bounds the pathological case without breaking the one it was built for.
         val events = (1..1024).map(::event)
         val (_, accepted, poisoned) = run(events, setOf(events[900].id))
 
@@ -170,9 +164,8 @@ class InsertBisectingTest {
 
     @Test
     fun `cancellation propagates instead of being mistaken for a poison event`() {
-        // Shutdown cancels the ingest scope mid-write. Treating that as "this event
-        // is bad" would drop good events and, worse, keep bisecting while the
-        // relay is trying to stop.
+        // Shutdown cancels the ingest scope mid-write; reading that as a bad
+        // event would drop good ones and keep bisecting while the relay stops.
         val events = (1..16).map(::event)
         assertFailsWith<CancellationException> {
             runBlocking {

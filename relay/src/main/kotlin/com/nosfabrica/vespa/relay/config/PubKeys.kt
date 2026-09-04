@@ -23,16 +23,10 @@ package com.nosfabrica.vespa.relay.config
 import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 
 /**
- * Parses every pubkey setting: `npub1…` (or another bech32 public-key form),
- * converted to the lowercase hex the store and filters speak.
- *
- * Bare hex is refused on purpose: hex has no checksum, so one mistyped
- * character is a valid-looking key that simply is not anybody, and nothing
- * downstream could ever notice. An npub cannot be corrupted silently.
- *
- * A bad value throws instead of being dropped, because a silently dropped
- * entry looks exactly like the feature not working — an admin who cannot
- * administer, a ban that is not enforced. A typo must be loud.
+ * Parses every pubkey setting: a bech32 public key, converted to lowercase
+ * hex. Bare hex is refused because it has no checksum, so a mistyped key is
+ * nobody and nothing downstream can notice. A bad value throws rather than
+ * being dropped, because a dropped entry looks like the feature not working.
  */
 object PubKeys {
     /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */
@@ -40,9 +34,7 @@ object PubKeys {
         raw: String,
         varName: String,
     ): String {
-        // BIP-173 allows the ALL-UPPERCASE spelling (QR exports produce it);
-        // normalizing case first keeps `NPUB1…` valid and — just as important
-        // — keeps the nsec detection below from being sidestepped by case.
+        // BIP-173 allows all-uppercase; folding case first also keeps the nsec check below honest.
         val trimmed =
             raw
                 .trim()
@@ -50,16 +42,11 @@ object PubKeys {
                 .let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
         val hex =
             when {
-                // Rejected outright: quartz would accept an nsec and hand back
-                // the matching public key, leaving a private key in a public
-                // setting for good.
+                // Quartz would decode an nsec to its public key, leaving a private key in a public setting.
                 trimmed.startsWith("nsec1") -> null
 
-                // Bech32 goes to quartz, which knows npub, nprofile and the rest.
                 trimmed.startsWith("n") -> decodePublicKeyAsHexOrNull(trimmed)
 
-                // Anything else — including bare hex — is refused; [describe]
-                // says how to fix it.
                 else -> null
             }
         return hex?.takeIf { it.length == 64 }
@@ -97,9 +84,7 @@ object PubKeys {
             }
 
             value.startsWith("npub1") -> {
-                // It IS an npub in shape; the checksum failed. Saying "must be
-                // an npub, got 63 characters" would tell the operator the one
-                // thing they already believe.
+                // The shape is right and the checksum failed; the operator already believes it is an npub.
                 "an npub that would not decode — recopy it"
             }
 

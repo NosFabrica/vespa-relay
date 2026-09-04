@@ -1,13 +1,8 @@
-// NIP-66: relay discovery records and the monitors that publish them. These
-// two get cards for the same reason 10040 and 30382 do — this relay publishes
-// them. It runs as a NIP-66 monitor (RelayIdentity's key signs the
-// announcement), so a 30166 permalink reading "kind 30166" over a hex blob
-// would be the relay failing to explain its own output.
-//
-// The discovery record is the interesting one: it is a statement ABOUT a
-// relay, and every field that matters is a tag — the url is the `d`, the
-// supported NIPs are `N` tags, the software is `s`. The NIP-11 document rides
-// in `content` as JSON and is the only place a human-written name or
+// NIP-66: relay discovery records and the monitors that publish them. This
+// relay publishes both (RelayIdentity's key signs the announcement), so their
+// cards explain its own output. A discovery record's fields are tags: the url
+// is the `d`, the supported NIPs `N`, the software `s`. The NIP-11 document
+// rides in `content` as JSON and is the only place a human-written name or
 // description lives, so it is read rather than printed.
 
 import { esc } from "../shared/format.js";
@@ -27,9 +22,7 @@ const everyN = (secs) => {
 
 /**
  * 30166 — one relay, as this monitor found it. `N` tags are NIP numbers and
- * `T`/`R` the relay's type and requirements; they are shown as chips because
- * "supports 1, 11, 42, 50, 65" is the answer somebody browsing relays wants,
- * and a props table of five one-word rows is not.
+ * `T`/`R` the relay's type and requirements, shown as chips.
  */
 function relayDiscoveryCard(ev, opts) {
   const url = tagOf(ev, "d") || "";
@@ -49,18 +42,13 @@ function relayDiscoveryCard(ev, opts) {
   ]);
 }
 
-/** "monitors relays every 1h" — the frequency being what makes its records mean anything. */
+/** "monitors relays every 1h"; the frequency is what makes its records mean anything. */
 const monitorLine = (ev) => {
   const every = everyN(tagOf(ev, "frequency"));
   return `monitors relays${every ? ` every ${every}` : ""}`;
 };
 
-/**
- * 10166 — a monitor announcing itself: how often it checks, how long it waits,
- * and which checks it runs. The frequency is the field that decides whether a
- * negative record from this monitor means anything, so it is stated in words
- * rather than as a raw seconds count.
- */
+/** 10166 — a monitor announcing itself: how often it checks, how long it waits, and which checks it runs. */
 function relayMonitorCard(ev, opts) {
   const checks = tagsOf(ev, "c").map((t) => t[1]).filter(Boolean);
   const kinds = tagsOf(ev, "k").map((t) => t[1]).filter(Boolean);
@@ -76,10 +64,7 @@ function relayMonitorCard(ev, opts) {
 register([30166], relayDiscoveryCard);
 register([10166], relayMonitorCard);
 
-// The rows. A discovery record's only human-written words are in the NIP-11
-// document it carries as JSON — so the row printed that document, in a search
-// where every result was one. The host is the fallback, and it is the thing a
-// reader recognises anyway.
+// A discovery record's only human-written words are in its NIP-11 JSON; the host is the fallback.
 registerRow([30166], (ev) => {
   const nip11 = jsonContent(ev);
   const url = tagOf(ev, "d") || "";

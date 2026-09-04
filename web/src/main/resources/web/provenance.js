@@ -1,143 +1,42 @@
-// WHY AN EVENT IS IN THIS PAGE — the pills a card draws under its byline.
-//
-// The relay's search expansion splices events the search terms never matched:
-// a profile rides in behind the Trusted List that names it, a note behind the
-// label that describes it. Without a word from the card, those arrive as
-// results that do not contain what was searched for, which reads as the relay
-// being wrong. The pills are that word.
-//
-// PURE, OVER WHATEVER ARRAY IT IS HANDED. This file makes no ask of its own and
-// holds no socket; it indexes an array and reads pointers out of it. Who fills
-// that array has changed once and may change again, which is exactly why the
-// rules live behind that seam.
-//
-// It used to be filled by the relay alone: the search expansion sent a pointer
-// and everything it named on one subscription, so the answer the page was
-// going to render anyway already held both, and the row cost no round trip. It
-// no longer does — a search that asks for `kinds:[0]` is answered with the
-// profiles the expansion found THROUGH those lists, labels and assertions and
-// not with the pointers themselves — so app.js now seeds twice: once off the
-// answer, and again once shared/pointers.js has fetched what the answer left
-// out. Both seeds go through here unchanged.
-//
-// What that costs is the trust gate, and it costs more than the fetch. "It
-// arrived, so the reader asked for it" was never quite a fact even about the
-// relay: the expansion's COMPANION is gated, but plain recall is not, and the
-// store says so outright — "an explicit `kinds:[30392]` is a NIP-01 ask and
-// serves strangers' lists as plain hits, gate or no gate". A search that names
-// no kinds recalls every kind, so a stranger's list whose TITLE matches lands
-// in the answer beside the delegated publisher's. Read as gated, the two
-// collapsed by value into one pill with a count of 2 — anyone could inflate a
-// publisher's corroboration number by signing a list with the same title.
-//
-// So the gate is applied HERE, over whatever filled the array, from the
-// `trusted` map [provenanceOf] takes. That is one rule for both fillers and
-// for any third.
-//
-// NOT BY ADJACENCY, and that distinction is now load-bearing. A subject used to
-// arrive directly behind its pointer, and reading the pair off neighbouring
-// positions would have worked. It no longer does: the store places a spliced
-// member by the confidence its list expressed about it, so a doubted member
-// sinks past the organic hits between them and can land anywhere in the page.
-// Both passes below are order-independent — index the whole page, then walk the
-// pointers — which is why that change cost this file nothing. Keep it that way.
-//
-// That makes the row deliberately PARTIAL, in three ways worth knowing before
-// reading a pill as a complete account:
-//
-//   - the expansion's budgets (100 per event, 1,000 per request) cap what the
-//     ANSWER carries, so a truncated page draws fewer pills than a whole one;
-//   - the follow-up read is bounded too — one batch of 100 targets per filter,
-//     and an ungated label read stops at pointers.js's LABEL_LIMIT;
-//   - the trust gate drops declarations from signers this reader never
-//     delegated, so the row is observer-relative by design.
-//
-// A fourth used to head that list and no longer holds, and the change is worth
-// knowing before reading a row: a label that did not match the SEARCH never
-// arrived, so the row could only ever say why a card was HERE. Asked by target
-// instead, every label the relay holds about it comes back — which is nearer
-// to "what has been said about this", the question that belongs on the entity
-// page. That drift is not a decision this file made; it is what is left when
-// the relay stops telling the client which labels matched, and the client
-// cannot re-derive it. Bounding it is pointers.js's LABEL_LIMIT and the
-// collapse below, and neither restores the old meaning.
-//
-// No DOM and one import — nip19's addrOf, because the address a pill links to
-// must be the same string the card's own permalink uses, and a second spelling
-// is how those two come to disagree. The rules are otherwise pure so
-// web/src/test/js can hold them,
-// and a pill names its DESTINATION rather than spelling a url — cards/base.js
-// owns every href on this page, and two spellings of one route is the bug that
-// rule exists to prevent.
+// Why an event is in this page: the pills a card draws under its byline. The
+// search expansion splices in events the terms never matched (a profile
+// behind the list that names it, a note behind a label), and the pills are
+// the card's word for that. Pure over whatever array it is handed: app.js
+// seeds it from the answer and again from shared/pointers.js's follow-up
+// read, and the trust gate is applied here from the `trusted` map, never
+// inferred from arrival or adjacency. The only import is nip19's addrOf, so
+// a pill's address is the string the card's own permalink uses.
 
-/** The label namespaces that are METADATA, not provenance. */
-//
-// `ISO-639-1` is 87% of the labels on staging — a pill reading "en" on every
-// card is furniture, and it would crowd out the one pill that says something.
-// A named constant rather than a scatter of conditions, because this is a
-// judgement about the corpus and the next reader is entitled to argue with it.
-//
-// `pub.ditto.trends` is the same judgement about the other half of the corpus,
-// and it is the one that shows up on PEOPLE. Ditto publishes a trending feed
-// as NIP-32: `["L","pub.ditto.trends"]`, `["l","#p","pub.ditto.trends"]`, and
-// forty `p` tags carrying a pubkey, a relay and two counts. Two things make it
-// furniture. The value is `#p` — a NIP-01 TAG NAME, saying "this trend list is
-// about pubkeys" rather than anything about any of them — so the pill reads
-// `#p` and means nothing to a reader. And one event names forty people, so a
-// single trends post puts that pill on forty cards at once.
-//
-// Measured against staging on 2026-09-01, asking for the labels on one page of
-// 40 profiles: 500 events (the whole budget), 2.4 MB of JSON, 100% this one
-// namespace from this one publisher, and exactly one distinct pill out of it,
-// reading `#p`. A general sample of the relay's 1985s is 100% `ISO-639-1`, and
-// the same 40 people have ZERO labels in any other namespace. So both entries
-// here are the same finding twice: the label half of this row is, on this
-// corpus, entirely furniture, and what it costs is in [LABEL_LIMIT].
 import { addrOf } from "./shared/nip19.js";
 
+/**
+ * The label namespaces that are metadata rather than provenance: a language
+ * on every card, or a trends feed whose label value is the tag name `#p`.
+ * A judgement about the corpus, named so the next reader can argue with it.
+ */
 export const QUIET_NAMESPACES = new Set(["ISO-639-1", "ISO-639-2", "ISO-3166-1", "ISO-3166-2", "pub.ditto.trends"]);
 
 /** NIP-32. Anyone may publish one about anything, so a label pill is never gated. */
 export const LABEL_KIND = 1985;
 
 /**
- * The kinds whose presence in a page IS the trust gate's verdict.
- *
- * The relay admits a declaration only for a reader whose own kind-10040
- * delegated its signer FOR THAT KIND. So the client does not re-derive the
- * gate and cannot disagree with it: if one of these arrived as a pointer, the
- * reader asked for it, and that is what the gated tone says.
+ * The kinds whose presence in a page is the trust gate's verdict: the relay
+ * admits one only for a reader whose kind 10040 delegated its signer for
+ * that kind, so the client never re-derives the gate.
  */
 export const DECLARATION_KINDS = new Set([30000, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 39089]);
 
 /**
- * THE TWO NIP-51 KINDS ARE THE ODD ONES HERE, and it is worth saying why they
- * belong beside a trust service's output.
- *
- * A people list (30000) and a follow pack (39089) are not computed by anybody:
- * they are a person's own curation, with no per-member score anywhere in them
- * — NIP-51 has nowhere to put one. Since store `2bc79f5f40` the relay splices
- * them anyway, because a reader who keeps a list called `Verified Human` IS
- * answering the query "verified human" with the people on it, and until then
- * that list could lead the page and contribute nobody.
- *
- * What makes them safe is the SAME gate, not a weaker one: anyone may title a
- * list `bitcoin` and name a thousand accounts in it, so a list unpacks only
- * for a reader who delegated its signer — and a reader is always their own
- * signer. That is why they need no special case below. `trustedSigners` maps
- * every kind here to the publishers the reader named PLUS the reader, so on a
- * normal Map these two resolve to the reader alone, which is exactly the set
- * the relay unpacks them for.
+ * The two NIP-51 kinds the relay splices beside a trust service's output: a
+ * reader's own curation, with no score in it. The same gate covers them,
+ * since a reader is always their own signer; `trustedSigners` adds the reader
+ * to every kind, so no special case is needed below.
  */
 export const PEOPLE_LIST_KINDS = new Set([30000, 39089]);
 
 /**
- * Which tag holds a list's membership, by kind — 30395's `i` names no event.
- *
- * A NIP-51 list holds its members in `p` like a 30392 does, so it reads with
- * the same walk. Only its PUBLIC members: the private half is NIP-44 encrypted
- * to the owner, the relay cannot read it either, and a pill drawn off a member
- * this page could not have been sent would be a claim about nothing.
+ * Which tag holds a list's membership, by kind; 30395's `i` names no event.
+ * Only public members: the private half is encrypted to the owner.
  */
 const MEMBER_TAG = { 30000: "p", 30392: "p", 30393: "e", 30394: "a", 39089: "p" };
 
@@ -149,31 +48,17 @@ const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray
 const tagOf = (ev, name) => (tagsOf(ev, name)[0] || [])[1] || "";
 
 /**
- * The pills for every event in [events], keyed by the id of the event they go on.
- *
- * One pass to index what the page holds, one to read the pointers. A pointer
- * whose target is NOT in this page contributes nothing: the row is about the
- * cards on screen, and a pill over an absent card is a claim about nothing.
- *
- * [trusted] is `kind -> Set(signer)` — who this reader delegated for each
- * declaration kind, plus the reader themselves, built by pointers.js's
- * trustedSigners off their kind 10040. A declaration from anyone else
- * contributes NOTHING: not a quieter pill, nothing. The row says why a card is
- * in this page, and a stranger's list did not put it there — the relay would
- * not unpack it for this reader, so whatever brought the card, it was not
- * that. Labels are unaffected; NIP-32 is open by construction and its tone
- * already says so.
- *
- * ABSENT MEANS NOBODY, deliberately. An anonymous reader delegates no one and
- * gets label pills only, which is exactly what the relay serves them. A
- * signed-in reader whose Map has not landed yet is in that state for one paint
- * and gains the pills on the next — the row understating itself for a moment
- * is the right way round for a claim about who vouched for whom.
+ * The pills for every event in [events], keyed by the id of the event they
+ * go on. One pass indexes the page, one reads the pointers; a pointer whose
+ * target is not on the page contributes nothing. [trusted] is `kind ->
+ * Set(signer)` from pointers.js's trustedSigners; a declaration from anyone
+ * else contributes nothing, and an absent map delegates nobody. Labels are
+ * open by construction and unaffected.
  */
 export function provenanceOf(events, trusted) {
   const byId = new Map();
   const byAddr = new Map();
-  const profileOf = new Map(); // pubkey -> the kind 0 in THIS page
+  const profileOf = new Map(); // pubkey -> the kind 0 in this page
   for (const e of events || []) {
     if (!e || !HEX64.test(e.id || "")) continue;
     byId.set(e.id, e);
@@ -184,12 +69,8 @@ export function provenanceOf(events, trusted) {
 
   // (target id) -> (pill key) -> pill
   const found = new Map();
-  // ONE POINTER MAY NAME ONE TARGET TWICE, and lists in the wild do: clients
-  // append without checking, which is the same reason peopleOf dedupes its
-  // grid. Counted naively, a single list repeating a member reads "Verified
-  // Human 2" — the count claiming two lists where there is one, which is
-  // exactly the fact the count exists to state honestly. Deduped PER POINTER,
-  // never globally: two different lists sharing a title must still count 2.
+  // Deduped per pointer, never globally: one list repeating a member must
+  // not count as two lists, and two lists sharing a title must.
   const seenHere = new Set();
   const add = (target, pill) => {
     if (!target || target.id === pill.from) return;
@@ -203,22 +84,15 @@ export function provenanceOf(events, trusted) {
       pills.set(pill.key, { ...pill, count: 1, authors: [pill.author] });
       return;
     }
-    // COLLAPSE BY VALUE, NEVER BY EVENT. Two lists titled "Verified Human" are
-    // one pill with a 2; 66 labels saying "zapped" are one pill with a 66 —
-    // which is the rule that takes the worst real card from 139 pills to 2.
+    // Collapsed by value, never by event: two lists titled alike are one
+    // pill with a count of 2.
     seen.count++;
     if (!seen.authors.includes(pill.author)) seen.authors.push(pill.author);
   };
 
-  // ONE EVENT WALKED ONCE, however many times the array holds it — and the
-  // array does hold it twice now. The page's own answer and the follow-up read
-  // that fetches what the answer no longer splices (shared/pointers.js) are
-  // seeded TOGETHER, on purpose: a pointer that arrives both ways must not
-  // vanish because the caller guessed wrong about which read carried it. But
-  // `seenHere` dedupes WITHIN a pointer and is cleared between them, so the
-  // second copy walked as a second pointer — and it landed on `count`, which
-  // is the number a reader reads as corroboration. "Verified Human 2" over one
-  // list is the exact false claim the count exists to avoid making.
+  // Each event walked once however many times the array holds it: the
+  // answer and the follow-up read are seeded together, and `seenHere` is
+  // cleared between pointers, so a second copy would land on `count`.
   const walked = new Set();
   for (const ev of events || []) {
     if (!ev) continue;
@@ -236,20 +110,14 @@ export function provenanceOf(events, trusted) {
 }
 
 /**
- * Hands every (target, pill) one pointer contributes to [emit].
- *
- * A CALLBACK RATHER THAN A RETURNED ARRAY, and it is the difference between
- * this being free and being felt. A Trusted List carries every member it has —
- * thousands — while a page holds at most a hundred results, so building an
- * array per list meant allocating five thousand entries to find five matches,
- * three times over (filter, map, filter). Emitting as we go walks the tags once
- * and allocates only for the members actually on screen.
+ * Hands every (target, pill) one pointer contributes to [emit]. A callback
+ * rather than an array: a list carries thousands of members and a page holds
+ * a hundred results, so only the members on screen are allocated for.
  */
 function contributionsOf(ev, page, emit) {
   if (ev.kind === LABEL_KIND) return labelContributions(ev, page, emit);
   if (!DECLARATION_KINDS.has(ev.kind)) return;
-  // WHOSE WORD, not just which kind — and this is the check that used to be
-  // the relay's. See [provenanceOf]'s `trusted`.
+  // Whose word, not only which kind; see [provenanceOf]'s `trusted`.
   if (!delegated(page.trusted, ev.kind, ev.pubkey)) return;
   if (MEMBER_TAG[ev.kind]) return listContributions(ev, page, emit);
   return assertionContributions(ev, page, emit);
@@ -262,11 +130,8 @@ const delegated = (trusted, kind, pubkey) => {
 };
 
 /**
- * NIP-32: one pill per LABEL VALUE, on every record the label names.
- *
- * `r` and `t` targets are deliberately not read — they name a url and a topic,
- * neither of which is an event this page could be drawing. The same rule the
- * relay's own SearchReferences follows, and for the same reason.
+ * NIP-32: one pill per label value, on every record the label names. `r`
+ * and `t` targets name a url and a topic, which no card on this page is.
  */
 function labelContributions(ev, page, emit) {
   const ns = tagOf(ev, "L");
@@ -283,9 +148,8 @@ function labelContributions(ev, page, emit) {
   if (!targets.length) return;
   for (const tag of (ev.tags || [])) {
     if (!Array.isArray(tag) || tag[0] !== "l" || !tag[1]) continue;
-    // The mark's namespace is its own third element where it has one, and the
-    // event's `L` otherwise — a label may carry several, and the one that
-    // decides whether this VALUE is metadata is the one written beside it.
+    // A mark's namespace is its own third element where it has one, and
+    // the event's `L` otherwise.
     if (QUIET_NAMESPACES.has(tag[2] || ns)) continue;
     const pill = { key: `label:${tag[1]}`, text: tag[1], to: "search", value: tag[1], gated: false, author: ev.pubkey, from: ev.id };
     for (const target of targets) emit(target, pill);
@@ -293,60 +157,19 @@ function labelContributions(ev, page, emit) {
 }
 
 /**
- * A NIP-51 list that is the reader saying the OPPOSITE of a vouch.
- *
- * Quartz names this shape itself — `PeopleListEvent.BLOCK_LIST_D_TAG = "mute"`
- * — and `SearchReferences` reads every public `p` off one, having no way to
- * tell a curation from a rejection. The row does: its whole claim is why a
- * card is HERE and who vouched for it, and "you muted this person" is not
- * that. Drawn, it would be a positive-looking chip on somebody the reader
- * threw out.
- *
- * IT REACHES THE PAGE THROUGH THE FETCH, not through the splice, and the
- * distinction is why this check belongs here rather than being left to the
- * relay. An untitled mute list has no indexed text at all — quartz indexes
- * `titleOrName()` and the description, and it has neither — so it can never
- * match a search and the expansion never splices it. shared/pointers.js asks
- * by MEMBER, with no terms, so it comes back regardless. Every untitled block
- * list on that corpus is reachable this way and by no other.
- *
- * MEASURED on staging (2026-09-01), sampling 400 kind-30000s: 41 carry one of
- * these `d` values, 9 of them name people in public `p` tags, and the largest
- * single one names 3,980. Two are TITLED (`Mute`), which is why this is a
- * check of its own rather than a side effect of the title rule below.
- *
- * `mute` is quartz's constant; the rest are what the same intent is spelled as
- * beside it on that corpus. A list whose `d` is a storage key for the reader's
- * block list is not a list they curated, whatever it is called.
+ * The `d` values under which a NIP-51 list is the reader saying the opposite
+ * of a vouch. It reaches the page through the by-member fetch, not the
+ * splice (an untitled mute list has no indexed text), and some are titled,
+ * so the title rule below cannot catch it. `mute` is quartz's own constant.
  */
 const BLOCK_LIST_D = new Set(["mute", "block", "blocked", "mutelist", "mutelists", "blocklist"]);
 
 /**
- * The words a list is FINDABLE by, in the order quartz indexes them, or "" for
- * a list that has none and so draws no pill at all.
- *
- * The pill has to name the thing the reader could have ARRIVED BY, so this
- * tracks `SearchFieldExtractor` rather than picking a sensible-looking tag: a
- * Trusted List and a follow pack index `title()`, and a people list indexes
- * `titleOrName()` — so a 30000 with only a `name` is reachable by those words
- * and has to draw them, while reading `name` off a 30392 would put a word on a
- * card that the relay never indexed and no reader could have searched.
- *
- * `d` IS THE FALLBACK FOR A TRUSTED LIST AND NOT FOR A NIP-51 ONE, and the
- * difference is the corpus rather than the principle. A `d` is a program's
- * storage key: it is never indexed, so it is never a word anybody searched.
- * For a 30392 that is a rounding error — a delegated publisher titles what it
- * computes — and the fallback beats a blank chip on the rare untitled one.
- *
- * For a 30000 it is most of the kind. Of 400 sampled on staging (2026-09-01),
- * 183 name at least one person and only 53 of those — 29% — carry a title or a
- * name. The other 130 would have drawn their storage keys as provenance, on up
- * to 10,934 member cards: `intent-bloom-r0s63o3y-isPlaying`,
- * `chats/null/lastOpened`, `nextblock.city/neighborhood`, `communities`. Those
- * are applications keeping state in a list kind, not people curating anybody,
- * and a chip reading `chats/null/lastOpened` under a byline explains nothing
- * to anyone. So on these two kinds an untitled list says nothing, which is the
- * row being partial — a property it already documents — rather than wrong.
+ * The words a list is findable by, in the order quartz indexes them, or ""
+ * for a list that draws no pill. Tracks `SearchFieldExtractor`: a Trusted
+ * List and a follow pack index `title`, a people list `titleOrName`. `d` is
+ * the fallback for a Trusted List only; on the NIP-51 kinds most `d` values
+ * are an application's storage keys, and an untitled list says nothing.
  */
 const NAME_INDEXED = new Set([30000]);
 const listText = (ev) => {
@@ -358,17 +181,10 @@ const listText = (ev) => {
 };
 
 /**
- * A list — a Trusted List or one of the NIP-51 people kinds: one pill, named
- * by the list, on every member this page holds.
- *
- * ONE TONE FOR BOTH, deliberately. A reader's own people list and a service
- * they enrolled are different claims — "I put this person on a list" against
- * "the publisher I named computed this" — but `gated` does not mean "a service
- * said so", it means the relay would not have unpacked this for anyone else,
- * and that is equally true of both. Where the difference matters the page
- * already states it: [facesNeeded] draws the author's face as soon as a page
- * holds more than one delegated publisher, and on a page mixing a service's
- * list with the reader's own that is precisely the case it fires on.
+ * A list, Trusted or NIP-51: one pill named by the list on every member this
+ * page holds. One tone for both, since `gated` means the relay would not
+ * have unpacked it for anyone else; where the author matters, [facesNeeded]
+ * draws the face.
  */
 function listContributions(ev, page, emit) {
   const addr = addrOf(ev);
@@ -385,30 +201,10 @@ function listContributions(ev, page, emit) {
 }
 
 /**
- * A NIP-85 assertion, whose subject is its `d` — read BY KIND, since only the
- * kind can say whether that string is a pubkey, an event id or an address.
- *
- * ITS TOPICS, AND NOTHING ELSE. Every `t` tag becomes a pill pointing at that
- * topic's own screen: the reader searched a subject, and the answer worth
- * giving is the other people under it. An assertion with no `t` contributes
- * NOTHING — not a quieter pill, nothing.
- *
- * WHY A SCORE IS NOT A REASON. This used to fall back to `rank 92`, or the
- * word "scored" where there was no rank, on the grounds that a delegated
- * service having scored somebody is why their card is here. Two things are
- * wrong with that. A number out of its scale says nothing a reader can act on
- * — `rank 2` beside `rank 98` invites a comparison the pill cannot support,
- * since the scale is the service's and is nowhere on the card. And the page
- * already answers it properly: shared/avatar.js puts a score chip on every
- * face and app.js fills it from the reader's own `30382:rank` service, so the
- * ranking has a place that carries its lens with it. A second, worse spelling
- * of the same fact was crowding the row that explains the OTHER reason a card
- * is here — the list that vouched for it.
- *
- * ALL THREE KINDS, not just the contact card. A topic is a topic whether the
- * subject is a person, an event or an article, and the `t` tag means the same
- * thing in each; reading it only off 30382 was the old shape's assumption, not
- * a rule about the data.
+ * A NIP-85 assertion, whose subject is its `d`, read by kind since only the
+ * kind says whether the string is a pubkey, an id or an address. Its topics
+ * and nothing else: a score is not a reason (the avatar's chip carries it,
+ * with its lens), and an assertion with no `t` contributes nothing.
  */
 function assertionContributions(ev, page, emit) {
   const subject = tagOf(ev, "d");
@@ -417,12 +213,10 @@ function assertionContributions(ev, page, emit) {
     ev.kind === 30382 ? page.profileOf.get(subject)
     : ev.kind === 30383 ? page.byId.get(subject)
     : ev.kind === 30384 ? page.byAddr.get(subject)
-    : null; // 30385's subject is a NIP-73 identifier — not an event this page draws.
+    : null; // 30385's subject is a NIP-73 identifier, not an event this page draws.
   if (!target) return;
 
-  // EVERY `t`, not the first. A service that files somebody under three topics
-  // has said three things, and the collapse below folds a repeat into a count
-  // rather than a second chip, so there is nothing to protect against here.
+  // Every `t`: the collapse above folds a repeat into a count.
   for (const t of (ev.tags || [])) {
     if (!Array.isArray(t) || t[0] !== "t" || !t[1]) continue;
     emit(target, { key: `topic:${t[1]}`, text: t[1], to: "topic", value: t[1], gated: true, author: ev.pubkey, from: ev.id });
@@ -430,11 +224,8 @@ function assertionContributions(ev, page, emit) {
 }
 
 /**
- * Delegated first, then by weight, then alphabetically.
- *
- * The last clause is the one that matters: a card must not reshuffle its own
- * pills between two renders of the same page, and `count` alone leaves ties to
- * whatever order the events happened to arrive in.
+ * Delegated first, then by weight, then alphabetically, so a card never
+ * reshuffles its pills between two renders of the same page.
  */
 function order(pills) {
   return pills.sort((a, b) =>
@@ -442,16 +233,9 @@ function order(pills) {
 }
 
 /**
- * WHICH PILLS CARRY A FACE — drawn where it disambiguates, nowhere else.
- *
- * An UNGATED pill always carries one: nothing gated it, so who is speaking is
- * the entire trust question, and the page cannot answer it any other way.
- *
- * A GATED pill carries one only when the page holds more than one delegated
- * publisher. Measured on staging, this reader's Map names exactly one
- * publisher for lists and one for scores, so a face on every gated pill would
- * be the same face forty times down a results list — restating what the tone
- * already says, which is that the reader asked for it.
+ * Which pills carry a face: every ungated one, since who is speaking is the
+ * whole trust question, and gated ones only when the page holds more than
+ * one delegated publisher.
  */
 export function facesNeeded(pillsByTarget) {
   const publishers = new Set();
@@ -465,22 +249,10 @@ export function facesNeeded(pillsByTarget) {
 export const provenance = new Map();
 
 /**
- * WHICH PAGE THIS ANSWER BELONGS TO — bumped by every write, including a clear.
- *
- * The row is now filled in two passes (see the header), and the second lands
- * after an await. Between them the reader can start another search, or click a
- * result and leave the results view entirely — and both of those replace what
- * this map is about. The late pass therefore has to check that it is still
- * writing into the page it read for, and it needs a counter to check against
- * because the events alone cannot tell it: re-running the SAME search under a
- * new observer is a different answer over an identical array.
- *
- * It lives here, with the two writers, rather than in the caller that happens
- * to await. It was a counter in app.js first, and [forgetProvenance] — which
- * is called from entity.js, not from app.js — could not reach it. A permalink
- * opened while a search's second pass was in flight cleared the row on the way
- * in and then had it written straight back, which is precisely the "how you
- * got here" reading forgetProvenance exists to prevent.
+ * Which page this answer belongs to, bumped by every write including a
+ * clear. The second seeding pass lands after an await, and the events alone
+ * cannot tell a new search from the same one under a new observer. Lives
+ * beside its writers so [forgetProvenance] (called from entity.js) reaches it.
  */
 let epoch = 0;
 
@@ -490,22 +262,9 @@ export const provenanceEpoch = () => epoch;
 export const attribution = { faces: false };
 
 /**
- * Drop what the page knows, so the next view starts from nothing.
- *
- * Two callers, for two different reasons. The FEED clears and stops: it draws
- * full cards, so a row left over from the last search would sit under them
- * explaining a list nobody searched, and a plain NIP-01 read expands nothing,
- * so it has no row of its own to put there.
- *
- * The ENTITY PAGE clears on the way in and then asks again. The clear is the
- * old reason and it still holds — a row inherited from the last SEARCH would
- * appear on a permalink reached by clicking a result and not on the same
- * permalink typed into the bar, which makes its presence mean "how you got
- * here". What has changed is that a permalink now HAS an answer: since the
- * page asks by target rather than reading what the relay happened to splice,
- * "which of the providers you named vouch for this person" is a question a
- * permalink asks more sharply than a results list does. entity.js seeds it
- * from the entity itself once that is known.
+ * Drop what the page knows. The feed clears and stops; the entity page
+ * clears on the way in, so a row inherited from the last search cannot mean
+ * "how you got here", and then seeds again from the entity itself.
  */
 export function forgetProvenance() {
   epoch++;

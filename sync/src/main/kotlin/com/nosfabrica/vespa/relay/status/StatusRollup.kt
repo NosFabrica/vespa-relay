@@ -24,20 +24,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Rebuild a status document on a timer — one instance per plane.
+ * Rebuilds a status document on a timer, one instance per plane.
  *
- * Its own single daemon thread rather than a coroutine on the engine's scope,
- * and the reason is the one this whole split is about: the page has to keep
- * answering when the mirror is in trouble. A rollup sharing `Dispatchers.IO`
- * with ingest queues behind whatever is saturating it, so the one moment an
- * operator opens the page is the moment it stops refreshing.
- *
- * A pass that throws is caught and logged rather than allowed to kill the
- * timer: `scheduleAtFixedRate` cancels the schedule on the first exception, so
- * one bad tick would silently end the feature for the life of the process.
+ * Runs on its own daemon thread rather than a coroutine on the engine's scope,
+ * so the page keeps refreshing while the mirror's dispatchers are saturated.
  */
 internal class StatusRollup(
-    /** What this timer is for, in the log line a failed pass prints. */
+    /** Names the thread and the log line a failed pass prints. */
     private val name: String,
     private val everySeconds: Long,
     private val publish: () -> Unit,
@@ -49,6 +42,7 @@ internal class StatusRollup(
 
     fun start(): StatusRollup {
         timer.scheduleAtFixedRate({
+            // `scheduleAtFixedRate` cancels the schedule on the first exception.
             runCatching { publish() }
                 .onFailure { System.err.println("router: $name status rollup failed: ${it.message}") }
         }, everySeconds, everySeconds, TimeUnit.SECONDS)

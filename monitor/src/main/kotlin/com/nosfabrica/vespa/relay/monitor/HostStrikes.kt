@@ -24,67 +24,50 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Which relays are worth dialling, within one dynamic cycle. A discovered
- * relay list is five figures of urls and most of them are corpses; without
- * this, every cycle re-dials all of them and the working relays queue behind
- * hosts that stopped existing years ago.
+ * Which relays are worth dialling within one dynamic cycle.
  *
- * Failures are counted per AUTHORITY (`host[:port]`), not per url: the outbox
- * model mints one url per user for a filtering relay, so a per-url counter
- * never reaches a threshold on any single one. The authority is host-only and
- * does NOT fold a subdomain into its parent — those are different servers.
- *
- * [produced] overrides a strike race: a host that has ever delivered is never
- * treated as dead for the rest of the cycle. Cycle-local; nothing persists.
+ * Failures are counted per authority (`host[:port]`), not per url: the outbox
+ * model mints one url per user on a filtering relay, so a per-url counter never
+ * reaches a threshold. A subdomain is not folded into its parent. A host that
+ * has ever delivered this cycle ([produced]) is never treated as dead. Nothing
+ * persists past the cycle.
  */
 class HostStrikes(
     private val strikeLimit: Int = DEFAULT_STRIKE_LIMIT,
-    // Relays a previous run proved unreachable, and still within their TTL.
+    // Relays a previous run proved unreachable, still within their TTL.
     private val knownDead: Set<NormalizedRelayUrl> = emptySet(),
 ) {
     private val strikes = ConcurrentHashMap<String, Int>()
     private val deadHosts = ConcurrentHashMap.newKeySet<String>()
     private val producedHosts = ConcurrentHashMap.newKeySet<String>()
 
-    /** Relays this cycle actually got something from — worth remembering as live. */
+    /** Relays this cycle got something from. */
     val reachable: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
 
     /** Relays this cycle could not reach at all. */
     val unreachable: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
 
-    /**
-     * Skip this relay? True when a previous run proved it dead (and no
-     * [produced] since), or when its whole authority has been struck out here.
-     */
     fun isDead(url: NormalizedRelayUrl): Boolean = whyDead(url) != null
 
     /**
-     * WHY this relay is being skipped, or null when it is not.
-     *
-     * The two reasons carry different retry policies and were reported as one
-     * number, which is unreadable in exactly the way "skipped as dead" was: a
-     * [Skip.KNOWN_DEAD] url is out until our own signed `dead` verdict ages
-     * past its TTL ([StreamWorld.DEAD_TTL_SECONDS], 24h)
-     * or its host delivers something, while a [Skip.STRUCK_OUT] one is out only
-     * for the rest of THIS cycle — nothing about a strike persists. An operator
-     * asking "will it try again, and when" gets opposite answers.
+     * Why this relay is being skipped, or null. The two reasons carry different
+     * retry policies: [Skip.KNOWN_DEAD] lasts until our signed `dead` verdict
+     * ages out ([StreamWorld.DEAD_TTL_SECONDS]), [Skip.STRUCK_OUT] only this cycle.
      */
     fun whyDead(url: NormalizedRelayUrl): Skip? {
         val authority = authorityOf(url.url)
         // A delivery this cycle outranks both verdicts.
         if (authority in producedHosts) return null
-        // Checked FIRST because it is the durable one: a url that is both
-        // known-dead and struck out this cycle is not coming back this cycle
-        // either way, and the honest thing to report is the reason with the
-        // longer reach.
+        // The durable reason first: a url that is both is out either way, and
+        // the reason with the longer reach is the honest one to report.
         if (url in knownDead) return Skip.KNOWN_DEAD
         if (authority in deadHosts) return Skip.STRUCK_OUT
         return null
     }
 
-    /** Why a url was not dialled — see [whyDead]. */
+    /** Why a url was not dialled; see [whyDead]. */
     enum class Skip {
-        /** An earlier run's signed NIP-66 record says unreachable, and it is still within its TTL. */
+        /** An earlier run's signed NIP-66 record says unreachable, still within its TTL. */
         KNOWN_DEAD,
 
         /** [strikeLimit] sibling urls on this authority went silent during this cycle. */
@@ -92,10 +75,8 @@ class HostStrikes(
     }
 
     /**
-     * This relay connected but delivered nothing before giving up. Count it
-     * against its authority and, at [strikeLimit], stop dialling the host.
-     * Returns the eviction (for the caller to publish) when this strike is
-     * the one that took the host down — the only point where evidence exists.
+     * This relay connected but delivered nothing. Returns the eviction, for the
+     * caller to publish, only from the strike that took the host down.
      */
     fun strike(url: NormalizedRelayUrl): Evicted? {
         unreachable += url
@@ -103,11 +84,9 @@ class HostStrikes(
         val authority = authorityOf(url.url)
         if (authority in producedHosts || authority in deadHosts) return null
         if (strikes.merge(authority, 1, Int::plus)!! < strikeLimit) return null
-        // Concurrent strikers can cross the threshold together; add() is the
-        // atomic exactly-once gate on who publishes. Re-check produced after
-        // winning it — a delivery that landed while this strike was in
-        // flight outranks the verdict, and the verdict becomes a signed
-        // public record.
+        // Concurrent strikers can cross the threshold together; add() decides
+        // who publishes. Re-check produced after winning, since a delivery that
+        // landed in between outranks a verdict that becomes a signed record.
         if (!deadHosts.add(authority)) return null
         if (authority in producedHosts) return null
         return Evicted(authority, strikeLimit)
@@ -126,7 +105,6 @@ class HostStrikes(
         producedHosts += authorityOf(url.url)
     }
 
-    /** For the cycle's closing line: how many hosts were dropped. */
     fun evictedHosts(): Int = deadHosts.size
 
     fun summary(total: Int): String =
@@ -134,19 +112,10 @@ class HostStrikes(
             "${deadHosts.size} host(s) struck out, ${knownDead.size} skipped as known-dead of $total"
 
     companion object {
-        /**
-         * Three, because a single timeout is ordinary — a busy relay that
-         * never answered one REQ is not a dead one — while three separate
-         * urls on the same host all going silent is a server, not a
-         * coincidence.
-         */
+        /** One timeout is a busy relay; three urls on one host going silent is a server. */
         const val DEFAULT_STRIKE_LIMIT = 3
 
-        /**
-         * `host[:port]` — everything between the scheme and the first path
-         * slash. The port is part of it: two ports on one machine are two
-         * relays.
-         */
+        /** `host[:port]`, everything between the scheme and the first slash. Two ports are two relays. */
         fun authorityOf(url: String): String {
             val afterScheme =
                 when {

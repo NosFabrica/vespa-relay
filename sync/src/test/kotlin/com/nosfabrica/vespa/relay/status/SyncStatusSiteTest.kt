@@ -42,14 +42,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The mirror's status site, driven in-process.
- *
- * The page and every module it imports are RESOURCES, spread across two jars —
- * `sync_stats.html` and `/web/sync/cards.js` in this module, and the shared
- * modules under `/web/shared/` in
- * :web — and nothing but a request proves they resolve. A missing one is a
- * blank page in production and compiles perfectly, which is exactly the class
- * of failure `RelayWebAssetsTest` exists for on the relay's side.
+ * The mirror's status site driven in-process: the page and its modules are
+ * resources spread across two jars, and only a request proves they resolve.
  */
 class SyncStatusSiteTest {
     /** The page as `SyncMain` loads it: off the classpath, no fallback. */
@@ -76,16 +70,9 @@ class SyncStatusSiteTest {
 
             val html = client.get("/")
             assertEquals(HttpStatusCode.OK, html.status)
-            // ONE page for three services: what it draws is decided by the
-            // section the document carries, and its heading comes from that
-            // document's `title`. So what is asserted here is that the page is
-            // served and mounts — not whose it is.
+            // One page serves three services; what it draws comes from the document, so only mounting is asserted.
             assertTrue(html.bodyAsText().contains("mountStatsPage"))
 
-            // EVERY `import` and `<link>` the page names, fetched. A page whose
-            // engine 404s renders a heading and nothing else, and the heading
-            // is what makes that look like a mirror with no state rather than a
-            // broken deploy.
             for (asset in IMPORTS) {
                 val res = client.get(asset)
                 assertEquals(HttpStatusCode.OK, res.status, "$asset — imported by the status page")
@@ -98,9 +85,6 @@ class SyncStatusSiteTest {
             val snapshot = StatsSnapshot(null)
             application { routing { statsDocument(snapshot) } }
 
-            // "No document yet" and "this mirror holds nothing" are different
-            // facts: the first is a state a poller retries and the second is a
-            // finding, and a 200 carrying zeroes cannot be told from either.
             assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/stats.json").status)
 
             snapshot.publish(buildJsonObject { put("schema", SyncStatus.SCHEMA_VERSION) })
@@ -109,21 +93,12 @@ class SyncStatusSiteTest {
 
     @Test
     fun `every browser file this page needs is one module's, and it is not this one`() {
-        // :web owns all of it — the page, the cards, the engine. This module
-        // ships none, which is the rule `NoBrowserFilesInEngineModulesTest`
-        // holds; here it is asserted from the consuming side, because what
-        // matters at runtime is that the files RESOLVE, not where they live.
         assertNotNull(WebAssets.get("shared/page.js"))
         assertNotNull(WebAssets.get("sync/cards.js"))
     }
 
     private companion object {
-        /**
-         * What the page pulls in, kept as a list rather than parsed out of the
-         * markup: a regex over `import` lines would silently stop matching the
-         * day someone reformats the page, and this list failing to compile is
-         * the point of it.
-         */
+        /** Kept as a list rather than parsed from the markup, so a reformat cannot silently empty it. */
         val IMPORTS =
             listOf(
                 "/web/shared/stats.css",

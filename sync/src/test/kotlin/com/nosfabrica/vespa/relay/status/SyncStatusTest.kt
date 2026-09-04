@@ -36,22 +36,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The mirror's own status document.
- *
- * Every case here is about the boundary this replaced. What the relay used to
- * do was read three files off a shared volume, re-parse them against an
- * allowlist and re-narrate them; the properties worth pinning are the ones that
- * changed when the writer and the reader became one object:
- *
- *  - the document exists at all before a reader arrives, so the first request
- *    is not the 503 that means "nothing computed yet"
- *  - the progress half is the mirror's OWN document rather than a projection
- *    of it, and carries no heartbeat
- *  - a failure in one half is reported beside the other half, not instead of it
- *  - the series accumulates ACROSS passes, which is the one thing a single tick
- *    cannot state and therefore the only reason this class holds state
- */
+/** The mirror's own status document, written and served by the same process. */
 class SyncStatusTest {
     private fun status(
         progress: SyncProgress = SyncProgress(),
@@ -72,13 +57,9 @@ class SyncStatusTest {
 
         val doc = snapshot.doc()
         assertEquals(SyncStatus.SCHEMA_VERSION, doc["schema"]!!.jsonPrimitive.content.toInt())
-        // The tier is named and its cadence published, so the page polls on
-        // what the document says rather than on a guess compiled into it.
         val tier = doc["tiers"]!!.jsonObject[SyncStatus.TIER]!!.jsonObject
         assertEquals(30L, tier["everySeconds"]!!.jsonPrimitive.long)
-        // ABSENT, not empty. A mirror that has walked nothing and published no
-        // progress has nothing to say, and a `sync` section carrying zeroes
-        // reads as a broken mirror rather than as a new one.
+        // Absent, not empty: a `sync` section of zeroes reads as a broken mirror, not a new one.
         assertNull(doc["sync"])
         assertEquals(0, (tier["sections"] as JsonArray).size)
     }
@@ -93,13 +74,9 @@ class SyncStatusTest {
         val data = snapshot.doc()["sync"]!!.jsonObject["data"]!!.jsonObject
         val published = data["progress"]!!.jsonObject
         assertEquals("content", (published["streams"] as JsonArray)[0].jsonObject["name"]!!.jsonPrimitive.content)
-        // The whole point of the move. `writtenAt`/`staleForSec` existed so a
-        // reader in ANOTHER process could tell a quiet mirror from a stopped
-        // one; this document is served by the process it describes.
+        // A heartbeat tells another process a quiet mirror from a stopped one; this is served in-process.
         assertNull(published["writtenAt"])
         assertNull(published["staleForSec"])
-        // And the glossary ships with the numbers, so a chip can never describe
-        // a member in words the router would not use.
         assertTrue(data["terms"]!!.jsonObject.isNotEmpty())
     }
 
@@ -122,8 +99,6 @@ class SyncStatusTest {
                 .jsonObject
         assertEquals(listOf(1_000L, 1_060L), (series["at"] as JsonArray).map { it.jsonPrimitive.long })
         assertEquals(2, (series["eventsPerSec"] as JsonArray).size)
-        // Both ends of the queue are sampled, so the level's history can be
-        // read against the rates that made it.
         assertEquals(listOf(1_200L, 1_200L), (series["arrivingPerSec"] as JsonArray).map { it.jsonPrimitive.long })
     }
 

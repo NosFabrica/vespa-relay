@@ -36,7 +36,7 @@ function appCard(ev, opts) {
   ]);
 }
 
-/** "recommends 2 handlers for kind 30023" — the whole of what a 31989 says. */
+/** "recommends 2 handlers for kind 30023", the whole of what a 31989 says. */
 const recommendsLine = (ev) => {
   const forKind = tagOf(ev, "d");
   return `recommends ${plural(tagsOf(ev, "a").length, "handler")}${forKind ? ` for kind ${forKind}` : ""}`;
@@ -59,8 +59,7 @@ register([31990, 32267], appCard);
 register([31989], recommendationCard);
 register([31890], feedCard);
 
-// The rows. An app's JSON content is a profile in all but kind, so its row is
-// one too — name, about, and the icon as the face, exactly as the card draws it.
+// An app's JSON content is a profile in all but kind, so its row is one too.
 registerRow([31990, 32267], (ev) => {
   const { name, icon, about } = appOf(ev);
   return { name, sub: about, pic: icon };

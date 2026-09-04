@@ -30,193 +30,49 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * WHERE EACH PRIME RELAY STANDS — one row per relay this router is allowed to
- * dial, and what its sync of that relay has actually reached.
+ * Where each prime (relay, stream) unit stands: one row per unit the roster
+ * admits, worst first, cut at [MAX_ROWS].
  *
- * ## The question no card could answer
+ * A row carries two independent readings. `syncStatus` is the past (how far
+ * the backfill has got: `notStarted`, `paging`, `complete`, `refused`) and
+ * `behindSec` is the present (the age of the newest event held). A tail is a
+ * third fact belonging to neither: a tailed pair's present arrives live, so
+ * the fault rule is stale and not tailed. The unit is the pool's pair rather
+ * than the relay because one relay can be complete for one stream and never
+ * started for another.
  *
- * Everything the mirror published was an AGGREGATE. `roster` counted the prime
- * relays, the coverage card charted their bands folded into per-stream groups,
- * and the in-flight tables named the handful a worker happened to be holding at
- * that instant. So "is this relay synced" — the question an operator actually
- * arrives with, usually about ONE relay somebody complained about — could be
- * answered for a relay only while it was being visited, and never afterwards.
- * Worse, the two states that matter most were the same absence: a relay the
- * pool has never reached and a relay it reaches every few minutes and is
- * refused by both have no band, and the coverage card draws neither, because
- * its denominator is *relays this stream has touched*.
+ * The join is on the unit's owed asks, keyed by the filter JSON the band
+ * snapshot is keyed under, and `complete` needs every owed ask settled. Urls
+ * join verbatim: both sides write the pool's own normalized string.
  *
- * **The PAGE is not where a single relay is looked up, and should not pretend
- * to be.** The rows are ordered worst-first and cut at [MAX_ROWS] precisely
- * because the table's job is *what is wrong on this mirror*, and the per-relay
- * table this replaces was 10,462 rows behind a filter box that nobody could
- * read. One named relay is a question for the document, which is public and is
- * the artifact the page is only one reader of:
- *
- * ```
- * curl -s localhost:7778/stats.json |
- *   jq '.sync.data.relays.rows[] | select(.relay == "wss://relay.example/")'
- * ```
- *
- * ## TWO AXES, and collapsing them into one was the first mistake
- *
- * `complete` means *the past below this is settled*. It does NOT mean *our copy
- * is current*, and the first version of this table let it read that way — green
- * chip, bottom of the sort, nothing else on the row about the present. A pair
- * that is `complete` with a dead tail and nothing newer than Tuesday is a worse
- * finding than one that is `paging 3/40` and live, and the table ranked them
- * the other way round.
- *
- * So a row carries two independent readings and neither is derived from the
- * other:
- *
- *  - **[syncStatus] — the PAST.** How far the backfill has got: `notStarted`,
- *    `paging`, `complete`, or `refused`.
- *  - **[behindSec] — the PRESENT.** How old the newest event we hold from this
- *    pair is. `SyncCoverage.legs` hands the catch-up its NEWER leg first, so
- *    this reaches now for any pair we have caught up on whatever depth its
- *    backfill is still at — which is what makes it a freshness measure rather
- *    than a second depth one.
- *
- * The tail is the third fact and belongs to neither: a tailed pair has its
- * present carried live between visits, so old content there is a quiet relay
- * rather than a mirror falling behind. That is why the fault rule below is
- * `stale AND NOT tailed` — the only combination in which nothing is watching
- * and nothing is arriving.
- *
- * ## …and the terms each relay serves us on
- *
- * The other half of *how is this relay letting us sync* was measured and thrown
- * away. The monitor signs a NIP-77 verdict per relay and the roster carries it
- * ([RosterBuilder.Roster.speaksNegentropy]); the pool learns a filter width from
- * each relay's own refusal ([FilterWidths]). Both decide what this mirror can
- * DO with a relay — whether its history can be reconciled at all, and whether
- * its asks have to be chunked — and neither was visible per relay anywhere.
- * They ride the row beside the relay's own sentence, which is the third term
- * and the only one that was already there.
- *
- * ## The four answers, and what each rests on
- *
- * The unit is the pool's own — a (relay, stream) PAIR — because that is what
- * has a state: one relay can be complete for `indexers` and have never started
- * for `contentViaOutbox`, and a row per relay would have to pick one of those
- * to report.
- *
- *  - **`complete`** — every band this unit holds is complete, which is quartz's
- *    word for *the past below this is settled*: a paged leg that DRAINED (the
- *    relay EOSEd an empty page) or a finished negentropy reconcile. `verifiedAt`
- *    beside it is the last reconcile's own stamp, which is the closest thing
- *    this router has to a *last synced* time; where no reconcile has ever run,
- *    `coveredTo` — the newest event we hold from it — is what there is.
- *  - **`paging`** — bands exist and at least one is not settled, so the walk is
- *    still working backwards. `coveredFrom` is how far back it has REACHED, and
- *    it is the number to read: a relay whose `coveredFrom` has not moved
- *    between two polls is a relay whose walk is not advancing.
- *  - **`refused`** — the pool visited it and could write no band, with the
- *    reason and the relay's own sentence from [com.nosfabrica.vespa.relay.sync.VisitAborts].
- *    This is the row that did not exist before: it is indistinguishable from
- *    `notStarted` in the band file and it is the opposite finding.
- *  - **`notStarted`** — on the roster, no band, and no abort recorded. Either
- *    the queue has not reached it yet or the process has only just booted.
- *
- * A unit that HAS bands and has also aborted keeps the band's status and
- * carries the refusal beside it, because both are true and the pair is the
- * useful reading: *complete, and the last visit was turned away* is a relay
- * that has stopped being maintained.
- *
- * ## The join is on the ASKS, and getting that wrong is not a detail
- *
- * A unit owes one ask PER BOUND AUTHOR where a `relaySource` select pairs
- * providers with relays, so a `contentViaOutbox` unit on a busy relay owes
- * dozens. The first version of this counted the bands a (stream, relay) pair
- * held and called the pair complete when all of THOSE were settled — so a unit
- * owing forty asks with one drained band read `complete`, which is the worst
- * answer a table whose whole job is *is this relay synced* can give, and it
- * gave it silently. `RelayStatusReportTest` pins that case by name.
- *
- * The denominator has to be what the unit OWES, and it is free:
- * [RosterBuilder.UnitAsks.identity] is already each ask's filter as JSON —
- * computed for the roster's own change detection — and that is the very string
- * [SyncBands.snapshot] keys a band under. So `askKeys` joins exactly, a band
- * for an ask the roster no longer makes is ignored rather than counted against
- * the unit, and `settled == askKeys.size` is the only thing that earns
- * `complete`.
- *
- * Asking [com.nosfabrica.vespa.relay.sync.SyncBands] per ask instead would cost
- * a `Filter.toJson()` that misses quartz's thousand-entry fingerprint cache —
- * a fresh serialisation of a 141-kind filter per row per poll. The snapshot is
- * already built for [SyncCoverageReport] on the same tick, so one walk of a map
- * already in hand answers every row.
- *
- * The relay is joined on `url.url` VERBATIM, not canonicalised: both sides are
- * the same normalized string by construction ([SyncBands] writes the pool's own
- * url), so normalising would be ~10,000 re-parses per tick to produce the
- * strings we started with — and, worse, a canonical form that is not the file's
- * key would join nothing at all.
- *
- * Public where [SyncCoverageReport] beside it is internal, and the difference
- * is which way the data flows: that one is handed maps this package already
- * holds, and this one is handed [PrimeUnit]s the POOL builds — so its type
- * crosses `SyncStatus`'s constructor exactly as `SyncBands` does, and for the
- * same reason.
+ * The table's job is what is wrong on this mirror; one named relay is a
+ * question for the document (`jq '.sync.data.relays.rows[] | select(.relay == ...)'`).
  */
 object RelayStatusReport {
-    /**
-     * One prime (relay, stream) unit as the POOL knows it — the half of a row
-     * that no file holds.
-     *
-     * Built by `VisitPool.primeUnits`, which is the only thing that can: the
-     * roster is a live rebuild off the monitor's verdicts, and a relay that
-     * leaves it stops having a row rather than becoming a stale one.
-     */
+    /** One prime unit as the pool knows it, built by `VisitPool.primeUnits`. */
     class PrimeUnit(
-        /** The relay's normalized url, VERBATIM — see the class header on the join. */
+        /** The relay's normalized url, verbatim. */
         val relay: String,
         val stream: String,
-        /**
-         * EVERY ASK THIS UNIT OWES, as the filter JSON the band file keys by —
-         * `RosterBuilder.UnitAsks.identity`, handed over by reference.
-         *
-         * The denominator of the whole row, and the reason it is this and not a
-         * count: `settled == askKeys.size` is what earns `complete`, and a
-         * count could only ever be compared against the bands that HAPPEN to
-         * exist, which is the bug the class header names.
-         */
+        /** Every ask this unit owes, as the filter JSON the band snapshot keys by (`RosterBuilder.UnitAsks.identity`). */
         val askKeys: Set<String>,
         /** A worker is inside this unit's visit right now. */
         val visiting: Boolean,
-        /** …and it is holding a live subscription. */
+        /** The worker is holding a live subscription. */
         val live: Boolean,
-        /**
-         * The monitor's signed NIP-77 verdict for this relay: true speaks
-         * negentropy, false measured as refusing a NEG-OPEN, null unmeasured.
-         *
-         * A TERM, not a status. It decides whether this pair's history can ever
-         * be reconciled — against a `false` relay both audits are futile and the
-         * only thing that re-reads its past is `refetchThePastSeconds` — so a
-         * `paging` row that will never settle reads completely differently
-         * depending on it, and nothing published it per relay before.
-         */
+        /** The monitor's NIP-77 verdict: true speaks negentropy, false refused a NEG-OPEN, null unmeasured. */
         val speaksNegentropy: Boolean? = null,
-        /**
-         * …and the filter width this relay has told us it takes, learned from
-         * its own refusal ([FilterWidths]). Null is the ordinary relay that has
-         * never complained.
-         */
+        /** The filter width learned from this relay's own refusal ([FilterWidths]); null when it never complained. */
         val kindCap: Int? = null,
-        /** The last time this unit ended early, if it ever has. */
         val abortReason: String? = null,
         val abortSaid: String? = null,
         val abortAtSec: Long = 0,
     )
 
     /**
-     * Fold [units] against [bandsDoc] — `SyncBands.snapshot()`, stream → filter
-     * → relay → band.
-     *
-     * Null when there are no units at all, which is a router with no visit
-     * streams rather than one with nothing to say — the section is then absent,
-     * on the same rule the store section follows.
+     * Fold [units] against [bandsDoc] (`SyncBands.snapshot()`, stream → filter
+     * → relay → band). Null when there are no units, so a router with no visit
+     * streams publishes no section.
      */
     fun build(
         bandsDoc: JsonObject?,
@@ -228,23 +84,11 @@ object RelayStatusReport {
         val rows = units.mapIndexed { at, unit -> row(unit, folded[at], nowSeconds) }
         val counts = rows.groupingBy { it.status }.eachCount()
         val fresh = rows.groupingBy { it.freshness }.eachCount()
-        // WORST FIRST, and the order is the whole usability of a list this
-        // long: an operator opens it because something is wrong, and a table
-        // sorted by relay name would put the four broken rows on page nine.
-        // Inside a status, the least-covered first for the same reason —
-        // and the url last so two polls of an unchanged router produce the
-        // same document.
+        // Faults first across both axes, then coldest, then status, then the
+        // url so two polls of an unchanged router produce the same document.
         val ordered =
             rows.sortedWith(
-                // FAULTS FIRST, ACROSS BOTH AXES. Sorting by `syncStatus` alone
-                // put every stale-but-complete pair below every healthy paging
-                // one, which on this deployment is a page nine nobody reaches —
-                // and staleness is the half an operator opened the table for.
                 compareByDescending<Row> { it.fault }
-                    // …then the coldest, which inside the fault band ranks a
-                    // pair that has delivered nothing in a month above one that
-                    // missed the last hour, and inside the healthy band puts
-                    // the pairs closest to becoming a fault at the top.
                     .thenByDescending { it.behindSec ?: Long.MAX_VALUE }
                     .thenBy { STATUS_ORDER.indexOf(it.status) }
                     .thenBy { it.relay }
@@ -252,18 +96,9 @@ object RelayStatusReport {
             )
         return buildJsonObject {
             put("pairs", rows.size)
-            // THE PARTITION AS ROWS, not as four members of its own.
-            //
-            // `complete` is already a BAND's member in this document and
-            // `counted` is already the root's sentence about what it counts, so
-            // publishing the statuses as members would have put one word on two
-            // quantities twice over — the exact overload `StatusVocabularyTest`
-            // exists to catch. As rows the vocabulary is `syncStatus` and
-            // `pairs`, each glossed once and meaning one thing.
-            //
-            // Published WHOLE even where the row list below is cut: the counts
-            // are what close, and a truncated list must never be the only place
-            // a status is counted.
+            // Both partitions as rows rather than members, so `complete` and
+            // `counted` keep their one meaning each. Counted over every row,
+            // not the cut list.
             putJsonArray("statuses") {
                 for (status in STATUS_ORDER) {
                     add(
@@ -274,11 +109,6 @@ object RelayStatusReport {
                     )
                 }
             }
-            // …AND THE OTHER AXIS, counted the same way. Two distributions
-            // rather than one because they are independent: `complete` says the
-            // past is settled and says nothing about whether our copy is
-            // current, and a table that published only the first let a mirror
-            // nine days cold read as 1,452 relays finished.
             putJsonArray("freshness") {
                 for (bucket in FRESHNESS_ORDER) {
                     add(
@@ -296,40 +126,21 @@ object RelayStatusReport {
                             put("relay", r.relay)
                             put("stream", r.stream)
                             put("syncStatus", r.status)
-                            // THE THREE THAT READ AS A FRACTION: what the unit
-                            // owes, how much of it has any coverage, and how
-                            // much is finished. `settled` against `asks` is the
-                            // completeness of the pair and the only pair of
-                            // numbers `complete` may be claimed from.
+                            // `settled` against `asks` is the pair's completeness.
                             put("asks", r.asks)
                             if (r.bands > 0) put("bands", r.bands)
                             if (r.settled > 0) put("settled", r.settled)
-                            // Absent rather than zero: a unit with no band has
-                            // no edges, and a 1970 in either column would read
-                            // as a walk that reached the epoch.
+                            // Absent rather than zero: a 1970 would read as a walk that reached the epoch.
                             r.coveredFrom?.let { put("coveredFrom", it) }
                             r.coveredTo?.let { put("coveredTo", it) }
-                            // THE PRESENT, as an age. Beside `coveredTo` rather
-                            // than instead of it: the stamp is what a reader
-                            // diffs between two polls to see the walk move, and
-                            // the age is what they judge now.
                             r.behindSec?.let { put("behindSec", it) }
                             put("behind", r.freshness)
                             if (r.fault) put("fault", true)
-                            // The terms this relay serves us on — see [PrimeUnit].
                             r.speaksNegentropy?.let { put("negentropy", it) }
                             r.kindCap?.let { put("kindCap", it) }
-                            // The AGE and not the stamp. One number where two
-                            // would say the same thing, and the age is the one
-                            // a reader judges — a stamp alone needs the
-                            // document's clock found and subtracted before it
-                            // means anything.
                             r.verifiedAt?.let { put("verifiedAgoSec", (nowSeconds - it).coerceAtLeast(0)) }
                             if (r.visiting) put("visiting", true)
-                            // `tailed`, not `live`: this document's `live` is
-                            // the root's list of every held tail, and a boolean
-                            // of the same name on a row would be a second
-                            // meaning for it.
+                            // `tailed`, not `live`: `live` is the root's list of held tails.
                             if (r.live) put("tailed", true)
                             r.abortReason?.let { put("refusedFor", it) }
                             r.abortSaid?.let { put("relaySaid", it) }
@@ -338,8 +149,6 @@ object RelayStatusReport {
                     )
                 }
             }
-            // Never silent about a cut, on the rule every list in this document
-            // follows.
             put("omitted", (rows.size - MAX_ROWS).coerceAtLeast(0))
         }
     }
@@ -373,22 +182,16 @@ object RelayStatusReport {
     ): Row {
         val status =
             when {
-                // An ask set this unit does not own any coverage for. The two
-                // readings of that are the whole reason this table exists, and
-                // only the abort tells them apart.
+                // No coverage at all: only the abort tells refused from not yet reached.
                 band.bands == 0 -> if (unit.abortReason != null) REFUSED else NOT_STARTED
 
-                // EVERY ask settled, and never merely every band: see the class
-                // header. A unit that owes nothing cannot be complete either —
-                // that is a roster this report cannot describe, not a finished
-                // relay.
+                // Every owed ask settled, never merely every band. A unit
+                // owing nothing cannot be complete.
                 unit.askKeys.isNotEmpty() && band.settled >= unit.askKeys.size -> COMPLETE
 
                 else -> PAGING
             }
-        // HOW OLD THE NEWEST THING WE HOLD IS. Clamped at zero: a relay
-        // serving a `created_at` in the future would otherwise read as
-        // negative, which renders as a mirror ahead of the network.
+        // Clamped at zero: a future-dated `created_at` would read as a mirror ahead of the network.
         val behind = band.max?.let { (nowSeconds - it).coerceAtLeast(0) }
         return Row(
             relay = unit.relay,
@@ -396,16 +199,7 @@ object RelayStatusReport {
             status = status,
             behindSec = behind,
             freshness = freshnessOf(behind),
-            // THE ROWS THAT NEED SOMEBODY. A refusal and a pair never reached
-            // are faults of the past; nothing recent AND no tail is a fault of
-            // the present, and it is the one the first version of this table
-            // could not surface at all — a `complete` pair nine days cold sat
-            // green at the bottom of the sort under 1,200 healthy paging rows.
-            //
-            // A TAILED pair is excluded whatever its age: its present is being
-            // carried live, so old content there is a quiet relay and not a
-            // mirror falling behind. That distinction is the whole reason the
-            // tail is a term rather than a status.
+            // A tailed pair is never stale whatever its age: its present arrives live.
             fault = status == REFUSED || status == NOT_STARTED || (behind != null && behind >= STALE_SEC && !unit.live),
             speaksNegentropy = unit.speaksNegentropy,
             kindCap = unit.kindCap,
@@ -423,12 +217,12 @@ object RelayStatusReport {
         )
     }
 
-    /** What one unit's OWED asks have covered, gathered off the snapshot. */
+    /** What one unit's owed asks have covered, gathered off the snapshot. */
     private class Folded {
-        /** Owed asks with any coverage at all… */
+        /** Owed asks with any coverage. */
         var bands = 0
 
-        /** …and the share of those whose past is settled. */
+        /** Owed asks whose past is settled. */
         var settled = 0
         var min: Long? = null
         var max: Long? = null
@@ -436,17 +230,9 @@ object RelayStatusReport {
     }
 
     /**
-     * ONE WALK of the snapshot, accumulating straight into the units.
-     *
-     * Indexed by the unit's position rather than gathered into a map first: the
-     * only question this walk asks of a band is *does some unit own this
-     * (stream, relay), and is this filter one of its asks*, so an intermediate
-     * keyed by every (stream, relay) in the file would build rows for the
-     * thousands of urls the roster no longer admits and then throw them away.
-     *
-     * Best-effort exactly as [SyncCoverageReport] is, and for the same reason:
-     * this runs inside the status tick, and a band entry a future build writes
-     * differently must cost a thinner table rather than the whole document.
+     * One walk of the snapshot, accumulating straight into the units by index.
+     * Best-effort like [SyncCoverageReport]: an entry this build does not
+     * understand costs a thinner table, not the document.
      */
     private fun fold(
         doc: JsonObject?,
@@ -454,16 +240,8 @@ object RelayStatusReport {
     ): List<Folded> {
         val out = List(units.size) { Folded() }
         if (doc == null) return out
-        // NESTED, and keyed the way the file is walked: stream, then relay.
-        //
-        // It was one flat map under a `"$stream $relay"` key, which is a string
-        // concatenation PER BAND — ~10,000 of them per status tick on the
-        // deployment this was written for, to answer a question two map reads
-        // answer with none. The stream level also buys the early-out below,
-        // which is the larger half: a bands file holds streams a running config
-        // no longer names (an operator renamed one; the migration shim's own
-        // note describes the same shape), and walking their every filter and
-        // relay to discard each row is the whole cost of the fold for nothing.
+        // Nested stream → relay → index, so streams the roster no longer names
+        // are skipped whole rather than walked per band.
         val at = HashMap<String, HashMap<String, Int>>()
         units.forEachIndexed { i, u -> at.getOrPut(u.stream) { HashMap() }[u.relay] = i }
         for ((stream, byFilter) in doc) {
@@ -474,17 +252,12 @@ object RelayStatusReport {
                 for ((relay, entry) in relays) {
                     val band = entry as? JsonObject ?: continue
                     val i = inStream[relay] ?: continue
-                    // The ask gate. A band for a filter this unit no longer
-                    // asks — a provider pairing a scan has since dropped — is
-                    // another unit's history, and counting it here would move
-                    // a row's edges and its denominator alike.
+                    // A band for a filter this unit no longer asks is another
+                    // unit's history.
                     if (filter !in units[i].askKeys) continue
                     val f = out[i]
                     f.bands++
-                    // A band whose `complete` is absent is one this build does
-                    // not understand; read as NOT settled, which is the claim
-                    // that costs a re-walk rather than the one that skips
-                    // history.
+                    // An absent `complete` reads as not settled: the claim that costs a re-walk, not the one that skips history.
                     if (band["complete"]?.jsonPrimitive?.booleanOrNull == true) f.settled++
                     band["min"]
                         ?.jsonPrimitive
@@ -496,11 +269,8 @@ object RelayStatusReport {
                         ?.longOrNull
                         ?.takeIf { it > 0 }
                         ?.let { m -> f.max = maxOf(f.max ?: m, m) }
-                    // The NEWEST reconcile across the unit's asks. `min` would
-                    // be the safer-sounding choice and is the wrong one: asks
-                    // are audited on independent clocks, so the oldest is
-                    // whichever ask happens to be furthest from its turn, not
-                    // a statement about the relay.
+                    // The newest reconcile: asks are audited on independent
+                    // clocks, so the oldest says nothing about the relay.
                     band["verifiedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 }?.let { v ->
                         f.verifiedAt = maxOf(f.verifiedAt ?: v, v)
                     }
@@ -510,43 +280,32 @@ object RelayStatusReport {
         return out
     }
 
-    /** A unit the pool has visited and could write no band for — see the class header. */
+    /** Visited, and no band could be written. */
     const val REFUSED = "refused"
 
-    /** …and one it has not reached at all. */
+    /** On the roster, no band, no abort recorded. */
     const val NOT_STARTED = "notStarted"
 
-    /** Bands exist, and at least one of them is not settled. */
+    /** Bands exist and at least one is not settled. */
     const val PAGING = "paging"
 
-    /** Every band this unit holds is settled. */
+    /** Every owed ask is settled. */
     const val COMPLETE = "complete"
 
-    /** Newest event within the hour — our copy of this pair is current. */
+    /** Newest event within the hour. */
     const val CURRENT = "current"
 
-    /** …within the day. */
     const val TODAY = "today"
 
-    /** …within the week. */
     const val THIS_WEEK = "thisWeek"
 
-    /** Older than that, which with no tail is a fault — see [Row.fault]. */
+    /** Older than [STALE_SEC], which untailed is a fault. */
     const val OLDER = "older"
 
-    /** Nothing held at all, so there is no age to state. */
+    /** Nothing held, so no age to state. */
     const val NOTHING = "nothing"
 
-    /**
-     * Which bucket an age falls in.
-     *
-     * FOUR AGES AND AN ABSENCE, on a log-ish scale, because that is how a
-     * reader judges a mirror: within the hour is working, within the day is a
-     * revisit cadence, within the week is a relay we are barely reaching, and
-     * older is a relay we have effectively stopped syncing. A linear scale
-     * would put every healthy pair in one bucket and every interesting one in
-     * the last.
-     */
+    /** Four ages on a log-ish scale and an absence; a linear scale would put every healthy pair in one bucket. */
     internal fun freshnessOf(behindSec: Long?): String =
         when {
             behindSec == null -> NOTHING
@@ -556,36 +315,15 @@ object RelayStatusReport {
             else -> OLDER
         }
 
-    /**
-     * When "nothing recent" becomes a finding — a week.
-     *
-     * Well past every revisit cadence the pool runs (the untailed base is
-     * minutes, and a stream's audit clock a week at its longest), so a pair
-     * this cold is not one waiting its turn. It is also the bound the fault
-     * rule uses, which is why it is a constant rather than two numbers that
-     * could drift apart.
-     */
+    /** Well past every revisit and audit cadence the pool runs; both the bucket edge and the fault bound. */
     const val STALE_SEC = 7 * 86_400L
 
-    /** The buckets in the order they are counted and drawn — freshest first, unlike [STATUS_ORDER]. */
+    /** Freshest first, unlike [STATUS_ORDER]. */
     val FRESHNESS_ORDER = listOf(CURRENT, TODAY, THIS_WEEK, OLDER, NOTHING)
 
-    /**
-     * The order the statuses are counted and drawn in, worst first.
-     *
-     * A list, not the map's iteration order: it is both the published member
-     * order and the row sort, and those two agreeing is what makes the counts
-     * above the table read as a key to it.
-     */
+    /** Worst first; both the published member order and the row sort. */
     val STATUS_ORDER = listOf(REFUSED, NOT_STARTED, PAGING, COMPLETE)
 
-    /**
-     * How many rows are published.
-     *
-     * A four-stream router on a 700-relay roster is 2,800 units, and the whole
-     * set on every poll is a document nobody can open for a table whose first
-     * screen is the whole answer. The counts above it are complete whatever
-     * this is, and the sort puts every row that names a fault before the cut.
-     */
+    /** The counts above the rows are complete whatever this is, and the sort puts every fault before the cut. */
     const val MAX_ROWS = 1_000
 }

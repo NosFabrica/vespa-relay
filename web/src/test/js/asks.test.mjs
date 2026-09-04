@@ -1,11 +1,6 @@
-// The ask cache: Enter after a type-ahead is ONE ranked search, not two.
-//
-// The property, not the mechanism: the same question at the same width gets
-// the same in-flight answer; a different question, a different width, a stale
-// answer or a failed one gets a fresh ask. And the two rules app.js relies on
-// to make the reuse happen — one type-ahead in flight at a time, the latest
-// text running next — are held against app.js's source, the way paging.test
-// holds its claims, because the rule that matters is whether app.js asks.
+// The ask cache: Enter after a type-ahead is one ranked search, not two. The
+// two app.js rules the reuse depends on (one type-ahead in flight, the latest
+// text runs next) are held against app.js's source.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
@@ -14,7 +9,6 @@ const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.
 
 const f = (limit, extra = {}) => ({ kinds: [1, 11, 1111], search: "bitcoin include:spam", limit, ...extra });
 
-// ---- the key ---------------------------------------------------------------
 assert.strictEqual(askKey(f(8)), askKey(f(160)), "the limit is not part of the question");
 assert.notStrictEqual(askKey(f(8)), askKey(f(8, { search: "bitcoin sort:rank include:spam" })), "the sort is");
 assert.notStrictEqual(askKey(f(8)), askKey(f(8, { kinds: [0] })), "so is the tab");
@@ -22,7 +16,6 @@ assert.strictEqual(askKey({ search: "x", kinds: [1], limit: 1 }), askKey({ kinds
 assert.strictEqual(askKey([f(8), f(8, { "#t": ["bitcoin"] })]), askKey([f(160), f(160, { "#t": ["bitcoin"] })]), "a hashtag search's several filters key together");
 assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of filters is its widest");
 
-// ---- reuse -----------------------------------------------------------------
 {
   let clock = 1000;
   const cache = new AskCache({ now: () => clock });
@@ -49,7 +42,6 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
   assert.strictEqual(asked, 5, "clear() forgets the kept answer");
 }
 
-// A failure is not kept: the next identical take asks again.
 {
   const cache = new AskCache();
   let n = 0;
@@ -59,9 +51,7 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
   assert.strictEqual(n, 2, "a rejected ask is retried, not replayed");
 }
 
-// A short answer — a timeout, an abort — is not kept either: the next
-// identical take asks again rather than drawing a page the relay never
-// finished sending.
+// `complete = false` is what a timed-out or aborted read comes back as.
 {
   const cache = new AskCache();
   let n = 0;
@@ -75,7 +65,6 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
   assert.strictEqual(n, 3, "…and a complete one is");
 }
 
-// ---- what app.js does with it ---------------------------------------------
 assert.ok(/const asks = new AskCache\(\)/.test(app), "app.js keeps one ask cache");
 assert.ok(/asks\.take\(filters, \(\) => relay\.req\(filters, undefined, \{ signal \}\)\)/.test(app), "…and every ranked search goes through it");
 assert.ok(/if \(pop\.loading\) \{ popupQueued = text; return; \}/.test(app), "a type-ahead while one is in flight only replaces the waiting text");

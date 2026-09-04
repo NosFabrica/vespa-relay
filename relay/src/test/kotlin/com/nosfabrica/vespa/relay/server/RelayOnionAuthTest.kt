@@ -38,16 +38,8 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * NIP-42 when the same relay answers at a clearnet url AND a hidden service.
- *
- * A Tor client signs the address it dialled — it has never heard of the
- * clearnet name — so these are the cases that decide whether the `.onion`
- * endpoint is a real relay or a downgraded one: a rejected AUTH here is not a
- * locked door, it is a search that silently loses its web-of-trust lens.
- *
- * The rejection cases are the other half. Widening WHICH address is accepted
- * must not widen anything else, and [MultiAddressAuthPolicy] re-states quartz's
- * checks rather than delegating to them, so each one is pinned here.
+ * NIP-42 when the same relay answers at a clearnet url and a hidden service: a Tor client signs the
+ * address it dialled. [MultiAddressAuthPolicy] re-states quartz's checks, so each rejection is pinned too.
  */
 class RelayOnionAuthTest {
     private val clearnet = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -63,10 +55,7 @@ class RelayOnionAuthTest {
             alsoServedAt = alsoAt,
         )
 
-    /**
-     * Runs one connection: sends [authFor] against the relay's challenge and
-     * returns the relay's `OK` verdict line for it.
-     */
+    /** Runs one connection: sends [authFor] against the relay's challenge and returns the relay's `OK` line for it. */
     private fun okFor(
         server: NostrRelayServer,
         authFor: (challenge: String) -> RelayAuthEvent,
@@ -109,13 +98,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /**
-     * The address exists only after Tor generates the service's key, which can
-     * be minutes after this process started serving. Asking per connection is
-     * what makes that address usable without a relay restart nobody knew to
-     * perform, so the property is asserted on ONE server whose answer changes
-     * between two connections.
-     */
+    /** The set is asked per connection: Tor mints the service's key minutes after this process starts serving. */
     @Test
     fun `an address published after boot is accepted by the next connection`() {
         var known = emptySet<NormalizedRelayUrl>()
@@ -133,13 +116,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /**
-     * Quartz's own `RelayAuthEvent.create(relays, …)` builds auth events naming
-     * several relays, and a client that names both of ours means both. Safe
-     * because the challenge is minted per connection: an event listing ten
-     * relays is still usable only on the connection that issued the challenge
-     * it carries.
-     */
+    /** Quartz's own `RelayAuthEvent.create(relays, …)` names several relays; the per-connection challenge keeps that safe. */
     @Test
     fun `an auth naming several relays authenticates if any of them is us`() {
         val server = relayServing { setOf(onion) }
@@ -163,12 +140,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /**
-     * A hidden service is published on port 80, so `ws://…onion:80` is the same
-     * endpoint spelled out — but the normalizer keeps the two strings apart, so
-     * a client configured that way would sign an address we DO serve and be
-     * refused.
-     */
+    /** A hidden service is published on port 80, and the normalizer keeps `…onion:80` and `…onion` apart. */
     @Test
     fun `the default port spelled out is the same address`() {
         val server = relayServing { setOf(onion) }
@@ -181,7 +153,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /** …and only the DEFAULT port folds. Another port is another endpoint. */
+    /** Only the default port folds; another port is another endpoint. */
     @Test
     fun `a different port on our own host is not our address`() {
         val server = relayServing { setOf(onion) }
@@ -253,15 +225,9 @@ class RelayOnionAuthTest {
     }
 
     /**
-     * The login hook fires once per identity per connection, however many
-     * times the same AUTH is sent.
-     *
-     * An AUTH event stays valid against the challenge that minted it for its
-     * whole ten-minute freshness window, and quartz accepts every copy — so
-     * without this a client could replay one frame in a loop and have each
-     * copy start another walk of the store, on a scope the socket's close does
-     * not cancel. `OK true` still comes back every time, because the frame IS
-     * valid; it is the side effect that is paid once.
+     * The login hook fires once per identity per connection. Quartz accepts every copy of a
+     * still-fresh AUTH, and each copy would otherwise start another walk of the store on a scope
+     * the socket's close does not cancel.
      */
     @Test
     fun `a replayed auth authenticates again but is only acted on once`() =
@@ -281,8 +247,7 @@ class RelayOnionAuthTest {
             repeat(3) { policy.authorize(auth) }
             assertEquals(listOf(signer.pubKey), seen.toList(), "three identical frames, one walk of the store")
 
-            // A DIFFERENT identity on the same connection is a different
-            // answer and is still owed one.
+            // A different identity on the same connection is still owed one.
             val other = NostrSignerSync()
             policy.authorize(other.sign(RelayAuthEvent.build(clearnet, policy.challenge)))
             assertEquals(listOf(signer.pubKey, other.pubKey), seen.toList())

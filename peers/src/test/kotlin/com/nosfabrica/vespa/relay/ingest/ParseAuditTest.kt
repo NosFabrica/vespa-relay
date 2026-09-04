@@ -61,7 +61,7 @@ class ParseAuditTest {
     fun `attributes an unparseable kind 0 content to its event`() {
         val dir = createTempDir()
         audit(dir).use { a ->
-            // A JSON array where an object belongs — still unparseable.
+            // A JSON array where an object belongs.
             a.inspect(metadata("1", "[]"))
 
             val findings = a.snapshot()
@@ -72,10 +72,6 @@ class ParseAuditTest {
 
     @Test
     fun `empty content is no longer a parse failure`() {
-        // It was: "Content Parse Error: … Expected start of the object '{', but
-        // had 'EOF' instead" was the second-largest class in a live audit, 3,783
-        // of 77,753 reports. quartz cdef4e9658 reads an empty content as an empty
-        // profile instead of a failed parse, which is what it always meant.
         val dir = createTempDir()
         audit(dir).use { a ->
             a.inspect(metadata("1", ""))
@@ -87,7 +83,7 @@ class ParseAuditTest {
     fun `groups the same failure across different events into one finding`() {
         val dir = createTempDir()
         audit(dir).use { a ->
-            // Same defect (content is a JSON array, not an object), different events.
+            // Same defect, different events.
             a.inspect(metadata("1", "[]"))
             a.inspect(metadata("2", "[1,2,3]"))
             a.inspect(metadata("3", "[]"))
@@ -106,12 +102,11 @@ class ParseAuditTest {
         Log.sink = a
         Log.minLevel = LogLevel.DEBUG
 
-        // Three events, one shared defect. Only the first adds a map entry, so a
-        // counter derived from the findings map would report 1 affected event here.
+        // Only the first adds a map entry, so a count derived from the map would say 1.
         a.inspect(metadata("1", "[]"))
         a.inspect(metadata("2", "[1,2,3]"))
         a.inspect(metadata("3", "[]"))
-        // ...plus one clean profile, which must not be counted as affected.
+        // One clean profile, not counted as affected.
         a.inspect(metadata("4", """{"name":"alice"}"""))
         a.close()
 
@@ -134,7 +129,7 @@ class ParseAuditTest {
         Log.sink = a
         Log.minLevel = LogLevel.DEBUG
 
-        // A wrongly-typed name AND a wrongly-typed birthday in one profile.
+        // A wrongly-typed name and a wrongly-typed birthday in one profile.
         a.inspect(metadata("1", """{"name":{"nested":"obj"},"birthday":"1990-01-01"}"""))
         a.close()
 
@@ -168,7 +163,7 @@ class ParseAuditTest {
         val finding = report["findings"]!!.jsonArray.single().jsonObject
         val sample = finding["samples"]!!.jsonArray.single().jsonObject
 
-        // The embedded event must be the real thing, not a summary of it.
+        // The real event, not a summary of it.
         val event = sample["event"]!!.jsonObject
         assertEquals(0, event["kind"]!!.jsonPrimitive.content.toInt())
         assertEquals("not json at all", event["content"]!!.jsonPrimitive.content)
@@ -213,7 +208,7 @@ class ParseAuditTest {
 
         val dir = createTempDir()
         val a = ParseAudit.installFromEnv(mapOf("PARSE_AUDIT_FILE" to File(dir, "r.json").path))!!
-        // The audit must be able to see WARN-level reports, whatever the floor was.
+        // The audit must see WARN-level reports whatever the floor was.
         assertEquals(LogLevel.WARN, Log.minLevel)
         a.close()
     }

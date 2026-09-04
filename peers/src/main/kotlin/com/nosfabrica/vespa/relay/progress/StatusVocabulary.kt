@@ -26,48 +26,18 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * WHAT EVERY NUMBER IN THE `sync` SECTION MEANS, shipped inside the document.
+ * What every number in the status documents means, shipped inside the
+ * document so the reader of the JSON has the definition beside the value.
  *
- * ## Why a glossary is part of the artifact
- *
- * The section publishes about a dozen counts and not one of them could be read
- * without this repository open beside it. Worse, three of them were being read
- * as the same thing — the word "done" covered all of:
- *
- *  - a fan-out leg that STARTED AND CAME BACK (`fetching 16747/16752`), which
- *    includes every leg that came back unreachable, capped or out of budget;
- *  - a walk that SETTLED (`complete` on a band — nothing outstanding below the
- *    span it walked);
- *  - a claim of GAP-FREE COVERAGE (`everyKindMin`/`Max`, which is not that
- *    either — it is the span in which every kind has produced evidence).
- *
- * The first is the least meaningful of the three and was read as progress.
- * Naming them apart is most of the fix; publishing the names beside the numbers
- * is the rest, because a definition that lives only in a KDoc is a definition
- * the reader of the JSON does not have.
- *
- * ## Rules this list is held to
- *
- * **One entry per published member, and no entry without one.** A term here that
- * nothing emits is a promise the document does not keep; a member emitted with
- * no term is the state this exists to end. `StatusVocabularyTest` pins both
- * directions against the other reports' output.
- *
- * **Say what the number is NOT, where it has been misread.** Half of these
- * entries are longer than a definition needs to be because the short version is
- * what produced the wrong reading in the first place.
- *
- * **Approximations are marked as such.** `frame`, `evidence` and the paging
- * fraction are estimates or envelopes, and every one of them has at some point
- * been quoted as a measurement.
+ * One entry per published member and no entry without one;
+ * `StatusVocabularyTest` pins both directions. An entry says what the number
+ * is not where it has been misread, and marks approximations as such.
  */
 object StatusVocabulary {
     /**
-     * Every member either status document can publish, defined.
-     *
-     * Static — it describes the schema, not this deployment — so it is built
-     * once and served from a `val`. Ship it through [termsFor] rather than
-     * whole: it is ~2KB, and each document publishes about half of it.
+     * Every member either status document can publish, defined. Describes the
+     * schema, not this deployment, so it is built once; ship it through
+     * [termsFor], since each document publishes about half of it.
      */
     val TERMS: JsonObject =
         buildJsonObject {
@@ -1035,10 +1005,8 @@ object StatusVocabulary {
                     "deliberately absent: the alias fold runs on a six-hour clock, so an hour of samples would not " +
                     "contain one of its passes.",
             )
-            // THE FITNESS PASS — the monitor's verdict funnel. Each member is
-            // one value of the NIP-32 label it signs onto a relay's kind-30166
-            // record, so the funnel here and the certificate a stream selects
-            // on are the same numbers by construction.
+            // The fitness pass's verdict funnel. Each member is one value of the
+            // NIP-32 label signed onto a relay's kind-30166 record.
             put(
                 "prime",
                 "Relays the monitor currently grades prime: reachable AND answering AND canonical AND " +
@@ -1085,9 +1053,7 @@ object StatusVocabulary {
                     "a filter service minting per-user paths. Probed with the same shaped-ask ladder the fold climbs " +
                     "before the verdict is written.",
             )
-            // THE ROTATING POOL — the visit-mode streams' engine. A slot IS a
-            // socket here, which is what these numbers being small and equal
-            // to each other is evidence of.
+            // The rotating pool, the visit-mode streams' engine. A slot is a socket here.
             put(
                 "roster",
                 "Relays currently graded prime and in rotation: the pool's whole world, rebuilt from the " +
@@ -1382,25 +1348,10 @@ object StatusVocabulary {
         }
 
     /**
-     * The definitions [document] actually needs — every member it publishes,
-     * at any depth, and no others.
-     *
-     * ## Why a subset rather than the whole map
-     *
-     * There are two status documents now, one per plane, and they publish
-     * disjoint halves of this vocabulary. Shipping the whole thing in both
-     * would put ~1KB of definitions for the mirror's members in the monitor's
-     * document and vice versa — but the real cost is the claim it makes. A
-     * glossary is a promise that the reader will find these numbers here, and a
-     * definition for a member the document does not carry is the way that
-     * promise rots into fiction. `StatusVocabularyTest` holds the other
-     * direction: no published member without a term, checked against both
-     * documents at once, because a term that has left one of them may still be
-     * earning its place in the other.
-     *
-     * Walks the document rather than taking a list, for the same reason the
-     * test does: a list is a third thing to keep in step with the two it
-     * describes.
+     * The definitions [document] needs: every member it publishes, at any
+     * depth, and no others. A term for a member the document does not carry
+     * is a promise it does not keep. Walks the document rather than taking a
+     * list, so there is no third thing to keep in step.
      */
     fun termsFor(document: JsonObject): JsonObject {
         val published = LinkedHashSet<String>()

@@ -38,38 +38,31 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * `RELAY_ICON` and the favicon are one icon now, and this is where the seam is
- * held: what an unset icon publishes, what a set one replaces, and the loop
- * that opens if the two are ever confused for each other.
+ * `RELAY_ICON` and the favicon are one icon: what an unset one publishes, what
+ * a set one replaces, and the redirect loop if the two are confused.
  */
 class RelayIconTest {
     @Test
     fun `an unset icon becomes this relay's own, at the origin and never at the relay's path`() {
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com"))
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com/"))
-        // A relay answering its websocket under a path still serves the icon at
-        // the root, because that is where `favicon()` mounts it.
+        // The icon is at the root wherever the websocket answers, because that is where `favicon()` mounts it.
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com/alpha"))
-        // A port is part of the authority and has to survive.
         assertEquals("https://relay.example.com:8443/favicon.ico", selfIconUrl("wss://relay.example.com:8443"))
-        // RELAY_HTTP_URL is already an http url — the caller passes whichever it has.
+        // RELAY_HTTP_URL is already http; the caller passes whichever it has.
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("https://relay.example.com"))
     }
 
     @Test
     fun `an address a stranger cannot reach publishes no icon at all`() {
-        // The one that motivated the rule: the compose default. Concatenating
-        // blindly would sign `http://localhost:7777/favicon.ico` into a public,
-        // replaceable kind 0 on every development boot — an address that
-        // resolves to the READER's machine, which is a claim we cannot support.
+        // The compose default: concatenating blindly would sign `localhost` into a public kind 0 on every development boot.
         assertNull(selfIconUrl("ws://localhost:7777"))
         assertNull(selfIconUrl("http://192.168.1.4:7777"))
         assertNull(selfIconUrl("ws://relay.example.com"), "plain ws clearnet is not a deployment we can name")
         assertNull(selfIconUrl(null))
         assertNull(selfIconUrl("   "))
         assertNull(selfIconUrl("relay.example.com"), "no scheme, no origin")
-        // A hidden service is reachable by name and by nothing else, so http is
-        // the normal spelling and it is admitted on either scheme.
+        // A hidden service is reachable by name alone, so plain http is admitted.
         val onion = "x".repeat(56) + ".onion"
         assertEquals("http://$onion/favicon.ico", selfIconUrl("ws://$onion"))
         assertEquals("https://$onion/favicon.ico", selfIconUrl("wss://$onion"))
@@ -78,16 +71,13 @@ class RelayIconTest {
     @Test
     fun `our own url is not an override, the redirect would point at itself`() {
         val self = "https://relay.example.com/favicon.ico"
-        // The trap this function exists for: with RELAY_ICON unset the doc
-        // carries our own url, and treating that as an override sends
-        // /favicon.ico to the route that issued it.
+        // With RELAY_ICON unset the doc carries our own url; as an override it would redirect /favicon.ico to itself.
         assertNull(iconOverride(self, self))
         assertNull(iconOverride(null, self))
         assertNull(iconOverride("", self))
         assertNull(iconOverride("   ", self))
         assertEquals("https://cdn.example/logo.png", iconOverride("https://cdn.example/logo.png", self))
-        // No self url to compare against (an unreachable RELAY_URL): an icon in
-        // the doc can only have come from the operator.
+        // With no self url to compare against, an icon in the doc can only be the operator's.
         assertEquals("https://cdn.example/logo.png", iconOverride("https://cdn.example/logo.png", null))
     }
 
@@ -106,12 +96,9 @@ class RelayIconTest {
         val links = Regex("""<link rel="icon"[^>]*>""").findAll(themed).map { it.value }.toList()
         assertEquals(1, links.size, "one icon link, not three")
         assertEquals("""<link rel="icon" href="https://cdn.example/logo.png" />""", links.single())
-        // The half that would silently do nothing: Chrome, Firefox and Edge all
-        // prefer an SVG icon, so an override left beside the built-in one loses
-        // everywhere except Safari.
+        // Chrome, Firefox and Edge prefer an SVG icon, so an override left beside the built-in one loses.
         assertFalse(themed.contains("web/favicon.svg"), "the built-in svg must be gone, not merely outnumbered")
         assertFalse(themed.contains("web/favicon.ico"))
-        // Nothing else about the page moved.
         assertEquals(html.lines().size - 1, themed.lines().size, "exactly one line fewer")
         assertTrue(themed.contains("<title>SearchOverTrust</title>"))
     }
@@ -119,8 +106,7 @@ class RelayIconTest {
     @Test
     fun `an icon from a NIP-86 rpc cannot break out of the attribute it lands in`() {
         val html = assertNotNull(javaClass.getResource("/index.html")?.readText())
-        // `changerelayicon` is an authenticated admin over the NETWORK, and this
-        // is what puts its argument into a page served to everyone.
+        // `changerelayicon` is an admin rpc over the network, and this puts its argument into a page served to everyone.
         val themed = pageWithIcon(html, """x" onerror="alert(1)" a="<script>&""")
         assertFalse(themed.contains("onerror=\""), "the quote must not close the attribute")
         assertFalse(themed.contains("<script>"))
@@ -141,9 +127,7 @@ class RelayIconTest {
         page.icon("https://cdn.example/logo.png")
         assertTrue(page.page.html.contains("https://cdn.example/logo.png"))
         assertFalse(page.page.html.contains("./web/favicon.svg"))
-        // The etag has to move with it, or a reader who already has the page
-        // keeps the old icon until the cache expires — which for a `no-cache`
-        // page is never.
+        // The etag has to move too, or a reader who has the page keeps the old icon until a `no-cache` page expires, which is never.
         assertTrue(before.etag != page.page.etag, "a new drawing needs a new validator")
 
         page.icon(null)
@@ -161,8 +145,7 @@ class RelayIconTest {
             assertEquals(HttpStatusCode.OK, ours.status)
 
             icon = "https://cdn.example/logo.png"
-            // Not the default client: it follows redirects, and the target is a
-            // host that does not exist. The redirect itself is the assertion.
+            // The default client follows redirects, and the target host does not exist.
             val moved = createClient { followRedirects = false }.get("/favicon.ico")
             assertEquals(HttpStatusCode.Found, moved.status, "302, so a changed icon is never cached forever")
             assertEquals("https://cdn.example/logo.png", moved.headers[HttpHeaders.Location])

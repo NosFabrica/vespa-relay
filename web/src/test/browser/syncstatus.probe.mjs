@@ -1,25 +1,8 @@
-// THE PER-RELAY TABLE, IN A REAL BROWSER — the layer the rules cannot reach.
-//
-// web/src/test/js/sync.test.mjs holds every decision this table makes: which
-// denominator the chips are read off, which rows are coloured, what an absent
-// edge renders as. All of them can be right while the page draws nothing, and
-// in this repository they have been — twice, per AGENTS.md, and neither bug was
-// in a rule. What a new section actually IS is wiring: a panel guard in
-// stats.html, an import in cards.js, a member name the document and the page
-// have to spell the same way. Only a browser resolves that.
-//
-// It caught one on the way in. The sync panel was guarded on
-// `progress || streams`, so a mirror whose whole roster is refused — no bands,
-// no walked streams, which is precisely the deployment this table exists for —
-// drew no card at all.
-//
-// Needs NOTHING but Chromium: it serves web/src/main/resources itself and
-// answers /stats.json out of the fixture below, so it runs from a clean
-// checkout with no Vespa, no router and no corpus. Asserts, and exits non-zero
-// on the first failure.
-//
-//     node web/src/test/browser/syncstatus.probe.mjs
-//     …and to keep the picture:  SHOT=/tmp/sync.png node …
+// The per-relay table in a real Chromium: the wiring sync.test.mjs cannot
+// reach (the panel guard in stats.html, the import in cards.js, the member
+// names the document and the page must spell the same way). Needs only
+// Chromium: it serves web/src/main/resources itself and answers /stats.json
+// from the fixture below. SHOT=/tmp/sync.png keeps the picture.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,13 +13,9 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const now = Math.floor(Date.now() / 1000);
 
 /**
- * The document as `SyncStatus` publishes it, cut to what this table reads.
- *
- * Deliberately a mirror in trouble: a refused pair, one never reached, one
- * paging and one complete — the four statuses at once, which is the only
- * fixture that can show the table telling them apart. The `statuses` counts do
- * NOT sum to the four rows, on purpose: the document cuts `rows` and does not
- * cut the partition, and the chips must come off the partition.
+ * The document as `SyncStatus` publishes it, cut to what this table reads: all
+ * four statuses at once. The `statuses` counts do not sum to the rows on
+ * purpose; the document cuts `rows` but not the partition the chips read.
  */
 const DOC = {
   schema: 1,
@@ -60,9 +39,7 @@ const DOC = {
           { behind: "thisWeek", pairs: 300 }, { behind: "older", pairs: 106 }, { behind: "nothing", pairs: 6 },
         ],
         rows: [
-          // The row the second axis exists for: `complete`, and nine days
-          // cold with nothing listening. Under one axis this sat green at the
-          // bottom of the sort; here it is a fault and comes first.
+          // Complete and nine days cold: a fault on the second axis, sorted first.
           { relay: "wss://cold.example/", stream: "contentViaOutbox", syncStatus: "complete", fault: true,
             behind: "older", behindSec: 9 * 86400, coveredFrom: now - 900 * 86400, coveredTo: now - 9 * 86400,
             verifiedAgoSec: 9 * 86400, negentropy: true },
@@ -104,15 +81,13 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((r) => server.listen(7801, r));
 
-// Playwright is not a dependency of this repo and never should be — the rest
-// of the web suite is plain node. Resolved from wherever it is installed.
+// Playwright is not a dependency of this repo; it is resolved from wherever it is installed.
 const { chromium } = await import(`${execSync("npm root -g", { encoding: "utf8" }).trim()}/playwright/index.mjs`);
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1500, height: 1400 } });
 
 const problems = [];
-// A module that 404s or throws leaves a heading and nothing else, which is
-// exactly what this probe is for — so console errors are failures, not noise.
+// A module that 404s or throws leaves a heading and nothing else, so console errors are failures.
 page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
 page.on("console", (m) => { if (m.type() === "error") problems.push(`console: ${m.text()}`); });
 
@@ -123,16 +98,12 @@ const ok = (name) => console.log(`  ✓ ${name}`);
 const fail = (name, detail) => { console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); problems.push(name); };
 const check = (cond, name, detail) => (cond ? ok(name) : fail(name, detail));
 
-// THE HEADING AND THE TABLE UNDER IT. The card is guarded on the section, so
-// this failing means the panel guard, the import or the member name is wrong —
-// the three things no unit test in this repository can see.
 const text = await page.textContent("body");
 check(/prime relays/.test(text), "the section is drawn");
 check(/1,400 of 2,712 pair\(s\) current/.test(text), "how up to date we are is the headline", text.slice(0, 300));
 check(/the past behind it/.test(text), "…and the backfill is the second heading, not the first");
 
-// THE CHIPS COME OFF THE PARTITIONS, both of them. Five rows are drawn; the
-// chips must say what the router reported, not what the rows add up to.
+// Five rows are drawn; the chips must say what the router reported, not what the rows add up to.
 for (const want of ["54 refused", "6 hasn't started", "1,200 paging", "1,452 complete"]) {
   check(text.includes(want), `the past chip reads "${want}" from the document's own partition`);
 }
@@ -140,7 +111,6 @@ for (const want of ["1,400 current", "900 today", "300 this week", "106 older", 
   check(text.includes(want), `the freshness chip reads "${want}"`);
 }
 
-// EVERY ROW, AND THE FOUR STATUSES TOLD APART.
 const rows = await page.$$eval("table.sy-legs tr", (trs) =>
   trs.map((tr) => ({ hot: tr.classList.contains("hot"), cells: [...tr.querySelectorAll("td")].map((td) => td.textContent.trim()) }))
      .filter((r) => r.cells.length));
@@ -151,44 +121,30 @@ check(!!byRelay["fresh.example/"], "…and so does the one never reached");
 check(!!byRelay["deep.example/"], "…and the one still paging");
 check(!!byRelay["done.example/"], "…and the one that is finished");
 
-// THE RELAY'S OWN SENTENCE, which is the whole reason the refusal cell is a
-// cell and not a chip: it is what says what to do about the wall.
 check(/auth-required: you are not authorized/.test(text), "the relay's own words reach the page");
 check(/would not accept our NIP-42 identity/.test(text), "…beside the router's reading of which wall it is");
 
-// THE FAULT MARK SPANS BOTH AXES. Under one axis the cold-complete row was
-// green and last; it is the whole reason the second axis exists.
 check(byRelay["cold.example/"]?.hot === true, "a complete pair nine days cold is coloured");
 check(byRelay["walled.example/"]?.hot === true, "the refused row is coloured");
 check(byRelay["fresh.example/"]?.hot === true, "the never-started row is coloured");
 check(byRelay["deep.example/"]?.hot === false, "the paging row is NOT coloured — a mirror working is not a fault");
 check(byRelay["done.example/"]?.hot === false, "and neither is a current, finished one");
 
-// …AND THE ORDER FOLLOWS IT. The cold complete pair is first, above three
-// healthy rows it used to sit beneath.
 const first = rows.find((r) => r.cells[0])?.cells[0];
 check(first === "cold.example/", "the faults are first, across both axes", `first row: ${first}`);
 
-// THE TERMS, which decide what the two columns to their left can ever reach.
 check(/no neg/.test(text), "a relay that cannot reconcile says so");
 check(/≤8 kinds/.test(text), "…and one whose filter width we learned says that");
 check(/9d old/.test(text), "the newest event's age reads in days, not 216 hours");
-// The table must not run wider than its card: the sentence is the one cell
-// that wraps and the one an operator needs whole.
+// The relay's sentence is the one cell that wraps, and the one an operator needs whole.
 const overflow = await page.$$eval("table.sy-legs", (ts) => ts.map((t) => t.scrollWidth - t.clientWidth));
 check(overflow.every((o) => o <= 1), "the table fits its card", `overflow: ${overflow.join(",")}`);
 
-// HOW MUCH OF WHAT IT OWES IS DONE — the number that makes `paging`
-// actionable, since a unit owes one ask per bound provider and the status
-// alone covers 39-of-40 and 1-of-40 the same way.
 check(/3\/40/.test(text), "a paging row shows the settled fraction");
 
-// AN ABSENT EDGE RENDERS AS A DASH, never as 1970 — the one failure a reader
-// would act on and be wrong about.
 check(!/1970/.test(text), "no epoch dates anywhere on the page");
 check((byRelay["fresh.example/"]?.cells || []).includes("—"), "a pair with no coverage draws dashes");
 
-// AND THE CUT DISCLOSES ITSELF.
 check(/1,712 more pair\(s\) not listed/.test(text), "the truncation is disclosed");
 
 if (process.env.SHOT) {

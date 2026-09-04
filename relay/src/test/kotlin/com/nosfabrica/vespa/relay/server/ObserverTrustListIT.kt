@@ -35,39 +35,10 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * ONE REAL READER'S TRUST CHAIN, END TO END: a production kind-10040, the
- * Trusted Lists the publisher it delegates actually signed, and the profiles
- * those lists name — loaded into a real Vespa and read back over the wire.
- *
- * This is the case [SearchReferenceExpansionTest] can only simulate. Its
- * fixture signs its own Map and its own lists, so it proves the code does what
- * it was written to do; it cannot prove the shape it was written for is the
- * shape publishers use. Here nothing is signed by us — the Map, the lists and
- * the profiles are production events, and the corpus is walked FROM the Map
- * rather than swept by kind, so every event in it is one this reader can be
- * shown to have asked for.
- *
- * WHAT MAKES THIS READER THE INTERESTING ONE: their Map delegates 30392 with a
- * generic bare-kind entry — `["30392", <pubkey>, <relay>]`, the Tapestry ADR's
- * shape — and NOTHING else names that publisher. A bare kind carries no `:`,
- * so NIP-85's `ServiceProviderTag` has never parsed one, and a gate reading
- * only `serviceProviders()` resolves this reader's list delegations to the
- * empty set. Their lists then come back as bare hits with nothing spliced
- * behind them, silently, with no error anywhere. So the first case below is
- * not only "the feature works": it is the one shape of real delegation that
- * would have failed, on the real Map that carries it.
- *
- * Off unless both are given — it needs a live engine and a corpus that is not
- * in the repo:
- *
- *     docker run -d --name vespa -m 9g -p 127.0.0.1:8080:8080 \
- *         -p 127.0.0.1:19071:19071 vespaengine/vespa
- *     node relay/tools/fetch-observer-corpus.mjs /tmp/obs <observer-hex>
- *     ./gradlew :relay:test --tests '*ObserverTrustListIT*' \
- *         -DitVespa=http://localhost:8080 -DitCorpus=/tmp/obs -i
- *
- * The observer is read from the corpus rather than hardcoded, so pointing the
- * fetch at a different reader re-targets the whole file.
+ * One real reader's trust chain end to end: a production kind-10040, the Trusted Lists it delegates by
+ * bare kind, and the profiles those lists name, loaded into a live Vespa and read back over the wire.
+ * Asserts the delegated lists unpack for that reader and for nobody else. Selected by `-DitVespa=<url>`
+ * and `-DitCorpus=<dir>`, a corpus written by `relay/tools/fetch-observer-corpus.mjs`.
  */
 class ObserverTrustListIT {
     private val vespa = System.getProperty("itVespa")
@@ -100,15 +71,12 @@ class ObserverTrustListIT {
 
     private fun membersOf(list: Event): List<HexKey> = list.tags.filter { it.size > 1 && it[0] == "p" }.map { it[1] }
 
-    /** The kind-0s the corpus actually holds, by author — a named member without one cannot be spliced. */
+    /** The kind-0s the corpus holds, by author; a named member without one cannot be spliced. */
     private val profiles: Map<HexKey, Event> by lazy { corpus.filter { it.kind == 0 }.associateBy { it.pubKey } }
 
     /**
-     * THE LIST THIS FILE IS ABOUT, chosen from the corpus rather than named:
-     * the most-populated one whose title appears in NONE of its members'
-     * profiles. That last condition is the whole point of the feature — if a
-     * member's profile contained the searched words, plain search would have
-     * found it and the splice would prove nothing.
+     * The most-populated list whose title appears in none of its members' profiles,
+     * so a spliced member cannot be a plain hit of the search.
      */
     private val subject: Event by lazy {
         lists
@@ -130,8 +98,7 @@ class ObserverTrustListIT {
         return VespaEventStore.open(vespa!!, relay = relayUrl, autoDeploy = true).use { store ->
             runBlocking {
                 val written = store.batchInsert(corpus).count { it is IEventStore.InsertOutcome.Accepted }
-                // Re-running against a warm Vespa re-offers what is already
-                // there, and a duplicate is a rejection rather than a failure.
+                // A warm Vespa rejects the duplicates; only an empty engine writes everything.
                 println("OBSERVER-IT corpus: ${corpus.size} events, $written newly written")
                 val relay = NostrRelayServer(store, relayUrl)
                 try {
@@ -156,19 +123,11 @@ class ObserverTrustListIT {
         assertTrue(bareList.isNotEmpty(), "this file is about the bare-kind shape; the Map carries none: $entries")
         assertTrue(lists.isNotEmpty(), "the delegated publisher signed no 30392 the corpus could fetch")
 
-        // Nothing here is ours. If a re-fetch ever lands on a corpus we signed,
-        // every assertion below stops meaning anything.
+        // Nothing here may be ours, or every assertion below stops meaning anything.
         assertTrue(lists.all { it.pubKey != observer }, "a list signed by the reader would pass the gate without any delegation")
 
-        // THE ORDERING THE SPLICE RELIES ON, checked against the real thing.
-        // The relay reads a member's KEY and never its score, so a spliced
-        // member's position means its rank only because the publisher sorted
-        // the tags. Every real list here does, every member carries a score,
-        // and every score is inside quartz's 0..100 range — a value outside it
-        // reads back as unscored, which would quietly cost the ordering its
-        // meaning. If this ever fails, SearchExpansionLimits' claim that a
-        // truncated splice is "the top of its own ranking" has stopped being
-        // true of production.
+        // The relay reads a member's key, never its score, so a spliced member's position means its rank
+        // only because the publisher sorted the tags; a score outside quartz's 0..100 reads back as unscored.
         for (list in lists) {
             val scores =
                 list.tags
@@ -206,9 +165,7 @@ class ObserverTrustListIT {
     fun `a reader who delegated nobody gets the list and none of its members`() {
         withRelay { relay ->
             val title = titleOf(subject)
-            // A pubkey with no 10040 in this corpus: the same search, the same
-            // list, and nothing behind it. This is the gate, and it is what
-            // makes the case above a result rather than a coincidence.
+            // A pubkey with no 10040 in this corpus: the same search, the same list, nothing behind it.
             val stranger = "b7".repeat(32)
             val page = page(relay, "stranger", """{"kinds":[0,30392],"search":"$title include:spam observer:$stranger"}""")
             val listIds = lists.map { it.id }.toSet()
@@ -225,9 +182,7 @@ class ObserverTrustListIT {
     @Test
     fun `a plain recall of the same list splices nothing`() {
         withRelay { relay ->
-            // No `search` on the filter, so no expansion at all — the reader is
-            // asking for lists, not for a feed, and the members stay behind
-            // their own REQ. Same reader, same delegation, different question.
+            // No search text on the filter, so no expansion: same reader, same delegation, different question.
             val page = page(relay, "plain", """{"kinds":[30392],"authors":["${subject.pubKey}"],"search":"include:spam"}""")
             assertTrue(subject.id in page, "the plain recall must still serve the list: $page")
             assertEquals(

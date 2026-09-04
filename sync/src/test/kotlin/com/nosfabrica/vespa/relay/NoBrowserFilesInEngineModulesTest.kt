@@ -25,29 +25,8 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * ENGINES PRODUCE DOCUMENTS; :web RENDERS THEM. The seam is `/stats.json`, and
- * this is the half of it a compiler cannot hold.
- *
- * ## Why it needs a test
- *
- * The layout drifted into the state this replaced by an argument that sounds
- * right every time: a page belongs next to the thing that serves it. It does
- * not. `:sync` and `:monitor` each ended up with one `.html` and one
- * `cards.js`, while three quarters of the same design — the stylesheet, the DOM
- * vocabulary, the render engine — sat in `:web`, so the line between the two
- * was "how many modules happen to import this file" rather than a principle.
- *
- * It cost more than tidiness. Assets spread across module roots do not resolve
- * for a filesystem-based test the way they do for a server reading the
- * classpath, so the JS suite needed its own resolver hook — machinery whose
- * only job was to undo the split. Putting every browser file in one module
- * deleted it.
- *
- * ## What "engine module" means
- *
- * Everything but `:web`. An engine may serve a page — `SyncMain` binds two —
- * but it does so with markup and modules it does not own, which is exactly the
- * relationship a back end has with a front end.
+ * Engines publish `/stats.json` and `:web` renders it; every browser file
+ * belongs in `:web`, and this holds the half of that seam a compiler cannot.
  */
 class NoBrowserFilesInEngineModulesTest {
     @Test
@@ -71,13 +50,7 @@ class NoBrowserFilesInEngineModulesTest {
     }
 
     private companion object {
-        /**
-         * What counts as browser code.
-         *
-         * Extensions rather than paths: the failure this catches is a NEW file
-         * put somewhere plausible, and a path list would only ever describe
-         * where the last one went.
-         */
+        /** Extensions rather than paths: the failure to catch is a new file somewhere plausible. */
         val BROWSER = setOf("html", "js", "mjs", "css")
     }
 }

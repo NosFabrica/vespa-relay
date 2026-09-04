@@ -30,15 +30,13 @@ import java.io.File
 import java.util.regex.PatternSyntaxException
 
 /**
- * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling. The old
- * name still works — a stale compose file must never silently disable the
- * sync engine — but it announces itself so the config gets updated.
+ * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling with a
+ * nudge on stderr so the config gets updated.
  */
 fun Map<String, String>.syncEnv(
     name: String,
-    // Oldest last: a knob renamed twice carries both spellings, and the first
-    // one SET wins so a deployment mid-migration is never read from the older
-    // of two values it has.
+    // Oldest last: the first spelling set wins, so a deployment mid-migration
+    // is never read from the older of two values it has.
     vararg legacy: String,
 ): String? {
     this[name]?.let { return it }
@@ -51,13 +49,10 @@ fun Map<String, String>.syncEnv(
 }
 
 /**
- * Loads [RouterConfig] from the environment. `SYNC_CONFIG` holds the HOCON
- * inline; `SYNC_CONFIG_FILE` points at a file. Neither set ⇒ null, and what
- * that means is the caller's: SyncMain refuses to start on it — a sync
- * process with nothing to sync is a misconfiguration, not a mode.
- * `SYNC_DYNAMIC_REFRESH_SECONDS` / `SYNC_DYNAMIC_CONCURRENCY` are the
- * defaults for dynamic streams; `SYNC_STREAMS` narrows the run to a subset
- * of the config's streams (see [select]).
+ * Loads [RouterConfig] from the environment: `SYNC_CONFIG` holds the HOCON
+ * inline, `SYNC_CONFIG_FILE` points at a file. Neither set is null, which
+ * SyncMain refuses to start on. `SYNC_STREAMS` narrows the run to a subset of
+ * the config's streams, see [narrowToStreams].
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -82,9 +77,8 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceIn(1, 20_000) ?: 1000
-        // Sized the legacy `auto` transport choice, which no engine makes any
-        // more. Refused rather than ignored, on the rule every removed setting
-        // here follows: it was a real number in a real compose file.
+        // Sized the removed `auto` transport choice. Refused rather than ignored,
+        // like every removed setting here.
         require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank() && env["ROUTER_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
                 "choice any more: the pool pages forward and reconciles the past on its own clock. Unset it"
@@ -100,9 +94,7 @@ object RouterConfigLoader {
                         ?.toLongOrNull()
                         ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
             )
-        // Window sizing for the automatic negentropy pager. Applied with copy()
-        // rather than threaded through parse(): they are runtime tuning, not
-        // part of the strfry-shaped config the parser reads.
+        // Runtime tuning, applied with copy() rather than threaded through parse().
         val pageTarget =
             env
                 .syncEnv("SYNC_NEG_PAGE_TARGET", "ROUTER_NEG_PAGE_TARGET")
@@ -139,11 +131,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * `SYNC_STREAMS=contentViaOutbox` — run only the named streams, so one part
-     * of the sync can be measured without the others competing for the same
-     * sockets, heap and ingest queue. A name that matches nothing is a hard
-     * error: a typo would otherwise look exactly like a relay that mirrors
-     * nothing.
+     * Run only the streams `SYNC_STREAMS` names. A name that matches nothing is
+     * a hard error: a typo would otherwise look like a relay that mirrors nothing.
      */
     fun narrowToStreams(
         streams: List<SyncStream>,
@@ -161,8 +150,8 @@ object RouterConfigLoader {
             "router: SYNC_STREAMS names ${unknown.joinToString()}, which the config does not define (has: ${known.joinToString()})"
         }
         val (on, off) = streams.partition { it.name in wanted }
-        // Said out loud, every startup: a stream that is off because someone
-        // was measuring last week must never look like one that is failing.
+        // Said every startup: a stream switched off for a measurement must
+        // never look like one that is failing.
         System.err.println(
             "router: SYNC_STREAMS is set — running ${on.joinToString { it.name }};" +
                 " NOT running ${off.joinToString { it.name }.ifEmpty { "nothing else" }}",
@@ -200,28 +189,14 @@ object RouterConfigLoader {
 
                 val filter = parseFilter(s.getConfig("filter"))
                 val deleteMissing = parseDeleteMissing(name, s)
-                // `sync` chose a static stream's transport for the engine that
-                // walked it once per process. Every stream rides the pool now,
-                // which has one shape — page forward from the band's edge,
-                // reconcile the past on its clock, re-fetch it on the other —
-                // so the choice has nothing left to decide and is refused
-                // rather than accepted and ignored.
+                // Refused rather than accepted and ignored: the pool has one shape for every stream.
                 require(!s.hasPath("sync")) {
                     "router: stream '$name' sets `sync` — gone with the legacy backfill. Every stream is visited " +
                         "the same way now: page forward from the band's edge, live-tail, and re-check the past on " +
                         "`negentropySyncThePastSeconds` (reconcile) and `refetchThePastSeconds` (re-fetch)"
                 }
-                // An hour is the floor because the audit re-reconciles the
-                // WHOLE covered history: a knob under it is a re-walk loop
-                // wearing an audit's name. `verifySeconds` is the knob's old
-                // name, honored with a nudge — a renamed key must never
-                // silently turn a deployment's audits off.
-                // Renamed twice, and both older spellings still parse: the
-                // knob clocks a NEGENTROPY reconcile of the whole past, and
-                // neither `auditSeconds` nor `verifySeconds` said which of the
-                // two re-checks it schedules — the other one now being
-                // `refetchThePastSeconds`, over a different transport, for a
-                // different set of relays.
+                // Floored at an hour: the audit re-reconciles the whole covered
+                // history. `auditSeconds` and `verifySeconds` are the knob's older names.
                 val negentropySyncThePastSeconds =
                     when {
                         s.hasPath("negentropySyncThePastSeconds") -> {
@@ -249,10 +224,8 @@ object RouterConfigLoader {
                             null
                         }
                     }?.coerceAtLeast(3600L)
-                // How often this stream's bands expire, putting its whole
-                // filter back on the walk. Floored at an hour for the reason
-                // above, and warned about below its own audit, where it
-                // re-downloads exactly what the audit was about to reconcile.
+                // Floored at an hour for the same reason; warned about at or below
+                // the audit, where it re-downloads what the audit would reconcile.
                 val refetchThePastSeconds =
                     if (s.hasPath("refetchThePastSeconds")) {
                         s.getLong("refetchThePastSeconds").coerceAtLeast(3600L).also {
@@ -269,12 +242,8 @@ object RouterConfigLoader {
                         null
                     }
                 if (deleteMissing != DeleteMissing.OFF) {
-                    // The comparison runs as the pool's history audit, so the
-                    // config must give it a relay list the monitor answers
-                    // for and the audit clock it runs on. Nothing else can
-                    // carry it: a static stream has no discovery to pair
-                    // authors with, and a paged fetch asks only outside its
-                    // band, so "not seen" there means "not asked for".
+                    // The comparison runs as the pool's audit, so it needs a relay
+                    // list the monitor answers for and the audit clock.
                     require(discovery != null) {
                         "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
                             "comparison runs as the pool's audit, over asks a scan paired with their owners"
@@ -283,19 +252,10 @@ object RouterConfigLoader {
                         "router: stream '$name' sets deleteMissing without `negentropySyncThePastSeconds` — " +
                             "the retraction comparison IS that reconcile, and that knob is its clock"
                     }
-                    // The delete's whole licence is per (relay, provider):
-                    // "this relay no longer serves this provider" is the only
-                    // retraction one relay can prove. An UNBOUND ask would
-                    // reconcile EVERY author's owned records against a single
-                    // relay and delete whatever that relay happens not to
-                    // hold — so every source must be a scan whose selects
-                    // bind `authors`. A verdict source cannot carry it: it
-                    // fans the stream's one filter to every certified relay.
+                    // The delete's licence is per (relay, provider), so every source must
+                    // bind `authors`; an unbound ask would judge every provider against one relay.
                     discovery.sources.forEach { source ->
-                        // Catches the kind-30166 source too, and by the rule
-                        // that matters rather than by its shape: its `d`-tag
-                        // select binds nothing, so it fans the stream's one
-                        // unbound filter to every relay it admits.
+                        // Catches the kind-30166 source too: its `d`-tag select binds nothing.
                         require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
                             "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
                                 "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
@@ -317,20 +277,15 @@ object RouterConfigLoader {
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     negentropySyncThePastSeconds = negentropySyncThePastSeconds,
-                    // This stream's share of each job — the only place a
-                    // workload is bounded. Absent is uncapped, which leaves
-                    // the job bounded by `visitConcurrency` alone.
+                    // Absent is uncapped: the job is bounded by `visitConcurrency` alone.
                     refetchConcurrency = cap(s, "refetchConcurrency"),
                     negentropyConcurrency = cap(s, "negentropyConcurrency"),
                     maxLiveConcurrency = cap(s, "maxLiveConcurrency"),
                     visitConcurrency = cap(s, "visitConcurrency"),
                 )
             }
-        // Advisory, never a refusal — the overlap can be deliberate. A kind a
-        // retracting stream deletes and another stream mirrors oscillates:
-        // the audit deletes it, the other stream re-mirrors it, the next
-        // audit deletes it again. Nothing broken, endlessly busy — said at
-        // boot so the operator who configured it can recognize the churn.
+        // Advisory, the overlap can be deliberate: a kind deleted here and
+        // mirrored there is re-mirrored and re-deleted on every audit.
         for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF }) {
             for (other in streams) {
                 if (other.name == retracting.name) continue
@@ -359,11 +314,9 @@ object RouterConfigLoader {
     }
 
     /**
-     * The pool's two socket numbers moved INSIDE the streams that pay for
-     * them. Refused at the old spelling rather than ignored: a router-wide
-     * `visitConcurrency` accepted and dropped would leave a deployment
-     * believing it had bounded its dials, and the whole point of moving them
-     * is that the sum is now visible where it is spent.
+     * The pool's socket widths live inside the streams that pay for them.
+     * Refused at the old spelling rather than dropped, so a deployment never
+     * believes it bounded dials it did not.
      */
     private fun refuseRouterWidePoolWidths(cfg: Config) {
         require(!cfg.hasPath("visitConcurrency")) {
@@ -379,13 +332,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * One of a stream's workload caps — absent, or at least one.
-     *
-     * Floored rather than refused, for the reason the pool's two socket
-     * numbers are: zero is an OFF SWITCH wearing a tuning knob's name, and a
-     * stream silently doing no catch-up because someone typed 0 is the worst
-     * reading of this whole feature. An operator who wants a job off says so
-     * by not configuring the work, not by sizing its pool to nothing.
+     * One of a stream's workload caps: absent, or at least one. Zero is
+     * floored, not honored: an off switch wearing a tuning knob's name.
      */
     private fun cap(
         cfg: Config,
@@ -393,10 +341,8 @@ object RouterConfigLoader {
     ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
 
     /**
-     * The `monitor { }` block — the plane that owns relay-list parsing and the
-     * probe passes' clocks. Reuses the stream-side parsers on purpose: a
-     * monitor source IS a relay source, just feeding verdicts instead of a
-     * fan-out.
+     * The `monitor { }` block. A monitor source is a relay source feeding
+     * verdicts instead of a fan-out, so it reuses the stream-side parsers.
      */
     private fun parseMonitor(cfg: Config): MonitorConfig? {
         if (!cfg.hasPath("monitor")) return null
@@ -415,8 +361,7 @@ object RouterConfigLoader {
                     .coerceAtLeast(300L),
             fastLaneSeconds =
                 run {
-                    // `newUrlSeconds` is the knob's old name — every log line
-                    // and progress row already says "fast lane".
+                    // `newUrlSeconds` is the knob's old name.
                     val key =
                         when {
                             m.hasPath("fastLaneSeconds") -> {
@@ -435,17 +380,14 @@ object RouterConfigLoader {
                     when {
                         key == null -> MonitorConfig.DEFAULT_FAST_LANE_SECONDS
 
-                        // 0 is the documented off switch: a fast lane that fired
-                        // every zero seconds would be a busy loop, not a setting.
+                        // 0 is the documented off switch.
                         m.getLong(key) <= 0L -> null
 
                         else -> m.getLong(key).coerceAtLeast(30L)
                     }
                 },
-            // Floored at 1: zero dials is a monitor that never certifies
-            // anything, which is an off switch no operator asked this knob
-            // to be. The ceiling is the operator's own arithmetic — the
-            // dispatcher budget minus the pool's — and is not second-guessed.
+            // Floored at 1: zero dials is an off switch no operator asked this
+            // knob to be. The ceiling is the operator's own arithmetic.
             dialConcurrency =
                 when {
                     m.hasPath("dialConcurrency") -> {
@@ -474,14 +416,7 @@ object RouterConfigLoader {
             }
         }
 
-    /**
-     * `deleteMissing = false | "dryRun" | true`.
-     *
-     * Refused outright on a `fetch` stream: a paged fetch asks only OUTSIDE
-     * its band, so "not seen" there mostly means "not asked for" —
-     * deleting on it would take the whole history below the band. Only a
-     * reconcile compares whole sets.
-     */
+    /** `deleteMissing = false | "dryRun" | true`. */
     private fun parseDeleteMissing(
         stream: String,
         s: Config,
@@ -512,14 +447,9 @@ object RouterConfigLoader {
     }
 
     /**
-     * `ownedKinds = [30382]` — which of the stream's kinds its upstreams are
-     * authoritative for, and therefore the only ones absence may delete.
-     *
-     * Required, non-empty, and a subset of the filter's kinds whenever
-     * `deleteMissing` is on: the whole point is that turning on deletion makes
-     * you write down what it is allowed to reach, in the same file. Refused
-     * outright when deletion is off, so a stream can never carry a stale
-     * licence that a later `deleteMissing = true` silently activates.
+     * `ownedKinds = [30382]`: the kinds the upstreams are authoritative for.
+     * Required, non-empty and a subset of the filter's kinds when `deleteMissing`
+     * is on; refused when it is off, so no stale licence waits for a later switch.
      */
     private fun parseOwnedKinds(
         stream: String,
@@ -541,8 +471,7 @@ object RouterConfigLoader {
                 "because every other kind in the filter would otherwise be deleted for being absent from a relay " +
                 "that was never supposed to serve it"
         }
-        // A kind-less filter means "every kind", and then the attached set —
-        // what deletion must NOT touch — has no enumerable shape to protect.
+        // A kind-less filter is every kind, so the set deletion must not touch has no shape.
         val streamKinds =
             requireNotNull(filter.kinds) {
                 "router: stream '$stream' sets deleteMissing on a filter with no `kinds` — " +
@@ -558,15 +487,8 @@ object RouterConfigLoader {
 
     /**
      * The `relaySource = [ ... ]` list plus the stream-level knobs pacing its
-     * discovery. Every source must answer to the monitor — a kind-30166
-     * verdict source, or a scan gated `certified` — because the pool is the
-     * only engine: an ungated scan has nothing to run it, and admitting it
-     * silently would dial every dead url every relay list ever spammed.
-     *
-     * The legacy fan-out's knobs are refused BY NAME rather than ignored: a
-     * config that still says them was written for the cycle engine, and the
-     * operator deserves the migration note, not a silently different
-     * behavior.
+     * discovery. The cycle engine's knobs are refused by name rather than
+     * ignored, with the message saying where the meaning moved.
      */
     private fun parseDiscovery(
         stream: String,
@@ -612,15 +534,8 @@ object RouterConfigLoader {
             } else {
                 emptyList()
             }
-        // SAID, NOT REFUSED. An ungated stream dials whatever its sources name,
-        // and relay lists are as writable as the events carrying them — each
-        // dead url costs a dial and a timeout every cycle forever. That used
-        // to be a parse error, on the rule "unless every source is a verdict
-        // query"; stating that rule meant this module deciding which tag, and
-        // which value in it, constitutes a vouching — the operator's choice
-        // and another monitor's spelling. A filter that gates and a filter
-        // that scans are indistinguishable from here, so the config is the
-        // authority and this is a line at boot naming the stream.
+        // Said, not refused: which tag and value constitute a vouching is the
+        // operator's knowledge, so the config is the authority.
         if (gatedBy.isEmpty()) {
             System.err.println(
                 "router: stream '$stream' has no `gatedBy` — every url its relaySource names will be dialled, " +
@@ -638,11 +553,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * `exclude` entries are plain urls or regexes — see [RelayExcludes] for
-     * how they are told apart and matched. Compiled here, at the one place a
-     * human types them, so a broken pattern refuses the config naming the
-     * stream instead of surfacing as a stack trace mid-cycle, and an
-     * unusable plain url warns the way a `urls` entry does.
+     * Compiled here, where a human types them, so a broken regex refuses the
+     * config naming the stream instead of surfacing mid-cycle.
      */
     private fun parseExcludes(
         stream: String,
@@ -659,21 +571,9 @@ object RouterConfigLoader {
         }
 
     /**
-     * ONE `{ select = [ ], filter = { } }` ENTRY, and there is only one kind.
-     *
-     * It used to be two. A filter asking for kind 30166 was parsed into a
-     * `VerdictSource` and read back through a separate verified path, while
-     * everything else was a scan; the two differed in the questions they were
-     * allowed to answer and in almost nothing else. Now that the verified read
-     * has nothing private left in it — no rules epoch, no tag-stamp freshness
-     * — a verdict query is a scan whose select is the `d` tag, and saying so
-     * removes a type, a read path, and a set of rules that applied to one of
-     * them for reasons that no longer hold.
-     *
-     * Used both for a stream's `relaySource` entries and for the entries of
-     * its `gatedBy`: "where urls come from" and "which urls are permitted" are
-     * the same shape of question asked at two points, so they take the same
-     * shape of answer.
+     * One `{ select = [ ], filter = { } }` entry, for a stream's `relaySource`
+     * and its `gatedBy` alike: where urls come from and which are permitted are
+     * the same shape of question.
      */
     private fun parseRelaySource(
         stream: String,
@@ -681,33 +581,20 @@ object RouterConfigLoader {
         what: String = "relaySource",
     ): RelaySource {
         require(s.hasPath("filter")) { "router: stream '$stream' has a $what entry with no `filter { }`" }
-        // Same npub-only rule everywhere a key is typed, restated as hex for
-        // the Filter: bare hex has no checksum, so a typo is a nobody whose
-        // source is empty and whose gate holds everything out, with no error.
         val written = parseFilter(s.getConfig("filter"))
         val kinds = written.kinds
         require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
-        // KIND, not semantics. NIP-66 fixes two things about a 30166 that this
-        // module may rely on without guessing anyone's vocabulary: the url
-        // lives in the `d` tag, and the author is a monitor identity. What the
-        // other tags are called and what their values mean is not ours.
+        // Kind, not semantics: NIP-66 fixes the url in a 30166's `d` tag, and
+        // nothing else about its tags is ours to read.
         val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
-        // No re-spelling of `authors` here or anywhere: [parseFilter] has
-        // already validated them as the raw hex NIP-01 asks for, monitor
-        // identities included. A filter block is the protocol's object, and it
-        // holds the protocol's values.
         val filter = written
         require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
             "router: stream '$stream' bounds a $what entry with BOTH `maxAgeSeconds` and since/until — they are " +
                 "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
                 "human and by nothing else"
         }
-        // A regular kind is unbounded — scanning all of kind 1 means loading
-        // every note in the store into one list. Replaceable/addressable kinds
-        // are one event per author, which is what makes them safe to scan
-        // whole. Checked on what the operator WROTE: `maxAgeSeconds` becomes a
-        // `since` at read time, and letting that satisfy the bound would make
-        // this guard vacuous for every source.
+        // Replaceable and addressable kinds are one event per author; only they
+        // may be scanned whole. Checked on what was written, not the derived filter.
         val narrowed =
             filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null || s.hasPath("maxAgeSeconds")
         require(narrowed || kinds.all { isBoundedKind(it) }) {
@@ -743,9 +630,7 @@ object RouterConfigLoader {
         return RelaySource(
             selects = selects,
             filter = filter,
-            // Unbounded unless written. Which filters describe a measurement
-            // that goes stale, and which describe a list that does not, is the
-            // operator's knowledge — see [RelaySource.maxAgeSeconds].
+            // Unbounded unless written; see [RelaySource.maxAgeSeconds].
             maxAgeSeconds = if (s.hasPath("maxAgeSeconds")) s.getLong("maxAgeSeconds").coerceAtLeast(60L) else null,
             refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
@@ -759,8 +644,7 @@ object RouterConfigLoader {
         require(!(s.hasPath("index") && s.hasPath("relay"))) {
             "router: stream '$stream' has a select with both `index` and `relay` — they name the same slot, write one"
         }
-        // `relay = N` is the name to use once a select binds more than one
-        // field; `index = N` is the original spelling and keeps working.
+        // `index = N` is the original spelling of `relay = N`.
         val index =
             when {
                 s.hasPath("relay") -> s.getInt("relay")
@@ -790,19 +674,17 @@ object RouterConfigLoader {
     }
 
     /**
-     * The destination fields a select may bind, beyond the relay url itself. A
-     * closed list on purpose: a typo that silently bound nothing would show up
-     * as a stream quietly syncing the wrong thing. `#x` tag filters are
-     * accepted for any single letter, as NIP-01 allows.
+     * The fields a select may bind. A closed list: a typo that bound nothing
+     * would look like a stream quietly syncing the wrong thing.
      */
     private val BINDABLE = setOf("authors", "ids", "kinds")
 
     private fun isBindable(key: String) = key in BINDABLE || (key.length == 2 && key[0] == '#' && key[1].isLetter())
 
     /**
-     * `{ tag = "30382:rank", relay = 2, authors = 1 }` — which tag slot feeds
-     * which filter field. A value is either an Int (that element of the tag)
-     * or `"pubkey"`/`"id"` for the scanned event's own.
+     * `{ tag = "30382:rank", relay = 2, authors = 1 }`: which tag slot feeds
+     * which filter field. A value is an Int (that element of the tag) or
+     * `"pubkey"`/`"id"` for the scanned event's own.
      */
     private fun parseBindings(
         stream: String,
@@ -845,8 +727,8 @@ object RouterConfigLoader {
 
     /**
      * NIP-65's rule spelled as a `where`: keep tags marked the asked-for side,
-     * marked empty, or too short to carry a marker at all — an unmarked `r`
-     * tag is read *and* write. `any` keeps everything.
+     * marked empty, or too short to carry a marker at all, since an unmarked
+     * `r` tag is read and write. `any` keeps everything.
      */
     private fun markerSugar(
         stream: String,
@@ -904,7 +786,7 @@ object RouterConfigLoader {
             "router: stream '$stream' has a where entry whose equals at index $index needs ${index!! + 1} elements but maxSize is $maxSize — it can never match"
         }
         // Every tag reaching a where already has the url, so a minSize at or
-        // under that floor holds for every tag — and one always-true entry in
+        // under that floor holds for every tag, and one always-true entry in
         // an OR list silently disables the others.
         require(minSize == null || minSize > urlIndex + 1) {
             "router: stream '$stream' has a where entry with minSize $minSize, which the url at index $urlIndex already guarantees — it matches every tag"
@@ -924,19 +806,9 @@ object RouterConfigLoader {
 
         fun ints(k: String) = if (f.hasPath(quote(k))) f.getIntList(quote(k)).map { it.toInt() } else null
 
-        // NIP-01 timestamps are unsigned and a `limit` counts events, so none of
-        // the three can be negative — and what a relay DOES with a negative one is
-        // never what the config meant. Measured across the five `indexers`:
-        // strfry kills the subscription (`CLOSED: bad req: error parsing until`),
-        // three answer a NOTICE and then never EOSE, so every page burns a full
-        // idle timeout, and purplepag.es silently drops the bound and serves its
-        // NEWEST page — the opposite end of the relay from the one asked for. A
-        // negative `limit` is quieter and worse: quartz drops the filter before
-        // the first REQ, so the stream reports LIMIT_REACHED having downloaded
-        // nothing, every cycle, looking like a relay with no events.
-        //
-        // Caught here, at the one place a human types it, because none of those
-        // failures name the config that caused them.
+        // NIP-01 timestamps are unsigned and `limit` counts events. Relays answer
+        // a negative one with a killed subscription, silence, or their newest
+        // page, and none of those failures name the config that caused them.
         fun nonNegative(
             key: String,
             value: Long?,
@@ -950,28 +822,9 @@ object RouterConfigLoader {
             }
 
         /**
-         * `since = 0` is NOT a floor, it is the absence of one — the epoch is
-         * the bottom of an unsigned `created_at`, so it asks for exactly what
-         * omitting `since` asks for. Normalised to null here so the rest of the
-         * router sees the two spellings as one thing.
-         *
-         * It matters at two places that both read `since != null` as "bounded":
-         *  - [flooredForPaging] passes a filter with its OWN `since` through
-         *    untouched, so `since = 0` walks unfloored. On the pinned quartz
-         *    that cannot run past zero any more, but it ends the leg UNPAGEABLE
-         *    against a relay like purplepag.es — no coverage recorded, re-walked
-         *    every boot.
-         *  - the `narrowed` check on a relaySource counts a non-null `since` as
-         *    narrowing the scan. Zero narrows nothing, so it bought a regular
-         *    kind an unbounded scan past a guard written to stop exactly that.
-         *
-         * Normalising here rather than clamping in [flooredForPaging] is
-         * deliberate: `drainSettlesThePast` compares the leg's floor against the
-         * FILTER's, so a leg clamped above the floor its filter asked for has
-         * not reached bottom and could never settle history.
-         *
-         * `until = 0` gets no such treatment — it is a real, if near-empty,
-         * bound ("nothing after the epoch"), not the absence of one.
+         * `since = 0` is the absence of a floor, not a floor: normalised to null
+         * so every `since != null` reader sees one spelling. `until = 0` is a
+         * real bound and is left alone.
          */
         fun epochAsAbsent(value: Long?): Long? = value?.takeIf { it != 0L }
 
@@ -985,15 +838,8 @@ object RouterConfigLoader {
 
         val since = epochAsAbsent(nonNegative("since", if (f.hasPath("since")) f.getLong("since") else null))
         val until = nonNegative("until", if (f.hasPath("until")) f.getLong("until") else null)
-        // An inverted window asks for events after X and before Y with X > Y,
-        // which nothing can satisfy. It is not caught anywhere downstream: the
-        // relay EOSEs an empty page, so the walk reports DRAINED, and
-        // `drainSettlesThePast` compares the leg's floor against the filter's —
-        // the same value — and returns true. The band then records a settled
-        // past from a window that could never have returned an event.
-        // `PagingProgress.begin` already refuses this shape ("an inverted window
-        // is not a walk"), so today such a leg is also invisible to the progress
-        // line while it runs.
+        // An inverted window matches nothing, and the empty page a relay answers
+        // it with would be recorded as a settled past.
         require(since == null || until == null || since <= until) {
             "router: filter at ${f.origin().description()} has `since = $since` after `until = $until` — " +
                 "an inverted window matches nothing, and a relay answers it with the empty page that " +
@@ -1007,45 +853,18 @@ object RouterConfigLoader {
             tags = tags,
             since = since,
             until = until,
-            // getInt, not getLong().toInt(): HOCON range-checks an int here, and
-            // going through Long would silently truncate an out-of-range limit
-            // into a plausible-looking one.
-            //
-            // Zero stays legal and is NOT normalised away: `limit = 0` is the
-            // NIP-01 idiom for "no stored events, just the live tail", and this
-            // router honours it — `SyncEngine`'s down tail reuses this same
-            // filter, overriding `since` but not `limit`, so the live
-            // subscription still streams. On the PAGED path quartz drops it
-            // before the first REQ (`matchCountPerFilter[i] < limit` is `0 < 0`)
-            // and reports LIMIT_REACHED, which is not DRAINED — so it claims no
-            // coverage, and "downloaded 0 history" is the truth for a stream
-            // configured not to want any.
+            // getInt, not getLong().toInt(): HOCON range-checks the int, and Long
+            // would truncate an out-of-range limit into a plausible one. Zero stays
+            // legal: `limit = 0` is NIP-01 for "no stored events, just the live tail".
             limit = if (f.hasPath("limit")) f.getInt("limit").also { nonNegative("limit", it.toLong()) } else null,
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }
 
     /**
-     * A NIP-01 filter's `ids` and `authors`, VALIDATED AS RAW HEX and left
-     * that way.
-     *
-     * These fields are NIP-01's, not ours: the spec says 64-character
-     * lowercase hex, that is what goes on the wire, and a config that writes
-     * one thing while the protocol carries another makes the operator hold two
-     * spellings of the same value in their head. So a `filter { }` block here
-     * is the filter — copy one out of a REQ and it works, paste one from here
-     * into a REQ and it works.
-     *
-     * Bech32 belongs to the settings that are OURS to define, where a
-     * checksummed spelling is a free guard on a value a human typed. It does
-     * not belong inside a NIP-01 object. An `npub1…` here is refused rather
-     * than decoded, because silently accepting it would make this block
-     * "mostly NIP-01" — the worst of both.
-     *
-     * Uppercase is lowercased rather than refused: the spec says lowercase,
-     * the value is unambiguous either way, and nothing downstream cares. An
-     * `nsec1…` is called out by name — that is a PRIVATE key in a file people
-     * commit.
+     * A filter's `ids` and `authors`, validated as raw hex and left that way:
+     * a `filter { }` block is a NIP-01 filter, so bech32 is refused rather
+     * than decoded. Uppercase is lowercased; an `nsec1` is called out by name.
      */
     private fun hexKeys(
         f: Config,

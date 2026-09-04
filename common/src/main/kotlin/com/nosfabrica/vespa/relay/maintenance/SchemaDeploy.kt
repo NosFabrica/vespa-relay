@@ -24,19 +24,10 @@ import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import java.net.URI
 
 /**
- * Deploy the bundled Vespa application package and wait until Vespa serves it.
- *
- * This runs on EVERY boot, so the cluster always matches the schema this build
- * expects — a drifted schema had Vespa answer every write with `Status 400 …
- * Field 'name_parts' is not defined` while the router counted, dropped and
- * carried on (2.3M good events lost in one run). A no-change deploy is a
- * cheap no-op.
- *
- * A deploy failure against a Vespa that is already serving keeps the calling
- * process up on the schema Vespa has, with a warning naming the cost. On a
- * fresh Vespa the failure rethrows: there is no schema to fall back to. Both
- * processes call this at boot — the sync side is the one whose writes a
- * drifted schema silently discards.
+ * Deploys the bundled Vespa application package on every boot and waits until
+ * Vespa serves it, so the cluster always matches the schema this build
+ * expects. Against a Vespa already serving, a failed deploy keeps the process
+ * up on the schema Vespa has; on a fresh Vespa it rethrows.
  */
 fun deployBundledSchema(
     vespaUrl: String,
@@ -47,8 +38,7 @@ fun deployBundledSchema(
         deployer.deploy()
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
-        // "schema:", not "relay:": both processes deploy since the split, and
-        // a failure in the sync container must not read as the relay's.
+        // "schema:", not "relay:": both processes deploy, and a failure in the sync container is not the relay's.
         System.err.println(
             "schema: deploy to $configUrl failed (${e.message?.take(200)}); " +
                 "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",

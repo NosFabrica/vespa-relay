@@ -45,12 +45,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The relay's own kind 0 and kind 10002: published when they are missing or
- * would say something different, and never republished for the sake of it.
- *
- * Driven against the same in-memory store the protocol tests use, so the
- * replaceable semantics under this — one event per (kind, author), the newer
- * one winning — are the store's own rather than a fake's opinion of them.
+ * The relay's own kind 0 and kind 10002, driven against the real in-memory
+ * store so the replaceable semantics are the store's own.
  */
 class RelayProfileTest {
     private val relayUrl = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -77,7 +73,7 @@ class RelayProfileTest {
 
     private fun contentOf(event: Event): Map<String, String> = (Json.parseToJsonElement(event.content) as JsonObject).mapValues { it.value.jsonPrimitive.content }
 
-    /** The `r` tags as (url, marker) — marker absent means both, which is what NIP-65 says. */
+    /** The `r` tags as (url, marker); an absent marker means both directions, per NIP-65. */
     private fun relaysOf(event: Event): List<Pair<String, String?>> = event.tags.filter { it.size > 1 && it[0] == "r" }.map { it[1] to it.getOrNull(2) }
 
     @Test
@@ -93,16 +89,13 @@ class RelayProfileTest {
             val content = contentOf(metadata)
             assertEquals("Example Relay", content["name"])
             assertEquals("Example Relay", content["display_name"])
-            // The NIP-11 description, verbatim — the one field this whole thing
-            // exists to carry to a reader who never asked this host for its doc.
             assertEquals("A trust-ranked search relay", content["about"])
             assertEquals("https://relay.example/icon.png", content["picture"])
             assertEquals("https://relay.example/banner.png", content["banner"])
 
             val list = stored(store, AdvertisedRelayListEvent.KIND) ?: error("no kind 10002 was published")
             assertTrue(list.verify(), "the relay signs its own relay list")
-            // No marker: inbox AND outbox. A "read" or "write" here would be
-            // the relay telling clients to reply somewhere else.
+            // No marker: inbox and outbox both.
             assertEquals(listOf("wss://relay.example/" to null), relaysOf(list))
         }
 
@@ -113,8 +106,7 @@ class RelayProfileTest {
             profile(store).publish(info)
             val first = stored(store, MetadataEvent.KIND)?.id to stored(store, AdvertisedRelayListEvent.KIND)?.id
 
-            // A later boot, with the clock moved on: the events already say
-            // this, so nothing is written and neither `created_at` creeps.
+            // A later boot with the clock moved on writes nothing, so neither `created_at` creeps.
             val report = profile(store, at = 1_800_009_999L).publish(info)
             assertEquals(emptyList(), report.published())
             assertEquals(first, stored(store, MetadataEvent.KIND)?.id to stored(store, AdvertisedRelayListEvent.KIND)?.id)
@@ -137,9 +129,7 @@ class RelayProfileTest {
     fun `keeps profile fields it does not own, and clears the ones it does`() =
         runBlocking {
             val store = newStore()
-            // Something an operator published for this key by hand: a lightning
-            // address and a nip05 this file knows nothing about, plus an `about`
-            // it does own.
+            // Published by hand for this key: fields this writer does not own, plus an `about` it does.
             store.insert(
                 signer.sign<MetadataEvent>(
                     MetadataEvent.createNew(
@@ -152,25 +142,20 @@ class RelayProfileTest {
                 ),
             )
 
-            // …and a NIP-11 doc carrying no description at all.
             profile(store).publish(Nip11Info(name = "Example Relay"))
 
             val content = contentOf(stored(store, MetadataEvent.KIND)!!)
             assertEquals("relay@example.com", content["lud16"], "a field this writer does not own survives the edit")
             assertEquals("_@relay.example", content["nip05"])
             assertEquals("Example Relay", content["name"], "the NIP-11 name replaces what was there")
-            // Owned and no longer said: an `about` left behind by a description
-            // that has been removed is exactly the drift this mirrors away.
+            // An `about` left behind by a removed description is the drift this mirrors away.
             assertNull(content["about"])
             assertNull(content["picture"])
         }
 
     /**
-     * NIP-39 claims are somebody else's tags, and quartz's `updateFromPast`
-     * rebuilds them from `IdentityClaimTag.parse` — which drops a claim with no
-     * proof and truncates an identity at its second colon. Both damages are
-     * silent, signed, and permanent, since the damaged tag is what the next
-     * edit reads. This asserts the `i` tags come out of an edit byte for byte.
+     * quartz's `updateFromPast` rebuilds `i` tags through `IdentityClaimTag.parse`,
+     * which drops a claim with no proof and truncates an identity at its second colon.
      */
     @Test
     fun `carries identity claims across the edit exactly as it found them`() =
@@ -179,10 +164,9 @@ class RelayProfileTest {
             val claims =
                 arrayOf(
                     arrayOf("i", "github:alice", "https://gist.github.com/alice/1"),
-                    // No proof — parses to nothing, so quartz's rewrite drops it.
+                    // No proof: quartz's rewrite drops it.
                     arrayOf("i", "telegram:alice"),
-                    // A second colon — quartz splits on the first and reassembles
-                    // the identity without the rest.
+                    // A second colon: quartz's rewrite truncates it.
                     arrayOf("i", "matrix:@alice:example.org", "https://example.org/proof"),
                 )
             store.insert(
@@ -195,8 +179,7 @@ class RelayProfileTest {
 
             val after = stored(store, MetadataEvent.KIND)!!.tags.filter { it.firstOrNull() == "i" }
             assertEquals(claims.map { it.toList() }, after.map { it.toList() })
-            // And it settles: putting the tags back must not itself be a change
-            // the next pass sees, or every boot rewrites the profile forever.
+            // Settles: restoring the tags must not itself read as a change on the next pass.
             assertEquals(emptyList(), profile(store, at = 1_800_000_500L).publish(info).published())
         }
 
@@ -216,8 +199,7 @@ class RelayProfileTest {
                 ),
             )
 
-            // The kind 0 rides along — this store holds none — and the kind
-            // 10002 is the one under test.
+            // The kind 0 rides along because this store holds none.
             assertEquals(listOf(0, 10002), profile(store).publish(info).published())
 
             val relays = relaysOf(stored(store, AdvertisedRelayListEvent.KIND)!!)
@@ -231,10 +213,7 @@ class RelayProfileTest {
     @Test
     fun `a store that cannot answer publishes nothing`() =
         runBlocking {
-            // The failure this whole retry loop exists for: a cold engine that
-            // throws must never be read as "there is no profile stored", which
-            // is the one way this could overwrite a richer one. Delegation, so
-            // every other part of the store stays real.
+            // A cold engine that throws must not read as "no profile stored", the one way to overwrite a richer one.
             val inner = newStore()
             val store =
                 object : IEventStore by inner {

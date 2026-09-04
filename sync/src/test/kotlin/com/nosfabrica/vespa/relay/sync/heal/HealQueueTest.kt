@@ -25,11 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The off-hot-path contract. The queue exists so a reconcile can note that a
- * repair is due in the time it takes to insert into a map, and the two
- * properties below are what stop that promise being quietly withdrawn later.
- */
+/** The queue a reconcile notes a due repair into, in the time of one map insert. */
 class HealQueueTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
     private val b = RelayUrlNormalizer.normalize("wss://b.example")
@@ -46,8 +42,7 @@ class HealQueueTest {
 
     @Test
     fun `coalescing keeps the freshest stale reference`() {
-        // The stale id is what a permanent refusal suppresses, so it must be the
-        // copy the relay is actually still serving.
+        // The stale id is what a permanent refusal suppresses, so it must be the copy still served.
         val q = HealQueue()
         val key = HealKey.content(0, "pk", null)
         q.offer(a, key, stale(1))
@@ -57,11 +52,7 @@ class HealQueueTest {
 
     @Test
     fun `a full queue drops rather than blocking the producer`() {
-        // SAFETY, and deliberately the inverse of IngestPipeline.submit, which
-        // suspends rather than lose an event. The asymmetry is the point: an
-        // event dropped there is data lost, a heal dropped here is a retry the
-        // next cycle rediscovers. A future reader "fixing the inconsistency"
-        // would stall the sweep behind the healer — the very thing being fixed.
+        // The inverse of IngestPipeline.submit on purpose: a dropped heal is a retry the next cycle rediscovers.
         val q = HealQueue(perRelayLimit = 10, totalLimit = 100)
         val accepted = (0 until 50).count { q.offer(a, HealKey.content(0, "pk$it", null), stale(it)) }
         assertEquals(10, accepted, "past the limit, offer returns false instead of waiting")
@@ -71,8 +62,6 @@ class HealQueueTest {
 
     @Test
     fun `an existing key is always refreshable even at the limit`() {
-        // Overwriting costs no new room, and refusing it would freeze the stale
-        // reference at whatever arrived first.
         val q = HealQueue(perRelayLimit = 2, totalLimit = 100)
         val k1 = HealKey.content(0, "pk1", null)
         q.offer(a, k1, stale(1))
@@ -118,12 +107,8 @@ class HealQueueTest {
 }
 
 /**
- * The counter, which is the queue's own kill switch.
- *
- * `offer` refuses everything once the running total reaches its limit, so any
- * drift upward is not a cosmetic stats bug — it is the healer switching itself
- * off permanently, with no log line and nothing left to notice it. These are
- * the cases where the old map-swapping drain lost track.
+ * The running total is the queue's kill switch: `offer` refuses everything
+ * once it reaches the limit, so any drift is the healer switching itself off.
  */
 class HealQueueAccountingTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
@@ -143,10 +128,6 @@ class HealQueueAccountingTest {
 
     @Test
     fun `a bounded drain takes its limit and leaves the rest queued`() {
-        // The remainder used to be drained and then dropped on the floor at the
-        // healer's per-pass cap. An address whose repair is discarded that way
-        // is re-queued only when its stale copy is refused again — which stops
-        // the moment that id is suppressed, so the relay stayed stale forever.
         val q = HealQueue()
         repeat(10) { q.offer(a, key(it), stale(it)) }
 
@@ -174,11 +155,6 @@ class HealQueueAccountingTest {
 
     @Test
     fun `an offer racing a drain never inflates the total`() {
-        // The regression under test. With the map swapped out wholesale, an
-        // offer that had already resolved its slot landed in the detached map
-        // AFTER the drain had subtracted the old size — the entry was lost and
-        // the counter was incremented for it anyway. Repeated, that walks the
-        // total up to the limit and every later offer is refused for good.
         val q = HealQueue()
         val threads =
             (0 until 8).map { t ->
@@ -192,8 +168,6 @@ class HealQueueAccountingTest {
         threads.forEach { it.start() }
         threads.forEach { it.join() }
 
-        // Whatever survived the interleaving, the counter must agree with the
-        // map it is counting — the invariant `offer` reads before dropping.
         assertEquals(q.sizeFor(a), q.size(), "the running total must equal what is actually queued")
         q.drain(a)
         assertEquals(0, q.sizeFor(a), "a full drain leaves nothing behind")
@@ -202,14 +176,7 @@ class HealQueueAccountingTest {
 
     @Test
     fun `an overwrite racing a drain never deflates the total`() {
-        // The mirror of the test above, through the other door. The overwrite
-        // path was a `containsKey` followed by a plain put, so a drain
-        // removing the key between the two re-inserted an entry the counter
-        // never saw — and its eventual drain decremented the total below the
-        // truth. Drift downward is the memory bound quietly widening: size()
-        // under-reports and totalLimit stops enforcing. A handful of hot keys
-        // makes the overwrite-vs-drain interleaving constant rather than
-        // lucky.
+        // Five hot keys make the overwrite-vs-drain interleaving constant rather than lucky.
         val q = HealQueue()
         val threads =
             (0 until 8).map { t ->

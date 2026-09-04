@@ -30,11 +30,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * What we are willing to SAY about someone else's relay.
- *
- * A negative NIP-66 record is signed and public. Every case below was published
- * as "unreachable" before this existed, including relays that answered our
- * handshake in 50ms and failures thrown by our own code.
+ * A negative NIP-66 record is signed and public, so only a failure that proves
+ * the connection never opened may produce one.
  */
 class UnreachabilityTest {
     private fun proves(e: Exception) = Unreachability.proves(e)
@@ -48,17 +45,11 @@ class UnreachabilityTest {
 
     @Test
     fun `a relay that hung up mid-transfer is not unreachable`() {
-        // wss://nip85.nosfabrica.com answered the handshake in 50ms and then sent
-        // EOFException part-way through a large page. It is reachable; it
-        // declined to finish a query. Publishing "unreachable" would be a false
-        // statement about a working server.
         assertFalse(proves(EOFException("stream closed")))
     }
 
     @Test
     fun `our own bug is never the relay's fault`() {
-        // A ConcurrentModificationException inside the fan-out cost a relay an
-        // unreachable record in a real cycle.
         assertFalse(proves(ConcurrentModificationException()))
         assertFalse(proves(NullPointerException()))
         assertFalse(proves(ClassCastException("HashMap\$Node cannot be cast")))
@@ -66,8 +57,6 @@ class UnreachabilityTest {
 
     @Test
     fun `an unrecognised failure stays quiet`() {
-        // Conservative on purpose: staying quiet costs one retry next cycle,
-        // being wrong costs a false record carrying our signature.
         assertFalse(proves(SocketTimeoutException("read timed out")))
         assertFalse(proves(RuntimeException("something new")))
     }

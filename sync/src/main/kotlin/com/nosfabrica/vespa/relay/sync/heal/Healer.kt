@@ -36,20 +36,11 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Which of an author's vanish requests a given relay is allowed to be handed.
- *
- * **SAFETY, and the reason this is its own function rather than a line inside
- * `resolve`.** A kind 62 scoped to one relay is an instruction the author
- * addressed to that relay alone. Handing it to a third party leaks where they
- * are leaving and invites a lax relay to act on someone else's retraction —
- * irreversible if it does. `shouldVanishFrom` is the exact predicate: it
- * passes `ALL_RELAYS` and the relay's own url, and nothing else.
- *
- * The filter runs BEFORE the newest-wins pick, never after. Taking the newest
- * kind 62 first and checking its scope second lets a newer relay-scoped
- * request mask an older `ALL_RELAYS` one that this relay genuinely should
- * receive — the push would then be skipped rather than misdirected, which is
- * safe but wrong, and silently so.
+ * Which of an author's vanish requests a relay may be handed: `ALL_RELAYS`
+ * and the relay's own url, nothing else. A relay-scoped kind 62 handed to a
+ * third party leaks where the author is leaving and invites a lax relay to
+ * act on it. The scope filter runs before the newest-wins pick, or a newer
+ * relay-scoped request would mask an older `ALL_RELAYS` one.
  */
 internal object VanishTargets {
     fun pushableTo(
@@ -69,24 +60,13 @@ data class HealSettings(
 /**
  * Hands upstreams the thing that supersedes the stale copy they served us.
  *
- * **The repair, as opposed to the cache.** A tombstone is private memory,
- * exactly as durable as one disk — rotate an epoch, wipe the volume, redeploy,
- * and every id it was suppressing comes back. A healed source stays healed,
- * and it stays healed for every other mirror too.
- *
- * **Consent comes from the trigger, not from a setting.** A repair can only be
- * queued because the relay served us its own stale copy of that author's event,
- * so the target already hosts the author's data and the push changes the
- * *version* it serves, never the *distribution set*. This is why there is no
- * path here that reaches a relay which has never seen the author — the queue is
- * fed by store refusals, and a relay that never sent us anything cannot produce
- * one. Introducing an author to a new relay remains `dir = up`'s job.
- *
- * **Off the hot path by construction.** The sweep only ever put an address in a
- * map. Everything expensive — resolving the winner, the publish, waiting for
- * the `OK` — happens here, per relay, at the end of that relay's own sync while
- * its socket is still open, yielding to [ServingPressure] exactly as ingest
- * does.
+ * A tombstone is private memory, as durable as one disk; a healed source
+ * stays healed for every mirror. A repair can only be queued because the
+ * relay served its own stale copy of the author's event, so the push changes
+ * the version a relay serves and never the distribution set; introducing an
+ * author to a new relay remains `dir = up`'s job. Everything expensive
+ * happens here, per relay, at the end of that relay's own visit while its
+ * socket is open, yielding to [ServingPressure] as ingest does.
  */
 class Healer(
     private val client: INostrClient,
@@ -104,61 +84,36 @@ class Healer(
     private val passes = AtomicLong()
 
     /**
-     * Push what is queued for [url]. Called at the end of that relay's sync,
-     * while its connection is still live — a `relaySource` stream keeps no
-     * live tail, so a fully detached healer would have to re-dial thousands of
-     * relays just to publish.
-     *
-     * **What it pushes is usually the PREVIOUS cycle's discoveries, not this
-     * one's, and that is expected.** `ingest.submit` hands the event to a
-     * channel; the store write, the refusal, and the enqueue all happen later
-     * on an ingest worker. By the time the sweep reaches this call, most of
-     * what this relay just served is still in flight, so its repairs land in
-     * the queue after the drain has run and wait for the next one.
-     *
-     * Nothing is lost by that — the queue persists and coalesces — and the
-     * alternative is worse. Quiescing ingest here would mean waiting on a
-     * pipeline shared by every stream, so one relay's drain would block the
-     * whole fan-out on unrelated work. A cycle of latency on a repair is a
-     * fair price; the earlier wording of this comment simply claimed a
-     * synchrony that was never there.
+     * Pushes what is queued for [url], at the end of that relay's visit while
+     * its connection is live. What it pushes is usually the previous visit's
+     * discoveries: `ingest.submit` hands the event to a channel, so this
+     * visit's refusals land in the queue after the drain has run. The queue
+     * persists and coalesces, so nothing is lost by that.
      */
     suspend fun drain(url: NormalizedRelayUrl) {
         if (caps.isClosed(url)) {
-            // Nothing to learn and nothing to gain: it has already told us.
+            // It has already told us: nothing to learn and nothing to gain.
             queue.discard(url)
             return
         }
-        // Take only what this pass will attempt. Draining the whole queue and
-        // then breaking out at the cap threw the remainder away: the entries
-        // were already out of the queue, and an id whose repair was dropped
-        // that way is re-queued only if it is refused again — which stops
-        // happening as soon as it is suppressed. The relay then stayed stale
-        // forever with nothing left to say so.
+        // Take only what this pass will attempt: an entry out of the queue and never pushed
+        // is re-queued only on another refusal, which stops once the id is suppressed.
         val work = queue.drain(url, settings.maxPerPass)
         if (work.isEmpty()) return
 
         val pass = passes.incrementAndGet()
-        // One lookup per author per pass, not per push: the guard below is a
-        // store query and the same author routinely appears many times.
+        // One lookup per author per pass: the guard below is a store query.
         val vanishCache = HashMap<String, Boolean>()
         var attempted = 0
         var accepts = 0
 
         for ((key, stale) in work) {
-            // No cap check here: `drain` already took at most maxPerPass, so
-            // the bound is applied where the entries are still recoverable
-            // rather than after they have left the queue.
             if (caps.isClosed(url)) break
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
 
             try {
-                // SAFETY: the one case where "the relay already holds their
-                // data" is NOT consent. The author asked to leave this relay
-                // and it kept serving them anyway; pushing their content would
-                // re-establish someone who requested removal. The repair for
-                // that pair is the vanish request itself, which the retraction
-                // path handles.
+                // Not consent: the author asked to leave this relay and it kept serving them.
+                // The repair for that pair is the vanish request itself.
                 if (key.mode == HealMode.CONTENT && vanishedFrom(key.pubkey, url, vanishCache)) {
                     skippedVanished.incrementAndGet()
                     continue
@@ -171,14 +126,8 @@ class Healer(
 
                 val verdict = OkClassifier.classify(result.accepted, result.message, result.isTransportFailure)
 
-                // ANY answer refutes the doubt `strike` accumulates, because
-                // that doubt is specifically about silence — and a relay that
-                // said "duplicate" or "invalid" is demonstrably not ignoring
-                // us. Clearing only on ACCEPTED let a relay that timed out
-                // once and then answered every later push keep its strike,
-                // accumulate two more across passes, and get closed for writes
-                // while it was plainly replying. CLOSED is excluded because it
-                // is a verdict, not a sign of life.
+                // Any answer refutes the doubt `strike` accumulates, which is about silence.
+                // CLOSED is excluded because it is a verdict, not a sign of life.
                 if (verdict != PushVerdict.SILENT && verdict != PushVerdict.CLOSED) caps.succeeded(url)
 
                 when (verdict) {
@@ -190,10 +139,8 @@ class Healer(
                     PushVerdict.CLOSED -> {
                         caps.close(url, result.message)
                         refusedByPolicy.incrementAndGet()
-                        // Certain on its own: it will refuse the next repair
-                        // identically, so the id it is serving is suppressed
-                        // without waiting for a second refusal. Everything else
-                        // still queued falls to the ordinary two-refusal gate.
+                        // It will refuse the next repair identically, so the served id is
+                        // suppressed without waiting for a second refusal.
                         refused.suppressNow(stale.id, stale.createdAt)
                         break
                     }
@@ -220,10 +167,9 @@ class Healer(
     }
 
     /**
-     * What to hand over, resolved NOW rather than when the address was queued.
-     * That is what makes the deferral safe against its own races: a version
-     * superseded again since the enqueue pushes the newest, and an event
-     * retracted since the enqueue pushes the retraction instead.
+     * What to hand over, resolved now rather than when the address was queued:
+     * a version superseded since the enqueue pushes the newest, and an event
+     * retracted since pushes the retraction instead.
      */
     private suspend fun resolve(
         key: HealKey,
@@ -260,17 +206,9 @@ class Healer(
         }
 
     /**
-     * One store read, booked as this subsystem's — see [StoreCalls].
-     *
-     * The four reads it serves are one shape asked four ways, and folding them
-     * into one call keeps the caller and the ask on the row rather than on four
-     * separate bookings of the same subsystem.
-     *
-     * These reads are per ADDRESS and cheap, so the reason they are worth
-     * naming is not their cost: they run at the end of every visit, on the
-     * pool's own worker, so a store that has stopped answering strands them
-     * where a reader would be looking at the relay instead. `heal.resolve` on
-     * an outstanding row is what says that is where the visit went.
+     * One store read, booked as this subsystem's under [StoreCalls]. These
+     * run at the end of every visit on the pool's own worker, so a store that
+     * has stopped answering strands them where a reader would blame the relay.
      */
     private suspend fun read(filter: Filter): List<Event> =
         storeCall(StoreCalls.CALLER_HEAL_RESOLVE, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {

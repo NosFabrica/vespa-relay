@@ -35,31 +35,20 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * File persistence for the NIP-86 [BanStore], so bans/allows survive a
- * restart. Only the moderation lists are durable — runtime NIP-11 edits reset
- * to the environment-configured identity on restart.
+ * File persistence for the NIP-86 [BanStore]. Only the moderation lists are
+ * durable; runtime NIP-11 edits reset to the environment on restart.
  */
 object BanListFile {
     private val json = Json { prettyPrint = true }
 
-    /** Seed [banStore] from [path] if the file exists and parses; otherwise no-op. */
+    /** Seeds [banStore] from [path] if the file exists and parses; otherwise a no-op. */
     fun loadInto(
         path: String,
         banStore: BanStore,
     ) {
         val file = File(path)
         if (!file.exists()) return
-        // The READ and the DECODE are one operation, because they fail the same
-        // way. This guarded only `parseToJsonElement`, and every field accessor
-        // below throws in its own right — `.jsonArray` on a value that is not an
-        // array, `.jsonPrimitive.int` on one that is not a number. So a file
-        // that was still valid JSON but wrong in shape (a truncated write, a
-        // hand-edit, a version that stored a list differently) threw straight
-        // out of here, out of openBanStore, and out of RelayMain: the relay did
-        // not start at all. The documented behaviour for a corrupt state file is
-        // to say so loudly and come up with empty lists, which is what the outer
-        // catch was for; it just did not cover the half that parses field by
-        // field.
+        // The field accessors throw on a wrong shape as the parse does on bad JSON; both are guarded.
         runCatching {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
             banStore.seedFromSnapshot(
@@ -70,19 +59,14 @@ object BanListFile {
                 root.ints("disallowedKinds"),
             )
         }.onFailure { e ->
-            // Loud: starting with an empty list because the state file is
-            // corrupt means every ban silently stops being enforced —
-            // the operator must know, not discover it from spam.
+            // Loud: a corrupt file means every ban stops being enforced.
             System.err.println("nip86: could not read $path (${e.message}) — starting with EMPTY ban lists; the file will be overwritten on the next mutation")
         }
     }
 
     /**
-     * Write [banStore]'s current lists to [path] atomically (temp file +
-     * move). Synchronized: concurrent admin RPCs each trigger a save, and
-     * two unlocked writers would share one `.tmp` path — interleaved writes,
-     * then racing renames, with the loser's truncated JSON possibly landing
-     * as the state file.
+     * Writes [banStore]'s lists to [path] atomically. Synchronized: concurrent
+     * admin RPCs each save, and two writers would share one `.tmp` path.
      */
     @Synchronized
     fun save(
@@ -110,27 +94,23 @@ object BanListFile {
         runCatching {
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }.recoverCatching {
-            // Some filesystems don't support ATOMIC_MOVE; fall back to a plain replace.
+            // Some filesystems do not support ATOMIC_MOVE.
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }.onFailure { e ->
-            // A ban that was acknowledged over NIP-86 but not persisted
-            // vanishes on restart — say so instead of swallowing it.
+            // A ban acknowledged over NIP-86 but not persisted vanishes on restart.
             System.err.println("nip86: could not persist ban lists to $path: ${e.message}")
         }
     }
 }
 
 /**
- * Open a NIP-86 [BanStore], optionally backed by a state file: seeds from it
- * on boot and rewrites it on every mutation. With no path, purely in-memory.
+ * A NIP-86 [BanStore], backed by [stateFile] when one is given: seeded from
+ * it on boot and rewritten on every mutation.
  */
 fun openBanStore(stateFile: String?): BanStore {
-    // Blank as well as null: docker compose can only pass a variable through
-    // with a `${RELAY_STATE_FILE:-}` default, which delivers "" for unset —
-    // and persisting bans to a file literally named "" is not a mode.
+    // Blank as well as null: compose's `${RELAY_STATE_FILE:-}` delivers "" for unset.
     if (stateFile.isNullOrBlank()) return BanStore {}
-    // The onChange callback needs the store it belongs to; wire it after
-    // construction through a nullable holder.
+    // The onChange callback needs the store it belongs to.
     var store: BanStore? = null
     val bs = BanStore { store?.let { BanListFile.save(stateFile, it) } }
     store = bs

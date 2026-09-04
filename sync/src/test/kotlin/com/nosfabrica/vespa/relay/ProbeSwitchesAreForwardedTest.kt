@@ -25,29 +25,10 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * EVERY PROBE SWITCH IS FORWARDED TO THE MODULE THAT READS IT.
- *
- * ## The failure this closes
- *
- * A probe is a test that skips itself unless a system property asks for it, and
- * a property on the Gradle command line reaches the DAEMON — the tests run in a
- * FORKED JVM that never sees it. Each module's `tasks.test` has to forward the
- * ones its own probes read.
- *
- * A missing forward does not fail. The probe prints its own `[skip]` line and
- * passes, which is indistinguishable from a probe nobody asked for: an operator
- * runs the documented command, sees a green build, and concludes the thing they
- * were measuring is fine. That is the same class of silence as a knob that is
- * accepted and does nothing, which this repo refuses everywhere else.
- *
- * It became reachable the moment the module split moved the fold, consistency
- * and auth probes out of `:sync` and into `:monitor`, leaving nine forwards
- * behind in a build file whose tests no longer read them.
- *
- * ## Why it reads the build files as text
- *
- * Because that is where the bug is. A test that asked Gradle's own model would
- * be asserting that the configuration it was handed matches itself.
+ * Every `-D` switch a module's probes read must be forwarded by that module's
+ * `tasks.test`: the property reaches the Gradle daemon, not the forked test
+ * JVM, and an unforwarded probe skips itself and the build stays green.
+ * Reads the build files as text because that is where the bug is.
  */
 class ProbeSwitchesAreForwardedTest {
     @Test
@@ -63,17 +44,13 @@ class ProbeSwitchesAreForwardedTest {
             val read =
                 tests
                     .walkTopDown()
-                    // This file is the scanner, not a probe: its own KDoc
-                    // spells the pattern it looks for, and matching that was
-                    // the first thing it reported.
+                    // This file spells the pattern it scans for and is not a probe.
                     .filter { it.extension == "kt" && it.name != "ProbeSwitchesAreForwardedTest.kt" }
                     .flatMap { PROPERTY.findAll(it.readText()).map { m -> m.groupValues[1] } }
                     .toSortedSet()
             if (read.isEmpty()) continue
             val build = File(dir, "build.gradle.kts").takeIf { it.isFile }?.readText().orEmpty()
-            // The forward is `systemProperty("name", it)` — matched on that
-            // rather than on the whole idiom, so a build file that spells the
-            // read half differently still counts as forwarding.
+            // Matched on the `systemProperty("name"` half only, so the read half may be spelled any way.
             read.filterNot { build.contains("""systemProperty("$it"""") }.forEach {
                 missing += ":$module reads -D$it in a test and never forwards it"
             }
@@ -87,7 +64,7 @@ class ProbeSwitchesAreForwardedTest {
     }
 
     private companion object {
-        /** `System.getProperty("name")` — how every probe in this repo reads its switch. */
+        /** `System.getProperty("name")`, how every probe reads its switch. */
         val PROPERTY = Regex("""System\.getProperty\("([A-Za-z0-9_]+)"\)""")
     }
 }

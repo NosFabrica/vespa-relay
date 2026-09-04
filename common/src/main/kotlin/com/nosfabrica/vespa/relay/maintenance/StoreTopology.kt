@@ -23,30 +23,9 @@ package com.nosfabrica.vespa.relay.maintenance
 import com.nosfabrica.vespa.eventstore.WriterTopology
 
 /**
- * What this deployment tells the store about its writers, at every
- * `VespaEventStore.open()` — the one fact neither process can work out for
- * itself, and the one the store's NIP-09/NIP-62 fast path turns on.
- *
- * There are two writers here and they are split by ROLE, not by owner: the
- * relay serves clients, the sync process mirrors upstreams, and both touch the
- * same authors. That is the one shape the guard-owner cache cannot be exact
- * for — the router stores tombstones the relay's copy never hears about, and
- * clients publish deletions the router's copy never hears about, so a cached
- * instance proves to itself that an author has no tombstone and admits the
- * event it covers.
- *
- * [WriterTopology.SHARED] would bound that to a refresh interval, and it is
- * still the wrong trade here: the rebuild is a corpus-wide visit (hours on
- * ours), so the window is set by the rebuild rather than by the interval you
- * configure, and the exposure it leaves is one-directional — a covered event is
- * admitted, stored and served, and nothing repairs it afterwards, because
- * re-delivering the tombstone hits the dedup gate before it can sweep again.
- * `SINGLE_WRITER` is simply false for us.
- *
- * The cost of being strict is measured and small: per-event `insert()` ~143 →
- * ~137 ev/s (−4.5%) with p50 unchanged, and no measurable difference on
- * `batchInsert`, because the store fires the dup and both guard probes
- * concurrently. Ingest throughput was never what the cache bought — it bought
- * engine read headroom, which is not worth a deleted note coming back.
+ * What this deployment tells the store about its writers at every
+ * `VespaEventStore.open()`. The relay and the sync process both write the same
+ * authors, so a cached guard-owner view in either can admit an event the
+ * other's tombstone covers; strict is the only exact answer.
  */
 val STORE_WRITERS: WriterTopology = WriterTopology.SHARED_STRICT

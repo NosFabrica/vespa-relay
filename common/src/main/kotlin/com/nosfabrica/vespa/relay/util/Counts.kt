@@ -20,14 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.util
 
-/*
- * The sync process's formatting helpers, `internal` again now that only this
- * module reads them — `fmtDuration`, the one both processes print, stayed in
- * `:common`. A distinct file name on purpose: a second `Format.kt` in this
- * package would compile to the same `FormatKt` facade class as :common's and
- * collide on the classpath.
- */
-
 /** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
 fun fmtCount(n: Int): String =
     when {

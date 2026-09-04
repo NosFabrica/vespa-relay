@@ -27,12 +27,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Which vanish request may be handed to which relay.
- *
- * Every case here guards an irreversible mistake in one direction or a silent
- * no-op in the other, and the pair is the whole point: a kind 62 is the one
- * event in this system whose delivery to the wrong server can destroy data
- * that nothing re-offers.
+ * Which vanish request may be handed to which relay. A kind 62 delivered to a
+ * relay it did not name destroys data nothing re-offers.
  */
 class VanishTargetsTest {
     private val relayA = RelayUrlNormalizer.normalize("wss://relay-a.example")
@@ -59,10 +55,6 @@ class VanishTargetsTest {
 
     @Test
     fun `a request scoped to another relay is never handed to this one`() {
-        // SAFETY, and the defect this function was extracted to pin. The
-        // author told relay A to erase them; relay B was not addressed. Giving
-        // B the request leaks where they are leaving, and a relay that acts on
-        // a retraction it was not named in deletes data irreversibly.
         val scopedToA = vanish(2, 1_700_000_000L, relayA.url)
         assertNull(VanishTargets.pushableTo(listOf(scopedToA), relayB))
     }
@@ -75,11 +67,7 @@ class VanishTargetsTest {
 
     @Test
     fun `a newer relay-scoped request never masks an older ALL_RELAYS one`() {
-        // The ordering bug hiding inside the ordering bug: filtering AFTER the
-        // newest-wins pick would select the relay-A request, find it
-        // unpushable, and return nothing — so relay B would silently never
-        // receive a retraction the author addressed to everyone. Wrong in the
-        // safe direction, and therefore the kind nothing would ever report.
+        // Filter before the newest-wins pick, or the unpushable newer one is picked and nothing is sent.
         val everywhere = vanish(4, 1_700_000_000L, "ALL_RELAYS")
         val newerScopedToA = vanish(5, 1_700_009_999L, relayA.url)
 

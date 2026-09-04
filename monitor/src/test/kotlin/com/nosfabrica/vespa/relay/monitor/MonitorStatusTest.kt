@@ -43,13 +43,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The monitor plane's own status document, and the one page that draws it.
- *
- * The rows are THIS plane's — nothing sorts a shared array by name any more —
- * and the glossary is the subset this document publishes. The page itself ships
- * in :web and is served by all three services; what makes it draw the MONITOR's
- * cards is the `monitor` section this document carries, which is the property
- * worth pinning here.
+ * The monitor plane's status document, and the shared page that draws it off
+ * the `monitor` section the document carries.
  */
 class MonitorStatusTest {
     private fun rows(): Processors =
@@ -77,8 +72,6 @@ class MonitorStatusTest {
         val processors = data["progress"]!!.jsonObject["processors"] as JsonArray
         assertEquals(MonitorEngine.FOLD_PROCESSOR, processors[0].jsonObject["name"]!!.jsonPrimitive.content)
 
-        // The glossary is the subset THIS document publishes. The mirror's
-        // members are defined in the same map and shipped in its document.
         val terms = data["terms"]!!.jsonObject
         assertTrue("foldedAway" in terms, "a member this document carries is defined in it")
         assertTrue("queued" !in terms, "and the mirror's ingest queue is not")
@@ -86,9 +79,7 @@ class MonitorStatusTest {
 
     @Test
     fun `a deployment with no monitor publishes no section at all`() {
-        // No signer, no passes, no rows. A card of zeroes here would read as a
-        // monitor that is failing rather than one nobody configured — the same
-        // distinction the mirror's document draws for a serve-only relay.
+        // A card of zeroes would read as a monitor that is failing rather than one nobody configured.
         val doc = MonitorStatus(Processors(), everySeconds = 30).document(nowSeconds = 1_000)
 
         assertNull(doc["monitor"])
@@ -113,10 +104,7 @@ class MonitorStatusTest {
                 }
             }
 
-            // The markup is one file for three services, so what it says on
-            // disk is the relay's heading — the monitor's comes from this
-            // document's `title` on the first render. What this asserts is that
-            // the page is SERVED and mounts at all.
+            // The markup on disk carries the relay's heading; the monitor's comes from the document's `title`.
             assertTrue(client.get("/").bodyAsText().contains("mountStatsPage"))
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the monitor page")
@@ -127,22 +115,13 @@ class MonitorStatusTest {
     fun `the document names itself, because one page is served by three services`() {
         val doc = MonitorStatus(rows(), everySeconds = 30, relayUrl = "ws://localhost:7777").document(nowSeconds = 1_000)
 
-        // The heading and the browser tab. A reader has two or three of these
-        // open at once, and a tab reading "Relay stats" on the monitor's port
-        // is worse than no title at all.
         assertEquals("Relay monitor", doc["title"]!!.jsonPrimitive.content)
-        // …and the relay to dial. Deriving it from `location` would open a
-        // websocket against this page's own port, which is the status site.
+        // Deriving the relay from `location` would dial the status site's own port.
         assertEquals("ws://localhost:7777", doc["relay"]!!.jsonPrimitive.content)
     }
 
     private companion object {
-        /**
-         * What the page pulls in, as a list rather than parsed out of the
-         * markup: a regex over `import` lines would silently stop matching the
-         * day someone reformats the page, and this list failing to compile is
-         * the point of it.
-         */
+        /** What the page imports, listed by hand: a regex over the markup would stop matching silently. */
         val IMPORTS =
             listOf(
                 "/web/shared/stats.css",

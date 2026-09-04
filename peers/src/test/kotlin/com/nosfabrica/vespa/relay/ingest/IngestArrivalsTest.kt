@@ -35,16 +35,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * What `submitted` counts, which is the ARRIVAL end of the ingest queue.
- *
- * The drain end (`accepted` + `rejected`) was the only rate the health line
- * carried, and on a full queue it reads `0 ev/s` for a store that has stopped
- * answering and for a fan-out that has gone quiet alike. The arrival count is
- * what tells those apart, so what it must and must not include is pinned here:
- * every event that entered the channel, and nothing the refusal filter turned
- * away before the channel — a suppression has its own counter, and an arrival
- * rate that a suppression storm holds up while the queue sits empty would
- * point the next reader at the store.
+ * What `submitted` counts: every event that entered the channel, and nothing the
+ * refusal filter turned away before it, which has its own counter.
  */
 class IngestArrivalsTest {
     private fun event(n: Int) =
@@ -58,7 +50,6 @@ class IngestArrivalsTest {
             sig = "b2".repeat(32),
         )
 
-    /** Suppresses every event whose sequence number is odd, and blames nothing. */
     private class OddsSuppressed : RefusalSink {
         override val tracksOrigins = false
 
@@ -81,15 +72,14 @@ class IngestArrivalsTest {
             try {
                 pipeline.start()
                 repeat(20) { pipeline.submit(event(it), skipVerify = true, IngestOrigin.Local) }
-                // Asynchronous by design: wait for the drain rather than a clock.
+                // Wait for the drain rather than a clock.
                 var spins = 0
                 while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
                 delay(200)
 
                 assertEquals(10L, pipeline.submitted.get(), "the ten even events reached the channel")
                 assertEquals(10L, pipeline.suppressed.get(), "the ten odd ones were turned away before it")
-                // The two ends of the queue reconcile once it is empty: what
-                // arrived is what left, every one with a verdict.
+                // Once the queue is empty, what arrived is what left.
                 assertEquals(pipeline.submitted.get(), pipeline.accepted.get() + pipeline.rejected.get())
                 assertEquals(0, pipeline.queued.get())
             } finally {

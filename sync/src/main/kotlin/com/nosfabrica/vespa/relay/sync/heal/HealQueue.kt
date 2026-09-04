@@ -38,10 +38,9 @@ enum class HealMode {
 }
 
 /**
- * What needs repairing at one relay. The key is an ADDRESS or an author, never
- * a resolved event — finding the thing to push is the healer's job at drain
- * time, so the sweep pays nothing but a map insert, and whatever is current
- * when the drain runs is what goes out.
+ * What needs repairing at one relay. The key is an address or an author,
+ * never a resolved event: the healer finds the thing to push at drain time,
+ * so the sweep pays one map insert and whatever is current then goes out.
  */
 data class HealKey(
     val mode: HealMode,
@@ -73,10 +72,9 @@ data class HealKey(
 }
 
 /**
- * The stale copy that triggered the repair, kept beside the key so a permanent
- * refusal can suppress the exact id the relay is serving rather than guessing.
- * Overwritten on coalesce, which is right: the newest stale copy is the one
- * that relay is actually still handing out.
+ * The stale copy that triggered the repair, so a permanent refusal can
+ * suppress the exact id the relay is serving. Overwritten on coalesce: the
+ * newest stale copy is the one the relay is still handing out.
  */
 data class StaleRef(
     val id: String,
@@ -84,18 +82,10 @@ data class StaleRef(
 )
 
 /**
- * Work the reconcile discovered and refuses to do itself.
- *
- * **Bounded and coalescing, and it DROPS rather than blocks.** That is
- * deliberately the inverse of [com.nosfabrica.vespa.relay.ingest.IngestPipeline.submit],
- * which suspends its producer rather than lose an event, and the difference is
- * the point: an event dropped there is data lost, a heal dropped here is a
- * retry — the next cycle rediscovers it the moment the relay offers the stale
- * copy again. Blocking the sweep to guarantee a repair would trade the thing we
- * are fixing for the fix.
- *
- * Coalescing on the address means a profile that a thousand relays are stale on
- * costs one entry per relay, not one per rejected copy.
+ * Repairs the reconcile discovered and left for the healer. Bounded,
+ * coalescing on (relay, key), and it drops rather than blocks: a dropped heal
+ * is rediscovered the next time the relay offers the stale copy, whereas
+ * blocking the sweep would trade the thing being fixed for the fix.
  */
 class HealQueue(
     private val perRelayLimit: Int = DEFAULT_PER_RELAY,
@@ -112,9 +102,8 @@ class HealQueue(
     fun sizeFor(url: NormalizedRelayUrl): Int = byRelay[url]?.size ?: 0
 
     /**
-     * Record that [url] is serving a stale [stale] for [key]. Returns false when
-     * the entry was dropped for want of room — logged by the caller, never
-     * retried, never blocking.
+     * Records that [url] serves a stale [stale] for [key]. False when the
+     * entry was dropped for want of room; never retried, never blocking.
      */
     fun offer(
         url: NormalizedRelayUrl,
@@ -122,14 +111,8 @@ class HealQueue(
         stale: StaleRef,
     ): Boolean {
         val slot = byRelay.computeIfAbsent(url) { ConcurrentHashMap() }
-        // Overwriting an existing key is always allowed: it costs no new room
-        // and keeps the freshest stale reference. ATOMIC, not check-then-act —
-        // a drain removing this key between a `containsKey` and a plain put
-        // re-inserted an entry [total] never counted, and its eventual drain
-        // decremented the counter below the real size. That drift is the
-        // MIRROR of the swap bug [drain]'s KDoc records: there the counter
-        // only ever rose until the healer silently stopped; here it only ever
-        // fell, and the memory bound [totalLimit] enforces quietly widened.
+        // Overwriting an existing key costs no room. Atomic, not check-then-act: a drain
+        // removing the key in between would re-insert an entry [total] never counted.
         if (slot.computeIfPresent(key) { _, _ -> stale } != null) return true
         if (slot.size >= perRelayLimit || total.get() >= totalLimit) {
             dropped.incrementAndGet()
@@ -143,29 +126,11 @@ class HealQueue(
     }
 
     /**
-     * Take up to [limit] repairs queued for [url], leaving any remainder for
-     * the next pass.
-     *
-     * **Entries are removed one at a time from the live map rather than by
-     * swapping the map out.** Swapping looks cheaper and is wrong: an `offer`
-     * that had already resolved its slot would land in the detached map after
-     * the swap, so its entry was lost AND [total] was incremented for it after
-     * the drain had subtracted the old size. That drift only ever goes up, and
-     * once it reached [totalLimit] every later offer was dropped — the healer
-     * silently stopping, which is the failure this whole subsystem is supposed
-     * to be the opposite of. Removing per key keeps the counter exact: each
-     * entry is counted by exactly the thread that inserted it and uncounted by
-     * exactly the thread that took it.
-     *
-     * The returned map is a private copy, so a concurrent offer cannot mutate
-     * what the caller is iterating.
-     *
-     * The now-empty per-relay map is deliberately left in place. Removing it
-     * is what created the race above, and a conditional remove does not help:
-     * an offer that resolved its slot beforehand still lands in whatever the
-     * removal detached. The cost of keeping it is one empty map per relay ever
-     * seen — bounded by the relay universe, tens of thousands at the outside,
-     * and a few tens of bytes each.
+     * Takes up to [limit] repairs queued for [url], leaving the remainder for
+     * the next pass. Entries are removed one at a time from the live map,
+     * never by swapping the map out, so each entry is counted by the thread
+     * that inserted it and uncounted by the thread that took it. The emptied
+     * per-relay map stays in place for the same reason.
      */
     fun drain(
         url: NormalizedRelayUrl,
@@ -184,24 +149,16 @@ class HealQueue(
         return taken
     }
 
-    /** Throw away what is queued for [url] without pushing any of it. */
+    /** Throws away what is queued for [url] without pushing any of it. */
     fun discard(url: NormalizedRelayUrl) {
         drain(url)
     }
 
     companion object {
-        /**
-         * One relay's worth. A fan-out cycle touches thousands of relays, and
-         * a single relay being stale on more addresses than this is a relay
-         * whose repair will not finish in one pass anyway.
-         */
+        /** One relay's worth; a relay stale on more addresses than this will not finish in one pass anyway. */
         const val DEFAULT_PER_RELAY = 2_000
 
-        /**
-         * Across every relay. At ~120 bytes an entry this is a few tens of MB
-         * worst case, and the drop path keeps it from ever being the reason
-         * the process runs out of room.
-         */
+        /** Across every relay; the drop path keeps the queue from being why the process runs out of room. */
         const val DEFAULT_TOTAL = 200_000
     }
 }

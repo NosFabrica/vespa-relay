@@ -24,21 +24,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * The one judgement this router makes about text somebody else formats.
- *
- * `never answered a REQ` is the largest bucket a probe pass produces, and the
- * only evidence that splits it is the socket layer's own message, reaching us
- * through quartz's terminal reason for the url. Matching on that text is a
- * guess about another project's formatting, so the guesses are all in one table
- * and the cases below are the strings the JDK and OkHttp actually produce.
- *
- * The last test is the one that matters most: nothing is forced into a bucket.
+ * The cases are the strings the JDK, OkHttp and quartz actually produce;
+ * unrecognised text goes to UNKNOWN rather than the nearest bucket.
  */
 class SilenceTest {
     @Test
     fun `the five causes Unreachability already proves are told apart`() {
-        // The same exceptions `Unreachability.proves` accepts as proving a relay
-        // unreachable, in the wording they reach this layer with.
         assertEquals(Silence.NAME, Silence.of("cannot: java.net.UnknownHostException: gone.example"))
         assertEquals(Silence.NAME, Silence.of("cannot: Unable to resolve host \"gone.example\""))
         assertEquals(Silence.NAME, Silence.of("cannot: gone.example: Name or service not known"))
@@ -53,10 +44,7 @@ class SilenceTest {
 
     @Test
     fun `the strings a live pass actually produced`() {
-        // MEASURED, not imagined — `ConsistencyLivePassProbe` against real urls,
-        // through quartz's `WebSocket Failure: <message> (<ExceptionName>)`.
-        // Both of these landed in UNKNOWN on the first live run, which is what
-        // that bucket is for and how this table gets extended.
+        // Quartz's `WebSocket Failure: <message> (<ExceptionName>)`, as ConsistencyLivePassProbe saw it.
         assertEquals(
             Silence.REFUSED,
             Silence.of("cannot:WebSocket Failure: Failed to connect to localhost/127.0.0.1:1 (ConnectException)"),
@@ -75,30 +63,18 @@ class SilenceTest {
 
     @Test
     fun `the specific pattern wins over the general one`() {
-        // `connect timed out` is a timeout and not a refusal, and a rate limit
-        // that mentions a timeout is a rate limit — first hit wins, so the order
-        // of the table is part of its meaning.
+        // First hit wins, so the order of the table is part of its meaning.
         assertEquals(Silence.RATE_LIMITED, Silence.of("cannot: 429 too many requests, retry after timeout"))
-        // A refused port and a connect timeout BOTH surface as ConnectException
-        // on some platforms, so an explicit timeout has to outrank the class
-        // name — otherwise every slow host is reported as refusing us.
+        // A connect timeout surfaces as ConnectException on some platforms, so the timeout outranks the class name.
         assertEquals(Silence.TIMEOUT, Silence.of("cannot: java.net.ConnectException: connect timed out"))
         assertEquals(Silence.TIMEOUT, Silence.of("cannot: failed to connect after 10000ms: connect timed out"))
-        // Case is not a contract either: the same message arrives capitalised
-        // from one platform and not from another.
         assertEquals(Silence.REFUSED, Silence.of("CANNOT: CONNECTION REFUSED"))
     }
 
     @Test
     fun `text this table does not recognise is counted, never forced`() {
-        // THE PROPERTY THE WHOLE CLASSIFIER RESTS ON. A misclassification here
-        // is a claim about somebody else's server made from a string we did not
-        // read properly, and the bucket that refuses to guess is what makes the
-        // rest of the table safe to extend later.
         assertEquals(Silence.UNKNOWN, Silence.of("cannot: something nobody has seen yet"))
         assertEquals(Silence.UNKNOWN, Silence.of(""))
-        // …and a walk that ended with the transport saying nothing at all is the
-        // same "we do not know", rather than a finding of its own.
         assertEquals(Silence.UNKNOWN, Silence.of(null))
     }
 }

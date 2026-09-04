@@ -1,66 +1,12 @@
-// The search box, as a field that RENDERS what it holds.
-//
-// Five things live here, and they are one feature:
-//
-//   1. `from:npub1…` / `to:npub1…` draw as a face and a name instead of 63
-//      characters of bech32. The field's VALUE is still the plain text — the
-//      URL, the export and the query builder all read `from:npub1…` — so the
-//      rendering is a view of the string and never a second source of truth.
-//   2. Typing `from:` or `to:` opens a people picker over the network, ranked
-//      by your own web of trust because the lookup rides the AUTHENTICATED
-//      socket. Picking somebody writes their npub into the text.
-//   3. Typing `since:` or `until:` opens a CALENDAR in the same box, and
-//      picking a day writes `since:2026-08-06` into the text. Nothing about it
-//      goes near the network — a month grid is arithmetic — so unlike the
-//      people picker it answers instantly and has nothing to debounce. WHICH
-//      days exist is shared/calendar.js's, tested there; what is here is only
-//      how they are drawn and what a click on one does.
-//      `since:2026-08-06` then draws as a pill reading `since 6 Aug 2026`:
-//      the token is the ISO day, because `06/08/2026` means two different days
-//      to two readers, and the pill is the reader's own spelling of it.
-//   4. `#hashtag` draws as a pill. NOT for the reason a person does — a
-//      hashtag is already the word it means, and nothing is being hidden. It
-//      is the field admitting what it did: that word LEFT the NIP-50 search
-//      string and became a tag filter, which the box had no way of saying. So
-//      it is quieter than a person (an outline, no face, no lookup, no
-//      repaint) and it appears only once the caret leaves the tag — see
-//      query.js's drawable(), and the comment there on why a pill that
-//      appeared at `#n` would re-render the field on every keystroke. A date
-//      pill settles on the same rule, and needs it more: one more digit after
-//      `since:2026-08-06` takes the whole token back to text. A NIP-73 scope
-//      (`site:…`, `isbn:…`, `doi:…`, …) is the hashtag's rule again with a
-//      longer `#`: no picker — the value is a url or an id off a jacket, and
-//      there is nothing to look up — just the pill, once the caret leaves.
-//   5. Typing `group:` opens a THIRD picker, over NIP-29 groups. It is the
-//      people picker's shape and it exists for the opposite reason to the
-//      scopes above: a group's filter value is an opaque id its host relay
-//      minted, so unlike a url or an ISBN it is precisely the thing nobody can
-//      type from memory. What the rows offer is the NAME; what a pick writes
-//      is the id. `group:` with nothing after it opens on the reader's own
-//      groups, which is the answer most of the time. The pill then draws that
-//      name BACK over the id — the person chip's bargain, over a value that is
-//      even less readable than an npub, and on the same terms: the token
-//      underneath is still the id, and shared/groupnames.js draws a name only
-//      where the sources agree on one.
-//
-// Why a contenteditable rather than the <input> this used to be: an input's
-// value is a string of characters and nothing else — there is no way to put a
-// picture inside one. The alternative shape (a transparent input over a
-// mirrored overlay) only holds while every rendered token is exactly as wide
-// as the text it hides, which a name and a face are not. So the field is a
-// div, and everything an input gave for free is given back here deliberately:
-// `value` (get and set), `select()`, a placeholder, single-line behaviour,
-// paste/drop that insert TEXT rather than whatever html was on the clipboard,
-// and letting go of the caret when the reader touches the page — which a
-// finger does not get from a contenteditable the way a mouse does. app.js
-// keeps writing `$q.value` and never learns the difference.
-//
-// The pickers and the results popup are mutually exclusive on purpose. All of
-// them occupy the same square of screen, and a keystroke inside `from:ali` is
-// not a search for "from:ali" — so while a token is being built this module
-// owns the arrows and Enter, and app.js is told to stand down. The pickers are
-// exclusive with each OTHER for free: one caret is inside one token, and
-// `from|to`, `since|until` and `group` are different prefixes.
+// The search box, as a field that renders what it holds: `from:`/`to:` as a
+// face and a name, `since:`/`until:` as a date pill, `#tag` and NIP-73 scopes
+// as outline pills, `group:` as a name over its id. The value stays the plain
+// text and every rendering is a view of it. `from:`, `to:` and `group:` open
+// pickers over the network and `since:`/`until:` a calendar; all share one
+// square of screen with the results popup, so while a token is being built
+// this module owns the arrows and Enter and app.js stands down. It is a
+// contenteditable, since an <input> cannot hold a picture, with `value`,
+// `select()` and single-line behaviour given back so app.js never notices.
 
 import { npub, shortNpub } from "./shared/nip19.js";
 import { esc, clip } from "./shared/format.js";
@@ -76,56 +22,18 @@ import {
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
-// The faces here are the CARD's face — avatarHtml, score chip and all. This
-// module used to draw its own <img>, which is how the one place that ASKS "who
-// do you mean by this person" ended up being the one place that did not say
-// what the active lens thinks of them. A picker offering eight strangers is
-// exactly where the number earns its keep.
-/**
- * The picture a person draws with right now, from whatever profiles knows.
- *
- * The SIZE is the caller's — a chip inside the field is `xs`, a picker row is
- * `lg` — which is why it is an argument rather than a constant.
- *
- * KEEP IT HERE, above mountSearchField and below the constants. It used to sit
- * one line under the calendar's `QUICK` table, and when that table and the rest
- * of the date arithmetic were lifted into shared/calendar.js the deletion
- * overshot by exactly one declaration and took this with it — one `const` line
- * inside a 276-line diff that was otherwise all move. Both call sites went on
- * calling it, and the two symptoms were the two you would not guess from
- * "undefined function":
- *
- *   - rowHtml() threw inside the debounced lookup, whose catch exists to keep
- *     a failed relay read from claiming nobody matches — so the picker sent
- *     its REQ, got its twelve answers, swallowed the error and drew nothing.
- *   - the NEXT keystroke then threw out of updateMention() before it could
- *     reach `++reqId`, so no further lookup was ever sent: the box stopped
- *     asking the server halfway through a name.
- */
+/** The card's own face for a person, score chip and all; the size is the caller's. */
 const faceHtml = (pubkey, size) => avatarHtml((profiles.get(pubkey) || {}).picture, pubkey, size);
 
 /**
- * Does this reader RAISE a keyboard to type, rather than already having one?
- *
- * The question two rules below both turn on, and app.js's autofocus with them,
- * so it is asked once here. A caret and a keyboard are one thing on a phone
- * and two on a desktop: a soft keyboard is raised only for a focus a finger
- * caused — `focus()` from script cannot do it, on any mobile browser, by
- * design — so anywhere the caret can arrive without one, a caret placed by
- * script is a field that looks ready and cannot be typed into.
- *
- * `pointer: coarse` is the PRIMARY pointer, which is the right cut rather than
- * "has a touchscreen": a laptop with a touch screen still types on the
- * keyboard it has, and would lose its autofocus for nothing.
- *
- * Asked at the moment it matters, not cached at load — a tablet gains and
- * loses a keyboard by being put in a case.
+ * Does this reader raise a keyboard to type? A soft keyboard rises only for
+ * a focus a finger caused, so a caret placed by script is a field that cannot
+ * be typed into. `pointer: coarse` is the primary pointer, asked when it
+ * matters rather than cached: a tablet gains a keyboard by being docked.
  */
 export const softKeyboard = () => window.matchMedia("(pointer: coarse)").matches;
 
-// A line break, which this field has nowhere to put. Module constants because
-// the first of them is tested against every keystroke's beforeinput, and a
-// regex literal inside the handler builds a new RegExp on each of them.
+// Hoisted: the first is tested against every keystroke's beforeinput.
 const NEWLINE = /[\r\n]/;
 const NEWLINES = /[\r\n]+/g;
 
@@ -137,62 +45,39 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   let reqId = 0;
   let day = null;       // the since:/until: token being built, from dateAt()
   let month = null;     // the month the grid is showing (a Date on its 1st)
-  let cursor = null;    // the day the KEYBOARD is on, or null while the mouse leads
+  let cursor = null;    // the day the keyboard is on, or null while the mouse leads
   let group = null;     // the group: token being built, from groupAt()
   let groups = [];      // the candidates currently offered, from lookupGroup()
-  let groupLock = null; // what lookupGroup() says about the reader's LOCKED groups
+  let groupLock = null; // what lookupGroup() says about the reader's locked groups
   let regroup = false;  // re-ask the group lookup even though the token is unchanged
 
-  // The one non-group thing the group picker can offer: reopen the permission
-  // dialog. It is an ACTION rather than an option, so it carries no id and
-  // [takeEnter] dispatches on it instead of picking it.
+  // The one non-group row: an action with no id, which [takeEnter]
+  // dispatches on rather than picks.
   const UNLOCK_ROW = { unlock: true };
-
-  // Which list the arrows and Enter are walking. The two network pickers share
-  // `active` rather than each keeping their own index: one caret is inside one
-  // token, so at most one of them is ever live, and two indices that must
-  // agree about which is the live one is a bug waiting for a caret to move.
-  //
-  // The unlock action is IN this list, last, and that is what makes it reachable
-  // without a mouse. It was a `tabindex="-1"` button wired only to mousedown —
-  // outside the walk, outside the tab order, outside every key this field
-  // handles — so a reader who dismissed the permission dialog with the keyboard
-  // had no way left to ask for it back. Being last keeps its index equal to its
-  // position among the rendered `.popup-item`s, which is what markActive()
-  // flips classes by.
+  // Which list the arrows and Enter walk. The two network pickers share
+  // `active`, since one caret is inside one token. The unlock action is last
+  // so its index matches its place among the rendered `.popup-item`s.
   const groupRows = () => (groupLock && groupLock.state === "denied" ? [...groups, UNLOCK_ROW] : groups);
   const liveRows = () => (group ? groupRows() : hits);
 
-  /**
-   * Fill the chips on the faces this module just drew.
-   *
-   * Fire and forget, like every other caller: the score is a second round trip
-   * and a face must not wait on it. A list that re-renders before the fill
-   * lands leaves it painting detached nodes, which is harmless — the scores it
-   * fetched are cached, so the render that replaced them fills from memory.
-   */
+  /** Fill the chips on the faces just drawn. Fire and forget: a face must not wait on its score. */
   const fillScores = () => { if (paintScores) Promise.resolve(paintScores()).catch(() => {}); };
 
   // ---- the value, and where the caret is inside it ------------------------
   //
-  // Every offset this module passes around is an index into the VALUE string,
-  // never into the DOM. A chip is worth its whole token, so splicing text at
-  // an offset and re-rendering puts the caret back exactly where it was —
-  // which is the only reason a chip can appear mid-typing without the caret
-  // jumping to the end.
+  // Every offset here is an index into the value string, never the DOM. A
+  // chip is worth its whole token, so splicing at an offset and re-rendering
+  // puts the caret back where it was.
 
-  // A chip is anything DRAWN over a token — a person or a hashtag. Keyed on the
-  // token it carries rather than its class, because the two draw differently
-  // and everything below cares only that the node stands for `dataset.token`.
+  // A chip is any node drawn over a token, keyed on `dataset.token`.
   const isChip = (n) => n && n.nodeType === 1 && n.dataset && n.dataset.token != null;
   const lenOf = (n) => (n.nodeType === 3 ? n.data.length : isChip(n) ? n.dataset.token.length : (n.textContent || "").length);
 
   function readValue() {
     let out = "";
     for (const n of el.childNodes) out += n.nodeType === 3 ? n.data : isChip(n) ? n.dataset.token : n.textContent || "";
-    // A contenteditable inserts NBSP to keep trailing spaces from collapsing.
-    // Left in, `from:npub1… alice` fails every \s in query.js and the
-    // token silently stops being a token.
+    // A contenteditable inserts NBSP to keep trailing spaces; left in, the
+    // token fails every \s in query.js.
     return out.replace(/\u00a0/g, " ");
   }
 
@@ -215,8 +100,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     const sel = document.getSelection();
     const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
     const inside = (n) => n === el || el.contains(n);
-    // The end-of-value fallback is computed only when it is needed — it walks
-    // the whole field, and this runs on every keystroke by way of `mentioning`.
+    // The fallback walks the whole field, and this runs on every keystroke.
     if (!r || !inside(r.startContainer) || !inside(r.endContainer)) {
       const n = readValue().length;
       return [n, n];
@@ -224,13 +108,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     return [indexOf(r.startContainer, r.startOffset), indexOf(r.endContainer, r.endOffset)];
   }
 
-  /**
-   * Where a DROP landed, in value offsets — not where the caret happens to be.
-   *
-   * A drop does not move the selection first, so inserting at `selectionRange`
-   * put the text wherever the caret was last AND replaced anything selected
-   * there, which is a destructive edit somewhere the reader was not looking.
-   */
+  /** Where a drop landed, in value offsets: a drop does not move the selection first. */
   function dropIndex(e) {
     const r = document.caretRangeFromPoint
       ? document.caretRangeFromPoint(e.clientX, e.clientY)
@@ -252,8 +130,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     for (const n of el.childNodes) {
       const len = lenOf(n);
       if (index <= i + len) {
-        // Never INSIDE a chip: it is contenteditable=false, and a caret that
-        // lands there has nothing to type into.
+        // Never inside a chip: it is contenteditable=false.
         if (n.nodeType === 3) r.setStart(n, Math.max(0, index - i));
         else if (index <= i) r.setStartBefore(n);
         else r.setStartAfter(n);
@@ -272,15 +149,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   // ---- rendering the value ------------------------------------------------
 
   /**
-   * What a chip currently DRAWS — name and face. Unchanged means no repaint.
-   *
-   * The separator is written as the ESCAPE `\u0000`, never typed as the byte it
-   * stands for. A literal NUL in this file is what made git call the whole
-   * module binary, and four commits of it landed as `Bin 23897 -> 23932 bytes`
-   * with nothing in them to read — which is how a refactor that deleted
-   * faceHtml() while keeping both of its call sites got reviewed and shipped.
-   * The character itself is still the right one: a space would join the pair
-   * ("Alice B", "") to the same key as ("Alice", "B") and skip a repaint.
+   * What a chip currently draws; unchanged means no repaint. The separator
+   * is written as the escape `\u0000`: a literal NUL makes git treat the
+   * file as binary. A space would not do, since ("Alice B", "") and
+   * ("Alice", "B") must not share a key.
    */
   const chipFace = (pk) => {
     const p = profiles.get(pk);
@@ -296,36 +168,21 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       faceHtml(pk, "xs") +
       `<span class="mention-name">${esc(clip(name, 32))}</span>`;
     span.dataset.face = chipFace(pk);
-    // The hover is the token itself: the field shows a person, and the string
-    // it stands for has to stay reachable without deleting it to look.
+    // The hover is the token itself, so the string stays reachable.
     span.title = span.dataset.token;
   }
 
   /**
-   * A group pill, drawn from whatever groupnames knows right now.
-   *
-   * `dataset.face` is the person chip's staleness key doing the same job for a
-   * group: the name is a lookup away, so the pill is drawn once with the id
-   * and repainted if and when a name arrives. It holds what the CACHE said,
-   * never what was drawn from it — the drawing is clipped, so keying on it
-   * would leave every long name permanently stale against groupName() and
-   * repaint it on every pass. An empty face is a real value rather than a
-   * missing one: it is what "asked, and no ONE name can be drawn for this id"
-   * looks like, and it must not read as "not asked yet".
-   *
-   * The hover is where the truth goes, exactly as it does for a `#Nostr` that
-   * asks for `nostr`: the pill says "nos engineers" and the filter is still
-   * the id, so the id is on the hover whether or not a name replaced it.
+   * A group pill, drawn from whatever groupnames knows now and repainted
+   * when a name arrives. `dataset.face` holds what the cache said, not the
+   * clipped drawing; an empty face means "asked, no one name", not "not
+   * asked". The hover carries the id whether or not a name replaced it.
    */
   function paintGroupChip(span) {
     const id = span.dataset.gid;
     const known = groupName(id);
-    // CLIPPED, where the id it replaces is not: an id is the reader's own
-    // token and a name is a stranger's string — any relay can sign a 39000
-    // whose `name` tag is a kilobyte — and the pill's `max-width` bounds the
-    // pixels without bounding what goes into the DOM. The person chip clips
-    // for the same reason at 32; a group gets more room because a channel name
-    // is written to be read rather than to fit beside a face.
+    // Clipped, where the id is not: a name is a stranger's string, and the
+    // pill's `max-width` bounds pixels without bounding the DOM.
     const name = clip(known, 48);
     span.innerHTML = `<b>group:</b><span class="scope-id">${esc(name || id)}</span>`;
     span.dataset.face = known;
@@ -338,26 +195,19 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     span.contentEditable = "false";
     span.dataset.token = seg.raw;
     if (seg.type === "tag") {
-      // A hashtag needs no lookup and never repaints: unlike an npub it is
-      // already readable, and the pill is not hiding it — it is saying that
-      // this word left the search string and became a filter, which is the
-      // one thing the box could not tell you before.
+      // No lookup and no repaint: the pill says this word left the search
+      // string and became a filter, not that anything is hidden.
       span.className = "hashtag";
       span.textContent = seg.raw;
-      // What it actually asks for, when that is not what it says: `#Nostr`
-      // filters for `nostr`, and the hover is where a chip puts the truth.
+      // The hover says what is asked when that differs: `#Nostr` filters for `nostr`.
       span.title = seg.raw.slice(1) === seg.tag
         ? `tag filter — this word is a #t/#l/#i filter, not a search term`
         : `tag filter for “${seg.tag}”`;
       return span;
     }
     if (seg.type === "scope") {
-      // The date pill's shape — the prefix bold, the value beside it — because
-      // the token splits the same way: `site:` is the language's word and the
-      // value is the reader's. The value draws AS TYPED; what is actually
-      // asked may be spelled differently (isbn: drops hyphens, doi: lowers),
-      // and the hover is where a chip puts the truth — same rule as the
-      // `#Nostr`-asks-for-`nostr` title below.
+      // The value draws as typed; what is asked may be spelled differently
+      // (isbn: drops hyphens, doi: lowers), and the hover carries that.
       span.className = "scopepill";
       span.innerHTML = `<b>${esc(seg.field)}:</b><span class="scope-id">${esc(seg.value)}</span>`;
       const asks = scopeIds(seg.field, seg.value);
@@ -365,38 +215,21 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       return span;
     }
     if (seg.type === "group") {
-      // The scope pill's shape, because the token splits the same way — the
-      // prefix is the language's word and the value is the reader's. Unlike
-      // every other scope it draws a NAME over that value wherever one is
-      // known, and that is the person chip's bargain, owed here for the
-      // stronger version of the person chip's reason: an npub is unreadable,
-      // and a group id is unreadable AND arbitrary. `0fe5c432fe61…` is
-      // whatever its host relay minted, so there is nothing in it to
-      // recognise — not even for the reader who picked it, who chose it off a
-      // row that said "nos engineers".
-      //
-      // It is a VIEW of the token and never a second source of truth: the
-      // field's value still reads `group:0fe5…`, so the url, the export and
-      // the query builder are untouched; the hover carries the raw token and
-      // the id; and the name is dropped the moment the id is edited by hand,
-      // because the drawing is re-derived from the id on every render. Which
-      // name that is — and when there is no honest one to draw — is
-      // shared/groupnames.js's decision, not this module's.
+      // A name drawn over an id nobody can recognise, even the reader who
+      // picked it. A view of the token only: the value still reads
+      // `group:0fe5…`, the hover carries the id, and the name is re-derived
+      // from the id on every render. Which name is shared/groupnames.js's.
       span.className = "scopepill grouppill";
       span.dataset.gid = seg.id;
       paintGroupChip(span);
       return span;
     }
     if (seg.type === "date") {
-      // Quieter than a person, like a hashtag, and for the same reason: the
-      // token is readable, so the pill is not standing in for it. What it does
-      // do is RESPELL it — `2026-08-06` is the one spelling both readers of a
-      // slash-separated date agree on, and `6 Aug 2026` is the one they read.
+      // Quiet like a hashtag, since the token is readable; the pill only
+      // respells `2026-08-06` as `6 Aug 2026`.
       span.className = "datepill";
       span.innerHTML = `<b>${esc(seg.field)}</b>${esc(dayLabel(new Date(seg.at * 1000)))}`;
-      // The hover is where the exactness goes: which second of the day the
-      // bound lands on is the whole difference between the two prefixes, and
-      // the pill has no room to say it.
+      // The hover carries which second of the day the bound lands on.
       span.title =
         `${seg.raw} — a NIP-01 ${seg.field} filter: ` +
         (seg.field === "since" ? `written from 00:00` : `written up to 23:59`) +
@@ -411,27 +244,18 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Re-label the chips in place — no node is replaced, so the caret holds.
-   *
-   * Only the ones whose name or face actually CHANGED. app.js calls this after
-   * every search whose profile lookup learned anything, which is usually about
-   * somebody in the results and nobody in the field; rewriting every chip's
-   * innerHTML for that rebuilt `<img>` elements to draw the same picture, and
-   * would collapse a selection the reader had dragged across a chip.
+   * Re-label in place the chips whose name or face changed; no node is
+   * replaced, so the caret and any selection across a chip hold.
    */
   function repaint() {
     let drew = false;
     for (const c of el.querySelectorAll(".mention")) {
       if (c.dataset.face !== chipFace(c.dataset.pk)) { paintChip(c); drew = true; }
     }
-    // A repainted chip is a NEW score chip — paintChip replaces the innerHTML,
-    // so whatever number was on the old face went with it.
+    // A repainted chip is a new score chip.
     if (drew) fillScores();
-    // The group pills are the same rule with nothing to fill: no face, no
-    // score, so a repaint here costs one innerHTML and buys a hex id becoming
-    // a name. app.js calls repaint() after every search that learned a name,
-    // which is when the 39000 a `group:` search asks for alongside its posts
-    // has landed.
+    // Group pills follow the same rule with nothing to fill: a repaint only
+    // turns a hex id into a name.
     for (const c of el.querySelectorAll(".grouppill")) {
       if (c.dataset.face !== groupName(c.dataset.gid)) paintGroupChip(c);
     }
@@ -454,28 +278,19 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     }
     if (caret != null) setCaret(caret);
     if (chips) fillScores();
-    // A chip for somebody the page has never met renders as a short npub and
-    // then becomes a face. Repainting only when the lookup LEARNED something
-    // is the same rule the results list follows: a lookup that found nothing
-    // must not cost a render.
+    // Repaint only when the lookup learned something, as the results list does.
     if (unknown.length) enrichProfiles(unknown).then((n) => { if (n) repaint(); }).catch(() => {});
-    // A group the page has never met is the same story with a hex id in place
-    // of the short npub — and this is the path that matters most for it, since
-    // a `group:` token that arrived in a URL or a paste was never offered by
-    // the picker and so has no name attached to it anywhere.
+    // A `group:` token from a URL or a paste was never offered by the
+    // picker, so this is the path that names it.
     if (strangeGroups.length) {
       enrichGroupNames(strangeGroups).then((n) => { if (n) repaint(); }).catch(() => {});
     }
   }
 
   /**
-   * Does the DOM still match what the text tokenizes to?
-   *
-   * Re-rendering on every keystroke would work and would also fight the
-   * browser over the caret, IME composition and undo. So the field is left
-   * alone until its STRUCTURE is wrong — a token finished or was broken, or
-   * contenteditable invented a node (a `<br>` from a stray Enter, a `<div>`
-   * or a `<b>` from a paste this module did not intercept).
+   * Does the DOM still match what the text tokenizes to? The field is left
+   * alone (caret, IME, undo) until a token finished or broke, or the browser
+   * invented a node: a `<br>` from Enter, a `<div>` from a paste.
    */
   function structureChanged(text, typingAt) {
     const want = drawable(text, typingAt).filter((s) => s.type !== "text").map((s) => s.raw);
@@ -510,8 +325,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     groupLock = null;
     list.classList.remove("open");
     list.innerHTML = "";
-    // Back to the shape the markup declares, so a calendar's dialog role does
-    // not outlive the calendar.
+    // Back to the markup's shape, so a calendar's dialog role does not outlive it.
     list.setAttribute("role", "listbox");
     // Handed back to the results popup, which owns these the rest of the time.
     el.setAttribute("aria-expanded", "false");
@@ -521,14 +335,9 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Raise the box, whichever picker filled it, and say what is in it.
-   *
-   * The ROLE changes with the contents, and has to. A list of people is a
-   * listbox; a calendar is a nav pair, a grid and four shortcuts, and calling
-   * that a listbox puts five interactive non-options inside one — which is not
-   * a listbox a screen reader can read. So the calendar is a dialog with the
-   * listbox narrowed to the days themselves, and the combobox's aria-haspopup
-   * says which of the two it currently offers.
+   * Raise the box and say what is in it. A list of people is a listbox; a
+   * calendar has nav, a grid and shortcuts, so it is a dialog with the
+   * listbox narrowed to the days, and aria-haspopup says which.
    */
   function openList(role, label) {
     list.setAttribute("role", role);
@@ -540,13 +349,9 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Splice a finished token over the partial the caret is in.
-   *
-   * Both pickers end here, because both are answering the same question — the
-   * reader typed a prefix, the box worked out what they meant, and the VALUE
-   * is what has to change. One trailing space, so the next word is a word and
-   * not more of the token; and the caret lands past it, which is outside the
-   * token and therefore the moment the pill draws.
+   * Splice a finished token over the partial the caret is in. One trailing
+   * space, and the caret lands past it, outside the token, where the pill
+   * draws.
    */
   function replaceToken(ctx, token) {
     const text = readValue();
@@ -574,14 +379,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       </div>`;
   }
 
-  /**
-   * Which row is highlighted, as a class flip on rows that already exist.
-   *
-   * This used to re-render the whole list per arrow press, which threw away
-   * and rebuilt every row's `<img>` to change one class — and told a screen
-   * reader nothing, because a combobox announces its highlight through
-   * aria-activedescendant and there was none.
-   */
+  /** Which row is highlighted, as a class flip on existing rows, announced through aria-activedescendant. */
   function markActive(scroll) {
     const rows = list.querySelectorAll(".popup-item");
     rows.forEach((r, i) => {
@@ -592,14 +390,12 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     const row = rows[active];
     if (!row) { el.removeAttribute("aria-activedescendant"); return; }
     el.setAttribute("aria-activedescendant", row.id);
-    // Only when the KEYBOARD moved the highlight. scrollIntoView forces layout
-    // and scrolls every scrollable ancestor including the page, and a fresh
-    // list always highlights its first row — so calling it per keystroke was
-    // paying for a scroll nobody asked for.
+    // Only when the keyboard moved it: scrollIntoView forces layout and
+    // scrolls every scrollable ancestor, and a fresh list highlights row 0.
     if (scroll) row.scrollIntoView({ block: "nearest" });
   }
 
-  /** `rows` null means "still asking" — an empty array means "asked, none". */
+  /** `rows` null means "still asking"; an empty array means "asked, none". */
   function renderList(rows) {
     if (!mention) return;
     const head =
@@ -613,8 +409,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     list.innerHTML = head + body;
     openList("listbox", "People");
     markActive();
-    // Asked of the DOM rather than of `rows`, because a note ("type a name",
-    // "nobody matches") is also a body built from a non-empty argument.
+    // Asked of the DOM: a note is also a body built from a non-empty argument.
     if (list.querySelector(".popup-item")) fillScores();
   }
 
@@ -626,19 +421,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * The UNFINISHED `from:`/`to:` token the caret sits in, or null.
-   *
-   * Derived from the text every time rather than remembered, because the
-   * picker being shut is not the same thing as the token being done — blur
-   * closes the list, and the half-written `from:al` is still sitting there
-   * waiting to be finished. With `mentioning` keyed on the open list, coming
-   * back to the field opened the RESULTS popup over that token: the one thing
-   * this feature promises will not happen.
-   *
-   * With no selection in the field (nothing focused, or focus elsewhere) the
-   * caret reads as the end of the value, which is the right answer for the
-   * question app.js asks: a box ENDING in a half-written token is not a box
-   * to show text results for.
+   * The unfinished `from:`/`to:` token the caret sits in, or null. Derived
+   * from the text, not the open list: blur closes the list while the token
+   * stays half-written. With no selection in the field the caret reads as
+   * the end of the value.
    */
   function pendingMention() {
     const m = mentionAt(readValue(), caretIndex());
@@ -647,10 +433,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   /**
    * Re-read the token under the caret and keep the picker in step.
-   *
-   * Idempotent by design: an unchanged token returns early rather than
-   * re-querying and resetting the highlight, so this is safe to call from
-   * every edit AND every caret move.
+   * Idempotent: an unchanged token returns early, so this is safe from every
+   * edit and every caret move.
    */
   function updateMention() {
     const next = pendingMention();
@@ -658,14 +442,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     const sameToken = !!mention && mention.field === next.field && mention.start === next.start;
     if (sameToken && mention.partial === next.partial) return;
     mention = next;
-    // The rows from the previous keystroke STAY UP while the next answer is
-    // fetched. Blanking them to "Searching people…" between every character
-    // made the list flicker rows → note → rows at typing speed, and moved the
-    // row out from under whatever the cursor was over.
-    //
-    // They are dropped when the caret moves to a DIFFERENT token, and when the
-    // partial empties: the list then reads "type a name" while `hits` would
-    // still have answered Enter with somebody it is no longer offering.
+    // The last rows stay up while the next answer is fetched, and are
+    // dropped only for a different token or an emptied partial.
     if (!sameToken || !next.partial) { hits = []; active = -1; }
     renderList(hits.length ? hits : null);
     clearTimeout(timer);
@@ -676,17 +454,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       try {
         found = await lookup(next.partial);
       } catch (e) {
-        // A failed lookup leaves the last rows (or "searching") up rather than
-        // claiming nobody matches — the relay not answering is not evidence
-        // that the person does not exist.
+        // A relay not answering is not evidence that nobody matches.
         return;
       }
-      // OUTSIDE the catch, and that is the point. This used to be inside it,
-      // where the forgiveness meant for a relay that did not answer was also
-      // applied to a bug in the drawing: rowHtml() threw on every row, the
-      // catch ate it, and the picker sat on "Searching people…" having been
-      // handed twelve perfectly good answers. A lookup can fail; drawing what
-      // it returned cannot, and if it does the console is where that belongs.
+      // Outside the catch: a lookup may fail, drawing what it returned may not.
       if (id !== reqId || !mention) return;
       hits = Array.isArray(found) ? found.slice(0, PICKER_LIMIT) : [];
       active = hits.length ? 0 : -1;
@@ -701,30 +472,17 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   // ---- the group picker ----------------------------------------------------
   //
-  // The people picker's shape, over NIP-29 groups, and it exists for the
-  // reason none of the other tokens needs one: a group's filter value is an id
-  // its host relay minted, and the reader knows the NAME. So the rows show a
-  // name and a place, and a pick writes the id.
-  //
-  // No FACE on a row, deliberately, though there is a picture tag to draw and
-  // avatarHtml right there. A face here would carry the score chip, and the
-  // only key a group row has is the host RELAY's — so the number would answer
-  // "how much do you trust this relay's signing key" under a list of channels,
-  // which is the shape of question this page is careful not to answer by
-  // accident.
+  // The people picker's shape over NIP-29 groups: the rows show a name and a
+  // place, and a pick writes the id. No face on a row, since the only key a
+  // group row has is the host relay's, and a score chip on it would answer a
+  // question about the relay under a list of channels.
 
   const GROUP_ROW_ID = (i) => `group-opt-${i}`;
 
   /**
-   * One candidate: what it is called, and where it is.
-   *
-   * The place is [groupWhere]'s, including its `exact` flag, and the two cases
-   * are drawn DIFFERENTLY on purpose. A url out of your own `group` tag is a
-   * fact the protocol wrote down; a name for a signing key is that key's claim
-   * about itself, and a row that printed them alike would be inventing
-   * provenance. `ambiguous` is the third thing a row can say and the one the
-   * reader cannot work out alone: picking it filters on the bare id, so a
-   * second group elsewhere with the same id comes too.
+   * One candidate: what it is called and where it is. A url out of the
+   * reader's own `group` tag and a name a signing key claims for itself are
+   * drawn differently; `ambiguous` warns that a pick filters on the bare id.
    */
   function groupRowHtml(cand, i) {
     const place = groupWhere(cand, displayName(profiles.get(cand.host)));
@@ -741,15 +499,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * What the list says about the reader's LOCKED groups, under the rows.
-   *
-   * Two of the three states are inert NOTES — there is nothing to do about an
-   * extension that cannot decrypt, or about a dialog already on screen. The
-   * third is an ACTION and is therefore a real `.popup-item`, last in the list,
-   * so the arrows reach it and Enter activates it: a refused permission dialog
-   * must be reopenable by the reader, and "by the reader" cannot mean "with a
-   * mouse". [takeEnter] tells it from a group row by its `unlock` flag rather
-   * than by its position, so it can never be spliced into the box as an id.
+   * What the list says about the reader's locked groups. Two states are
+   * notes; the third is an action and so a real `.popup-item`, last, so the
+   * arrows reach it. [takeEnter] tells it by its `unlock` flag, never by
+   * position.
    */
   function lockHtml(at) {
     if (!groupLock) return "";
@@ -766,49 +519,34 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       </div>`;
   }
 
-  /** `rows` null means "still asking" — an empty array means "asked, none". */
+  /** `rows` null means "still asking"; an empty array means "asked, none". */
   function renderGroupList(rows) {
     if (!group) return;
     const head = `<div class="popup-head"><span>Posted in</span><span class="timing">group:</span></div>`;
     let body;
     if (rows == null) body = `<div class="popup-note">Finding groups…</div>`;
     else if (rows.length) body = rows.map(groupRowHtml).join("");
-    // The empty states are two different facts and say so. With nothing typed
-    // the reader has not asked anything yet and the list is their own groups —
-    // so an empty one means we could not find their kind 10009, which is worth
-    // saying rather than answering a question nobody asked. A LOCKED list is a
-    // third fact and the footer carries it, because "no groups of yours" over
-    // an unopened payload is not true, it is unknown.
+    // The empty states are different facts: with nothing typed, an empty
+    // list means the reader's kind 10009 was not found; a locked list is
+    // unknown rather than empty, and the footer carries it.
     else if (groupLock) body = "";
     else if (!group.partial) body = `<div class="popup-note">No groups of yours here yet — type a name, or paste a group id</div>`;
     else body = `<div class="popup-note">No group matches “${esc(clip(group.partial, 40))}”</div>`;
-    // The action's index is the count of group rows above it, so the walkable
-    // list and the rendered `.popup-item`s stay one sequence.
+    // The action's index is the count of group rows above it.
     list.innerHTML = head + body + lockHtml(rows ? rows.length : 0);
     openList("listbox", "Groups");
     markActive();
   }
 
   /**
-   * Re-read the `group:` token under the caret and keep the picker in step.
-   *
-   * updateMention()'s twin, down to the two rules that were paid for there: an
-   * unchanged token returns early rather than re-asking and resetting the
-   * highlight, and the previous keystroke's rows STAY UP while the next answer
-   * is fetched rather than flickering back to a note at typing speed.
-   *
-   * The one difference is the empty partial. There it blanks the list, because
-   * `from:` with nothing after it has nothing to offer; here it is a question
-   * with an answer — your own groups — so an empty partial asks like any other.
+   * Re-read the `group:` token under the caret and keep the picker in step:
+   * updateMention()'s twin, except that an empty partial is a question with
+   * an answer (the reader's own groups) and asks like any other.
    */
   function updateGroups() {
-    // `regroup` is the one thing that gets past the unchanged-token guard: an
-    // unlock changes what the SAME token answers, which is a case nothing else
-    // here has. Read and cleared FIRST, above every return in this function —
-    // it was cleared below the token check, so an unlock landing after the
-    // caret had left the token returned with the flag still armed and spent it
-    // on the next `group:` typed, re-asking and resetting that list's highlight
-    // for nothing.
+    // `regroup` is the one thing past the unchanged-token guard: an unlock
+    // changes what the same token answers. Read and cleared above every
+    // return, or it is spent on the next `group:` typed.
     const forced = regroup;
     regroup = false;
     const next = pendingGroup();
@@ -826,44 +564,32 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       try {
         found = await lookupGroup(next.partial);
       } catch (e) {
-        // The last rows stay up: a relay that did not answer is not evidence
-        // that the group does not exist. updateMention's rule, and its reason.
+        // The last rows stay up: updateMention's rule.
         return;
       }
-      // Outside the catch, exactly as it is there — a lookup may fail, drawing
-      // what it returned may not, and a throw in here belongs in the console
-      // rather than swallowed into a picker that sits on "Finding groups…".
+      // Outside the catch, as there.
       if (id !== reqId || !group) return;
       const rows = (found && found.rows) || [];
       groupLock = (found && found.lock) || null;
       groups = rows.slice(0, PICKER_LIMIT);
-      // Off the WALKABLE list, not off `groups`: with no groups and a refused
-      // unlock the only row is the action, and it still has to start highlighted
-      // or Enter would fall through to a search the reader did not ask for.
+      // Off the walkable list, not `groups`: with no groups and a refused
+      // unlock the only row is the action, and it must start highlighted.
       active = groupRows().length ? 0 : -1;
       renderGroupList(groups);
     }, DEBOUNCE_MS);
   }
 
   /**
-   * The reader asking for a dismissed permission dialog back.
-   *
-   * The ONLY thing that reopens one. A refused prompt is remembered as refused
-   * and nothing re-asks on its own — not the next keystroke, not the next
-   * search — so this click is the reader changing their mind, which is the
-   * only event that should put an extension dialog back on their screen.
-   *
-   * The notice flips to `asking` here rather than waiting for the lookup to
-   * say so: the dialog is up from this moment, and a button that still read
-   * "Unlock" under an open prompt invites a second click that would do nothing.
+   * The reader asking for a dismissed permission dialog back; nothing else
+   * reopens one. The notice flips to `asking` now, since the dialog is up
+   * from this moment.
    */
   async function unlock() {
     if (!group || !unlockGroups) return;
     groupLock = { state: "asking" };
     renderGroupList(groups);
-    // Not awaited for the reason app.js's lookup does not await it either: the
-    // answer is a human's, on their own schedule. refreshGroups() is what puts
-    // it on screen whenever it lands.
+    // Not awaited: the answer is a human's, on their own schedule, and
+    // refreshGroups() puts it on screen when it lands.
     try { unlockGroups(); } catch (e) { /* refreshGroups reports whatever state resulted */ }
   }
 
@@ -874,30 +600,21 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   // ---- the calendar --------------------------------------------------------
   //
-  // Which days exist is shared/calendar.js's business and is tested there; what
-  // is here is only how they are drawn and what a click on one does. No lookup,
-  // no debounce, no request id — a month grid is not a question anyone has to
-  // answer, which is the whole difference from the people picker beside it.
+  // Which days exist is shared/calendar.js's; here is only how they are
+  // drawn and what a click does. No lookup, no debounce, no request id.
 
   const DAY_ID = (value) => `cal-day-${value}`;
   const HEAD = { since: "Written on or after", until: "Written on or before" };
 
-  // Nothing here draws the CURSOR: markDay does, on the cells this built, for
-  // the same reason markActive does it for the people rows. A grid rebuilt per
-  // arrow press throws away fifty nodes to move one highlight — the lesson the
-  // people list already paid for once.
-  //
-  // tabindex="-1" on every control, as the people rows are not focusable
-  // either: the caret has to stay in the field, because it is what a pick
-  // splices into, and thirty-one tab stops between the box and the next control
-  // is not a keyboard path anybody wants. The keyboard reaches all of this
-  // through the field instead — arrows for days, Page keys for months.
+  // markDay draws the cursor on the cells this built, as markActive does for
+  // the people rows. tabindex="-1" on every control: the caret has to stay in
+  // the field, which a pick splices into, and the keyboard reaches all of
+  // this through the field.
   function calendarHtml() {
     const today = midnight(new Date());
     const grid = monthGrid(month || shiftMonths(today, 0), today);
-    // The blanks before the 1st are real cells, not a margin: the grid is seven
-    // columns and the 1st has to land under its own weekday. aria-hidden, so
-    // the listbox they sit in holds nothing but days.
+    // The blanks before the 1st are cells so the 1st lands under its own
+    // weekday; aria-hidden, so the listbox holds nothing but days.
     const pads = Array.from({ length: grid.lead }, () => `<span class="cal-pad" aria-hidden="true"></span>`);
     const cells = grid.days.map((d) =>
       `<button type="button" tabindex="-1" id="${DAY_ID(d.value)}" data-day="${d.value}"` +
@@ -921,11 +638,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Which day the keyboard is on, as a class flip on cells that already exist.
-   *
-   * The people list's markActive, for the grid: moving the highlight must not
-   * cost a render. It is also the only writer of aria-activedescendant on this
-   * side, so the announced day and the filled square cannot disagree.
+   * Which day the keyboard is on, as a class flip on existing cells, and the
+   * only writer of aria-activedescendant on this side.
    */
   function markDay() {
     const on = cursor ? ymd(cursor) : null;
@@ -950,11 +664,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Point the grid at a month, dropping a cursor that would fall off it.
-   *
-   * The one invariant the three callers below all need: the highlighted day is
-   * either on screen or gone. A cursor left behind in a month nobody is looking
-   * at is a day Enter would pick sight unseen.
+   * Point the grid at a month, dropping a cursor that would fall off it: the
+   * highlighted day is on screen or gone, never picked sight unseen.
    */
   function setMonth(next) {
     month = next;
@@ -963,22 +674,18 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   /** Re-read the `since:`/`until:` token under the caret and keep the grid in step. */
   function showCalendar(next) {
-    // Idempotent for the same reason updateMention() is: this runs on every
-    // caret move as well as every edit, and a grid that rebuilt itself for an
-    // unchanged token would throw away the month the reader had stepped to.
+    // Idempotent, as updateMention() is: a grid rebuilt for an unchanged
+    // token would lose the month the reader had stepped to.
     const same = !!day && day.field === next.field && day.start === next.start && listOpen();
     if (same && day.partial === next.partial) return;
     day = next;
-    // Both network pickers stood down, and `timer`/`reqId` with them: a
-    // calendar over a half-answered people or group lookup would take the late
-    // reply into a list that is no longer the one on screen.
+    // Both network pickers stand down with `timer`/`reqId`, or a late reply
+    // lands in a list no longer on screen.
     if (mention || group) { clearTimeout(timer); mention = null; hits = []; group = null; groups = []; active = -1; }
-    // The typed month wins whenever the partial names one, so the grid follows
-    // what the box says. Failing that, the same token keeps wherever the reader
-    // had stepped it, and a calendar only just opened starts on this month.
+    // The typed month wins; failing that the same token keeps its month, and
+    // a fresh calendar starts on this one.
     setMonth(typedMonth(next.partial) || (same ? month : null) || shiftMonths(midnight(new Date()), 0));
-    // Always a full draw, even for an unchanged month: the head and the
-    // shortcuts belong to the TOKEN, and `since`→`until` changes both.
+    // Always a full draw: the head and the shortcuts belong to the token.
     renderCalendar();
   }
 
@@ -990,14 +697,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   /**
    * Move the keyboard cursor by `by` days, opening the month it lands in.
-   *
-   * The first press starts from the day the grid is already about: today when
-   * it is in view, the 1st of the shown month otherwise. Starting from "today"
-   * unconditionally would put the cursor off-screen the moment somebody
-   * arrowed after stepping back a year.
-   *
-   * The month is set from the day rather than the other way round, so setMonth
-   * is not in a position to throw away the cursor it was just handed.
+   * The first press starts from today if in view, else the shown month's 1st.
+   * The month is set from the day, so setMonth cannot drop the cursor.
    */
   function moveDay(by) {
     if (!day) return;
@@ -1008,8 +709,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
         : new Date(shown.getFullYear(), shown.getMonth(), 1);
     const crossed = !sameMonth(month, cursor);
     month = shiftMonths(cursor, 0);
-    // A step inside the month is a class flip, not a grid: the rule the people
-    // list already follows, and the reason an arrow press costs what it does.
+    // A step inside the month is a class flip, not a grid.
     if (crossed) renderCalendar();
     else markDay();
   }
@@ -1022,11 +722,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   // ---- what the caret is inside, and which picker that opens ---------------
 
   /**
-   * The UNFINISHED `since:`/`until:` token the caret sits in, or null.
-   *
-   * Read from the text every time, exactly as [pendingMention] is and for the
-   * same reason: the box being shut is not the same thing as the token being
-   * done, and `since:2026-08-` left behind by a blur is still waiting.
+   * The unfinished `since:`/`until:` token the caret sits in, or null. Read
+   * from the text every time, as [pendingMention] is and for the same reason.
    */
   function pendingDate() {
     const d = dateAt(readValue(), caretIndex());
@@ -1034,27 +731,16 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * The `group:` token the caret sits in, or null.
-   *
-   * No `complete` test, unlike its two neighbours, because [groupAt] never
-   * reports one — a group id has no finished shape to recognise. What ends the
-   * token is the space a pick writes, which takes the caret out of it.
+   * The `group:` token the caret sits in, or null. No `complete` test:
+   * [groupAt] never reports one, and the space a pick writes ends the token.
    */
   const pendingGroup = () => groupAt(readValue(), caretIndex());
 
   /**
    * Re-read the token under the caret and put the right picker under it.
-   *
-   * The date half goes first because it is the cheap one — no network, no
-   * debounce — and because only one of the three can match: a caret is inside
-   * one token, and `from|to`, `since|until` and `group` are different
-   * prefixes. Whichever does not match has to be shut, or stepping from
-   * `since:` straight into a `from:` would leave a calendar over a people
-   * search.
-   *
-   * The two NETWORK pickers shut each other explicitly rather than relying on
-   * that, because they share `timer` and `reqId`: leaving one live while the
-   * other asks would let a late answer land in a list it does not belong to.
+   * The date half goes first, being the cheap one; at most one prefix
+   * matches, and whichever does not match is shut. The two network pickers
+   * shut each other explicitly because they share `timer` and `reqId`.
    */
   function updateToken() {
     const next = pendingDate();
@@ -1070,30 +756,19 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }
 
   /**
-   * Enter, however it arrived — true when a picker consumed it.
-   *
-   * Shared by the two doors Enter comes through, because a phone's action key
-   * is not reliably a keydown (see the beforeinput handler below) and a
-   * highlighted person or day has to be picked either way. Tab lands here too:
-   * completing the token is what Tab means over an open picker.
-   *
-   * Nothing highlighted is deliberately NOT consumed. The picker is a
-   * suggestion over the text, not a gate in front of it, so a partial date
-   * with no day chosen falls through to the page's own Enter — the search.
+   * Enter, however it arrived: true when a picker consumed it. Shared by
+   * keydown and beforeinput (a phone's action key is not reliably a key), and
+   * Tab lands here too. Nothing highlighted is not consumed: the picker is a
+   * suggestion over the text, not a gate, so Enter falls through to the search.
    */
   function takeEnter() {
     if (!listOpen()) return false;
     if (day) { if (!cursor) return false; pickDay(ymd(cursor)); return true; }
     const rows = liveRows();
     if (active < 0 || !rows[active]) return false;
-    // Nothing highlighted falls through to the page's Enter, which for a group
-    // is the case that matters: a reader who pasted an id this relay has never
-    // seen gets no rows, and Enter must SEARCH for that id rather than do
-    // nothing. shared/groups.js's exact-id band is the other half of the same
-    // promise — an id typed in full is row 0, so Enter over it picks itself.
-    // The action is told from an option by its flag, never by its position: a
-    // row that could be mistaken for a group would splice `group:undefined`
-    // into the box, which is the one thing this list must not do.
+    // For a group the fall-through is what lets Enter search for a pasted id
+    // this relay has never seen. The action is told by its flag, never its
+    // position, or a row could splice `group:undefined` into the box.
     if (rows[active].unlock) { unlock(); return true; }
     if (group) pickGroup(rows[active]);
     else pick(rows[active]);
@@ -1102,27 +777,24 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   el.addEventListener("input", (e) => {
     const text = readValue();
-    // Empty means EMPTY: the browser leaves a `<br>` behind when the last
-    // character goes, and `:empty` is what draws the placeholder.
+    // Empty means empty: the browser leaves a `<br>` behind when the last
+    // character goes, and `:empty` draws the placeholder.
     if (!text) { if (el.innerHTML) el.innerHTML = ""; }
-    // NEVER re-render mid-composition: rebuilding the nodes under an IME tears
-    // down the text it is still composing, which is a whole class of users
-    // typing a whole class of scripts. Nothing can finish a token during a
-    // composition anyway — an npub is 63 bech32 characters.
+    // Never re-render mid-composition: rebuilding the nodes under an IME
+    // tears down the text it is composing. No token can finish inside one.
     else if (!e.isComposing) { const at = caretIndex(); if (structureChanged(text, at)) render(text, at); }
     updateToken();
     onEdit && onEdit();
   });
 
-  // Paste and drop insert TEXT. Left to the browser they insert markup — a
-  // pasted link arrives as an <a>, a pasted paragraph as a <div> — and this
-  // field's value is the concatenation of its nodes.
+  // Paste and drop insert text: left to the browser they insert markup, and
+  // this field's value is the concatenation of its nodes.
   function insertPlain(e, raw, at) {
     e.preventDefault();
     const text = String(raw || "").replace(/\s+/g, " ");
     const [from, to] = at == null ? selectionRange() : [at, at];
-    // A paste is not somebody midway through typing a word, so a pasted tag
-    // pills immediately: `typingAt` null draws every token it finds.
+    // A paste is not somebody midway through a word: `typingAt` null draws
+    // every token it finds.
     replaceRange(from, to, text, from + text.length, null);
     updateToken();
     onEdit && onEdit();
@@ -1131,38 +803,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   el.addEventListener("drop", (e) => insertPlain(e, e.dataTransfer && e.dataTransfer.getData("text/plain"), dropIndex(e)));
 
   /**
-   * The other door Enter comes through, and on a phone the only one.
-   *
-   * A soft keyboard's action key is not a key press. Gboard and the iOS
-   * keyboard report an IME edit, so the keydown that reaches the page carries
-   * `Unidentified` (keyCode 229) or does not arrive at all — `e.key ===
-   * "Enter"` never matched, app.js never got its preventDefault in, and the
-   * div did what a div does with a newline: grew a second line, which is why
-   * the box and the faces in it jumped. An <input> had no such failure mode
-   * because it has nowhere to put a line break.
-   *
-   * So the newline is caught here as what it actually IS — an input of a line
-   * break — whichever keyboard produced it, and refused rather than merely
-   * redirected: the field is one line by construction (`white-space: pre`,
-   * `aria-multiline="false"`), so a break has no meaning in it even when the
-   * Enter behind it is not a submit.
-   *
-   * Three things this had wrong when it was written, all of them the same
-   * mistake — treating "there is a newline in here" as "this event IS the
-   * newline":
-   *
-   *   - An IME can commit the composing word and the action key as ONE
-   *     insertion, `hello\n`. Refusing that outright dropped `hello` with the
-   *     break, which is the worst failure available: text the reader typed,
-   *     gone, with a search running to distract from it. The break is stripped
-   *     and the rest inserted, so only the newline is refused.
-   *   - insertCompositionText is deliberately absent. A pick re-renders the
-   *     field, and doing that under a live composition is exactly what the
-   *     input handler above refuses to do for the same reason.
-   *   - The regex is hoisted, because this runs on every keystroke.
-   *
-   * Desktop cannot double-submit through this: there Enter IS a keydown, and
-   * app.js's preventDefault stops the input from ever being attempted.
+   * The other door Enter comes through, and on a phone the only one: a soft
+   * keyboard's action key arrives as an inserted line break, not a keydown.
+   * The break is refused, the field being one line by construction, and any
+   * text committed with it (`hello\n` from an IME) is kept.
    */
   el.addEventListener("beforeinput", (e) => {
     const t = e.inputType;
@@ -1177,101 +821,62 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   });
 
   /**
-   * A caret MOVE finishes a hashtag, a date or a scope without editing anything.
-   *
-   * `#nos|` is text while the caret is in it and a pill the moment the caret
-   * leaves — so clicking away, arrowing past it or tabbing out has to re-read
-   * the structure, exactly as those same moves re-read the people picker.
-   * Nothing happens unless the drawing would actually change, so this stays a
-   * comparison of two short lists on a keyup, not a render.
+   * A caret move finishes a hashtag, a date or a scope without editing:
+   * `#nos|` is text while the caret is in it and a pill once it leaves. A
+   * comparison of two short lists unless the drawing would change.
    */
   function syncPills(typingAt = caretIndex()) {
     const text = readValue();
     if (text && structureChanged(text, typingAt)) render(text, typingAt, typingAt);
   }
 
-  // A caret MOVE can enter or leave a token without editing anything. Arrows
-  // that the picker is using are excluded — they move the highlight, not the
-  // caret, and re-reading here would reset it on every press.
+  // A caret move can enter or leave a token. The arrows a picker is using
+  // move the highlight, not the caret, and are left out.
   el.addEventListener("click", () => { updateToken(); syncPills(); });
-  // Coming BACK to a half-written token has to pick up where it left off. Blur
-  // shut the picker, and without this the only way to see it again was to type
-  // another character — so tabbing away and back, or leaving the window and
-  // returning, stranded `from:al` with no way to finish it but by hand.
+  // Coming back to a half-written token picks up where it left off: blur
+  // shut the picker, and typing another character is not the only way back.
   el.addEventListener("focus", () => { updateToken(); syncPills(); });
   el.addEventListener("keyup", (e) => {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") { updateToken(); syncPills(); }
   });
   el.addEventListener("blur", () => {
-    // Nobody is typing a word in a field they have left: every tag pills, and
-    // the caret is not placed at all — restoring one into an unfocused field
-    // would scroll it back into view for no reader.
+    // Nobody is typing a word in a field they have left: every tag pills,
+    // and no caret is placed, which would scroll an unfocused field into view.
     syncPills(null);
-    // The SELECTION outlives the focus, and a caret is drawn from the
-    // selection. Losing focus leaves the document's only range sitting inside
-    // this div, which is a blinking caret in a field the reader has left —
-    // visible on a phone, where the compositor keeps painting it after the
-    // keyboard has gone. Dropped only when the range is ours, so a selection
-    // the same gesture made somewhere else survives. It is also what
-    // pendingMention() already documents as the unfocused state: no range in
-    // here means the caret reads as the end of the value.
+    // The selection outlives the focus, and a caret is drawn from it: a
+    // range left in this div is a blinking caret in a field the reader left.
+    // Dropped only when the range is ours.
     const sel = document.getSelection();
     if (sel && sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) sel.removeAllRanges();
-    // A click ON the picker must land before the picker disappears; mousedown
-    // there has already fired by the time blur does, so the delay only has to
-    // outlast the same tick.
+    // A click on the picker must land before the picker disappears; its
+    // mousedown has already fired by the time blur does.
     setTimeout(() => { if (!list.contains(document.activeElement)) closeList(); }, 120);
   });
 
   // preventDefault throughout: the caret in the field is what a pick splices
-  // into, and a mousedown in here would move it out of the token first. The
-  // month arrows need it for a second reason — they are not a pick at all, and
-  // a field that lost focus to a `‹` would close the calendar being paged.
+  // into. The month arrows need it too, or a field losing focus to `‹` would
+  // close the calendar being paged.
   list.addEventListener("mousedown", (e) => {
     const step = e.target.closest(".cal-step");
     if (step) { e.preventDefault(); stepMonth(Number(step.dataset.step)); return; }
     const cell = e.target.closest(".cal-day, .cal-pick");
     if (cell) { e.preventDefault(); pickDay(cell.dataset.day); return; }
-    // Not a pick at all — like the month arrows above, and it needs the same
-    // preventDefault for the same reason: losing focus to this button would
-    // close the picker it is trying to refill.
+    // Not a pick, and needs the preventDefault for the month arrows' reason.
     if (e.target.closest("[data-unlock]")) { e.preventDefault(); unlock(); return; }
     const row = e.target.closest(".popup-item");
     if (!row) return;
     e.preventDefault();
-    // Which list a row belongs to is on the row, not in a module variable: the
-    // two pickers draw the same `.popup-item`, and reading the wrong array
-    // would pick whatever happened to sit at that index in the other one.
+    // Which list a row belongs to is on the row: both pickers draw the same
+    // `.popup-item`.
     if (row.dataset.g != null) pickGroup(groups[Number(row.dataset.g)]);
     else pick(hits[Number(row.dataset.i)]);
   });
 
   /**
-   * A touch anywhere else on the page LEAVES the field — said out loud, one
-   * more thing an <input> gave for free.
-   *
-   * An input loses focus the moment a pointer goes down outside it, on every
-   * device. A contenteditable div gets that from a desktop mouse and not from
-   * a finger: with nothing focusable under the tap there is nowhere for focus
-   * to go, so the editing session is torn down when the browser is finished
-   * with the soft keyboard rather than when the reader touched the page —
-   * seconds later, with the caret still blinking in the box the whole time.
-   * (It is invisible to a desktop browser in mobile-emulation, which
-   * synthesises the tap but has no keyboard to put away, so this is one to
-   * check on a phone.)
-   *
-   * pointerdown, because that is the moment the desktop already does it, and
-   * it is ahead of the click that closeList() waits for below. Capture, so
-   * nothing between the tap and the document can strand the caret by
-   * swallowing the event. Passive, because unlike the picker's own mousedown
-   * below — which preventDefaults to keep the caret in the token a row splices
-   * into — this one never cancels anything; it is the opposite handler, and
-   * the flag says so to the browser as well as to the reader.
-   *
-   * Never inside .search-wrap: that box holds the field, both pickers and the
-   * results popup, and a row is picked with the caret still in the token.
-   * The activeElement test is first because it is the cheap one and it is
-   * false for almost every tap on the page — this runs on all of them.
+   * A touch anywhere else on the page leaves the field, as it would an
+   * <input>: a contenteditable loses focus to a mouse but not to a finger.
+   * Capture, so nothing can swallow the event; passive, since it cancels
+   * nothing. Never inside .search-wrap, where a pick needs the caret.
    */
   document.addEventListener("pointerdown", (e) => {
     if (document.activeElement !== el) return;
@@ -1281,26 +886,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   }, { capture: true, passive: true });
 
   /**
-   * Leaving the page takes the keyboard with it, so the field lets the caret
-   * go too.
-   *
-   * Coming BACK is where this was felt. The page freezes with the field
-   * focused, the keyboard is gone by the time it thaws, and a caret is still
-   * blinking in a box that cannot be typed into — and tapping that box does
-   * not fix it, because the element is already focused, so there is no focus
-   * change for the browser to raise a keyboard for. The only way back in was
-   * to tap somewhere else first and then return, which is a thing no reader
-   * should have to know.
-   *
-   * Three events for one rule, because no one of them fires everywhere:
-   * pagehide is the back/forward cache freeze (conn.js closes the sockets on
-   * the same signal), visibilitychange is switching apps without a navigation,
-   * and pageshow is the belt to their braces — if the page did come back with
-   * the caret still in here, this is where it goes.
-   *
-   * Only where a keyboard has to be raised at all. On a desktop the caret and
-   * the keyboard are not the same thing, and dropping a caret because the
-   * reader looked at another tab would be taking something away for nothing.
+   * Leaving the page takes the keyboard, so the field lets the caret go: a
+   * field still focused when the page thaws cannot raise a keyboard by being
+   * tapped. Three events, since no one of them fires everywhere; only where
+   * a keyboard has to be raised at all.
    */
   const releaseOnHide = () => { if (document.activeElement === el && softKeyboard()) el.blur(); };
   window.addEventListener("pagehide", releaseOnHide);
@@ -1313,19 +902,15 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   Object.defineProperty(el, "value", {
     get: readValue,
-    // A programmatic set is a RESTORE (the URL, the clear button), never a
-    // keystroke: it does not call onEdit, exactly as assigning to an input's
-    // value fires no input event, and it dismisses the picker because the
-    // token that was being built no longer exists.
+    // A programmatic set is a restore (the URL, the clear button), never a
+    // keystroke: no onEdit, as an input's value fires no input event.
     set(v) {
-      // The last door a line break could come through. The keyboard's is shut
-      // on beforeinput and the clipboard's by insertPlain, but this one takes
-      // whatever `?q=` carried — and a text node holding a `\n` under
-      // `white-space: pre` is the same two-line box, arrived at from the URL.
+      // The last door a line break can come through: `?q=` carries whatever
+      // it carries, and a `\n` under `white-space: pre` is a two-line box.
       const text = String(v ?? "").replace(NEWLINES, " ");
       closeList();
-      // typingAt null: a URL restore or a clear is not typing, so a tag the
-      // caret happens to land after still draws as the filter it already is.
+      // typingAt null: a restore or a clear is not typing, so a tag the
+      // caret lands after still draws as the filter it is.
       render(text, document.activeElement === el ? text.length : null, null);
     },
   });
@@ -1342,37 +927,22 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   return {
     /**
-     * Is a `from:`/`to:`/`since:`/`until:`/`group:` token being built now?
-     *
-     * An open picker OR an unfinished token under the caret — the second half
-     * matters because the box closes on blur and on Escape while the token
-     * stays half-written, and app.js uses this to decide whether the results
-     * popup may open. Answering "no" in that window is how a stale result
-     * list ended up over `from:al`.
+     * Is a token being built now: an open picker, or an unfinished token
+     * under the caret? The second half matters because the box closes on
+     * blur and Escape while the token stays; app.js gates the results popup
+     * on it.
      */
     get picking() { return listOpen() || !!pendingMention() || !!pendingDate() || !!pendingGroup(); },
     /**
-     * Is a picker itself on screen? Narrower than `picking`, and the difference
-     * matters to exactly one caller: while one is up it owns the field's
-     * aria-expanded / aria-controls / aria-activedescendant, and closePopup()
-     * must not lower them under it.
+     * Is a picker on screen? Narrower than `picking`: while one is up it
+     * owns the field's aria attributes, and closePopup() must not lower them.
      */
     get pickerOpen() { return listOpen(); },
     /**
-     * The keys a picker owns while it is open, consumed here so app.js's own
-     * handler can return. Called BY app.js rather than racing it in the
-     * capture phase: which of two listeners on one element runs first is
-     * registration order, and that is not a thing to depend on.
-     *
-     * The calendar takes the same four keys and reads them as a grid rather
-     * than a list — sideways is a day, up and down are a week, which is what
-     * the shape on screen promises. Two more are its own: Page keys are how a
-     * reader gets to last March without forty presses.
-     *
-     * That does cost Left and Right, which the people list leaves to the caret;
-     * Escape is what hands them back, and it hands them back for good — one
-     * press moves the caret INTO the token, where dateAt stops reporting a
-     * partial and nothing reopens.
+     * The keys a picker owns while open, called by app.js rather than racing
+     * it in the capture phase. The calendar reads the arrows as a grid (a
+     * day sideways, a week up and down) and takes the Page keys for months;
+     * Escape hands Left and Right back to the caret.
      */
     handleKey(e) {
       if (!listOpen()) return false;
@@ -1385,11 +955,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
           stepMonth(e.key === "PageUp" ? -1 : 1);
           return true;
         }
-        // Enter on nothing highlighted stays the page's Enter, exactly as it
-        // does over the people list: the reader typed a partial date and hit
-        // Enter, which is a search for what is in the box, not a pick of
-        // whatever day the grid happens to be showing. takeEnter() is that
-        // rule, for both lists and for the phones that never send this key.
+        // Enter on nothing highlighted stays the page's Enter, as over the
+        // people list: a search for the partial date, not a pick.
         if (e.key === "Enter" || e.key === "Tab") {
           if (!takeEnter()) return false;
           e.preventDefault();
@@ -1407,13 +974,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       return false;
     },
     /**
-     * Ask the group lookup again — for when an unlock lands after the draw.
-     *
-     * The one thing that gets past updateGroups()'s unchanged-token guard, and
-     * the only caller is the permission dialog resolving: what changed is what
-     * the SAME token answers, which nothing else here does. A no-op unless a
-     * `group:` token is still under the caret, since a dialog takes focus out
-     * of the page and the reader may have moved on.
+     * Ask the group lookup again, for an unlock that landed after the draw.
+     * A no-op unless a `group:` token is still under the caret.
      */
     refreshGroups() {
       if (!group) return;

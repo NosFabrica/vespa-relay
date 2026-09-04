@@ -42,43 +42,29 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * The Tor transport: which client a url gets, and — the one that matters —
- * that a `.onion` name is handed to the proxy rather than looked up here.
- *
- * The second is asserted against a real SOCKS5 handshake into a fake proxy,
- * because it is a property of OkHttp's route selection rather than of any code
- * in this repo: an upgrade that resolved the host before connecting would keep
- * every mock-based test passing while leaking the name of every hidden service
- * this router syncs with to the local resolver, and breaking .onion outright.
+ * Which client a url gets, and that a `.onion` name reaches the proxy unresolved,
+ * asserted on a real SOCKS5 handshake because that is OkHttp's doing, not ours.
  */
 class TorTransportTest {
     /**
-     * A SOCKS5 server that gets as far as reading the request and then hangs
-     * up, recording what it was asked for. Enough to observe the address type
-     * and the host — which is the whole question.
+     * A SOCKS5 server that reads the request, records the address type and host,
+     * and hangs up unless given a [replyCode] to answer with.
      */
     private class FakeSocks(
-        // A SOCKS5 reply code to answer the request with, instead of hanging
-        // up. 4 is "host unreachable" — what a working Tor says about a hidden
-        // service it could not reach.
+        /** 4 is "host unreachable", what a working Tor says about a hidden service it could not reach. */
         private val replyCode: Int? = null,
     ) : AutoCloseable {
         private val server = ServerSocket(0)
         val port: Int get() = server.localPort
         val asked = ArrayBlockingQueue<String>(8)
 
-        /** How many connections this proxy has accepted, of any kind. */
         val accepted =
             java.util.concurrent.atomic
                 .AtomicInteger()
 
         /**
-         * [accepted] once it has stopped moving. A connect returns as soon as
-         * the kernel has completed the handshake, and the count is bumped by
-         * the accept loop one thread wakeup later — so a caller that has
-         * returned is not proof the connection it made has been counted. Read
-         * on the instant, this says 0 about once in a thousand runs, which
-         * fails the assertion for the opposite of the reason it exists.
+         * [accepted] once it has stopped moving. A connect returns before the accept
+         * loop has counted it, so a caller that has returned is not proof its connection was counted.
          */
         fun settledAccepts(
             quietMs: Long = 250,
@@ -126,14 +112,14 @@ class TorTransportTest {
                 input.readUnsignedByte()
                 input.readUnsignedByte()
                 when (val type = input.readUnsignedByte()) {
-                    // DOMAINNAME — the proxy resolves it. The answer we want.
+                    // DOMAINNAME: the proxy resolves it.
                     3 -> {
                         val host = ByteArray(input.readUnsignedByte())
                         input.readFully(host)
                         asked.offer("domain:${String(host)}:${input.readUnsignedShort()}")
                     }
 
-                    // IPV4 — something on this side already resolved the name.
+                    // IPV4: something on this side already resolved the name.
                     1 -> {
                         val ip = ByteArray(4)
                         input.readFully(ip)
@@ -178,8 +164,7 @@ class TorTransportTest {
         FakeSocks().use { socks ->
             val transport = TorTransport(settings(port = socks.port), OkHttpClient())
             val client = transport.clientFor(onion)
-            // The dial fails — the fake hangs up mid-handshake — and that is
-            // fine: what is under test is what the proxy was ASKED.
+            // The dial fails at the fake's hang-up; what is under test is what the proxy was asked.
             runCatching {
                 client
                     .newCall(Request.Builder().url("http://${java.net.URI(onion.url).host}/").build())
@@ -195,20 +180,10 @@ class TorTransportTest {
         }
     }
 
-    /**
-     * A proxy saying "I could not reach that host" must never become a signed
-     * NIP-66 record. It is the PROXY's report, and it does not separate their
-     * service being down from our circuit not being built.
-     *
-     * The type is what decides it — [Unreachability] publishes on
-     * `UnknownHostException` — so this asserts what actually comes out of a
-     * SOCKS failure. Checked against a live tor while building this: an
-     * unreachable `.onion` surfaces as `SocketException`, never as a name that
-     * failed to resolve, because nothing here ever tried to resolve it.
-     */
     @Test
     fun `a SOCKS failure is never proof the relay is unreachable`() {
-        // 4 is SOCKS5 "host unreachable".
+        // The proxy's "host unreachable" does not separate their service being down from
+        // our circuit failing, and [Unreachability] publishes on the exception type alone.
         FakeSocks(replyCode = 4).use { socks ->
             val transport = TorTransport(settings(port = socks.port), OkHttpClient())
             val failure =
@@ -246,14 +221,9 @@ class TorTransportTest {
         assertTrue(transport.clientFor(clearnet) !== direct)
     }
 
-    /**
-     * The Tor client must not inherit the clearnet dispatcher. `newBuilder()`
-     * shares it, and sharing it would let a handful of onion dials queue in —
-     * and draw down — the 1024-socket budget the whole fan-out is sized
-     * against.
-     */
     @Test
     fun `the tor client gets its own socket budget`() {
+        // `newBuilder()` shares the dispatcher, and a handful of onion dials would draw down the clearnet budget.
         val direct = OkHttpClient()
         val transport = TorTransport(settings(port = 9050), direct)
         val tor = transport.clientFor(onion)
@@ -277,14 +247,10 @@ class TorTransportTest {
         }
     }
 
-    /**
-     * The gate is asked once per relay, and a dynamic fan-out launches a
-     * coroutine per discovered relay — so when the TTL expires, every runnable
-     * thread arrives at the check together. Each opening its own connection
-     * would answer "is our proxy healthy?" with a burst of load on it.
-     */
     @Test
     fun `a fan-out asking at once costs one probe, not one per caller`() {
+        // When the TTL expires every runnable thread reaches the check together; each
+        // opening its own connection would load the proxy to ask whether it is healthy.
         FakeSocks().use { socks ->
             val transport = TorTransport(settings(port = socks.port), OkHttpClient())
             val start = java.util.concurrent.CountDownLatch(1)
@@ -314,9 +280,8 @@ class TorTransportTest {
         assertEquals("127.0.0.1", scheme.socksHost)
         assertEquals(9150, scheme.socksPort)
 
-        // The brackets are there to keep an IPv6 literal's colons apart from
-        // the port's; InetSocketAddress wants the address without them, and a
-        // host that keeps them never resolves while looking correct in a log.
+        // InetSocketAddress wants the IPv6 literal without its brackets; a host that
+        // keeps them never resolves while looking correct in a log.
         val v6 = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "[::1]:9050")))
         assertEquals("::1", v6.socksHost)
         assertEquals(9050, v6.socksPort)
@@ -328,88 +293,53 @@ class TorTransportTest {
         assertNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "   ")))
     }
 
-    /**
-     * A value that cannot be parsed must not degrade to "no Tor": the setting
-     * exists to turn something on, and silently ignoring it is how a mirror
-     * stops mirroring while every log line reads healthy.
-     */
     @Test
     fun `a malformed proxy address is a hard error, not a fallback`() {
+        // Silently ignoring a bad value is how a mirror stops mirroring while every log line reads healthy.
         assertFailsWith<IllegalArgumentException> { TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor")) }
         assertFailsWith<IllegalArgumentException> { TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor:abc")) }
         assertFailsWith<IllegalArgumentException> { TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor:99999")) }
     }
 
-    /**
-     * The pre-probe is a plain socket to a resolved address, so it cannot say
-     * anything about a relay the dial will reach through Tor — and asking
-     * would both fail and hand the name to the local resolver.
-     */
     @Test
     fun `the TCP pre-probe is skipped for onion relays and kept for everything else`() {
+        // The pre-probe is a plain socket to a resolved address: it cannot reach a Tor
+        // relay, and asking would hand the name to the local resolver.
         val tor = TorTransport(settings(port = 9050), OkHttpClient())
         assertFalse(shouldPreProbe(onion, tor))
         assertTrue(shouldPreProbe(clearnet, tor))
-        // No transport: the probe is the only thing that will ever look at
-        // most of these relays, so it stays on for every clearnet url.
+        // Without a transport the probe is all that ever looks at most relays.
         assertTrue(shouldPreProbe(clearnet, null))
     }
 
-    /**
-     * The fold's fingerprint gets the budget of the transport it will be
-     * dialled over, and this is the assertion that a refactor cannot take back
-     * to one number.
-     *
-     * Quartz's `idleTimeoutMs` runs from the START of the fetch, so it pays for
-     * the connect too — and a hidden service is allowed
-     * [TorSettings.connectTimeoutSec] for the circuit and the rendezvous alone,
-     * while `connectionTimeout` sizes a clearnet TCP handshake. Given only the
-     * clearnet window, an onion fingerprint lapses before the relay has said
-     * anything and comes back EMPTY, which is not "measured and distinct" — it
-     * is no verdict at all, so every url on that host is dialled again on every
-     * cycle for as long as the router runs.
-     */
     @Test
     fun `an onion fingerprint gets the Tor budget on top of the clearnet window`() {
+        // Quartz's `idleTimeoutMs` runs from the start of the fetch, so an onion
+        // fingerprint pays for the circuit; on the clearnet window alone it lapses
+        // and comes back empty, which is no verdict and re-dials the host forever.
         val tor = TorTransport(settings(port = 9050), OkHttpClient())
-        // settings() builds a 5s Tor connect budget; the clearnet window here
-        // is the router's own `connectionTimeout` default, in millis.
+        // settings() gives a 5s Tor connect budget; 20s is the router's `connectionTimeout` default.
         assertEquals(25_000L, probeIdleMs(onion, tor, 20_000L))
         assertEquals(20_000L, probeIdleMs(clearnet, tor, 20_000L))
-        // No transport at all: nothing routes through a proxy, so nothing pays
-        // for one. A `.onion` cannot be discovered in this deployment anyway.
+        // No transport: nothing routes through a proxy, so nothing pays for one.
         assertEquals(20_000L, probeIdleMs(onion, null, 20_000L))
     }
 
-    /**
-     * `SYNC_TOR_ALL` puts CLEARNET relays behind the same circuit, and every
-     * rule that protects a hidden service has to follow them there.
-     *
-     * The pre-probe is the sharp one: it resolves the name and opens a socket
-     * from this box's own address. Left on under `SYNC_TOR_ALL` it would do
-     * that for all ~20,000 discovered relays — announcing to each of them, and
-     * to the local resolver, exactly what the setting was turned on to hide,
-     * while measuring a path no transfer would use.
-     */
     @Test
     fun `SYNC_TOR_ALL takes the onion rules with it to clearnet relays`() {
+        // Under `SYNC_TOR_ALL` the pre-probe would resolve and dial every discovered relay
+        // from this box's own address, announcing exactly what the setting hides.
         val all = TorTransport(settings(port = 9050, routeAll = true), OkHttpClient())
         assertFalse(shouldPreProbe(clearnet, all), "SYNC_TOR_ALL must not leave a direct probe of every relay running")
         assertFalse(shouldPreProbe(onion, all))
         assertTrue(all.routes(clearnet), "the strike and UNREACHABLE guards key on this")
-        // …including the fold's window: under this setting a clearnet relay is
-        // reached through a circuit like any other, and the fingerprint that
-        // decides whether to keep dialling it has to be given time to build one.
+        // The fold's window follows too: a clearnet relay is reached through a circuit here.
         assertEquals(25_000L, probeIdleMs(clearnet, all, 20_000L))
     }
 
-    /**
-     * A `.onion` in a stream's `urls` is accepted by the parser — the config
-     * cannot know what transport the process has — and reported here, so
-     * [SyncMain] can refuse to boot instead of mirroring nothing forever.
-     */
     @Test
     fun `configured onion upstreams are reported with the stream that names them`() {
+        // The parser accepts a `.onion` in `urls`; this report is how [SyncMain] refuses to boot on one.
         val config =
             RouterConfigLoader.parse(
                 """

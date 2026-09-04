@@ -2,9 +2,10 @@
 
 See **[AGENTS.md](AGENTS.md)** — one file, so the two cannot drift apart.
 
-It covers the build and test commands, the module layout, how the router's
-streams and sync cursors work, the instrumentation to reach for before forming a
-theory, the commenting and testing conventions this codebase holds itself to,
-and the traps that have already cost real time (JitPack pins resolving
-lexicographically, stacked KDoc failing ktlint, verifying a fix while the system
-is idle).
+It is the first hour: what the project is and the six modules, every command
+and probe switch, a short map of the packages, how the router's streams, bands,
+visit pool, monitor verdicts and roster fit together, the instruments to reach
+for before forming a theory, the conventions this codebase holds itself to, and
+one line per trap that has already cost real time. The long forms live in
+`docs/` (`router-internals.md`, `layout.md`, `instrumentation.md`, `traps.md`,
+`operations.md`) and the decisions behind the code in `docs/decisions/`.

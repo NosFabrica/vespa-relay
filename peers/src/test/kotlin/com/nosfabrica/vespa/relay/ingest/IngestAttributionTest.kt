@@ -39,14 +39,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Who a store refusal gets blamed on.
- *
- * The pipeline reads outcome `i` as belonging to event `i` of the batch it
- * sent. That is the store's contract, and everywhere else a breach of it would
- * only skew a counter — here it decides which id goes into a filter that
- * suppresses that id forever. So the mismatch is checked rather than trusted,
- * and these pin both halves: attribution happens when the lists line up, and
- * stops when they do not.
+ * Who a store refusal gets blamed on. Outcome `i` belongs to event `i` only while
+ * the lists are the same length, and a wrong blame suppresses an id forever.
  */
 class IngestAttributionTest {
     private fun event(n: Int) =
@@ -60,7 +54,6 @@ class IngestAttributionTest {
             sig = "b2".repeat(32),
         )
 
-    /** Records what the pipeline decided to blame, and for what reason. */
     private class Recorder : RefusalSink {
         override val tracksOrigins = true
 
@@ -77,11 +70,7 @@ class IngestAttributionTest {
         }
     }
 
-    /**
-     * A store that answers with the right verdicts in the wrong quantity —
-     * the contract breach the guard exists for. Interface delegation carries
-     * everything except the one method under test.
-     */
+    /** A store that answers with the right verdicts in the wrong quantity. */
     private class Misaligning(
         private val inner: IEventStore,
         private val drop: Int,
@@ -109,8 +98,7 @@ class IngestAttributionTest {
         try {
             pipeline.start()
             repeat(count) { pipeline.submit(event(it), skipVerify = true, IngestOrigin.Local) }
-            // The pipeline is asynchronous by design; wait for the queue to
-            // clear rather than for a fixed time.
+            // Wait for the drain, not a clock; the refusals reach the sink a moment after it.
             var spins = 0
             while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
             delay(200)
@@ -136,12 +124,8 @@ class IngestAttributionTest {
 
     @Test
     fun `a store that returns fewer outcomes than events attributes nothing`() {
-        // SAFETY. `getOrNull(i)` alone would keep going here and blame the
-        // wrong events — outcome i belongs to event i only while the lists are
-        // the same length. Every id it named would be a candidate for
-        // suppression it never earned, and a suppressed id is never downloaded
-        // again to notice the mistake. Silence is the correct output; the
-        // pipeline logs the breach once instead.
+        // Blaming by position against a shorter list would suppress ids that
+        // never earned it, and a suppressed id is never downloaded again.
         runBlocking {
             val sink = Recorder()
             run(Misaligning(base(), drop = 3), sink, 8)
@@ -154,10 +138,8 @@ class IngestAttributionTest {
     }
 
     /**
-     * A real event, hashed the way NIP-01 says, so `verifyId` accepts it. The
-     * signature is still junk — deliberately: the fast path below runs before
-     * verification, and these pin that it is the ID and not the signature that
-     * gates what may be remembered.
+     * A real id hash with a junk signature: the fast path runs before verification,
+     * so it is the id and not the signature that gates what may be remembered.
      */
     private fun hashed(
         n: Int,
@@ -181,13 +163,9 @@ class IngestAttributionTest {
     @Test
     fun `a replaceable superseded inside the batch is reported even though the store never sees it`() =
         runBlocking {
-            // The merge hazard. `dropSuperseded` exists to keep a stale
-            // replaceable away from verification and the store — which is
-            // exactly where the `replaced:` verdict used to come from. If the
-            // refusal is not reported from the fast path too, the filter and
-            // the healer go quiet in proportion to how well that optimisation
-            // works, and a backfill running at 94% replaced would feed them
-            // almost nothing.
+            // `dropSuperseded` keeps a stale replaceable away from the store, which
+            // is where the `replaced` verdict used to come from, so the fast path
+            // must report the refusal itself.
             val sink = Recorder()
             val older = hashed(1, createdAt = 1_700_000_000L)
             val newer = hashed(2, createdAt = 1_700_009_999L)
@@ -200,17 +178,8 @@ class IngestAttributionTest {
                 pipeline.submit(newer, skipVerify = true, IngestOrigin.Local)
                 var spins = 0
                 while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
-                // WAIT FOR THE FACT, NOT FOR A DURATION. The queue draining
-                // says the pipeline took both events; the refusal reaches the
-                // sink from the fast path a moment after that, and a fixed
-                // sleep only asks whether this runner was quick enough today.
-                // It was not, once, on CI. The two tests either side of this
-                // one keep their fixed settle deliberately: they assert an
-                // ABSENCE, and there is no fact to wait for.
-                //
-                // Under the list's own monitor because that is how a
-                // `synchronizedList` may be iterated — the pipeline is still
-                // running here, where the assertion below reads it after close.
+                // Wait for the refusal itself, not a duration. Under the list's
+                // monitor, because the pipeline is still writing to it.
                 var settling = 0
                 while (settling++ < 200 &&
                     synchronized(sink.refusals) { sink.refusals.none { it.first == older.id } }
@@ -231,11 +200,8 @@ class IngestAttributionTest {
     @Test
     fun `an event whose id does not match its content is never remembered`() =
         runBlocking {
-            // SAFETY. The fast path runs before any verification, so an
-            // unchecked id here is attacker-chosen: forge a stale kind 0 for
-            // any pubkey, stamp it with the id of an event you want this relay
-            // never to fetch, and two of them suppress that id for good. The
-            // id hash is what makes the claim self-certifying.
+            // The fast path runs before verification, so an unchecked id would let
+            // a forged stale kind 0 suppress any id its author chose.
             val sink = Recorder()
             val real = hashed(3, createdAt = 1_700_009_999L)
             val forged =

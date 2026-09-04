@@ -39,11 +39,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Verification is the most expensive thing ingest does per event (~48µs of
- * schnorr) and a mirror is offered the same event once per relay that holds it.
- * These pin the property that makes that affordable: **an event the store
- * already holds is dropped without being verified**, and — the other half,
- * which is what keeps that safe — **nothing unverified is ever written**.
+ * An event the store already holds is dropped without being verified, and
+ * nothing unverified is ever written.
  */
 class IngestDedupTest {
     private val relayUrl = RelayUrlNormalizer.normalize("wss://here.example")
@@ -64,9 +61,8 @@ class IngestDedupTest {
         )
 
     /**
-     * Runs one batch through a pipeline over a real in-memory store, wired to
-     * the same existence check production hands it. [preload] goes into the
-     * store first; [offer] is what the upstream then delivers.
+     * Runs one batch through a pipeline over an in-memory store wired to production's
+     * existence check. [preload] is stored first; [offer] is what the upstream delivers.
      */
     private fun ingest(
         preload: List<Event>,
@@ -82,8 +78,7 @@ class IngestDedupTest {
                 IngestPipeline(
                     store,
                     // One worker: two would split the offer into halves that
-                    // each fall under the probe's width gate, and this asserts
-                    // what ONE batch does.
+                    // each fall under the probe's width gate.
                     IngestTuning(concurrency = 1, batch = 1000),
                     audit = null,
                     servingPressure = null,
@@ -105,23 +100,17 @@ class IngestDedupTest {
                             }
                         },
                 )
-            // Queued BEFORE the workers start, so the whole offer is drained as
-            // one batch — this asserts what a batch does, and a batch split
-            // three ways would test the channel instead.
+            // Queued before the workers start, so the whole offer drains as one batch.
             offer.forEach { pipeline.submit(it, skipVerify = false) }
             pipeline.start()
-            // Every offered event lands in exactly one of the two counters —
-            // accepted, or rejected by dedup, by verify, or by the store — so
-            // their sum is the settled condition. A fixed sleep here would be a
-            // guess about a loaded CI box.
+            // Every offered event lands in exactly one of the two counters, so
+            // their sum is the settled condition.
             var waitedMs = 0
             while (pipeline.accepted.get() + pipeline.rejected.get() < offer.size && waitedMs < SETTLE_TIMEOUT_MS) {
                 delay(5)
                 waitedMs += 5
             }
-            // Every kind, not just the notes: the supersession cases store
-            // kind 0, and a filter that cannot see them would read as "nothing
-            // was written" for the wrong reason.
+            // Every kind: the supersession cases store kind 0.
             val stored = store.count(Filter()).toLong()
             scope.cancel()
             pipeline.close()
@@ -130,12 +119,9 @@ class IngestDedupTest {
 
     @Test
     fun `an event the store already holds is dropped without being verified`() {
-        // Wide enough to earn the probe round trip, which is the case that
-        // matters: this is the fan-out, not a live tail.
+        // Wide enough to earn the probe round trip.
         val held = (0 until 200).map { note(it) }
-        // Every offered copy is FORGED — same ids, junk signatures. If the
-        // pipeline verified them it would say `bad signature`; dropping them as
-        // duplicates is the proof it never looked.
+        // Forged copies: same ids, junk signatures. Verifying one would say `bad signature`.
         val (pipeline, _, stored) = ingest(preload = held, offer = held.map { forge(it) })
 
         val breakdown = pipeline.rejectionBreakdown()
@@ -149,9 +135,7 @@ class IngestDedupTest {
     @Test
     fun `copies of one event inside a batch cost a single verification`() {
         val real = (0 until 150).map { note(it) }
-        // Each event once, then every one of them again — the shape a fan-out
-        // across two relays delivers. The repeats are forged, so a second
-        // verification would be visible.
+        // Each event once, then again forged, so a second verification would show.
         val (pipeline, _, stored) = ingest(preload = emptyList(), offer = real + real.map { forge(it) })
 
         assertFalse(
@@ -183,9 +167,7 @@ class IngestDedupTest {
         assertEquals(50, stored)
     }
 
-    // ---- supersession ------------------------------------------------------
-
-    /** kind 0 for [author] at [at] — a later `at` is a NEWER version of the SAME address, with a different id. */
+    /** Kind 0 for [author] at [at]; a later `at` is a newer version of the same address with a different id. */
     private fun profile(
         author: NostrSignerSync,
         at: Long,
@@ -195,9 +177,8 @@ class IngestDedupTest {
     fun `a replaceable the store already beats is dropped without being verified`() {
         val people = (0 until 200).map { NostrSignerSync() }
         val newest = people.map { profile(it, 1_700_001_000L) }
-        // Older versions of the same addresses, forged. Different ids, so the
-        // id probe cannot see them — only the version probe can. If they were
-        // verified, the breakdown would say so.
+        // Older versions of the same addresses, forged. Different ids, so only
+        // the version probe can see them.
         val stale = people.map { forge(profile(it, 1_700_000_000L)) }
 
         val (pipeline, _, stored) = ingest(preload = newest, offer = stale)
@@ -225,9 +206,7 @@ class IngestDedupTest {
     @Test
     fun `of several versions in one batch only the newest is verified and written`() {
         val people = (0 until 200).map { NostrSignerSync() }
-        // Three generations per address, all in one batch, oldest first. Only
-        // the newest can survive NIP-01, so the other two must never be
-        // verified — they are forged, which is how the test can tell.
+        // Three generations per address, oldest first; the two forged ones must never be verified.
         val offer =
             people.flatMap {
                 listOf(
@@ -248,17 +227,15 @@ class IngestDedupTest {
     @Test
     fun `an addressable is left to the store, whose version query the router does not reproduce`() {
         val author = NostrSignerSync()
-        // kind 30382 at one address (same d tag), older then newer. The router
-        // must not touch these: dropping one on a query shape it got wrong
-        // would be a lost event, not a slow one.
+        // One address (same d tag), older then newer. Dropping one on a query
+        // shape the router got wrong would be a lost event, not a slow one.
         val d = arrayOf(arrayOf("d", "rank"))
         val older = author.sign<Event>(1_700_000_000L, 30382, d, "old")
         val newer = author.sign<Event>(1_700_001_000L, 30382, d, "new")
 
         val (pipeline, _, _) = ingest(preload = listOf(newer), offer = listOf(older), probe = false)
 
-        // Rejected by the STORE as replaced, having been verified — the
-        // behaviour that existed before the supersession pre-filter.
+        // Rejected by the store as replaced, having been verified.
         assertEquals(1, pipeline.rejected.get())
         assertTrue(pipeline.rejectionBreakdown().contains("replaced"), pipeline.rejectionBreakdown())
     }
@@ -268,9 +245,8 @@ class IngestDedupTest {
         val author = NostrSignerSync()
         val v1 = profile(author, 1_700_000_000L)
         val v2 = profile(author, 1_700_001_000L)
-        // v2 lands on its own tombstone and is rejected; v1 is what survives.
-        // Collapsing the batch to "v2, the newest" would leave this address
-        // EMPTY — so the collapse must stand down for a batch like this.
+        // v2 lands on its own tombstone and v1 survives; collapsing the batch
+        // to v2 would leave the address empty.
         val delete = author.sign<Event>(1_700_002_000L, 5, arrayOf(arrayOf("e", v2.id)), "")
 
         val (pipeline, store, _) = ingest(preload = emptyList(), offer = listOf(v1, delete, v2))
@@ -281,7 +257,6 @@ class IngestDedupTest {
     }
 
     private companion object {
-        /** Long enough that only a hang reaches it, so a slow box fails no test. */
         const val SETTLE_TIMEOUT_MS = 30_000
     }
 }

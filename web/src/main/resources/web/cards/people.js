@@ -1,8 +1,5 @@
 // The graph family: who somebody follows, which relays they read, and this
-// relay's OWN working kinds — 10040 observer declarations and 30382 score
-// cards. Those two get real renderers precisely because they are what this
-// relay is organised around: a 10040 permalink that read "kind 10040" with a
-// hex blob would be the relay failing to explain itself.
+// relay's own working kinds, 10040 observer declarations and 30382 score cards.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
@@ -21,15 +18,7 @@ function followsCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 30000 — a named follow set: the d/title plus the same grid.
- *
- * The DESCRIPTION was the one thing on these events that reached the type-ahead
- * row and not the card — a starter pack called "Test Group" and described as
- * "Test Group for Amethyst" said the second half only in the popup, and lost it
- * on the way to the page the popup opens. Muted, as every other summary line on
- * this page is: it stands in for the set, it is not the set.
- */
+/** 30000 — a named follow set: title, muted description, and the same grid. */
 function followSetCard(ev, opts) {
   const pks = peopleOf(ev);
   const title = titleOf(ev);
@@ -59,7 +48,7 @@ function relaySetCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The score dimensions a 10040 names — `["30382:rank", <service>, <relay>]`. */
+/** The score dimensions a 10040 names: `["30382:rank", <service>, <relay>]`. */
 const dimensionsOf = (ev) => tagsWhere(ev, (name, t) => /^\d+:/.test(name) && t[1]);
 
 /** 10040 — NIP-85: per dimension, the service trusted and the relay serving it. */
@@ -74,11 +63,9 @@ function observerCard(ev, opts) {
 }
 
 /**
- * 30382/30383/30384 — NIP-85 assertions. One renderer, because only the `d`
- * changes meaning: a pubkey for 30382, an event id for 30383, an `a` address
- * for 30384. Reading all three as a pubkey — which the pubkey-only version of
- * this card did — turns an event id into a link to a person who does not
- * exist, so the subject is resolved by KIND, not by shape.
+ * 30382/30383/30384 — NIP-85 assertions. One renderer; only the `d` changes
+ * meaning (a pubkey, an event id, an `a` address), and the subject is
+ * resolved by kind, not by shape, since an event id is hex too.
  */
 function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
@@ -105,14 +92,7 @@ function subjectLinkFor(kind, subject) {
   return /^[0-9a-f]{64}$/.test(subject) ? personLink(subject) : esc(subject);
 }
 
-/**
- * The same subject as the WORDS alone — what a type-ahead row has room for.
- *
- * The person branch is personLink's ladder without the anchor (name, else a
- * short npub, never hex), which is the same trade peopleGrid's cells make: a
- * row is one line of text, and a link inside a row that is already one big
- * click target has nowhere to go that the row does not.
- */
+/** The same subject as words alone, for a row: a name, else a short npub, never hex. */
 function subjectName(kind, subject) {
   if (!subject) return "(no subject)";
   if (kind === 30384) return shortAddr(subject);       // an address is never bare hex
@@ -121,8 +101,7 @@ function subjectName(kind, subject) {
 }
 
 register([3], followsCard);
-// 39089/39092 are follow sets under another name — a named group of pubkeys
-// meant to be followed together. Same tags, same card, no second template.
+// 39089/39092 are follow sets under another name: same tags, same card.
 register([30000, 39089, 39092], followSetCard);
 registerPeopleGrid([3, 30000, 39089, 39092]);
 register([10002], relayListCard);
@@ -130,15 +109,8 @@ register([30002], relaySetCard);
 register([10040], observerCard);
 register([30382, 30383, 30384], scoreCard);
 
-// The rows. Every card in this family COUNTS something, and none of them
-// carries a line of prose to count as a title — so each row led with the
-// author's name and then said it again underneath. The count is the card's
-// first line and it is the row's too; the author's name is the second, which
-// cards.js fills in when a row leaves it empty.
-//
-// A NAMED set carries its description after the count: a starter pack called
-// "Test Group" and described as "Test Group for Amethyst" is two facts, and the
-// row has room for both now that neither line is the author twice.
+// The rows. Every card here counts something and none has a title to lead
+// with, so the count is the row's line and cards.js fills the author in.
 registerRow([3], (ev) => ({ sub: `follows ${plural(peopleOf(ev).length, "person", "people")}` }));
 registerRow([30000, 39089, 39092], (ev) => ({
   name: titleOf(ev),
@@ -150,10 +122,7 @@ registerRow([30002], (ev) => ({
   sub: [plural(tagsOf(ev, "relay").length, "relay"), summaryOf(ev)].filter(Boolean).join(" · "),
 }));
 registerRow([10040], (ev) => ({ sub: `trusts ${plural(dimensionsOf(ev).length, "score dimension")}` }));
-// An assertion's `d` is its subject and its `rank` is the verdict — the two
-// facts the card leads with, in the two lines a row has. The subject used to
-// reach the row as a 64-character hex blob (a `d` that is opaque falls out of
-// titleOf), which named nobody and filled the line.
+// An assertion's `d` is its subject and its `rank` the verdict: the card's two facts, in the row's two lines.
 registerRow([30382, 30383, 30384], (ev) => ({
   name: `scores ${subjectName(ev.kind, tagOf(ev, "d"))}`,
   sub: tagOf(ev, "rank") ? `rank ${tagOf(ev, "rank")}` : "",

@@ -39,49 +39,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Does dropping `pendingOnAuthRequired = true` change anything on the wire?
- *
- * [AliasProbe.over] used to pass it explicitly. Quartz's rework (amethyst #3905,
- * #3906) made the default `hasAuthResponder()` and removed the parameter from
- * every accessory but `fetchAllWithHooks`, on the argument that the correct
- * value is computable from the client — so passing it by hand only creates a
- * way to be wrong later.
- *
- * That argument is only sound here if this router's client really does have a
- * responder, which is a claim about OUR wiring rather than about quartz. This
- * asks the wire instead of the source: the same relay, the same filter, three
- * ways — explicit true, explicit false, and the derived default — with
- * `hasAuthResponder()` printed beside them.
- *
- * Measured against `auth.nostr1.com` on the `1ff1077d58` pin:
- *
- * ```
- * hasAuthResponder() = true
- *   explicit true      91 event(s) in 1485ms   done=eose
- *   explicit false     91 event(s) in  113ms   done=eose
- *   derived default    91 event(s) in  105ms   done=eose
- * ```
- *
- * Two readings, and the second is the one to hold on to. **The derived default
- * is the value this router was hardcoding** — `hasAuthResponder()` is true
- * because `RelayAuthenticator` registers itself — so dropping the explicit flag
- * changed nothing, which is what it was worth running to find out. **And this
- * relay did not exercise the fix at all**: it answered `eose` rather than
- * `auth-required:`, so all three agree and none of them is evidence about the
- * auth path. The 1485ms on the first row is the websocket connect, which the
- * two later rows reuse; reading it as a cost of the flag would be wrong.
- *
- * So this probe pins OUR wiring, not quartz's behaviour. Quartz's own
- * `Nip42AuthGatedFetchTest` drives a relay that really gates, in process.
- *
- * OFF by default, asserts NOTHING — it dials someone else's server, and an
- * allowlist relay declining our ephemeral key is a legitimate answer rather
- * than a regression.
- *
- * ```
- * ./gradlew :sync:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
- * #  …or a relay of your own: -DauthGatedUrl='wss://relay.example'
- * ```
+ * Whether quartz's derived `pendingOnAuthRequired` default equals the value
+ * this router used to pass by hand: fetches the same filter from one relay
+ * three ways (explicit true, explicit false, derived) with `hasAuthResponder()`
+ * printed beside them. Asserts nothing. Selected by `-DauthGatedProbe=true`;
+ * relay via `-DauthGatedUrl=wss://...`.
  */
 class AuthGatedFetchProbe {
     private val url: NormalizedRelayUrl =
@@ -97,8 +59,7 @@ class AuthGatedFetchProbe {
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
-        // The router's own wiring, and the thing under test: this is what is
-        // supposed to make the derived default come out true.
+        // The router's own wiring, and what makes the derived default come out true.
         val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
 
         println("=".repeat(78))

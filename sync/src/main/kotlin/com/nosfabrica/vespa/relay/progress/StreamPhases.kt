@@ -24,165 +24,88 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What each stream is doing right now, so an operator can tell a stream that
- * is working from one that never started.
+ * What each stream is doing right now, for the progress document and the log.
  *
- * Three rules, each written against a way this went wrong before:
- *
- *  - **A phase in progress reports elapsed time**, including the phases that
- *    are not "progress". A stream that went idle forty-five minutes ago and one
- *    that finished a second ago used to print the identical line; silence and
- *    stillness are different states and only the clock tells them apart.
- *  - **A configured stream is never absent.** It appears on every tick even
- *    before it has done anything, so silence can never be read as "not
- *    configured".
- *  - **Counts do not name anybody**, so the per-relay truth lives beside the
- *    phase rather than inside it — see [names] and [InFlight]. A stream
- *    held on two relays for eleven hours published the number 2 and no url.
- *
- * **There is one phase now, and that is the point.** This class used to carry a
- * fan-out's whole vocabulary — discovering, snapshotting, fetching, syncing,
- * holding, idle, failed — plus the passes each of those cycled through, because
- * a stream's engine was a pass over its relay list and a reader needed to know
- * which step it was on. Every stream rides the visit pool now: there is no walk
- * to be a phase OF, so a stream is [Phase.Rotating] from its first visit to the
- * end of the process and what moves is the numbers. What each relay is doing is
- * the in-flight list, which is the question the phase words were standing in
- * for all along.
+ * A configured stream is never absent: it appears from registration on, and
+ * every phase reports its elapsed time so stillness can be told from silence.
+ * Counts name nobody; the per-relay truth is the [InFlight] list beside the
+ * phase.
  */
 class StreamPhases {
     sealed interface Phase {
-        /** Registered, not yet visiting — the only honest thing to say before the first roster. */
+        /** Registered, not yet visiting. */
         data object Starting : Phase
 
         /**
-         * Riding the visit pool. One long-lived phase whose numbers move: the
-         * relays this stream is on, and how many of them hold a live tail.
-         *
-         * Zero is a REPORT and not an absence — a stream whose roster is empty
-         * is one waiting on the fitness pass to certify its first relay, and a
-         * stream that looks busy while dialling nothing is exactly the state
-         * this pair exists to show.
+         * Riding the visit pool, from the first roster to the end of the
+         * process. Zero relays is a report, not an absence: the roster is
+         * waiting on its first certified relay.
          */
         data class Rotating(
             val relays: Int,
             val tailed: Int,
-            /**
-             * …and how many of those relays are QUEUED for a visit this
-             * instant — waiting for a worker rather than on a revisit timer.
-             *
-             * The third number because the other two cannot separate the two
-             * ways a stream sits still. A roster of 400 with nothing running
-             * is healthy when the 400 are counting down their cadence and is a
-             * starved stream when they are stacked against a `visitConcurrency`
-             * of 2, and until this existed both drew the same card.
-             */
+            /** Relays waiting for a worker rather than on a revisit timer; separates a starved stream from a resting one. */
             val queued: Int,
         ) : Phase
     }
 
     /**
-     * One stream's state, flattened for a reader outside this process.
-     *
-     * A snapshot, not a view: [SyncProgress] serialises it on a timer while the
-     * pool keeps moving, and handing out the live [Entry] would publish a
-     * document whose members were read at different instants.
+     * One stream's state, flattened at one instant. A snapshot rather than a
+     * view, so the document's members are not read at different times.
      */
     class Stream(
         val name: String,
-        /** The phase's own word — never the rendered line. */
+        /** The phase's own word, never the rendered line. */
         val phase: String,
-        /** How long it has been in that phase, in seconds. */
         val phaseForSec: Long,
-        /**
-         * Relays this stream is riding, of those how many are tailed, and how
-         * many are queued for a worker.
-         *
-         * A relay is ONE unit of work for one stream, so [roster] is this
-         * stream's units as well as its relays and the shares below partition
-         * it. That is only true per stream: pool-wide, a relay three streams
-         * want is one relay and three units, which is why the pool publishes
-         * both counts and this row needs one.
-         */
+        /** This stream's units, which per stream are also its relays; [tails] and [queued] partition it. */
         val roster: Int? = null,
         val tails: Int? = null,
         val queued: Int? = null,
-        /**
-         * The relays this stream has workers on right now, quietest first.
-         * Null for a stream nothing has registered a source for.
-         */
+        /** Relays with a worker on them right now, quietest first. Null when nothing registered a source. */
         val inFlight: InFlight? = null,
-        /**
-         * WHAT THIS STREAM MAY SPEND on each of the pool's jobs, and what it
-         * has spent — see [Limit]. Empty for a stream whose engine caps
-         * nothing, which is every deployment that has not configured a share.
-         */
+        /** Empty for a stream whose engine caps nothing. */
         val limits: List<Limit> = emptyList(),
-        /**
-         * WHEN this stream's two scheduled re-reads of the past come due —
-         * see [Scheduled]. Empty for a stream that schedules neither.
-         */
+        /** Empty for a stream that schedules no re-read of the past. */
         val schedule: List<Scheduled> = emptyList(),
     )
 
     /**
-     * ONE SCHEDULED JOB'S CLOCK, over every ask this stream has: its period,
-     * how many asks are due right now, how many have never run, how many are
-     * waiting out the period, and how long until the next one comes due.
+     * One scheduled job's clock over every ask this stream has.
      *
-     * ## What it is for
-     *
-     * "Do the audits only run when they are scheduled to" is a question the
-     * counters cannot answer. `auditsRun` climbing says work happened; nothing
-     * said whether it was DUE. The two are told apart here: work only ever
-     * moves out of [waiting] by the clock running out, so a `waiting` that
-     * holds steady while `auditsRun` climbs is a rule being broken, and one
-     * that drains at the period is the schedule working.
-     *
-     * ## `neverRun` is the honest exception, and it is not a bug
-     *
-     * An ask with no completed pass behind it is ALWAYS due — see
-     * `SyncBands.auditDue`, where a zero clock short-circuits — so a relay's
-     * first audit happens on its first visit rather than a period later. That
-     * is deliberate and it is also why a fresh deployment audits everything at
-     * once. Counted apart from [due] so that storm reads as what it is:
-     * scheduled work whose schedule has not started yet, not the period being
-     * ignored. It is also the number a workload cap is for.
+     * Work leaves [waiting] only by the clock running out, so a steady
+     * `waiting` beside a climbing run count is the schedule being broken.
+     * [neverRun] is counted apart from [due] because an ask with no completed
+     * pass is always due, and a fresh deployment's audit storm is that rule
+     * working rather than the period being ignored.
      */
     class Scheduled(
-        /** The pool word this clocks — `negentropy` or `re-fetching`. */
+        /** The pool word this clocks: `negentropy` or `re-fetching`. */
         val job: String,
-        /** The stream's configured period for it, in seconds. */
         val everySec: Long,
-        /** Asks whose clock has run out and are waiting for a visit to pick them up. */
+        /** Asks whose clock has run out, waiting for a visit. */
         val due: Int,
-        /** Asks with no completed pass behind them, which are due by definition. */
+        /** Asks with no completed pass behind them. */
         val neverRun: Int,
-        /** Asks inside their period — the healthy majority, and what the period is FOR. */
+        /** Asks inside their period. */
         val waiting: Int,
-        /** Seconds until the nearest [waiting] ask comes due, or null when none is waiting. */
+        /** Seconds until the nearest waiting ask comes due, or null when none is waiting. */
         val nextInSec: Long?,
     )
 
     /**
-     * ONE STREAM'S SHARE OF ONE JOB: what it may take, what is out right now,
-     * and how much work the cap has turned away.
-     *
-     * The last is the one that had to be published. A cap that silently drops
-     * work is indistinguishable from work that was never due — a stream whose
-     * history has not been re-checked for a week reads identically whether its
-     * audits are capped to nothing or its bands simply have not aged. That is
-     * the state an operator would be debugging at the relay, and the answer is
-     * a number this process already had.
+     * One stream's share of one pool job: the cap, what is out against it, and
+     * how much work the cap has turned away. The last is what tells a capped
+     * stream from one whose bands have not aged.
      */
     class Limit(
-        /** The pool word this bounds — `visiting`, `live`, `re-fetching`, `negentropy`. */
+        /** The pool word this bounds: `visiting`, `live`, `re-fetching`, `negentropy`. */
         val job: String,
-        /** This stream's share, or null where it has none and is bounded by the dial width. */
+        /** Null where the stream has no share of its own and is bounded by the dial width. */
         val cap: Int?,
-        /** Permits out right now against [cap]. Null when this stream has no cap of its own. */
+        /** Permits out against [cap]; null when there is no cap. */
         val inUse: Int?,
-        /** Times this stream was refused a permit for this job since boot. */
+        /** Permits refused for this job since boot. */
         val deferred: Long,
     )
 
@@ -196,7 +119,7 @@ class StreamPhases {
 
     private val phases = ConcurrentHashMap<String, Entry>()
 
-    /** Ordered, so the report reads the same way every tick. */
+    /** Registration order, so the report reads the same way every tick. */
     private val order = mutableListOf<String>()
 
     @Synchronized
@@ -207,25 +130,9 @@ class StreamPhases {
     }
 
     /**
-     * WHERE TO ASK [name] ABOUT ITSELF — the three projections this class
-     * flattens but does not own, registered in one call.
-     *
-     * Registered once, by whoever owns the rotation, and every one INVOKED at
-     * snapshot time. That is the whole design: this class is a view flattened
-     * for a reader outside the process, so a list read a tick earlier would
-     * date a stuck leg's clock from the wrong instant, and a copy of the
-     * permits kept in step by hand would be a report disagreeing with the
-     * thing it reports on. `schedule`'s engine is expected to cache behind it
-     * — that one walks every ask.
-     *
-     * ONE CALL, not three. They were three methods with one call site each,
-     * identical but for the field assigned, and every one of them re-did the
-     * `register` and the map lookup. A fourth projection was five coordinated
-     * edits; it is now one parameter with a default.
-     *
-     * Omitting an argument leaves that source ALONE rather than clearing it —
-     * these are registered at start-up by one caller, and "I am only setting
-     * the limits" must not silently drop the in-flight list.
+     * Where to ask [name] about itself. Each source is invoked at snapshot
+     * time, not copied. An omitted argument leaves that source alone rather
+     * than clearing it.
      */
     @Synchronized
     fun names(
@@ -241,14 +148,7 @@ class StreamPhases {
         schedule?.let { entry.schedule = it }
     }
 
-    /**
-     * Move [name] to [phase].
-     *
-     * The elapsed clock restarts only when the phase CHANGES KIND — a
-     * [Phase.Rotating] whose numbers moved is the same phase it was a second
-     * ago, and resetting elapsed there would hide exactly the duration worth
-     * seeing.
-     */
+    /** Move [name] to [phase]. The elapsed clock restarts only when the phase changes kind, not when its numbers move. */
     @Synchronized
     fun set(
         name: String,
@@ -289,18 +189,9 @@ class StreamPhases {
         }
 
     /**
-     * ` — wss://slow.example held 11h 20m, 2 event(s), quiet 11h 19m`, or
-     * nothing.
-     *
-     * Appended to whatever the phase says, because the phase cannot say it: a
-     * stream is rotating whether its pool is turning over or wedged on one
-     * relay, and the counts beside it name nobody. The url only ever reached
-     * stderr for the ONE stream `SYNC_DIAGNOSE` points at, and container logs
-     * here rotate inside the hour — so a leg that had been holding a slot since
-     * the small hours left no trace at all by the time anyone looked.
-     *
-     * Silent below [STUCK_LEG_SECONDS]: every healthy rotation has legs in
-     * flight, and a line on each is the log rather than a finding.
+     * The oldest held leg, named, once it has been held past
+     * [STUCK_LEG_SECONDS]; empty below that, since every healthy rotation has
+     * legs in flight.
      */
     private fun stuck(e: Entry): String {
         val oldest =
@@ -310,10 +201,8 @@ class StreamPhases {
                 ?.firstOrNull() ?: return ""
         if (oldest.heldForSec < STUCK_LEG_SECONDS) return ""
         return " — ${oldest.relay} held ${fmtDuration(oldest.heldForSec * 1000)}" +
-            // The two that separate a real backlog from a wedge. Both, always:
-            // "0 events" alone reads as a dead socket on a leg that is merely
-            // reconciling, and a large count alone reads as healthy on a walk
-            // that stopped hours ago.
+            // Both counts, always: zero events alone reads as a dead socket on
+            // a leg that is reconciling, and a large count alone as healthy.
             ", ${oldest.events} event(s), quiet ${fmtDuration(oldest.quietForSec * 1000)}" +
             (if (oldest.transferringForSec == null) " (not on a socket)" else "")
     }
@@ -334,7 +223,6 @@ class StreamPhases {
         }
     }
 
-    /** The phase's own word, which is what the document publishes. */
     private fun word(phase: Phase): String =
         when (phase) {
             is Phase.Starting -> "starting"
@@ -342,17 +230,7 @@ class StreamPhases {
         }
 
     companion object {
-        /**
-         * Past this, a leg is not slow, it is stuck — and every progress line
-         * for the stream holding it names it until it lets go.
-         *
-         * Ten minutes because that is comfortably longer than the slowest
-         * HEALTHY leg measured here: the full `indexers` walk on purplepag.es
-         * downloads 1,490,010 events in ~10.8 minutes, and directory.yabu.me
-         * serves a 1.2M-event backlog below its floor. Anything below that
-         * threshold would print a line about legs doing exactly what they are
-         * supposed to, which is how a warning stops being read.
-         */
+        /** Past this a held leg is stuck, not slow; set comfortably above the slowest healthy leg seen. */
         const val STUCK_LEG_SECONDS = 600L
     }
 }

@@ -1,31 +1,12 @@
-// THE PAGER, IN A REAL BROWSER — the layer the arithmetic cannot reach.
-//
-// web/src/test/js/paging.test.mjs holds the rules: where the cut falls, which
-// prefix each page asks for, how a widened answer folds into the one on
-// screen. Every one of them can be right while the page is wrong, because what
-// paging actually is here is WIRING — a preload that must not cancel the
-// answer it extends, a url that has to survive Back, a buffer two views used
-// to share. That is the shape of both bugs row.probe.mjs was written for, and
-// it is why this exists beside it.
-//
-// Unlike that probe it needs NOTHING but a browser: no Vespa, no corpus, no
-// relay. The relay is a fake WebSocket installed before the page's modules
-// load, answering any NIP-50 REQ out of a deterministic corpus — `result 0`,
-// `result 1`, … — so "page two starts at result 40" is a thing this file can
-// assert rather than eyeball. Three query words steer it: `big` is a corpus of
-// a thousand (the ask ceiling), `thin` one of seven (no pager at all), and
-// `slow` delays every widened ask by 900ms so the reader can be made to outrun
-// the preload on purpose.
-//
-// Playwright is not a dependency of this repo and never should be — the rest
-// of the web suite is plain node. Resolved from wherever it is installed,
-// global included.
+// The pager in a real Chromium: the wiring paging.test.mjs cannot reach (a
+// preload that must not cancel the answer it extends, a url that survives
+// Back). Needs only Chromium: it serves web/src/main/resources on :7799 and
+// installs a fake WebSocket that answers any NIP-50 REQ out of a numbered
+// corpus. Query words steer it: `big` is a corpus of a thousand, `thin` one of
+// seven, `slow` delays every widened ask by 900ms.
 //
 //     npm i -g playwright && npx playwright install chromium
 //     node web/src/test/browser/pager.probe.mjs
-//
-// It serves web/src/main/resources itself on :7799, so it runs from a clean
-// checkout with nothing else up.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -85,9 +66,8 @@ await page.addInitScript(`
 `);
 
 const t = async (name, fn) => { try { await fn(); console.log("  ok  " + name); } catch (e) { console.log("  FAIL " + name + ": " + e.message); process.exitCode = 1; } };
-// Bounded waits and `.catch(() => {})` wherever a page might NOT render: the
-// probe's job is to report which assertion failed, and an unhandled timeout
-// takes the whole run down with the state it was about to describe.
+// Bounded waits and `.catch(() => {})` wherever a page might not render: an
+// unhandled timeout takes the run down with the state it was about to report.
 const cards = () => page.$$eval(".result", (els) => els.map((e) => e.querySelector(".result-body")?.textContent.trim() || ""));
 const pager = () => page.$$eval(".pager .pg", (els) => els.map((e) => `${e.textContent.trim()}${e.disabled ? "(off)" : ""}${e.classList.contains("on") ? "*" : ""}`));
 const stats = () => page.$eval(".list-stats", (e) => e.textContent.trim());
@@ -165,7 +145,6 @@ await t("…and Next is spent, with no phantom page past it", async () => {
   if (p.includes("…")) throw new Error("a page offered past the end of the corpus: " + JSON.stringify(p));
 });
 
-// ---- the ceiling ----------------------------------------------------------
 await page.goto("http://localhost:7799/?q=big&page=10");
 await page.waitForSelector(".result");
 await t("the deepest page this view follows a ranking to", async () => {
@@ -179,12 +158,7 @@ await t("the deepest page this view follows a ranking to", async () => {
   if (!/400 results deep/.test(note)) throw new Error("no note saying WHY it stopped: " + note);
 });
 
-// ---- a page that does not exist ------------------------------------------
-//
-// The regression this file was written too late for: `?page=99` drew the
-// skeleton for page 99 and then sat on it forever. settlePage() had corrected
-// the state behind it and nothing repainted — caught by pasting exactly this
-// url at a real relay, and held here.
+// settlePage() corrects the state behind a page that does not exist; the repaint must follow.
 await page.goto("http://localhost:7799/?q=test&page=99");
 await page.waitForSelector(".result", { timeout: 8000 }).catch(() => {});
 await t("a url past the end of the answer lands on the last page there is", async () => {
@@ -200,7 +174,6 @@ await t("…and one page back is page one, which the url stops naming", async ()
   if (new URL(page.url()).searchParams.has("page")) throw new Error(page.url());
 });
 
-// ---- an answer that fits on one page has no pager -------------------------
 await page.goto("http://localhost:7799/?q=thin");
 await page.waitForSelector(".result");
 await t("seven results are not a pager", async () => {
@@ -208,7 +181,6 @@ await t("seven results are not a pager", async () => {
   if (!/^7 results ·/.test(await stats())) throw new Error(await stats());
 });
 
-// ---- the reader outruns the preload ---------------------------------------
 await page.goto("http://localhost:7799/?q=slow");
 await page.waitForSelector(".result");
 await page.click(".pager .pg[data-page='1']");
@@ -226,9 +198,8 @@ await t("…and fills in when it does", async () => {
 });
 
 await t("…and the buffer goes back to being three pages ahead of where they now are", async () => {
-  // The turn's own preload() found one already in flight and stood down, so
-  // the answer that lands has to ask again or the promise quietly becomes
-  // "three pages ahead of where you STARTED".
+  // The turn's own preload() stood down behind one in flight, so the answer
+  // that lands must ask again.
   await page.waitForFunction(
     () => [...document.querySelectorAll(".pager .pg")].some((e) => e.textContent.trim() === "5"),
     null, { timeout: 6000 },
@@ -237,12 +208,7 @@ await t("…and the buffer goes back to being three pages ahead of where they no
   if (!asks.includes(200)) throw new Error(JSON.stringify(asks));
 });
 
-// ---- a page turn names the query the CARDS answer -------------------------
-//
-// The url is written from `hitsFor`, never from the box, and the difference is
-// invisible until somebody starts typing a new search without submitting it —
-// at which point a page turn used to write `?q=<what they were typing>&page=2`
-// over the results still on screen, and a link to it came back empty.
+// The url is written from `hitsFor`, never from the box.
 await page.goto("http://localhost:7799/?q=test");
 await page.waitForSelector(".result");
 await page.waitForSelector(".pager .pg[data-page='3']", { timeout: 5000 });
@@ -259,12 +225,8 @@ await t("the url a page turn writes is about the answer, not about the box", asy
   if (c[0] !== "result 40") throw new Error("and the cards are page two of the search that was run: " + c[0]);
 });
 
-// ---- a preload that changes nothing but the pager repaints only the pager --
-//
-// A full re-render destroys and rebuilds every card, which re-arms the lazy
-// media observers and drops whatever a browser had started loading in them.
-// The marker rides on a card ELEMENT — it cannot survive the list being
-// rewritten, which is exactly what makes it the test.
+// A full re-render rebuilds every card and drops the media it had started
+// loading; the marker rides on the element, so it cannot survive a rewrite.
 await page.goto("http://localhost:7799/?q=slow");
 await page.waitForSelector(".result");
 await page.evaluate(() => document.querySelectorAll(".result").forEach((el, i) => (el.dataset.mark = "m" + i)));
@@ -278,7 +240,6 @@ await t("…and the cards under the reader are not rebuilt for it", async () => 
   if (marks !== 40) throw new Error(`${marks} of 40 cards survived the widening ask`);
 });
 
-// ---- the type-ahead does not own the results' array -----------------------
 await page.goto("http://localhost:7799/?q=test&page=2");
 await page.waitForSelector(".result");
 await page.click("#q");

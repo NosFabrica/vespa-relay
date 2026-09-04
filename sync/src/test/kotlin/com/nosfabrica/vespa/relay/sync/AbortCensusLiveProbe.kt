@@ -54,89 +54,14 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * DO #187'S RELAYS WORK ON EVERY STREAM — the real [VisitPool], both outbox ask
- * shapes, real relays, and a real Vespa the events have to land in.
- *
- * ## The question this exists for, and why a clean dial cannot answer it
- *
- * The issue splits its relays into 28 that failed on BOTH outbox streams and
- * **109 that failed on ONE**, and that second number is the sharpest fact in
- * it. A relay that refuses one stream and serves the other is the same server,
- * on the same socket, under the same pool and the same quartz — nothing about
- * its cursor can differ between the two. The ASK is what differs:
- * `contentViaOutbox` carries 141 kinds, `profileViaOutbox` carries 3. So a
- * fault that follows the STREAM is a fault of the filter, and one that follows
- * the RELAY is a fault of the relay, and the two want opposite fixes.
- *
- * Six shapes of clean dial were run against these relays first and every one
- * advanced its cursor or drained honestly — see `RelayComplianceProbe` and the
- * table in AGENTS.md. What a clean dial is not: 96-way visits, live tails on
- * shared sockets, real band state, a real ingest queue behind `onEvent`, and
- * the pool's own narrowing. This runs those.
- *
- * ## What it prints
- *
- * Every abort line the pool produces, with — since #187 — the PAGE that caused
- * it ([RelayPages]), then a census per (relay, stream). A relay that aborts on
- * `content` and completes on `profile` is the 109's shape reproduced, and the
- * sample on that line says which of the three faults it is: events of a kind
- * that was not asked for, events above the cursor, or events belonging to
- * another subscription entirely.
- *
- * BOUNDED by a `limit` on each filter, for [WidthRescueLiveProbe]'s reason: the
- * width is what is under test and a relay decides on the REQ before an event
- * moves, so the limit cannot mask a refusal and without it this drains
- * strangers' whole corpora into a probe's engine.
- *
- * OFF by default and asserts NOTHING — it dials other people's servers and
- * writes to an engine. A relay that has changed its policy since the issue was
- * filed is a legitimate answer here, not a failure.
- *
- * ```
- * DOCKER_MIN_API_VERSION=1.24 dockerd &
- * VESPA_MEM_LIMIT=6g docker compose up -d vespa
- * until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
- * ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCensusLiveProbe*' --rerun -i
- * #   …relays of your own: -DabortCensusUrls='wss://a.example,wss://b.example'
- * #   …and longer, since a revisit is five minutes: -DabortCensusMinutes=15
- * #   …AND THE DEPLOYMENT'S OWN KEY, which is the one relays allowlist:
- * #   -DabortCensusNsec=nsec1…
- * ```
- *
- * ## What it answered, 2026-09-04 — all 137, both streams, 20 minutes
- *
- * ```
- * visitsRun 1065   abortedVisits 421   abortedQuiet 417   abortedUnreachable 4
- * abortedUnpageable 0
- *
- * 58 relay(s) never aborted
- * 77 relay(s) aborted on BOTH streams
- *  2 relay(s) aborted on ONE stream — nostr.bitcoiner.social, relay.nmail.li
- * ```
- *
- * **The fault does not follow the stream, and it is not `unpageable`.** The
- * quiet aborts split 71 / 71 between the 141-kind ask and the 3-kind one —
- * identical counts, so width discriminates nothing — and 77 of the 79 failing
- * relays failed on both. #187's "109 failed on ONE stream" did not reproduce:
- * two did.
- *
- * **And what DID fail is a relay that connects and then never EOSEs**, which is
- * `PagedFetchResult.End.IDLE` and not the cursor at all. Every one of those
- * lines carries no page sample — correctly, because a silent relay sends
- * nothing to sample, and the instrument says nothing rather than "sent 0
- * events". A relay serving the wrong events would have shown its page here.
- *
- * So this environment does not reproduce production's 49%-unpageable, and the
- * likeliest missing ingredient is the identity above: run it with the
- * deployment's own nsec before drawing a conclusion about any relay on the
- * list.
+ * Runs the real [VisitPool] over the relays issue 187 names, on both outbox
+ * ask shapes at once with a live Vespa behind the ingest, then prints every
+ * abort line with its page sample and a census of which relays aborted on
+ * which stream. Asserts nothing. Selected by `ABORT_CENSUS_VESPA` (the engine
+ * url); `-DabortCensusUrls`, `-DabortCensusMinutes` and `-DabortCensusNsec` tune it.
  */
 class AbortCensusLiveProbe {
-    /**
-     * ALL 137 RELAYS #187 NAMES — the 28 that failed on both outbox streams and
-     * the 109 that failed on one, verbatim, as a resource rather than a literal
-     * so the list is diffable against the issue.
-     */
+    /** The 137 relays issue 187 names, as a resource so the list is diffable against the issue. */
     private val urls: List<String> =
         System
             .getProperty("abortCensusUrls")
@@ -151,25 +76,11 @@ class AbortCensusLiveProbe {
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
 
     /**
-     * REAL RELAY LISTS FROM PRODUCTION, so the run starts from a store that has
-     * seen this network rather than an empty one.
-     *
-     * Kind 10002s naming these relays in an `r` tag, pulled off the deployment's
-     * own relay and inserted here. Two things it buys, and neither is the ask
-     * shape — both outbox streams bind no authors (`RosterBuilder.asksOf`
-     * returns one unbound ask when a source `select` binds nothing, and neither
-     * stream's `relaySource` has one), so the REQ is identical either way:
-     *
-     *  - the ingest path behaves as production's does, refusing what the store
-     *    already holds instead of accepting everything as new; and
-     *  - the corpus is the one these relays actually serve, so what comes back
-     *    is what a real visit would find.
-     *
-     * NIP-42 AND THE TRUST LENS, both handled the way `RelayListLiveProbe`
-     * documents: the deployment answers a stranger's REQ with `auth-required`
-     * naming the way out verbatim, so this signs a throwaway 22242 and, if the
-     * ranked answer is still empty, re-asks with the NIP-50 `include:spam`
-     * token the relay's own notice tells you to use.
+     * Seeds the store with the kind 10002s naming these relays, pulled off the
+     * deployment's relay, so ingest refuses what production already holds. The
+     * ask shape is unaffected: neither outbox stream binds authors. Answers
+     * NIP-42 with a throwaway key and retries once with `include:spam` when the
+     * ranked answer is empty.
      */
     private suspend fun seedRelayLists(
         store: com.vitorpamplona.quartz.nip01Core.store.IEventStore,
@@ -236,8 +147,7 @@ class AbortCensusLiveProbe {
                                     req(ws, unranked.get())
                                 }
 
-                                // An empty first answer is the trust lens, not
-                                // an empty corpus — one retry, unranked.
+                                // An empty first answer is the trust lens, not an empty corpus.
                                 "EOSE" -> {
                                     if (seen.isEmpty() && unranked.compareAndSet(false, true)) {
                                         req(ws, true)
@@ -288,12 +198,7 @@ class AbortCensusLiveProbe {
                         .pingInterval(Duration.ofSeconds(120))
                         .build()
                 val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-                // THE DEPLOYMENT'S OWN IDENTITY IF IT IS OFFERED, and this is
-                // not a nicety: `RelayReachLiveProbe` measured sixteen of
-                // #185's fifty "unreadable" relays serving us once NIP-42 was
-                // answered, and the key relays ALLOWLIST is the deployment's,
-                // not a throwaway. A run without it reads a relay's policy as
-                // its behaviour.
+                // The key relays allowlist is the deployment's; without it a relay's policy reads as its behaviour.
                 val identity =
                     System
                         .getProperty("abortCensusNsec")
@@ -304,14 +209,10 @@ class AbortCensusLiveProbe {
                 println("  identity: ${if (System.getProperty("abortCensusNsec").isNullOrBlank()) "a THROWAWAY key" else "the nsec given"}")
                 val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(identity.sign(template)) }
                 val complaints = ClientRelayComplaints(client)
-                // THE INSTRUMENT UNDER TEST as much as the relays are: this is
-                // the first time it runs inside the real pool.
                 val pages = ClientRelayPages(client)
                 val widths = FilterWidths()
                 val bands = SyncBands(null)
                 val normalized = urls.map { RelayUrlNormalizer.normalize(it) }
-                // BOTH STREAMS, which is the whole point — the same relays, the
-                // same pool, two ask widths.
                 val streams =
                     listOf(
                         SyncStream(
@@ -363,9 +264,7 @@ class AbortCensusLiveProbe {
                     )
                 client.connect()
 
-                // THE ABORT LINES ARE THE DELIVERABLE, and the pool writes them
-                // to stderr. Captured rather than watched, so the census below
-                // can group them and nothing is lost to a scrolled log.
+                // The pool writes its abort lines to stderr; captured so the census can group them.
                 val captured = ByteArrayOutputStream()
                 val realErr = System.err
                 System.setErr(PrintStream(captured, true))
@@ -401,9 +300,6 @@ class AbortCensusLiveProbe {
                 }
                 println("  %-22s %d".format("visitsRun", counts["visitsRun"] ?: 0))
                 println()
-                // THE CENSUS PER RELAY, which is the deliverable at this size:
-                // a list of 137 relays is unreadable as a log and the question
-                // is per (relay, stream) anyway.
                 val abortedUnits =
                     aborts
                         .mapNotNull { line ->
@@ -454,25 +350,18 @@ class AbortCensusLiveProbe {
         private const val POLL_MS = 15_000L
         private const val DEFAULT_MINUTES = 8L
 
-        /** The deployment's own relay — where the real relay lists come from. */
+        /** The deployment's own relay, where the real relay lists come from. */
         private const val SEED_RELAY = "wss://search-staging.brainstorm.world"
 
-        /** Urls per `#r` ask. Wide enough to be few round trips, narrow enough to be served. */
+        /** Urls per `#r` ask: few round trips, still served. */
         private const val SEED_CHUNK = 20
 
         private const val SEED_WAIT_MS = 30_000L
 
-        /**
-         * Workers, and it is 274 units of work — 137 relays on two streams.
-         *
-         * Nowhere near the deployment's 96 per stream, and deliberately: this
-         * shares one box with a Vespa and the point is to reach every relay
-         * once, not to reproduce the pool's own contention. What that costs is
-         * stated in the census output rather than hidden.
-         */
+        /** Far below the deployment's width on purpose: the point is to reach every relay once, beside a Vespa. */
         private const val WORKERS = 16
 
-        /** Bounded for [WidthRescueLiveProbe]'s reason — a relay decides on the REQ, not on the events. */
+        /** A relay decides width on the REQ, not on the events, so a limit masks nothing. */
         private const val EVENTS_PER_ASK = 200
 
         private val ABORT_COUNTERS =
@@ -487,13 +376,7 @@ class AbortCensusLiveProbe {
                 "abortedFailed",
             )
 
-        /**
-         * `contentViaOutbox`'s kinds, verbatim from `router.conf.example`.
-         * Copied rather than shared with [WidthRescueLiveProbe]: that one holds
-         * the list the ISSUE quoted for #185 and is pinned to it, and a probe
-         * that silently drifted onto another's corpus would be measuring a
-         * width nobody deploys.
-         */
+        /** `contentViaOutbox`'s kinds from `router.conf.example`; [WidthRescueLiveProbe] pins the older list issue 185 quoted. */
         private val CONTENT_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
 
         /** `profileViaOutbox`'s kinds, verbatim from `router.conf.example`. */

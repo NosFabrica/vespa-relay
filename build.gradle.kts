@@ -2,9 +2,7 @@ import com.diffplug.gradle.spotless.SpotlessExtensionPredeclare
 import java.io.File
 
 plugins {
-    // Load the Kotlin plugins once, on the root classpath (`apply false`): subprojects
-    // applying them per-module would otherwise each get their own classloader copy
-    // ("The Kotlin Gradle plugin was loaded multiple times in different subprojects").
+    // Loaded once here; per-module loading gives each subproject its own classloader copy.
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.diffplug.spotless)
 }
@@ -12,14 +10,11 @@ plugins {
 val ktlintVersion = libs.versions.ktlint.get()
 
 allprojects {
-    // Maven coordinates for anything this build publishes, and the root of the
-    // source package tree — the two are kept the same on purpose.
     group = "com.nosfabrica.vespa.relay"
 
     apply(plugin = "com.diffplug.spotless")
 
     if (project === rootProject) {
-        // Predeclare formatter dependencies once at the root (Spotless multi-project best practice).
         spotless { predeclareDeps() }
         configure<SpotlessExtensionPredeclare> {
             kotlin { ktlint(ktlintVersion) }
@@ -43,10 +38,7 @@ allprojects {
     }
 }
 
-// Install the repo's git hooks (.git-hooks -> .git/hooks) so spotless runs on
-// commit and tests run on push, mirroring Amethyst. Handles the worktree layout
-// (where .git is a file pointing at the real gitdir) and marks the hooks
-// executable on copy.
+// Installs .git-hooks into .git/hooks, resolving the worktree layout where .git is a file.
 val installGitHook =
     tasks.register<Copy>("installGitHook") {
         val dotGit = File(rootProject.rootDir, ".git")
@@ -63,7 +55,6 @@ val installGitHook =
         filePermissions { unix("0777") }
     }
 
-// Run before compilation so a plain `./gradlew build` installs the hooks.
 subprojects {
     tasks.matching { it.name == "compileKotlin" }.configureEach {
         dependsOn(installGitHook)

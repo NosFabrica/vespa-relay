@@ -36,31 +36,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * STAGES THE ENFORCE-MODE RETRACTION SCENARIO against a live stack, so the
- * one decision that destroys data can be watched making the RIGHT deletion
- * and no other:
- *
- *  1. an ephemeral provider publishes two 30382 scores to a real NIP-77 relay
- *     (`-DenforceProviderRelay`, an operator-chosen relay that accepts writes
- *     and reconciles);
- *  2. a 10040 naming that (provider, relay) pairing goes to the LOCAL relay,
- *     so the gated assertions scan discovers the ask;
- *  3. one PHANTOM score by the same provider goes to the local relay ONLY —
- *     the record "the provider no longer serves", manufactured.
- *
- * The running router must then: certify the provider relay, mirror the two
- * real scores, and — on the ask's first retraction audit — delete exactly the
- * phantom and keep both real scores. The probe only stages and prints ids; the sync log
- * and a REQ for the ids afterwards are the verdict.
- *
- * OFF by default: it publishes fabricated (tiny, ephemeral-keyed) score
- * events to the relay the property names. Point it only at a relay you are
- * comfortable seeding two addressable events on.
- *
- * ```
- * ./gradlew :sync:test --tests '*EnforceRetractionProbe*' \
- *   -DenforceProbe=true -DenforceProviderRelay=wss://... --rerun -i
- * ```
+ * Stages the enforce-mode retraction scenario on a live stack: two real 30382
+ * scores on a NIP-77 relay (`-DenforceProviderRelay`), a 10040 naming that
+ * pairing and one phantom score on the local relay only. The running router's
+ * first retraction audit should delete exactly the phantom; the probe prints
+ * the ids and asserts nothing. Selected by `-DenforceProbe=true`.
  */
 class EnforceRetractionProbe {
     @Test

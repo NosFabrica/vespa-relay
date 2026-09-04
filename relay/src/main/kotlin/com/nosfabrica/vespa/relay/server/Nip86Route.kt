@@ -37,10 +37,9 @@ import io.ktor.utils.io.readRemaining
 import kotlinx.io.readByteArray
 
 /**
- * The NIP-86 relay-management configuration. [banStore] is shared with
- * [NostrRelayServer]'s BanListPolicy, so bans take effect on ingest
- * immediately. [purge] removes already-stored events matching a filter.
- * [relayHttpUrl] is the `u` the NIP-98 auth event must be tagged with.
+ * The NIP-86 configuration. [banStore] is shared with the server's
+ * BanListPolicy; [purge] removes stored events matching a filter;
+ * [relayHttpUrl] is the `u` a NIP-98 auth event must carry.
  */
 class Nip86Admin(
     val banStore: BanStore,
@@ -50,10 +49,9 @@ class Nip86Admin(
 )
 
 /**
- * Mount the NIP-86 admin RPC on `POST /`. Parsing, NIP-98 auth and dispatch
- * live in Quartz's [Nip86HttpHandler]; this bridges Ktor's request to it and
- * maps the typed result onto HTTP status codes. Successful name/description/
- * icon changes flow into [info], so `GET /` reflects them.
+ * The NIP-86 admin RPC on `POST /`. Parsing, NIP-98 auth and dispatch are
+ * quartz's [Nip86HttpHandler]; this maps its result onto HTTP status codes.
+ * Name, description and icon changes flow into [info].
  */
 fun Route.nip86Admin(
     admin: Nip86Admin,
@@ -71,13 +69,9 @@ fun Route.nip86Admin(
 
     post("/") {
         val auth = call.request.headers["Authorization"]
-        // Bound the read BEFORE buffering. NIP-98 binds the token to the
-        // sha256 of the whole body, so the handler can only check size after
-        // reading — its KDoc makes bounding the read itself the adapter's
-        // job. An unbounded receive here is a pre-auth OOM vector: anyone
-        // who finds the port could fill the heap without ever presenting a
-        // token. The declared length gets a clean early 413; the +1 read
-        // catches liars and chunked uploads.
+        // Bounded before buffering: NIP-98 binds the token to the body's sha256, so the handler
+        // can only check size after reading, and an unbounded receive is a pre-auth OOM vector.
+        // The declared length gives a clean early 413; the +1 read catches liars and chunked uploads.
         val max = Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES
         if ((call.request.contentLength() ?: 0) > max) {
             call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)

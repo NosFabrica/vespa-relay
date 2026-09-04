@@ -1,23 +1,18 @@
 // The marketplace family. Two payload styles meet here: NIP-99 listings keep
 // everything in tags (price is ["price", amount, currency, period?]) while
-// NIP-15 stalls/products keep a JSON content — both are rendered from what
-// the event actually carries, with nothing invented for a missing field.
+// NIP-15 stalls/products keep a JSON content. Nothing is invented for a
+// missing field.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { register, registerRow, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf, oneLine, satsOf } from "./base.js";
 
 /**
- * "250 USD", "9 EUR / month" — the price as WORDS, so the row can carry it too.
- *
- * Every part goes through oneLine because half of these come out of a JSON
- * content: `{"price": {}}` is a legal document and `${}` on it reads "[object
- * Object]", which is a price nobody quoted.
+ * "250 USD", "9 EUR / month" — the price as words, so the row can carry it
+ * too. Every part goes through oneLine: `{"price": {}}` is a legal document.
  */
 const priceText = (amount, currency, period) => {
   const a = oneLine(amount);
-  // Each part is tested AFTER oneLine, not before: a period that is not text
-  // passes a bare `period ?` and then renders as "250 USD / ", a rate with no
-  // unit — the same class of mistake as the price itself being an object.
+  // Tested after oneLine, so a period that is not text does not render as "250 USD / ".
   const per = oneLine(period);
   return a ? `${a} ${oneLine(currency)}${per ? ` / ${per}` : ""}`.trim() : "";
 };
@@ -86,19 +81,15 @@ function badgeCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-// 30403 is the draft of a 30402 and carries the identical tags; 30020 is a
-// product sold at auction, whose JSON content is a product's plus a starting
-// bid. Neither is a different card — a draft that rendered as "kind 30403"
-// while its published twin rendered as a listing was the registry's gap, not
-// the event's.
+// 30403 is the draft of a 30402 with identical tags; 30020 is a product at
+// auction, whose JSON content is a product's plus a starting bid.
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
 
-// The rows, and the price is on every one that has a price: what a thing costs
-// is half of why anybody clicks a listing, and it is not in the title.
+// The price is on every row that has one; it is not in the title.
 registerRow([30402, 30403], (ev) => {
   const price = tagsOf(ev, "price")[0] || [];
   return {
@@ -106,9 +97,6 @@ registerRow([30402, 30403], (ev) => {
     sub: [priceText(price[1], price[2], price[3]), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
   };
 });
-// NIP-15 keeps the whole product in a JSON content, which is what the row used
-// to print: `{"name":"Widget","description":…,"price":10,…}` in place of the
-// three words of it a reader wanted.
 registerRow([30018, 30020], (ev) => {
   const c = jsonContent(ev);
   return { name: c.name, sub: [priceText(c.price, c.currency), oneLine(c.description)].filter(Boolean).join(" · ") };

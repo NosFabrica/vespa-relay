@@ -41,40 +41,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * WAS THE CORPUS CUT, OR WAS IT SKIPPED? — the question #172's data poses and
- * that no per-url theory can answer.
- *
- * Pulled off `search-staging.brainstorm.world`, 20,075 of this monitor's
- * kind-30166 records carry a fitness grade, and their measured-at stamps fall
- * into cohorts rather than a spread: 11,812 written in the last sweep, then
- * 623, 3,212, 4,150 and 278 progressively older. The share is the same in EVERY
- * grade — `prime` 55.8% fresh, `dead` 57.7%, `alias` 61.8%, `silent` 57.7% — and
- * the median `rtt-read` is flat across the age bands (664ms fresh, 937ms in the
- * 48-96h band). Nothing about the relay predicts whether its verdict was
- * re-taken. A pass wrote about three fifths of what it earned and stopped.
- *
- * Which leaves WHERE it stopped, and that is a question about our own iteration
- * order. [FitnessPass]'s write loop used to walk `outcomes`, a
- * [ConcurrentHashMap], so it went in bucket order — arbitrary, and identical on
- * every pass over the same key set. If the drop is a cut batch, the urls
- * written last sweep are a CONTIGUOUS RUN in that order and the stale ones are
- * the run after it. If the drop is anything per-url, the two sets are shuffled
- * through each other.
- *
- * So this rebuilds the exact map the pass built — the same
- * [NormalizedRelayUrl] keys, the same [ConcurrentHashMap] — walks it in
- * iteration order, and reports how the fresh/stale split falls across that
- * walk. A cut batch is unmistakable: a long unbroken prefix of fresh, then a
- * long unbroken tail of stale, and a handful of crossings rather than
- * thousands.
- *
- * ```
- * ./gradlew :monitor:test --tests '*WriteOrderForensicProbe*' \
- *   -DwriteOrderTsv=/path/to/urls_at.tsv --rerun -i
- * ```
- *
- * The TSV is `url<TAB>measured-at-epoch-seconds`, one per line — what a
- * `#d`-scoped read of the monitor's own records yields. Dials nothing.
+ * Was the verdict corpus cut, or skipped? Rebuilds the fitness pass's old
+ * `ConcurrentHashMap` from a `url<TAB>measured-at` TSV, walks it in iteration
+ * order and prints how the fresh/stale split falls across the walk; then replays
+ * the same corpus through the real pass against a store that stops answering.
+ * Dials nothing, asserts nothing. Selected by `-DwriteOrderTsv=<file>`.
  */
 class WriteOrderForensicProbe {
     @Test
@@ -94,26 +65,19 @@ class WriteOrderForensicProbe {
             println("[skip] WriteOrderForensicProbe — $path parsed to no usable rows (want `url<TAB>epoch-seconds`)")
             return
         }
-        // THE PASS'S OWN MAP, rebuilt. Keys inserted in no particular order for
-        // the same reason the pass inserts in none: the dials complete
-        // concurrently. Bucket order does not depend on insertion order, which
-        // is exactly why it was stable across passes and why the same tail was
-        // dropped every time.
+        // Bucket order does not depend on insertion order, which is why it was stable across passes.
         val outcomes = ConcurrentHashMap<NormalizedRelayUrl, Long>()
         for ((url, at) in parsed) outcomes[url] = at
 
         val newest = parsed.maxOf { it.second }
-        // The last sweep's cohort: everything stamped within an hour of the
-        // newest stamp. The cohorts are hours apart, so the cut is unambiguous.
+        // The cohorts are hours apart, so an hour below the newest stamp cuts cleanly.
         val freshFloor = newest - 3_600
         val walk = outcomes.entries.map { it.key to (it.value >= freshFloor) }
 
         val fresh = walk.count { it.second }
         var crossings = 0
         for (i in 1 until walk.size) if (walk[i].second != walk[i - 1].second) crossings++
-        // What a cut batch predicts: ONE crossing. What a per-url cause
-        // predicts: the two classes interleaved, so crossings scale with the
-        // smaller class — here, thousands.
+        // A cut batch predicts one crossing; a per-url cause interleaves the classes.
         val shuffledExpectation = 2.0 * fresh * (walk.size - fresh) / walk.size
 
         println("=".repeat(96))
@@ -125,8 +89,6 @@ class WriteOrderForensicProbe {
         println("  …a cut batch predicts               1")
         println("  …a shuffled/per-url cause predicts  ~${shuffledExpectation.toInt()}")
         println()
-        // The longest run of each, and where it starts — a cut batch puts the
-        // fresh run at the head and the stale run immediately after it.
         var bestRun = 0
         var bestAt = 0
         var bestClass = false
@@ -150,9 +112,7 @@ class WriteOrderForensicProbe {
         }
         println("  longest unbroken run                $bestRun ${if (bestClass) "FRESH" else "STALE"} at position $bestAt")
         println()
-        // …AND WHERE THE OLDER COHORTS FALL IN THE SAME WALK. If the cut point
-        // is stable, each successively older cohort is the slice just beyond
-        // the one before it: pass N wrote up to here, pass N-1 up to there.
+        // If the cut point is stable, each older cohort is the slice just beyond the one before it.
         println("  cohorts by position (median verdict age per bucket):")
         val nowSec = System.currentTimeMillis() / 1000
         for (b in 0 until 40) {
@@ -174,20 +134,7 @@ class WriteOrderForensicProbe {
         }
     }
 
-    /**
-     * THE SAME CORPUS THROUGH THE REAL PASS, cut the same way — the before/after
-     * the forensics above ask for.
-     *
-     * The production numbers ARE the "before": the write loop reached position
-     * 12,191 of 20,072 and stopped, every pass, from position zero, so the
-     * urls beyond it were never re-graded at all. This replays that on the real
-     * url set, against a store that stops answering at the same point, and
-     * reports coverage over four passes — where "covered" is a verdict actually
-     * in the store.
-     *
-     * Nothing is dialled: the probe answers from memory, because the question
-     * is what the WRITE loop reaches and the dial phase is not part of it.
-     */
+    /** The same corpus through the real pass, cut at production's share, reporting coverage over passes. */
     @Test
     fun coverageOverPassesOnTheRealCorpus() {
         val path =
@@ -201,12 +148,7 @@ class WriteOrderForensicProbe {
                 .mapNotNull { line ->
                     RelayUrlNormalizer.normalizeOrNull(line.substringBefore('\t').trim())
                 }.distinct()
-                // A SCALED slice of the real corpus, and scaled only because
-                // the in-memory store's read-before-write is linear, so the
-                // replay is quadratic where production's indexed store is not.
-                // The property under test is positional and scale-free: does
-                // pass two begin where pass one stopped. The cut below is held
-                // at production's own three-fifths.
+                // Scaled because the in-memory store's read-before-write is linear; the property is positional and scale-free.
                 .let { all -> all.take(System.getProperty("writeOrderReplayUrls")?.toIntOrNull() ?: 4_000) }
         if (urls.isEmpty()) {
             println("[skip] WriteOrderForensicProbe — $path named no usable urls")
@@ -217,9 +159,7 @@ class WriteOrderForensicProbe {
         val signer = NostrSignerInternal(KeyPair())
         val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
         val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
-        // The store as production behaved: it takes writes, and past a point in
-        // a batch it stops answering them. CUT_AT is the observed 12,191 of
-        // 20,072 — the same three-fifths.
+        // The store takes writes and past a point in a batch stops answering them, at production's observed share.
         val cutAt = urls.size * 12191 / 20072
         val writesThisPass = AtomicInteger()
         val store =

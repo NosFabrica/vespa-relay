@@ -35,21 +35,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * **A SLOW TRANSPORT MUST NOT SPEND A FAST ONE'S BUDGET.**
- *
- * The fold, the stability gate and the fitness pass each used to bound their
- * dials with one `Semaphore(dialConcurrency)` covering both transports. On
- * staging that gate ran saturated at 100 with `.onion` — 10% of the candidate
- * urls, and allowed a circuit budget on top of the clearnet one by
- * [probeIdleMs] — holding 60-74% of every permit, 30-40 of them queued behind a
- * Tor dispatcher only [TorSettings.maxSockets] wide and therefore holding a
- * probe slot with no socket under it.
- *
- * The property is scheduling, not sizing, so the first test is the one that
- * fails on the old shape: a clearnet dial must be able to START while every
- * onion permit is held. It is written as a deadlock rather than as a stopwatch —
- * the clearnet job is what releases the onion jobs — because a timing assertion
- * on a loaded CI box measures the box.
+ * One permit gate per transport, so a slow one cannot spend a fast one's budget.
+ * Written as deadlocks, not stopwatches: a timing assertion on a loaded CI box measures the box.
  */
 class DialGateTest {
     private val onions =
@@ -75,20 +62,16 @@ class DialGateTest {
     @Test
     fun `onions holding every Tor permit cannot stop a clearnet dial starting`() =
         runBlocking {
-            // Two permits each, four onions, one clearnet url — so the onions
-            // over-subscribe their own gate exactly as the measured pass did.
+            // Two permits each, four onions, one clearnet url: the onions over-subscribe their own gate.
             val gate = DialGate.over(concurrency = 2, tor = tor(maxSockets = 2))
-            // Nothing completes this but the clearnet job. Under one shared gate
-            // of two permits the first two onions take both, the clearnet url
-            // queues behind them, and nothing ever completes it: the timeout
-            // below is the old behaviour failing, not a slow machine.
+            // Only the clearnet job completes this. Under one shared gate it queues
+            // behind the onions and the timeout below is the old behaviour failing.
             val clearnetRan = CompletableDeferred<Unit>()
             val onionsSeen = AtomicInteger()
 
             withTimeout(10_000) {
                 coroutineScope {
-                    // Launched FIRST, so they hold the permits before the
-                    // clearnet job asks for one.
+                    // Launched first, so they hold the permits before the clearnet job asks for one.
                     for (url in onions) {
                         launch {
                             gate.withPermit(url) {
@@ -108,12 +91,8 @@ class DialGateTest {
         }
 
     /**
-     * The same staging, on the shape this replaced — one undifferentiated
-     * semaphore over both transports. It is here so the test above is known to
-     * be asserting something: the clearnet job never gets a permit, so nothing
-     * ever completes the onions, and the run has to be cut rather than
-     * finishing. Half a second, because the outcome is a deadlock and not a
-     * slow machine.
+     * One semaphore over both transports, so the test above is known to assert
+     * something. Half a second, because the outcome is a deadlock.
      */
     @Test
     fun `one gate over both transports is what deadlocks`() =
@@ -136,8 +115,6 @@ class DialGateTest {
     @Test
     fun `the clearnet gate still bounds clearnet dials`() =
         runBlocking {
-            // The other half of the same property: separating the two must not
-            // quietly let either one run unbounded.
             val gate = DialGate.over(concurrency = 3, tor = tor(maxSockets = 2))
             val inFlight = AtomicInteger()
             val peak = AtomicInteger()
@@ -147,9 +124,7 @@ class DialGateTest {
                         gate.withPermit(clearnet) {
                             val now = inFlight.incrementAndGet()
                             peak.updateAndGet { seen -> maxOf(seen, now) }
-                            // A suspension point, so the permits are actually
-                            // contended rather than each job running to
-                            // completion before the next one starts.
+                            // A suspension point, so the permits are contended rather than each job running to completion.
                             kotlinx.coroutines.yield()
                             inFlight.decrementAndGet()
                         }
@@ -160,11 +135,8 @@ class DialGateTest {
         }
 
     /**
-     * A permit on the Tor gate has to mean a SOCKET, not a place in the Tor
-     * dispatcher's queue — which is the whole of the "30-40 permits with nothing
-     * behind them" half of the report. So it is sized from the dispatcher, and
-     * capped by the operator's knob, which is a ceiling on the plane's whole
-     * appetite rather than a clearnet-only number.
+     * A Tor permit has to mean a socket, not a place in the Tor dispatcher's
+     * queue, so it is sized from the dispatcher and capped by the operator's knob.
      */
     @Test
     fun `the Tor gate is the Tor dispatcher's width, and never wider than the operators knob`() {
@@ -172,8 +144,6 @@ class DialGateTest {
             assertEquals(100, it.clearnetPermits)
             assertEquals(32, it.torPermits)
         }
-        // …and a deployment that asked for four dials did not ask for
-        // thirty-two onion ones.
         DialGate.over(concurrency = 4, tor = tor(maxSockets = 32)).let {
             assertEquals(4, it.clearnetPermits)
             assertEquals(4, it.torPermits)
@@ -181,11 +151,8 @@ class DialGateTest {
     }
 
     /**
-     * TWO EQUAL NUMBERS IS NOT ONE NUMBER. At `dialConcurrency = 16` against
-     * the default 32 sockets both gates are 16, and a line that collapsed to
-     * "16 dial(s)" there would read exactly like the no-Tor deployment while
-     * the real ceiling is 32. The boot line is the only place an operator sees
-     * this split, so it has to say which shape it is.
+     * At `dialConcurrency = 16` against the default 32 sockets both gates are 16,
+     * and the boot line is the only place an operator sees the split.
      */
     @Test
     fun `the boot line tells a proxied gate from an unproxied one, even at the same width`() {
@@ -205,9 +172,7 @@ class DialGateTest {
         val gate = DialGate.over(concurrency = 16, tor = null)
         assertEquals(16, gate.clearnetPermits)
         assertEquals("16 dial(s)", gate.describe())
-        // A `.onion` on a deployment with no Tor is a url that will fail, and it
-        // fails on the clearnet gate: there is no second transport to charge it
-        // to. Asserted by saturating the only gate there is.
+        // A `.onion` with no Tor fails on the clearnet gate: there is no second transport to charge it to.
         runBlocking {
             val one = DialGate.over(concurrency = 1, tor = null)
             val order = mutableListOf<String>()
@@ -220,10 +185,8 @@ class DialGateTest {
     }
 
     /**
-     * Under `SYNC_TOR_ALL` every url is dialled through the proxy, so every url
-     * must wait on the proxy's permits. The gate asks [TorTransport.routes] —
-     * the same predicate that picks the OkHttp client — precisely so the gate a
-     * url waits on and the dispatcher it lands in cannot disagree.
+     * The gate asks [TorTransport.routes], the predicate that picks the OkHttp
+     * client, so the gate a url waits on and the dispatcher it lands in cannot disagree.
      */
     @Test
     fun `SYNC_TOR_ALL puts clearnet urls on the Tor gate too`() =

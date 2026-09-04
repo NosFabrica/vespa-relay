@@ -36,19 +36,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * SEEDS ONE SIGNED KIND-10040 into a relay under test, so the `gatedBy`
- * gate and the monitor's 10040 source can be watched doing their jobs on a
- * live stack: the provider list names one real relay (which the monitor
- * should certify) and one dead url (which the gate should hold out of the
- * assertions fan-out forever, at the cost of one monitor probe).
- *
- * OFF by default and pointed at LOCALHOST by default — it publishes a
- * fabricated provider list, which belongs on a relay you run, never a public
- * one. Override the target only with a relay that is yours.
- *
- * ```
- * ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true --rerun -i
- * ```
+ * Publishes one signed kind-10040 naming a real relay and a dead one, so the
+ * `gatedBy` gate and the monitor's 10040 source can be watched on a live stack.
+ * Asserts nothing. Selected by `-Dseed10040=true`; the target
+ * (`-Dseed10040Url`, default localhost) must be a relay you run, since the
+ * provider list is fabricated.
  */
 class Seed10040Probe {
     @Test
@@ -61,9 +53,7 @@ class Seed10040Probe {
         val okhttp = OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(10)).build()
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-        // Two ephemeral identities: the USER whose 10040 this is, and the
-        // PROVIDER the service tags pair each relay with — the same two roles
-        // a real provider list separates.
+        // The user whose 10040 this is, and the provider the service tags pair each relay with.
         val user = NostrSignerInternal(KeyPair())
         val provider = NostrSignerInternal(KeyPair())
         try {

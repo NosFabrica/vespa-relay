@@ -53,79 +53,51 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 
 /**
- * The Nostr relay: Quartz's protocol engine ([RelayServerBase]) over the
- * Vespa-backed store. NIP-01 filters, NIP-50 search, live subscriptions,
- * NIP-45 COUNT and server-side NIP-77 come from the engine and the store.
+ * The Nostr relay: quartz's protocol engine ([RelayServerBase]) over the
+ * Vespa-backed store.
  *
- * The policy stack only verifies AUTH inline; EVENT publishes are verified by
- * [IngestQueue] in a parallel stage off the hot path. [limits] are enforced by
- * the engine and also drive the NIP-11 `limitation` block, so the doc and the
- * enforcement can never disagree.
+ * The policy stack verifies AUTH inline; EVENT publishes are verified by
+ * [IngestQueue] off the hot path. [limits] are enforced by the engine and
+ * render the NIP-11 `limitation` block, so the two cannot disagree.
  *
- * READS DECLARE THEIR LENS. [LensRequiredPolicy] refuses a REQ or a COUNT from
- * a connection that has not authenticated unless the query names an observer
- * or waives one with `include:spam` — this store has no house observer, so a
- * read with neither is the whole corpus with the trust switched off, and that
- * is an answer a client should have to ask for rather than one it gets by
- * saying nothing.
+ * Reads declare their lens: [LensRequiredPolicy] refuses an unauthenticated
+ * REQ or COUNT that names no observer and does not waive one. NIP-42 runs
+ * through [MultiAddressAuthPolicy] so a client that dialled the hidden service
+ * authenticates as itself; that policy also carries [onAuthenticated].
  *
- * NIP-42 runs through [MultiAddressAuthPolicy] rather than quartz's
- * OptionalAuthPolicy, so a client that dialled the relay's hidden service — and
- * therefore signs that address — authenticates as itself instead of quietly
- * losing its ranking lens. That same policy is what carries [onAuthenticated],
- * the login hook [TrustNotice] hangs off.
- *
- * [close] shuts down the connections and the ingest writer, but not the store —
- * the composition root owns that — and the sync process holds its own handle
- * to the same cluster, so "done with the store" is per-process anyway.
+ * [close] shuts the connections and the ingest writer, not the store, which
+ * the composition root owns.
  */
 class NostrRelayServer(
     store: IEventStore,
     relayUrl: NormalizedRelayUrl,
-    // Other addresses the same relay answers at — a `.onion` in front of this
-    // port. Asked per connection, not once at boot: Tor generates the hidden
-    // service's address the first time it starts, which can be after this
-    // process is already serving.
+    // Asked per connection: Tor mints the hidden service's address on its first start, which can be after ours.
     alsoServedAt: () -> Set<NormalizedRelayUrl> = { emptySet() },
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
     limits: RelayLimits? = defaultRelayLimits(),
     negentropySettings: NegentropySettings = NegentropySettings.Default,
-    // When set, published events from banned pubkeys / event ids are rejected
-    // before ingest. Shared with the NIP-86 admin endpoint.
+    // Shared with the NIP-86 admin endpoint; bans apply before ingest.
     banStore: BanStore? = null,
-    // Static write authorization (deploy-time, unlike the banStore). Empty
-    // allowlists ⇒ permissive; denylists always subtract.
+    // Deploy-time write authorization. Empty allowlists are permissive; denylists always subtract.
     pubkeyAllow: Set<String> = emptySet(),
     pubkeyDeny: Set<String> = emptySet(),
     kindAllow: Set<Int> = emptySet(),
     kindDeny: Set<Int> = emptySet(),
-    // Reject events dated more than this many seconds in the future; 0 disables.
     rejectFutureSeconds: Int = 0,
-    // Whether a read from a connection that has not authenticated must declare
-    // its lens — `observer:` or `include:spam` — to be answered at all. See
-    // [LensRequiredPolicy]; false is the older relay that answered anonymous
-    // reads out of the whole corpus without either side saying so.
+    // See [LensRequiredPolicy]; false answers anonymous reads out of the whole corpus.
     requireReadLens: Boolean = true,
-    // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
-    // Fires once per successful NIP-42 AUTH, with the connection's send —
-    // TrustNotice::check is what the composition root puts here. Unset is a
-    // relay that stays silent on login.
+    // Fires once per successful NIP-42 AUTH with the connection's send.
     onAuthenticated: AuthNotifier? = null,
-    // Only recorded into here; the consumer is the sync process, which polls
-    // the mean over GET /pressure and yields its ingest on it.
+    // Only recorded here; the sync process polls the mean over GET /pressure.
     private val servingPressure: ServingPressure? = null,
-    // Ranked reads one connection may run at once; the rest queue behind them
-    // in arrival order. See [SearchGate] for the measurement. 0 turns it off.
+    // Ranked reads one connection may run at once; 0 turns the gate off. See [SearchGate].
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
-    // A default parameter rather than a property so the gate exists before the
-    // super constructor runs: it is also the listener that drops a
-    // connection's lane, and the server takes ONE listener.
+    // A default parameter so the gate exists before the super constructor takes it as the listener.
     private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
 ) : RelayServerBase(
-        // Cheap rejections (bans, allow/deny lists, future-dated events) run
-        // first; only the policies an operator configured are installed.
+        // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
             PolicyStack(
                 *listOfNotNull(
@@ -144,26 +116,12 @@ class NostrRelayServer(
         listener = searchGate.listening(listener),
         limits = limits,
     ) {
-    /**
-     * SPLICING A LABEL'S SUBJECT IN BEHIND IT IS THE STORE'S JOB NOW, and this
-     * relay's only remaining part in it is not asking for it: a plain NIP-01
-     * recall carries no terms and expands nothing, which is every read the
-     * router makes.
-     *
-     * It lived here as an `IEventStore` decorator until store `a9ce0d254c`. The
-     * two things that could not be fixed from this side are why it moved: the
-     * reader's enrolment had to be cached with a TTL, because a relay cannot see
-     * the sync process feeding 10040s into the same index from another JVM; and
-     * placing a subject by the confidence its pointer expressed needs the
-     * pointer's relevance, which `IEventStore` does not expose and a decorator
-     * above it therefore cannot reach.
-     */
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
         ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate)
 
-    /** Connections holding a search lane right now — see [SearchGate.lanesOpen]. */
+    /** Connections holding a search lane right now. See [SearchGate.lanesOpen]. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
 
     override fun close() {
@@ -175,56 +133,28 @@ class NostrRelayServer(
 
 /**
  * The session-facing wrapper over [LiveEventStore]. Every read path is
- * delegated — including [queryRaw] (the zero-decode replay splice and the
- * fanout's shared wire body) and [sealedNegentropyStorage] (the NEG-OPEN
- * snapshot cache); falling back to the interface defaults on either would
- * silently rebuild events and snapshots the engine already optimized away.
+ * delegated, [queryRaw] and [sealedNegentropyStorage] included: the interface
+ * defaults would rebuild events and snapshots the engine already optimized away.
  *
- * Reads from an authenticated connection run in a [StoreQueryContext]
- * carrying that caller's pubkey, which the store turns into the caller's
- * web-of-trust ranking lens. An anonymous caller gets NO observer,
- * deliberately. The store treats the observer as a filter, so a house
- * observer would gate anonymous visitors to the sliver of the corpus that
- * observer has scored (~0.1% measured here) and tell them nothing about it.
- * Anonymous means the whole corpus, unranked; a caller who wants a lens asks
- * with NIP-50's `observer:` extension.
+ * A read from an authenticated connection runs in a [StoreQueryContext]
+ * carrying the caller's pubkey, which the store applies as a web-of-trust
+ * filter. An anonymous caller gets no observer and the whole corpus, unranked;
+ * [LensRequiredPolicy] decides whether such a read is answered at all, and
+ * this class decides only what a read is answered through.
  *
- * What CHANGED around that is who may ask for the unranked corpus without
- * saying so: nobody. [LensRequiredPolicy] now refuses an anonymous read that
- * declares neither `observer:` nor `include:spam` before it reaches here, so
- * the no-observer branch below is the deliberate `include:spam` answer rather
- * than the default one. This class is unchanged by that on purpose — the
- * policy decides what is ANSWERED, this decides what a read is answered
- * THROUGH, and an operator who turns the policy off still gets exactly the
- * behaviour documented above.
- *
- * The reference expansion is NOT here. A search that answers with the records
- * its Trusted Lists, Assertions and NIP-32 labels point at needs a store lookup
- * in the middle of a page, and no callback on this interface can suspend — so
- * it lives in the store, where the same two calls are ordinary suspend
- * functions that return. What this class contributes to it is the
- * [StoreQueryContext] installed below, which is how the expansion learns whose
- * enrolment gates it.
+ * The reference expansion lives in the store: it needs a suspending lookup
+ * mid-page, which no callback on this interface can make.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
     private val onObserver: ((String) -> Unit)? = null,
     /**
-     * Serving latency is sampled from the start of a read to its EOSE — the
-     * replay is the engine work. The call itself does NOT return at EOSE: a
-     * REQ parks until the client closes it, so timing the whole call would
-     * record subscription lifetimes (minutes, hours) as read latency and pin
-     * the ingest backoff at max forever. Prompt calls (COUNT) are timed
-     * whole, in a finally — a count that timed out is the most important
-     * sample there is.
+     * Sampled from the start of a read to its EOSE. A REQ parks until the
+     * client closes it, so timing the whole call would record subscription
+     * lifetimes as read latency. Prompt calls (COUNT) are timed whole.
      */
     private val pressure: ServingPressure? = null,
-    /**
-     * The per-connection lane a ranked read runs in. Taken INSIDE the timed
-     * span on purpose: a read that queued behind the connection's previous
-     * search took that long to answer from where the client sits, and the
-     * pressure figure exists to describe what a client sees.
-     */
+    /** Taken inside the timed span: a read queued behind a previous search took that long from where the client sits. */
     private val gate: SearchGate = SearchGate(0),
 ) : SessionBackend {
     override suspend fun query(
