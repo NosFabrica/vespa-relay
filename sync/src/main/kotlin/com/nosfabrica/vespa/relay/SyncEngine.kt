@@ -460,6 +460,28 @@ class SyncEngine(
                     servingMs = pressure?.meanMs(),
                     // On this clock rather than the progress tick: the stage split explains `bottleneck`.
                     stageMs = stageMs(IngestStats.dump()),
+                    // The structured read the parser above was waiting for; both
+                    // are read in one tick so they describe one instant.
+                    stageDetail =
+                        IngestStats.snapshot().map { (name, st) ->
+                            SyncProgress.StageDetail(
+                                stage = name,
+                                ms = st.totalNanos / 1_000_000,
+                                calls = st.calls,
+                                meanMs = st.meanNanos / 1_000_000,
+                                maxMs = st.maxNanos / 1_000_000,
+                            )
+                        },
+                    // Present tense: what holds the store's write lock now. Null is
+                    // the common case and means nothing does.
+                    lockHeld =
+                        IngestStats.heldNow()?.let { held ->
+                            SyncProgress.LockHeld(
+                                stage = held.stage,
+                                heldMs = held.heldForMillis(),
+                                detail = held.detail,
+                            )
+                        },
                     // Only a VespaEventStore has a feed; the cast is the feature detection.
                     feed = (store as? VespaEventStore)?.runCatching { feedStatus() }?.getOrNull(),
                 )
