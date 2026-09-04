@@ -91,8 +91,8 @@ class DialGateTest {
         }
 
     /**
-     * The shape this replaced, one semaphore over both transports, so the test
-     * above is known to assert something. Half a second, because the outcome is a deadlock.
+     * One semaphore over both transports, so the test above is known to assert
+     * something. Half a second, because the outcome is a deadlock.
      */
     @Test
     fun `one gate over both transports is what deadlocks`() =

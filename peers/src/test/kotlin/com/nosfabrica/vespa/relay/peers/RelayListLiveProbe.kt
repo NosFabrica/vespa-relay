@@ -43,11 +43,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 
 /**
- * Pulls real kind-10040 declarations off a live relay, feeds them to a real
- * Vespa, runs [RelayDiscovery.discover] over `router.conf.example`'s own monitor
- * sources, then re-answers through the tags projection so the two can be compared.
- * Asserts nothing. Selected by `-DliveListProbe=true`; `-DliveListRelay`,
- * `-DliveListVespa` and `-DliveListKind` override the defaults.
+ * Pulls real kind-10040 declarations off a live relay into a real Vespa, runs
+ * [RelayDiscovery.discover] over `router.conf.example`'s monitor sources, then
+ * re-answers through the tags projection so the two can be compared. Asserts nothing.
+ * Selected by `-DliveListProbe=true`; `-DliveListRelay`, `-DliveListVespa`, `-DliveListKind` override.
  */
 class RelayListLiveProbe {
     private val enabled = System.getProperty("liveListProbe") == "true"
@@ -91,8 +90,7 @@ class RelayListLiveProbe {
                 found.take(15).forEach { println("    ${it.url.url}${if (it.bindings.isEmpty()) "" else "  ${it.bindings}"}") }
                 if (found.size > 15) println("    …and ${found.size - 15} more")
 
-                // The removed path, one corpus visit per tag name. Read the ratio of
-                // the two clocks: a laptop corpus is the one size at which a visit looks cheap.
+                // One corpus visit per tag name; read the ratio of the two clocks.
                 val viaVisit = LinkedHashSet<String>()
                 val visitAt = System.nanoTime()
                 for (select in selects.filter { it.tag != null && it.bindings.isEmpty() }) {

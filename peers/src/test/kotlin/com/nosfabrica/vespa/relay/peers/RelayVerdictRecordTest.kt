@@ -344,9 +344,8 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict still reads as CURRENT after the other writers have edited the record`() =
         runBlocking {
-            // Other writers carry the tag forward by copying it; one rebuilding at a
-            // fixed arity would keep the name and lose the clock and the rules version.
-            // So this asserts what `load` decides, not what the tags are called.
+            // Other writers carry the tag forward by copying it, so this asserts what
+            // `load` decides, not what the tags are called.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)

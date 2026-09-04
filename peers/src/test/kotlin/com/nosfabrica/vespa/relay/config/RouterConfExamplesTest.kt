@@ -36,10 +36,7 @@ import kotlin.test.assertTrue
  * into what it claims to be; a broken example is a broken feature.
  */
 class RouterConfExamplesTest {
-    /**
-     * NIP-85 assertions (30382-30385) and Tapestry Trusted Lists (30392-30395):
-     * one family, because a search expands all eight.
-     */
+    /** NIP-85 assertions and Tapestry Trusted Lists: one family, because a search expands all eight. */
     private val trustedKinds = listOf(30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395)
 
     /** Tests run from the module dir; the example sits at the repo root. */
