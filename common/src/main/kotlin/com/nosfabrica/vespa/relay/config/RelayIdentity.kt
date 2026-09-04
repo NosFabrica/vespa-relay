@@ -26,26 +26,17 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePrivateKeyAsHexOrNull
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * The relay's own keypair (`RELAY_NSEC`), shared by every role in which it acts
- * as itself: the NIP-11 `self` it advertises, the NIP-42 challenges it answers,
- * and the NIP-66 liveness records it signs. One key on purpose — a reader can
- * then verify that a 30166 or an AUTH response came from the relay whose NIP-11
- * they just read.
- *
- * There is no generated fallback: an ephemeral key would be a stranger every
- * restart. Unset, the relay simply acts anonymously — it answers no challenges,
- * publishes no liveness records, and advertises no `self`.
+ * The relay's own keypair (`RELAY_NSEC`), one key for every role it acts in
+ * as itself: the NIP-11 `self`, the NIP-42 challenges, the NIP-66 records.
+ * No generated fallback, since an ephemeral key is a stranger every restart;
+ * unset, the relay acts anonymously.
  */
 object RelayIdentity {
     const val ENV_VAR = "RELAY_NSEC"
 
     /**
      * The signer built from [ENV_VAR], or null when it is unset or blank.
-     * Only `nsec1…` is accepted — bare hex has no checksum, and a mistyped
-     * hex key would have the relay sign as a stranger with nothing to
-     * indicate it. Anything else throws rather than starting anonymous: a
-     * relay silently serving nothing because it never answered a challenge is
-     * exactly the failure this key exists to fix.
+     * Anything else that does not decode throws rather than starting anonymous.
      */
     fun fromEnv(env: (String) -> String? = System::getenv): NostrSignerInternal? {
         val raw = env(ENV_VAR)?.trim()?.ifEmpty { null } ?: return null
@@ -53,18 +44,14 @@ object RelayIdentity {
     }
 
     fun signerFor(secret: String): NostrSignerInternal {
-        // BIP-173 allows the ALL-UPPERCASE spelling (QR exports produce it);
-        // without normalizing, `NSEC1…` would die in [describe] as "63
-        // characters" — the one hint that never mentions case.
+        // BIP-173 allows the all-uppercase spelling (QR exports produce it).
         val trimmed =
             secret
                 .trim()
                 .removeSurrounding("\"")
                 .let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
         val hex =
-            // quartz owns the bech32 side, and returns null for an npub rather
-            // than pretending a public key could sign. Bare hex never reaches
-            // it: this setting takes only nsec1 — see [describe].
+            // Only nsec1: bare hex has no checksum, and an npub decodes to null here.
             (if (trimmed.startsWith("n")) decodePrivateKeyAsHexOrNull(trimmed) else null)
                 ?.takeIf { it.length == 64 }
                 ?: throw IllegalArgumentException(

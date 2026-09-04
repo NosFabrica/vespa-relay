@@ -26,16 +26,9 @@ import kotlinx.coroutines.CancellationException
 
 /**
  * Write [events] through [write]; if that throws, split the batch and write
- * the halves, down to the single event the writer cannot take.
- *
- * A bulk write fails as a unit, so one bad event would otherwise cost the
- * whole batch — 999 good events lost per bad one at the default size, with no
- * retry. Bisecting costs ~2·log2(n) extra writes on a failing batch, nothing
- * on a healthy one, and ends holding the offender by itself for [onPoison] to
- * report. Re-writing the good halves is safe: re-inserting an already-applied
- * event is a duplicate the store rejects.
- *
- * Free-standing and injectable so the isolation can be tested without a store.
+ * the halves, down to the single event the writer cannot take, which goes to
+ * [onPoison]. Re-writing a good half is safe: an already-applied event comes
+ * back as a duplicate.
  */
 internal suspend fun insertBisecting(
     events: List<Event>,
@@ -55,9 +48,8 @@ private suspend fun bisect(
 ) {
     if (events.isEmpty()) return
     try {
-        // Outcomes come back positionally aligned with the batch, which is what
-        // lets a caller attribute a rejection to the event that earned it —
-        // the whole basis for deciding whether an id is worth remembering.
+        // Outcomes are positionally aligned with the batch; that alignment is
+        // what attributes a rejection to the event that earned it.
         onOutcomes(events, write(events))
     } catch (e: CancellationException) {
         throw e
@@ -66,11 +58,8 @@ private suspend fun bisect(
             onPoison(events.single(), e)
             return
         }
-        // Splitting assumes ONE event is at fault. When the store itself is
-        // refusing (a full disk, a dead engine) every half fails all the way
-        // down and isolation turns one failed write into ~2n — precisely the
-        // wrong moment to multiply the load. So spend a fixed budget and give
-        // up on the remainder when it runs out.
+        // Splitting assumes one event is at fault. When the store itself is
+        // refusing, every half fails, and the budget bounds the extra writes.
         if (budget[0] <= 0) {
             onGaveUp(events, e)
             return
@@ -82,10 +71,5 @@ private suspend fun bisect(
     }
 }
 
-/**
- * Writes one batch may spend isolating its bad events before giving up.
- * Isolating k bad events out of n costs about `2·k·log2(n)` writes, so 64
- * covers three in a 1000-event batch — past the rate seen in practice. What
- * it really bounds is the store-wide case, where every write fails.
- */
+/** Writes one batch may spend isolating its bad events before giving up. */
 private const val ISOLATION_WRITE_BUDGET = 64

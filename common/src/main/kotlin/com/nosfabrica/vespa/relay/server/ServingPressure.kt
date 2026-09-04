@@ -24,40 +24,25 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * How slow the relay's own reads have become, so the mirror can get out of
- * their way. A client's REQ queues behind ingest's queries inside the engine
- * and nothing can reorder that queue — the only lever is to stop filling it.
- *
- * Latency is the steering signal (not a fixed ingest rate) because it needs no
- * per-deployment tuning. The mean is exponentially weighted (alpha = 1/8): an
- * ordinary slow query is absorbed, a sustained rise moves it within a handful
- * of reads, and it decays back as soon as reads are healthy.
+ * their way: a client's REQ queues behind ingest's queries inside the engine,
+ * and the only lever is to stop filling the queue. The mean is exponentially
+ * weighted (alpha = 1/8), so one slow query is absorbed and a sustained rise
+ * moves it within a handful of reads.
  */
 class ServingPressure(
-    /**
-     * Above this mean read latency (ms), ingest starts yielding. Comfortably
-     * above a healthy read (~400ms against 52M documents) and far below the
-     * point a client gives up.
-     */
+    /** Above this mean read latency (ms), ingest starts yielding. */
     private val thresholdMs: Long = DEFAULT_THRESHOLD_MS,
-    /** Never pause a batch longer than this, however bad it gets. */
+    /** Never pause a batch longer than this. */
     private val maxBackoffMs: Long = 2_000,
 ) {
-    // Fixed-point millis: updated from many threads, and an AtomicLong keeps
-    // that lock-free without a full histogram.
     private val meanMicros = AtomicLong(0)
 
     private val samples = AtomicLong(0)
 
-    /** Record a completed read. Called on the serving path, so it must stay cheap. */
+    /** Records a completed read. On the serving path, so it must stay cheap. */
     fun record(durationMs: Long) {
-        // Floored at 1: a sub-millisecond read is a real (fast) sample. If a
-        // zero could reach the mean, a run of cache hits would zero it and
-        // the next call's first-sample check would adopt one straggler
-        // wholesale — the exact spike MIN_SAMPLES and the EWMA exist to
-        // absorb. Negative guards against a non-monotonic caller clock.
+        // Floored at 1 so a mean of zero stays unreachable; the counter, not the mean, says which sample is first.
         val micros = durationMs.coerceAtLeast(1) * 1_000
-        // The counter, not a zero mean, says whether this is the first
-        // sample — a mean of zero must stay unreachable.
         val first = samples.getAndIncrement() == 0L
         meanMicros.updateAndGet { prev ->
             if (first) micros else prev + (micros - prev) / 8
@@ -70,16 +55,10 @@ class ServingPressure(
     fun sampleCount(): Long = samples.get()
 
     /**
-     * Overwrite the mean with one measured somewhere else. The sync process
-     * runs in its own container and cannot [record] the relay's reads, so it
-     * polls them over HTTP and adopts what the relay reports — the EWMA
-     * already happened on the relay side, so this replaces rather than
-     * smooths. An instance is either recorded into or adopted into, never
-     * both: mixing them would interleave two unrelated distributions.
-     *
-     * `adopt(0, 0)` is the reset: below [MIN_SAMPLES], [backoffMs] is zero,
-     * which is how a poller says "the feed is gone, stop throttling on a
-     * number from the past".
+     * Overwrites the mean with one measured elsewhere (the sync process polls
+     * the relay's over HTTP). Replaces rather than smooths: the EWMA already
+     * happened there. An instance is recorded into or adopted into, never both.
+     * `adopt(0, 0)` is the reset.
      */
     fun adopt(
         meanMs: Long,
@@ -89,12 +68,7 @@ class ServingPressure(
         samples.set(sampleCount.coerceAtLeast(0))
     }
 
-    /**
-     * How long ingest should wait before its next batch, in milliseconds. Zero
-     * while reads are healthy or before there are enough samples to mean
-     * anything — a relay nobody is querying must mirror at full speed. Past
-     * the threshold it grows with the overshoot.
-     */
+    /** How long ingest should wait before its next batch: zero while reads are healthy or under-sampled, then the overshoot. */
     fun backoffMs(): Long {
         if (samples.get() < MIN_SAMPLES) return 0
         val mean = meanMs()
@@ -109,13 +83,10 @@ class ServingPressure(
     }
 
     companion object {
-        /** One default, referenced by the env fallback too, so they cannot drift. */
+        /** One default, referenced by the env fallback too. */
         const val DEFAULT_THRESHOLD_MS = 2_000L
 
-        /**
-         * Below this, the mean is one client's cold first query rather than a
-         * trend, and throttling the mirror on it would be superstition.
-         */
+        /** Below this, the mean is one client's cold first query rather than a trend. */
         const val MIN_SAMPLES = 20
     }
 }

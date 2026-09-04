@@ -22,22 +22,9 @@ package com.nosfabrica.vespa.relay.web
 
 /**
  * Every `<link rel="icon">` in a page, replaced by one pointing at [icon].
- *
- * Replaced rather than appended, and this is the half that would silently do
- * nothing if it were skipped: the pages hint the built-in SVG FIRST, and Chrome,
- * Firefox and Edge all prefer an SVG icon to an `.ico`. An operator's icon added
- * alongside would lose to ours in every browser except Safari — an override that
- * appears to work only where nobody looks.
- *
- * [icon] null leaves the markup exactly as it is on disk, which is the common
- * case and the one worth keeping byte-identical: with no override the pages are
- * the classpath's own bytes, and the two hints they carry are already this
- * relay's icon.
- *
- * The value is ESCAPED because of where it can come from. `RELAY_ICON` is an
- * operator's own environment, but `changerelayicon` is a NIP-86 RPC — an
- * authenticated admin over the network — and this function is what puts its
- * argument inside an HTML attribute of a page served to everyone.
+ * Replaced rather than appended: browsers prefer the SVG the pages hint
+ * first. Null leaves the markup byte-identical. The value is escaped because
+ * `changerelayicon` is a network rpc and this puts its argument in an attribute.
  */
 fun pageWithIcon(
     html: String,
@@ -49,8 +36,7 @@ fun pageWithIcon(
     return ICON_LINK.replace(html) {
         if (first) {
             first = false
-            // The captured indentation keeps the substituted line sitting where
-            // the pair it replaces sat; the pages are read by people.
+            // The captured indentation keeps the line where the pair it replaces sat.
             it.groupValues[1] + replacement + it.groupValues[2]
         } else {
             ""

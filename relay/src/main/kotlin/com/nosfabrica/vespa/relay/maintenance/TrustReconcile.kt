@@ -24,19 +24,10 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.delay
 
 /**
- * Reconcile the trust projection, waiting out an engine that is not answering
- * yet. A cold Vespa serves queries only once the content node has loaded the
- * index — minutes on a large corpus — so a failure is treated as "not yet" and
- * retried rather than as an answer.
- *
- * Zero providers is retried too: the call once "succeeded" one second after
- * start against a content node still loading 24M events, and the projection
- * stayed empty for hours. Zero is indistinguishable from cold, so it is only
- * accepted once the wait budget is spent.
- *
- * Bounded, because a failure that is NOT warm-up (a wrong url, a dead cluster)
- * must not hold the relay off its port forever — serving unranked results
- * beats serving nothing.
+ * Reconcile the trust projection, waiting out a cold engine. A failure and a
+ * zero-provider answer are both read as "not answering yet" and retried; zero
+ * is only accepted once the wait budget is spent. Bounded so a failure that is
+ * not warm-up cannot hold the relay off its port.
  */
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     var waited = 0L
@@ -81,16 +72,12 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
                 "trust: reconcile still failing after ${waited / 1000}s; " +
                     "serving with the projection as-is — ranked searches may return nothing until it runs clean",
             )
-            // The whole stack, once — this is the only place it can be printed.
             cause?.printStackTrace()
             return
         }
         if (!printedFirstFailure) {
-            // On the FIRST failure, whichever attempt that is — a success on
-            // attempt 1 followed by a throw on attempt 2 deserves the same
-            // diagnostic, or the loop retries silently for ten minutes. A
-            // deterministic bug and a cold engine look identical from one
-            // message, hence the stack.
+            // The first failure on any attempt gets the stack: a bug and a cold
+            // engine read the same from one message.
             printedFirstFailure = true
             println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
             cause?.printStackTrace()
@@ -100,7 +87,5 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     }
 }
 
-// The engine is being waited ON, not polled at: a cold content node takes
-// minutes, and each attempt is a real query.
 private const val TRUST_RECONCILE_RETRY_MS = 5_000L
 private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L

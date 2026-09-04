@@ -34,83 +34,38 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * WHAT THIS MIRROR IS DOING, as its own `/stats.json` publishes it.
+ * The mirror's own `/stats.json`: what it is doing and how far it has walked.
  *
- * ## Why this is not a section of the relay's document
- *
- * It was, and the relay could not honestly build it. The mirror wrote three
- * JSON files to a shared volume, and the serving relay read them back, re-parsed
- * them against an allowlist, and re-narrated them — about 2,500 lines whose only
- * job was to re-derive what the writer already knew. Two things were wrong with
- * that beyond the cost.
- *
- * A file cannot say whether the process writing it is alive. That is why the
- * progress document had to carry a `writtenAt` heartbeat and the reader had to
- * turn it into a `staleForSec`: without them "a mirror that has been down for a
- * day" and "a mirror mid-cycle" published the identical card. An HTTP request
- * answers that question by whether it answers, so the heartbeat and every
- * inference built on it are gone.
- *
- * And the re-parse was a defence against a boundary that no longer exists. The
- * relay was right to distrust another process's file — a hand-edited or
- * half-migrated one must not be able to put arbitrary JSON into a page served
- * under the relay's name. Here the writer and the reader are one object on one
- * heap, so `SyncProgress.latest` is served as it is built.
- *
- * ## What is left, and why each part earns it
- *
- * [SyncCoverageReport] stays whole: folding bands and sweep cursors into
- * per-stream groups and depth buckets is real computation, not a re-copy, and
- * it is the same computation wherever it runs. [GaugeSeries] stays because a
- * series is the one thing a single tick cannot state. [StatusVocabulary] ships
- * with the numbers it defines, so a chip can never describe a member in words
- * the router would not use.
- *
- * The envelope is deliberately the relay's: same `schema`/`generatedAt`/`tiers`
- * shape, same per-section `status`/`generatedAt`/`data`. The two pages share a
- * rendering engine, and a second envelope would be a second thing to keep in
- * step for no reader's benefit.
+ * The writer and the reader share one heap, so `SyncProgress.latest` is served
+ * as built, and liveness is answered by whether the request answers. The
+ * envelope matches the relay's document (`schema`, `generatedAt`, `tiers`, a
+ * `status`/`generatedAt`/`data` section) because the two pages share a
+ * rendering engine.
  */
 class SyncStatus(
     private val bands: SyncBands,
     private val sweeps: SweepState,
     private val progress: SyncProgress,
     private val snapshot: StatsSnapshot,
-    /**
-     * How often [publish] is called, so the page can poll on the cadence the
-     * document states rather than on a guess — see `everySeconds`.
-     */
+    /** How often [publish] is called; published so the page polls on the stated cadence. */
     private val everySeconds: Long,
     /**
-     * EVERY PRIME (relay, stream) UNIT THE POOL HOLDS — `VisitPool.primeUnits`.
-     *
-     * A supplier rather than a value for the same reason the processors'
-     * counters are one: the roster is rebuilt on its own clock and this is read
-     * once per tick, so a copy kept in step by hand would be the shape that
-     * produces a table disagreeing with the `roster` count above it.
-     *
-     * Empty by default, which publishes no section at all — a router with no
-     * visit streams has no prime relays, and an empty table would read as one
-     * that has lost them.
+     * Every prime (relay, stream) unit the pool holds, read once per tick
+     * because the roster is rebuilt on its own clock. Empty publishes no
+     * `relays` section at all.
      */
     private val primeUnits: () -> List<RelayStatusReport.PrimeUnit> = { emptyList() },
 ) {
     /**
-     * Build the document and hand it to [snapshot].
-     *
-     * Never throws. This runs on a timer beside the mirror's own work, and a
-     * status page that takes the router down with it would be worse than no
-     * status page — the failure is published INTO the document instead, under
-     * the same `errors` key every section of the relay's document uses.
+     * Build the document and hand it to [snapshot]. Never throws: a failed
+     * part is published under `errors` instead.
      */
     fun publish(nowSeconds: Long = System.currentTimeMillis() / 1000) {
         val startedMs = System.currentTimeMillis()
         val errors = LinkedHashMap<String, String>()
 
-        // ONE SNAPSHOT, TWO READERS. The band map is the expensive thing this
-        // tick touches (measured at 13.7MB and 213ms to parse from disk), and
-        // both the coverage fold and the per-relay table are walks of it — so
-        // it is built once here rather than once per report.
+        // The band snapshot is the expensive part of the tick; both reports
+        // walk it, so it is built once.
         val bandsDoc =
             runCatching { bands.snapshot() }
                 .onFailure { errors["bands"] = it.message ?: it::class.simpleName.orEmpty() }
@@ -121,19 +76,14 @@ class SyncStatus(
                 .onFailure { errors["sync"] = it.message ?: it::class.simpleName.orEmpty() }
                 .getOrNull()
 
-        // WHERE EACH PRIME RELAY STANDS. Its own member rather than a part of
-        // the coverage fold: that one groups by STREAM and its denominator is
-        // the relays a stream has touched, and this one's subject is the
-        // roster — which is the difference between "how far have the walks
-        // got" and "which relays are being synced at all".
+        // Its own member: the coverage fold groups by stream over relays a
+        // stream has touched, and this one's subject is the roster.
         val relays =
             runCatching { RelayStatusReport.build(bandsDoc, primeUnits(), nowSeconds) }
                 .onFailure { errors["relays"] = it.message ?: it::class.simpleName.orEmpty() }
                 .getOrNull()
 
-        // The previously served series, so this tick appends to it rather than
-        // restarting it. The document is where state that outlives one pass is
-        // kept — see [GaugeSeries] for why nothing else holds it.
+        // The previously served series, so this tick appends rather than restarts it.
         val servedProgress = (served()?.get("data") as? JsonObject)?.get("progress") as? JsonObject
         val latest = progress.latest
         val withSeries =
@@ -156,20 +106,14 @@ class SyncStatus(
                 }
             }
 
-        // What every number above MEANS — the subset of the shared vocabulary
-        // THIS document publishes. The monitor's members are defined in the
-        // same map and shipped in the monitor's own document; see
-        // [StatusVocabulary.termsFor] for why a glossary listing members the
-        // document does not carry is worse than a smaller one.
+        // Only the vocabulary this document's members use; see [StatusVocabulary.termsFor].
         val withTerms = data?.let { JsonObject(it + ("terms" to StatusVocabulary.termsFor(it))) }
 
         snapshot.publish(
             buildJsonObject {
                 put("schema", SCHEMA_VERSION)
-                // WHOSE PAGE THIS IS. One markup file is served by all three
-                // services, so the heading and the tab come from the document
-                // rather than from the page — a tab reading "Relay stats" on
-                // the mirror's port is worse than no title at all.
+                // One markup file serves all three services, so the title, scope
+                // and what the numbers cover come from the document.
                 put("title", "Mirror status")
                 put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                 put(
@@ -178,8 +122,6 @@ class SyncStatus(
                         "for what the store holds, read the relay's own /stats.html.",
                 )
                 put("timezone", "UTC")
-                // What the numbers cover, stated by the service that computed
-                // them — the page cannot know, and the three answers differ.
                 put("counted", "Counted against this mirror's own state, not the relay's corpus.")
                 putJsonObject("tiers") {
                     putJsonObject(TIER) {
@@ -214,23 +156,10 @@ class SyncStatus(
     private fun served(): JsonObject? = snapshot.served()?.doc?.get("sync") as? JsonObject
 
     companion object {
-        /**
-         * The one tier this document has.
-         *
-         * The relay's document is computed in two passes on two cadences,
-         * because a grouping over its whole corpus costs minutes. Nothing here
-         * queries anything — it is a fold over maps this process already holds —
-         * so there is one pass and it is named for what it is.
-         */
+        /** The one tier: everything here is a fold over maps this process already holds. */
         const val TIER = "status"
 
-        /**
-         * Bumped when a RELEASED member of this document changes meaning or
-         * leaves, so the page can say it was written for another one rather
-         * than quietly mis-drawing it. Its own number, not the relay's: the two
-         * documents are published by different processes and version
-         * independently.
-         */
+        /** Bumped when a released member changes meaning or leaves. Versioned apart from the relay's document. */
         const val SCHEMA_VERSION = 1
     }
 }

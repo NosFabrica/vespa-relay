@@ -32,61 +32,19 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * WHAT THE MONITOR HAS DECIDED, as its own `/stats.json` publishes it.
- *
- * ## Why the monitor has a page at all
- *
- * Because it answers a different question from the mirror's, on a different
- * clock, in a different unit. Sync coverage answers "is the mirror keeping up",
- * measured in events; this answers "what is out there, and how much of it can we
- * use", measured in relay urls. They were two cards on one page and the page
- * asked both at once — an operator arrives with one of the two questions, and
- * the split is what lets them stop reading at the answer.
- *
- * It is also what the eventual process split needs. The monitor's rows already
- * come from its own [Processors]; this document and the page over it mean that
- * when the plane moves into its own container, nothing about how it is read
- * changes — the port is already its own.
- *
- * ## What is in it
- *
- * The four pass rows and nothing else. There is no `streams` half and no health
- * gauges: the mirror owns the ingest queue, the heap and the sockets, and a
- * second reading of them here would be a second number for one fact.
- *
- * The envelope is deliberately the same as the relay's and the mirror's — same
- * `schema`/`generatedAt`/`tiers`, same per-section `status`/`data` — because all
- * three pages run the same rendering engine, and a third envelope would be a
- * third thing to keep in step for no reader's benefit.
+ * What the monitor has decided, as its own `/stats.json` publishes it: the
+ * pass rows and nothing else, in the same envelope as the relay's and the
+ * mirror's documents so all three pages share one renderer. The mirror owns
+ * the health gauges; a second reading here would be a second number for one fact.
  */
 class MonitorStatus(
     private val processors: Processors,
     /** How often [document] is rebuilt, published so the page polls on what the document states. */
     private val everySeconds: Long,
-    /**
-     * THE SERVED RELAY'S OWN WS URL — `RELAY_URL`, published because the page
-     * cannot derive it.
-     *
-     * The verdict panel reads kind-30166 records over a websocket, and it used
-     * to open one against `location`: correct on the relay's own page, which is
-     * where the panel lived, and wrong the moment it moved here, because this
-     * page is served on the MONITOR's port. It would have dialled the status
-     * site and found no relay there — a panel that reads empty on a store
-     * holding thousands of records, which is the exact confusion the panel
-     * exists to end.
-     *
-     * Null in a deployment with no relay beside it; the page then says so
-     * rather than guessing at an origin.
-     */
+    /** The served relay's ws url, which the verdict panel dials; this page is on the monitor's port, so `location` is wrong. */
     private val relayUrl: String? = null,
 ) {
-    /**
-     * The document, pure, so it can be asserted without a server.
-     *
-     * Never throws: a `Processors` snapshot is a read of atomics the passes
-     * already keep, so there is nothing here that can fail in a way worth
-     * reporting into the document.
-     */
+    /** The document, pure, so it can be asserted without a server. Never throws. */
     fun document(nowSeconds: Long = System.currentTimeMillis() / 1000): JsonObject {
         val startedMs = System.currentTimeMillis()
         val rows = processors.snapshot()
@@ -94,24 +52,18 @@ class MonitorStatus(
             buildJsonObject {
                 putJsonArray("processors") { rows.forEach { add(Processors.published(it)) } }
             }
-        // ABSENT, not empty, when no pass has registered a row. A deployment
-        // with no signer runs no monitor at all, and a card of zeroes there
-        // reads as a monitor that is failing rather than one nobody configured.
+        // Absent, not empty, when no pass has registered a row: a card of zeroes reads as a failing monitor.
         val data =
             progress.takeIf { rows.isNotEmpty() }?.let {
                 buildJsonObject {
                     put("progress", it)
-                    // What every number above MEANS — the subset of the shared
-                    // vocabulary this document actually publishes. See
-                    // [StatusVocabulary.termsFor] for why it is a subset.
                     put("terms", StatusVocabulary.termsFor(it))
                 }
             }
 
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
-            // See SyncStatus: one markup file, three services, so the heading
-            // and the tab are the document's to state.
+            // One markup file serves three services, so the heading is the document's to state.
             put("title", "Relay monitor")
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put(
@@ -122,8 +74,6 @@ class MonitorStatus(
             )
             put("timezone", "UTC")
             put("counted", "Counted over the relay urls this router discovers, not over its corpus.")
-            // See [relayUrl]: this page is not served by the relay, so the
-            // websocket the verdict panel opens has to be named for it.
             relayUrl?.let { put("relay", it) }
             putJsonObject("tiers") {
                 putJsonObject(TIER) {
@@ -145,18 +95,10 @@ class MonitorStatus(
     }
 
     companion object {
-        /**
-         * The one tier this document has — the passes' own rows, read from
-         * atomics. Nothing here queries or dials, so there is one pass and it is
-         * named for what it is.
-         */
+        /** The one tier: the passes' own rows, read from atomics. Nothing here queries or dials. */
         const val TIER = "status"
 
-        /**
-         * Bumped when a RELEASED member changes meaning or leaves. Its own
-         * number: the three documents are published by different planes and
-         * version independently.
-         */
+        /** Bumped when a released member changes meaning or leaves. Versioned independently of the other two documents. */
         const val SCHEMA_VERSION = 1
     }
 }

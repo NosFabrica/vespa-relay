@@ -30,13 +30,7 @@ import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import java.security.MessageDigest
 
-/**
- * A strong ETag over [bytes] — the first 16 hex of its SHA-256.
- *
- * Content-derived rather than a timestamp on purpose: a jar entry's mtime is
- * the build's, not the file's, so two deploys of an unchanged module would
- * still miss. A hash makes "unchanged" mean unchanged.
- */
+/** A strong ETag over [bytes], the first 16 hex of its SHA-256. Content-derived: a jar entry's mtime is the build's. */
 internal fun etagOf(bytes: ByteArray): String =
     MessageDigest
         .getInstance("SHA-256")
@@ -53,18 +47,9 @@ class CachedPage(
 }
 
 /**
- * A page whose icon links follow the service's relay document.
- *
- * Two states, and the common one costs nothing: with no override the html is
- * the classpath's own bytes and the [CachedPage] is built once, exactly as
- * before. With one, the markup is re-rendered — and re-rendered AGAIN whenever a
- * NIP-86 `changerelayicon` moves the doc, because a cached page is otherwise
- * frozen at boot and would keep serving a link to an icon the relay no longer
- * claims.
- *
- * Rebuilt on change rather than rendered per request: the substitution and the
- * etag hash together walk 25KB of markup, a page load asks for that markup all
- * the time, and an admin rpc arrives approximately never.
+ * A page whose icon links follow the service's relay document. Rebuilt on
+ * change rather than rendered per request: a NIP-86 `changerelayicon` arrives
+ * approximately never, a page load all the time.
  */
 class IconedPage(
     private val template: String,
@@ -77,7 +62,7 @@ class IconedPage(
     var page: CachedPage = CachedPage(pageWithIcon(template, icon))
         private set
 
-    /** Re-theme, unless this is the icon already drawn — most rpcs change something else. */
+    /** Re-themes, unless this is the icon already drawn. */
     fun icon(icon: String?) {
         if (icon == current) return
         current = icon
@@ -86,17 +71,9 @@ class IconedPage(
 }
 
 /**
- * The icon an operator set, or null when the icon in the doc is the one this
- * service serves anyway.
- *
- * The whole point is the null. With `RELAY_ICON` unset the NIP-11 doc now
- * publishes [selfIconUrl] — this relay's own `/favicon.ico` — so "the doc has an
- * icon" stopped meaning "the operator overrode the icon". Treating it as an
- * override would rewrite every page's `<link rel="icon">` to a url identical to
- * the built-in one it replaced (harmless, but a needless absolute url and a
- * second name for one file), and, worse, point `/favicon.ico` at itself: a
- * browser following that redirect arrives at the route that issued it and loops
- * until it gives up with no icon at all.
+ * The icon an operator set, or null when the doc's icon is [selfIconUrl], the
+ * one this service serves anyway. Treating that as an override would point
+ * `/favicon.ico` at itself.
  */
 fun iconOverride(
     icon: String?,
@@ -104,14 +81,8 @@ fun iconOverride(
 ): String? = icon?.takeIf { it.isNotBlank() && it != selfIconUrl }
 
 /**
- * An HTML page, revalidated every time but re-sent only when it changed.
- *
- * `no-cache` is NOT "do not store": it means the browser must ask before
- * reusing, which is exactly the property these pages need — a deploy is picked
- * up on the next load, and the modules under /web can never outlive their page
- * by more than their own max-age. What it adds is the 304: reloading a page
- * that has not changed since the last deploy costs a header exchange instead of
- * 25KB of markup and inline CSS re-gzipped from scratch.
+ * An HTML page, revalidated every time and re-sent only when it changed.
+ * `no-cache` means ask before reusing, not do not store; the 304 is what it adds.
  */
 suspend fun ApplicationCall.respondPage(page: CachedPage) {
     response.header(HttpHeaders.ETag, page.etag)
@@ -124,15 +95,8 @@ suspend fun ApplicationCall.respondPage(page: CachedPage) {
 }
 
 /**
- * A document recomputed behind the server, revalidated every time and re-sent
- * only when the writer actually produced something new.
- *
- * The 304 is the point rather than a nicety: a page polls its document on a
- * timer and the rollup behind it is far slower than the poll, so most fetches
- * are for bytes the reader already has. `no-cache` (revalidate, don't reuse
- * blind) rather than a `max-age` guess, because the interval is an operator
- * setting and a cache lifetime picked here would be wrong for anyone who
- * changed it.
+ * A document recomputed behind the server, polled far more often than it
+ * changes. `no-cache` rather than a `max-age`, since the interval is an operator setting.
  */
 suspend fun ApplicationCall.respondDocument(
     bytes: ByteArray,
@@ -149,12 +113,8 @@ suspend fun ApplicationCall.respondDocument(
 }
 
 /**
- * Does the request already hold this exact version?
- *
- * `If-None-Match` is a comma-separated list, and a proxy may hand back a weak
- * form (`W/"…"`) of a tag we minted strong. Both are the same content by
- * construction here — one immutable resource, one hash — so the weak prefix is
- * stripped rather than treated as a mismatch that would re-send the body.
+ * Does the request already hold this exact version? `If-None-Match` is a list,
+ * and a proxy may weaken a tag minted strong; the weak form is the same content here.
  */
 internal fun ApplicationCall.matchesEtag(etag: String): Boolean =
     request.headers[HttpHeaders.IfNoneMatch]

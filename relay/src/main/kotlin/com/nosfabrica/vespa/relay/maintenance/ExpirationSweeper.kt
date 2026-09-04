@@ -32,9 +32,8 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
 /**
- * Periodically prunes NIP-40 expired events from the [store] — the store
- * exposes `deleteExpiredEvents()` but schedules nothing itself. A non-positive
- * interval disables the sweeper.
+ * Prunes NIP-40 expired events from the [store] every [intervalSeconds]; the
+ * store schedules nothing itself. A non-positive interval disables the sweeper.
  */
 class ExpirationSweeper(
     private val store: IEventStore,
@@ -54,11 +53,11 @@ class ExpirationSweeper(
         return this
     }
 
-    /** One sweep; failures are swallowed so a transient error can't kill the loop. */
+    /** One sweep; a failure is logged so the loop survives it. */
     suspend fun sweepOnce() {
         runCatching { store.deleteExpiredEvents() }
             .onFailure {
-                // Cancellation is shutdown doing its job, not a failed sweep.
+                // Cancellation is shutdown, not a failed sweep.
                 if (it is CancellationException) throw it
                 System.err.println("expiration sweep failed: ${it.message}")
             }

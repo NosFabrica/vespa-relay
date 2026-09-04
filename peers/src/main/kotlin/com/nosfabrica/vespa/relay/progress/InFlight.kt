@@ -21,190 +21,54 @@
 package com.nosfabrica.vespa.relay.progress
 
 /**
- * WHICH relays a stream has a worker on right now, and for how long — longest
- * held first.
+ * The relays a stream has a worker on right now, named rather than counted.
  *
- * ## The question this exists to answer
- *
- * A production `sync.progress` reported `pending = 2` on a stream that had
- * received two events in eleven and a half hours. Two relays had held their
- * slots since the small hours and there was no way, anywhere in the system, to
- * learn which two: a bare pending count is derived by subtraction,
- * the coverage card only draws relays that have EARNED a band (a stalled leg
- * never does), the diagnostic log line names urls only for the stream
- * `SYNC_DIAGNOSE` points at, and container stderr rotates inside the hour. The
- * router knew both urls perfectly well the whole time — `RelayRotation` was
- * holding them — and published nothing but their number.
- *
- * So this is the counts' missing half, on the same terms as
- * the fold's own report: not the count, the NAMES.
- *
- * ## What it is a set of, exactly
- *
- * Urls this stream has a live worker on, right now — nothing else. Not the
- * roster (most of it is between visits), not what is queued (a queued url has
- * no worker yet, which is the whole difference). Read it as "what is actually
- * running", and read the roster count beside the phase for the rest.
- *
- * ## WHOLE, quietest first, and it still says what it left out
- *
- * It used to be cut to twenty rows, and the cut was wrong twice over.
- *
- * The sizing argument was that a fan-out's admission gate is far wider than
- * its transfer pool — 128 workers against 8 slots, the other 120 being connect
- * timeouts to hosts that will never answer — so the whole set was neither
- * small nor interesting. The pool killed that premise: a row here IS a worker
- * holding a socket, so the list is bounded by `visitConcurrency` and the whole
- * set is exactly the interesting thing.
- *
- * The ordering was the second half. Sorted by how long each had been HELD, the
- * twenty rows were routinely twenty healthy long-haulers with the wedged leg
- * cut into `omitted` — held is not risk, since the healthiest thing this
- * router does is hold one relay for an hour while it streams two million
- * events. Quietest-first fixed which twenty, and publishing all of them
- * retires the question.
- *
- * What the cut cost in the end was not a wedged leg but the plain reading: an
- * operator asking "what is this mirror connected to" got a sixth of the answer
- * on a card that looked complete, and one stream showing a single row was a
- * truncation artifact rather than a mirror down to one relay.
- *
- * `omitted` survives as the schema's promise — a list that does not disclose
- * its truncation reads as the whole answer, and a reader finding the member
- * absent cannot tell "nothing dropped" from "does not say".
+ * Only urls with a live worker: not the roster, not the queue. The list is
+ * published whole, quietest first, and is bounded by the pool's worker count.
  */
 class InFlight(
     /** Every relay with a worker on it, quietest first. */
     val relays: List<Relay>,
-    /** How many more had a worker and are not named here. Zero from the pool; never silently dropped. */
+    /** How many more had a worker and are not named here. Zero from the pool. */
     val omitted: Int,
 ) {
-    /**
-     * One relay a worker is holding, and the clocks that say what it is doing
-     * with it.
-     *
-     * Three questions, in the order an operator asks them: has it got a transfer
-     * slot at all ([transferringForSec]), has it given us anything ([events]),
-     * and is it still giving ([quietForSec]). Naming the relay without them only
-     * moves the guesswork — a relay held for eleven hours is doing something
-     * reasonable about as often as it is not.
-     */
+    /** One relay a worker is holding, and the clocks that say what it is doing with it. */
     class Relay(
         val relay: String,
-        /**
-         * Since the rotation CLAIMED it — which is before the guards, the TCP
-         * pre-probe and the wait for a transfer slot, not just the transfer.
-         * A relay held for hours with this the only clock running never got a
-         * slot, and that is a different fault from a slow download.
-         */
+        /** Since the rotation claimed it, which is before the guards and the wait for a slot. */
         val heldForSec: Long,
         /**
-         * …and since it took a TRANSFER SLOT, or null when it has not got one.
-         *
-         * The slot, not the socket, and the difference was measured rather than
-         * assumed: `InFlightReportProbe` watched a url that could not be
-         * connected to at all report `transferring 0s` for its whole life and
-         * end `CANNOT_CONNECT`. The clock starts when the worker is admitted to
-         * the pool and the connect happens INSIDE it, so a leg stuck on a
-         * websocket handshake is `transferring` and not absent.
-         *
-         * Absent is the ordinary answer for most of the set and is not missing
-         * data: a stream with 8 slots routinely has 128 workers, and the other
-         * 120 are in the guards (strikes, our Tor proxy, the TCP pre-probe) or
-         * queued for a slot. Absent with a large [heldForSec] therefore says the
-         * POOL is saturated — this worker is waiting behind other legs — which
-         * is a fact about our own capacity. Present and large is the other one:
-         * a slot committed to a transfer that is not ending.
+         * Since it took a transfer slot, or null while it waits for one. The
+         * connect happens inside the slot, so a leg stuck on a handshake is
+         * transferring, and absent with a large [heldForSec] means the pool is full.
          */
         val transferringForSec: Long?,
-        /**
-         * Events this leg has received off the wire so far.
-         *
-         * The leg's own count, not the stream's: `cycle.received` is every leg
-         * added together and cannot single one out. Counted before ingest, like
-         * every other `received` here, so it is the larger number.
-         */
+        /** Events this leg has received off the wire, counted before ingest. */
         val events: Long,
-        /**
-         * …and how long since the last one arrived — or since the claim, if none
-         * ever did.
-         *
-         * THE ONE THAT DECIDES. A leg holding a slot for hours with events still
-         * landing is a relay with a real backlog and the slot is well spent; the
-         * same two durations with this number climbing is a walk that is not
-         * going to end. Both were "held for hours, transferring" before this
-         * existed, and only one of them is worth an operator's attention.
-         */
+        /** Since the last event arrived, or since the claim if none did. The number that decides. */
         val quietForSec: Long,
         /**
-         * WHAT THE LEG IS DOING, which the clocks above cannot say: in the
-         * guards, queued behind our own pool, reconciling (where a long silence
-         * is negentropy computing), or paging (where it is a walk that has
-         * stopped delivering). [transferringForSec] separates the first two from
-         * the rest; nothing separated the last two. Null before a leg reaches a
-         * stage worth the word.
-         *
-         * A working leg's word names the JOB and then the TRANSPORT — `catching
-         * up (paging)`, `negentropy sync of the past` — because neither
-         * implies the other: the audit is the full-past pass, whatever it uses
-         * to download with, and an audit does page the windows a peer will not
-         * reconcile. See `VisitPool.STAGE_PAGING` and its neighbours for the
-         * pool's own set.
+         * What the leg is doing, as a sentence naming the job and then the
+         * transport. Null before a leg reaches a stage worth the word.
          */
         val stage: String? = null,
-        /**
-         * WHICH STREAM this row belongs to, on a list that is not already one
-         * stream's. A stream's own `inFlight` needs no such member — every row
-         * in it is that stream's — but the pool-wide live list does: one
-         * subscription serves one stream now, so a live row has exactly one
-         * owner and saying so is what lets the four tables be read with one
-         * vocabulary. Null on a per-stream list, where it would repeat the row
-         * above it.
-         */
+        /** The owning stream, on the pool-wide list only; null where every row is one stream's. */
         val stream: String? = null,
         /**
-         * WHICH OF THE POOL'S WORKLOADS this row is in — the machine word
-         * beside [stage]'s sentence, and the only one of the two a reader may
-         * GROUP by. `live`, `catching-up`, `re-fetching`, `negentropy`; absent
-         * for a row that is in none of them, which is a visit between jobs —
-         * claiming its socket, working out what an ask still owes, or draining
-         * the healer's queue on its way out.
-         *
-         * The two are published together and set together — see `VisitPool`'s
-         * `Stage`, which carries both so neither can be moved without the
-         * other. Two members rather than one because they answer different
-         * readers: [stage] is a sentence written to be read once, and a page
-         * that grouped rows by it would be grepping prose — the arrangement
-         * that already zeroed a gauge here when a word was reworded.
-         *
-         * The pool word is deliberately NOT a partition of the row set: rows
-         * outside the four are ordinary and must still be drawn, so a reader
-         * finding this absent shows the row under its [stage] rather than
-         * dropping it.
+         * The pool workload this row is in (`live`, `catching-up`, `re-fetching`,
+         * `negentropy`), the word a reader may group by. Absent for a visit
+         * between jobs, which is still drawn, under its [stage].
          */
         val pool: String? = null,
         /**
-         * HOW FAR BACK the leg has got — a second, always read the same
-         * direction whichever stage set it: the `created_at` the paged cursor
-         * is reading now, or the older edge of the negentropy window an audit
-         * is comparing now. Never the newer end of either range; an audit
-         * publishing the window's `until` here read as `back to <today>` for
-         * the whole of a sweep with years still to compare.
-         *
-         * [doing] `catching up (paging)` beside a large [quietForSec] is two legs that look
-         * identical here: one deep in a real backlog and one whose cursor has
-         * stopped. Read twice, this separates them. The stream's `reached` cannot
-         * — it is the MINIMUM over every live walk, one date describing the
-         * deepest, while a row is drawn because it is the exception.
-         *
-         * Null when neither is running for this url: in the guards, queued, or
-         * a retraction pass, whose reconcile publishes no window.
+         * How far back the leg has got, always the older edge: the paged cursor's
+         * `created_at`, or the `since` of the negentropy window being compared.
+         * Null in the guards, queued, or on a retraction pass.
          */
         val pagingUntil: Long? = null,
     )
 
     companion object {
-        /** Nothing is running — the honest answer for a stream between passes. */
         val NONE = InFlight(emptyList(), 0)
     }
 }

@@ -21,85 +21,25 @@
 package com.nosfabrica.vespa.relay.monitor
 
 /**
- * Does the relay answer the question it was ASKED — the one thing the stability
- * gate cannot see.
+ * Does the relay answer the question it was asked.
  *
- * ## The gap this fills, stated exactly
+ * [RelayConsistency] compares two answers to one filter against each other and
+ * never opens an event, so a relay that serves the same wrong slice every time
+ * (its newest firehose, whatever the `kinds`, `until` or `limit`) scores a
+ * perfect containment. This pass is the complement: consistency asks "is this
+ * the same relay twice", this asks "is this an answer". A failure excludes
+ * rather than downgrades, and the verdict expires so a relay that starts
+ * answering properly comes back on its own.
  *
- * [RelayConsistency] compares two answers to one filter against EACH OTHER. It
- * catches the relay whose window is a fresh random slice per REQ, and it is
- * blind by construction to the relay whose window is the SAME wrong slice every
- * time: two identical answers score 1.000 containment whatever is in them,
- * because nothing in that comparison ever opens an event. A relay that replies
- * to every ask with its newest firehose — ignoring `kinds`, ignoring `until`,
- * ignoring the `limit` — is perfectly self-consistent and, until this pass
- * existed, perfectly certifiable.
- *
- * So the two are complements and neither implies the other. Consistency asks
- * "is this the same relay twice"; this asks "is this an ANSWER".
- *
- * ## What it costs to leave one in
- *
- * The mirror asks for a kind and a window and stores what comes back. A relay
- * that serves something else is not merely useless to a stream — it is
- * expensive to it: every cycle downloads events the ask did not want, they are
- * verified, offered to the store and mostly refused as duplicates, and the band
- * the cursor covers is a fiction because the events that came back were never
- * the ones inside it. That is [RelayConsistency]'s failure mode reached by a
- * different road, and the same argument applies to the response: exclude rather
- * than downgrade, and let the verdict expire so a relay that starts answering
- * properly comes back on its own.
- *
- * It is also the one refusal here that says something a reader outside this
- * deployment can act on directly. `alias` and `inconsistent` are facts about
- * syncing; "this relay does not honour `kinds`" is a fact about the protocol,
- * and any client picking read relays wants it.
- *
- * ## The bars, and how provisional they are
- *
- * **These numbers have not been taken against the network yet, and the header
- * of [RelayConsistency.ANCHOR_LAG_SECONDS] is the standing warning about
- * exactly that mistake** — a single run there suggested a constant that a
- * second run disproved. `RelayComplianceProbe` is the instrument for these two,
- * it is written, and it asserts nothing; run it more than once before believing
- * either number, and record what it said here when you do.
- *
- * Until then the bars are set where a false positive is expensive and a false
- * negative merely leaves things as they were: TWO bars, both of which have to
- * be crossed. A share alone would refuse a relay that answered three events and
- * got one wrong; a count alone would refuse a firehose that got three wrong out
- * of five hundred. Neither of those is the failure this is for, and the failure
- * this is for crosses both by a mile — a relay ignoring the filter gets
- * essentially ALL of them wrong.
- *
- * ## What is deliberately not a refusal
- *
- * [AliasProbe.Compliance.overLimit]. An over-served event matches the filter; it
- * was simply not asked for yet. It is published as a fact and never graded on
- * — see that field's own header.
+ * Both bars must be crossed. A share alone would refuse a relay that got one of
+ * three wrong; a count alone would refuse a firehose that got three of five
+ * hundred wrong. The bars are provisional; see `docs/decisions/fitness.md`.
+ * [AliasProbe.Compliance.overLimit] is published as a fact and never graded on.
  */
 class RelayCompliance(
-    /**
-     * How much of an answer must be off-filter before the answer is not one.
-     *
-     * Ten percent. Nothing measured stands behind that yet (see the class
-     * header); it is chosen as a number no honest relay can plausibly reach —
-     * a compliant server is at 0.000 by construction, and the only things known
-     * to put a stray event in a window are our own five-minute clock slack and
-     * a boundary re-read — while the relay this exists for sits at or near
-     * 1.000.
-     */
+    /** How much of an answer must be off-filter before it is not an answer. */
     private val minOffFilterShare: Double = DEFAULT_MIN_OFF_FILTER_SHARE,
-    /**
-     * …and how many off-filter events it takes at all, whatever the share.
-     *
-     * The floor that stops a thin answer being a verdict. A relay that returned
-     * two events and got one wrong is at 0.500 and has told us almost nothing;
-     * the same relay over twenty events is telling us something. Same argument
-     * as [RelayConsistency]'s `minSample`, one field over: the cost of missing
-     * a bad relay for one more cycle is a cycle, and the cost of refusing a
-     * good one is its place in the mirror.
-     */
+    /** The floor that stops a thin answer being a verdict, whatever the share. */
     private val minOffFilterEvents: Int = DEFAULT_MIN_OFF_FILTER_EVENTS,
 ) {
     /** What one answer proved about the relay that served it. */
@@ -111,12 +51,8 @@ class RelayCompliance(
         NONCOMPLIANT,
 
         /**
-         * Nothing was proved. An empty answer, or one that never happened.
-         *
-         * Its own value rather than [COMPLIANT], for [RelayConsistency.Verdict.UNMEASURABLE]'s
-         * reason: a relay holding nothing under the ask is not a relay that
-         * honoured it, and publishing `compliant true` off a drain would put
-         * our name to a claim no event supports.
+         * Nothing was proved: an empty answer, or one that never happened. Its own
+         * value because `compliant true` off a drain would be a claim no event supports.
          */
         UNMEASURABLE,
     }
@@ -124,7 +60,6 @@ class RelayCompliance(
     /** How much of the answer did not match the ask. Zero when there was no answer. */
     fun share(reading: AliasProbe.Compliance): Double = if (reading.seen == 0) 0.0 else reading.offFilter.toDouble() / reading.seen
 
-    /** What [reading] proves — see [Verdict], and the bars on the class. */
     fun decide(reading: AliasProbe.Compliance): Verdict =
         when {
             reading.seen == 0 -> Verdict.UNMEASURABLE
@@ -133,13 +68,8 @@ class RelayCompliance(
         }
 
     /**
-     * The sentence published beside the verdict.
-     *
-     * **A stray that did not reach the bar is still named.** The bars are
-     * provisional (see the class header) and the evidence is how they get
-     * re-taken: a corpus of records saying "1 of 20 events came back off-filter"
-     * is the measurement that says whether ten percent is the right line, and a
-     * record that only said `compliant true` would have thrown it away.
+     * The sentence published beside the verdict. A stray that did not reach the
+     * bar is still named: the corpus of these records is how the bars get re-taken.
      */
     fun evidence(reading: AliasProbe.Compliance): String {
         if (reading.seen == 0) return "nothing came back to check"
@@ -155,10 +85,10 @@ class RelayCompliance(
     }
 
     companion object {
-        /** See the constructor parameter of the same name. PROVISIONAL — measure before moving it. */
+        /** Provisional; measure with `RelayComplianceProbe` before moving it. */
         const val DEFAULT_MIN_OFF_FILTER_SHARE = 0.10
 
-        /** See the constructor parameter of the same name. PROVISIONAL — measure before moving it. */
+        /** Provisional; measure with `RelayComplianceProbe` before moving it. */
         const val DEFAULT_MIN_OFF_FILTER_EVENTS = 3
     }
 }

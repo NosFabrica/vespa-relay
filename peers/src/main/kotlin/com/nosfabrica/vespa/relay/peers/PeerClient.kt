@@ -34,64 +34,42 @@ import okhttp3.OkHttpClient
 import java.time.Duration
 
 /**
- * HOW THIS PROCESS TALKS TO OTHER RELAYS — one websocket client, one socket
- * budget, one Tor transport, one NIP-42 answer, for both planes.
+ * How this process talks to other relays: one websocket client, one socket
+ * budget, one Tor transport, one NIP-42 answer, shared by both planes.
  *
- * ## Why it is one object rather than two
- *
- * The mirror and the monitor dial the same relays. A pooled connection either
- * of them opens is one the other can measure or transfer over without a second
- * dial, and [RelaySockets] — the refcount that keeps a probe pass from closing
- * a socket a stream is still transferring on — only works because there is one
- * pool for it to count. Split the plumbing and a relay both planes touch costs
- * two connections against a 1,024-socket dispatcher.
- *
- * ## Why it is its own object rather than fields on the engine
- *
- * Because "the engine" was one class doing two jobs, and this was the reason it
- * could not be two. Everything here is genuinely shared; everything that was
- * NOT — the passes, the pool, the ingest queue — is now on the side that owns
- * it. A plane holds a [PeerClient] and asks it for a socket; it does not build
- * one, and it does not close one.
- *
- * The process that constructs this owns its lifecycle: [connect] once
- * everything is registered, [close] after the planes have stopped touching it.
+ * One object because the mirror and the monitor dial the same relays: a
+ * pooled connection either opens is one the other can use without a second
+ * dial, and [RelaySockets] only works because there is one pool to count.
+ * A plane holds a [PeerClient] and asks it for a socket; it neither builds
+ * nor closes one. The constructor's owner calls [connect] once everything is
+ * registered and [close] after the planes have stopped touching it.
  */
 class PeerClient(
     private val scope: CoroutineScope,
     /**
      * Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-     * Null is the anonymous deployment — a gated relay then serves nothing,
-     * and an unanswered challenge looks exactly like an ordinary empty relay,
-     * which is why `SyncMain` says at boot which of the two this is.
+     * Null is the anonymous deployment, where a gated relay looks exactly
+     * like an empty one; `SyncMain` says at boot which of the two this is.
      */
     signer: NostrSigner? = null,
-    /**
-     * `SYNC_TOR_SOCKS`: the proxy `.onion` upstreams are dialled through. Null
-     * is the clearnet-only deployment, where discovery drops `.onion` urls and
-     * a configured one is a boot error — never a silent timeout.
-     */
+    /** `SYNC_TOR_SOCKS`: the proxy `.onion` upstreams are dialled through. Null drops `.onion` urls at discovery. */
     torSettings: TorSettings? = null,
     /** `SYNC_WIRE_LOG`: "" (errors only) / "sent" / "full". */
     wireLogMode: String = "",
-    /** How long a dial may take before it is a failure — `config.connectionTimeoutSec`. */
+    /** How long a dial may take before it is a failure: `config.connectionTimeoutSec`. */
     connectionTimeoutSec: Long = 10,
 ) : AutoCloseable {
-    // One OkHttp client for every upstream. The 120s ping surfaces half-open
-    // connections as a failed pong, which routes into quartz's reconnect path.
+    // The 120s ping surfaces half-open connections as a failed pong, which
+    // routes into quartz's reconnect path.
     private val okhttp =
         OkHttpClient
             .Builder()
-            // The dispatcher budget is the real concurrency ceiling for the
-            // whole router: an open websocket holds a dispatcher slot for its
-            // entire life, so at the stock 64 every stream's `concurrency`
-            // silently stopped meaning anything (measured: a 20,340-relay
-            // cycle with an ETA of 330 hours). Must exceed static upstreams
-            // plus the sum of every stream's `concurrency`.
+            // An open websocket holds a dispatcher slot for its whole life, so
+            // the budget must exceed static upstreams plus every stream's
+            // `concurrency`, or those knobs stop meaning anything.
             .dispatcher(
                 Dispatcher().apply {
                     maxRequests = MAX_CONCURRENT_SOCKETS
-                    // Per HOST; only bites when one host serves several urls.
                     maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
                 },
             ).pingInterval(Duration.ofSeconds(120))
@@ -99,25 +77,9 @@ class PeerClient(
             .build()
 
     /**
-     * WHAT THE SOCKET BUDGET IS DOING RIGHT NOW — calls running against
-     * [MAX_CONCURRENT_SOCKETS], and calls QUEUED behind it.
-     *
-     * The second number is the one worth publishing, and it is the only direct
-     * evidence this process can offer that the dispatcher is the constraint. A
-     * slow mirror has many explanations — a slow store, a saturated thread
-     * pool, relays that will not answer — and they all look alike from
-     * throughput. `queued` above zero means something else entirely: the calls
-     * exist, they are admissible, and OkHttp is holding them because the
-     * budget is full. That is a one-constant fix, and until now it could only
-     * be inferred from an ETA.
-     *
-     * It was inferred once, expensively: the dispatcher above is set to 1024
-     * because at OkHttp's stock 64 a 20,340-relay cycle projected 330 hours,
-     * and working that out took a measurement nobody should have to repeat.
-     *
-     * THE CLEARNET DISPATCHER ONLY. A Tor deployment has a second one with its
-     * own budget ([TorTransport]), and adding the two queues would produce a
-     * number that could not be read against the ceiling published beside it.
+     * Calls running against [MAX_CONCURRENT_SOCKETS], and calls queued behind
+     * it. `queued` above zero is the one direct sign that the dispatcher is
+     * the constraint. Clearnet only: the Tor dispatcher has its own budget.
      */
     fun socketLoad() = SocketLoad(okhttp.dispatcher.runningCallsCount(), okhttp.dispatcher.queuedCallsCount())
 
@@ -127,61 +89,37 @@ class PeerClient(
         val queued: Int,
     )
 
-    /**
-     * The Tor client, when there is one, and which urls it takes. See
-     * [TorTransport] for why resolution has to happen inside the proxy.
-     */
+    /** The Tor client, when there is one, and which urls it takes. */
     val tor = torSettings?.let { TorTransport(it, okhttp) }
 
     /**
-     * The OkHttp client that can reach [url] — the Tor one for a `.onion`, the
-     * clearnet one otherwise.
-     *
-     * Exposed because two things dial outside quartz's websocket path: the
-     * monitor's NIP-11 document fetch, which is plain HTTP, and anything else
-     * that needs a transport rather than a socket.
+     * The OkHttp client that can reach [url]. Exposed for the dials outside
+     * quartz's websocket path, such as the monitor's NIP-11 fetch.
      */
     fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
 
-    // Per URL, not one client for the process: quartz's builder takes
-    // (NormalizedRelayUrl) -> OkHttpClient precisely so a relay can be dialled
-    // over the transport that can reach it.
+    // Per url, so a relay is dialled over the transport that can reach it.
     val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope)
 
-    // NO PASSIVE NIP-66 WRITER. quartz's `RelayMonitor` used to live here,
-    // attached to this client as a connection listener, signing a kind-30166
-    // for every socket the fan-out opened. Two things followed, both bad. It
-    // was a second publisher of facts the monitor passes already state, and
-    // because a 30166 is addressable per (author, url) and every writer edits
-    // the same record, it rewrote `created_at` on a 5-minute flush for every
-    // relay we were actively syncing — so the record's own clock said "we
-    // talked recently" instead of "we checked this", and every consumer needed
-    // a private freshness convention to work around it.
-    //
-    // The monitor's passes are the only writers now. `created_at` means what
-    // every other NIP-66 consumer takes it to mean, and a stream can bound
-    // verdict freshness with a plain NIP-01 `since`.
+    // No passive NIP-66 writer here: the monitor's passes are the only writers
+    // of kind 30166, so a record's `created_at` means "we checked this".
 
-    // NIP-42: relays that gate reads behind AUTH serve nothing until we answer
-    // their challenge — and an unanswered challenge looks exactly like an
-    // ordinary empty relay. Attaching the authenticator is enough.
+    // NIP-42: an unanswered challenge looks exactly like an empty relay.
+    // Attaching the authenticator is enough.
     private val authenticator =
         signer?.let { s ->
             RelayAuthenticator(client, scope) { _, template, _ -> listOf(s.sign(template)) }
         }
 
     /**
-     * What actually goes down the wire, for when the counters stop making
-     * sense. The error half — NOTICE, CLOSED, failed sends — is on always:
-     * those are the relay explaining itself. `sent`/`full` add outgoing
-     * commands / every message.
+     * What goes down the wire. The error half (NOTICE, CLOSED, failed sends)
+     * is always on; `sent`/`full` add outgoing commands / every message.
      */
     private val wireLog =
         when (wireLogMode) {
             "full", "sent" -> {
-                // The sent/received lines are DEBUG and quartz's floor is WARN
-                // in every deployment we run — without lowering it the switch
-                // would be accepted, construct its logger, and print nothing.
+                // The sent/received lines are DEBUG; without lowering quartz's
+                // floor the switch would construct its logger and print nothing.
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
@@ -201,12 +139,8 @@ class PeerClient(
     }
 
     /**
-     * Say at boot whether the configured Tor proxy is answering, both ways.
-     *
-     * A transport that is configured but not answering must not be discovered
-     * later, one silent onion relay at a time. The probe asks our OWN SOCKS
-     * port, so a false answer here is a statement about this container and
-     * nobody else's server.
+     * Say at boot whether the configured Tor proxy is answering. The probe
+     * asks our own SOCKS port, so a false answer is about this container.
      */
     fun announceTor() {
         tor?.let {
@@ -219,9 +153,8 @@ class PeerClient(
     }
 
     /**
-     * Stop dialling. Called AFTER the planes' own scopes are cancelled, so a
-     * worker mid-visit stops touching the client before it closes rather than
-     * racing it and counting its own death as an abort.
+     * Stop dialling. Called after the planes' own scopes are cancelled, so a
+     * worker mid-visit is not racing the close and counting its death as an abort.
      */
     override fun close() {
         runCatching { authenticator?.destroy() }
@@ -233,11 +166,7 @@ class PeerClient(
     }
 
     companion object {
-        /**
-         * The socket budget for the whole process, and the number the health
-         * line reports against — see the dispatcher above for what happened at
-         * OkHttp's stock 64.
-         */
+        /** The socket budget for the whole process, and the number the health line reports against. */
         const val MAX_CONCURRENT_SOCKETS = 1024
         const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
     }

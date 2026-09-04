@@ -24,7 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * The router config: strfry's `streams { }` model, parsed from HOCON, so an
+ * The router config: strfry's `streams { }` model parsed from HOCON, so an
  * existing strfry `routerConfigOverride` drops in unchanged:
  *
  *     connectionTimeout = 20
@@ -36,83 +36,42 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  *       }
  *     }
  *
- * `dir` is `down` (mirror upstream events into our store), `up` (publish our
- * matching events upstream), or `both`. Beyond strfry's schema: `trusted`
- * (skip signature verification for this stream), `deleteMissing`
- * ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]). `sync` is
- * refused: the pool has ONE shape for every stream, so a transport choice here
- * would claim a decision nothing reads.
- *
- * How far back a stream reaches is the [SyncStream.filter]'s own
- * `since`/`until`, exactly as NIP-01 reads them: absent is unbounded. The live
- * tail runs from connect forward but keeps the filter's `until`.
+ * Beyond strfry's schema a stream may set `trusted`, `deleteMissing`
+ * ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]); `sync` is
+ * refused. How far back a stream reaches is its filter's own `since`/`until`,
+ * read as NIP-01 reads them: absent is unbounded.
  */
 data class RouterConfig(
     val connectionTimeoutSec: Long,
     val streams: List<SyncStream>,
-    // How often (seconds) an `up`/`both` stream re-reconciles to push newly
-    // arrived local events. From SYNC_UP_INTERVAL_SECONDS.
+    // Seconds between an `up`/`both` stream's re-reconciles. SYNC_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
-    // Ingest tuning. The store serializes writes through one mutex, so
-    // throughput comes from the batch size, not the worker count.
-    // From SYNC_INGEST_CONCURRENCY / SYNC_INGEST_BATCH.
+    // The store serializes writes through one mutex, so ingest throughput comes
+    // from the batch size, not the worker count.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
-    // How many matching events WE must already hold before a negentropy
-    // reconcile beats paging — our own count decides alone; the NIP-45 COUNT
     /**
-     * Automatic negentropy paging: how many events one reconcile window aims to
-     * hold, the floor and ceiling the learned per-peer size moves between, and
-     * how far below `now` a sweep stops (the seam with the live tail).
-     *
-     * A stream holding more than [negPageTarget] events reconciles in windows
-     * instead of one whole-filter pass — see `NegentropyPager`. `0` turns
-     * paging off and restores the single shared snapshot per stream, which is
-     * correct but holds the stream's entire id set for the length of the sync.
-     * From SYNC_NEG_PAGE_TARGET / _MIN / _MAX / _SLACK_SECONDS.
+     * Negentropy paging: the events one reconcile window aims to hold, the floor
+     * and ceiling the learned per-peer size moves between, and how far below
+     * `now` a sweep stops. A [negPageTarget] of `0` turns paging off.
      */
     val negPageTarget: Int = 100_000,
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
-    /**
-     * The monitor plane's own configuration — see [MonitorConfig]. Null runs
-     * the probe passes exactly as before: candidates derived from the streams'
-     * parsed sources, on the default six-hour clock.
-     */
+    /** Null runs the probe passes on candidates derived from the streams' own sources, on the default clock. */
     val monitor: MonitorConfig? = null,
 ) {
     companion object {
-        /**
-         * Matches the monitor's dial width: the same arithmetic — simultaneous
-         * TLS handshakes against their own connect timeout — sizes both. The
-         * first 440-relay integration run let the pool dial its whole socket
-         * budget at once and watched 436 dials time out inside a minute.
-         */
+        /** Sized like the monitor's dial width: simultaneous TLS handshakes against one connect timeout. */
         const val DEFAULT_VISIT_CONCURRENCY = 128
 
-        /**
-         * …and what a stream with no `visitConcurrency` of its own contributes
-         * to the pool's worker count. The pool has no router-wide width any
-         * more — the workers it runs are the SUM of what its streams ask for —
-         * so an unbounded stream has to stand for a number somewhere, and this
-         * is it. It is the same 128 the router-wide setting defaulted to, so a
-         * single-stream deployment that configures nothing runs exactly the
-         * pool it always did.
-         */
+        /** What a stream with no `visitConcurrency` contributes to the pool's worker count, the sum over streams. */
         const val UNCAPPED_STREAM_VISITS = DEFAULT_VISIT_CONCURRENCY
 
         /**
-         * …and what a stream with no `maxLiveConcurrency` of its own
-         * contributes to the sockets the pool may hold open.
-         *
-         * Sized to the measured prime population (~600 responsive hosts after
-         * folding): the whole point is that every certified relay is
-         * effectively always connected. It was the router-wide budget until
-         * the budgets moved inside the streams, and it is unchanged as a
-         * NUMBER — what changed is that a two-stream deployment now has to say
-         * what each of them may keep, because the sum is what the process
-         * pays. See `VisitPool.warnOnSocketBudget`.
+         * What a stream with no `maxLiveConcurrency` contributes to the sockets
+         * the pool may hold open. See `VisitPool.warnOnSocketBudget`.
          */
         const val DEFAULT_MAX_LIVE_CONCURRENCY = 600
     }
@@ -133,47 +92,29 @@ data class RouterConfig(
 }
 
 /**
- * The monitor plane's configuration: where candidate urls come from, and the
- * clocks its passes run on.
- *
- * The `monitor { }` block is what makes the config file "routers + monitor"
- * rather than router-only. Its [sources] use the same select syntax a stream's
- * `relaySource` does — every relay list in the protocol is a tag with a url at
- * a fixed offset — but they feed the PROBE PASSES (fold, consistency,
- * fitness), whose verdicts land on kind-30166 records, where a
- * a verdict-query stream then finds its relay list. A deployment can thus
- * move every ounce of relay-list parsing off the streams and onto this block.
- *
- * Candidates derived here UNION with whatever the streams' own parsed sources
- * still yield — the migration posture everywhere in this config.
+ * The `monitor { }` block: where candidate urls come from, and the clocks the
+ * probe passes run on. Its [sources] use the same select syntax a stream's
+ * `relaySource` does, but feed the probe passes, whose verdicts land on
+ * kind-30166 records. Candidates derived here union with what the streams'
+ * own sources yield.
  */
 data class MonitorConfig(
-    /** Where candidate urls come from — same shape as a stream's `relaySource`. */
+    /** Where candidate urls come from; the same shape as a stream's `relaySource`. */
     val sources: List<RelaySource>,
     val exclude: RelayExcludes = RelayExcludes.NONE,
-    /**
-     * The full-sweep cadence: how often every candidate is re-verdicted.
-     * The default is the probe passes' historical six hours.
-     */
+    /** How often every candidate is re-verdicted. */
     val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
     /**
-     * The fast lane: how often the monitor looks for urls that have NEVER
-     * been measured and verdicts just those. This is what bounds a new
-     * relay's wait for its first `prime` at minutes instead of a sweep —
-     * the price of "unmeasured urls are not dialled by streams" is paid here.
-     * Null turns the lane off.
-     *
-     * Cheap by construction: the derivation is `since`-bounded to relay-list
-     * events ingested after the last look, so it reads minutes of events, not
-     * the store.
+     * How often the monitor verdicts urls that have never been measured, which
+     * bounds a new relay's wait for its first `prime`. The derivation is
+     * `since`-bounded to relay lists ingested after the last look. Null turns
+     * the lane off.
      */
     val fastLaneSeconds: Long? = DEFAULT_FAST_LANE_SECONDS,
     /**
-     * How many relays a probe pass dials at once — the sweep's wall clock,
-     * since the corpus is mostly dead relays whose cost is a timeout. Shared
-     * by all three dialling passes, which run serialized, so this is also the
-     * most sockets the monitor plane ever holds; size it against the
-     * dispatcher ceiling minus the visit pool's budget.
+     * Relays a probe pass dials at once. The three dialling passes run
+     * serialized, so this is also the most sockets the monitor plane holds;
+     * size it against the dispatcher ceiling minus the visit pool's budget.
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
 ) {
@@ -183,15 +124,7 @@ data class MonitorConfig(
         /** Two minutes: a new relay is graded prime before its author refreshes the page. */
         const val DEFAULT_FAST_LANE_SECONDS = 120L
 
-        /**
-         * This was 16, with a note calling the probe work "a side quest"
-         * that must stay below the fan-out's concurrency — true when the
-         * fold shared its sockets with the streams' fan-out, and a relic
-         * after the split. Nothing certifies until the passes finish, and a
-         * mostly-dead corpus costs timeouts, not bandwidth: a 929-url sweep
-         * measured at 16 spent half an hour in the fitness dials alone,
-         * nearly all of it waiting.
-         */
+        /** A mostly-dead corpus costs timeouts, not bandwidth, so the width is the sweep's wall clock. */
         const val DEFAULT_DIAL_CONCURRENCY = 128
     }
 }
@@ -217,160 +150,63 @@ data class SyncStream(
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
     /**
-     * Push our newer replaceable/addressable version at a relay that served us
-     * a stale one. Separate from [healRetractions] because the two differ in
-     * whether the author asked: this is a version update to a relay that
-     * already carries them, which is why it is still opt-in.
+     * Push our newer replaceable/addressable version at a relay that served a
+     * stale one. Opt-in: unlike [healRetractions], the author never asked.
      */
     val healContent: Boolean = false,
-    /**
-     * Push the kind 5, or the `ALL_RELAYS` kind 62, at a relay still serving
-     * what our stored tombstone retracts. These are instructions the author
-     * already addressed to every relay and most relays never received.
-     */
+    /** Push the kind 5, or the `ALL_RELAYS` kind 62, at a relay still serving what our stored tombstone retracts. */
     val healRetractions: Boolean = false,
     /**
-     * Page forward, RECONCILE the past: when set, a relay whose covered
-     * history was last verified longer ago than this gets a windowed
-     * negentropy audit on its next visit — the whole covered range compared,
-     * only the difference downloaded. A week is the intended magnitude.
-     * Staggering is free (each relay's band ages on its own clock), so no herd
-     * and no cap.
-     *
-     * Only for relays that speak NIP-77, and the router does not guess which:
-     * the monitor measures it and signs the answer onto the same 30166 record
-     * the roster admits the relay by. A relay measured as NOT answering is
-     * never asked — the attempt cannot succeed, and a failed audit advances no
-     * clock, so it used to be retried every six hours forever. Their past is
-     * re-checked by [refetchThePastSeconds] instead, which is the other half
-     * of this pair and the reason both knobs name their transport: they are
-     * one job over two mechanisms, and which one a relay gets is a fact about
-     * the relay.
-     *
-     * Null reconciles nothing, which leaves history exactly as complete as the
-     * paged walks left it.
+     * How stale a relay's verified history may get before its next visit runs
+     * a windowed negentropy audit over the whole covered range. Only relays the
+     * monitor measured as answering NEG-OPEN are asked; the rest are re-checked
+     * by [refetchThePastSeconds]. Null audits nothing.
      */
     val negentropySyncThePastSeconds: Long? = null,
     /**
-     * THIS STREAM'S SHARE of each of the pool's four jobs — how many of the
-     * pool's visits may be doing that job FOR THIS STREAM at once. Null is
-     * uncapped, which leaves that job bounded by [visitConcurrency] alone —
-     * the dial width, which is what every deployment had before these existed.
-     *
-     * This is the ONLY place a workload is bounded, and deliberately so: what
-     * every stream may take between them is the sum of what each may take,
-     * written where the stream that pays it is configured. A router-wide
-     * ceiling over the top would be a second number to keep in step by hand,
-     * and the failure it causes — a stream inside its own share, refused
-     * anyway, by a limit named nowhere near it — is the one these exist to
-     * make legible.
-     *
-     * Streams are not peers: a content mirror over ~130 kinds and a
-     * thirty-relay index stream share one pool, and without a share the first
-     * one's audits can occupy every worker the second one needed.
+     * This stream's share of the pool's jobs: how many visits may run that job
+     * for this stream at once. Null is uncapped, leaving the job bounded by
+     * [visitConcurrency] alone. There is no router-wide ceiling above these.
      */
     val refetchConcurrency: Int? = null,
     val negentropyConcurrency: Int? = null,
     /**
-     * …and how many live subscriptions this stream may hold open between
-     * visits — the same idea for SOCKETS rather than for workers, with one
-     * difference that matters: null here is not uncapped.
-     *
-     * The three jobs above are taken inside a visit, so [visitConcurrency] is
-     * a ceiling over them even where none is set. A tail is taken between
-     * visits and released only when the roster drops the relay, so nothing
-     * bounds it but this — an unbounded live gate is one socket per relay on
-     * the roster, and every new connect on the process queues behind the ones
-     * already held. A stream that names no number therefore gets
-     * [DEFAULT_MAX_LIVE_CONCURRENCY], which is what the router-wide
-     * `tailBudget` defaulted to before the budgets moved in here.
-     *
-     * Past the budget a tail is EARNED rather than refused: the pool's own
-     * eviction takes the socket from the tail that has delivered least. This
-     * is what says how many there are to fight over.
-     *
-     * Read it through [liveBudget], never here: the default belongs to one
-     * expression, and this branch having been written twice is what let the
-     * gate and the boot warning disagree about it.
+     * Live subscriptions this stream may hold open between visits. Null is not
+     * uncapped: it resolves to [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY], and
+     * readers take it through [liveBudget]. Past the budget a tail is earned by
+     * evicting the tail that has delivered least.
      */
     val maxLiveConcurrency: Int? = null,
     /**
-     * …and how many relays may be VISITED for this stream at once — the dial
-     * width, per stream.
-     *
-     * The pool still runs one queue and one set of workers over one socket per
-     * relay: this is admission, like the four above it, and not a pool of its
-     * own. A visit that cannot get a permit for a stream simply does not serve
-     * that stream's asks; if it can get none of them it never dials at all,
-     * which is what makes this bound simultaneous TLS handshakes and not just
-     * work.
-     *
-     * The pool sizes its worker count from the SUM of these, because that is
-     * the most dialling any configuration of them can produce — see
-     * [RouterConfig.UNCAPPED_STREAM_VISITS] for what a stream that sets none
-     * contributes to it.
+     * Relays visited for this stream at once: the dial width. Admission on the
+     * shared pool, not a pool of its own; a visit that gets no permit for any
+     * stream never dials. The pool's worker count is the sum of these.
      */
     val visitConcurrency: Int? = null,
     /**
-     * How often this stream's bands EXPIRE, putting its whole filter back on
-     * the walk — `SYNC_REFETCH_THE_PAST_SECONDS` for the streams that do not
-     * name one, and NEVER under that — no schedule this expensive is a default.
-     *
-     * The coarse safety net, and the only full re-check a stream without
-     * [negentropySyncThePastSeconds] has: band arithmetic can only widen what
-     * a walk observed, so nothing else would ever re-read a window a relay
-     * back-filled after we passed it. Where a reconcile DOES run it is the
-     * expensive twin of one — the
-     * audit reconciles the same history and downloads the difference, this
-     * re-downloads the history — which is why a stream that audits wants a
-     * period well above its [negentropySyncThePastSeconds] rather than beside
-     * it.
-     *
-     * Named for what it costs on the pool, where an expired band is always
-     * re-PAGED. On a static stream it is re-walked by whatever that stream's
-     * `sync` chose, which for `negentropy` is a reconcile rather than a fetch —
-     * the one place the name is generous. `fullResyncSeconds` was the old
-     * spelling, and said neither which direction nor how.
+     * How often this stream's bands expire, putting its whole filter back on
+     * the walk. The only full re-check a stream without
+     * [negentropySyncThePastSeconds] has, and the expensive twin of the audit
+     * where one runs, so set it well above the audit period. Null never expires.
      */
     val refetchThePastSeconds: Long? = null,
     /**
-     * The kinds this stream's upstreams are the source of truth for — the only
-     * kinds [deleteMissing] may delete on their own absence. Required whenever
-     * it is on, and checked against [filter]: turning on deletion without
-     * saying what it may delete is a config error, not a default.
-     *
-     * Everything else the same authors publish is left alone, by this class
-     * and by everything else: an absence upstream is only ever evidence about
-     * the kinds the upstream owns.
+     * The kinds this stream's upstreams are the source of truth for: the only
+     * kinds [deleteMissing] may delete on absence. Required whenever deletion
+     * is on, and checked against [filter].
      */
     val ownedKinds: Set<Int> = emptySet(),
 ) {
-    /**
-     * HOW MANY LIVE SUBSCRIPTIONS THIS STREAM MAY HOLD, resolved — the
-     * configured number or [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY].
-     *
-     * Here rather than at each reader because there are two of them and they
-     * have to agree: the gate that enforces the budget and the boot warning
-     * that adds the budgets up. They did not — the warning went on quoting the
-     * default after the gate stopped applying it, so a deployment was told it
-     * would hold 600 tails per uncapped stream while the pool held one per
-     * relay on the roster. One expression is the fix; [visitConcurrency] has
-     * had it all along, behind `VisitPool.workersFor`.
-     */
+    /** The live budget resolved. The one expression the gate and the boot warning both read. */
     val liveBudget: Int get() = maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY
 }
 
 /**
- * What to do with records WE hold that the upstream no longer serves.
- *
- * Only meaningful when the upstream is the source of truth for its records —
- * a NIP-85 provider's own relay for its own scores. For a general mirror,
- * absence means almost nothing: relays hold different subsets by design.
- *
- * This asks and deletes; it never writes upstream (unlike NIP-09 propagation,
- * which would require uploading our events to read the rejections). Absence
- * has innocent causes — a retention window, AUTH-gated reads, an outage — so
- * [DRY_RUN] and the guardrails in the router are the safety net.
+ * What to do with records we hold that the upstream no longer serves. Only
+ * meaningful when the upstream is the source of truth for its records, such
+ * as a NIP-85 provider's own relay. Absence has innocent causes (a retention
+ * window, AUTH-gated reads, an outage), so [DRY_RUN] and the router's
+ * guardrails are the safety net.
  */
 enum class DeleteMissing {
     /** Never delete. The default, and correct for every ordinary mirror stream. */
