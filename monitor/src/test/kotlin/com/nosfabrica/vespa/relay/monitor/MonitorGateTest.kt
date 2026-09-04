@@ -28,28 +28,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * **DOES THE MONITOR RUN?** — one question, asked of the config, and for a
- * while it was asked of the wrong half of it.
- *
- * `SyncEngine.start` gated `aliasMonitor.start()` on `discoveryStreams`, which
- * is the streams carrying a `relaySource` of their own. That was the whole
- * story when a stream was the only way a url could enter the system. The
- * `monitor { sources }` block is the other way, and it is not a corner: the
- * block's own KDoc offers moving every ounce of relay-list parsing off the
- * streams, and `StreamWorld` unions both sides precisely so a deployment can.
- *
- * Take that offer all the way — static `urls` on the streams, every url
- * arriving through the monitor block — and `discoveryStreams` is empty while
- * the block names three sources. The urls were derived correctly and then
- * nothing ran over them: no fold, no stability gate, no fitness, not one
- * `prime` ever signed, and four rows on the monitor card reading `off` for the
- * life of the process. Nothing said so, because `off` is also what those rows
- * correctly say on the static config this gate was written for.
- *
- * The rule is over the config so the deployment that broke can be handed to it
- * whole, through the REAL loader: what counts as a source is the loader's
- * decision, and a test that builds a `RouterConfig` by hand cannot fail when
- * that decision changes.
+ * Whether the monitor runs is asked of the whole config through the real
+ * loader: what counts as a source is the loader's decision.
  */
 class MonitorGateTest {
     private fun config(text: String) = RouterConfigLoader.parse(text.trimIndent())
@@ -74,7 +54,7 @@ class MonitorGateTest {
         }
         """
 
-    /** The same streams, and no monitor block at all — the static config the old gate was for. */
+    /** The same streams and no monitor block at all. */
     private val staticOnly =
         """
         streams {
@@ -86,7 +66,7 @@ class MonitorGateTest {
         }
         """
 
-    /** A stream that parses relay lists itself, which is what the old gate looked for. */
+    /** A stream that parses relay lists itself. */
     private val streamDiscovers =
         """
         streams {
@@ -116,32 +96,15 @@ class MonitorGateTest {
 
     @Test
     fun `a static config still runs no monitor`() {
-        // The other direction, and the reason the gate exists at all: a config
-        // naming its upstreams by hand has no duplicate urls to find, and the
-        // rows saying `off` there is the honest report rather than a fault.
         assertEquals(false, MonitorEngine.hasMonitorSources(config(staticOnly)))
     }
 
     @Test
     fun `a stream that parses relay lists is a source on its own`() {
-        // Unchanged by the fix, and asserted so the widening cannot be mistaken
-        // for a replacement: this is the deployment the old rule was right for.
         assertTrue(MonitorEngine.hasMonitorSources(config(streamDiscovers)))
     }
 
-    /**
-     * **A LANE THAT IS OFF AND A LANE NOBODY CONFIGURED READ THE SAME**, and
-     * they are opposite intentions. `config.monitor?.fastLaneSeconds` is null
-     * for both, and the engine used to carry that null straight out — so the
-     * deployment above, which is a supported shape and has no `monitor` block,
-     * ran no fast lane at all and made a new relay wait a whole `sweepSeconds`
-     * for its first `prime`. Its two neighbours, `sweepSeconds` and
-     * `dialConcurrency`, both defaulted on that path; only this one did not.
-     *
-     * The other direction is the reason this cannot simply be `?: DEFAULT`:
-     * `fastLaneSeconds = 0` is the documented off switch and the loader maps it
-     * to null, so a blanket fallback would restart a lane an operator stopped.
-     */
+    // `config.monitor?.fastLaneSeconds` is null both for no block and for the `= 0` off switch.
     @Test
     fun `a config with no monitor block still gets the default fast lane`() {
         assertEquals(
@@ -168,8 +131,7 @@ class MonitorGateTest {
             MonitorEngine.fastLaneSecondsFor(off),
             "0 is the documented off switch; a default that overrode it would restart a lane by hand-tuning",
         )
-        // …and the same block WITHOUT the off switch takes the default, so the
-        // assertion above is about the 0 rather than about the block.
+        // The same block without the off switch, so the assertion above is about the 0 and not the block.
         val on =
             config(
                 """

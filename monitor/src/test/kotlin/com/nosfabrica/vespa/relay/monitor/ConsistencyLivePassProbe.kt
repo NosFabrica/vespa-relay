@@ -41,43 +41,27 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * A WHOLE STABILITY PASS, against the real internet.
- *
- * Every other test of this pass drives a fake [AliasProbe.Page], which can prove
- * the classification is applied and cannot prove the classification is RIGHT:
- * [Silence] matches substrings of text OkHttp and the JDK format, and no unit
- * test can tell us what they actually say. This one runs the real pass over real
- * urls — good, dead, unresolvable and auth-gated — and prints the published
- * partition, so the unrecognised bucket is either empty or naming the strings
- * the table still has to learn.
- *
- * It asserts only what must hold whatever the network does: the partition
- * closes, and the rows sum to `unmeasured`. Which relay answers on a given day
- * is not this repository's business.
- *
- * ```
- * ./gradlew :sync:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
- * #  …or urls of your own:
- * #  -DliveConsistencyUrls='wss://relay.example,wss://other.example'
- * ```
+ * A whole stability pass over real urls (good, dead, unresolvable, auth-gated),
+ * printing the published partition so the unrecognised bucket names the strings
+ * [Silence] still has to learn. Asserts only that the partition closes.
+ * Selected by `-DliveConsistency=true`; urls via `-DliveConsistencyUrls=a,b`.
  */
 class ConsistencyLivePassProbe {
     private val urls: List<NormalizedRelayUrl> =
         (
             System.getProperty("liveConsistencyUrls")
                 ?: listOf(
-                    // Answer, and are the fold's own reference hosts.
+                    // The fold's reference hosts.
                     "wss://nos.lol",
                     "wss://nostr.oxtr.dev",
                     "wss://relay.damus.io",
-                    // Caps a bare filter, so the kinds rung gets exercised.
+                    // Caps a bare filter, so the kinds rung is exercised.
                     "wss://purplepag.es",
-                    // Measured unstable, twice, at every anchor depth.
+                    // Measured unstable at every anchor depth.
                     "wss://fiatjaf.com",
                     // Auth-gated: the ladder must stop on the refusal.
                     "wss://filter.nostr.wine",
-                    // A name that cannot resolve, and a port nothing listens on
-                    // — the two silences the table is supposed to tell apart.
+                    // A name that cannot resolve, and a port nothing listens on.
                     "wss://this-relay-does-not-exist-vespa.example",
                     "wss://localhost:1",
                 ).joinToString(",")
@@ -98,8 +82,7 @@ class ConsistencyLivePassProbe {
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
-        // Attached for its side effect, exactly as the engine does: without a
-        // responder an auth-gated relay reads as a silent one.
+        // Attached for its side effect: without a responder an auth-gated relay reads as silent.
         RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
         val processors = Processors()
@@ -138,7 +121,6 @@ class ConsistencyLivePassProbe {
             println("    %-42s %3d url(s) on %2d host(s)%s  %s".format(row.reason, row.urls, row.hosts, under, top))
         }
 
-        // THE TWO PROPERTIES THAT DO NOT DEPEND ON THE NETWORK.
         assertEquals(
             work.candidates,
             (work.foldedAway ?: 0) + (work.consistent ?: 0) + (work.inconsistent ?: 0) + work.unmeasured,
@@ -153,7 +135,6 @@ class ConsistencyLivePassProbe {
     }
 
     private companion object {
-        /** Generous: a live pass is measuring relays, not our patience. */
         const val IDLE_MS = 20_000L
     }
 }
