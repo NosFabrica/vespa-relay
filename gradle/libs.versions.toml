@@ -373,14 +373,18 @@ quartz = "cecc3287b2"
 # LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
 # replaces — the safe direction, and as the previous two notes say, one that
 # has never been needed: nothing else in the graph names vespa-eventstore.
-# 15d2733595 = claude/gate-slice, NOT a main commit. Carries the diagnostic
+# 1a0ddecde4 = claude/split-trust-lock, NOT a main commit. Splits the store's
+# single write mutex in two so a kind-1 (no reputation work) stops queueing
+# behind the trust drain — measured at 35-41s per client write before it.
+# Carries claude/gate-slice's per-slice gate and the instrumentation under it.
+# Superseded note: 15d2733595 = claude/gate-slice, NOT a main commit. Carries the diagnostic
 # instrumentation (77bed35f93: `IngestStats.snapshot()` with calls/mean/max, a
 # live `heldNow()` holder, `proj.fetch` split into `.derive`/`.maxrank`) AND the
 # fix it found: the write gate is now taken per 500-subject slice instead of
 # once per 20,000-subject batch. That hold was measured at 13 minutes on
 # staging with ingest queueing 38 behind it. Back to a main pin once both have
 # landed upstream.
-vespaEventStore = "15d2733595"
+vespaEventStore = "1a0ddecde4"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
