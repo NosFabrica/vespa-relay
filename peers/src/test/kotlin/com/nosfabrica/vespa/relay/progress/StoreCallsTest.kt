@@ -38,23 +38,10 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * The store-call registry — the report that turns "two workers have been in a
- * batch for 794 seconds" into "both on ingest.dedup, 2,048 ids, thirteen
- * minutes ago".
- *
- * What is under test is everything about it that can be wrong SILENTLY. A row
- * that outlives its call is a fault report about work that is not happening; a
- * cancelled call counted as a failure reads as a store refusing work; a caller
- * tally that does not close cannot be checked by the reader it is published
- * for; an age histogram that does not sum looks reasonable row by row. None of
- * those throws, and every one of them is read as a finding.
- *
- * The clock is driven rather than waited on — [StoreCalls]'s `now` seam exists
- * for exactly that — so "a call thirteen minutes old" is a fact this file can
- * state instead of thirteen minutes it would have to spend.
+ * The store-call registry: which caller is in which store method, for how long.
+ * The clock is driven through [StoreCalls]'s `now` seam, so a call's age is stated, not waited for.
  */
 class StoreCallsTest {
-    /** A clock the test moves by hand, so a call can be any age at no cost. */
     private class Clock(
         var ms: Long = 1_000_000,
     ) : () -> Long {
@@ -62,12 +49,8 @@ class StoreCallsTest {
     }
 
     /**
-     * Hold [caller]'s call open, run [body] while it is out, and let it return.
-     *
-     * A real coroutine under a real registry, because the wiring is half of what
-     * is under test: a call is booked because it is running inside a scope
-     * carrying the element, and a helper that reached into the map directly
-     * would assert nothing about that.
+     * Holds [calls] open, runs [body] while they are out, then lets them return.
+     * A real coroutine under a real registry, because booking through the context element is half of what is under test.
      */
     private fun StoreCalls.whileOut(
         vararg calls: Triple<String, String, String?>,
@@ -104,13 +87,10 @@ class StoreCallsTest {
             val held = calls.snapshot()
             assertEquals(1, held.outstanding)
             val row = held.calls.single()
-            // The three facts three investigations had to guess at, in one row.
             assertEquals(StoreCalls.CALLER_INGEST_DEDUP, row.caller)
             assertEquals(StoreCalls.OP_EXISTING_IDS, row.op)
             assertEquals("2048 id(s)", row.asked)
             assertEquals(794, row.elapsedSec)
-            // Nothing else was out when it went — the reading that says this
-            // call did not queue behind us.
             assertEquals(0, row.outstandingAtIssue)
             assertEquals(794, held.callers.single().oldestOutstandingSec)
         }
@@ -131,17 +111,12 @@ class StoreCallsTest {
             val calls = StoreCalls()
             val scope = CoroutineScope(Dispatchers.Default + calls)
 
-            // The store refusing a batch: fast, loud, and a different remedy
-            // from a call that never comes back.
             scope
                 .launch {
                     runCatching { storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT) { error("schema drift") } }
                 }.join()
 
-            // …and the process stopping, which is not a fault: folded into
-            // `failed` it would report a clean shutdown as a store refusing
-            // work — the reason the ingest probes rethrow cancellation rather
-            // than swallowing it.
+            // Folded into `failed`, a clean shutdown would read as a store refusing work.
             scope
                 .launch {
                     runCatching {
@@ -158,13 +133,8 @@ class StoreCallsTest {
             assertEquals(1, caller.failed)
             assertEquals(1, caller.cancelled)
             assertEquals(0, snapshot.outstanding, "a call that threw has stopped being outstanding either way")
-            // WITH NOTHING IN FLIGHT the lifetime counters account for every
-            // call, which is the only moment that identity is exact — see
-            // [StoreCalls.Caller]. On a busy router `issued` and the terminal
-            // counters are stamped either side of the row's own insertion and
-            // removal, so a call that finished mid-snapshot lands on one side
-            // and not the other; what holds ALWAYS is the live half, asserted
-            // in the partition test below.
+            // Exact only with nothing in flight: on a busy router a call finishing mid-snapshot
+            // lands on one side of this identity. What always holds is the live partition, below.
             assertEquals(caller.issued, caller.returned + caller.failed + caller.cancelled)
         }
 
@@ -172,15 +142,8 @@ class StoreCallsTest {
     fun `a dispatcher hop keeps the registry, so ingest's own worker pool books its calls`() =
         runBlocking {
             val calls = StoreCalls()
-            // THE WIRING RISK, asserted rather than assumed. `SyncEngine`
-            // installs the registry on one scope and ingest launches its
-            // workers onto a dispatcher of their own
-            // (`Executors.newFixedThreadPool(...).asCoroutineDispatcher()`),
-            // with the store reaching for `Dispatchers.IO` underneath. A
-            // context element survives all of that — but "survives" is the
-            // whole claim this design rests on, and a report that quietly
-            // booked nothing would look exactly like a router with nothing
-            // outstanding.
+            // Ingest launches its workers on a dispatcher of their own and the store reaches
+            // for `Dispatchers.IO` underneath; the context element surviving that is the whole claim.
             val pool = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
             try {
                 CoroutineScope(Dispatchers.Default + calls)
@@ -217,9 +180,7 @@ class StoreCallsTest {
         val scope = CoroutineScope(Dispatchers.Default + calls)
 
         runBlocking {
-            // Three calls of very different ages, issued against a clock this
-            // test moves — so the order and the bands are facts about the
-            // registry rather than about how fast the machine ran.
+            // Three calls of very different ages, against a clock this test moves.
             for (
             (caller, at) in
             listOf(
@@ -248,16 +209,10 @@ class StoreCallsTest {
                 "longest-running first — a call that has not come back is the anomaly, which a held relay is not",
             )
             assertEquals(listOf(794L, 45L, 0L), snapshot.calls.map { it.elapsedSec })
-            // The second and third rows found calls already out, which is the
-            // client-side half of "slow store, or waiting in line".
+            // The second and third found calls already out: the client-side half of "slow store, or waiting in line".
             assertEquals(listOf(0, 1, 2), snapshot.calls.map { it.outstandingAtIssue }.sorted())
 
-            // THE LIVE HALF IS ONE PARTITION, THREE WAYS — and it closes
-            // whatever the router is doing, because all three come off one read
-            // of the row set. A histogram that does not sum is the one failure
-            // a reader cannot see, since every row of it looks reasonable
-            // alone; `accountedFor` on the card reports it, so a raced read
-            // here would have the router accusing itself.
+            // All three come off one read of the row set, so the partition closes whatever the router is doing.
             assertEquals(snapshot.outstanding, snapshot.ages.sumOf { it.calls })
             assertEquals(snapshot.outstanding, snapshot.callers.sumOf { it.outstanding })
             assertEquals(StoreCalls.AGE_BANDS, snapshot.ages.map { it.fromSec }, "every band is published, the empty ones included")
@@ -265,8 +220,7 @@ class StoreCallsTest {
             assertEquals(1, snapshot.ages.single { it.fromSec == 10L }.calls, "…the 45s one is in 10s-60s")
             assertEquals(1, snapshot.ages.single { it.fromSec == 300L }.calls, "…and the 794s one is in 5m-15m")
 
-            // Ties on `outstanding` fall back to lifetime traffic and then to
-            // the name, so one state rolls up the same way twice.
+            // Ties on `outstanding` fall back to lifetime traffic and then to the name.
             assertEquals(calls.snapshot().callers.map { it.caller }, snapshot.callers.map { it.caller })
 
             hold.complete(Unit)
@@ -284,9 +238,6 @@ class StoreCallsTest {
 
             clock.ms += 40_000
             val line = calls.warnSlow().single()
-            // What makes the line actionable: who, which call, and what it asked
-            // for. A warning naming only a duration is the state this whole
-            // file exists to leave behind.
             assertTrue(StoreCalls.CALLER_INGEST_DEDUP in line, "the line must name the caller: $line")
             assertTrue(StoreCalls.OP_EXISTING_IDS in line, "…and the store method: $line")
             assertTrue("2048 id(s)" in line, "…and what it asked for: $line")
@@ -307,10 +258,8 @@ class StoreCallsTest {
         val clock = Clock()
         val calls = StoreCalls(now = clock)
 
-        // A WEDGE IS TEN MINUTES OF EVERY WORKER HELD, which is why this is a
-        // unit test: a live run against a frozen store proves the SLOW lines in
-        // a minute and cannot reach `IngestPipeline.WEDGE_AFTER_MS` without
-        // waiting out the threshold that exists to stop the router crying wolf.
+        // A wedge is ten minutes of every worker held, which a live run cannot
+        // reach without waiting out `IngestPipeline.WEDGE_AFTER_MS`.
         assertNull(calls.describeOldest(), "no store call out is not a fault — it says the workers are held elsewhere")
 
         calls.whileOut(
@@ -319,10 +268,6 @@ class StoreCallsTest {
         ) {
             clock.ms += 794_000
             val line = calls.describeOldest()!!
-            // The LONGEST one, and enough of it to act on: the health line has
-            // already decided something is wrong, so what it needs from here is
-            // which call — a batch pass makes three, against three engine
-            // paths, with three remedies.
             assertTrue(StoreCalls.OP_BATCH_INSERT in line || StoreCalls.OP_COUNT in line, "the line must name the call: $line")
             assertTrue("13:14" in line, "…and how long it has been in it: $line")
         }
@@ -347,18 +292,13 @@ class StoreCallsTest {
         val summary = StoreCalls.summarise(Filter(kinds = listOf(1), authors = listOf("a", "b"), since = 100, until = 700))
 
         assertEquals("kinds 1, 2 author(s), window 10:00", summary)
-        // The window is a WIDTH, not two epoch seconds: a negentropy window's
-        // cost is mostly its width, and nobody subtracts ten-digit numbers at a
-        // glance.
+        // The window is a width, not two epoch seconds: a negentropy window's cost is mostly its width.
         assertTrue("100" !in summary && "700" !in summary, "the raw stamps are not the reading: $summary")
-        // An unbounded ask says so rather than rendering blank, which would read
-        // as a report that declined to answer.
+        // An unbounded ask says so rather than rendering blank.
         assertEquals("everything", StoreCalls.summarise(Filter()))
-        // The ids are COUNTED. Two thousand of them per row is a document
-        // nobody can open, and WHICH ids answers nothing the count does not.
+        // Ids are counted, not listed.
         assertEquals("2048 id(s)", StoreCalls.ids(2_048))
-        // A tag ask names its KEYS and their widths — the `#d` chunks the
-        // monitor's verdict reads are made of — and none of their values.
+        // A tag ask names its keys and their widths, none of their values.
         assertEquals(
             "kinds 30166, 1 author(s), #d x500",
             StoreCalls.summarise(
@@ -371,8 +311,7 @@ class StoreCallsTest {
     fun `a bad threshold is refused rather than silently defaulted`() {
         val clock = Clock()
 
-        // A mistyped value that quietly reverts is a setting an operator
-        // believes is in effect. Every other knob in this process refuses.
+        // A mistyped value that quietly reverts is a setting an operator believes is in effect.
         runCatching { StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "a minute")) }
             .onSuccess { fail("a non-numeric threshold must stop the process, not default") }
             .onFailure { assertTrue("SYNC_STORE_SLOW_SEC" in (it.message ?: ""), "the refusal must name the variable: ${it.message}") }
@@ -380,21 +319,15 @@ class StoreCallsTest {
             .onSuccess { fail("a negative re-warn period must stop the process too") }
             .onFailure { assertTrue("SYNC_STORE_REWARN_SEC" in (it.message ?: "")) }
 
-        // …a good one is taken, and taken in SECONDS: the variable is named in
-        // seconds and held in millis, and a factor of a thousand in either
-        // direction is a threshold that never fires or fires at once. Straddled
-        // rather than hit exactly, because a row's published `issuedAt` is
-        // truncated to the second and the bound is not the thing in doubt.
+        // Taken in seconds: the variable is named in seconds and held in millis. Straddled
+        // rather than hit exactly, because a row's `issuedAt` is truncated to the second.
         val parsed = StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "90"))
         assertTrue(!parsed.namesAt(80_000), "a 90-second bound must not fire at 80 — the value was read as something other than seconds")
         assertTrue(parsed.namesAt(100_000), "…and must fire at 100")
-        // …AND THE PAGE IS TOLD, so a row is marked at the operator's bound
-        // rather than at the page's copy of the default. Without this the log
-        // and the colour mean two different things by the same word.
+        // The page is told, so a row is marked at the operator's bound and not at the page's copy of the default.
         assertEquals(90L, parsed.snapshot().slowAfterSec)
         assertEquals(0L, StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "0")).snapshot().slowAfterSec, "off is published as off")
-        // …and it is in effect, checked through the only thing that reveals a
-        // threshold: whether a call of a known age is due to be named.
+        // In effect, checked through the one thing that reveals a threshold: whether a call of a known age is named.
         val tuned = StoreCalls(slowAfterMs = 90_000, now = clock)
         tuned.whileOut(Triple(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, null)) {
             clock.ms += 80_000
@@ -405,18 +338,13 @@ class StoreCallsTest {
     }
 
     /**
-     * Whether this registry names a call [ageMs] old — the one observable a
-     * threshold has, and how the parsed value is checked without a field.
-     *
-     * Its own clock, driven from a fixed instant, so the answer is about the
-     * bound and not about how long the assertion took to run.
+     * Whether this registry names a call [ageMs] old: a threshold's one observable.
+     * Driven from a fixed instant, so the answer is about the bound and not about how long the assertion took.
      */
     private fun StoreCalls.namesAt(ageMs: Long): Boolean {
         var named = false
         whileOut(Triple(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, null)) {
-            // `issuedAt` is published in seconds, so this instant is the row's
-            // own to within a second — which is why the caller straddles the
-            // bound rather than sitting on it.
+            // `issuedAt` is published in seconds, so this instant is the row's own to within a second.
             val issued = snapshot().calls.single().issuedAt * 1_000
             named = warnSlow(issued + ageMs).isNotEmpty()
         }

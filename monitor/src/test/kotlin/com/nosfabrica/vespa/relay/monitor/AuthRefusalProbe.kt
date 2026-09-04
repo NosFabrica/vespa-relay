@@ -39,53 +39,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * **Where the 61 seconds per url actually goes at a relay that refuses our
- * credentials — and whether quartz is the one that has to fix it.**
- *
- * A pass against `filter.nostr.wine` spent 184s on three urls. The first theory
- * was "one `idleTimeoutMs` per rung of [AliasProbe.leaderPrint]'s ladder", and it
- * was WRONG: a single ask on a fresh socket comes back in ~1.5s at every host
- * measured, auth-gated or not. The ladder makes SIX asks, though, and only the
- * first meets a connection that has never been refused. Timed individually, on
- * one connection, in the order the pass uses them:
- *
- * ```
- * filter.nostr.wine  rung 1 bare  limit=500:  1601ms  authRefused=true   auth-refused:auth-required…
- *                    rung 1 bare  limit=100: 20007ms  authRefused=false  reason=null
- *                    rung 2 [1]   limit=500: 20004ms  authRefused=false  reason=null
- *                    rung 3 [39000] …        20004ms  authRefused=false  reason=null
- * buzz.relay.tools   every ask:                 ~85ms authRefused=true   auth-refused:auth-required…
- * nos.lol            every ask:                ~170ms authRefused=false  eose
- * ```
- *
- * 1.6s + 20 + 20 + 20 = the 61s, exactly. **The first ask is answered properly
- * and every one after it is answered with nothing** — no CLOSED, no EOSE, no
- * `doneReason` at all, so [AliasProbe.over] reads it as a url that never spoke
- * and the walk waits out the whole window. Confirmed on the wire: after this
- * relay rejects our AUTH (`OK <id> false restricted: user unauthorized`) it
- * ignores every further REQ on that socket. `buzz.relay.tools` is the contrast —
- * it keeps saying `auth-refused` to every ask, which is why it cost 21s for two
- * urls where this cost 121s.
- *
- * **So quartz needs no change.** It reports the refusal terminally, in machine
- * -readable form, on the first ask: `doneReasons[url]` starts with
- * `auth-refused`, which is exactly what
- * [com.vitorpamplona.quartz.nip01Core.relay.client.accessories.FetchAllResult.authRefused]
- * is derived from, and [AliasProbe.over] already reads that map to tell `cannot:`
- * from a real answer. Waiting out the window on the later asks is the only thing
- * quartz COULD do — the relay sends nothing. The waste is ours: we ask five more
- * times after being told, in a way we can already see, that our credentials were
- * refused. A credential refusal is not a complaint about the filter, so no rung
- * of the ladder can fix it.
- *
- * Off by default and asserts nothing: it dials other people's paid relays, and
- * every answer it can get is a legitimate one.
- *
- * ```
- * ./gradlew :sync:test --tests '*AuthRefusalProbe*' -DauthRefusalProbe=true --rerun -i
- * #  …or hosts of your own:
- * #  -DauthRefusalUrls=wss://a.example,wss://b.example
- * ```
+ * Where a url's time goes at a relay that refuses our credentials: times the
+ * ladder's asks one by one on one socket, and ranks what one `leaderPrint`
+ * costs across a corpus. Asserts nothing. Selected by `-DauthRefusalProbe=true`
+ * (per-rung timing) or `-DauthRefusalCensus=true` (the ranking); hosts via
+ * `-DauthRefusalUrls=a,b`.
  */
 class AuthRefusalProbe {
     private val urls =
@@ -97,33 +55,9 @@ class AuthRefusalProbe {
             .mapNotNull { RelayUrlNormalizer.normalizeOrNull(it.trim()) }
 
     /**
-     * **Which relays are expensive to FINGERPRINT, ranked, over a real corpus.**
-     *
-     * The per-rung breakdown above explains one host. This asks the population
-     * question instead: with the credential stop in place, what does
-     * [AliasProbe.leaderPrint] — the exact call a pass makes, once per url —
-     * actually cost at each of a few dozen live urls, and which shapes dominate?
-     *
-     * Concurrent behind a small gate, the way [AliasFolding] runs it, so the wall
-     * clock is not the sum of the slow ones.
-     *
-     * **A CENSUS RUN FROM ONE IP AGAINST RELAYS YOU HAVE BEEN PROBING MEASURES
-     * YOUR OWN RATE LIMIT.** The first run of this ranked 14 of 52 urls as SILENT
-     * at ~20s each, 79% of the total cost — and `relay.rodbishop.nz` then
-     * answered a follow-up with `cannot:Server Misconfigured. Response: 429 Too
-     * Many Requests`, which is not a fact about that relay. `relay.damus.io`
-     * appearing silent is the same tell: it had served 500 events to a kinds
-     * filter minutes earlier. `chorus.bonsai.com` swung from "21s, served
-     * nothing" to "1.1s, 100 events" between two runs.
-     *
-     * So read the SHAPES here, never the totals, unless the run is cold: fresh
-     * IP, no prior sweep of the same hosts, and ideally spread over hours. The
-     * shapes are stable and the timings are not.
-     *
-     * ```
-     * ./gradlew :sync:test --tests '*AuthRefusalProbe*' -DauthRefusalCensus=true \
-     *   -DauthRefusalUrls='wss://a.example,wss://b.example' --rerun -i
-     * ```
+     * Concurrent behind a small gate, as [AliasFolding] runs it. A census from
+     * one IP against hosts already probed measures your own rate limit, so read
+     * the shapes and not the totals unless the run is cold.
      */
     @Test
     fun rankWhatEachUrlCostsToFingerprint() {
@@ -158,8 +92,7 @@ class AuthRefusalProbe {
                                 val startedMs = System.currentTimeMillis()
                                 val attempt = runCatching { probe.leaderPrint(url, anchor) {} }.getOrNull()
                                 val tookMs = System.currentTimeMillis() - startedMs
-                                // The three outcomes a pass distinguishes, which
-                                // are also the three cost classes.
+                                // The three outcomes a pass distinguishes are also the three cost classes.
                                 val shape =
                                     when {
                                         attempt == null -> "threw"
@@ -209,9 +142,7 @@ class AuthRefusalProbe {
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
-        // The router's own NIP-42 wiring. Without it quartz derives
-        // `pendingOnAuthRequired = false` and the timing below would be a
-        // measurement of a client the router never runs.
+        // The router's own NIP-42 wiring; without it quartz derives `pendingOnAuthRequired = false`.
         val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
 
         println("=".repeat(78))
@@ -221,16 +152,7 @@ class AuthRefusalProbe {
             for (url in urls) {
                 println("-".repeat(78))
                 println("  ${url.url}")
-                // THE LADDER AS THE PASS ACTUALLY WALKS IT, on ONE connection.
-                //
-                // A single ask on a fresh socket was the first thing measured
-                // here and it came back in ~1.5s at every host — which killed
-                // the theory that a rung costs a whole idle window and left the
-                // 61s-per-url unexplained. The pass does not make ONE ask: it
-                // makes six down the filter ladder, and only the first of them
-                // meets a connection that has never been refused. So the asks
-                // are timed individually, in the order and on the socket the
-                // pass uses them.
+                // Six asks on one connection, in the pass's order: only the first meets a socket that has never been refused.
                 for ((n, kinds) in LADDER.withIndex()) {
                     for (size in listOf(500, RelayAliases.FALLBACK_PROBE_PAGE)) {
                         val startedMs = System.currentTimeMillis()
@@ -270,7 +192,7 @@ class AuthRefusalProbe {
     }
 
     private companion object {
-        /** The live probe's window, so these numbers sit beside its 184s. */
+        /** The live pass's own window. */
         const val IDLE_MS = 20_000L
 
         /** The rungs [AliasProbe.leaderPrint] walks, in order. */

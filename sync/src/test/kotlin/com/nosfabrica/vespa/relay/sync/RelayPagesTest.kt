@@ -31,14 +31,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * THE PAGE AN ABORT COULD NOT NAME — #187's instrument.
- *
- * `VisitPool.refusedOutright` aborts on `downloaded == 0`, so every
- * `abortedUnpageable` is a walk in which no event matched the ask. The pool's
- * own `onEvent` therefore sees nothing, and the events that DID arrive are
- * discarded by the very match that produced the abort. These pin that the
- * sample says which part of the ask went unhonoured, and that an idle sampler
- * costs nothing and claims nothing.
+ * The sample an abort renders: it says which part of the ask the page failed,
+ * and an idle sampler claims nothing.
  */
 class RelayPagesTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -57,10 +51,7 @@ class RelayPagesTest {
 
     @Test
     fun `a page of the wrong kind is named as the wrong kind`() {
-        // The ask carries kinds; the relay answers with something else. Under
-        // quartz that page matches nothing, `downloaded` stays 0, and the walk
-        // ends UNPAGEABLE — a word about paging for a fault that has nothing to
-        // do with the cursor. The sentence is what tells them apart.
+        // The page matches nothing, so the walk ends UNPAGEABLE; the sentence tells an off-kind page from a cursor fault.
         val s = sample(kind1Below)
         repeat(3) { s.add("sub1", kind = 7, createdAt = anchor - it) }
         val said = assertNotNull(s.render(downloaded = 0))
@@ -82,10 +73,7 @@ class RelayPagesTest {
 
     @Test
     fun `a page that matches the ask perfectly says exactly that`() {
-        // THE READING THAT MATTERS MOST, and the one a naive line would make
-        // impossible: a page that matched everything asked, which quartz still
-        // counted as nothing downloaded, is not a relay misbehaving — it is our
-        // side of the walk, and an operator must be able to tell.
+        // A page that matched everything, which quartz still counted as nothing, is our side of the walk.
         val s = sample(Filter(kinds = listOf(1), since = anchor - 100, until = anchor))
         s.add("sub1", kind = 1, createdAt = anchor - 10)
         val said = assertNotNull(s.render(downloaded = 0))
@@ -96,12 +84,7 @@ class RelayPagesTest {
 
     @Test
     fun `the same page under a walk that DID download says the ordinary thing`() {
-        // The sharp reading — everything matched and quartz still counted none
-        // — is only true at zero, and `VisitPool` renders on a refusal where
-        // zero is the definition. The live probe renders on a walk that
-        // downloaded 158 and was told quartz had counted none of them: a
-        // sentence that is right only where it happens to be called is one that
-        // will be wrong the first time somebody calls it elsewhere.
+        // The sharp reading is only true at zero; the live probe renders on a walk that downloaded.
         val s = sample(kind1Below)
         s.add("sub1", kind = 1, createdAt = anchor - 10)
         val said = assertNotNull(s.render(downloaded = 158))
@@ -112,11 +95,7 @@ class RelayPagesTest {
 
     @Test
     fun `the subscriptions are reported, because a page carrying somebody else's is its own finding`() {
-        // Several streams share one socket. The walk's own subscription id is
-        // not knowable from a connection listener — `fetchAllPages` mints its
-        // own — so the ids are printed rather than filtered on: one id is this
-        // walk, several means the socket's other traffic landed inside the ask,
-        // which is a different fault with a different fix.
+        // The walk's own subscription id is not knowable from a connection listener, so ids are printed, not filtered on.
         val s = sample(kind1Below)
         s.add("walk", kind = 1, createdAt = anchor - 1)
         s.add("tail", kind = 1, createdAt = anchor - 2)
@@ -128,20 +107,13 @@ class RelayPagesTest {
 
     @Test
     fun `nothing arriving is not a finding and says nothing at all`() {
-        // A socket that carried no event is not evidence about the relay. "sent
-        // 0 events" would read as one, so the line is simply absent — the same
-        // rule the monitor's own passes follow for a measurement they did not
-        // take.
+        // A socket that carried nothing is not evidence about the relay.
         assertNull(sample(Filter(kinds = listOf(1))).render(downloaded = 0))
     }
 
     @Test
     fun `the counts are over every event, not over the handful kept for display`() {
-        // THE REGRESSION AN AUDIT CAUGHT. Faults were tallied at render over the
-        // RETAINED rows, so a page whose first five happened to match reported
-        // "all of them MATCHING the ask" — the sharpest sentence here, the one
-        // that points at OUR side of the walk — about a page that was 45/50 the
-        // relay's fault. The rows are a sample; the numbers are not.
+        // The rows are a sample; the counts are not.
         val s = sample(kind1Below)
         repeat(5) { s.add("sub1", kind = 1, createdAt = anchor - it) }
         repeat(45) { s.add("sub1", kind = 7, createdAt = anchor - 100 - it) }
@@ -171,9 +143,7 @@ class RelayPagesTest {
 
     @Test
     fun `one walk holds a relay's slot at a time, and the loser reports nothing`() {
-        // Several streams visit one relay at once over one socket. A second
-        // sampler would be collecting the FIRST walk's events, and a line that
-        // attributed them to the second ask would be worse than no line.
+        // Several streams visit one relay over one socket; a second sampler would collect the first walk's events.
         val pages = pages()
         val first = assertNotNull(pages.arm(url, kind1Below))
         assertNull(pages.arm(url, kind1Below), "the relay's slot is taken")
@@ -185,10 +155,7 @@ class RelayPagesTest {
 
     @Test
     fun `freeing a slot a later walk already took does not steal it`() {
-        // A walk that returns slowly must not drop a slot somebody else is
-        // using — the identity check in `free`. Without it the sampler would
-        // silently stop working for whichever relay is busiest, which is the
-        // one it exists for.
+        // The identity check in `free`: a slow walk must not drop a slot somebody else holds.
         val pages = pages()
         val stale = assertNotNull(pages.arm(url, kind1Below))
         pages.free(stale)

@@ -30,11 +30,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
- * A misconfigured identity must not start. It is the NIP-11 `self`, the NIP-42
- * answer and the NIP-66 monitor all at once, and every one of those fails
- * silently: an upstream that refuses to serve an unauthenticated client is
- * indistinguishable from an upstream with nothing to say, so a typo surfaces
- * hours later as a relay that mysteriously contributes zero — if at all.
+ * A misconfigured identity must not start: an upstream refusing an unauthenticated
+ * client looks exactly like an upstream with nothing to say.
  */
 class RelayIdentityTest {
     // A throwaway key, generated for this test and used nowhere.
@@ -51,8 +48,7 @@ class RelayIdentityTest {
 
     @Test
     fun `a bare hex key is refused — this setting takes only nsec`() {
-        // Hex has no checksum: one mistyped character is a DIFFERENT valid
-        // key, and the relay would sign as a stranger with nothing to show it.
+        // Hex has no checksum: one mistyped character is a different valid key.
         val e = assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex) }
         assertEquals(true, e.message!!.contains("nsec1"), "got: ${e.message}")
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.uppercase()) }
@@ -60,7 +56,7 @@ class RelayIdentityTest {
 
     @Test
     fun `surrounding whitespace is forgiven`() {
-        // Copy-paste out of a password manager brings a newline along.
+        // A paste out of a password manager brings a newline along.
         val nsec = KeyPair(privKey = Hex.decode(hex)).privKey!!.toNsec()
         val signer = RelayIdentity.fromEnv(env(RelayIdentity.ENV_VAR to "  $nsec\n"))!!
         assertEquals(RelayIdentity.signerFor(nsec).pubKey, signer.pubKey)
@@ -82,9 +78,7 @@ class RelayIdentityTest {
 
     @Test
     fun `an nsec-shaped string that is not valid bech32 is rejected`() {
-        // The decoder must actually decode. Wrapping the bech32 text as if it
-        // were hex yields a keypair derived from nonsense — silently wrong,
-        // which is the worst outcome for a key.
+        // Treating the bech32 text as hex would derive a keypair from nonsense.
         assertFailsWith<IllegalArgumentException> {
             RelayIdentity.signerFor("nsec1" + "q".repeat(58))
         }
@@ -102,7 +96,7 @@ class RelayIdentityTest {
     @Test
     fun `a typo is rejected loudly rather than starting unauthenticated`() {
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor("not-a-key") }
-        // Hex in any shape — valid, truncated, padded — is refused outright.
+        // Hex in any shape is refused outright.
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1)) }
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex + "ab") }
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1) + "z") }
@@ -110,7 +104,7 @@ class RelayIdentityTest {
 
     @Test
     fun `the failure message never contains the key`() {
-        // It goes into a log line. A wrong-format secret is still a secret.
+        // It goes into a log line.
         val secret = "sk-this-should-never-appear-in-any-log-output-abcdef"
         val e = assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(secret) }
         assertEquals(false, e.message!!.contains(secret), "got: ${e.message}")

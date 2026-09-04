@@ -27,13 +27,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The report for the work that is not a stream.
- *
- * What is under test is that a row says only what its processor can honestly
- * answer: a counter-shaped job has no pass clock and must not publish one, and a
- * pass-shaped one must keep its clock moving even when the pass achieves
- * nothing — a fold that fails every six hours and a fold that stopped running
- * are different faults, and the timestamp is what separates them.
+ * Rows for the work that is not a stream. A row says only what its processor can
+ * answer: a counter job has no pass clock, and a pass job's clock moves even when the pass achieves nothing.
  */
 class ProcessorsTest {
     @Test
@@ -52,9 +47,7 @@ class ProcessorsTest {
         assertNull(row.nextInSec, "…nor that anything is scheduled")
         assertEquals(listOf(12L, 20_000L), row.counts.map { it.value })
 
-        // Read at snapshot time, not copied at registration: a gauge kept in
-        // step by hand is the shape that produces a report disagreeing with the
-        // thing it reports on.
+        // Read at snapshot time, not copied at registration.
         queue.set(19_999)
         assertEquals(
             19_999L,
@@ -86,8 +79,7 @@ class ProcessorsTest {
 
     @Test
     fun `the countdown is asked live and never runs negative`() {
-        // Overdue is the ordinary state at the moment a pass is about to start,
-        // and "-40s" reads as a bug in the reader rather than as a queue.
+        // Overdue is the ordinary state as a pass is about to start, and "-40s" reads as a bug in the reader.
         val p = Processors()
         val due = AtomicLong(0)
         p.of("aliasFold").nextPassAt { due.get() }
@@ -100,16 +92,11 @@ class ProcessorsTest {
 
     @Test
     fun `a pass in flight publishes where it has got to, and what that rate implies`() {
-        // The state this exists for: a stability pass runs for hours, its
-        // countdown is deliberately unset while it does, and every other number
-        // on the row describes the pass BEFORE it. `measuring` is the only
-        // member that moves, so it has to carry both halves of the position and
-        // the estimate they imply.
+        // `measuring` is the only member that moves during a pass; every other number on the row describes the pass before it.
         val p = Processors()
         val gate = p.of("consistency")
         gate.begin(nowMs = 1_000)
-        // The walk's own clock starts here, not at `begin` — the pass spends
-        // its first stretch reading stored verdicts, and that is not dialling.
+        // The walk's clock starts here, not at `begin`: reading stored verdicts is not dialling.
         gate.measuring(10, Processors.UNIT_URL, nowMs = 1_000)
 
         assertNull(
@@ -130,24 +117,16 @@ class ProcessorsTest {
         assertEquals(10, run.toProbe)
         // Ten seconds for two urls is five seconds each, and eight are left.
         assertEquals(40L, run.etaSec)
-        // …and the reading the estimate cannot give. Timed from the last unit
-        // that ENDED, so it is zero the moment one does and climbs from there.
+        // Timed from the last unit that ended, so zero the moment one does.
         assertEquals(0L, run.quietForSec)
     }
 
     @Test
     fun `a pass that has stopped is told from one about to finish, which the estimate cannot do`() {
-        // The production shape: `attempted: 12,373 of 12,374, etaSec: 0` held
-        // for 74 minutes on one wedged url. The estimate was CORRECT arithmetic
-        // — one unit left at the rate so far rounds to nothing — and every
-        // number on the row agreed with every other one. Nothing published said
-        // the pass had stopped.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 0)
-        // The production numbers, so the estimate is the one that was actually
-        // published: 12,373 units in the first second of the pass leaves one,
-        // and one unit at that rate rounds to no seconds at all.
+        // One unit left at the rate so far rounds to no seconds at all, however long it has been stuck.
         fitness.measuring(12_374, Processors.UNIT_URL, nowMs = 0)
         fitness.attempted(12_373, nowMs = 1_000)
 
@@ -158,10 +137,6 @@ class ProcessorsTest {
 
     @Test
     fun `a pass names the urls it is holding, longest first, and lets go of them with the pass`() {
-        // The whole diagnostic gap this closes: the url that held a fitness
-        // pass for 74 minutes was not nameable from the progress document, the
-        // log, or a thread dump — a suspended coroutine has no frame. The pass
-        // knew it the entire time.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 0)
@@ -169,17 +144,13 @@ class ProcessorsTest {
         fitness.holding("wss://quick.example/", "pre-probe", nowMs = 3_000)
 
         val held = p.snapshot(nowMs = 5_000).single().inFlight!!
-        // Longest-held FIRST, which is the reverse of a stream's legs: there,
-        // held is not risk; here every leg is bounded by a deadline, so a long
-        // one is the anomaly and belongs at the top.
+        // Longest-held first, the reverse of a stream's legs: every leg here has a deadline, so a long one is the anomaly.
         assertEquals(listOf("wss://slow.example/", "wss://quick.example/"), held.relays.map { it.relay })
         assertEquals(4L, held.relays[0].heldForSec)
         assertEquals("ask ladder", held.relays[0].stage)
         assertEquals(0, held.omitted)
 
-        // A later call MOVES THE STEP AND KEEPS THE CLOCK. A leg that restarted
-        // its clock at every rung would report the last step's age as its own,
-        // which is exactly the number being looked up.
+        // A later call moves the step and keeps the clock; the age being looked up is the leg's, not the step's.
         fitness.holding("wss://slow.example/", "neg-open", nowMs = 4_000)
         val moved =
             p
@@ -202,22 +173,14 @@ class ProcessorsTest {
                 .map { it.relay },
         )
 
-        // Nothing outlives the pass. A row left standing under `idle` would be
-        // a fault report about a leg that is not running.
+        // Nothing outlives the pass: a row under `idle` would be a fault report about a leg that is not running.
         fitness.finish(nowMs = 6_000)
         assertNull(p.snapshot(nowMs = 7_000).single().inFlight)
     }
 
     @Test
     fun `a wide pass publishes every url it is holding, not a head of them`() {
-        // A row here is a JOB, so the monitor's `dialConcurrency` already
-        // bounds the set — which puts it on the far side of this repo's rule
-        // that a cap is for a list the NETWORK can grow. It was cut to twenty
-        // once, on the argument that most rows are ordinary dials a second old:
-        // true of the ROWS and false of the LIST, since `omitted: 480` says
-        // nothing about whether those 480 are healthy while the whole set
-        // sorted by age is the distribution, and the distribution is what an
-        // operator is reading the list for.
+        // The monitor's `dialConcurrency` already bounds this list, so it is not one the network can grow.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 0)
@@ -228,17 +191,13 @@ class ProcessorsTest {
         val held = p.snapshot(nowMs = 2_000).single().inFlight!!
         assertEquals(500, held.relays.size)
         assertEquals(0, held.omitted, "the member stays as the schema's promise; nothing is being dropped")
-        // …and the order is still oldest first, so the wedged leg is at the top
-        // for whatever the page chooses to draw.
         assertEquals("wss://r0.example/", held.relays.first().relay)
     }
 
     @Test
     fun `a position belongs to the pass that had it`() {
-        // Both directions of the same rule. A stale position under `idle` reads
-        // as a pass that stopped halfway, which is a fault report rather than a
-        // measurement; the previous pass's `10 of 10` under a fresh `measuring`
-        // reads as one that finished instantly. Neither may survive its pass.
+        // A stale position under `idle` reads as a pass stopped halfway; the last
+        // pass's `10 of 10` under a fresh `measuring` reads as one that finished instantly.
         val p = Processors()
         val fold = p.of("aliasFold")
         fold.begin(nowMs = 1_000)
@@ -257,17 +216,14 @@ class ProcessorsTest {
 
     @Test
     fun `a pass that brackets itself inside another bracket is one pass, not two`() {
-        // The fitness pass brackets its own `measure` — it must, because the
-        // fast lane calls it outside the monitor's loop — and the sweep
-        // brackets every pass it runs. Both finishes landed, so the row
-        // reported two `passesRun` per sweep and the clock came from the loop
-        // rather than from the measure.
+        // The fitness pass brackets its own `measure`, because the fast lane calls
+        // it outside the monitor's loop, and the sweep brackets every pass it runs.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 1_000) // the monitor's bracket
         fitness.begin("measuring fitness", nowMs = 2_000) // the pass's own
-        fitness.finish(nowMs = 8_000) // …which ends it
-        fitness.finish(nowMs = 8_100) // and the monitor's, arriving after
+        fitness.finish(nowMs = 8_000) // ends the pass
+        fitness.finish(nowMs = 8_100) // the monitor's, arriving after
 
         val row = p.snapshot(nowMs = 9_000).single()
         assertEquals(1L, row.passes, "one pass ran")
@@ -276,9 +232,7 @@ class ProcessorsTest {
 
     @Test
     fun `a pass that reports no position is silent rather than empty`() {
-        // Three of the router's processors have no set to walk at all — ingest,
-        // the healer, the push — and `0 of 0` from them would be a measurement
-        // they never took, drawn on the card as a pass that has nothing to do.
+        // Ingest, the healer and the push walk no set; `0 of 0` from them would be a measurement they never took.
         val p = Processors()
         p.of("ingest").phase(Processors.RUNNING)
 
@@ -287,8 +241,7 @@ class ProcessorsTest {
 
     @Test
     fun `work is kept per stream, replacing rather than accumulating`() {
-        // A stream re-submits its whole candidate set every cycle, so appending
-        // would publish the same stream once per pass forever.
+        // A stream re-submits its whole candidate set every cycle.
         val p = Processors()
         val fold = p.of("aliasFold")
         fold.record(Processors.Work(stream = "content", candidates = 100, unmeasured = 90, dialled = 10, decided = 5))
@@ -303,8 +256,7 @@ class ProcessorsTest {
 
     @Test
     fun `asking for a handle twice hands back the same row`() {
-        // The fold is constructed with its handle and driven by the monitor,
-        // which asks for it by name — two objects reporting into one row.
+        // The fold is constructed with its handle and the monitor asks for it by name: two objects, one row.
         val p = Processors()
         p.of("aliasFold").phase(Processors.MEASURING)
         p.of("aliasFold").record(Processors.Work(stream = "content", candidates = 2, unmeasured = 1, dialled = 1, decided = 1))
@@ -318,9 +270,7 @@ class ProcessorsTest {
 
     @Test
     fun `the phase clock restarts on the WORD, not on every tick`() {
-        // Same rule as `StreamPhases.set`: a processor re-stating its phase
-        // every tick would report an elapsed time of zero forever, and elapsed
-        // time is the one number worth having on a row that is otherwise static.
+        // Same rule as `StreamPhases.set`: re-stating the phase every tick would report zero elapsed forever.
         val p = Processors()
         val ingest = p.of("ingest")
         ingest.phase(Processors.RUNNING)

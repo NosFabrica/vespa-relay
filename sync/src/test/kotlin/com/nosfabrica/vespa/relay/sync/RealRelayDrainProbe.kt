@@ -36,37 +36,18 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Asks the five `indexers` relays, over the real network, the question the whole
- * drain change turns on: **does an empty page come back with an EOSE?**
- *
- * Everything else that pins this behaviour scripts a relay's terminal signals,
- * so it pins OUR interpretation of them and nothing about any relay's actual
- * EOSE discipline. Only this can tell the two apart — and it is the difference
- * between the phantom legs closing and the fix being inert in production.
- *
- * OFF by default and not a gate: it dials the public internet, so it is neither
- * hermetic nor reproducible, and a relay being down is not a code regression.
- * It asserts nothing for the same reason — it REPORTS, and a human reads it.
- *
- * ```
- * ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true -i
- * ```
+ * Asks the `indexers` relays, over the real network, whether an empty page
+ * comes back EOSEd and whether an unfloored leg can end at all. Prints a
+ * report per relay and asserts nothing. Selected by `-DrealRelayProbe=true`.
  */
 class RealRelayDrainProbe {
-    /**
-     * The exact legs `SyncCoverage.legs` hands the `indexers` stream today,
-     * taken from the live `/stats.json` in the conversation that started this:
-     * kind 10002 below the oldest relay list each relay holds. Every one of
-     * these comes back empty — the question is whether it comes back DRAINED.
-     */
+    /** The legs `SyncCoverage.legs` hands the `indexers` stream: kind 10002 below each relay's oldest relay list. */
     private val legs =
         listOf(
             Triple("wss://purplepag.es", 1_676_121_767L, "3.1y of kind 0 below it"),
             Triple("wss://user.kindpag.es", 1_748_273_096L, "1.8y below it"),
             Triple("wss://directory.yabu.me", 1_762_093_077L, "4.4mo below it"),
-            // These two agree across kinds, so they have no phantom leg. Asked
-            // anyway: a relay that does NOT drain here would mean the ending is
-            // a property of the relay, not of the emptiness.
+            // Controls: kinds agree on these two, so they have no phantom leg.
             Triple("wss://profiles.nostr1.com", 1_676_163_321L, "kinds agree — control"),
             Triple("wss://indexer.coracle.social", 1_676_163_321L, "kinds agree — control"),
         )
@@ -93,11 +74,7 @@ class RealRelayDrainProbe {
             for ((url, until, note) in legs) {
                 val relay = RelayUrlNormalizer.normalize(url)
                 val leg = Filter(kinds = listOf(10002), until = until)
-                // A HARD ceiling per relay, which `fetchAllPages` deliberately does
-                // not have — its own doc says a walk is bounded by a `limit` or by
-                // cancelling the caller, and this is the caller cancelling. Without
-                // it, one relay that keeps answering hangs the whole probe, which
-                // is what the first run did on coracle.
+                // `fetchAllPages` has no ceiling of its own; one relay that keeps answering would hang the probe.
                 var events = 0
                 var oldest = Long.MAX_VALUE
                 val outcome =
@@ -134,29 +111,10 @@ class RealRelayDrainProbe {
     }
 
     /**
-     * The measurement that ended the "purplepag.es stops EOSEing" theory, and the
-     * one to re-run before touching [flooredForPaging].
-     *
-     * It walks each indexer twice from the same ceiling — once with the leg exactly
-     * as [SyncCoverage.legs] hands it over (`since = null`, the shape every stream in
-     * `router.conf.example` produces), and once floored.
-     *
-     * READ `end`, NOT `lowest until`. When this probe was written the tell was the
-     * cursor going below zero, because nothing stopped it; on the quartz pinned now
-     * it cannot, so that column can no longer discriminate. What separates the two
-     * runs today is how the walk ENDS: unfloored, purplepag.es answers above the
-     * cursor and quartz calls the walk `UNPAGEABLE` — the leg stays open, records no
-     * coverage, and the whole 1.49M-event history is re-walked on the next boot;
-     * floored, the page below the floor is an EOSE'd empty one, so the walk is
-     * `DRAINED` and the leg closes. `lowest until` is still printed because it shows
-     * how deep each run got, but note it is the `until` the walk ASKED for, not one
-     * it was answered at.
-     *
-     * The ceiling is deliberately just above the epoch-stamped events rather than
-     * `now`: purplepag.es serves ~2,300 kind 0/10002 events a second and holds years
-     * of them, so starting at the top would spend a quarter of an hour on history
-     * that is not what this measures. Starting here reaches the same cursor in one
-     * page.
+     * Walks each indexer twice from [TRAP_CEILING], once with the leg as
+     * [SyncCoverage.legs] builds it and once through [flooredForPaging]. Read
+     * `end`: `DRAINED` closes the leg, `UNPAGEABLE` leaves it to re-walk every
+     * boot. `lowest until` is what the walk asked for, not what it was answered at.
      */
     @Test
     fun reportWhetherAnUnflooredLegCanEndAtAll() {
@@ -209,12 +167,7 @@ class RealRelayDrainProbe {
                         outcome.fold(
                             onSuccess = { r ->
                                 when (r) {
-                                    // Kept, but it should no longer be reachable: the
-                                    // pinned quartz floors its cursor at 0, so a walk
-                                    // cannot run off the bottom of the time axis any
-                                    // more. If this ever prints again, the guard
-                                    // upstream has regressed — that is the finding,
-                                    // not the relay.
+                                    // Unreachable while the pinned quartz floors its cursor at 0; printing again means that guard regressed.
                                     null -> "NEVER ENDED in ${TERMINATION_MS / 1000}s"
 
                                     else -> "${r.end} (${r.downloaded} event(s))"
@@ -235,18 +188,10 @@ class RealRelayDrainProbe {
     companion object {
         private const val PER_RELAY_MS = 120_000L
 
-        /**
-         * Just above the events purplepag.es stamps `created_at = 0` — twelve kind
-         * 10002s, and the reason a walk there runs off the bottom of the time axis.
-         * One page from this ceiling already carries them, so both runs reach the
-         * cursor that matters immediately.
-         */
+        /** Just above the events purplepag.es stamps `created_at = 0`, so one page reaches the cursor that matters. */
         private const val TRAP_CEILING = 1_600_000_000L
 
-        /**
-         * Not an idle timeout — the relay is answering the whole time, EOSE on every
-         * page. This is how long a walk gets to prove it can END.
-         */
+        /** Not an idle timeout; the relay answers throughout. How long a walk gets to prove it can end. */
         private const val TERMINATION_MS = 45_000L
     }
 }

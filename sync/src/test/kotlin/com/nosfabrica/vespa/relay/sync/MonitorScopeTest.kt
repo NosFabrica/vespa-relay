@@ -32,25 +32,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * **WHOSE 30166 VERDICTS BUILD THE ROSTER WHEN THE CONFIG NAMES NOBODY?**
- *
- * Everybody's. An absent `authors` is the unscoped read it is on any other
- * NIP-01 filter, and the router does not substitute its own signer for it.
- *
- * The substitution used to be there (`RosterBuilder`'s `ifEmpty`) and cost
- * more than it bought. It welded the trust anchor to `RELAY_NSEC`: rotating
- * the key re-pointed every verdict source at an identity that had signed
- * nothing, so all of them selected zero records and every roster emptied
- * until the new key finished a sweep — with no warning, because a rotated key
- * IS a monitor identity, just one with no history. And the only deployment
- * where the substitution changed the answer at all was the one that had
- * deliberately mirrored somebody else's 30166s, i.e. the one that meant the
- * union.
- *
- * Unscoped is safe for THIS read because admitting is a positive claim that
- * still has to survive a dial. The hold-out read is not symmetric with it and
- * stays author-bound — see `RelayDiscovery.undialable` and
- * [discovery.StreamWorld].
+ * An absent `authors` on a verdict source is the unscoped read it is on any
+ * NIP-01 filter; the router does not substitute its own signer.
  */
 class MonitorScopeTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -60,7 +43,7 @@ class MonitorScopeTest {
     private val ourRelay = RelayUrlNormalizer.normalize("wss://ours.example")
     private val theirRelay = RelayUrlNormalizer.normalize("wss://theirs.example")
 
-    /** Both monitors' verdicts in one store — mirroring a foreign 30166 amounts to exactly this. */
+    /** Both monitors' verdicts in one store, which is what mirroring a foreign 30166 amounts to. */
     private suspend fun storeWithBothMonitors(): NostrSemanticsStore {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
         RelayVerdictRecord(store, ours)
@@ -102,8 +85,7 @@ class MonitorScopeTest {
     @Test
     fun `naming authors keeps every other monitor out`() =
         runBlocking {
-            // Hex, because a `filter { }` block is a NIP-01 filter and NIP-01
-            // speaks hex. Bech32 stays in the settings that are ours to define.
+            // Hex: a `filter { }` block is a NIP-01 filter, and NIP-01 speaks hex.
             val roster = rosterOf(storeWithBothMonitors(), authors = ""","authors": ["${ours.pubKey}"]""").rebuild()
             assertEquals(
                 setOf(ourRelay),
@@ -115,10 +97,7 @@ class MonitorScopeTest {
     @Test
     fun `a rotated signer does not empty an unscoped roster`() =
         runBlocking {
-            // The migration the substitution used to break: the store holds the
-            // OLD key's verdicts, the process now runs under a new one. Nothing
-            // in the read depends on which key this process happens to hold, so
-            // the roster is whatever the store can prove — not empty.
+            // The store holds the old key's verdicts; the process runs under a new one.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             RelayVerdictRecord(store, ours)
                 .publishFitness(ourRelay, "prime", "signed before the rotation", pageable = null, nip77 = null)
@@ -128,9 +107,7 @@ class MonitorScopeTest {
     @Test
     fun `the unscoped read still applies the freshness and epoch rules`() =
         runBlocking {
-            // Unscoped widens WHO may admit, and nothing else: a stranger's
-            // `dead` verdict is not an admission, and never was an exclusion
-            // either — that asymmetry is the dead set's, not this read's.
+            // Unscoped widens who may admit and nothing else; a stranger's `dead` is not an admission.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             RelayVerdictRecord(store, stranger)
                 .publishFitness(theirRelay, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
@@ -142,9 +119,7 @@ class MonitorScopeTest {
     @Test
     fun `the roster is unchanged by a second rebuild`() =
         runBlocking {
-            // Each source's read is cached for its own refreshSeconds, so the
-            // second rebuild is served from that cache — and must answer the
-            // same thing the read did.
+            // The second rebuild is served from each source's cache and must answer the same.
             val builder = rosterOf(storeWithBothMonitors())
             assertEquals(builder.rebuild().asks.keys, builder.rebuild().asks.keys)
         }

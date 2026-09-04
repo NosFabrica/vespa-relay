@@ -26,21 +26,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * **THE ONE PLACE THIS REPO PARSES ANOTHER REPO'S PROSE, made loud.**
- *
- * The stage split is the number that says whether a slow ingest batch is in
- * `dedup`, `write` or `lock.ingest.wait`, and `IngestStats` offers exactly two
- * ways to read it: `statusLine`, which is destructive and would halve the
- * operator's log line if anything else called it, and `dump`, which is
- * cumulative and repeatable and a String. So the health loop parses `dump`.
- *
- * A parser against a format nobody promised fails SILENTLY — an empty panel
- * reads exactly like an idle router. This books a stage through the REAL
- * `IngestStats` and asserts it comes back, so a store bump that rewords `dump`
- * fails here, by name, instead.
+ * The health loop parses `IngestStats.dump()`, a format the store never
+ * promised; a store bump that rewords it must fail here by name, not as an
+ * empty panel that reads like an idle router.
  */
 class IngestStageParseTest {
-    /** The health loop's parser, by construction: same source, so this cannot drift from what ships. */
+    /** The health loop's parser, copied so it cannot drift from what ships. */
     private fun stageMs(dump: String): List<Pair<String, Long>> {
         val parts =
             dump
@@ -60,8 +51,7 @@ class IngestStageParseTest {
 
     @Test
     fun `a stage booked through the real IngestStats parses back out of dump`() {
-        // A name of our own, so a shared JVM running other tests cannot make
-        // this pass on somebody else's stage — and cannot make it fail either.
+        // A unique name, so other tests sharing the JVM can neither pass nor fail this one.
         val stage = "parsetest.${System.nanoTime()}"
         IngestStats.add(stage, 2_500_000_000L)
 
@@ -73,9 +63,7 @@ class IngestStageParseTest {
 
     @Test
     fun `an empty dump is empty rather than one junk row`() {
-        // The library's own word for nothing booked. Parsed naively, "(none)"
-        // becomes a stage called `(none)` with no time, which would draw a row
-        // on the card for a router that has ingested nothing.
+        // "(none)" is the library's word for nothing booked.
         assertEquals(emptyList(), stageMs("stages (none)"))
         assertEquals(emptyList(), stageMs(""))
     }

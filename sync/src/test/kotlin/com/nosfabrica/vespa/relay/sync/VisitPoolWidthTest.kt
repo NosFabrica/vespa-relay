@@ -52,39 +52,23 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * THE CONVERGENCE FIX, END TO END: a relay that rejects an over-wide filter
- * outright is asked again in chunks, and completes.
- *
- * Nine relays on `vespa-eventstore-staging` refuse this router's 139-kind
- * `contentViaOutbox` ask rather than trimming it. A refused walk ends the visit
- * ([VisitPool.refusedOutright]), and the next visit re-asks the identical
- * filter — so those relays could never complete a single ask, however many
- * times the pool visited them. That is a livelock, not a slow path, and the
- * unit tests beside this one ([FilterWidthsTest]) can only show the arithmetic;
- * only driving the real pool can show that the arithmetic is reached, that the
- * chunks actually go out, and that the visit finishes.
+ * The real [VisitPool] over a relay that refuses over-wide filters: the
+ * re-ask in chunks reaches the wire, and the visit finishes.
  */
 class VisitPoolWidthTest {
     private val url = RelayUrlNormalizer.normalize("wss://purplerelay.com")
 
-    /** Every kind the stream asks for — small enough to assert on, wide enough to chunk. */
+    /** Small enough to assert on, wide enough to chunk. */
     private val kinds = listOf(1, 6, 7, 16, 1111)
 
     /**
-     * A relay that refuses any filter naming more than [cap] kinds, the way the
-     * measured ones do: a `CLOSED` with nothing delivered, and a sentence
-     * naming the limit.
-     *
-     * It is its own [RelayComplaints] so the DATING contract is exercised
-     * rather than stubbed out — the sentence is stamped when the refusal is
-     * produced, so a walk that was never refused reads back nothing, which is
-     * what stops an ordinary quiet relay from being narrowed.
+     * A relay that refuses any filter naming more than [cap] kinds with a `CLOSED`
+     * and a sentence. It is its own [RelayComplaints] so the sentence is dated
+     * when the refusal is produced, and a walk never refused reads back nothing.
      */
     private class WidthCappedRelay(
         private val cap: Int,
-        /** What it says when it refuses — a width complaint, or something else entirely. */
         private val says: String = "invalid: too many kinds (max $cap)",
-        /** …and how the walk ends. A width refusal is a `CLOSED`; an auth wall is its own ending. */
         private val end: PagedFetchResult.End = PagedFetchResult.End.CLOSED,
     ) : RelayReads,
         RelayComplaints {
@@ -105,8 +89,7 @@ class VisitPoolWidthTest {
                 saidAtMs = System.currentTimeMillis()
                 return PagedFetchResult(0, end)
             }
-            // DRAINED with nothing downloaded: an honest empty relay, which is
-            // not a refusal, so the visit carries on to its tail.
+            // DRAINED with nothing delivered is an honest empty relay, not a refusal.
             return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
         }
 
@@ -129,27 +112,21 @@ class VisitPoolWidthTest {
         }
     }
 
-    /** Claims nothing and counts nothing — this test is about what goes on the wire. */
+    /** Claims nothing and counts nothing. */
     private object NoSockets : Sockets {
         override fun claim(url: NormalizedRelayUrl) = Unit
 
         override fun release(url: NormalizedRelayUrl) = Unit
     }
 
-    /**
-     * The real [VisitPool] over one fake relay — everything else is the plain
-     * wiring the concurrency test already stands up, and it is here rather than
-     * inline so the two cases below differ only in the relay they meet.
-     */
+    /** The real [VisitPool] over one fake relay, so the two cases differ only in the relay they meet. */
     private fun poolOver(
         relay: WidthCappedRelay,
         store: NostrSemanticsStore,
         scope: CoroutineScope,
         processors: Processors,
     ): VisitPool {
-        // Never dialled: nothing here queues a heal or sets
-        // `negentropySyncThePastSeconds`, so neither the healer nor the pager
-        // reaches a socket. It exists to satisfy their constructors.
+        // Never dialled: nothing queues a heal or schedules an audit. It satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
         val bands = SyncBands(null)
         val streams =
@@ -196,57 +173,32 @@ class VisitPoolWidthTest {
             val pool = poolOver(relay, store, scope, processors)
             try {
                 pool.start()
-                // The tail is the last thing a clean visit does, so its arrival
-                // is the signal that the whole ask completed — which is the
-                // claim under test: before the narrowing, this visit ended on
-                // the first refusal and no tail was ever opened.
+                // The tail is the last thing a clean visit does, so its arrival means the ask completed.
                 withTimeout(10_000) {
                     while (relay.tails.isEmpty()) delay(20)
                 }
 
-                // THE FIRST ASK IS THE WHOLE FILTER, and it is refused. The
-                // pool does not pre-split: a cap can only ever be the relay's,
-                // so every relay on a roster is asked at full width once.
+                // A cap is the relay's to state, so every relay is asked at full width once.
                 assertEquals(kinds, relay.asked.first(), "the first ask is the stream's own filter, unsplit")
 
-                // …AND THE RE-WALK COVERS EVERY KIND, in chunks the relay
-                // accepts. Three of them at a cap of two — not the ceiling
-                // rounded up, the kinds themselves.
+                // Three chunks at a cap of two: the kinds themselves, not a ceiling rounded up.
                 val chunks = relay.asked.drop(1).take(3)
                 assertTrue(chunks.all { it.size <= 2 }, "every chunk is inside the relay's stated limit: $chunks")
                 assertEquals(kinds, chunks.flatten(), "every kind asked for, in order, exactly once")
 
-                // …AND THE TAIL PAYS THE SAME WIDTH. A live subscription
-                // carrying the filter the relay just refused is one that
-                // silently never delivers.
+                // The tail pays the same width; a subscription carrying the refused filter never delivers.
                 val tail = relay.tails.values.first()
                 assertTrue(tail.all { (it.kinds?.size ?: 0) <= 2 }, "the tail is chunked too: ${tail.map { it.kinds }}")
                 assertEquals(kinds, tail.flatMap { it.kinds.orEmpty() })
 
-                // ONE ABORT, AND IT IS NAMED. The first refusal is counted
-                // whether or not the retry rescues the visit — a relay we had
-                // to narrow to is a fact worth having on the card — and it is
-                // counted under the ending quartz reported rather than lumped
-                // into a total.
-                // THE TAIL IS AT THE WIDTH THE RELAY TAKES, and it has to be
-                // re-opened to get there: the cap is learned from a REFUSAL,
-                // which is the roster changing nothing, so a tail whose
-                // identity was the want set alone would keep the very filter
-                // this relay refuses — on a subscription it had already closed
-                // — while the pair went on reporting `tailed`.
+                // Re-opened at the learned width: the cap comes from a refusal, which changes nothing on the roster.
                 assertEquals(
                     1,
                     relay.tails.size,
                     "one live subscription, re-opened at the learned width rather than left at the refused one",
                 )
 
-                // AND THE VISIT DID NOT ABORT. `abortedVisits` counts visits
-                // that ENDED early, so a refusal the pool took down itself must
-                // not appear there: on this deployment that number is the
-                // convergence measure, and inflating it with refusals that were
-                // rescued would make the fix look like the fault. What the
-                // narrowing leaves behind instead is `narrowedRelays`, which is
-                // not a fault at all.
+                // A refusal the narrowing rescued is not an abort; it is a `narrowedRelays`.
                 val counts =
                     processors
                         .snapshot()
@@ -263,13 +215,7 @@ class VisitPoolWidthTest {
     @Test
     fun `a relay refusing for any other reason is not narrowed, it is named`() =
         runBlocking {
-            // THE OTHER HALF OF THE GATE, and the more important one: 50 relays
-            // on the same deployment refuse with `auth-required:` and 21 are
-            // outright blocked. Chunking THOSE asks would spend three extra
-            // round trips per leg on relays that will never serve us, forever.
-            // So the narrowing is driven by the sentence and nothing else, and
-            // what a refusal outside it earns is the thing that was missing:
-            // a counter with its own name, and a line.
+            // Narrowing is driven by the sentence alone; any other refusal is counted under its own name.
             val scope = CoroutineScope(SupervisorJob())
             val store = NostrSemanticsStore(InMemoryEventIndex())
             val relay = WidthCappedRelay(cap = 2, says = "auth-required: we only serve authenticated users", end = PagedFetchResult.End.AUTH_REQUIRED)
@@ -296,9 +242,7 @@ class VisitPoolWidthTest {
                 assertTrue((counts["abortedAuthRequired"] ?: 0L) > 0, "and it is counted as the wall it is")
                 assertEquals(counts["abortedVisits"], counts["abortedAuthRequired"], "with nothing else in the total")
                 assertTrue(relay.tails.isEmpty(), "a refused visit never reaches its tail")
-                // ONE ASK, NOT FOUR. The relay is asked at full width and the
-                // visit ends there — the chunks that a width refusal earns are
-                // exactly what this refusal must not.
+                // One ask: the relay is asked at full width and the visit ends there.
                 assertTrue(relay.asked.all { it == kinds }, "no chunking was attempted: ${relay.asked}")
             } finally {
                 scope.cancel()

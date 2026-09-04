@@ -45,25 +45,8 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * THE FAST LANE, AND WHAT IT IS ALLOWED TO HAND A RELAY THAT NOBODY HAS
- * CHECKED YET.
- *
- * The lane exists because a new relay waits on `prime` — that grade is the
- * whole admission decision for every visit-mode stream — and the sweep runs on
- * a six-hour clock. So the lane looks every [MonitorConfig.fastLaneSeconds] at
- * the urls named since its last look and grades them straight away.
- *
- * **It used to run FITNESS ALONE, and that is the hole this pins shut.** The
- * stability gate rode the sweep, so a url could be graded `prime` and admitted
- * to every roster before anything had asked whether it answers the same
- * question twice. [Verdict.INCONSISTENT] exists because such a relay "would
- * poison bands and coverage", and the window was up to a whole sweep of one
- * doing exactly that.
- *
- * The FOLD is deliberately still not here: it elects a leader out of a host's
- * whole group, and a since-bound set holds whichever urls of that host happened
- * to be named in the last two minutes. Per-url work belongs in the lane; per-host
- * work does not.
+ * The fast lane runs the stability gate before fitness, so a new relay is
+ * never admitted `prime` before anyone asked whether it answers twice alike.
  */
 class FastLaneTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -77,10 +60,7 @@ class FastLaneTest {
     /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE] as one page. */
     private val corpus: List<Event> = (0 until 60).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
-    /**
-     * The world the lane reads from: [candidatesSince] is the lane's door and
-     * [candidates] is the sweep's, so a test can drive either.
-     */
+    /** [candidatesSince] is the lane's door and [candidates] the sweep's, so a test can drive either. */
     private class Fresh(
         private val urls: List<NormalizedRelayUrl>,
     ) : AliasMonitor.CandidateSource {
@@ -96,15 +76,9 @@ class FastLaneTest {
     }
 
     /**
-     * A fetch where [shuffler] walks its window forward on every ask, so no two
-     * answers agree — the same shape `RelayConsistencyTest` measures the gate
-     * with — and everything else is an ordinary relay that pages.
-     *
-     * The cursor is honoured for everything but the shuffler, and since #187
-     * that is what "ordinary" means: the fitness pass asks a second page below
-     * the first and grades a relay that ignores it `unpageable`. This test is
-     * about the LANE admitting and refusing, so its good relays have to page or
-     * they are all refused for a reason it is not measuring.
+     * [shuffler] walks its window forward on every ask; everything else pages
+     * properly, or the fitness pass refuses it `unpageable` for a reason this
+     * test is not measuring.
      */
     private fun shufflingFetch(
         dials: AtomicInteger,
@@ -130,7 +104,7 @@ class FastLaneTest {
         store: NostrSemanticsStore,
         urls: List<NormalizedRelayUrl>,
         fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page,
-        /** False stages the lane as it ran BEFORE the gate joined it — see the control below. */
+        /** False stages the lane with fitness alone, the control below. */
         gateInLane: Boolean = true,
     ): Lane {
         val processors = Processors()
@@ -148,9 +122,7 @@ class FastLaneTest {
                 probe = AliasProbe(fetch = fetch, target = 40, page = 40, fallbackPage = 40),
                 client = EmptyNostrClient(),
                 foldedAway = { emptyMap() },
-                // THE WIRE UNDER TEST. Fitness reads the gate's standing
-                // verdicts through this, and until the lane ran the gate there
-                // was never one to read on a url this new.
+                // The wire under test: fitness reads the gate's standing verdicts through this.
                 inconsistent = { u -> stability.applyVerdicts(u).toSet() },
                 progress = processors.of("fitness"),
             )
@@ -193,25 +165,13 @@ class FastLaneTest {
 
             l.monitor.runFastLane(0)
 
-            // The whole point: the shuffler never sees `prime`, on the very
-            // tick that discovered it. Before the gate joined this lane it was
-            // graded off the fitness ladder alone, which the shuffler passes —
-            // it answers, and it pages.
             assertEquals(Verdict.INCONSISTENT.value, gradeOf(store, shuffler))
             assertNotEquals(Verdict.PRIME.value, gradeOf(store, shuffler))
-            // …and the relay that IS steady still gets its grade on the same
-            // tick. A lane that bought safety by making everyone wait for the
-            // sweep would have defeated its own reason to exist.
+            // The steady relay still gets its grade on the same tick.
             assertEquals(Verdict.PRIME.value, gradeOf(store, steady))
         }
 
-    /**
-     * THE CONTROL, and it is the reason the test above is known to assert
-     * something: the shuffler passes the fitness ladder on its own. It answers
-     * and it pages, which is all `prime` is measured from — so with the gate
-     * back on the sweep the lane admits it, and every visit-mode stream selects
-     * on that grade until the next sweep replaces it.
-     */
+    /** The control: the shuffler answers and pages, which is all the fitness ladder measures. */
     @Test
     fun `fitness alone in the lane is what let the shuffler through`() =
         runBlocking {
@@ -230,10 +190,7 @@ class FastLaneTest {
     @Test
     fun `the work moves earlier and does not repeat, so the sweep re-dials nothing the lane measured`() =
         runBlocking {
-            // The cost argument for putting the gate here at all. A stability
-            // verdict stands for RelayVerdictRecord.DEFAULT_TTL_SECONDS, so a
-            // url the lane measured is one the sweep skips: over a month this
-            // is the same number of dials, taken sooner.
+            // A stability verdict stands for RelayVerdictRecord.DEFAULT_TTL_SECONDS, so over a month this is the same dials, sooner.
             val store = newStore()
             val dials = AtomicInteger()
             val l = lane(store, listOf(steady, shuffler), shufflingFetch(dials, AtomicInteger()))
@@ -249,8 +206,6 @@ class FastLaneTest {
     @Test
     fun `one lane pass failing does not cost the next one its turn`() =
         runBlocking {
-            // A new relay's first `prime` must not be lost to a fault in the
-            // pass ahead of it — the same rule `runPass` holds each stream to.
             val ran = mutableListOf<String>()
             val boom =
                 AliasMonitor.Pass { label, _, _, _, _ ->

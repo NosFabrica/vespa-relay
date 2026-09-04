@@ -42,40 +42,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * **THE FUNNEL'S FIRST BRANCH HAS TO COUNT WHAT IT DROPS.**
- *
- * `sourced = excluded + heldOutDead + candidates` is the identity the coverage
- * card's top three rows rest on, and for as long as it existed the `excluded`
- * term was structurally 0 — not because nothing was excluded, but because
- * [StreamWorld.derive] asked [RelayDiscovery.discover] to apply the exclude
- * list and the self check FIRST and then re-tested the survivors with the same
- * two predicates. Everything that would have failed had already been dropped a
- * frame below, so `kept` was true for every url that reached the callback.
- *
- * Two numbers were wrong from one cause, which is why both are asserted here:
- * `excluded` read 0 on a config excluding thousands of urls, and `sourced` —
- * labelled "every url the streams named" — was silently a POST-exclusion
- * count, so the arithmetic closed perfectly while describing a corpus smaller
- * than the one that existed. A partition that divides cleanly because one side
- * was amputated before the cut is the failure this file exists to catch.
- *
- * The exclusion itself was never broken, and one test below pins that the fix
- * did not trade a right answer for a right number.
+ * The funnel's first branch: `sourced = excluded + heldOutDead + candidates`,
+ * with `sourced` counted above the exclusion rather than below it.
  */
 class StreamWorldDerivationTest {
-    /**
-     * A ROUTABLE url on purpose. The usual test spelling for "us" is
-     * `ws://localhost:7777`, and it cannot exercise the self check at all —
-     * `RelayDiscovery.normalize` drops loopback before anything downstream sees
-     * it, so a relay list naming us would come back excluded for the wrong
-     * reason and the assertion would pass on a coincidence.
-     */
+    /** Routable on purpose: `RelayDiscovery.normalize` drops loopback before the self check sees it. */
     private val self = RelayUrlNormalizer.normalize("wss://ours.example")
 
-    /**
-     * The production shape this was found on: a host minting one url per npub,
-     * excluded by a regex no literal list could keep up with.
-     */
+    /** A host minting one url per npub, excluded by regex. */
     private val perNpub = (1..40).map { "wss://filter.nostr.wine/npub1p4kg8${"%02d".format(it)}" }
 
     private fun event(
@@ -84,12 +58,8 @@ class StreamWorldDerivationTest {
     ): Event = NostrSignerSync().sign(1_700_000_000L, kind, arrayOf(*tags), "")
 
     /**
-     * The monitor block from `router.conf.example`, cut to the one source this
-     * needs. Compiled through the REAL loader rather than a hand-built
-     * [com.nosfabrica.vespa.relay.config.RelayExcludes]: the entry's
-     * classification as a regex — it carries a `*`, a dot alone would not do it
-     * — is the loader's decision, and a test that bypasses it cannot fail when
-     * that classification changes.
+     * Compiled through the real loader: whether an exclude entry is a regex is
+     * the loader's decision, and a hand-built [com.nosfabrica.vespa.relay.config.RelayExcludes] cannot fail with it.
      */
     private fun monitorConfig(exclude: List<String>) =
         RouterConfigLoader
@@ -110,14 +80,7 @@ class StreamWorldDerivationTest {
                 """.trimIndent(),
             ).monitor
 
-    /**
-     * The same block with TWO sources in it — one config, two units of work.
-     *
-     * The shape the position is counted for: a deployment that has moved its
-     * relay-list parsing into `monitor { sources }` has exactly one
-     * [RelayDiscoveryConfig] however many sources it names, and the example
-     * config's block names three.
-     */
+    /** One [RelayDiscoveryConfig] holding two sources, the shape the position is counted for. */
     private fun twoSourceMonitorConfig() =
         RouterConfigLoader
             .parse(
@@ -139,11 +102,8 @@ class StreamWorldDerivationTest {
             ).monitor
 
     /**
-     * Nothing here dials, so the probe, the ingest queue and the socket
-     * refcount are never reached — [StreamWorld.candidates] reads the store and
-     * nothing else. Passed real rather than mocked anyway, because a
-     * constructor that quietly starts doing work is exactly the change this
-     * test should notice.
+     * Nothing here dials, so the probe, ingest and sockets are never reached; they
+     * are passed real so a constructor that starts doing work is noticed.
      */
     private fun world(
         store: NostrSemanticsStore,
@@ -226,22 +186,12 @@ class StreamWorldDerivationTest {
     @Test
     fun `the walk says where it has got to, and the row ends with the yield`() =
         runBlocking {
-            // THE STATE THAT USED TO BE INVISIBLE. This walk is minutes on a
-            // live store and it sits in front of every probe pass, so while it
-            // ran the card had three rows reading `idle` and nothing saying the
-            // sweep had started at all.
-            //
-            // The position is per SOURCE, and that is the only unit available:
-            // how many urls the walk yields is what it is finding out, so a
-            // position counted in them would need its own answer first.
             val store = storeWithPerNpubUrls()
             val processors = Processors()
             val row = processors.of("aliasSource")
             val world = world(store, listOf("wss://filter.nostr.wine/npub.*"), progress = row)
-            // Five zeros and a walk that has not happened are the same object,
-            // and only this tells them apart — the row's whole fact line is
-            // drawn from those counts, so a boot must publish none of them
-            // rather than claim it named no urls.
+            // Five zeros and a walk that has not happened are the same object; a boot
+            // publishes no counts rather than claiming it named no urls.
             assertEquals(false, world.derived, "nothing has been derived before the first walk")
 
             val candidates = world.candidates()
@@ -249,18 +199,10 @@ class StreamWorldDerivationTest {
 
             val after = processors.snapshot().single()
             assertEquals("source", after.measuring?.unit, "the walk declared what it was counting")
-            // Per SOURCE and not per derivation config: this world's whole
-            // corpus comes from the monitor block, which is ONE config holding
-            // however many sources — counted the other way the position would
-            // read `0 of 1` for the entire walk and then `1 of 1`, which is not
-            // a position at all. The block here names one source, so the two
-            // readings coincide; `RelayDiscovery.discover` is where the tick
-            // comes from either way.
+            // Per source, not per derivation config: the monitor block is one config
+            // holding however many sources, and a position over configs could not move.
             assertEquals(1, after.measuring?.toProbe, "one unit per configured source, across every derivation")
             assertEquals(1, after.measuring?.attempted, "and it is behind the walk once that source's read ends")
-            // The yield, stated rather than left to a subtraction: it is what
-            // the passes were handed, and every number on their rows is a share
-            // of it.
             assertEquals(candidates.size, world.lastDerivation.candidates)
             assertEquals(1, world.lastDerivation.candidates, "one relay survives the exclude, and the row says so")
         }
@@ -268,12 +210,6 @@ class StreamWorldDerivationTest {
     @Test
     fun `the position counts sources, not the configs they are grouped into`() =
         runBlocking {
-            // THE POSITION THAT COULD NOT MOVE. Counted per derivation CONFIG,
-            // a router whose urls all enter through the `monitor { sources }`
-            // block has one unit: the row reads `0 of 1` for the whole walk and
-            // then `1 of 1`, which is a mark that reads the same on every
-            // healthy system and therefore not a mark. The block below is one
-            // config and two sources, and the row has to say two.
             val store = storeWithPerNpubUrls()
             val processors = Processors()
             val world =
@@ -307,13 +243,8 @@ class StreamWorldDerivationTest {
     @Test
     fun `the fast lane still holds out a url we call dead, asking only about what it found`() =
         runBlocking {
-            // THE READ THAT WAS NOT BOUNDED. The lane derived the handful of
-            // urls named since its last look and then read the WHOLE dead set
-            // to filter them — an unbounded materializing query every
-            // `fastLaneSeconds`, thirty an hour at the stock 120s, to decide a
-            // question about a dozen urls. It asks about its own urls now, and
-            // this is the half that can go wrong quietly: the answer over that
-            // subset has to be identical.
+            // The lane asks about its own handful of urls rather than reading the whole
+            // dead set; the answer over that subset has to be identical.
             val monitor = NostrSignerInternal(KeyPair())
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(
@@ -345,10 +276,6 @@ class StreamWorldDerivationTest {
     @Test
     fun `our own url is counted as excluded, which is what the row says`() =
         runBlocking {
-            // The row reads "excluded by config, or our own url" — the self
-            // check used to reach discovery as `skip`, one frame below the
-            // count, so the second half of that label could never be true
-            // either.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(event(10002, arrayOf("r", self.url, "write"), arrayOf("r", "wss://ordinary.example", "write")))
 
@@ -363,12 +290,8 @@ class StreamWorldDerivationTest {
     @Test
     fun `urls only our records know about are counted beside what the streams named`() =
         runBlocking {
-            // THE CORPUS IS NOT ONE DERIVATION'S YIELD. A url leaves the relay
-            // lists for reasons of its own — the author who listed it revised
-            // their 10002 — and every measurement of it stays in the store,
-            // still read by the fold. The coverage card's caption says "every
-            // relay url this router knows of" and its tree was rooted at
-            // `sourced`, so those urls left the corpus without a word.
+            // A url leaves the relay lists for reasons of its own while every
+            // measurement of it stays in the store, still read by the fold.
             val monitor = NostrSignerInternal(KeyPair())
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(event(10002, arrayOf("r", "wss://ordinary.example", "write")))
@@ -376,9 +299,7 @@ class StreamWorldDerivationTest {
             for (url in listOf("wss://forgotten.example", "wss://gone.example")) {
                 record.publishFitness(RelayUrlNormalizer.normalize(url), "dead", "nothing answered", pageable = null, nip77 = null)
             }
-            // …and one the relay list DOES still name, which must not be counted
-            // twice: the mouth is `sourced + recordedOnly` and a url on both
-            // sides of that would inflate the whole tree's denominator.
+            // Named by a relay list too, and not counted twice: the mouth is `sourced + recordedOnly`.
             record.publishFitness(
                 RelayUrlNormalizer.normalize("wss://ordinary.example"),
                 "prime",
@@ -398,26 +319,14 @@ class StreamWorldDerivationTest {
     @Test
     fun `a url our own records know about is MEASURED again, not merely counted`() =
         runBlocking {
-            // THE CORPUS IS OURS TO RE-MEASURE. Counting these urls was half the
-            // fix; the other half is that they are candidates. Measured on
-            // staging: one derivation yielded 127 urls out of a store holding
-            // 3.09M relay lists and records for 19,844 relays, and because the
-            // candidate set was that derivation's yield, a short read took the
-            // whole corpus with it — 583 relays graded prime where there had
-            // been 1,600, and no way back, since a url nothing named could not
-            // be re-measured to earn its grade again.
-            //
-            // A url we hold a signed record about is one we have measured and
-            // are telling the network about. Re-measuring it does not need
-            // somebody's 10002 to name it a second time.
+            // A url we hold a signed record about does not need somebody's 10002 to
+            // name it a second time before it is re-measured.
             val monitor = NostrSignerInternal(KeyPair())
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(event(10002, arrayOf("r", "wss://named.example", "write")))
             val record = RelayVerdictRecord(store, monitor)
             val forgotten = RelayUrlNormalizer.normalize("wss://forgotten.example")
-            // `prime`, not `dead`: a dead verdict is held out for its own 24h
-            // reason, and the url this test is about is one that WORKS and that
-            // no list happens to name this round.
+            // `prime`, not `dead`: a dead verdict is held out for its own reason.
             record.publishFitness(forgotten, "prime", "answered at a settled anchor", pageable = null, nip77 = null)
 
             val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
@@ -432,15 +341,7 @@ class StreamWorldDerivationTest {
     @Test
     fun `a derivation that collapses says what the round before it named`() =
         runBlocking {
-            // A SHORT READ AND A SHRUNK NETWORK ARE THE SAME PICTURE, and the
-            // only thing that separates them is the round before. Staging went
-            // from naming five figures of urls to naming 127 with nothing
-            // anywhere saying so, because every number on this row described
-            // one round and no number described the change.
-            //
-            // The corpus is safe either way now — it is the union with our own
-            // records — so this is a REPORT, and reporting it needs both sides
-            // of the comparison to be readable from outside.
+            // A short read and a shrunk network are the same picture; only the round before separates them.
             val monitor = NostrSignerInternal(KeyPair())
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             for (i in 0 until 140) {
@@ -459,11 +360,8 @@ class StreamWorldDerivationTest {
     @Test
     fun `a router with no monitor identity claims to know nothing beyond its lists`() =
         runBlocking {
-            // Same asymmetry `undialable` documents: with no signer and no named
-            // monitors this router holds no records, so the honest count of what
-            // it knows beyond today's relay lists is none — not "everything in
-            // the store", which would let a mirrored stranger's 30166s decide
-            // the size of our own corpus.
+            // With no signer and no named monitors this router holds no records; counting
+            // everything in the store would let a mirrored stranger's 30166s size our corpus.
             val stranger = NostrSignerInternal(KeyPair())
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(event(10002, arrayOf("r", "wss://ordinary.example", "write")))
@@ -479,8 +377,7 @@ class StreamWorldDerivationTest {
     @Test
     fun `an empty exclude list leaves the count at zero`() =
         runBlocking {
-            // The reading that USED to be unconditional. Pinned so a regression
-            // to it is a failure rather than a plausible-looking 0.
+            // Pinned so a regression to an unconditional 0 fails rather than looking plausible.
             val store = storeWithPerNpubUrls()
             val world = world(store, emptyList())
             val candidates = world.candidates()

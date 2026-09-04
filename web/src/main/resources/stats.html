@@ -6,110 +6,25 @@
 <meta name="color-scheme" content="light dark" />
 <meta name="description" content="What this deployment holds and is doing: the relay's corpus, the mirror's coverage, and the monitor's verdicts — one page, served by whichever of the three you point it at." />
 <title>Relay stats</title>
-<!-- The same tab icon the search page carries; see its head for why there are
-     two of them.
-
-     Every reference on this page is document-RELATIVE — these two, the
-     stylesheet below, the module imports, and `stats.json` inside
-     `shared/statspage.js`. This one file is served by the relay, the mirror and
-     the monitor, and an operator putting all three behind one hostname mounts
-     two of them under a path prefix (`/sync/`, `/monitor/`). An absolute
-     `/web/…` would then be asked of the host ROOT, where the relay answers 200
-     with ITS copy of the same file name — a page that renders its chrome and
-     silently draws another service's modules, which is worse than a 404. At the
-     root the two spellings resolve identically, so nothing changes there.
-
-     Relative is safe here for two reasons, and neither is general. The imports
-     are in an INLINE `<script type="module">`, whose specifiers resolve against
-     the DOCUMENT base url rather than a module's own. And this page never
-     rewrites its own url — no pushState, no replaceState, no location
-     assignment — so that base cannot drift under the reader. The search UI has
-     both of those the other way round and stays a root-only page.
-
-     The leading `./` is not decoration on the imports: a specifier that starts
-     with a bare name — `web/shared/page.js` — is not a relative url at all but
-     an IMPORT MAP key, and a browser with no import map fails the whole module
-     graph on it. The `<link>` hrefs would take either spelling; they are
-     written the same way so that neither can be copied into the other. -->
+<!-- Both icons, like the search page. Every reference on this page is
+     document-relative: this one file is served by the relay, the mirror and the
+     monitor, and two of them may be mounted under a path prefix. Relative is
+     safe here because the imports are in an inline module (specifiers resolve
+     against the document url) and the page never rewrites its own url. The
+     leading `./` on an import is required: a bare `web/...` is an import-map
+     key, not a path. -->
 <link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
 <link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
 <!--
-  The corpus this relay holds, charted from GET /stats.json.
+  The corpus this deployment holds, charted from GET /stats.json.
 
-  THE JSON IS THE ARTIFACT; this page is one reader of it. That is deliberate
-  and it is the whole reason the endpoint exists separately: the reference
-  dashboard this page was modelled on (stats.andotherstuff.org) was completely
-  reconstructible in minutes precisely because its /api/dashboard was public and
-  unauthenticated, and ours being public means anyone can chart our coverage,
-  diff it against a network-wide one, or build a better page than this. A reader
-  who wants the numbers should never have to scrape markup for them.
-
-  So, unlike observer_stats.html, this page carries NO relay client. That page
-  speaks the protocol itself because it must work when the app is broken, and
-  because asking the way a client would means it also TESTS what it asks.
-  Neither applies here: no aggregation on this page is a protocol feature, and
-  thirty days of distinct-pubkey counts is not something to ask over a websocket
-  — it is one grouping query per series against the engine, run on a timer
-  behind the server. What this page must survive is a stale or missing rollup,
-  and it says so rather than drawing zeros.
-
-  EVERY NUMBER DESCRIBES THIS RELAY'S STORE, not the Nostr network. The two look
-  identical charted, and the confusion runs one way: a reader comparing our
-  event count against a network-wide dashboard's and finding it smaller reads it
-  as a broken relay rather than as a mirror's coverage. Hence the scope line
-  under the title, which is not decoration and should not be trimmed.
-
-  Counted ANONYMOUSLY, like the sibling pages and for the same reason: the store
-  gates an authenticated reader to authors that reader has scored, so the same
-  query under an operator's own lens answers a smaller, different question under
-  an identical label.
-
-  TWO PANELS ARE COMPUTED BUT INCOMPLETE — zaps and relay distribution — and
-  each carries a `note` in the document saying what it leaves out and why.
-  This page does not print those notes, or any of the per-panel prose it used
-  to carry: the caveats stay in /stats.json for a reader who wants them, and
-  the page stays a page of numbers. Only states are still written out — an
-  empty window, a missing section, an engine error — because those are facts
-  about the document rather than commentary on it.
-
-  THE KINDS TABLE IS LAST AND COMPLETE, and it is what replaced
-  kind_stats.html. That page could only count kinds it already knew to name —
-  the search UI's card registry plus whatever an operator typed in — so a kind
-  nobody had registered was invisible on the one page that would have shown it.
-  A grouping histogram enumerates what the store actually holds, which is why
-  this table is every kind rather than a top-N, and why it is at the bottom: it
-  is a reference list, not a chart, and it is now the longest thing here.
-
-  What went with that page: it asked its counts as NIP-45 COUNTs over the
-  relay's own websocket, so it also TESTED the protocol — a kind that came back
-  "no COUNT" was a finding about this relay rather than a blank cell. That is
-  still the right call for COUNTS, which have a rollup to fall back on.
-
-  ONE PANEL SPEAKS THE PROTOCOL AGAIN, and the distinction is worth keeping
-  straight. Monitor verdicts (kind 30166) have NO rollup: `/stats.json` says how
-  many urls folded and onto how many relays, and nothing anywhere could answer
-  "what does this store say about THIS url, and when was it measured" — the
-  question every investigation of a still-duplicated relay starts with. So that
-  panel pages the records off the websocket, and it is the only one here that
-  does. It is drawn on a BUTTON rather than on the poll, because this page
-  refreshes itself every minute and a websocket read on that cadence is a load
-  source rather than a debugging aid.
-
-  CHARTS: single-series, one hue, no legend (the title names the series), thin
-  bars with a rounded data-end, hairline solid gridlines, a 2px surface gap
-  doing the separating rather than a stroke.
-
-  Two rules that took a wrong turn to find:
-
-  * Events and publishing pubkeys are TWO charts, never two y-axes on one plot.
-    Their scales differ by orders of magnitude and a shared plot would invent a
-    correlation out of the arbitrary alignment of the two scales.
-
-  * The Daily/Weekly/Monthly toggle switches between THREE SERIES the rollup
-    computed separately — it never re-aggregates one into another. Events sum
-    across buckets; distinct authors do not. Someone posting every day is one
-    author in the week and seven in the sum of that week's days, so a weekly
-    pubkey count has to be asked of the engine at weekly granularity.
+  The JSON is the artifact and this page is one reader of it: nothing here
+  speaks the relay protocol except the verdicts panel, which has no rollup to
+  read. Every number describes this store, not the Nostr network, and is
+  counted anonymously (an authenticated reader is trust-gated). A stale or
+  missing rollup is said, never drawn as zeros. Charts are single-series with
+  no legend; events and pubkeys are two charts, never two y-axes, and the
+  three grains are three series the rollup computed separately.
 -->
 <link rel="stylesheet" href="./web/shared/stats.css" />
 </head>
@@ -128,115 +43,57 @@
 
 <script type="module">
 import { kindLabel } from "./web/shared/kinds.js";
-// The page's shared vocabulary and its engine, both in :web: every stats page
-// in this repo draws the same cards, polls the same way and keeps the reader's
-// place the same way, and the mirror's page proved it by being a MOVE rather
-// than a rewrite. See `mountStatsPage` for the whole contract.
 import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "./web/shared/page.js";
 import { mountStatsPage } from "./web/shared/statspage.js";
-// The two planes' cards. Imported unconditionally because this ONE page is
-// served by all three services, and each draws what its own document carries —
-// see PANELS. About 35KB of module the relay's copy never draws, against three
-// copies of the page chrome to keep in step, which is the trade this reverses.
+// Imported unconditionally: one page serves all three services, and each
+// draws what its own document carries (see PANELS).
 import { syncCard } from "./web/sync/cards.js";
 import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
 
 /**
- * What to call a kind, best source first.
- *
- * The document's own `name` leads, and it comes from Quartz's `KindNames` —
- * the protocol-wide registry, 287 kinds deep, which is the only one big enough
- * for a table that enumerates the whole store. `kinds.js` is the fallback and
- * not the primary: it is the search UI's BADGE registry, sized to the kinds
- * this relay can render a card for, so on its own it left 180 kinds reading
- * "kind N" — including the long tail this table exists to reveal.
- *
- * Kept as a fallback rather than dropped, because the two sets are not nested:
- * `kinds.js` names ten kinds Quartz has not registered yet (the `1630`-`1633`
- * git statuses, `30024` drafts, `30040`/`30041` publications), and a document
- * rolled up before this field existed carries no names at all.
+ * What to call a kind: the document's own name (Quartz's registry) first,
+ * `kinds.js` as the fallback. The two sets are not nested, so neither is enough alone.
  */
 const kindName = (kind, given) => given || kindLabel(kind);
 
-/**
- * Past this, an age is worth colouring. NOT an assertion that the relay is
- * broken: a serve-only deployment with no router has every right to a corpus
- * whose newest event is old, and this page cannot see whether a mirror is even
- * configured. It marks "look at this", and the tooltip names both readings.
- */
+/** Past this an age is coloured. Not a verdict: a serve-only deployment has every right to an old corpus. */
 const STALE_CORPUS_SECONDS = 24 * 3600;
 
 /**
- * The document schema this page was written against — see SCHEMA_VERSION in
- * StatsRollup, which bumps when a RELEASED field changes meaning or leaves.
- *
- * One constant because it was two: the comparison and the sentence it prints
- * both carried a literal, and raising the rollup's number left the page
- * comparing against one and offering to explain itself in terms of another. A
- * version check that can disagree with itself is worse than no check.
+ * The document schema this page reads; see SCHEMA_VERSION in StatsRollup.
+ * One constant, used by both the check and the sentence it prints.
  */
 const SCHEMA = 2;
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/**
- * Axis labels for the bucket keys the rollup emits.
- *
- * SLICED OFF THE STRING, never parsed through Date. A bare `yyyy-mm-dd` is
- * parsed as UTC midnight and then printed in the READER's zone, so every label
- * west of Greenwich slides one day into the past — on a page whose every
- * number is documented as UTC, and against a tooltip that would still be
- * printing the raw key. The rollup already bucketed by UTC; the axis only has
- * to spell what it bucketed.
- */
+/** Axis label for a `yyyy-mm-dd` key, sliced rather than parsed: Date would shift it into the reader's zone. */
 const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
 /** "2025-07" → "Jul ’25". The year is on every month label because the window spans several. */
 const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
 
-/**
- * How many bars apart the x labels stand.
- *
- * Measured from the width the labels ACTUALLY need — the longest one present,
- * at the 10px tick size — rather than a per-chart constant, so 24 hours, 30
- * days and 12 months each get as many labels as they can carry without a
- * collision, and none of them needs to know about the others.
- */
+/** How many bars apart the x labels stand, measured from the widest label present. */
 function tickStride(points, plotW) {
   const widest = points.reduce((m, p) => Math.max(m, (p.tick || "").length), 0);
   if (!widest) return points.length;
-  // ~6.2px per character at font-size 10, plus a gutter that keeps neighbours
-  // from touching. Two labels is the floor: first and last still beats none.
+  // ~6.2px per character at the 10px tick size, plus a gutter. Two labels is the floor.
   const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
   return Math.max(1, Math.ceil(points.length / room));
 }
 
 /**
- * Hide the axis ticks that would overlap — the sync frame's answer to [tickStride].
- *
- * That frame spans years and its axis prints every boundary, which is a legible
- * ruler at a card's full width and a smear below it: at 390px each of "2022"
- * through "2026" overlapped its neighbour by 2px and the frame's start date
- * overlapped the first year by 59, drawing "20222023202420252026now" as one
- * token. Even at 1100px the start date and the first year stood 1.9px apart and
- * read as a single label. Same problem the charts solve with [tickStride] and
- * the same answer — what the labels ACTUALLY measure decides how many fit —
- * except these are positioned in percentages of a fluid track rather than in a
- * fixed viewBox, so the measuring has to wait for layout.
- *
- * THE TWO ENDS WIN and the years give way to them, not the other way round.
- * "now" is what every question on this card is asked against, and the frame's
- * start is the one label no bare year can stand in for — it is the date the
- * card's own "not a target" note is about. The start yields only when even the
- * two ends cannot both fit.
+ * Hide the sync frame's axis ticks that would overlap. They are positioned in
+ * percentages of a fluid track, so the measuring has to wait for layout. The
+ * two end labels win and the years give way; the start yields only when even
+ * the two ends cannot both fit.
  */
 function thinTicks(track) {
   if (!track) return;
   const spans = [...track.children];
-  // Unhidden before measuring, because this re-runs on every resize and a tick
-  // hidden at the previous width has no box to measure at this one.
+  // Unhidden before measuring: this re-runs on resize, and a hidden tick has no box.
   for (const s of spans) s.hidden = false;
   if (spans.length < 2) return;
-  // Enough that neighbours read as two labels rather than one hyphenless word.
+  // Enough that neighbours read as two labels.
   const GAP = 6;
   const r = spans.map((s) => s.getBoundingClientRect());
   const end = spans.length - 1;
@@ -249,27 +106,22 @@ function thinTicks(track) {
   }
 }
 
-/** A bar chart of one series. See the header for why single-series and why never two y-axes. */
+/** A bar chart of one series. */
 function barChart(points, { label, height = 130 }) {
-  // Geometry in a fixed viewBox, scaled by CSS — so the chart is responsive
-  // without re-measuring on resize, and the bar caps stay round at any width.
-  // PAD_L is the y-label gutter, and it is sized for the widest label `short`
-  // can produce ("1.2M", ~25px at the 10px tick size) plus the 6px the label is
-  // inset from the plot. It was 46 when those labels were spelled out in full.
+  // A fixed viewBox scaled by CSS, so nothing re-measures on resize. PAD_L fits
+  // the widest label `short` produces ("1.2M") plus a 6px inset.
   const W = 720, H = height, PAD_L = 34, PAD_B = 20, PAD_T = 8;
   const plotW = W - PAD_L, plotH = H - PAD_B - PAD_T;
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label });
 
   const max = Math.max(1, ...points.map((p) => p.value));
-  // Clean tick values rather than max/2 — the axis carries every value not
-  // directly labelled, so it should read in round numbers.
+  // Round tick values: the axis carries every value not labelled directly.
   const step = Math.pow(10, Math.floor(Math.log10(max)));
   const tick = [1, 2, 5, 10].map((m) => m * step).find((t) => t >= max) || max;
   const y = (v) => PAD_T + plotH - (v / tick) * plotH;
 
-  // Deduped by the label they actually render, not by their value: a series
-  // whose maximum is 1 puts the midpoint at 0.5, which rounds to the same "1"
-  // as the top and drew an axis reading "1 / 1 / 0".
+  // Deduped by rendered label: a maximum of 1 puts the midpoint at 0.5, which
+  // also prints "1".
   const drawn = new Set();
   for (const v of [0, tick / 2, tick]) {
     const label = short(Math.round(v));
@@ -282,16 +134,13 @@ function barChart(points, { label, height = 130 }) {
   }
 
   const band = plotW / points.length;
-  // A gap in the surface colour is what separates neighbouring bars — never a
-  // stroke around them. Capped at 24px AND at a fraction of the band: the 2px
-  // minimum alone let 30 bars across this width come out 20px wide in a 22px
-  // slot, which reads as a wall of saturated blocks rather than as data.
+  // A gap in the surface colour separates bars, never a stroke; capped at 24px
+  // and at a fraction of the band.
   const w = Math.max(1, Math.min(24, band - 2, band * 0.72));
   points.forEach((p, i) => {
     const x = PAD_L + i * band + (band - w) / 2;
     const top = y(p.value), h = Math.max(p.value > 0 ? 1 : 0, PAD_T + plotH - top);
-    // Rounded at the data end, square at the baseline: one rect with a radius
-    // plus one square rect covering the baseline half.
+    // Rounded at the data end, square at the baseline.
     const r = Math.min(4, w / 2, h);
     const marks = [];
     if (h > 0) {
@@ -299,16 +148,9 @@ function barChart(points, { label, height = 130 }) {
       if (h > r) marks.push(svgEl("rect", { class: "mark", x, y: top + r, width: w, height: h - r }));
       marks.forEach((m) => svg.appendChild(m));
     }
-    // The hit target is the whole band, not the bar — a 3px-tall bar is
-    // unhoverable, and a quiet day is exactly the one worth reading.
-    //
-    // The highlight is applied to THIS bar's own marks rather than left to a
-    // CSS sibling selector. It was `.hit:hover + .mark`, which reads "the
-    // element right after the hovered hit" — and since each bar appends its
-    // marks BEFORE its hit, that is the next bar's mark. Hovering bar 4 lit up
-    // bar 5, and the last bar lit nothing at all, while the tooltip (bound to
-    // the hit itself) stayed correct. A wrong bar highlighted beside a right
-    // number reads as a rendering glitch rather than an off-by-one.
+    // The hit target is the whole band: a 3px bar is unhoverable. The highlight
+    // is applied to this bar's own marks rather than via a CSS sibling selector,
+    // since each bar's marks are appended before its hit.
     const hit = svgEl("rect", { class: "hit", x: PAD_L + i * band, y: PAD_T, width: band, height: plotH });
     hit.addEventListener("pointerenter", (e) => {
       marks.forEach((m) => m.classList.add("on"));
@@ -322,23 +164,13 @@ function barChart(points, { label, height = 130 }) {
     svg.appendChild(hit);
   });
 
-  // Labelled from the END backwards, at a stride the width can hold.
-  //
-  // Two things this fixes. It was first/middle/last, so reading "the fourth
-  // Tuesday" off a 30-bar chart meant counting bars from a label 15 bars away.
-  // And walking forwards from index 0 leaves the LAST bucket unlabelled
-  // whenever the length is not a multiple of the stride — the most recent day
-  // is the one every reader looks at first, so the walk starts there and the
-  // stride runs backwards into the past.
-  // Hoisted: the stride is a property of the series and the width, and calling
-  // it in the update clause re-measured every label on every step.
+  // Labelled from the newest bar backwards, so the last bucket always carries
+  // a label whatever the stride.
   const stride = tickStride(points, plotW);
   for (let i = points.length - 1; i >= 0; i -= stride) {
     const p = points[i];
     if (!p.tick) continue;
-    // Anchored to keep the two end labels inside the plot: centred text under
-    // the last band hangs off the right edge, and under the first it runs back
-    // over the y-axis numbers.
+    // End labels anchored inward so they stay inside the plot.
     const anchor = i === points.length - 1 ? "end" : i === 0 ? "start" : "middle";
     const t = svgEl("text", { class: "tick", x: PAD_L + i * band + band / 2, y: H - 6, "text-anchor": anchor });
     t.textContent = p.tick;
@@ -348,20 +180,9 @@ function barChart(points, { label, height = 130 }) {
 }
 
 /**
- * The four hero numbers — read from THREE sections, because they are not all
- * computed on the same cadence.
- *
- * `corpus` is the per-minute half of the document: the event total and the
- * newest event's timestamp. `authors.pubkeys` and the kinds table's own `total`
- * are corpus-wide groupings and move on the slow cadence — see `StatsTier` in
- * StatsRollup for why. They sit in one row anyway because that is how they are
- * READ, and each section carries its own `generatedAt` for anyone who needs to
- * know which of these was measured when.
- *
- * The Kinds tile takes the histogram's `total` rather than a copy of it in
- * `corpus`, which is where it used to come from. One number in one place: two
- * copies refreshed on different timers is how a tile comes to say "412" above a
- * table headed "All 413 kinds" with nothing on the page able to explain it.
+ * The hero numbers, read from three sections that refresh on different
+ * cadences (see `StatsTier` in StatsRollup). The Kinds tile takes the
+ * histogram's own `total`, so it can never disagree with the table.
  */
 function tiles(doc) {
   const out = [];
@@ -371,17 +192,13 @@ function tiles(doc) {
   const kinds = (doc.kinds && doc.kinds.data) || {};
   for (const [value, label] of [[d.events, "Events"], [authors.pubkeys, "Pubkeys"], [kinds.total, "Kinds"]]) {
     const t = el("div", "tile");
-    // A hero number, not a one-bar chart. An absent value is an em dash: this
-    // page never prints a zero it did not measure.
+    // An absent value is an em dash: never a zero this page did not measure.
     t.appendChild(el("div", "v", value == null ? "—" : fmt(value)));
     t.appendChild(el("div", "k", label));
     wrap.appendChild(t);
   }
 
-  // Freshness as the headline it is. "Is the store still filling" is the first
-  // question an operator has and the corpus totals cannot answer it — a relay
-  // whose mirror died last week has the same impressive event count it had
-  // while working.
+  // Freshness is the headline: a relay whose mirror died keeps its event count.
   if (d.newestEvent != null) {
     const t = el("div", "tile");
     const age = Math.max(0, Math.floor(Date.now() / 1000) - d.newestEvent);
@@ -400,21 +217,11 @@ function tiles(doc) {
   }
   out.push(fitTiles(wrap));
 
-  // `corpus.futureDated` is deliberately NOT drawn. It is still counted, and it
-  // is still in /stats.json for anyone watching it grow, but a card that only
-  // ever says "some authors signed a bad clock" is a caveat about the Nostr
-  // protocol rather than a fact about this relay, and it was sitting between
-  // the totals and everything worth reading.
+  // `corpus.futureDated` is deliberately not drawn: a fact about the protocol,
+  // not about this relay.
 
-  // The totals have no card header for cardHead to hang an error on, and
-  // without this an em dash where a number belongs is the ONLY sign anything
-  // went wrong — with the engine's message, which names the failing pipeline,
-  // dropped on the floor. Carried in its own strip instead.
-  //
-  // Both sections feeding this row, and each error PREFIXED with the one it
-  // came from: these keys used to be unique because they came from one section,
-  // and a bare "pubkeys:" beside a bare "events:" now says nothing about which
-  // half of the document to go and read.
+  // The totals have no card header to hang an error on, so the engine's
+  // messages ride in their own strip, each prefixed with its section.
   const strip = el("div", "card");
   for (const [name, section] of [["corpus", doc.corpus], ["authors", doc.authors]]) {
     for (const [k, v] of Object.entries((section && section.errors) || {})) {
@@ -429,14 +236,9 @@ function tiles(doc) {
 }
 
 /**
- * One chart card, or a stated empty window.
- *
- * A series that is present but all-zero must NOT be dropped — an omitted chart
- * is indistinguishable from a panel this page does not know about, and "no
- * events in the last 30 days" is a real and alarming fact about a relay that is
- * supposed to be mirroring. This drew nothing at all until a corpus whose
- * newest event predated the window rendered a page with the daily charts simply
- * missing and no indication anything was wrong.
+ * One chart card, or a stated empty window. An all-zero series is drawn as
+ * "No … in this window", never dropped: a missing chart cannot be told from a
+ * panel this page does not know about.
  */
 function chartCard(title, sub, points, section, noun = "events") {
   const card = el("div", "card");
@@ -444,10 +246,7 @@ function chartCard(title, sub, points, section, noun = "events") {
   if (!points.length) {
     card.appendChild(el("p", "why", "Not in this document."));
   } else if (points.every((p) => !p.value)) {
-    // [noun] names what the series counts, because this sentence is the whole
-    // finding when a window is empty and it was hardcoded to "events" — so the
-    // pubkeys chart reported "No events in this window." over a chart that is
-    // not counting events, next to an events chart that might be full of them.
+    // [noun] names what the series counts; the sentence is the whole finding.
     card.appendChild(el("p", "err", `No ${noun} in this window.`));
   } else {
     card.appendChild(barChart(points, { label: title }));
@@ -456,44 +255,20 @@ function chartCard(title, sub, points, section, noun = "events") {
 }
 
 /**
- * The three granularities, and why they are three separate answers rather than
- * one re-aggregated.
- *
- * Events sum across buckets; DISTINCT AUTHORS DO NOT. Someone posting every day
- * is one author in the week and seven in the sum of that week's days, so a
- * weekly "publishing pubkeys" has to be asked of the engine at weekly
- * granularity. The rollup does exactly that, and this toggle picks between the
- * three series it returns — it never adds days together to make a week.
+ * The three granularities, each a separate series from the rollup. Events sum
+ * across buckets; distinct authors do not, so a week is asked of the engine at
+ * weekly granularity and never built out of days.
  */
 const GRAINS = [
-  // [tick] is the axis label, [tip] the hover. They differ on purpose: the axis
-  // gets the shortest form that still reads ("Jul 9"), the tooltip gets the
-  // unambiguous one — and for weeks it has to say WHICH day that key is, since
-  // a week bucket is keyed by the Monday it starts on and "Jul 9" alone would
-  // read as a single day's bar.
-  // [span] returns NULL rather than a string built around a missing field. When
-  // the whole activity section fails the engine, `data` is absent and every one
-  // of these read `undefined` straight into the card title — "Events per day ·
-  // last undefined days", printed in bold above the badge that already said
-  // `failed`. A window this page cannot state is one it should not mention.
-  //
-  // It is the WHOLE phrase, "last" included, and it was a bare length the
-  // caller prefixed with that word. The monthly series is anchored to a date
-  // and grows rather than trailing the present, so "last 44 months" described a
-  // rolling window this chart deliberately is not.
+  // [tick] is the axis label, [tip] the hover: a week bucket is keyed by its
+  // Monday, so the tooltip says so. [span] is the whole phrase and is null when
+  // the document states no window, so the card title never mentions one.
   { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `last ${d.windowDays} days`), tick: dayTick, tip: (p) => p },
   { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `last ${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
   { key: "months", label: "Monthly", unit: "month", span: monthSpan, tick: monthTick, tip: (p) => p },
 ];
 
-/**
- * "since Jan ’23" — the monthly window stated as where it starts.
- *
- * Falls back to the count for a document written before `monthsSince` existed,
- * rather than dropping the window from the title entirely: an older rollup's
- * monthly chart really was a rolling N months, and that is what its own field
- * says.
- */
+/** "since Jan ’23"; falls back to the count for a document written before `monthsSince` existed. */
 function monthSpan(d) {
   if (d.monthsSince) return `since ${monthTick(d.monthsSince)}`;
   return d.windowMonths == null ? null : `last ${d.windowMonths} months`;
@@ -509,18 +284,7 @@ const grainsIn = (activity) => {
   return GRAINS.filter((g) => (d[g.key] || []).length);
 };
 
-/**
- * Settle [grain] on something the document can actually draw.
- *
- * The default used to be a hardcoded "days", which is wrong whenever the daily
- * series is the empty one — a store whose newest event predates the 30-day
- * window opens on "Not in this document." with weekly and monthly data sitting
- * right there. Worse, the toggle hides itself below two granularities, so a
- * document carrying ONLY months could never be switched to and its data was
- * unreachable. Reconciling here means the page opens on the finest granularity
- * that has something to show, and a reader's explicit choice is kept as long as
- * it stays valid.
- */
+/** Settle [grain] on the finest granularity the document can draw, keeping the reader's choice while it stays valid. */
 function settleGrain(activity) {
   const available = grainsIn(activity);
   if (!available.length) return;
@@ -529,8 +293,7 @@ function settleGrain(activity) {
 
 function grainToggle(activity, onChange) {
   const row = el("div", "seg");
-  // Only the granularities the document actually carries — a control that
-  // switches to an empty chart is worse than one that is not offered.
+  // Only the granularities the document carries.
   const available = grainsIn(activity);
   if (available.length < 2) return null;
   for (const g of available) {
@@ -552,8 +315,7 @@ function activityCards(activity) {
   const span = g.span(d);
   const out = [];
 
-  // The window is in the title because it is the one thing a bare "Events per
-  // day" cannot be read without: 30 days and 30 months are the same 30 bars.
+  // The window is in the title: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
     `Events per ${g.unit}${spanNote(span)}`,
     null,
@@ -561,9 +323,8 @@ function activityCards(activity) {
     activity,
   ));
 
-  // A SECOND chart, never a second y-axis on the first: events and pubkeys
-  // differ by orders of magnitude, and aligning two scales on one plot invents
-  // a correlation that is not in the data.
+  // A second chart, never a second y-axis: two scales on one plot invent a
+  // correlation.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
       `Publishing pubkeys per ${g.unit}${spanNote(span)}`,
@@ -574,9 +335,8 @@ function activityCards(activity) {
     ));
   }
 
-  // "14:00", not "14": a bare number under a bar reads as a count on a page
-  // whose every other axis label is one. The tooltip names the whole hour and
-  // the zone, because "14:00" alone invites the reader to apply their own.
+  // "14:00", not "14": a bare number under a bar reads as a count. The tooltip
+  // names the zone.
   out.push(chartCard(
     `Events by hour of day${spanNote(d.hourWindowDays == null ? null : `last ${d.hourWindowDays} days`)}`,
     null,
@@ -590,15 +350,9 @@ function activityCards(activity) {
 }
 
 /**
- * A compact bar chart with no axis — the small-multiple mark.
- *
- * Each kind gets its OWN vertical scale, and the peak is printed beside the
- * title because of it. A shared scale is the obvious default and it is wrong
- * here: kind 1 outnumbers the rest by an order of magnitude, so a common axis
- * would flatten every other kind to a line of pixels and the panel would show
- * one series and seven blanks. Shape is what this panel is for — the levels are
- * in the Kinds table above it — but a reader will assume a shared scale unless
- * told, so the peak is on every card.
+ * A compact bar chart with no axis. Each kind gets its own vertical scale
+ * (kind 1 would flatten every other kind on a shared one), which is why the
+ * peak is printed beside every title.
  */
 function sparkline(points) {
   const W = 240, H = 40;
@@ -618,10 +372,7 @@ function kindActivityCard(section) {
   const d = (section && section.data) || {};
   const kinds = d.kinds || [];
   const card = el("div", "card");
-  // "peak N/day" on every cell is what stands in for the removed sentence about
-  // per-kind scales. Do not drop it as prose: without a stated peak a reader
-  // assumes one shared axis and compares heights across cells, which is the one
-  // thing this panel does not mean.
+  // "peak N/day" on every cell is what tells a reader the scales are not shared.
   cardHead(
     card,
     kinds.length
@@ -636,12 +387,8 @@ function kindActivityCard(section) {
   for (const k of kinds) {
     const cell = el("div", "spark-cell");
     const head = el("div", "spark-head");
-    // Number FIRST, name second — same order as the Kinds table, and it is the
-    // order that survives the ellipsis. These heads truncate (a narrow column
-    // beside a "peak N/day"), and with the name leading, Quartz's longer
-    // registry names pushed the kind NUMBER off the end: "Outbox Relays ·…"
-    // drops the one part of the label that is unambiguous. The full text is on
-    // the title, since this is the string most likely to be cut.
+    // Number first, name second: these heads truncate, and the number is the
+    // unambiguous part.
     const name = kindName(k.kind, k.name);
     const label = el("span", "spark-kind", `${k.kind} · ${name}`);
     label.title = `${name} — kind ${k.kind}`;
@@ -657,36 +404,22 @@ function kindActivityCard(section) {
 }
 
 /**
- * Whether ranked search can rank at all.
- *
- * The four numbers are a CHAIN — observers name providers, providers publish
- * scores, scores project onto pubkeys — and reading them together localises a
- * break that every other panel on this page is blind to. `TrustReconcile` warns
- * about exactly this failure: "a corpus mirrored before its provider lists
- * arrived stays silently unprojected, and every ranked search comes back
- * empty." A relay in that state looks perfectly healthy on the charts above.
- *
- * Drawn as a bare `.panel`, not a `.card`: four headline counts are the same
- * kind of mark as the corpus totals immediately above, so they get the same
- * bare tiles on the page background. In a card they were tiles-in-a-box —
- * their border inside the card's, both on `--surface` — which made the one
- * panel that can report the relay broken read as the busiest thing on screen.
+ * Whether ranked search can rank at all. The four numbers are a chain
+ * (observers name providers, providers publish scores, scores project onto
+ * pubkeys), and reading them together localises a break the charts cannot see.
+ * A bare `.panel`, not a `.card`: these are the same kind of tile as the corpus totals.
  */
 function trustCard(section) {
   const d = (section && section.data) || {};
   const card = el("div", "panel");
   cardHead(card, "Trust", null, section);
 
-  // Plain `.tiles`, matching the corpus row's 11rem track rather than the 8rem
-  // one the in-card rows use: standing on the same background at the same
-  // width, the two rows have to size their tiles identically or the seam shows.
+  // Plain `.tiles`, sized like the corpus row above it, or the seam shows.
   const row = el("div", "tiles");
   for (const [key, label, help] of [
     ["observers", "Observers", "Distinct authors of a kind-10040 list naming a score provider"],
-    // "Service Keys", not "Providers". The count is of KEYS that signed
-    // kind-30382 scores, and one provider may sign under several of them — the
-    // pubkey is what a kind-10040 list names and what this number can actually
-    // vouch for, so it is what the label says.
+    // "Service Keys": the count is of keys that signed scores, and one provider
+    // may sign under several.
     ["providers", "Service Keys", "Distinct authors of kind-30382 scores"],
     ["scores", "Scores", "Stored kind-30382 events"],
     ["scoredPubkeys", "Scored pubkeys", "Pubkeys carrying projected trust state — what a ranked search can order by"],
@@ -699,7 +432,7 @@ function trustCard(section) {
   }
   card.appendChild(fitTiles(row));
 
-  // The one state worth shouting about, and the reason this panel exists.
+  // The one state worth shouting about.
   if (d.scoredPubkeys === 0) {
     card.appendChild(el("p", "err",
       "No pubkey carries trust state, so every ranked search is falling back to unranked — " +
@@ -717,8 +450,8 @@ function relaysCard(section) {
   cardHead(
     card,
     "Relay distribution",
-    // The one sub that survives as more than an empty state: a capped list and
-    // a complete one are different facts, and only this line tells them apart.
+    // A capped list and a complete one are different facts; only this line tells
+    // them apart.
     top.length
       ? `${shownOf(d.shown, d.total, "relays", "most-named")}.`
       : "No relay distribution in this document.",
@@ -727,9 +460,7 @@ function relaysCard(section) {
   if (!top.length) return card;
 
   const max = Math.max(...top.map((r) => r.lists));
-  // Bounded and scrolling, like the Kinds table: this list is capped at the
-  // most-named but the cap is generous, and a card that runs for a screen and
-  // a half pushes everything under it out of reach.
+  // Bounded and scrolling, like the Kinds table.
   const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
@@ -761,12 +492,8 @@ function zapsCard(section) {
   cardHead(card, "Zaps", null, section);
 
   const row = el("div", "tiles inline");
-  // "Zap services", not "wallets" and emphatically not "senders". Under NIP-57
-  // the receipt is signed by the LNURL service that settled the invoice, so
-  // this counts the handful of services our receipts came through — never the
-  // people who zapped, whose keys are in the `description` tag the rollup does
-  // not walk. "Wallets" was the JSON field's name and it read as the zappers'
-  // wallets, which is off by a whole party to the transaction.
+  // "Zap services": under NIP-57 the receipt is signed by the LNURL service that
+  // settled it, never by the zapper.
   for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Zap services"]]) {
     const t = el("div", "tile");
     t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
@@ -795,39 +522,24 @@ function wrapTitle(node, title) {
 }
 
 /**
- * Every kind in the store, largest first.
- *
- * This card replaced kind_stats.html, and completeness is why it could. That
- * page asked one NIP-45 COUNT per kind it already knew to name — the search
- * UI's card registry, plus whatever an operator typed into a box — so a kind
- * nobody had registered was invisible on the one page that would have revealed
- * it. The rollup's histogram ENUMERATES what is there instead, which is a
- * strictly better answer to "what does this relay hold" and is the reason this
- * table is not a top-N.
- *
- * What was genuinely lost with that page: it exercised NIP-45 over the relay's
- * own websocket, so a kind that came back "no COUNT" was a finding about the
- * protocol implementation rather than a blank cell. This table cannot say that
- * — it reads the engine directly, and never speaks the protocol at all.
+ * Every kind in the store, largest first. The rollup's histogram enumerates
+ * what is there, so this table is complete rather than a top-N and never
+ * speaks the protocol.
  */
 function kindsCard(kinds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
   const all = d.all || [];
-  // No count in the sub: the filter row below prints "N kinds" and keeps
-  // printing "n of N" once the reader types, so the total is on screen either
-  // way and a header saying it too was the same fact twice.
+  // No count in the sub: the filter row prints it.
   cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
   if (!all.length) return card;
 
-  // A corpus carries thousands of distinct kinds, most of them a handful of
-  // events in the tail. Filtering by number or name beats scrolling for the
-  // one you came to look up, which is what the page it replaced was for.
+  // Filtering by number or name beats scrolling a tail of thousands.
   const controls = el("div", "bar-row");
   const filter = el("input");
   filter.type = "search";
-  // Named, so render() restores what was typed into THIS box and not into the
-  // one on Sync coverage — see the restore loop there.
+  // Named, so render() restores what was typed into this box and not the one
+  // on Sync coverage.
   filter.name = "kinds";
   filter.placeholder = "filter by kind number or name";
   filter.setAttribute("aria-label", "filter kinds");
@@ -837,19 +549,15 @@ function kindsCard(kinds) {
   card.appendChild(controls);
 
   const top = all;
-  // reduce, not Math.max(...spread): the array is every kind in the store now,
-  // and a spread is an argument list — past the engine's limit it throws
-  // RangeError, which load()'s catch would turn into a blank page rather than
-  // one missing table.
+  // reduce, not Math.max(...spread): past the engine's argument limit a spread
+  // throws RangeError.
   const max = top.reduce((m, k) => (k.events > m ? k.events : m), 1);
   const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
-  // No Pubkeys column: distinct authors per kind cost a grouping over the
-  // whole corpus (every event has exactly one kind, so the inner pubkey sets
-  // union to the entire store) and took the engine down. Dropped in the
-  // rollup, so `k.pubkeys` is now always absent — see StatsRollup.kindsSection.
+  // No Pubkeys column: distinct authors per kind is a grouping over the whole
+  // corpus. See StatsRollup.kindsSection.
   for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Last event", "n"]]) {
     const th = el("th", cls, label);
     hr.appendChild(th);
@@ -867,10 +575,8 @@ function kindsCard(kinds) {
     bar.style.width = Math.max(2, (k.events / max) * 100) + "%";
     share.appendChild(bar);
     tr.appendChild(share);
-    // An AGE, not a date. Per kind this is the useful form: "kind 1 four
-    // minutes ago, kind 30023 six days ago" localises which stream stalled,
-    // where a column of dates makes the reader subtract thirty times. The
-    // rollup bounds lastSeen to the present, so this can never read "in".
+    // An age, not a date: "kind 30023 six days ago" localises the stalled stream.
+    // The rollup bounds lastSeen to the present.
     const newest = el("td", "n", ago(k.lastSeen));
     if (k.lastSeen != null) newest.title = isoOf(k.lastSeen);
     tr.appendChild(newest);
@@ -886,15 +592,12 @@ function kindsCard(kinds) {
     let shown = 0;
     rows.forEach((tr, i) => {
       const k = top[i];
-      // Filtered on the name that is ON SCREEN. Searching kindLabel() while
-      // rendering the document's name means typing what you can see hides the
-      // row you are looking at, on the 180 kinds where the two disagree.
+      // Filtered on the name on screen, which may differ from kindLabel().
       const hit = !q || String(k.kind).includes(q) || kindName(k.kind, k.name).toLowerCase().includes(q);
       tr.hidden = !hit;
       if (hit) shown++;
     });
-    // The denominator stays visible while filtering — a filtered table that
-    // only says "12" reads as a corpus with twelve kinds in it.
+    // The denominator stays visible while filtering.
     count.textContent = q ? `${fmt(shown)} of ${fmt(top.length)}` : `${fmt(top.length)} kinds`;
   };
   filter.addEventListener("input", applyFilter);
@@ -902,14 +605,7 @@ function kindsCard(kinds) {
   return card;
 }
 
-/**
- * The activity charts and the control that switches between them, as one
- * element.
- *
- * Together on purpose: the toggle and the two series it drives are re-rendered
- * by the same closure, so switching granularity cannot leave the control and the
- * charts disagreeing about which one is showing.
- */
+/** The activity charts and their toggle, redrawn by one closure so they cannot disagree. */
 function activityPanel(activity) {
   const wrap = el("div");
   const draw = () => {
@@ -923,41 +619,11 @@ function activityPanel(activity) {
 }
 
 /**
- * The body, panel by panel — what each draws and which sections it reads from.
- *
- * The `reads` list is not documentation, it is the REDRAW KEY: a panel is
- * rebuilt when one of the sections it reads has been recomputed, and left
- * untouched when none has. That distinction is what makes two cadences liveable
- * on one page. The document now changes every minute, and rebuilding the whole
- * body on every change destroys what the reader was doing — both search boxes
- * lose what they typed, and every bounded scroll box (Kinds, Relay distribution,
- * and a Sync coverage card thousands of rows tall) jumps back to the top. The
- * old guard against that was "the document is unchanged, draw nothing", which
- * stops helping the moment half of it is refreshed fifteen times as often as the
- * other half.
- *
- * Order is the order they appear. Trust sits SECOND, right under the corpus
- * totals, because it is the only panel here that can report the relay broken: a
- * store with no projected trust state answers every ranked search unranked, and
- * nothing else on this page changes when that happens. The two reference tables
- * are last, in the order of how far you have to scroll to get past them.
- */
-/**
- * The body, panel by panel — what each draws and which sections it reads from.
- *
- * The `reads` list is the REDRAW KEY: a panel is rebuilt when a section it
- * reads has been recomputed, and left alone when none has. That is what makes
- * two cadences liveable on one page — the document changes every minute, and
- * rebuilding the whole body destroys what the reader was doing: both search
- * boxes lose what they typed and every bounded scroll box jumps to the top.
- *
- * IT IS ALSO THE PRESENCE TEST, and that half is new. One page is served by
- * three services and their documents carry disjoint sections, so a panel whose
- * section is absent must draw NOTHING — not an empty card. The two are opposite
- * claims: "this deployment mirrors nothing" against "this document is not the
- * mirror's". `has()` is that check, applied to every panel rather than to the
- * ones that happened to need it, because which sections a document carries is
- * now a property of which service answered.
+ * The body, panel by panel. `reads` is the redraw key: a panel is rebuilt
+ * when a section it reads has been recomputed and left alone otherwise, so a
+ * one-minute poll does not destroy what the reader typed or scrolled. `has()`
+ * is the presence test: three services serve this page with disjoint
+ * sections, and a panel whose section is absent draws nothing, not an empty card.
  */
 const has = (doc, ...members) => members.some((m) => doc[m]);
 
@@ -969,57 +635,32 @@ const PANELS = [
   { name: "zaps", reads: ["zaps"], build: (doc) => (has(doc, "zaps") ? [zapsCard(doc.zaps)] : []) },
   { name: "relays", reads: ["relayDistribution"], build: (doc) => (has(doc, "relayDistribution") ? [relaysCard(doc.relayDistribution)] : []) },
   { name: "kinds", reads: ["kinds"], build: (doc) => (has(doc, "kinds") ? [kindsCard(doc.kinds)] : []) },
-  // THE ROUTER'S TWO PLANES, drawn by whichever service is serving this page.
-  //
-  // One page again, and it is the same list it always was — what changed is
-  // that a document no longer has to carry every section. Three pages
-  // duplicated the chrome — head, title, footer, poll, the mount call — so a
-  // change to how a page BEHAVES had to be made three times or silently
-  // diverge. The plane split belongs in the SERVICE that publishes the numbers,
-  // which is where it is; it does not have to be in the markup as well.
-  //
-  // The mirror's card is guarded on the coverage itself, not on the section:
-  // the RELAY's document carries a `sync` section too, holding the manifest and
-  // nothing else — a fact about this relay that clients read — and a coverage
-  // card over it would report a mirror that has walked nothing.
-  //
-  // `relays` counts as coverage for this guard and it has to: a mirror whose
-  // roster is entirely refused has no bands and no walked streams, so on the
-  // one deployment where the per-relay table is the whole point the card would
-  // not have been drawn at all.
+  // The router's two planes. The mirror's card is guarded on the coverage
+  // itself, not the section: the relay's document carries a `sync` section too,
+  // holding only the manifest. `relays` counts as coverage, since a roster that
+  // is entirely refused has no bands and no walked streams.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams || doc.sync?.data?.relays ? [syncCard(doc.sync)] : []) },
   { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
-  // `reads: []` on purpose: built ONCE and never rebuilt by the poller, because
-  // it holds what the reader asked for over a websocket and what they typed
-  // into its filter. Empty on any document with no `monitor` section — the
-  // verdicts are that plane's whole output, and a panel offering to read them
-  // beside a corpus histogram is answering a question nobody asked there.
-  //
-  // `doc.relay` is the SERVED relay's ws url, published by every one of the
-  // three documents: a page on the monitor's port must not derive its socket
-  // from `location`, or it dials the status site.
+  // `reads: []`: built once and never rebuilt by the poller, because it holds
+  // what the reader asked for over a websocket. `doc.relay` is the served
+  // relay's ws url; a page on the monitor's port must not derive its socket
+  // from `location`.
   { name: "verdicts", reads: [], build: (doc) => (has(doc, "monitor") ? [verdictsCard(doc.relay)] : []) },
 ];
 
 mountStatsPage({
   panels: PANELS,
-  // Every schema this page can read. It used to be one number because there was
-  // one document; there are three now, versioned independently by the planes
-  // that publish them, and the page checks the one it was handed. A document
-  // whose service is not listed is drawn anyway and says so in the footer.
+  // Every schema this page can read, one per publishing service.
   schema: { relay: SCHEMA, sync: 1, monitor: 1 },
-  // The cadences to name in the footer, in the order they are READ. A tier a
-  // document carries and this list does not still gets a line under its own
-  // name — a page that silently omits half of a document it does not recognise
-  // is how a third cadence would go unnoticed for a release.
+  // The cadences named in the footer, in reading order; a tier not listed here
+  // still gets a line.
   tiers: [["counters", "Counters"], ["charts", "Charts"], ["status", "Status"]],
   pendingNote:
     "This is computed behind the server. On the relay the counters land within seconds and the first pass over a " +
     "large corpus takes a while (check the log for `stats:` lines, and that STATS_COUNTERS_INTERVAL_SECONDS and " +
     "STATS_INTERVAL_SECONDS are not both 0); on the mirror and the monitor it is a fold over state already in " +
     "memory and lands on the first tick (check the sync log for `router:` lines).",
-  // The activity panel draws whichever grain this settles on, and a document
-  // may have stopped carrying the one on screen.
+  // A document may have stopped carrying the grain on screen.
   beforePanels: (doc) => settleGrain(doc.activity),
 });
 </script>

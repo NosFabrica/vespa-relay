@@ -37,9 +37,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * The cursor is the reason a sweep of a billion-event corpus is restartable at
- * all, so the cases that matter are the ones where it must NOT be believed: a
- * claim about a different ask, and a claim old enough that the peer has moved on.
+ * The sweep cursor, mostly the cases where it must not be believed: a claim
+ * about a different ask, and a claim old enough that the peer has moved on.
  */
 class SweepStateTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -96,8 +95,7 @@ class SweepStateTest {
         assertEquals(1_000, mark.downTo)
         assertEquals(2_000, mark.upTo)
 
-        // A window inside what is already claimed changes nothing — it cannot
-        // punch a hole in the region by narrowing it.
+        // A window inside the claim cannot narrow it.
         state.advance(SweepState.keyFor(mirror, relay, notes), 1_800, 1_900)
         assertEquals(1_000, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.downTo)
         assertEquals(2_000, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.upTo)
@@ -105,12 +103,7 @@ class SweepStateTest {
 
     @Test
     fun `a window disjoint from the claim is not merged across the gap`() {
-        // The resumed-sweep shape: a standing claim, and the slice ABOVE it
-        // pushed as its own segment (`pushResumed`). The first window that
-        // segment completes bisects down from the NEW ceiling, so it lands
-        // disjoint from the claim — and a min/max merge absorbed the
-        // un-compared gap between 2_000 and 3_000, which an interruption then
-        // persisted: a history audit recorded as verified with a hole in it.
+        // The resumed-sweep shape: the segment above the claim finishes its first window disjoint from it.
         val state = SweepState(null)
         state.advance(SweepState.keyFor(mirror, relay, notes), 1_000, 2_000)
         state.advance(SweepState.keyFor(mirror, relay, notes), 3_000, 4_000)
@@ -118,9 +111,7 @@ class SweepStateTest {
         assertEquals(1_000, mark.downTo)
         assertEquals(2_000, mark.upTo, "a claim may only ever mean 'everything in here was compared'")
 
-        // The disjoint window's progress is forfeited, not banked — but the
-        // moment the segment reaches back down to the claim, the touch merges
-        // and the region is one range again, honestly.
+        // Forfeited until the segment reaches back down to the claim, then merged.
         state.advance(SweepState.keyFor(mirror, relay, notes), 2_001, 2_999)
         assertEquals(1_000, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.downTo)
         assertEquals(2_999, state.reconciled(SweepState.keyFor(mirror, relay, notes))?.upTo)
@@ -131,8 +122,7 @@ class SweepStateTest {
         val state = SweepState(null)
         state.advance(SweepState.keyFor(mirror, relay, notes), 1_000, 2_000)
 
-        // Same ask, different window: this is what a sweep varies, so it must
-        // find its own cursor.
+        // Same ask, different window: what a sweep varies.
         assertNotNull(state.reconciled(SweepState.keyFor(mirror, relay, notes.copy(since = 5, until = 9))))
         // Different ask: reconciling kind 1 says nothing about kind 0.
         assertNull(state.reconciled(SweepState.keyFor(mirror, relay, Filter(kinds = listOf(0)))))
@@ -171,7 +161,6 @@ class SweepStateTest {
             it.flush()
         }
         val root = Json.parseToJsonElement(f.readText()).jsonObject
-        // Three levels, no concatenation anywhere.
         val mark =
             assertNotNull(root["sweeps"])
                 .jsonObject[mirror]!!
@@ -180,8 +169,7 @@ class SweepStateTest {
                 .jsonObject
         assertEquals(1_500L, mark["downTo"]!!.jsonPrimitive.long)
         assertEquals(2_000L, mark["upTo"]!!.jsonPrimitive.long)
-        // …and `peers` stays flat beside it: a learned window size is a
-        // property of the peer's config, not of anything we ask for.
+        // `peers` stays flat: a learned window size belongs to the peer, not to an ask.
         assertEquals(
             12_500,
             root["peers"]!!
@@ -191,9 +179,9 @@ class SweepStateTest {
         )
     }
 
-    // ---- MIGRATION SHIM: a file written before the format nested ------------
+    // ---- a file written before the format nested ---------------------------
 
-    /** The flat key the previous version wrote: relay, a PIPE, then the shape. */
+    /** The flat key the previous version wrote: relay, a pipe, then the shape. */
     private fun writeFlat(
         f: File,
         key: String,
@@ -232,7 +220,7 @@ class SweepStateTest {
             "a second stream must not inherit a claim about a walk it never made",
         )
 
-        // Claimed means MOVED: from here on it is written under the name.
+        // Claimed means moved: from here on it is written under the stream.
         reopened.flush()
         val sweeps = Json.parseToJsonElement(f.readText()).jsonObject["sweeps"]!!.jsonObject
         assertNull(sweeps["${relay.url}|${notes.toJson()}"], "the flat key must not survive the claim")
@@ -248,9 +236,6 @@ class SweepStateTest {
 
     @Test
     fun `a stale pre-stream cursor is dropped, not filed under whoever asked`() {
-        // Staleness is absolute. Adopting it would park a claim nobody may act
-        // on inside one stream's map — and take it away from the stream that
-        // actually wrote it, for nothing.
         val f = tempFile()
         writeFlat(f, "${relay.url}|${notes.toJson()}", 1_500, 2_000)
 
@@ -264,9 +249,7 @@ class SweepStateTest {
 
     @Test
     fun `claiming widens what a sweep has already recorded, never replaces it`() {
-        // `advance` claims too, so the window that has just finished can be in
-        // the map before the pre-stream cursor is adopted. Overwriting there
-        // loses exactly the window the caller was recording.
+        // `advance` claims too, so the window just finished may already be in the map when the cursor is adopted.
         val f = tempFile()
         writeFlat(f, "${relay.url}|${notes.toJson()}", 1_500, 2_000)
 
@@ -279,8 +262,7 @@ class SweepStateTest {
 
     @Test
     fun `an unclaimed pre-stream cursor is written back, not dropped`() {
-        // The flusher runs 30 seconds after boot, long before a slow stream
-        // reaches this relay. Dropping it there costs the window it was keeping.
+        // The flusher runs long before a slow stream reaches this relay.
         val f = tempFile()
         val key = "${other.url}|${notes.toJson()}"
         writeFlat(f, key, 1_500, 2_000)

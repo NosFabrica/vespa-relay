@@ -46,24 +46,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The loop, against real relays, with no fake anywhere in it.
- *
- * Everything else in this suite drives the mechanism from constructed events;
- * this drives it from whatever the network actually serves. It exists because
- * the central claim — that a mirror is offered stale replaceable versions over
- * and over — is a claim about the live network, and a fixture cannot falsify
- * it.
- *
- * **Off unless `SYNC_LIVE_RELAYS` is set**, because a unit suite that dials
- * the internet fails for reasons that have nothing to do with the code. Run it
- * with:
- *
- *     SYNC_LIVE_RELAYS=wss://relay.damus.io,wss://nos.lol \
- *       ./gradlew :sync:test --tests '*LiveRelayHealIT*' -i
- *
- * Nothing here publishes. The healer's push path is deliberately NOT exercised
- * against production relays from a test: writing other people's events to
- * someone's server is not a thing to do by accident from CI.
+ * Dials real relays and runs the refusal gate and suppression over what they
+ * serve, three passes on one filter; asserts the loop reproduces and the gate
+ * holds. Nothing is published. Selected by the `SYNC_LIVE_RELAYS` environment
+ * variable (a comma-separated list of urls).
  */
 class LiveRelayHealIT {
     private val relays =
@@ -106,9 +92,7 @@ class LiveRelayHealIT {
             val store = store()
             client.connect()
 
-            // Replaceable kinds across several relays: the exact shape the
-            // proposal says never converges, because each relay serves its own
-            // current version and only one of them can win in our store.
+            // Replaceable kinds: each relay serves its own current version and only one can win in our store.
             val ask = Filter(kinds = listOf(0, 3, 10002), limit = 500)
 
             val replacedPerPass = mutableListOf<Int>()
@@ -129,9 +113,7 @@ class LiveRelayHealIT {
                     downloaded += batch.size
 
                     for (event in batch) {
-                        // The suppression check sits exactly where
-                        // IngestPipeline makes it: after the caller's band
-                        // bookkeeping, before the store.
+                        // Same place IngestPipeline checks it: after band bookkeeping, before the store.
                         if (h.sink.isSuppressed(event)) {
                             suppressed++
                             continue
@@ -164,17 +146,11 @@ class LiveRelayHealIT {
                 return@runBlocking
             }
 
-            // The loop: the SAME versions come back on a second ask. This is the
-            // claim the whole proposal rests on, measured rather than assumed.
             assertTrue(
                 replacedPerPass[1] > 0,
                 "pass 2 saw no repeat refusals — the loop this fixes did not reproduce",
             )
-            // The gate: one refusal is a candidate only, so nothing may be
-            // suppressed before the second.
             assertEquals(0, suppressedPerPass[0], "a first sighting must never suppress")
-            // And by the third ask the twice-refused ids are gone from the
-            // store's path entirely.
             assertTrue(
                 suppressedPerPass[2] > 0,
                 "by pass 3 the twice-refused ids should be suppressed; got $suppressedPerPass",
@@ -190,10 +166,7 @@ class LiveRelayHealIT {
                 println("LiveRelayHealIT skipped — set SYNC_LIVE_RELAYS to run it")
                 return@runBlocking
             }
-            // Pins the correction this proposal had to make to its own opening
-            // claim: a compliant relay serves its CURRENT version per address,
-            // not the whole edit history. If this ever fails against the live
-            // network, the sizing arithmetic downstream of it is wrong.
+            // A compliant relay serves its current version per address, not the edit history; the sizing rests on it.
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             val client = client(scope)
             client.connect()

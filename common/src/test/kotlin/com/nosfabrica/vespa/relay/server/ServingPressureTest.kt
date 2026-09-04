@@ -34,8 +34,6 @@ class ServingPressureTest {
 
     @Test
     fun `a relay nobody queries mirrors at full speed`() {
-        // No reads means no serving latency to protect. Throttling the mirror
-        // here would be pure superstition.
         val p = ServingPressure()
 
         assertEquals(0, p.backoffMs())
@@ -44,7 +42,7 @@ class ServingPressureTest {
 
     @Test
     fun `healthy reads cost the mirror nothing`() {
-        // ~400ms is a normal read against 52M documents on this deployment.
+        // 400ms is an ordinary read on the production corpus.
         val p = ServingPressure()
 
         feed(p, 400, 60)
@@ -65,9 +63,7 @@ class ServingPressureTest {
 
     @Test
     fun `an ordinary slow read is absorbed`() {
-        // A cold cache or an expensive filter must not throttle the mirror. At
-        // alpha = 1/8, one 3s read against a 200ms baseline moves the mean to
-        // ~550ms — well under the threshold.
+        // At alpha = 1/8, one 3s read over a 200ms baseline moves the mean to about 550ms.
         val p = ServingPressure(thresholdMs = 2_000)
         feed(p, 200, 60)
 
@@ -78,10 +74,8 @@ class ServingPressureTest {
 
     @Test
     fun `a single catastrophic read does yield, and that is intended`() {
-        // 30s is not variance — it is a client that has already given up. An
-        // eighth of it clears any sane threshold on its own, and reacting is the
-        // point: the mean decays back over the next few healthy reads, so the
-        // mirror pauses briefly rather than being held down.
+        // An eighth of 30s clears any sane threshold on its own; the mean then
+        // decays back over the next few healthy reads.
         val p = ServingPressure(thresholdMs = 2_000)
         feed(p, 200, 60)
 
@@ -95,10 +89,8 @@ class ServingPressureTest {
 
     @Test
     fun `a straggler after a run of instant reads is dampened, not adopted`() {
-        // Sub-millisecond reads (COUNT hits, cache hits) record as 0ms. If a
-        // zero could reach the mean, the mean would read as "no samples yet"
-        // and the next straggler would be adopted WHOLESALE — the exact spike
-        // the EWMA exists to dampen.
+        // Instant reads record as 0ms. A zero mean that read as "no samples yet"
+        // would let the next straggler be adopted wholesale.
         val p = ServingPressure(thresholdMs = 2_000)
         feed(p, 0, 100)
 
@@ -112,7 +104,6 @@ class ServingPressureTest {
 
     @Test
     fun `a few samples are not yet evidence`() {
-        // Below MIN_SAMPLES this is one client's first query, not a trend.
         val p = ServingPressure(thresholdMs = 2_000)
 
         feed(p, 20_000, ServingPressure.MIN_SAMPLES - 1)
@@ -122,8 +113,7 @@ class ServingPressureTest {
 
     @Test
     fun `an adopted mean replaces rather than smooths`() {
-        // The EWMA already happened on the relay side; re-dampening it here
-        // would make a real spike take several polls to reach ingest.
+        // The EWMA already happened on the relay side.
         val p = ServingPressure(thresholdMs = 2_000)
 
         p.adopt(5_000, ServingPressure.MIN_SAMPLES.toLong())
@@ -145,8 +135,6 @@ class ServingPressureTest {
 
     @Test
     fun `an adopted mean below the sample gate is not yet evidence`() {
-        // Same rule as record(): below MIN_SAMPLES the mean is one client's
-        // first query, not a trend — however it arrived.
         val p = ServingPressure(thresholdMs = 2_000)
 
         p.adopt(10_000, (ServingPressure.MIN_SAMPLES - 1).toLong())
@@ -156,8 +144,7 @@ class ServingPressureTest {
 
     @Test
     fun `the backoff is bounded however bad it gets`() {
-        // Ingest yields; it does not stop. A pause long enough to look like a
-        // hang would be a worse failure than the one it is avoiding.
+        // Ingest yields; it does not stop.
         val p = ServingPressure(thresholdMs = 1_000, maxBackoffMs = 2_000)
 
         feed(p, 600_000, 200)

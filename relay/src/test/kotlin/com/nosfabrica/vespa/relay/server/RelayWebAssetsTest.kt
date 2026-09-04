@@ -38,23 +38,16 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * The /web module cache: what it will serve, and what it must refuse.
- *
- * This replaced Ktor's `staticResources`, so the traversal guard that came free
- * with it is now ours to hold. The rest is the property that makes the ETag
- * worth having at all — same bytes, same tag; different bytes, different tag —
- * because a validator that does not track the content is a stale page nobody
- * can flush.
+ * The /web module cache: what it serves and what it must refuse. It replaced
+ * Ktor's `staticResources`, so the traversal guard is ours to hold.
  */
 class RelayWebAssetsTest {
     @Test
     fun `serves a module with a utf-8 content type and a content etag`() {
         val app = assertNotNull(WebAssets.get("app.js"), "the page's entry module is on the classpath")
-        // Whatever Ktor derives from the extension, unchanged from what
-        // staticResources sent — the same mime table answers both.
+        // Whatever Ktor derives from the extension, as staticResources sent it.
         assertEquals("text/javascript", "${app.contentType.contentType}/${app.contentType.contentSubtype}")
-        // The modules carry non-ASCII — every clipped label ends in "…" — so an
-        // unstated charset would be the browser guessing at the bytes.
+        // The modules carry non-ASCII, so an unstated charset is the browser guessing at the bytes.
         assertEquals("UTF-8", app.contentType.charset()?.name())
         assertTrue(app.etag.matches(Regex("^\"[0-9a-f]{16}\"$")), "a quoted strong etag, got ${app.etag}")
         assertTrue(app.bytes.isNotEmpty())
@@ -70,8 +63,7 @@ class RelayWebAssetsTest {
 
     @Test
     fun `refuses anything that is not a plain path under web`() {
-        // The traversal cases are the point: a request names a file under
-        // resources/web or it names nothing. `..` never reaches the classloader.
+        // `..` never reaches the classloader.
         for (bad in listOf(
             "",
             "..",
@@ -89,15 +81,9 @@ class RelayWebAssetsTest {
 
     @Test
     fun `every module the landing page preloads is actually servable`() {
-        // tools/webtest/preload.test.mjs checks the hints against the import
-        // graph on disk; this checks them against the route that has to answer
-        // them. A hint whose href does not resolve here is 23 wasted requests
-        // and a silent return to the three-wave waterfall.
+        // tools/webtest/preload.test.mjs checks the hints against the import graph; this checks them against the route.
         val html = assertNotNull(javaClass.getResource("/index.html")?.readText())
-        // The hints are document-relative — `./web/…`, the spelling every
-        // reference in :web carries so a page survives a path-prefix mount.
-        // The ROUTE is unchanged and still absolute: what moved is only what
-        // the markup asks for.
+        // Document-relative hints, so a page survives a path-prefix mount; the route itself stays absolute.
         val hrefs = Regex("""<link rel="modulepreload" href="\./web/([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
         assertTrue(hrefs.isNotEmpty(), "the landing page still carries preload hints")
         for (href in hrefs) assertNotNull(WebAssets.get(href), "./web/$href is hinted but not servable")
@@ -108,25 +94,21 @@ class RelayWebAssetsTest {
         testApplication {
             application { routing { webModules() } }
 
-            // The tailcard has to survive the directory: shared/ and cards/ are
-            // where all but one of the modules live.
+            // The tailcard has to survive a directory.
             val first = client.get("/web/shared/nip19.js")
             assertEquals(HttpStatusCode.OK, first.status)
             assertTrue(first.bodyAsText().contains("export function nip19Parse"), "the real module, not an index page")
             assertEquals("max-age=60", first.headers[HttpHeaders.CacheControl])
             val etag = assertNotNull(first.headers[HttpHeaders.ETag], "a validator, or the 304 below can never happen")
 
-            // The whole point: an unchanged module costs a header exchange.
             val again = client.get("/web/shared/nip19.js") { header(HttpHeaders.IfNoneMatch, etag) }
             assertEquals(HttpStatusCode.NotModified, again.status)
             assertEquals("", again.bodyAsText())
 
-            // A proxy may weaken the tag on the way back. One immutable resource,
-            // one hash — treating that as a mismatch would re-send the body.
+            // A proxy may weaken the tag on the way back; one hash is still one resource.
             val weak = client.get("/web/shared/nip19.js") { header(HttpHeaders.IfNoneMatch, "W/$etag") }
             assertEquals(HttpStatusCode.NotModified, weak.status)
 
-            // A stale tag is a real fetch, not a silent 304.
             val stale = client.get("/web/shared/nip19.js") { header(HttpHeaders.IfNoneMatch, "\"0000000000000000\"") }
             assertEquals(HttpStatusCode.OK, stale.status)
 

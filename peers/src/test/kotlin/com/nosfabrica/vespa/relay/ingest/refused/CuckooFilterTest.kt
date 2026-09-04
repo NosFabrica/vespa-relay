@@ -30,18 +30,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The filter's contract, and the two failure modes that matter are opposites:
- *
- *  - a **false positive** suppresses an event we wanted, silently and forever.
- *    Bounded by the fingerprint width, and measured here rather than asserted
- *    from theory.
- *  - a **false negative** costs one re-download and nothing else, which is why
- *    every concurrency and overflow compromise in the implementation is allowed
- *    to land on that side and never on the other.
- *
- * Ids here are real SHA-256 hex, because the whole bucket/fingerprint scheme is
- * "slice the bits out of the id" — feeding it sequential strings would test a
- * distribution the router never sees.
+ * A false positive suppresses a wanted event forever; a false negative costs one
+ * re-download. Ids are real SHA-256 hex, since the filter slices its bits from the id.
  */
 class CuckooFilterTest {
     private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("event-$n".toByteArray()))
@@ -67,9 +57,7 @@ class CuckooFilterTest {
 
     @Test
     fun `an id that was never inserted is never reported present`() {
-        // SAFETY. A false positive is silent, permanent data loss: we skip an
-        // event we wanted, nothing logs it, and the same id hits the same bits
-        // forever. Measured over a disjoint population rather than trusted.
+        // Measured over a disjoint population rather than trusted from theory.
         CuckooFilter.open(null, 200_000).use { f ->
             repeat(100_000) { f.add(id(it)) }
             var falsePositives = 0
@@ -85,9 +73,8 @@ class CuckooFilterTest {
 
     @Test
     fun `every inserted id is still present after the table has been churned`() {
-        // The relocation chain moves OTHER fingerprints on every insert. A bug
-        // there loses entries, which only ever shows up as a false negative —
-        // benign per event, but it would quietly turn suppression off.
+        // Relocation moves other fingerprints on every insert; a bug there
+        // shows only as a false negative, which would quietly turn suppression off.
         CuckooFilter.open(null, 60_000).use { f ->
             val added = (0 until 50_000).filter { f.add(id(it)) == AddResult.ADDED }
             val missing = added.count { !f.contains(id(it)) }
@@ -97,9 +84,8 @@ class CuckooFilterTest {
 
     @Test
     fun `a filter at capacity fails the insert rather than continuing to answer`() {
-        // SAFETY, and the entire reason this is cuckoo and not Bloom. A Bloom
-        // filter past its design point keeps answering with a false-positive
-        // rate in the double digits and logs nothing.
+        // The reason this is cuckoo and not Bloom: a Bloom filter past its
+        // design point keeps answering and logs nothing.
         val f = CuckooFilter.open(null, 1_000)
         var full = false
         var inserted = 0
@@ -136,9 +122,7 @@ class CuckooFilterTest {
 
     @Test
     fun `a file whose geometry disagrees is rebuilt rather than reinterpreted`() {
-        // Reading a table with the wrong bucket count would scatter every
-        // lookup — the one way this structure could give confident wrong
-        // answers rather than merely forgetting.
+        // Reading a table with the wrong bucket count would give confident wrong answers.
         val dir = tmpDir()
         val file = File(dir, "t.cf")
         CuckooFilter.open(file, 10_000).use { it.add(id(1)) }
@@ -167,13 +151,8 @@ class CuckooFilterTest {
 }
 
 /**
- * The table's size arithmetic, which has one hard edge nothing else guards.
- *
- * A `ByteBuffer` cannot address more than `Int.MAX_VALUE` bytes, and neither
- * can [CuckooFilter]'s own slot offsets. Past that, `FileChannel.map` throws
- * and `allocateDirect` gets a negative size from a truncating `toInt()` — so a
- * capacity chosen by an operator, not by this code, decided whether the router
- * ran at all.
+ * The table's size arithmetic. A `ByteBuffer` cannot address more than
+ * `Int.MAX_VALUE` bytes, and neither can the filter's slot offsets.
  */
 class CuckooGeometryTest {
     @Test
@@ -190,34 +169,22 @@ class CuckooGeometryTest {
 
     @Test
     fun `an oversized capacity clamps rather than asking for a table nothing can map`() {
-        // Clamping rather than failing is the deliberate choice: an operator
-        // asking for more headroom than one partition can give should get the
-        // biggest partition available plus the SEALED warning when it fills,
-        // not a router that dies on the first refusal. Before the clamp,
-        // `bucketsFor` promised 2^28 buckets — 4 GiB — and `open` raised
-        // "Size exceeds Integer.MAX_VALUE" from inside the ingest path.
-        //
-        // Asserted on the geometry rather than by opening one: a clamped table
-        // is a gigabyte, and a unit suite has no business allocating that to
-        // learn a number `bucketsFor` already knows.
+        // Asserted on the geometry rather than by opening one: a clamped table is a gigabyte.
         assertEquals(CuckooFilter.MAX_BUCKETS, CuckooFilter.bucketsFor(300_000_000))
         assertEquals(CuckooFilter.MAX_BUCKETS, CuckooFilter.bucketsFor(Int.MAX_VALUE))
     }
 
     @Test
     fun `a capacity just under the clamp still gets the table it asked for`() {
-        // The other side of the edge, so the clamp cannot silently swallow
-        // ordinary sizings on its way to guarding the extreme one.
+        // The other side of the edge: the clamp must not swallow ordinary sizings.
         assertTrue(CuckooFilter.bucketsFor(8_000_000) < CuckooFilter.MAX_BUCKETS)
         assertTrue(CuckooFilter.capacityOf(CuckooFilter.bucketsFor(8_000_000)) >= 8_000_000)
     }
 
     @Test
     fun `the real ceiling is reported, not the requested one`() {
-        // Rounding the bucket count up to a power of two routinely leaves the
-        // true ceiling well above what was asked for. The seal warning quotes
-        // this, because telling an operator to raise a number that was never
-        // the binding one sends them the wrong way.
+        // Rounding buckets up to a power of two leaves the true ceiling above
+        // the request, and the seal warning quotes the true one.
         val buckets = CuckooFilter.bucketsFor(8_000_000)
         val real = CuckooFilter.capacityOf(buckets)
         assertTrue(

@@ -32,23 +32,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `Onion-Location` on the clearnet endpoint: the standard way a service says
- * "I am also this hidden service".
- *
- * The consumers decide the shape, so the tests are written against them rather
- * than against our own idea of the feature:
- *
- *  - **Amethyst** records the header from ANY response — its
- *    `OnionLocationInterceptor` is an OkHttp application interceptor over every
- *    request the app makes — and, with Tor on, rewrites the host so the
- *    connection never crosses an exit node. A Nostr client may only ever open
- *    the WEBSOCKET, so the 101 handshake carrying the header is the case that
- *    decides whether this works at all for the clients it is for.
- *  - **Tor Browser** turns it into the ".onion available" button on the page.
- *
- * The value is an `http://` url, not `ws://`, because both parse it as one:
- * okhttp's `toHttpUrl()` returns null for a ws scheme, and a null there is a
- * feature that silently does nothing.
+ * `Onion-Location` as Amethyst (on any response, the 101 included) and Tor
+ * Browser read it: an `http://` url, since okhttp parses a ws scheme to null.
  */
 class RelayOnionLocationTest {
     private val clearnet = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -60,8 +45,7 @@ class RelayOnionLocationTest {
         block: (port: Int) -> T,
     ): T {
         val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = clearnet), clearnet)
-        // Port 0: the OS picks a free one, so tests never collide with a
-        // developer's running relay.
+        // Port 0, so tests never collide with a developer's running relay.
         val server =
             serveRelay(
                 relay = relay,
@@ -86,17 +70,12 @@ class RelayOnionLocationTest {
         }
     }
 
-    /**
-     * One request, spoken by hand: a websocket upgrade is not something an
-     * http client library will let us inspect the 101 of, and the `Host` we
-     * send is itself under test.
-     */
+    /** Spoken by hand: no http client exposes a 101's headers, and the `Host` sent is itself under test. */
     private fun headersOf(
         port: Int,
         host: String,
         upgrade: Boolean,
-        // Null asks for the PAGE; the default asks for the NIP-11 doc, which
-        // the same route serves by content negotiation.
+        // Null asks for the page; the default asks for the NIP-11 doc.
         accept: String? = "application/nostr+json",
         acceptGzip: Boolean = false,
         ifNoneMatch: String? = null,
@@ -146,7 +125,6 @@ class RelayOnionLocationTest {
         }
     }
 
-    /** The case the clients this is for actually hit. */
     @Test
     fun `the websocket handshake advertises the hidden service`() {
         serving({ onion }) { port ->
@@ -156,11 +134,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /**
-     * Amethyst keys its cache by the host it asked for. A request that already
-     * arrived over Tor would cache the onion as its own alternative — noise at
-     * best, and a self-referential entry at worst.
-     */
+    /** Amethyst keys its cache by the host asked for; a request over Tor would cache the onion as its own alternative. */
     @Test
     fun `a request that already arrived on the onion is not told about it`() {
         serving({ onion }) { port ->
@@ -169,12 +143,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /**
-     * The same request, with the port spelled out. `Host: …onion:80` is what a
-     * client that was configured with the port sends, and the skip above has to
-     * see through it — a header naming the host back to itself is exactly the
-     * self-referential cache entry it exists to avoid.
-     */
+    /** `Host: <onion>:80` is what a client configured with the port sends. */
     @Test
     fun `a request on the onion with an explicit port is not told about it either`() {
         serving({ onion }) { port ->
@@ -183,12 +152,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /**
-     * The compressed page, which is the one Tor Browser loads and turns into
-     * the ".onion available" button. Compression replaces the body; a header
-     * set before the handler ran has to survive that, and "has to" is not
-     * evidence.
-     */
+    /** Compression replaces the body; a header set before the handler ran has to survive that. */
     @Test
     fun `a gzipped page still carries the header`() {
         // Over the plugin's 1KB floor, or there is nothing to compress.
@@ -200,13 +164,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /**
-     * The pages revalidate with an ETag, so a returning visitor's request ends
-     * in `304 Not Modified` — a response with no body and a trimmed header set.
-     * That is the ordinary case for anyone who has been here before, and the
-     * advertisement has to survive it or the ".onion available" button appears
-     * only on a cold load.
-     */
+    /** A returning visitor's request ends in a bodiless 304 with a trimmed header set; the advertisement has to survive it. */
     @Test
     fun `a 304 still carries the header`() {
         val page = "<html><body>search</body></html>"

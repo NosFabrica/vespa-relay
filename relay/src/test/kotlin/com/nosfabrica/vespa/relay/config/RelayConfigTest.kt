@@ -37,8 +37,7 @@ class RelayConfigTest {
         assertEquals(20, d.maxFilters)
         assertEquals(50, d.maxSubscriptions)
         assertEquals(5_000, d.maxLimit)
-        // A REQ that names no `limit` gets the same window as one asking for the
-        // ceiling: the default is not a smaller, quieter cap.
+        // A REQ naming no `limit` gets the same window as one asking for the ceiling.
         assertEquals(5_000, d.defaultLimit)
         assertEquals(false, d.authRequired)
     }
@@ -50,23 +49,20 @@ class RelayConfigTest {
                 mapOf(
                     "MAX_FILTERS" to "7",
                     "MAX_LIMIT" to "999",
-                    "MAX_SUBSCRIPTIONS" to "not-a-number", // ignored -> default stands
+                    "MAX_SUBSCRIPTIONS" to "not-a-number",
                     "CREATED_AT_UPPER_LIMIT" to "1900000000",
                 ),
             )
         assertEquals(7, limits.maxFilters)
         assertEquals(999, limits.maxLimit)
-        assertEquals(50, limits.maxSubscriptions) // default kept
+        assertEquals(50, limits.maxSubscriptions)
         assertEquals(1_900_000_000L, limits.createdAtUpperLimit)
     }
 
     @Test
     fun `an unreadable expansion cap keeps the default rather than disabling the splice`() {
         val d = SearchExpansionLimits.Default
-        // A NEGATIVE used to be coerced to zero — the feature on and adding
-        // nothing, which reads from the outside exactly like a corpus with no
-        // trust records in it. Unparseable in spirit, so it keeps the default
-        // like every other limit here.
+        // A negative is unparseable in spirit: coerced to zero it reads like a corpus with no trust records.
         for (bad in listOf("-1", "-1000", "many", "", "  ")) {
             val got = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to bad, "SEARCH_EXPAND_MAX_TOTAL" to bad))
             assertEquals(d.maxPerEvent, got.maxPerEvent, "SEARCH_EXPAND_MAX_PER_EVENT=$bad")
@@ -77,9 +73,7 @@ class RelayConfigTest {
 
     @Test
     fun `zero is honoured as zero, and off is its own switch`() {
-        // 0 means "add nothing" and is a real answer — the boot log says so.
-        // Turning the feature OFF is `SEARCH_EXPAND_REFERENCES`, and the two
-        // must not be spelled the same way.
+        // Zero is a real cap; off is `SEARCH_EXPAND_REFERENCES`, and the two must not be spelled the same way.
         val zero = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to "0"))
         assertEquals(0, zero.maxPerEvent)
         assertTrue(zero.enabled)
@@ -123,11 +117,7 @@ class RelayConfigTest {
 
     @Test
     fun `a key that cannot be read stops the relay instead of being dropped`() {
-        // This used to filter silently, which is the worst possible outcome for an
-        // admin list: the relay starts, reports the key count it was given minus
-        // the ones it threw away, and the missing admin only finds out when a
-        // NIP-86 call is refused. Same for a deny list — a ban that is not
-        // enforced looks exactly like a ban that was never configured.
+        // A dropped admin only finds out when a NIP-86 call is refused, and a dropped ban looks like one never configured.
         val good = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
         listOf("not-hex", "b".repeat(63), "b".repeat(64), "npub1nope").forEach { junk ->
             assertFailsWith<IllegalArgumentException>("'$junk' must not be silently dropped") {
@@ -138,10 +128,8 @@ class RelayConfigTest {
 
     @Test
     fun `bare hex is refused without echoing the value back`() {
-        // Hex has no checksum, so one mistyped character is a different valid
-        // key. The error explains the fix but must NOT carry the value in any
-        // form: 64 hex characters might equally be a hex-encoded SECRET pasted
-        // into the wrong slot, and boot logs are shipped to aggregators.
+        // Hex has no checksum, so one typo is a different valid key. The error must not
+        // carry the value in any form: 64 hex characters may be a secret pasted into the wrong slot.
         val hex = "0000000000000000000000000000000000000000000000000000000000000001"
         val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
         val e =
@@ -205,8 +193,7 @@ class RelayConfigTest {
 
     @Test
     fun `a kind list with junk fails loudly like a pubkey list does`() {
-        // `DENY_KINDS=4;5` silently denying nothing is a ban that is not
-        // enforced — the exact silent-inert failure the pubkey lists refuse.
+        // `DENY_KINDS=4;5` denying nothing is a ban that is not enforced.
         assertFailsWith<IllegalArgumentException> {
             denyKindsFromEnv(mapOf("DENY_KINDS" to "4, junk"))
         }
@@ -228,10 +215,8 @@ class RelayConfigTest {
         for (off in listOf("false", "0", "no", "off", "FALSE", " no ")) {
             assertFalse(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to off)), "\"$off\" turns it off")
         }
-        // Anything else is ON, including the spellings an operator MEANT as
-        // off. The two failure modes are not symmetric: a typo that quietly
-        // opens the whole corpus to every anonymous read is the one nothing
-        // outside the process can notice.
+        // Anything else is on, typos meant as off included: a typo that opens the
+        // corpus to anonymous reads is the one nothing outside the process notices.
         for (on in listOf("true", "1", "yes", "treu", "", "  ")) {
             assertTrue(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to on)), "\"$on\" leaves it on")
         }

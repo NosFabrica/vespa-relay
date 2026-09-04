@@ -47,9 +47,7 @@ class StatsPageTest {
             val snapshot = StatsSnapshot()
             application { routing { corpusStats(null, snapshot) } }
 
-            // A poller must be able to tell "ask again later" from "this relay
-            // holds nothing" — the two render completely differently and only
-            // one of them is a fact about the corpus.
+            // A poller must tell "ask again later" from "this relay holds nothing".
             val empty = client.get("/stats.json")
             assertEquals(HttpStatusCode.ServiceUnavailable, empty.status)
             assertTrue(empty.bodyAsText().contains("no statistics computed yet"))
@@ -67,19 +65,16 @@ class StatsPageTest {
             val first = client.get("/stats.json")
             assertEquals(HttpStatusCode.OK, first.status)
             assertEquals("application/json", first.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim())
-            // Revalidate rather than a max-age guess: the rollup interval is an
-            // operator setting this route cannot see.
+            // Revalidate rather than guess a max-age: the rollup interval is an operator setting this route cannot see.
             assertEquals("no-cache", first.headers[HttpHeaders.CacheControl])
             val etag = assertNotNull(first.headers[HttpHeaders.ETag])
 
-            // The page polls this on a timer and the rollup is far slower than
-            // the poll, so most fetches are for bytes the reader already holds.
+            // The page polls faster than the rollup, so most fetches are for bytes the reader holds.
             assertEquals(HttpStatusCode.NotModified, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, etag) }.status)
             assertEquals(HttpStatusCode.NotModified, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, "W/$etag") }.status)
             assertEquals(HttpStatusCode.OK, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, "\"0000000000000000\"") }.status)
 
-            // A new rollup must break the reader's cache, or the page silently
-            // stops advancing while the relay keeps computing.
+            // A new rollup must break the reader's cache.
             snapshot.publish(
                 buildJsonObject {
                     put("schema", 1)
@@ -100,33 +95,17 @@ class StatsPageTest {
             val body = res.bodyAsText()
             assertTrue(body.contains("/stats.json"), "the page fetches the document rather than carrying its own numbers")
 
-            // The scope line is load-bearing, not decoration: without it a
-            // reader compares our total against a network-wide dashboard's and
-            // reads a mirror's coverage as a broken relay.
+            // Without the scope line a reader compares a mirror's total against a network-wide dashboard's.
             assertTrue(body.contains("id=\"scope\""), "the page has somewhere to print the document's scope")
 
-            // Its one import must actually resolve — the kind names come from
-            // the search UI's registry so a second table cannot go stale.
-            // The specifiers are document-RELATIVE — `./web/…` — so this one
-            // page survives being mounted behind a path prefix; see its head.
-            // Matched as that literal spelling: an absolute `/web/…` would be
-            // asked of the host root wherever the page was mounted, and on a
-            // deployment where the relay sits there it is answered, with the
-            // relay's copy of the same file name.
+            // Imports are document-relative (`./web/`) so the page survives a path-prefix mount, and
+            // matched as that literal: an absolute `/web/` is answered by whatever sits at the host root.
             for (spec in Regex("""from "(\./web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
                 assertNotNull(WebAssets.get(spec.removePrefix("./web/")), "$spec is imported but not servable")
             }
         }
 
-    /**
-     * The url of the page this one's Kinds table replaced still resolves.
-     *
-     * A 301 rather than a 404 because the answer MOVED — the new table covers
-     * every kind in the store, where `kind_stats.html` could only count the ones
-     * it already knew to name — and because that url is what is bookmarked and
-     * what this repo's own history points at. A dead operator link is a bad way
-     * to announce an improvement.
-     */
+    /** A 301, not a 404: the url is bookmarked and this repo's history points at it. */
     @Test
     fun `the old kind_stats url redirects to the page that replaced it`() =
         testApplication {

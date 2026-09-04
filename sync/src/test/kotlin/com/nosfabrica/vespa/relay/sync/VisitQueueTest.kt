@@ -39,10 +39,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The rotation invariants, hermetically — the choreography that was
- * probe-only when two of its race bugs were found. The visits here are
- * controllable: each one announces itself and waits to be released, so the
- * interleavings under test are STAGED, not hoped for.
+ * The rotation invariants. Each visit announces itself and waits to be
+ * released, so the interleavings under test are staged, not hoped for.
  */
 class VisitQueueTest {
     private val url = RelayUrlNormalizer.normalize("wss://a.example")
@@ -50,17 +48,11 @@ class VisitQueueTest {
     @Test
     fun `disarming a revisit lets the next completion arm the cadence the url now has`() =
         runBlocking {
-            // THE SIX-TIMES FRESHNESS GAP. The delay is read once, when the
-            // timer is armed, so a url armed while TAILED carries the tailed
-            // cadence — half an hour against five minutes untailed. Eviction
-            // requeues it promptly, but the visit that followed found the old
-            // timer still standing and armed nothing, so the relay that had
-            // just lost its live feed waited out the cadence it earned while it
-            // still had one.
+            // The delay is read once, when the timer is armed.
             val scope = CoroutineScope(SupervisorJob())
             val q = VisitQueue<NormalizedRelayUrl>(scope)
             val entered = Channel<Unit>(Channel.UNLIMITED)
-            // Long while "tailed", short once not — the pool's own shape.
+            // Long while tailed, short once not.
             val tailed = AtomicInteger(1)
             val visits = AtomicInteger()
             scope.launch {
@@ -80,17 +72,13 @@ class VisitQueueTest {
                     delay(200)
                     assertEquals(1, visits.get())
 
-                    // The tail is evicted: the cadence is now the short one,
-                    // and the pool requeues promptly as it always did.
+                    // Eviction: the cadence is now the short one.
                     tailed.set(0)
                     q.disarm(url)
                     q.offer(url)
                     entered.receive()
 
-                    // …and THIS is what the stale timer used to swallow: the
-                    // completion after eviction arms the untailed cadence, so a
-                    // third visit lands on the short clock rather than an hour
-                    // out.
+                    // The completion after eviction arms the untailed cadence.
                     entered.receive()
                     assertEquals(3, visits.get())
                 }
@@ -100,20 +88,9 @@ class VisitQueueTest {
         }
 
     /**
-     * **THE TIMER THAT LOST ITS SLOT USED TO BE LEAKED, NOT CANCELLED.**
-     *
-     * `armRevisit` builds the timer with `scope.launch(start = LAZY)` before
-     * claiming the url's slot, and deliberately so — the body clears its own
-     * entry, so a job that could run before the map knew about it would clear a
-     * successor's. But `launch` parents the job at CREATION; LAZY defers only
-     * the body. The loser of `putIfAbsent` was then dropped on the floor: never
-     * started, never cancelled, and an incomplete child of a scope that lives
-     * as long as the router.
-     *
-     * The race is staged rather than hoped for, in this class's usual way.
-     * `revisitDelayMs` is the caller's lambda and runs INSIDE `armRevisit`
-     * before the slot is claimed, so blocking the first call holds one worker
-     * exactly there while the other arms the same url and wins.
+     * `launch` parents a job at creation and LAZY defers only the body, so the
+     * timer that loses `putIfAbsent` must be cancelled, not dropped. The race is
+     * staged by blocking `revisitDelayMs`, which runs inside `armRevisit`.
      */
     @Test
     fun `a revisit timer that loses the slot is cancelled, not left parented forever`() =
@@ -129,8 +106,7 @@ class VisitQueueTest {
                     q.visitLoop(
                         stillWanted = { true },
                         revisitDelayMs = {
-                            // The FIRST worker to finish parks here, inside
-                            // armRevisit and before the slot is claimed.
+                            // The first worker to finish parks here, before the slot is claimed.
                             if (armCalls.incrementAndGet() == 1) {
                                 inArmRevisit.trySend(Unit)
                                 release.await(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -147,26 +123,18 @@ class VisitQueueTest {
                     // Worker A is now held inside armRevisit with no slot taken.
                     inArmRevisit.receive()
 
-                    // Worker B takes the whole url through a visit and arms it,
-                    // winning the slot A is about to ask for.
+                    // Worker B visits and arms the url, winning the slot A is about to ask for.
                     q.offer(url)
                     entered.receive()
                     while (armCalls.get() < 2) delay(10)
                     delay(100)
 
-                    // …and now A asks, and loses.
+                    // A asks, and loses.
                     release.countDown()
                     delay(300)
 
-                    // Two worker loops plus the ONE armed timer that won. The
-                    // loser must not still be here: before the fix this counted
-                    // four, and grew by one for every lost race the router ran.
-                    // NOT `isActive`, which is the trap this assertion fell
-                    // into first: a LAZY job that was never started is in the
-                    // New state, so `isActive` is false for it and the leak is
-                    // exactly what such a filter hides. `isCompleted` is the
-                    // question — a cancelled job reaches it, an abandoned one
-                    // never does.
+                    // Two worker loops plus the one timer that won. `isCompleted`, not `isActive`:
+                    // a LAZY job never started is New, which `isActive` would hide.
                     val children = scope.coroutineContext[Job]!!.children.count { !it.isCompleted }
                     assertEquals(
                         3,
@@ -212,14 +180,12 @@ class VisitQueueTest {
                 withTimeout(10_000) {
                     q.offer(url)
                     entered.receive()
-                    // The visit is running; a rebuild wants it again. The
-                    // second worker draws it, collides, and parks it.
+                    // A rebuild wants the running url again; the second worker draws it and parks it.
                     assertTrue(q.offer(url), "a running url can be wanted again")
                     delay(200)
                     assertEquals(1, visits.get(), "the collision must not start a second concurrent visit")
                     release.send(Unit)
-                    // The parked requeue comes back as the NEXT visit — one
-                    // queue wait, not the hour-long revisit timer above.
+                    // The parked requeue comes back as the next visit, not after the revisit timer.
                     entered.receive()
                     release.send(Unit)
                     assertEquals(2, visits.get())
@@ -276,14 +242,7 @@ class VisitQueueTest {
     @Test
     fun `two units on one relay run at the same time, the same unit never twice`() =
         runBlocking {
-            // THE INVARIANT THE POOL'S UNIT CHANGE IS FOR. Admission is per
-            // KEY, and the key is a (relay, stream) pair — so two streams may
-            // be on one relay at once, while one stream's second visit to that
-            // relay waits for its first.
-            //
-            // Pinned here rather than in the pool because this class IS the
-            // exclusion: `inFlight` and `parked` are keyed by identity alone,
-            // and nothing in them knows what a relay is.
+            // Admission is per key, and the key is a (relay, stream) pair.
             data class Unit2(
                 val url: String,
                 val stream: String,
@@ -295,19 +254,11 @@ class VisitQueueTest {
             val release = Channel<Unit>(Channel.UNLIMITED)
             val running = AtomicInteger()
             val peak = AtomicInteger()
-            // THREE workers against two units, so a worker is always free to
-            // draw the re-offer below. With only as many workers as units,
-            // "no third visit" would be proved by the worker count rather than
-            // by the exclusion under test.
+            // Three workers against two units, so a worker is always free to draw the re-offer.
             repeat(3) {
                 scope.launch {
                     q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
-                        // COUNT FIRST, THEN RECORD THE PEAK. `updateAndGet`
-                        // re-runs its lambda whenever the CAS loses, so an
-                        // increment INSIDE it is applied once per attempt —
-                        // two workers entering together counted three visits
-                        // and failed this test about one run in three. The
-                        // counter is the fact; the peak is a reading of it.
+                        // Count first, then record the peak: `updateAndGet` re-runs its lambda on a lost CAS.
                         val now = running.incrementAndGet()
                         peak.updateAndGet { was -> maxOf(was, now) }
                         entered.send(key)
@@ -329,10 +280,7 @@ class VisitQueueTest {
                 }
                 assertEquals(2, running.get())
 
-                // …and the SAME unit again does not start a second visit. The
-                // offer is accepted — a unit may be WANTED again while it runs
-                // — and the worker that draws it parks it instead, which is
-                // what keeps two jobs of one stream off one band.
+                // Wanting a running unit again is allowed; the worker that draws it parks it.
                 assertTrue(q.offer(content), "wanting it again is allowed while it runs")
                 repeat(20) { delay(10) }
                 assertEquals(2, running.get(), "still two — the third draw parked")
@@ -351,16 +299,8 @@ class VisitQueueTest {
     @Test
     fun `the queue splits by group, counting what waits and never what runs`() =
         runBlocking {
-            // WHOSE QUEUE IS IT. The pool's own row says how many units are
-            // waiting; a per-stream card has to say how many of THOSE are
-            // this stream's, and the number was unpublishable until the queue
-            // could be asked for the split.
-            //
-            // The distinction that matters is the one a card would get wrong
-            // silently: a unit a worker is ON is not waiting for a worker. A
-            // split that counted it would put the same unit in `queued` and in
-            // the in-flight rows beside it, and the remainder drawn from both
-            // would come out short.
+            // A unit a worker is on is not waiting for one; counted, it would appear
+            // in `queued` and in the in-flight rows both.
             data class Unit2(
                 val url: String,
                 val stream: String,
@@ -370,8 +310,7 @@ class VisitQueueTest {
             val q = VisitQueue<Unit2>(scope)
             val entered = Channel<Unit2>(Channel.UNLIMITED)
             val release = Channel<Unit>(Channel.UNLIMITED)
-            // ONE worker, so exactly one unit is running and the rest are
-            // provably still queued.
+            // One worker, so exactly one unit runs and the rest are provably queued.
             scope.launch {
                 q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
                     entered.send(key)
@@ -394,10 +333,7 @@ class VisitQueueTest {
                 )
                 assertEquals(3, q.waiting, "and the split adds up to the number the pool publishes")
 
-                // A stream nothing has queued is ABSENT rather than zero: the
-                // caller knows its own streams and reads a missing key as
-                // none, and inventing keys here would mean this class knowing
-                // what the whole set is.
+                // A stream nothing has queued is absent, not zero; the caller knows its own streams.
                 assertEquals(null, q.waitingBy { it.stream }["idle"])
             } finally {
                 release.trySend(Unit)

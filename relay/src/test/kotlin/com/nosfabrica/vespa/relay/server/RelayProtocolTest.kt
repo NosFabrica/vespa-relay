@@ -48,10 +48,8 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * The whole relay stack, driven over the wire protocol: Quartz's engine ->
- * ObserverBackend -> NostrSemanticsStore -> a recording in-memory index.
- * Sessions speak raw NIP-01 JSON through [NostrRelayServer.connect], exactly
- * what the websocket route feeds them.
+ * The whole relay stack driven over the wire: quartz's engine, ObserverBackend, NostrSemanticsStore
+ * and a recording in-memory index, fed raw NIP-01 JSON through [NostrRelayServer.connect].
  */
 class RelayProtocolTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -78,9 +76,7 @@ class RelayProtocolTest {
 
         override suspend fun count(query: EventQuery) = inner.count(query)
 
-        // Delegate rather than ride the interface default, which the store's
-        // KDoc requires of a decorator: the default answers by search(), and
-        // this one records every search it sees.
+        // Delegated, not the interface default: the default answers by search(), which this records.
         override suspend fun countByAuthor(query: EventQuery) = inner.countByAuthor(query)
 
         override fun close() {}
@@ -103,23 +99,19 @@ class RelayProtocolTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // A live subscription with a full NIP-01 filter — not just a search term.
+                // A live subscription with a full NIP-01 filter, not just a search term.
                 session.receive("""["REQ","sub",{"kinds":[1],"#p":["$bob"],"search":"include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","sub"]""") }
 
-                // Publish a signed note (VerifyPolicy checks id + signature).
                 val note = signer.sign<Event>(1_700_000_000L, 1, arrayOf(arrayOf("p", bob)), "hi bob")
                 session.receive("""["EVENT",${note.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${note.id}",true""") }
-                // ...and the open subscription sees it live.
                 awaitMessage(out) { it.startsWith("""["EVENT","sub",""") && note.id in it }
 
-                // A fresh REQ answers the same event from storage, through author + tag + time filters.
                 session.receive("""["REQ","q2",{"kinds":[1],"authors":["${signer.pubKey}"],"#p":["$bob"],"since":1699999999,"search":"include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EVENT","q2",""") && note.id in it }
                 awaitMessage(out) { it.startsWith("""["EOSE","q2"]""") }
 
-                // NIP-45 COUNT over the stored set.
                 session.receive("""["COUNT","c1",{"kinds":[1],"search":"include:spam"}]""")
                 val count = awaitMessage(out) { it.startsWith("""["COUNT","c1"""") }
                 assertTrue("\"count\":1" in count, "exact count from the store: $count")
@@ -154,26 +146,16 @@ class RelayProtocolTest {
     @Test
     fun `an anonymous search has no observer and NIP-42 auth supplies one`() =
         runBlocking {
-            // A searchable profile in the store (search_text derives from the typed event).
+            // A typed MetadataEvent, because search_text derives from the typed event.
             store.insert(MetadataEvent("4".repeat(64), "a1".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
 
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // The relay advertises NIP-42 on connect.
                 val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
 
-                // Unauthenticated search: NO observer at all.
-                //
-                // This used to assert the operator's DEFAULT_OBSERVER, which was
-                // right while the observer only reordered results and wrong once
-                // the store began treating it as a filter: an anonymous visitor
-                // would have been gated to the ~2.7% of profiles anyone has
-                // scored, silently. Anonymous now means the whole corpus — and,
-                // since LensRequiredPolicy, only when the query SAYS so. The
-                // `include:spam` here is what the relay now requires of an
-                // anonymous read; what it does NOT do is conjure a house lens,
-                // which is what this test is about.
+                // Anonymous means the whole corpus, not a house lens: `include:spam` is what the relay
+                // requires of an anonymous read, and no observer is conjured for it.
                 session.receive("""["REQ","s1",{"kinds":[0],"search":"ali include:spam","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
                 assertTrue(out.any { it.startsWith("""["EVENT","s1",""") && "alice" in it }, "the stored kind-0 streams back: $out")
@@ -182,7 +164,6 @@ class RelayProtocolTest {
                     "an anonymous search carries no observer: ${index.searchObservers}",
                 )
 
-                // Authenticate with a real signed kind-22242, then search again.
                 val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
@@ -196,17 +177,8 @@ class RelayProtocolTest {
         }
 
     /**
-     * NIP-50 extensions must survive the whole websocket path to the engine
-     * query. The store parses `sort:`/`filter:rank:`/`include:spam`/`observer:`
-     * itself, which only works if it receives `search` verbatim.
-     *
-     * The mechanism behind that has already changed once: quartz's engine used
-     * to strip the extensions before the store, and the relay carried the
-     * originals past it on the coroutine context. The IEventStore contract now
-     * passes `search` through untouched and that workaround is gone. The test
-     * is unchanged across both, which is the point — it asserts the property
-     * the relay needs, not the arrangement that currently delivers it, so it
-     * keeps working as the session-level net for future quartz bumps.
+     * The store parses `sort:`/`filter:rank:`/`include:spam`/`observer:` itself, which only works
+     * if `search` reaches it verbatim through the whole websocket path.
      */
     @Test
     fun `NIP-50 extensions survive the session to the engine query`() =
@@ -215,65 +187,26 @@ class RelayProtocolTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // Signed in first: these assertions are about what the store
-                // makes of the TOKENS, and an anonymous read now has to carry
-                // `include:spam` to be answered at all — which is itself one of
-                // the tokens under test and would set the floor it asserts.
+                // Signed in first: an anonymous read would have to carry `include:spam`, which is one of the tokens under test.
                 val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
                 val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
 
-                // THE QUERY THE REQ ASKED, which is no longer the last row the
-                // engine saw. Every REQ below is kindless, and since store
-                // 94be3000a1 a kindless searching read also issues a
-                // DECLARATION COMPANION — the same terms re-aimed at the
-                // Trusted List and Assertion kinds, authors narrowed to the
-                // signers this reader enrolled (themselves, here), trust floor
-                // waived. `last()` therefore reads that companion, and read the
-                // floor assertion below as this relay having dropped its gate.
-                // The kinds tell the two apart: the caller asked for none.
+                // A kindless searching read also issues a declaration companion, so `last()` may read that
+                // instead; the caller's own query is the one with no kinds.
                 fun asked() = index.searchQueries.last { it.kinds.isEmpty() }
 
                 session.receive("""["REQ","x1",{"search":"ali","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x1"]""") }
                 assertEquals(DEFAULT_MIN_RANK, asked().minRank, "a plain search is trust-gated by default")
 
-                // The companion itself, pinned rather than merely tolerated:
-                // what makes its waived floor safe is that it can only name
-                // declaration kinds signed by someone this reader enrolled, so
-                // a bump that widened either half would land here. IT HAS: at
-                // store 2bc79f5f40 the reader's own NIP-51 lists of people
-                // joined the set, which is a different family reached by the
-                // SAME gate — a reader is always their own signer, so their own
-                // list unpacks and a stranger's titled `bitcoin` does not. The
-                // two halves are asserted separately below for that reason, and
-                // it is the AUTHORS line, not this one, that holds the gate.
-                //
-                // Spelled out rather than left as the 30382..30395 range it
-                // used to be: the kinds no longer form one, and the property
-                // this asserts was never "in that range" but "is a kind the
-                // store expands a declaration from".
-                // NIP-85 assertions (subject: a pubkey / an event / an address),
-                // the Trusted Lists (by what their members are), and the two
-                // NIP-51 people kinds. 30385 and 30395 are absent because their
-                // members are NIP-73 external identifiers, which name no event.
+                // The companion may only name declaration kinds signed by someone this reader enrolled; the
+                // authors line is what holds the gate. 30385 and 30395 are absent because their members are NIP-73 external ids.
                 val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089)
 
-                // BY WHAT IT IS, NOT BY WHERE IT LANDED. `last()` here was a
-                // COIN FLIP, and it failed about one run in three with
-                // `kinds: []` — having read back the caller's own kindless
-                // query. The companion goes out WITH that query, which is the
-                // entire point of it (the pointers arrive as rows of one
-                // page), so which of the two the index records last is a
-                // scheduling detail and never was a fact about the store.
-                // `asked()` above already selects by identity for the same
-                // reason. Asserted over EVERY kinded query rather than one, so
-                // no ordering can hide a companion this does not look at: a
-                // kindless read issues exactly one (companions() skips the
-                // label half outright when the caller named no kinds, and
-                // groups the declarations by signer set — one signer here, so
-                // one query).
+                // Selected by shape, not position: the companion goes out with the caller's query, so which the
+                // index records last is a scheduling detail. Every kinded query is checked so no ordering hides one.
                 val companions = index.searchQueries.filter { it.kinds.isNotEmpty() }
                 assertTrue(companions.isNotEmpty(), "a kindless searching read still issues its declaration companion")
                 for (companion in companions) {
@@ -287,12 +220,8 @@ class RelayProtocolTest {
 
                 session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
-                // include:spam SENDS a floor of 0 rather than omitting one. The
-                // floor is also the anchor of the default profile's trust boost
-                // — log(1 + user_score - min_rank) — and the schema's fail-open
-                // default for that feature is -1e9, so leaving it out would not
-                // "no floor", it would wreck the ordering. 0 keeps every hit,
-                // which is what the extension promises.
+                // `include:spam` sends a floor of 0 rather than omitting one: the floor anchors the trust boost,
+                // whose schema default is fail-open, so leaving it out would wreck the ordering.
                 assertEquals(
                     INCLUDE_SPAM_MIN_RANK,
                     asked().minRank,
@@ -305,16 +234,8 @@ class RelayProtocolTest {
                 assertEquals(EventYql.RANK_DESC, asked().ranking, "sort:rank picks the profile")
                 assertEquals(7.0, asked().minRank, "filter:rank:gte sets the floor")
 
-                // The sort menu's "Newest" (index.html). Chronological is the
-                // one order this path can get wrong in SILENCE: quartz strips
-                // every `key:value` extension before the terms, so a store that
-                // does not know `recent` does not search for the literal and
-                // does not complain — it just answers in relevance order under
-                // a menu that says newest. Nothing in this repo parses the
-                // token, so the pin is the only thing that decides, and this
-                // asserts the profile rather than the results because the order
-                // itself is the engine's (InMemoryEventIndex has no rank
-                // profiles to run).
+                // Chronological is the order this path can get wrong in silence: quartz strips `key:value`
+                // extensions before the terms, so a store that did not know `recent` would answer in relevance order.
                 session.receive("""["REQ","x4",{"search":"ali sort:recent","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x4"]""") }
                 assertEquals(EventYql.RANK_RECENCY_GATED, asked().ranking, "sort:recent picks the gated recency profile")
@@ -335,7 +256,7 @@ class RelayProtocolTest {
                 try {
                     val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
 
-                    // Anonymous searches never enroll anyone — declared or not.
+                    // Anonymous searches never enroll anyone, declared or not.
                     session.receive("""["REQ","s1",{"kinds":[0],"search":"ali include:spam","limit":10}]""")
                     awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
                     assertEquals(emptyList(), enrolled.toList())
@@ -356,17 +277,8 @@ class RelayProtocolTest {
         }
 
     /**
-     * Signing in gets a reader an answer to the question the protocol gives
-     * them no way to ask: whether this relay holds the two things their ranked
-     * search depends on. The store treats the lens as a FILTER, so a reader
-     * whose chain has not been mirrored here searches an empty relay and is
-     * told nothing about it — see [TrustNotice].
-     *
-     * What this asserts is the WIRING, over the wire: that a verified AUTH
-     * reaches the hook at all, carrying the pubkey that signed it and this
-     * connection's send. Which notices a given store earns is
-     * [TrustNoticeTest]'s job, and so is the silent case — an absence over a
-     * socket is only ever a wait that has not finished.
+     * Asserts the wiring only: a verified AUTH reaches the hook with the pubkey that signed it and
+     * this connection's send. Which notices a store earns is [TrustNoticeTest]'s job.
      */
     @Test
     fun `signing in reaches the login hook with the connection to answer on`() =
@@ -381,9 +293,7 @@ class RelayProtocolTest {
                     val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
                     session.receive("""["AUTH",${auth.toJson()}]""")
 
-                    // The login is not held up by the check: the OK is quartz's
-                    // answer to the AUTH frame, and the notices arrive behind it
-                    // off a scope that never touched this coroutine.
+                    // The OK is quartz's answer to the AUTH frame; the notices arrive behind it off another scope.
                     awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
                     val notices = awaitNotices(out, 1)
                     assertTrue(notices.any { "10040" in it }, "an empty store holds no trust provider list for this reader: $notices")
@@ -411,25 +321,9 @@ class RelayProtocolTest {
     }
 
     /**
-     * The search page's hashtag REQ, end to end — the assumptions the web UI's
-     * four filters rest on, none of which this repo owns.
-     *
-     * A `#hashtag` in the search box becomes a union: `#t` for events tagged
-     * with the topic, `#l` for NIP-32 labels, and kind 1111 with the NIP-73
-     * external id in `#I` (a comment thread's root scope) or `#i` (its parent).
-     * Three of those are load-bearing beliefs about code upstream of here:
-     *
-     *  - `#I` survives Quartz's REQ parse as an UPPERCASE tag name and is not
-     *    folded into `#i`. NIP-01 allows a-zA-Z and Quartz's isIndexableTagName
-     *    implements exactly that, but a fold anywhere in the chain would not
-     *    fail loudly — the filter would quietly match the wrong events, which
-     *    is worse than matching none.
-     *  - Tag VALUES compare cased (the engine schema's `match { cased }`), so
-     *    an event tagged `t: Nostr` is invisible to a `#t: ["nostr"]` ask. The
-     *    page sends the spellings for this reason; asserted here so a future
-     *    "normalize tags on write" would break this test rather than the feed.
-     *  - The filters of one REQ are ORed and the union is deduped, so an event
-     *    answering two of them is delivered once.
+     * The search page's hashtag REQ, end to end: `#t`, `#l` and kind-1111 `#I`/`#i` filters. Pins three
+     * beliefs about upstream code: `#I` survives the REQ parse uppercase, tag values compare cased,
+     * and the union of one REQ's filters is deduped.
      */
     @Test
     fun `the search page's hashtag union reaches the right events`() =
@@ -486,9 +380,7 @@ class RelayProtocolTest {
                 assertTrue(served.none { otherTopic.id in it }, "a comment on another topic is not in this union")
                 assertEquals(6, served.size, "exactly the six events the union describes")
 
-                // The control for the spellings: the lowercase ask ALONE cannot
-                // see `t: Nostr`. This is the assertion that makes the extra
-                // values in the filter above a fix rather than decoration.
+                // The control for the spellings: the lowercase ask alone cannot see `t: Nostr`.
                 session.receive("""["REQ","lc",{"#t":["nostr"],"search":"include:spam","limit":40}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","lc"]""") }
                 val lower = synchronized(out) { out.filter { it.startsWith("""["EVENT","lc",""") } }
@@ -500,22 +392,9 @@ class RelayProtocolTest {
         }
 
     /**
-     * The search page's NIP-73 scope REQ, end to end — `site:`, `isbn:`,
-     * `doi:`, `podcast:guid:` and the rest become two kind-1111 filters, the
-     * id in `#I` (a thread's root) and `#i` (a parent), and the beliefs they
-     * rest on are the hashtag union's plus two of their own:
-     *
-     *  - A tag VALUE carrying colons and slashes — a whole url, or
-     *    `podcast:guid:<uuid>` — survives Quartz's REQ parse and the store's
-     *    tag matching byte for byte. Nothing in NIP-01 promises that; a parser
-     *    that split tag values on `:` would quietly match nothing.
-     *  - The `kinds` gate on the filter is real: a kind that is not 1111
-     *    carrying the same `I` tag stays out, which is what lets the page send
-     *    these filters under any tab without the tab's kinds on them.
-     *
-     * The two spellings of the url are the page's own ask (scopeIds toggles
-     * the trailing slash — one page, two byte-distinct tag values), so a
-     * comment written under either spelling has to come back.
+     * The search page's NIP-73 scope REQ, end to end: two kind-1111 filters, the id in `#I` and `#i`.
+     * Pins that a tag value carrying colons and slashes matches byte for byte, and that the `kinds`
+     * gate keeps a kind 1 wearing the same tag out. Both url spellings are the page's own ask.
      */
     @Test
     fun `the search page's scope filters reach the comments on the id`() =
@@ -590,8 +469,7 @@ class RelayProtocolTest {
                 assertTrue(served.none { notAComment.id in it }, "the kinds gate is real: a kind 1 wearing the tag stays out")
                 assertEquals(4, served.size, "exactly the four comments the filters describe")
 
-                // The prefixed families ride the same two filters; what this
-                // adds is the value itself being colon-laden.
+                // The prefixed families ride the same two filters; what this adds is a colon-laden value.
                 session.receive(
                     """["REQ","pg",""" +
                         """{"kinds":[1111],"#I":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"search":"include:spam","limit":40},""" +
@@ -607,27 +485,9 @@ class RelayProtocolTest {
         }
 
     /**
-     * The search page's `group:<id>` REQ, end to end — an `#h` filter for what
-     * was posted in the group, and a kind-39000 keyed by `#d` for the group
-     * itself. Four beliefs, and every one of them is a thing the page would
-     * otherwise be taking on trust:
-     *
-     *  - **`h` is an indexable tag at all.** The store derives `tag_index`
-     *    from SINGLE-LETTER tag names only, and `h` is one — so a group filter
-     *    costs what a topic filter costs. Nothing outside the store says which
-     *    letters it kept.
-     *  - **A group post is any kind.** NIP-29 puts chat in 9, threads in 11 and
-     *    replies in 1111, and an `#h` ask with no `kinds` has to reach all of
-     *    them — which is why the page lets the TAB narrow this filter and gates
-     *    only the metadata one.
-     *  - **The id is matched CASED**, like every other tag value. `General` and
-     *    `general` are two groups, which is why shared/query.js asks for the id
-     *    verbatim and does not spread it over spellings the way a hashtag is.
-     *  - **Two hosts' groups stay apart in 39000 and NOT in the posts.** A
-     *    39000 is addressable per (kind, pubkey, `d`), so the same id signed by
-     *    two relay keys is two stored records; the posts carry the bare id and
-     *    are one set. That asymmetry is the whole reason the picker can warn
-     *    about an ambiguous id while the results cannot separate it.
+     * The search page's `group:<id>` REQ, end to end. Pins that `h` is an indexable tag, that an `#h`
+     * ask with no `kinds` reaches chat, threads and replies, that the id matches cased, and that two
+     * hosts' 39000 records stay apart while their posts are one set.
      */
     @Test
     fun `the search page's group filters reach the posts and the group record`() =
@@ -679,9 +539,7 @@ class RelayProtocolTest {
                 assertTrue(served.none { casedId.id in it }, "`h` values compare CASED: `Chachi` is a different group")
                 assertEquals(3, served.size, "exactly the three posts the filter describes")
 
-                // The metadata half, and the asymmetry that makes the picker
-                // possible. Two relays each sign a `chachi`; both records are
-                // stored, because a 39000 is addressable per (kind, pubkey, d).
+                // Two relays each sign a `chachi`; both records are stored, because a 39000 is addressable per (kind, pubkey, d).
                 val hostA = NostrSignerSync()
                 val hostB = NostrSignerSync()
                 val recordA = publish(39000, arrayOf(arrayOf("d", "chachi"), arrayOf("name", "Chachi on A")), "", hostA)
@@ -699,24 +557,9 @@ class RelayProtocolTest {
         }
 
     /**
-     * A RANKED union comes back as ONE order over all four filters, not as each
-     * filter's run end to end.
-     *
-     * The fourth assumption the search page rests on, and the newest: until
-     * store `8a45e4d1a2` a multi-filter REQ with a search string was served as
-     * run after run, so the page's export carried a caveat telling readers that
-     * a jump back up the trust scale was a seam and not a misranking. That
-     * caveat is gone, which makes the merge something this repo now depends on.
-     *
-     * Asserted through the ordering the in-memory engine CAN produce: it does
-     * not rank, so it reports no scores and the store merges on recency
-     * instead. That is enough to tell the two behaviors apart — the events are
-     * arranged so the tag filter holds the newest AND the oldest, and the label
-     * filter the one in between. Concatenation can only put the label's hit
-     * last; one merged order has to interleave it.
-     *
-     * What it cannot check is the merge on real relevance — that needs an
-     * engine that ranks, and lives in the store's own integration gate.
+     * Asserted through the ordering the in-memory engine can produce: it reports no scores, so the
+     * store merges on recency. The tag filter holds the newest and the oldest, the label filter the
+     * one between; concatenation can only put the label's hit last.
      */
     @Test
     fun `a ranked union is served as one order, not one run per filter`() =
@@ -755,19 +598,9 @@ class RelayProtocolTest {
         }
 
     /**
-     * The relay's default before AUTH: a read says whose eyes it is read
-     * through, or it is not answered.
-     *
-     * Every claim here is one a client acts on. The REFUSAL is `auth-required:`
-     * rather than a silent empty EOSE because that is the prefix NIP-42 clients
-     * already retry through (ours is `web/shared/relay.js`), and because an
-     * empty answer to a read this relay declined is indistinguishable from an
-     * empty corpus — the confusion the whole gate exists to end.
-     *
-     * The two ways past it need no signature at all: scores here are public, so
-     * `observer:` ranks through any lens on an anonymous socket, and
-     * `include:spam` asks for the corpus the relay used to hand over without
-     * either side saying so.
+     * The refusal is `auth-required:` rather than an empty EOSE: that is the prefix NIP-42 clients retry
+     * through, and an empty answer is indistinguishable from an empty corpus. Neither way past it
+     * needs a signature.
      */
     @Test
     fun `an undeclared read is refused before AUTH, and the two declarations get through`() =
@@ -776,8 +609,7 @@ class RelayProtocolTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // A plain NIP-01 filter — no NIP-50 anything — is a read with
-                // no lens just as much as a search is, and is refused the same.
+                // A plain NIP-01 filter is a read with no lens just as much as a search is.
                 session.receive("""["REQ","n1",{"kinds":[0],"limit":10}]""")
                 val closed = awaitMessage(out) { it.startsWith("""["CLOSED","n1",""") }
                 assertTrue("auth-required:" in closed, "the machine-readable prefix a NIP-42 client retries through: $closed")
@@ -786,15 +618,11 @@ class RelayProtocolTest {
                 session.receive("""["REQ","n2",{"kinds":[0],"search":"ali","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["CLOSED","n2",""") }
 
-                // COUNT is a read too, and answers with a number rather than
-                // events — which is exactly why it cannot be left open: an
-                // ungated count reports the size of the corpus a gated REQ
-                // would refuse to serve.
+                // COUNT is a read too: an ungated count reports the size of the corpus a gated REQ would refuse.
                 session.receive("""["COUNT","n3",{"kinds":[0]}]""")
                 awaitMessage(out) { it.startsWith("""["CLOSED","n3",""") }
 
-                // ONE undeclared filter poisons the REQ: NIP-01 ORs them, so
-                // serving the rest would serve the undeclared question in full.
+                // One undeclared filter poisons the REQ: NIP-01 ORs them.
                 session.receive("""["REQ","n4",{"kinds":[0],"search":"include:spam"},{"kinds":[1]}]""")
                 awaitMessage(out) { it.startsWith("""["CLOSED","n4",""") }
 
@@ -803,15 +631,12 @@ class RelayProtocolTest {
                 awaitMessage(out) { it.startsWith("""["EOSE","y1"]""") }
                 assertTrue(out.any { it.startsWith("""["EVENT","y1",""") && "alice" in it }, "the waiver is answered in full: $out")
 
-                // Way out two: name one. No signature involved — the store
-                // resolves it as the query's own observer.
+                // Way out two: name one. The store resolves it as the query's own observer.
                 session.receive("""["REQ","y2",{"kinds":[0],"search":"ali observer:${"7".repeat(64)}","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","y2"]""") }
                 assertEquals("7".repeat(64), index.searchQueries.last().observer, "the named lens is the one the store ranks through")
 
-                // …and a lens the store cannot resolve is not one: an npub is
-                // ignored there, so accepting it here would answer an unranked
-                // read under a token that promised a ranked one.
+                // A lens the store cannot resolve is not one: an npub is ignored there.
                 session.receive("""["REQ","n5",{"kinds":[0],"search":"ali observer:npub1qqqqqqqq","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["CLOSED","n5",""") }
             } finally {
@@ -820,34 +645,9 @@ class RelayProtocolTest {
         }
 
     /**
-     * NIP-77 GOES THROUGH THE SAME GATE, and this pins it in both directions
-     * because nothing in this repo decides it: quartz's `NegSessionRegistry`
-     * builds a [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd]
-     * out of the NEG-OPEN's filters and runs it through the very hook
-     * [LensRequiredPolicy] implements, turning a rejection into `NEG-ERR`.
-     *
-     * It is the RIGHT answer — a reconcile hands over the ids and times of
-     * everything matching a filter, which is the lensless read of the whole
-     * corpus this gate exists to stop — but it is quartz's arrangement rather
-     * than our decision, so the day it changes, a reconcile silently becomes
-     * the one unguarded read here.
-     *
-     * ONLY THE REFUSAL IS DRIVEN OVER THE WIRE, and that is a deliberate
-     * limit rather than half a test. The other half — that a DECLARING peer
-     * gets through — cannot be asserted this way, because a NEG-OPEN the gate
-     * admits is then handed to quartz's negentropy session, and a frame that
-     * is not a well-formed negentropy message never comes back: the message
-     * consumer's varint loop reads past the end of the buffer, where
-     * `ByteArrayReader.readByte` returns -1 forever and the continuation bit
-     * is never clear. It spins at 100% on the thread it is on — which in the
-     * server is a Netty I/O thread — and this test would hang the suite.
-     * (Reproduced deterministically against `negentropy-jvm` with the frames
-     * `6100`, `6101`, `61ff`, …: every truncated frame with a byte after the
-     * version byte loops forever. `61` alone terminates.) Building a real
-     * negentropy frame here would test quartz's reconciliation rather than
-     * this gate, so the refusal above is the whole claim: the ReqCmd hook is
-     * what a NEG-OPEN goes through, which is exactly what would break
-     * silently.
+     * Quartz's `NegSessionRegistry` runs a NEG-OPEN's filters through the same hook as a REQ; nothing
+     * here decides that. Only the refusal is driven over the wire: an admitted NEG-OPEN reaches quartz's
+     * negentropy session, which spins forever on a frame that is not a well-formed negentropy message.
      */
     @Test
     fun `a negentropy session declares a lens like any other read`() =
@@ -863,12 +663,7 @@ class RelayProtocolTest {
             }
         }
 
-    /**
-     * The other half, asserted where it can be: the policy itself, with no
-     * session behind it. A NEG-OPEN's filters reach [LensRequiredPolicy] as a
-     * [com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd], so a
-     * peer that waives a lens is admitted and this relay stays mirrorable.
-     */
+    /** The admitted half, asserted on the policy alone: a peer that waives a lens gets through, so this relay stays mirrorable. */
     @Test
     fun `a declared reconcile is admitted by the policy`() {
         val policy = LensRequiredPolicy()
@@ -893,9 +688,7 @@ class RelayProtocolTest {
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
 
-                // The SAME undeclared read, on the same socket, now answered —
-                // this is the "authenticate and ask again" half of NIP-42, and
-                // the reason the refusal above carries that prefix.
+                // The same undeclared read, now answered: the "authenticate and ask again" half of NIP-42.
                 session.receive("""["REQ","after",{"kinds":[0],"limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","after"]""") }
                 session.receive("""["COUNT","cafter",{"kinds":[0]}]""")
@@ -905,12 +698,7 @@ class RelayProtocolTest {
             }
         }
 
-    /**
-     * `REQUIRE_READ_LENS=false` is the older relay, whole: an undeclared
-     * anonymous read is answered out of the unranked corpus. Pinned because
-     * that is a deployment (a mirror-only relay, a store with no trust data
-     * behind it) and not a debug switch.
-     */
+    /** `REQUIRE_READ_LENS=false` is a deployment (a mirror-only relay, a store with no trust data), not a debug switch. */
     @Test
     fun `the gate can be turned off, and then an undeclared read is answered`() =
         runBlocking {

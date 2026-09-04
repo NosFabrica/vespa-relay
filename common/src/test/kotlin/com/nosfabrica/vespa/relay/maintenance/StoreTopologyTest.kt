@@ -27,11 +27,9 @@ import kotlin.test.assertEquals
 class StoreTopologyTest {
     @Test
     fun `neither process may skip a deletion probe`() {
-        // A constant asserting itself, deliberately: the two faster modes are
-        // the obvious thing to reach for when ingest needs to go quicker, and
-        // both are wrong HERE for a reason no profiler will show — the relay
-        // and the sync process write one index and each is the other's foreign
-        // feeder. Relaxing this means deleting a test that says why.
+        // A constant asserting itself: the relay and the sync process write one
+        // index and each feeds the other, so the faster modes are wrong here for
+        // a reason no profiler will show.
         assertEquals(
             WriterTopology.SHARED_STRICT,
             STORE_WRITERS,

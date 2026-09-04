@@ -41,9 +41,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The dynamic relay list: what [RelayDiscovery] reads out of the store, driven
- * entirely by a [RelaySource]'s filter and its [RelaySelect]s rather than by
- * per-kind code.
+ * What [RelayDiscovery] reads out of the store, driven entirely by a
+ * [RelaySource]'s filter and its [RelaySelect]s rather than by per-kind code.
  */
 class RelayDiscoveryTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -78,8 +77,7 @@ class RelayDiscoveryTest {
     ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
-        // Production compilation, so these tests exercise the same entry
-        // classification and case rules the loader produces.
+        // Parsed the way the loader does, so the entry and case rules are production's.
         exclude = RelayExcludes.parse(exclude.toList()),
         maxRelaysPerList = maxRelaysPerList,
     )
@@ -129,9 +127,8 @@ class RelayDiscoveryTest {
                 arrayOf("30382:followers", "b".repeat(64), "wss://graph.example"),
             )
 
-        // A named tag picks exactly one service...
         assertEquals(listOf("wss://scores.example/"), urls(list, select(tag = "30382:rank", index = 2)))
-        // ...and no tag name takes the whole <kind>:<type> family.
+        // No tag name takes the whole <kind>:<type> family.
         assertEquals(
             listOf("wss://scores.example/", "wss://graph.example/"),
             urls(list, select(index = 2)),
@@ -168,20 +165,15 @@ class RelayDiscoveryTest {
         val list =
             event(
                 10002,
-                // `equals` is exact, so "WRITE" is not a write marker — NIP-65
-                // specifies lowercase. The url survives via its lowercase twin.
+                // `equals` is exact and NIP-65 specifies lowercase; the url survives via its twin.
                 arrayOf("r", "wss://write.example", "WRITE"),
                 arrayOf("r", "wss://write.example", "write"),
-                // Scheme-less. The normalizer WOULD coerce this to wss://, and it
-                // used to be allowed here because a named tag was treated as
-                // enough context. It is not: a relay list holds whatever its
-                // author typed, and a dynamic stream dials the result every
-                // cycle. Costs 2 urls in 1,854 on the live store.
+                // Scheme-less: the normalizer would coerce it to wss://, and a relay list holds whatever its author typed.
                 arrayOf("r", "relay.example"),
                 arrayOf("r", "http://relay.example"), // right host, wrong protocol
                 arrayOf("r"),
                 arrayOf("p", "wss://not-an-r-tag.example"),
-                // The normalizer would turn these into `wss://not/`; we don't let it.
+                // The normalizer would turn these into `wss://not/`.
                 arrayOf("r", "not a url at all"),
                 arrayOf("r", "   "),
             )
@@ -194,12 +186,8 @@ class RelayDiscoveryTest {
 
     @Test
     fun `urls we could never dial are dropped rather than discovered`() {
-        // Not a matter of taste: this client has no Tor transport, and a loopback
-        // host in someone else's relay list means THEIR machine. Both are certain
-        // failures, and a certain failure kept in the list is worse than absent —
-        // it burns a connect timeout and a concurrency permit every cycle forever,
-        // and gets written down as an unreachable relay when the truth is that we
-        // were never in a position to ask.
+        // No Tor transport here, and a loopback host in someone else's list means their
+        // machine. A certain failure kept in the list burns a timeout and a permit every cycle.
         val list =
             event(
                 10002,
@@ -221,12 +209,10 @@ class RelayDiscoveryTest {
                 arrayOf("e", "b".repeat(64), "wss://reply.example", "reply"),
                 arrayOf("e", "c".repeat(64), "wss://mention.example", "mention"),
                 arrayOf("e", "d".repeat(64), "wss://bare.example"),
-                // NIP-10 also allows a pubkey after the marker — this is the tag
-                // that proves maxSize actually cuts inside an AND.
+                // NIP-10 also allows a pubkey after the marker: the tag that proves maxSize cuts inside an AND.
                 arrayOf("e", "e".repeat(64), "wss://deep.example", "root", "f".repeat(64)),
             )
 
-        // Two OR-ed alternatives keep root and reply hints, dropping the rest.
         val threaded =
             select(
                 tag = "e",
@@ -239,8 +225,7 @@ class RelayDiscoveryTest {
             )
         assertEquals(listOf("wss://root.example/", "wss://reply.example/", "wss://deep.example/"), urls(note, threaded))
 
-        // Fields inside one entry AND: the marker must say root AND the tag must
-        // stop right there, so the root tag with a pubkey after it is out.
+        // The marker must say root and the tag must stop there, so the root tag with a pubkey after it is out.
         val strictRoot =
             select(
                 tag = "e",
@@ -280,8 +265,7 @@ class RelayDiscoveryTest {
                 arrayOf("r", "wss://empty.example", ""),
             )
 
-        // An absent marker slot is not an empty string: `equals = ""` demands the
-        // slot exists. The structural case is maxSize's job.
+        // An absent slot is not an empty string: `equals = ""` demands the slot exists.
         assertEquals(
             listOf("wss://empty.example/"),
             urls(list, select(tag = "r", where = listOf(TagCondition(index = 2, equals = "")))),
@@ -298,8 +282,7 @@ class RelayDiscoveryTest {
             event(
                 10040,
                 arrayOf("30382:rank", "a".repeat(64), "wss://scores.example"),
-                // Without a tag name to filter on, a pet name would otherwise
-                // normalize to `wss://petname/` and enter the fan-out.
+                // Without a tag name to filter on, a pet name would normalize to `wss://petname/`.
                 arrayOf("p", "b".repeat(64), "petname"),
             )
 
@@ -314,8 +297,7 @@ class RelayDiscoveryTest {
                 arrayOf("r", "wss://relay.example:443"),
                 arrayOf("r", "wss://relay.example"),
                 arrayOf("r", "ws://plain.example:80/alpha"),
-                // NOT a default for its scheme, and not the scheme's business
-                // to remove: this is a different listener.
+                // Not a default for its scheme: a different listener.
                 arrayOf("r", "wss://relay.example:4443"),
             )
 
@@ -337,9 +319,6 @@ class RelayDiscoveryTest {
     fun `a relay list too long to be one is dropped whole`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // The shape this exists for: measured on the live store, 148 pubkeys
-            // published a kind 10002 of 100-10,591 entries, no other tags and no
-            // content, and every entry cost the router a dial.
             store.insert(event(10002, *Array(12) { arrayOf("r", "wss://bulk$it.example") }))
             store.insert(event(10002, arrayOf("r", "wss://ordinary.example")))
 
@@ -348,8 +327,7 @@ class RelayDiscoveryTest {
                     .discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))), maxRelaysPerList = 10))
                     .map { it.url.url }
 
-            // Not the first ten of the bulk list — none of it. Taking a prefix
-            // would let its author choose which relays we see by ordering them.
+            // None of the bulk list, not its first ten: a prefix lets the author choose which relays we see.
             assertEquals(listOf("wss://ordinary.example/"), found)
         }
 
@@ -357,8 +335,7 @@ class RelayDiscoveryTest {
     fun `the cap counts the relays a select reads, not every tag on the event`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // A NIP-51 set: hundreds of `p` tags around four relays. Judged on
-            // its relays, it is an ordinary list and stays.
+            // A NIP-51 set: dozens of `p` tags around two relays.
             store.insert(
                 event(
                     30002,
@@ -380,10 +357,7 @@ class RelayDiscoveryTest {
     fun `the cap does not count relays the select's where rejects`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // A NIP-65 outbox: 200 read-only relays and three write ones. The
-            // write select reads three urls off it, so by the rule the cap
-            // states — judge a list on the relays it names TO US — it is an
-            // ordinary list and stays.
+            // 200 read-only relays and three write ones: judged on the relays it names to us, an ordinary list.
             store.insert(
                 event(
                     10002,
@@ -426,9 +400,7 @@ class RelayDiscoveryTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             val rankSvc = "a".repeat(64)
             val followSvc = "b".repeat(64)
-            // One observer, two dimensions, two DIFFERENT relays. This is the
-            // case the cross product gets wrong: collecting services and relays
-            // into separate sets says "ask both relays for both services".
+            // One observer, two dimensions, two different relays: the case a cross product gets wrong.
             store.insert(
                 event(
                     10040,
@@ -479,9 +451,7 @@ class RelayDiscoveryTest {
                     ).single()
 
             assertEquals(setOf(one, two), found.bindings["authors"])
-            // Sorted into the filter, because the band is keyed on the
-            // filter's serialized form — an unordered set would key the same ask
-            // two ways and re-walk history for nothing.
+            // Sorted into the filter, because the band is keyed on the filter's serialized form.
             assertEquals(listOf(one, two), found.narrowed(Filter(kinds = listOf(30382))).authors)
         }
 
@@ -513,8 +483,7 @@ class RelayDiscoveryTest {
                         ),
                     ).single()
 
-            // "fetch THIS author's events from the relays their own 10002 marks
-            // write" — the author is nowhere in the tag.
+            // The author is nowhere in the tag.
             assertEquals(setOf(list.pubKey), found.bindings["authors"])
         }
 
@@ -522,9 +491,8 @@ class RelayDiscoveryTest {
     fun `a tag that cannot fill a binding is dropped whole, not half-applied`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // No service slot, and a service that is not a key. Either one, taken
-            // half-applied, would widen the ask back to every author on that
-            // relay — the opposite of what binding it was for.
+            // No service slot, and a service that is not a key: half-applied, either
+            // would widen the ask back to every author on that relay.
             store.insert(event(10040, arrayOf("30382:rank", "wss://short.example")))
             store.insert(event(10040, arrayOf("30382:rank", "not-a-pubkey", "wss://bogus.example")))
 
@@ -557,8 +525,6 @@ class RelayDiscoveryTest {
                     ).single()
 
             assertTrue(found.bindings.isEmpty())
-            // The stream's own filter, untouched — every config written before
-            // bindings existed behaves exactly as it did.
             val base = Filter(kinds = listOf(0, 10002))
             assertEquals(base, found.narrowed(base))
         }
@@ -574,16 +540,12 @@ class RelayDiscoveryTest {
             store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://quiet.example")))
             store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://lonely.example", "write")))
 
-            // Nothing is dropped for being unpopular — the one-list relay is synced
-            // like the rest; the count only decides who goes first.
             val all =
                 RelayDiscovery.discover(
                     store,
                     dynamic(source(10002, selects = listOf(select(tag = "r", where = marker("write"))))),
                 )
-            // Every named relay, once each. The reference count that used to
-            // order these went with the switch to the store's tags-only
-            // projection, which answers with a set — see RelayDiscovery.
+            // Every named relay once, in name order: the scan answers with a set, so there is no count to order by.
             assertEquals(
                 listOf("wss://lonely.example/", "wss://popular.example/", "wss://quiet.example/"),
                 all.map { it.url.url },
@@ -598,7 +560,6 @@ class RelayDiscoveryTest {
             store.insert(event(10040, arrayOf("30382:rank", "a".repeat(64), "wss://shared.example")))
             store.insert(event(10050, arrayOf("relay", "wss://dm.example")))
 
-            // One filter over all three kinds; the selects sort out which is which.
             val found =
                 RelayDiscovery.discover(
                     store,
@@ -618,8 +579,6 @@ class RelayDiscoveryTest {
                     ),
                 )
 
-            // Both selects contribute, and a relay named by several is present
-            // once — the union is the point, not the tally.
             assertEquals(
                 listOf("wss://dm.example/", "wss://shared.example/"),
                 found.map { it.url.url },
@@ -671,8 +630,7 @@ class RelayDiscoveryTest {
     fun `one exclude pattern drops every per-user url a host mints`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // The shape filter.nostr.wine produces: a distinct url per user, so
-            // no literal exclude list could ever be complete.
+            // The shape filter.nostr.wine produces: a url per user, so no literal exclude list could be complete.
             store.insert(
                 event(
                     10002,
@@ -691,7 +649,6 @@ class RelayDiscoveryTest {
                         exclude = setOf("wss://filter\\.nostr\\.wine/npub.*"),
                     ),
                 )
-            // The per-user urls fall; the relay itself and everything else stay.
             assertEquals(listOf("wss://filter.nostr.wine/", "wss://keep.example/"), kept.map { it.url.url })
         }
 
@@ -699,9 +656,8 @@ class RelayDiscoveryTest {
     fun `a paged scan sees every event, across page boundaries and repeated timestamps`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // 12 lists over 4 distinct timestamps, so pages of 2 land mid-run of
-            // events sharing a created_at — the case `until` being inclusive makes
-            // awkward, and the case a naive cursor either loops on or skips.
+            // 12 lists over 4 timestamps, so pages of 2 land mid-run of a shared
+            // created_at: the case an inclusive `until` makes a naive cursor loop on or skip.
             repeat(12) { i ->
                 store.insert(
                     NostrSignerSync().sign<Event>(
@@ -752,10 +708,8 @@ class RelayDiscoveryTest {
         }
 
     /**
-     * A relay list naming a hidden service is only worth keeping when
-     * something can dial one. Without a Tor transport the url is not merely
-     * useless: dialling it asks the local resolver for a name only Tor can
-     * answer, which both fails and tells the resolver who we sync with.
+     * Without a Tor transport an onion url asks the local resolver for a name
+     * only Tor can answer, which fails and tells the resolver who we sync with.
      */
     @Test
     fun `an onion relay is kept only when a Tor transport exists`() {
@@ -781,11 +735,7 @@ class RelayDiscoveryTest {
         )
     }
 
-    /**
-     * Loopback is dropped whichever transport exists: `ws://localhost` in
-     * someone else's relay list names THEIR machine, and Tor changes nothing
-     * about that.
-     */
+    /** `ws://localhost` in someone else's relay list names their machine, and Tor changes nothing about that. */
     @Test
     fun `a Tor transport does not make loopback dialable`() {
         val list = event(10002, arrayOf("r", "ws://localhost:7777"))
@@ -800,13 +750,8 @@ class RelayDiscoveryTest {
         }
 
     /**
-     * THE HOLD-OUT READ, ASKED ABOUT A HANDFUL — the fast lane's shape.
-     *
-     * Unbounded, this materializes every `dead` record in the store to answer a
-     * question about the dozen urls a lane tick just found, once every
-     * `fastLaneSeconds`. Bounded by `#d`, it reads the records of the urls
-     * asked about and no others — and it has to give the SAME answer over that
-     * subset, which is the half a rescoping can quietly get wrong.
+     * The fast lane asks about a handful of urls every tick. Bounded by `#d` the
+     * read must give the same answer over that subset as the unbounded one.
      */
     @Test
     fun `the hold-out read can be bounded to the urls a caller is asking about`() =
@@ -826,22 +771,16 @@ class RelayDiscoveryTest {
             val whole = RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400)
             assertEquals(setOf(dead, alsoDead), whole, "unbounded, it is the whole dead set")
 
-            // The same verdicts, over the subset asked about: the dead one in
-            // the ask is held out, the dead one OUTSIDE it is not returned —
-            // the caller is not asking, and a bound that leaked it would make
-            // the two reads disagree about a url the caller never mentioned.
+            // The dead url outside the ask is not returned: a bound that leaked it would
+            // make the two reads disagree about a url the caller never mentioned.
             assertEquals(
                 setOf(dead),
                 RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(dead, alive)),
                 "bounded, it answers about exactly the urls it was handed",
             )
-            // A url with a verdict that is not `dead` is not held out, bounded
-            // or not: `alias`, `inconsistent` and the rest were earned by
-            // ANSWERING, and only the transport saying no keeps a url out.
+            // Only `dead` holds a url out; `alias`, `inconsistent` and the rest were earned by answering.
             assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(alive)).isEmpty())
-            // AN EMPTY ASK IS NOT AN UNBOUNDED ONE. This is the lane's quiet
-            // tick — nothing new arrived — and reading the whole dead set to
-            // decide nothing is exactly the cost the bound exists to remove.
+            // An empty ask is not an unbounded one: the lane's quiet tick must not read the whole dead set.
             assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = emptyList()).isEmpty())
         }
 }

@@ -52,29 +52,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * THE POOL'S OWN SCHEDULING, driven without a network.
- *
- * Everything the pool decides — which units run together, which exclude each
- * other, whose budget a tail costs, what a socket is shared by — had no test
- * before [RelayReads] existed, because `fetchAllPages` is a quartz extension
- * and a pool holding a `NostrClient` can only be tested by being one. Two
- * defects shipped into this branch behind that gap in one afternoon, both
- * found by reading rather than by running.
- *
- * So this drives the real [VisitPool] over a fake relay and asserts the
- * invariant the unit of work exists for: **many streams may work one relay at
- * once; one stream sees that relay in one state at a time.**
+ * The real [VisitPool] over a fake relay: many streams may work one relay at
+ * once, and one stream sees that relay in one state at a time.
  */
 class VisitPoolConcurrencyTest {
     private val url = RelayUrlNormalizer.normalize("wss://a.example")
 
-    /**
-     * A relay that answers pages when told to, and remembers what it was asked.
-     *
-     * `page` parks on a channel so a test can hold several walks open at once
-     * and look at what is in flight — which is the only way to assert
-     * concurrency rather than merely completion.
-     */
+    /** Parks each `page` on a channel, so several walks can be held open and inspected in flight. */
     private class FakeRelay : RelayReads {
         val paging = Channel<Filter>(Channel.UNLIMITED)
         val release = Channel<Unit>(Channel.UNLIMITED)
@@ -88,20 +72,13 @@ class VisitPoolConcurrencyTest {
             idleTimeoutMs: Long,
             onEvent: suspend (Event) -> Unit,
         ): PagedFetchResult {
-            // COUNT FIRST, THEN RECORD THE PEAK. `updateAndGet` re-runs its
-            // lambda whenever the CAS loses, so an increment INSIDE it is
-            // applied once per attempt — two workers entering together left
-            // `inFlight` permanently one too high, and this fake exists to
-            // count exactly that. The same slip was fixed in `VisitQueueTest`
-            // and missed here, which is why the note is on both.
+            // Count first, then record the peak: `updateAndGet` re-runs its lambda on a lost CAS.
             val now = inFlight.incrementAndGet()
             peak.updateAndGet { was -> maxOf(was, now) }
             paging.send(filter)
             release.receive()
             inFlight.decrementAndGet()
-            // DRAINED with nothing downloaded: an honest empty relay, which is
-            // not a refusal — see `VisitPool.refusedOutright` — so the visit
-            // carries on to its tail.
+            // DRAINED with nothing delivered is an honest empty relay, not a refusal.
             return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
         }
 
@@ -119,7 +96,7 @@ class VisitPoolConcurrencyTest {
         }
     }
 
-    /** Counts what is claimed, so "one socket, shared" is an assertion and not a comment. */
+    /** Counts claims per url. */
     private class CountingSockets : Sockets {
         val held = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
         val peak = AtomicInteger()
@@ -152,9 +129,7 @@ class VisitPoolConcurrencyTest {
             val store = NostrSemanticsStore(InMemoryEventIndex())
             val relay = FakeRelay()
             val sockets = CountingSockets()
-            // Never dialled: the healer's queue is empty and no stream sets
-            // `negentropySyncThePastSeconds`, so neither the healer nor the
-            // pager reaches a socket. It exists to satisfy their constructors.
+            // Never dialled: the heal queue is empty and no stream schedules an audit. It satisfies the constructors.
             val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
             val bands = SyncBands(null)
             val streams = listOf(streamNamed("content", 1), streamNamed("indexers", 7))
@@ -182,9 +157,7 @@ class VisitPoolConcurrencyTest {
                 )
             try {
                 pool.start()
-                // BOTH STREAMS ON THE ONE RELAY AT THE SAME TIME. Each parks
-                // inside its own page, so seeing two means two units are live
-                // on this url — the thing the (relay, stream) unit exists for.
+                // Each parks inside its own page, so two in flight means two units live on this url.
                 val asked =
                     withTimeout(10_000) {
                         setOf(relay.paging.receive().kinds, relay.paging.receive().kinds)
@@ -192,19 +165,14 @@ class VisitPoolConcurrencyTest {
                 assertEquals(setOf(listOf(1), listOf(7)), asked, "one relay, both streams' filters, at once")
                 assertEquals(2, relay.inFlight.get(), "both parked inside their walk")
 
-                // ONE SOCKET, SHARED. `RelaySockets` refcounts, so two
-                // concurrent units on a url are two claims and one connection
-                // — the property that makes the split cost no extra dials.
+                // Two claims, one url: `RelaySockets` refcounts, so the split costs no extra dial.
                 assertEquals(2, sockets.peak.get(), "two claims…")
                 assertEquals(1, sockets.held.size, "…on one url")
 
                 relay.release.send(Unit)
                 relay.release.send(Unit)
 
-                // ONE TAIL PER UNIT, carrying only that stream's filter. It
-                // used to be one subscription per relay carrying every wanting
-                // stream's filters, which is why `maxLiveConcurrency` could
-                // only ever be an upper bound on the sockets held.
+                // One tail per unit, carrying only that stream's filter.
                 withTimeout(10_000) {
                     while (relay.tails.size < 2) kotlinx.coroutines.delay(20)
                 }

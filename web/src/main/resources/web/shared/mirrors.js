@@ -1,128 +1,45 @@
-// What this relay MIRRORS — the kind bound that makes a count taken against it
-// mean anything.
-//
-// The mirror is a FILTERED subset of the network. `router.conf` names the kinds
-// each stream pulls down, and nothing outside the sync process knows which — so
-// "how much of my stuff is here yet", asked as our count for an author over
-// that author's own relay's count for them, is a filtered numerator over an
-// unfiltered denominator: a quotient that cannot reach 100% however complete
-// the mirror is. Measured, 31,118 here of 89,485 on vitor.nostr1.com, drawn
-// under the search box as "35% mirroring", on a mirror missing nothing it had
-// ever been asked to hold. The whole gap was kinds 3, 4, 5, 6, 7 and 1059 — no
-// stream asks for any of them, and two are encrypted DMs and gift wraps this
-// relay must never hold at all.
-//
-// The router writes what it is running to its manifest at boot, and the relay
-// publishes the union of the `down` kinds as `sync.mirrors.kinds` on
-// GET /stats.json (`SyncManifest` and `MirrorReport`, Kotlin side). This module
-// is the client's half of that: read the set, and put it on BOTH sides of the
-// comparison.
-//
-// It is FETCHED rather than copied here, and that is the point of the whole
-// arrangement. The kind list lives in router.conf and nowhere else, it is
-// actively edited, and a JS copy would drift silently — in the direction of the
-// same wrong number.
+// What this relay mirrors: the kind bound that makes a count taken against it
+// mean anything. The mirror is a filtered subset of the network, so a count of
+// ours over an upstream's count is only like-for-like when both carry the same
+// kinds. The router publishes the union of its `down` kinds as
+// `sync.mirrors.kinds` on GET /stats.json (`SyncManifest`, `MirrorReport`);
+// this module reads that set and puts it on both sides of the comparison. It
+// is fetched, never copied here, because the list lives in router.conf.
 
-/**
- * Where the relay publishes what it holds. Same origin, public, ETag'd.
- *
- * Document-RELATIVE, like every other reference a page in `:web` makes, so a
- * page mounted behind a path prefix asks its OWN service rather than whatever
- * sits at the host root. On the search UI — the only reader today — this
- * resolves to `/stats.json` either way: that page is served at `/` and at
- * `/npub1…`, and both have the root as their base directory.
- */
+/** Where the relay publishes what it holds. Document-relative, so a page behind a path prefix asks its own service. */
 const STATS_URL = "stats.json";
 
 /**
- * The kind bound for a count against this relay, out of a `/stats.json`
- * document — or null when the document does not say.
- *
- * Two answers, and they are not the same claim:
- *
- *   {kinds: [0, 1, …]}  the union over every stream that pulls events DOWN.
- *                       Both counts carry it.
- *   {kinds: null}       `allKinds` — some mirroring stream names no kinds at
- *                       all, so this relay asks its upstreams for everything
- *                       they serve and there is no bound to apply. An unscoped
- *                       comparison is already like-for-like.
- *
- * NULL is the third answer and the one with teeth: no `sync` section, no
- * `mirrors` member, a document we could not read, a relay that mirrors nothing,
- * or a rollup that has not run yet (the route serves 503 until it has). The
- * caller must then ask NOTHING, rather than fall back to the unscoped count —
- * that fallback is the 35%.
- *
- * `allKinds` beats `kinds` if a document somehow carries both, matching the
- * writer's own rule: an unbounded stream publishes the flag and NO list,
- * because a union taken over only the streams that name kinds is smaller than
- * the truth, and scoping a COUNT to it would under-count the very denominator
- * this exists to fix.
- *
- * `writtenAt` is deliberately not read. It is stamped once, at the router's
- * boot, so a mirror that has been running healthily for a month carries a
- * month-old timestamp and a mirror switched off an hour ago carries whatever it
- * last booted with — the two are indistinguishable, and treating age as staleness
- * would suppress the honest number on exactly the relays that earned it.
- *
- * THE MEMBER IS UNDER `sync.data`, not under `sync`. Every section of the
- * document is wrapped in the same status envelope by `StatsRollup.section` —
- * `{status, generatedAt, tookMs, data, errors?}` — and the payload is `data`;
- * `stats.html` unwraps it at each of its four cards. Read one level too high
- * this returns undefined against every real document, `mirrorScope` answers
- * null, and the panel silently stops asking the question it was written to ask.
- * It fails CLOSED, which is why nothing looked broken: no wrong number is
- * published, the right one simply never is. The unwrapped shape is accepted too,
- * because the fixtures and any hand-built document use it and refusing them
- * would trade one silent null for another.
+ * The kind bound out of a `/stats.json` document: `{kinds: [...]}`,
+ * `{kinds: null}` for an unbounded mirror, or null when the document does not
+ * say. On null the caller must not count at all; an unscoped count is wrong.
  */
 export function mirrorScope(stats) {
+  // Sections are wrapped in the `StatsRollup.section` envelope, so the member
+  // is under `sync.data`; the bare shape is accepted for fixtures.
   const section = stats && stats.sync;
   const mirrors = section && ((section.data && section.data.mirrors) || section.mirrors);
   if (!mirrors || typeof mirrors !== "object") return null;
+  // `allKinds` wins over `kinds`: an unbounded stream publishes the flag and no list.
   if (mirrors.allKinds === true) return { kinds: null };
   const kinds = Array.isArray(mirrors.kinds)
     ? [...new Set(mirrors.kinds.filter((k) => Number.isInteger(k) && k >= 0))]
     : [];
-  // An empty list is not an unbounded mirror. The writer drops `kinds` when it
-  // could not read a stream's bound, and reading that absence as "everything"
-  // would put kinds we do not hold into a set somebody counts against.
+  // An empty list is not an unbounded mirror: the writer drops `kinds` when it
+  // could not read a stream's bound.
   return kinds.length ? { kinds } : null;
 }
 
-/**
- * [filter] with the mirror's kind bound on it.
- *
- * Both sides of the comparison are built here, which is the whole point: the
- * bug was two filters that looked identical and were not, because one of them
- * was narrowed by the ROUTER rather than by the filter.
- *
- * A null scope throws instead of passing the filter through. Returning it
- * unscoped is the 35% — and at the call site it would look exactly like working
- * code, which is how it survived this long.
- */
+/** [filter] with the mirror's kind bound on it. A null scope throws: passing the filter through unscoped is the bug. */
 export function scopedTo(filter, scope) {
   if (!scope) throw new Error("no mirror scope: a count against this relay cannot be scoped, so it must not be taken");
   return scope.kinds ? { ...filter, kinds: scope.kinds } : filter;
 }
 
 /**
- * Read the scope off this relay.
- *
- * One same-origin GET, and null for every way it can fail to answer — a 503
- * before the first rollup, a relay serving no statistics at all, a body that is
- * not JSON. Null is a supported answer everywhere it is used; see [mirrorScope]
- * for what the caller owes it.
- *
- * [fetcher] is injectable so the failure paths are testable without a network:
- * they are the paths that decide whether a number appears at all. It defaults
- * to a WRAPPER rather than to `globalThis.fetch` itself, so the call keeps the
- * global as its receiver. A bare reference is very probably fine — WebIDL
- * substitutes the global for an undefined `this` on operations of the global
- * interface — but "probably" is doing real work in that sentence across four
- * engines, and the failure mode is the worst shape available here: the
- * TypeError lands in the catch below, the scope reads as unknown, and the panel
- * simply stops mentioning posts with nothing logged anywhere.
+ * Read the scope off this relay: one same-origin GET, null for every way it
+ * can fail. [fetcher] is injectable for tests; the default wraps the global
+ * so `fetch` keeps its receiver.
  */
 export async function readMirrorScope(fetcher = (url, init) => globalThis.fetch(url, init)) {
   try {

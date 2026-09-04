@@ -30,12 +30,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * The admission control behind the per-stream workload caps.
- *
- * Every assertion here is written in the direction its failure would go
- * UNNOTICED: a cap that stops capping looks exactly like a cap set higher than
- * the load, and the only way to tell them apart in production is that the
- * machine is busier than it was configured to be.
+ * The admission control behind the per-stream caps. A cap that stops capping
+ * looks like a cap set higher than the load, so each assertion faces that way.
  */
 class PoolLimitsTest {
     private val audit = VisitPool.POOL_NEGENTROPY
@@ -56,10 +52,7 @@ class PoolLimitsTest {
 
     @Test
     fun `no cap is no gate, and every ask is granted`() {
-        // The behaviour every deployment has today, and the one this must not
-        // change for a config that says nothing: uncapped is unlimited, never
-        // zero. A null read as "none allowed" would stop a mirror dead on
-        // upgrade.
+        // Uncapped is unlimited, never zero; a null read as "none allowed" would stop a mirror on upgrade.
         val limits = PoolLimits(mapOf(("content" to audit) to null))
         repeat(1_000) { assertNotNull(limits.tryHold("content", audit)) }
         assertEquals(0L, limits.deferred("content", audit))
@@ -75,13 +68,10 @@ class PoolLimitsTest {
         assertNull(limits.tryHold("content", audit), "the third is over content's share")
         assertEquals(1L, limits.deferred("content", audit))
 
-        // The whole point of a share: one stream at its ceiling does not touch
-        // another's. Before these existed, a content mirror's audits could
-        // occupy every worker an index stream needed and nothing said so.
+        // One stream at its ceiling does not touch another's share.
         assertNotNull(limits.tryHold("indexers", audit), "a different stream has its own share")
         assertEquals(0L, limits.deferred("indexers", audit))
-        // …and a different JOB is a different gate again, so a stream capped
-        // on its audits is not thereby capped on its catch-up.
+        // A different job is a different gate.
         assertNotNull(limits.tryHold("content", catchUp))
 
         a.release()
@@ -90,11 +80,7 @@ class PoolLimitsTest {
 
     @Test
     fun `a refusal spends nothing, however many times it happens`() {
-        // THE FAILURE THIS RULES OUT. A refusal that walked away holding
-        // anything would shrink the share by one per refusal, so a cap of 2
-        // would become 1, then a stream that never audits again — with no
-        // error, no log line, and a `deferred` counter climbing that reads as
-        // the cap doing its job.
+        // A refusal that walked away holding anything would shrink the share by one per refusal.
         val limits = PoolLimits(mapOf(("content" to audit) to 2))
         val one = assertNotNull(limits.tryHold("content", audit))
         val two = assertNotNull(limits.tryHold("content", audit))
@@ -110,11 +96,7 @@ class PoolLimitsTest {
 
     @Test
     fun `releasing twice does not mint a permit`() {
-        // A tail's hold is released by `dropTail`, which races an eviction, a
-        // roster drop and a re-open. A double release on a plain semaphore
-        // ADDS a permit — the cap silently grows by one every time the race is
-        // lost, which is the same class of failure as a leak and harder to
-        // see, because the symptom is a machine doing more than it was told to.
+        // `dropTail` races an eviction, a roster drop and a re-open; a double release on a plain semaphore mints a permit.
         val limits = PoolLimits(mapOf(("content" to audit) to 1))
         val hold = assertNotNull(limits.tryHold("content", audit))
         hold.release()
@@ -126,11 +108,8 @@ class PoolLimitsTest {
 
     @Test
     fun `an uncapped job's hold is releasable too, and releases nothing`() {
-        // `tryHold` returns a Hold for an uncapped job rather than null, so no
-        // caller has to branch on whether a job is capped — a `Hold?` meaning
-        // both "refused" and "no cap" would be one `?:` away from a cap that
-        // silently admits everything. The handle those callers release must
-        // therefore be safe and inert.
+        // `tryHold` answers a Hold for an uncapped job so no caller branches on whether a job is capped;
+        // the handle must be inert.
         val limits = PoolLimits(mapOf(("content" to audit) to null))
         val hold = assertNotNull(limits.tryHold("content", audit))
         hold.release()
@@ -141,18 +120,8 @@ class PoolLimitsTest {
 
     @Test
     fun `the live pool is capped even when the config says nothing`() {
-        // THE ONE JOB THAT CANNOT BE UNCAPPED, and the regression this pins.
-        // A visit-job permit is taken INSIDE a visit, so `visitConcurrency` —
-        // the pool's own worker count — bounds those even where no share is
-        // set. A tail is taken between visits and released only when the
-        // roster drops the relay, so an uncapped live gate is one held socket
-        // per relay on the roster and nothing above it: the mirror strangles
-        // every new connect behind sockets it already holds.
-        //
-        // It was router-wide (`tailBudget = 600`) and hard until the budgets
-        // moved inside the streams, at which point an absent value parsed to
-        // null and the default survived only in the boot warning — which went
-        // on quoting a number the gate no longer enforced.
+        // A tail is released only when the roster drops the relay, so an uncapped live
+        // gate is one held socket per relay on the roster.
         val limits =
             PoolLimits.of(
                 listOf(
@@ -166,8 +135,7 @@ class PoolLimitsTest {
             limits.capFor("indexers", VisitPool.POOL_LIVE),
             "and one that says nothing gets the default the socket warning has been assuming all along",
         )
-        // …while the three that something else bounds stay uncapped, so a
-        // config that configures nothing runs the pool it always did.
+        // The three jobs that something else bounds stay uncapped.
         assertNull(limits.capFor("indexers", VisitPool.JOB_VISITING))
         assertNull(limits.capFor("indexers", VisitPool.POOL_NEGENTROPY))
         assertNull(limits.capFor("indexers", VisitPool.POOL_REFETCHING))
@@ -175,19 +143,14 @@ class PoolLimitsTest {
 
     @Test
     fun `a refusal the caller is going to answer for itself is not work turned away`() {
-        // `deferred` is the number that makes a cap actionable: at the cap is
-        // not a fault, at the cap WITH work being refused is. The live pool
-        // reaches its gate on every tail it opens past the budget and then
-        // EARNS one by eviction, so counting that refusal marked every stream
-        // sitting at its live budget as starved — permanently, and in the one
-        // colour the page uses for a cap that is biting.
+        // The live pool looks for a spare on every tail past the budget and then earns one
+        // by eviction; that look is not work turned away.
         val limits = PoolLimits(mapOf(("content" to VisitPool.POOL_LIVE) to 1))
         val held = assertNotNull(limits.tryHold("content", VisitPool.POOL_LIVE))
         repeat(10) { assertNull(limits.trySpare("content", VisitPool.POOL_LIVE)) }
         assertEquals(0L, limits.deferred("content", VisitPool.POOL_LIVE), "a look for a spare permit is not a refusal")
 
-        // …and the ask that follows the eviction IS counted: reaching it means
-        // the candidate could not outrank anything, which is work turned away.
+        // The ask after the eviction is counted: reaching it means the candidate outranked nothing.
         assertNull(limits.tryHold("content", VisitPool.POOL_LIVE))
         assertEquals(1L, limits.deferred("content", VisitPool.POOL_LIVE))
         held.release()
@@ -195,9 +158,7 @@ class PoolLimitsTest {
 
     @Test
     fun `what is out and what was turned away are both readable`() {
-        // The pair an operator reads together: at the cap is not a fault, at
-        // the cap WITH deferrals climbing is the cap turning work away. A
-        // deployment cannot tell those apart from either number alone.
+        // At the cap is not a fault; at the cap with deferrals climbing is.
         val limits = PoolLimits(mapOf(("content" to audit) to 2))
         assertEquals(0, limits.heldBy("content", audit))
         val one = assertNotNull(limits.tryHold("content", audit))

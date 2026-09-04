@@ -329,13 +329,9 @@ class RelayVerdictRecord(
     private fun ownedByFitness(tag: Array<String>): Boolean =
         when (val name = tag.firstOrNull()) {
             null -> false
-
             LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX).let { it == null || it == FITNESS_NAMESPACE }
-
             LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX).let { it == null || it == FITNESS_NAMESPACE }
-
             PAGEABLE_TAG, NIP77_TAG, COMPLIANT_TAG -> true
-
             else -> name in RelayFacts.OWNED
         }
 

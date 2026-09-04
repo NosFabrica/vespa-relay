@@ -34,12 +34,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * NIP-86 enforcement: a pubkey banned in the shared [BanStore] is rejected by
- * the relay's [com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy]
- * before ingest, and un-banning restores publishing. This exercises the same
- * BanStore instance the NIP-86 admin endpoint mutates.
- */
+/** A pubkey banned in the [BanStore] the NIP-86 endpoint mutates is refused before ingest. */
 class RelayAdminTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)

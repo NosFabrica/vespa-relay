@@ -35,13 +35,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The statistics snapshot: what it serves, what it refuses to serve, and what
- * survives a restart.
- *
- * The routes are exercised in [StatsPageTest]; this covers the HOLDER, which is
- * where the two mistakes live that a route test would not catch — publishing
- * bytes with a stale validator, and treating "no document yet" as a document
- * full of zeros.
+ * The holder behind the stats routes: bytes and validator move together, and
+ * "no document yet" is not a document full of zeros. The routes are in [StatsPageTest].
  */
 class StatsSnapshotTest {
     private fun doc(events: Int) =
@@ -52,9 +47,7 @@ class StatsSnapshotTest {
 
     @Test
     fun `nothing is served before the first rollup`() {
-        // The distinction the page depends on: "not computed yet" is not
-        // "this relay holds nothing", and a snapshot must never invent the
-        // second while waiting for the first.
+        // "Not computed yet" is not "this relay holds nothing".
         assertNull(StatsSnapshot().served())
     }
 
@@ -76,9 +69,8 @@ class StatsSnapshotTest {
 
         snap.publish(doc(2))
         val second = assertNotNull(snap.served())
-        // The property that makes the ETag worth having: different content can
-        // never share a validator, or a poller caches the first document
-        // forever and the page silently stops advancing.
+        // Different content never shares a validator, or a poller caches the
+        // first document forever.
         assertTrue(first.etag != second.etag, "new content must mint a new validator")
 
         snap.publish(doc(1))
@@ -90,7 +82,7 @@ class StatsSnapshotTest {
         val file = Files.createTempDirectory("stats").resolve("stats.json").toFile()
         StatsSnapshot(file.path).publish(doc(7))
 
-        // A fresh holder over the same path — the restart.
+        // A fresh holder over the same path is the restart.
         val reopened = StatsSnapshot(file.path).also { it.loadFromFile() }
         val served = assertNotNull(reopened.served(), "the file is why a deploy does not blank the page")
         assertEquals(
@@ -109,17 +101,16 @@ class StatsSnapshotTest {
     fun `a corrupt or missing state file leaves the snapshot empty rather than failing`() {
         val dir = Files.createTempDirectory("stats").toFile()
 
-        // Missing: normal on a first boot, and says nothing.
+        // Missing is normal on a first boot.
         val absent = StatsSnapshot(File(dir, "nope.json").path).also { it.loadFromFile() }
         assertNull(absent.served())
 
-        // Truncated: the recovery is an empty page and a loud line, NOT
-        // serving half a document under this relay's name.
+        // Truncated: an empty page and a loud line, not half a document.
         val bad = File(dir, "bad.json").also { it.writeText("""{"schema":1,"corpus":{"eve""") }
         val corrupt = StatsSnapshot(bad.path).also { it.loadFromFile() }
         assertNull(corrupt.served())
 
-        // …and the next rollup simply overwrites it.
+        // The next rollup overwrites it.
         corrupt.publish(doc(3))
         assertNotNull(corrupt.served())
         assertTrue(bad.readText().contains("\"events\":3"))
@@ -128,9 +119,8 @@ class StatsSnapshotTest {
 
     @Test
     fun `an unwritable path still serves from memory`() {
-        // The file is for durability, not for serving — losing it must not cost
-        // the endpoint. A directory where the file should be makes every write
-        // fail without making the document unavailable.
+        // A directory where the file should be fails every write; the file is
+        // for durability, not for serving.
         val dir = Files.createTempDirectory("stats").toFile()
         val blocked = File(dir, "stats.json").also { it.mkdirs() }
         val snap = StatsSnapshot(blocked.path)
@@ -138,8 +128,6 @@ class StatsSnapshotTest {
         assertNotNull(snap.served(), "the in-memory document is unaffected by a failed write")
         dir.deleteRecursively()
     }
-
-    // ---- two writers, one document ------------------------------------------
 
     /** One tier's pass: the members it computed, stamped as that tier's. */
     private fun pass(
@@ -155,13 +143,8 @@ class StatsSnapshotTest {
     private fun StatsSnapshot.doc() = Json.parseToJsonElement(assertNotNull(served()).bytes.decodeToString()).jsonObject
 
     /**
-     * A tier publishes its own half and leaves the other alone.
-     *
-     * This is what makes two cadences possible at all: the counters pass runs
-     * fifteen times for every charts pass, and each of those must not blank the
-     * charts it did not compute. Both tiers' `tiers` entries survive too — that
-     * member is the one thing neither owns, and a plain replacement would leave
-     * the document only ever admitting to whichever cadence wrote last.
+     * The counters pass runs many times per charts pass and must not blank the
+     * charts it did not compute. `tiers` is the one member neither tier owns.
      */
     @Test
     fun `a tier publishes its own sections and keeps the other tier's`() {
@@ -197,12 +180,8 @@ class StatsSnapshotTest {
     }
 
     /**
-     * A section its own tier stops computing DISAPPEARS.
-     *
      * `sync` is the case: a relay whose router state files are gone publishes no
-     * sync section, and leaving the last one behind would show a coverage card
-     * that keeps its numbers forever while the section header claims this pass
-     * computed them. Absent is a fact the page draws; stale is one it cannot.
+     * sync section. Absent is a fact the page draws; stale is one it cannot.
      */
     @Test
     fun `a section the owning tier no longer computes is removed, not left behind`() {
@@ -214,16 +193,7 @@ class StatsSnapshotTest {
         assertNull(snap.doc()["sync"], "the tier that owns it computed nothing for it")
     }
 
-    /**
-     * A staleness notice belongs to the tier that failed, and survives the other
-     * tier's success.
-     *
-     * The failure this ends: charts that have been failing for hours, beside
-     * counters forty seconds old, publishing every minute — and every one of
-     * those publishes clearing the notice that said so. The page would then draw
-     * a document indistinguishable from a healthy one, which is exactly what
-     * `stale` exists to prevent.
-     */
+    /** A staleness notice belongs to the tier that failed, and survives the other tier's success. */
     @Test
     fun `one tier's staleness notice survives the other tier's publish`() {
         val snap = StatsSnapshot()
@@ -235,19 +205,14 @@ class StatsSnapshotTest {
         val kept = assertNotNull(snap.doc()["stale"], "the counters are current; the charts are still not")
         assertEquals("charts", kept.jsonObject["tier"]!!.jsonPrimitive.content)
 
-        // …and the tier that left it is the one that clears it.
+        // The tier that left it is the one that clears it.
         snap.publish(pass("charts", "kinds" to 3), owns = setOf("kinds"), tier = "charts")
         assertNull(snap.doc()["stale"])
     }
 
     /**
-     * A document from another schema is replaced rather than merged onto.
-     *
-     * Its members can mean different things, and the ones this schema dropped
-     * are owned by nobody now — so merging would leave them in the document
-     * forever, beside the numbers that superseded them. The cost is the other
-     * tier's sections until its next pass, which is the first minutes after an
-     * upgrade and is stated by their absence.
+     * A document from another schema is replaced, not merged onto: the members
+     * this schema dropped are owned by nobody and would otherwise stay forever.
      */
     @Test
     fun `a seeded document from an older schema is not merged onto`() {

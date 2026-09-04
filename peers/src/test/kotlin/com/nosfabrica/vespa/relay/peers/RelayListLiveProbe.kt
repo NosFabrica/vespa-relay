@@ -43,33 +43,11 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 
 /**
- * THE WHOLE READ AGAINST REAL DATA: real kind-10040 declarations, pulled off a
- * real relay, fed into a real Vespa, read back through the config an operator
- * actually deploys.
- *
- * Everything else that covers this path is either an in-memory index (which
- * cannot have a document API, so it cannot show the difference #182 is about)
- * or a bench that prices one query. This runs `RelayDiscovery.discover` over
- * `router.conf.example`'s own `monitor { sources }` block — all 38 delegation
- * tags — and then re-answers the same question through the tags projection the
- * fix removed, so the two paths can be compared on the ONE thing that matters
- * besides the clock: whether they name the same relays.
- *
- * Asserts nothing. A probe against a live relay cannot pin a number that
- * somebody else's corpus decides.
- *
- * Needs a Vespa and network. Off by default:
- *
- *     DOCKER_MIN_API_VERSION=1.24 dockerd &
- *     docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa
- *     ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i
- *
- * `--rerun` is load-bearing: the task is up-to-date-checked, so a second
- * identical run is SKIPPED and prints nothing, which reads as a silent pass.
- *
- *     -DliveListRelay=wss://…   the relay to pull declarations from
- *     -DliveListVespa=http://…  the engine to feed and read
- *     -DliveListKind=10002      another relay-list kind
+ * Pulls real kind-10040 declarations off a live relay, feeds them to a real
+ * Vespa, runs [RelayDiscovery.discover] over `router.conf.example`'s own monitor
+ * sources, then re-answers through the tags projection so the two can be compared.
+ * Asserts nothing. Selected by `-DliveListProbe=true`; `-DliveListRelay`,
+ * `-DliveListVespa` and `-DliveListKind` override the defaults.
  */
 class RelayListLiveProbe {
     private val enabled = System.getProperty("liveListProbe") == "true"
@@ -93,8 +71,6 @@ class RelayListLiveProbe {
                 }
                 println("LIVE-LIST fed $fed of ${pulled.size}; store holds ${store.count(Filter(kinds = listOf(kind)))}")
 
-                // THE OPERATOR'S OWN CONFIG, not a hand-built one: the 38
-                // delegation tags as `router.conf.example` names them.
                 val conf =
                     RouterConfigLoader.parse(
                         requireNotNull(
@@ -115,11 +91,8 @@ class RelayListLiveProbe {
                 found.take(15).forEach { println("    ${it.url.url}${if (it.bindings.isEmpty()) "" else "  ${it.bindings}"}") }
                 if (found.size > 15) println("    …and ${found.size - 15} more")
 
-                // THE PATH THAT WAS REMOVED, for the same question. One corpus
-                // visit per tag name, and this store is tiny — so read the
-                // RATIO of the two clocks, never the visit's absolute number:
-                // a visit's cost is the corpus, and a laptop corpus of a few
-                // hundred events is the one size at which it looks cheap.
+                // The removed path, one corpus visit per tag name. Read the ratio of
+                // the two clocks: a laptop corpus is the one size at which a visit looks cheap.
                 val viaVisit = LinkedHashSet<String>()
                 val visitAt = System.nanoTime()
                 for (select in selects.filter { it.tag != null && it.bindings.isEmpty() }) {
@@ -134,11 +107,8 @@ class RelayListLiveProbe {
                 val visitTook = System.nanoTime() - visitAt
                 println("LIVE-LIST projection: ${viaVisit.size} raw value(s) in ${secs(visitTook)} over ${selects.size} corpus walk(s)")
 
-                // THE ANSWERS, COMPARED. The scan applies the router's url
-                // rules and the projection hands back raw tag values, so the
-                // projection's set is the SUPERSET the scan filters — anything
-                // the scan found that the projection did not is a real
-                // disagreement, and the other direction is the rules working.
+                // The projection returns raw values the scan's url rules then filter, so
+                // only a url the scan found and the projection did not is a disagreement.
                 val scanned = found.map { it.url.url }.toSet()
                 val onlyScan = scanned.filterNot { s -> viaVisit.any { it.trimEnd('/') == s.trimEnd('/') } }
                 println("LIVE-LIST agreement: ${scanned.size} scanned, ${viaVisit.size} projected, ${onlyScan.size} the projection missed")
@@ -150,16 +120,8 @@ class RelayListLiveProbe {
         }
 
     /**
-     * One REQ, collected to EOSE — through NIP-42 if the relay asks, which
-     * `search-staging.brainstorm.world` does the moment the socket opens.
-     *
-     * The auth key is a THROWAWAY generated per run. This reads public relay
-     * lists and writes nothing, so the identity only has to exist; borrowing
-     * the deployment's own would put its pubkey in a stranger's logs for a read
-     * anybody may make.
-     *
-     * Every control frame is printed. A probe whose whole job is "what does the
-     * real relay do" must not swallow the sentence where it says no.
+     * One REQ collected to EOSE, answering NIP-42 with a throwaway key if the relay
+     * asks. Every control frame is printed; the relay saying no is part of the reading.
      */
     private fun pull(
         url: String,
@@ -176,13 +138,8 @@ class RelayListLiveProbe {
             java.util.concurrent.atomic
                 .AtomicBoolean(false)
 
-        // UNRANKED, BY THE RELAY'S OWN INSTRUCTION. This deployment serves
-        // through a web of trust, and a throwaway key has no kind 10040 — so a
-        // plain REQ is answered with `restricted: no kind 10040 for you here —
-        // ranked search will be empty` and an empty EOSE. Its `auth-required`
-        // notice names the way out verbatim: "ask for the whole corpus unranked
-        // with `include:spam`". That token is the whole search field, so the
-        // read stays plain NIP-01 recall of the kind.
+        // A throwaway key has no kind 10040, so this relay's trust lens answers a plain REQ
+        // with nothing; its auth-required notice names `include:spam` as the unranked ask.
         fun req(
             ws: WebSocket,
             unranked: Boolean,
@@ -222,13 +179,11 @@ class RelayListLiveProbe {
                                         "",
                                     )
                                 ws.send("""["AUTH",${auth.toJson()}]""")
-                                // Re-ask under the authenticated session: the
-                                // first REQ may already have been refused.
+                                // Re-ask under the authenticated session: the first REQ may already have been refused.
                                 req(ws, unranked = false)
                             }
 
-                            // An EMPTY first answer is this relay's lens, not
-                            // an empty corpus — see [req]. One retry, unranked.
+                            // An empty first answer is the trust lens, not an empty corpus: one retry, unranked.
                             "EOSE" -> {
                                 if (events.isEmpty() && unranked.compareAndSet(false, true)) {
                                     println("LIVE-LIST empty under the trust lens — re-asking with include:spam")
@@ -238,11 +193,8 @@ class RelayListLiveProbe {
                                 }
                             }
 
-                            // NOT a finish line. A relay that refuses the
-                            // unauthenticated REQ closes that subscription and
-                            // then serves the next one; treating CLOSED as the
-                            // end is how this probe first reported "0 events"
-                            // against a relay holding hundreds.
+                            // Not a finish line: a relay refusing the unauthenticated REQ closes
+                            // that subscription and then serves the next one.
                             "CLOSED", "NOTICE", "OK" -> {
                                 println("LIVE-LIST relay said: $text".take(300))
                             }
@@ -269,12 +221,7 @@ class RelayListLiveProbe {
         return events.toList()
     }
 
-    /**
-     * The wire object as a quartz [Event]. Built field by field rather than
-     * through a deserializer: this probe is about what the READ does with real
-     * tags, so a parse that silently dropped one would be the worst possible
-     * way to pass.
-     */
+    /** Built field by field rather than through a deserializer, so a silently dropped tag cannot pass. */
     private fun eventOf(o: kotlinx.serialization.json.JsonObject): Event? =
         runCatching {
             Event(

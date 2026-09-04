@@ -43,53 +43,20 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * WHERE A URL'S BUDGET ACTUALLY GOES, measured one step at a time against real
- * relays — the experiment #172 could not be closed without.
- *
- * The issue supplies a correlation and says so: re-verdict cadence tracks
- * `rtt-read`, and the relays slowest to answer a read sit at a median verdict
- * age twenty times the fast group's. It explicitly does NOT supply a mechanism.
- * Reading the pass, the candidate is the per-url wall clock
- * ([AliasProbe.deadlineMs]) firing on a job that has already earned its verdict
- * — and the only step of that job with no bound of its own is the NEG-OPEN,
- * which is last.
- *
- * That story is arithmetically uncomfortable and the discomfort is the reason
- * this exists. The budget is `WINDOWS_PER_URL` (12) x `connectionTimeout`, four
- * minutes at the default, against a job whose visible parts sum to well under
- * one: a TCP pre-probe, a NIP-11 document, one twenty-event page, one NEG-OPEN.
- * For the deadline to be the cause, something in there has to be spending
- * minutes, and no unit test can say which — quartz's own idle windows are
- * re-armed by traffic, so the answer is a property of the relay and the moment,
- * not of our code.
- *
- * So this times the four steps SEPARATELY, prints each against the budget it
- * draws on, and then runs the real [FitnessPass] over the same urls so the
- * per-step numbers can be checked against the verdict the pass actually
- * published.
- *
- * ```
- * ./gradlew :monitor:test --tests '*FitnessBudgetLiveProbe*' -DliveBudget=true --rerun -i
- * #  …or urls of your own:
- * #  -DliveBudgetUrls='wss://relay.example,wss://other.example'
- * ```
- *
- * Read-only against everybody it dials: the verdicts it earns are signed into
- * an in-memory store and go nowhere.
+ * Where a url's fitness budget goes: times the pre-probe, NIP-11, ladder and
+ * NEG-OPEN separately against real relays, then runs the real [FitnessPass]
+ * over the same urls into an in-memory store. Asserts nothing. Selected by
+ * `-DliveBudget=true`; urls via `-DliveBudgetUrls=a,b`.
  */
 class FitnessBudgetLiveProbe {
     private val urls: List<NormalizedRelayUrl> =
         (
             System.getProperty("liveBudgetUrls")
                 ?: listOf(
-                    // The two the issue is about — the mirror's largest
-                    // assertion sources, measured at rtt-read ~11.4s and a
-                    // verdict age of 68.4h.
+                    // The two #172 is about, then the middle and the fast end of its table.
                     "wss://nip85.nosfabrica.com",
                     "wss://nip85-staging.nosfabrica.com",
-                    // The middle of the same table: 3.6s and 23.9h.
                     "wss://nip85-staging.relay.tools",
-                    // …and the fast end, re-verdicted every few hours.
                     "wss://bucket.coracle.social",
                     "wss://relay.vertexlab.io",
                     "wss://relay.primal.net",
@@ -145,17 +112,13 @@ class FitnessBudgetLiveProbe {
                     var window: AliasProbe.Window? = null
                     leg.ladderMs =
                         timed {
-                            // The pass's own ladder shape, first rung only:
-                            // every url here answers a bare filter, and a rung
-                            // that is not taken is not a cost to attribute.
+                            // First rung only: a rung that is not taken is not a cost to attribute.
                             window = runCatching { probe.window(url, anchor, null) { seen++ } }.getOrNull()
                         }
                     leg.firstPageMs = window?.firstPageMs
                     leg.events = seen
-                    // THE STEP THIS PROBE EXISTS FOR. Same call, same sliver,
-                    // same idle window the pass uses — and deliberately with NO
-                    // wall clock around it, so the number printed is how long it
-                    // would ACTUALLY have run inside a url's budget.
+                    // Same call, sliver and idle window as the pass, with no wall clock around it,
+                    // so the number printed is how long it would actually run inside a url's budget.
                     val sliver =
                         Filter(
                             kinds = null,
@@ -221,9 +184,6 @@ class FitnessBudgetLiveProbe {
                 )
             }
 
-            // …AND THE SAME URLS THROUGH THE REAL PASS, so the per-step numbers
-            // above can be held against the verdict actually published and the
-            // pass's own funnel line.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
             val processors = Processors()
             val pass =

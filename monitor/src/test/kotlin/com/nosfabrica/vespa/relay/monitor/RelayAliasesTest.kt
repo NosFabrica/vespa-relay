@@ -29,12 +29,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The duplicate-url fold: which discovered urls are one relay, decided on what
- * each of them served rather than on what its url looks like.
- *
- * No probe here — [RelayAliases] takes fingerprints as an argument precisely so
- * the decision can be tested without a relay — so every test states the windows
- * two urls returned and asserts what was concluded from them.
+ * Which discovered urls are one relay, decided on what each served. No probe:
+ * every test states the windows two urls returned and asserts the conclusion.
  */
 class RelayAliasesTest {
     private fun url(raw: String): NormalizedRelayUrl = RelayUrlNormalizer.normalize(raw)
@@ -77,11 +73,7 @@ class RelayAliasesTest {
     @Test
     fun `a url that answered nothing is not called its own relay`() {
         val aliases = RelayAliases()
-        // Measured live: relay.damus.io/lantern-oscar-dynamo answered a probe
-        // with ZERO events while its host's other paths folded normally. An
-        // empty window is not a null one, so it used to fall past the fold test
-        // and out the other side as "probed, and it is its own relay" — a claim
-        // published for thirty days on the strength of nothing at all.
+        // An empty window is not a null one, and neither is proof of a distinct relay.
         val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to emptySet()))
 
         assertTrue(learned.folded.isEmpty())
@@ -92,9 +84,7 @@ class RelayAliasesTest {
     @Test
     fun `a window under the sample floor decides nothing either way`() {
         val aliases = RelayAliases()
-        // The satsdisco case: 9 events, all 9 shared with the leader. Too thin
-        // to fold on — and equally too thin to call a separate relay, which is
-        // the stronger claim of the two.
+        // Too thin to fold on, and too thin for the stronger claim of a separate relay.
         val nine = window(9)
         val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to nine))
 
@@ -106,12 +96,7 @@ class RelayAliasesTest {
     @Test
     fun `a group-metadata window folds below the general floor`() {
         val aliases = RelayAliases()
-        // A NIP-29 relay's complete list of groups, which is what the third rung
-        // of the ladder brings back and is SHORT by nature: measured over 21 live
-        // hosts the kind-39000 window is min 1, median 9, max 1,302, and of the
-        // five hosts the rung recovers two serve under DEFAULT_MIN_SAMPLE
-        // (groups.hzrd149.com at 7, groups.fiatjaf.com at 16). Seven ids out of
-        // seven is not a thin slice of a feed — it is everything the host has.
+        // A group list is short by nature; seven of seven is everything the host has.
         val groups = window(7)
 
         val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to groups, nosAlpha to groups), RelayAliases.GROUP_METADATA_KINDS)
@@ -123,10 +108,7 @@ class RelayAliasesTest {
     @Test
     fun `the lowered floor belongs to the filter, not to the window`() {
         val aliases = RelayAliases()
-        // The same seven ids, taken through the GENERAL filter, are exactly the
-        // coincidence DEFAULT_MIN_SAMPLE exists to refuse. Nothing about a short
-        // window earns the lower bar; only the filter that could not ask for more
-        // does.
+        // Only the filter that could not ask for more earns the lower bar.
         val seven = window(7)
 
         val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to seven, nosAlpha to seven))
@@ -138,12 +120,7 @@ class RelayAliasesTest {
     @Test
     fun `a group-metadata window may fold a url but never clear one`() {
         val aliases = RelayAliases()
-        // The asymmetry the lowered floor rests on. These two paths served
-        // DIFFERENT group lists, so nothing folds — and the tempting second step,
-        // publishing "each is a relay in its own right" for thirty days, is
-        // exactly the relay.damus.io/lantern-oscar-dynamo lie at a smaller scale.
-        // Refusing to fold and proving distinctness are different claims, and a
-        // seven-id window can only make one of them.
+        // Refusing to fold and proving distinctness are different claims; a seven-id window can make only one.
         val learned =
             aliases.learn(
                 listOf(nos, nosAlpha),
@@ -160,12 +137,8 @@ class RelayAliasesTest {
     @Test
     fun `a group list that shares only part of itself is not folded away`() {
         val aliases = RelayAliases()
-        // THE HOLE A RATIO CANNOT CLOSE. This path serves three groups, two of
-        // which the leader also has — 0.667, over minOverlap, and its window
-        // clears a floor of three. On the ratio alone it folds, and the third
-        // group, which nothing else on this host serves, stops being mirrored
-        // for a month. That is the fold's one unforgivable failure bought for a
-        // two-id coincidence, so the shared COUNT has to clear the floor too.
+        // 0.667 clears minOverlap and the window clears a floor of three, so the shared
+        // count has to clear the floor too, or a group nobody else serves stops being mirrored.
         val leader = window(7)
         val partial = setOf(*window(2).toTypedArray(), "id%064d".format(999))
 
@@ -178,10 +151,7 @@ class RelayAliasesTest {
     @Test
     fun `a group list shared in full still folds at the smaller floor`() {
         val aliases = RelayAliases()
-        // The other side of the same guard: three groups, all three shared. The
-        // shared count is the floor exactly, which is the smallest honest fold
-        // this filter can produce — and the measured case, since every live pair
-        // shared its list entirely (containment 1.000, 6 of 6).
+        // Three shared is the floor exactly, the smallest honest fold this filter can make.
         val three = window(3)
 
         val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to three, nosAlpha to three), RelayAliases.GROUP_METADATA_KINDS)
@@ -192,9 +162,7 @@ class RelayAliasesTest {
     @Test
     fun `a group-metadata window still refuses a single shared id`() {
         val aliases = RelayAliases()
-        // Three, not one. A host serving one or two groups hands over one or two
-        // ids, and at that width "both urls returned the same list" is the
-        // coincidence the floor exists for, whatever filter asked.
+        // At one or two ids an identical list is the coincidence the floor exists for.
         val two = window(2)
 
         val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to two, nosAlpha to two), RelayAliases.GROUP_METADATA_KINDS)
@@ -204,9 +172,7 @@ class RelayAliasesTest {
 
     @Test
     fun `the group floor lowers the bar and never raises it`() {
-        // `minOf`, in the one direction it can be observed: a caller that set
-        // minSample BELOW the group floor keeps its own number rather than
-        // having it raised to three here.
+        // `minOf`: a caller whose minSample is below the group floor keeps its own number.
         val strict = RelayAliases(minSample = 2)
         val learned = strict.learn(listOf(nos, nosAlpha), nos, mapOf(nos to window(2), nosAlpha to window(2)), RelayAliases.GROUP_METADATA_KINDS)
 
@@ -225,17 +191,13 @@ class RelayAliasesTest {
     @Test
     fun `two verdicts that disagree do not pin a url as its own duplicate`() {
         val aliases = RelayAliases()
-        // A says "I am B", B says "I am A" — two passes that disagreed, or a
-        // record edited by hand. Resolving B's canonical walks back to B, and
-        // writing that would make `folded[B] = B`: not a fold, but a url marked
-        // as its own duplicate, which `measured` then answers true for forever
-        // while `unresolved` drops the group and nothing revisits it.
+        // Resolving B's canonical walks back to B, and writing that marks a url as its
+        // own duplicate, which `measured` then answers true for forever.
         aliases.replace(listOf(nos, nosAlpha), mapOf(nosAlpha to nos, nos to nosAlpha), cleared = emptySet())
 
         assertFalse(aliases.measured(nos) && aliases.canonicalOf(nos) == nos && nos in aliases.verdicts().keys)
         assertTrue(nos !in aliases.verdicts().keys, "a url was folded onto itself: ${aliases.verdicts()}")
-        // Neither edge, rather than whichever one the map iterated first: a
-        // loop is two passes contradicting each other and no evidence at all.
+        // Neither edge: a loop is two passes contradicting each other, not evidence.
         assertTrue(aliases.verdicts().isEmpty(), "a loop was folded anyway: ${aliases.verdicts()}")
     }
 
@@ -246,10 +208,8 @@ class RelayAliasesTest {
         aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to print, nosAlpha to print))
         assertTrue(aliases.measured(nosAlpha) && aliases.measured(nos))
 
-        // The store is the record and this map is a cache of it. Without an
-        // eviction path the cache outlives the TTL: the record expires, is
-        // never republished because `measured` says there is nothing to do, and
-        // the fan-out keeps folding on evidence that no longer exists anywhere.
+        // This map is a cache of the store; without eviction it outlives the TTL and
+        // keeps folding on evidence that no longer exists anywhere.
         aliases.forget(listOf(nos, nosAlpha))
 
         assertFalse(aliases.measured(nosAlpha))
@@ -262,10 +222,8 @@ class RelayAliasesTest {
     fun `learn folds onto the leader it was given, not one it recomputes`() {
         val aliases = RelayAliases()
         val print = window(100)
-        // `leaderOf` prefers a url something already folded onto, and
-        // `canonicals` is mutated by every concurrent pass — so recomputing the
-        // leader here could name a different url than the one that was actually
-        // fingerprinted as the yardstick, and discard the group's whole pass.
+        // `leaderOf` reads `canonicals`, which every concurrent pass mutates, so a
+        // recomputed leader may not be the url that was fingerprinted as the yardstick.
         val learned = aliases.learn(listOf(nos, nosAlpha, nosBeacon), nosAlpha, mapOf(nosAlpha to print, nos to print, nosBeacon to print))
 
         assertEquals(nosAlpha, aliases.canonicalOf(nos))
@@ -276,8 +234,6 @@ class RelayAliasesTest {
     @Test
     fun `a window too small to mean anything folds nothing`() {
         val aliases = RelayAliases()
-        // Identical, and identical is meaningless at this size: two quiet
-        // relays holding the same four events prove nothing about each other.
         val tiny = window(4)
 
         assertTrue(aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to tiny, nosAlpha to tiny)).folded.isEmpty())
@@ -287,7 +243,6 @@ class RelayAliasesTest {
     fun `a url that never answered is not folded`() {
         val aliases = RelayAliases()
 
-        // Only the leader has a fingerprint. Silence is not evidence.
         val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100)))
 
         assertTrue(learned.folded.isEmpty())
@@ -305,8 +260,7 @@ class RelayAliasesTest {
     @Test
     fun `a window that merely moved on still matches`() {
         val aliases = RelayAliases()
-        // The two dials are seconds apart on a live relay: 60 of the leader's
-        // 100 ids are still in the second window, which is over the bar.
+        // 60 of the leader's 100 ids are still in the second window, which is over the bar.
         val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to window(100, from = 40)))
 
         assertEquals(mapOf(nosAlpha to nos), learned.folded)
@@ -324,8 +278,7 @@ class RelayAliasesTest {
     fun `the pathless url is the one kept`() {
         val aliases = RelayAliases()
         val print = window(100)
-        // Deliberately ordered worst-first: the leader is chosen by preference,
-        // not by position.
+        // Ordered worst-first: the leader is chosen by preference, not by position.
         val group = listOf(nosBeacon, nosAlpha, nos)
 
         aliases.learn(group, aliases.toProbe(group).first(), group.associateWith { print })
@@ -351,10 +304,8 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val secure = url("wss://groups.example")
         val plain = url("ws://groups.example")
-        // Nine events, under `minSample` on both sides — so containment can say
-        // nothing either way, `learn` used to publish nothing, and `unresolved`
-        // handed this pair back on every pass forever. The two urls name one
-        // endpoint and both of them answered, which is the whole verdict.
+        // Nine events is under `minSample` on both sides; the two urls name one
+        // endpoint and both answered, which is the whole verdict.
         val nine = window(9)
 
         val learned = aliases.learn(listOf(secure, plain), secure, mapOf(secure to nine, plain to nine))
@@ -371,14 +322,12 @@ class RelayAliasesTest {
         val host = url("wss://relay.example")
         val secureInbox = url("wss://relay.example/inbox")
         val plainInbox = url("ws://relay.example/inbox")
-        // The secure twin was asked and never answered. "Both work" is the
-        // condition: folding here retires a live url in favour of a dead one.
+        // Folding here would retire a live url in favour of a dead one.
         val learned =
             aliases.learn(listOf(host, secureInbox, plainInbox), host, mapOf(host to window(100), plainInbox to window(100, from = 500)))
 
         assertTrue(learned.twins.isEmpty())
-        // Measured against the leader in the ordinary way instead, and it is not
-        // that either — so it stays a url of its own, dialled.
+        // Measured against the leader instead, and it is not that either.
         assertEquals(plainInbox, aliases.canonicalOf(plainInbox))
         assertEquals(secureInbox, aliases.canonicalOf(secureInbox))
     }
@@ -388,9 +337,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val secure = url("wss://relay.example")
         val plain = url("ws://relay.example")
-        // The direction that can lose data: everything the plain url has must
-        // already be on the survivor. Here it holds 100 events the secure url
-        // never returned, so folding it away would stop mirroring them.
+        // Everything the plain url has must already be on the survivor.
         val learned = aliases.learn(listOf(secure, plain), secure, mapOf(secure to window(9), plain to window(100, from = 500)))
 
         assertTrue(learned.twins.isEmpty())
@@ -409,9 +356,7 @@ class RelayAliasesTest {
         aliases.learn(group, host, group.associateWith { window(100) })
 
         assertEquals(host, aliases.canonicalOf(secureAlpha))
-        // …and not onto secureAlpha, which is itself an alias: `canonicalOf` is
-        // one hop by design, so a chain here is a duplicate that survives the
-        // fold and gets dialled every cycle.
+        // `canonicalOf` is one hop, so a chain would survive the fold and be dialled every cycle.
         assertEquals(host, aliases.canonicalOf(plainAlpha))
     }
 
@@ -420,9 +365,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val chosen = url("wss://relay.example:8443")
         val plain = url("ws://relay.example")
-        // 8443 is a port somebody picked deliberately. Nothing about `ws://x`
-        // says it reaches the same service, so this is left to the fingerprint —
-        // which, on windows this thin, correctly decides nothing.
+        // 8443 was picked deliberately, so the pair is left to the fingerprint.
         val learned = aliases.learn(listOf(chosen, plain), chosen, mapOf(chosen to window(9), plain to window(9)))
 
         assertTrue(learned.folded.isEmpty())
@@ -443,19 +386,11 @@ class RelayAliasesTest {
         val host = url("wss://relay.example")
         val secureInbox = url("wss://relay.example/inbox")
         val plainInbox = url("ws://relay.example/inbox")
-        // Last month's pass cleared the secure path as its own endpoint; the
-        // plain one turned up today. Without re-dialling the twin there is no
-        // "both answered" to be had, and the plain url would be measured against
-        // the group's leader — a genuinely different endpoint — disagree with it
-        // correctly, and be published as a relay in its own right.
-        // Seeded the way it really arrives — a store read with two cleared
-        // verdicts in it. `adoptDistinct` was the bulk half of the old
-        // forget-then-adopt pair and went with it; see [RelayAliases.replace].
+        // Cleared last pass, the twin has to answer again for a "both answered" to exist;
+        // measured against the leader instead, the plain url would be cleared as its own relay.
         aliases.replace(listOf(host, secureInbox), known = emptyMap(), cleared = setOf(host, secureInbox))
 
-        // In preference order, not appended: that order is what the yardstick
-        // search walks down, and a re-dialled twin is a `wss://` url — the best
-        // kind of yardstick a group has.
+        // Preference order, not appended: a re-dialled `wss://` twin is the best yardstick a group has.
         assertEquals(listOf(host, secureInbox, plainInbox), aliases.toProbe(listOf(host, secureInbox, plainInbox)))
     }
 
@@ -495,8 +430,7 @@ class RelayAliasesTest {
 
         val toProbe = aliases.toProbe(listOf(nos, nosAlpha, nosBeacon))
 
-        // The leader is re-measured because the window it is compared against
-        // has moved; the settled url is not.
+        // The leader is re-measured because the window it is compared against has moved.
         assertEquals(listOf(nos, nosBeacon), toProbe)
     }
 
@@ -517,16 +451,14 @@ class RelayAliasesTest {
 
         assertEquals(1, folded.size)
         assertEquals(nos, folded.single().url)
-        // Dropping the url without carrying its authors would stop asking for
-        // author b entirely — a fold that loses data, not duplicates.
+        // Dropping the url without its authors would stop asking for author b at all.
         assertEquals(setOf("a", "b"), folded.single().bindings["authors"])
     }
 
     @Test
     fun `a verdict pointing at a folded url resolves to the end of the chain`() {
         val aliases = RelayAliases()
-        // Both edges arrive together, as one store read, and the answer must
-        // not depend on which order they were returned in.
+        // Both edges arrive in one store read, in either order.
         aliases.replace(listOf(nos, nosAlpha, nosBeacon), mapOf(nosBeacon to nosAlpha, nosAlpha to nos), cleared = emptySet())
 
         assertEquals(nos, aliases.canonicalOf(nosBeacon))
@@ -534,17 +466,8 @@ class RelayAliasesTest {
 
     @Test
     fun `re-reading the store never leaves a url transiently unfolded`() {
-        // What `AliasFolding.adopt` does every pass, and what it must not do on
-        // the way. The bulk forget it used to start with left every fold in the
-        // candidate set missing until the adopt that followed put them back —
-        // and this object is shared by every stream and the monitor's pass, so
-        // another stream reading inside that window dialled the duplicates for
-        // a whole cycle. `replace` moves each url straight from its old verdict
-        // to its new one.
-        //
-        // The window itself is a race and not directly assertable; what is
-        // assertable — and is the invariant the race broke — is that a re-read
-        // of the SAME verdicts is a complete no-op on every url in the set.
+        // The window itself is a race and not assertable; what is, and is the invariant
+        // the race broke, is that a re-read of the same verdicts is a no-op on every url.
         val aliases = RelayAliases()
         val urls = listOf(nos, nosAlpha, nosBeacon)
         val known = mapOf(nosAlpha to nos, nosBeacon to nos)
@@ -561,10 +484,8 @@ class RelayAliasesTest {
 
     @Test
     fun `replace clears the urls the store no longer has a verdict for`() {
-        // The other half, and the reason this is not simply an adopt: the TTL
-        // and the rules epoch expire verdicts inside `RelayVerdictRecord.load`,
-        // so a url dropping OUT of what the store returns is how a re-measure
-        // is scheduled. Left in memory it would answer `measured` forever.
+        // The TTL and the rules epoch expire verdicts inside `RelayVerdictRecord.load`, so a
+        // url dropping out of the read is how a re-measure is scheduled.
         val aliases = RelayAliases()
         val urls = listOf(nos, nosAlpha)
         aliases.replace(urls, mapOf(nosAlpha to nos), cleared = setOf(nos))

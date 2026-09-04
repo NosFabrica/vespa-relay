@@ -42,49 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * DOES THE SAMPLER FIRE AT ALL — the half [RelayPagesTest] cannot reach.
- *
- * That suite covers the RULES: what the sentence says about a page, how the
- * slot behaves, what a bounded sample keeps. It builds the `Sample` by hand and
- * gives `ClientRelayPages` a client that never delivers a message, so every one
- * of its assertions would pass just as happily if quartz never dispatched an
- * `EventMessage` to a connection listener in its life. That dispatch is the
- * whole mechanism, it was inferred from bytecode, and the repository has been
- * bitten by exactly this shape before — see the browser row probe, whose rules
- * were green while the page drew nothing.
- *
- * So this runs the wiring: a real client, a real relay, the real listener, and
- * the two facts the instrument exists to produce.
- *
- * ## What it stages, and why the tail is the point
- *
- * A live TAIL on a busy relay, and at the same time a paged walk over a window
- * that is empty. The walk therefore ends `DRAINED` with `downloaded == 0` —
- * quartz matched nothing, so `VisitPool`'s own `onEvent` is never called — while
- * the socket is carrying the tail's events throughout.
- *
- * That is the aborting shape reproduced honestly. It proves the two claims the
- * sampler is built on:
- *
- *  1. **events reach the listener that the walk's `onEvent` never sees**, which
- *     is the entire reason this seam was chosen; and
- *  2. **the subscription ids separate them**, so a page carrying another
- *     subscription's traffic is legible as exactly that rather than as the
- *     relay misbehaving.
- *
- * It does NOT reproduce a relay ignoring a cursor — nothing dialled from
- * outside the deployment has, over six ask shapes, and that is the open half of
- * #187 recorded in AGENTS.md. What it does is make sure that when the
- * deployment meets one, the line is there.
- *
- * OFF by default, asserts NOTHING — it dials somebody else's server, and a
- * quiet relay is not a regression.
- *
- * ```
- * ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true --rerun -i
- * #   …a relay of your own — it wants a BUSY one, or the tail has nothing to carry:
- * #   -DpagesUrl='wss://relay.example'
- * ```
+ * Dials a busy relay with a live tail open and runs a walk over an empty
+ * window beside it, to show the page sampler's connection listener sees the
+ * events the walk's `onEvent` never does. Prints its verdict and asserts
+ * nothing. Selected by `-DpagesProbe=true`; `-DpagesUrl` picks the relay.
  */
 class RelayPagesLiveProbe {
     private val url: NormalizedRelayUrl =
@@ -115,11 +76,7 @@ class RelayPagesLiveProbe {
         println("=".repeat(90))
         try {
             runBlocking {
-                // THE TAIL, which is what the socket will be carrying while the
-                // walk runs. `VisitPool` holds one of these per (relay, stream)
-                // for the life of a visit and beyond, so a walk sharing the
-                // socket with one is the ordinary case rather than a contrived
-                // one.
+                // The tail the socket carries while the walk runs, as a visit's does in production.
                 val tailed = AtomicInteger()
                 client.subscribe(
                     TAIL_SUB,
@@ -135,19 +92,10 @@ class RelayPagesLiveProbe {
                         }
                     },
                 )
-                // Long enough for the relay to start pushing. A tail that has
-                // carried nothing proves nothing, and the line below says so.
                 delay(TAIL_WARMUP_MS)
 
-                // STAGE ONE, AND THE ONE THAT SETTLES IT: an armed walk over a
-                // window the relay HAS events in.
-                //
-                // The staged abort below needs a tail that happens to be
-                // flowing, and a quiet minute makes it inconclusive — which is
-                // no way to answer "does this listener fire". A walk that
-                // downloads events is a socket carrying events by
-                // construction, so if the sampler records none of THOSE, the
-                // seam is wrong and no amount of tail will save it.
+                // Stage one: a walk over a window the relay has events in. A walk that downloads
+                // is a socket carrying events by construction, so a null sample here is the seam being wrong.
                 val busy = Filter(kinds = listOf(1), since = now - BUSY_WINDOW_SECONDS, until = now)
                 val busySampling = pages.arm(url, busy)
                 val busyDownloaded =
@@ -168,20 +116,12 @@ class RelayPagesLiveProbe {
                 )
                 println()
 
-                // …AND THE WALK, over a window chosen to be empty: one second,
-                // a year ago. It drains at once, so `downloaded` is 0 and the
-                // pool's own `onEvent` is never called — the aborting shape,
-                // without needing a misbehaving relay to produce it.
+                // Stage two: a walk over an empty window, one second a year ago. It drains at once
+                // with `downloaded == 0`, which is the aborting shape without a misbehaving relay.
                 val asked = Filter(kinds = listOf(1), since = now - EMPTY_WINDOW_AGO, until = now - EMPTY_WINDOW_AGO + 1)
                 val delivered = AtomicInteger()
-                // THE ARMED WINDOW HAS TO CONTAIN SOME TRAFFIC, and the walk
-                // below does not give it any: an empty window drains in
-                // milliseconds, so a first cut of this probe armed for ~100ms
-                // against a relay serving an event every few seconds, saw the
-                // miss, and reported the sampler broken. In production the
-                // window is the whole ask — seconds to a minute — so it is held
-                // open for a comparable slice here, and the tail is counted
-                // ACROSS THAT SLICE rather than across the probe.
+                // The sampler is held armed for a production-sized slice before the walk, and the
+                // tail is counted across that slice; an empty walk alone drains in milliseconds.
                 val sampling = pages.arm(url, asked)
                 val before = tailed.get()
                 delay(ARMED_WINDOW_MS)
@@ -233,14 +173,10 @@ class RelayPagesLiveProbe {
         private const val TAIL_SUB = "pages-probe-tail"
         private const val TAIL_WARMUP_MS = 4_000L
 
-        /**
-         * How long the sampler is held armed before the walk — see the note at
-         * the call site. Long enough that a relay serving an event every few
-         * seconds gives the listener something to catch.
-         */
+        /** How long the sampler is held armed before the walk; enough for a relay serving an event every few seconds. */
         private const val ARMED_WINDOW_MS = 10_000L
 
-        /** A window the relay certainly has kind 1 in — the dispatch check's ask. */
+        /** A window the relay certainly has kind 1 in. */
         private const val BUSY_WINDOW_SECONDS = 600L
         private const val IDLE_MS = 10_000L
 

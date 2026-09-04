@@ -26,38 +26,25 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The memo over [RelayDiscovery.normalize]'s rules. A cache is only worth having
- * if it cannot change an answer, so every test here is about the answer and not
- * about the hit.
- */
+/** The memo over [RelayDiscovery.normalize]'s rules. Every test is about the answer, not the hit. */
 class RelayUrlCacheTest {
-    /**
-     * THE ONE WAY A MEMO HERE COULD LIE, and the reason `allowOnion` is not part
-     * of the key: a deployment WITH Tor and one without must get different
-     * answers for the same string, in either order, from one cache.
-     */
+    /** `allowOnion` is not part of the key, so one cache must answer both ways for the same string, in either order. */
     @Test
     fun `the onion gate survives being cached under the other answer`() {
         val onion = "wss://vespaxyz2h4pnvxvxjyklnvvbfvvvvvvvvvvvvvvvvvvvvvvvvvvid.onion"
 
-        // Clearnet first, then Tor: the cached refusal must not stick.
         val a = RelayUrlCache()
         assertNull(a.normalize(onion, allowOnion = false))
         assertNotNull(a.normalize(onion, allowOnion = true), "a cached clearnet refusal must not outlive Tor")
 
-        // ...and the other order, which is the one that would leak an onion to
-        // a resolver that cannot see it.
         val b = RelayUrlCache()
         assertNotNull(b.normalize(onion, allowOnion = true))
         assertNull(b.normalize(onion, allowOnion = false), "a cached Tor answer must not survive into a clearnet read")
 
-        // One entry either way: the deployment's transport is not the string.
         assertEquals(1, a.size())
         assertEquals(1, b.size())
     }
 
-    /** Every reject rule, cached and re-asked, still rejects. */
     @Test
     fun `a refusal is an answer and is cached like one`() {
         val cache = RelayUrlCache()
@@ -68,8 +55,7 @@ class RelayUrlCacheTest {
                 "wss://has space.example",
                 "nostr.example",
                 "https://kbin.social/",
-                // The normalizer REPAIRS as well as canonicalises: this passes a
-                // startsWith("wss://") test and comes out an https:// web page.
+                // Passes a startsWith("wss://") test and is repaired by the normalizer into an https:// page.
                 "wss://https//nostr.watch/relay/nostr.21crypto.ch",
                 "ws://localhost:7777",
                 "ws://127.0.0.1:7777",
@@ -81,7 +67,6 @@ class RelayUrlCacheTest {
         }
     }
 
-    /** A repeat is the same object's value, not a re-decision. */
     @Test
     fun `the same spelling answers the same thing every time`() {
         val cache = RelayUrlCache()
@@ -91,18 +76,12 @@ class RelayUrlCacheTest {
         assertEquals(1, cache.size(), "one spelling is one entry however often it arrives")
     }
 
-    /**
-     * The keys come from strangers — anyone's kind 10002 can name urls nobody
-     * has seen — so the map is dropped whole at the cap rather than growing
-     * with whatever a relay list invents. A miss costs the parse it was
-     * avoiding; it never costs correctness.
-     */
+    /** The keys come from strangers' relay lists, so the map is dropped whole at the cap; a miss costs a parse, never an answer. */
     @Test
     fun `an invented flood cannot grow the map without bound`() {
         val cache = RelayUrlCache(maxEntries = 64)
         repeat(500) { cache.normalize("wss://minted$it.example", allowOnion = false) }
         assertTrue(cache.size() <= 64, "held ${cache.size()} of 500 invented spellings")
-        // And it still answers, which is the whole contract.
         assertEquals("wss://real.example/", cache.normalize("wss://real.example", allowOnion = false)?.url)
     }
 }
