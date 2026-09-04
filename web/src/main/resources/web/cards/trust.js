@@ -1,18 +1,8 @@
-// The Tapestry Trusted List family — 30392-30395: a curated membership,
-// computed under one point of view and published as an event.
-//
-// These get a real card for the same reason 10040 and 30382 do (people.js says
-// it): they are what this relay is organised around. A Trusted List is also
-// the one kind whose permalink another card LINKS TO — the provenance pill on
-// a spliced result opens the list that put it there — so a page reading "kind
-// 30392" over a hex blob would be the relay failing to explain the reason it
-// just gave.
-//
-// FOUR KINDS, ONE RENDERER, because only the MEMBER TAG changes: `p` on 30392
-// is a pubkey, `e` on 30393 an event id, `a` on 30394 an address, `i` on 30395
-// a NIP-73 external identifier. The kind decides which to read — the same rule
-// scoreCard follows for an assertion's `d`, and for the same reason: reading
-// all four as pubkeys would draw a link to a person who does not exist.
+// The Tapestry Trusted List family, 30392-30395: a curated membership,
+// computed under one point of view and published as an event. A provenance
+// pill on a spliced result opens one of these, so the card has to explain
+// the reason the relay just gave. Four kinds, one renderer: only the member
+// tag changes, and the kind decides which to read.
 
 import { esc, titleOf } from "../shared/format.js";
 import { shortAddr, shortNote } from "../shared/nip19.js";
@@ -22,57 +12,39 @@ import {
 } from "./base.js";
 
 /**
- * Which tag holds the membership, per kind — the family's whole dispatch.
- *
- * Keyed by kind rather than sniffed from the tags: a list may legitimately
- * carry `p` tags that are NOT membership (30393's `observer`, say, names whose
- * point of view it was computed under), so "which tag is the members" is a
- * question only the kind can answer.
+ * Which tag holds the membership, per kind. Keyed by kind rather than sniffed
+ * from the tags: a 30393 may carry `p` tags (its `observer`) that are not members.
  */
 const MEMBER_TAG = { 30392: "p", 30393: "e", 30394: "a", 30395: "i" };
 
-/** What one member is CALLED, in the vocabulary of the kind that holds it. */
+/** What one member is called, in the vocabulary of the kind that holds it. */
 const MEMBER_NOUN = { 30392: "member", 30393: "event", 30394: "article", 30395: "identifier" };
 
 /**
- * The membership, in the shape this kind's member tag holds.
- *
- * 30392 goes through `peopleOf` rather than a raw `p` scan, and both halves of
- * that are load-bearing — the same two `peopleOf` exists for. It DEDUPES,
- * because lists in the wild repeat entries, and it drops anything that is not
- * hex, because npub() over a value that is not a key labels somebody who does
- * not exist. It also has to be the same call `gridPeople` makes to declare
- * which profiles the page owes itself: the faces drawn and the profiles
- * fetched for them must not be two different sets.
+ * The membership. 30392 goes through `peopleOf` so the faces drawn and the
+ * profiles `gridPeople` fetches are the same deduped, hex-only set.
  */
 const membersOf = (ev) =>
   ev.kind === 30392 ? peopleOf(ev) : tagsOf(ev, MEMBER_TAG[ev.kind] || "p").map((t) => t[1]).filter(Boolean);
 
 /**
- * THE FACTS A LIST IS, drawn as the props table rather than as prose.
- *
- * `metric` names the computation, `observer` the point of view it ran under,
- * `min-rank` and `cutoff` where it drew the line, `rigor` how hard it looked.
- * None of them is searchable (quartz indexes a list's `title` and nothing
- * else), and that is the point of putting them here: the card is where a
- * reader finds out what a list they cannot search for actually measured.
+ * The facts a list is, as the props table: `metric` names the computation,
+ * `observer` the point of view, `min-rank` and `cutoff` where it drew the
+ * line, `rigor` how hard it looked. None is searchable (quartz indexes a
+ * list's `title` only), which is why the card states them.
  */
 const FACTS = ["metric", "observer", "source-tag", "min-rank", "cutoff", "rigor"];
 
 /**
  * A member score, when the publisher assigned one: `["p", <key>, <hint>, <score>]`.
- *
- * Quartz reads index 3 as a 0..100 PERCENTAGE and drops anything outside that
- * range rather than clamping it, so a publisher counting on another scale
- * reads back as unscored. This mirrors that: a number this scale cannot
- * express is not drawn as though it could.
+ * A 0..100 percentage, as quartz reads it; anything outside is unscored, not clamped.
  */
 const scoreOf = (tag) => {
   const n = Number.parseInt(tag[3], 10);
   return Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
 };
 
-/** The non-pubkey members, one link per row — an id, an address, an external identifier. */
+/** The non-pubkey members, one link per row: an id, an address, an external identifier. */
 function memberRows(ev, opts) {
   const tags = tagsOf(ev, MEMBER_TAG[ev.kind]).filter((t) => t[1]);
   const cap = opts && opts.full ? 40 : 8;
@@ -94,13 +66,8 @@ function memberRows(ev, opts) {
 }
 
 /**
- * 30392-30395 — one Trusted List.
- *
- * The TITLE leads, because it is the only thing about a list this relay can
- * search for, and so the only thing that can have brought a reader here by
- * name. An untitled list is legal and indexes the empty string; it gets its
- * `d` instead of a blank heading, which is at least an identifier a reader can
- * carry back to the publisher.
+ * 30392-30395 — one Trusted List. The title leads, being the only thing this
+ * relay can search for; an untitled list gets its `d` instead of a blank heading.
  */
 function trustedListCard(ev, opts) {
   const members = membersOf(ev);
@@ -115,15 +82,11 @@ function trustedListCard(ev, opts) {
 }
 
 register([30392, 30393, 30394, 30395], trustedListCard);
-// 30392's members ARE people, so the page owes itself their profiles before it
-// draws the grid — the same declaration every other people-holding kind makes.
+// 30392's members are people, so the page owes itself their profiles before drawing the grid.
 registerPeopleGrid([30392]);
 
-// The row leads with the list's NAME, which is the half a reader recognises,
-// and counts underneath. `metric` rides along because two lists can share a
-// title and differ only in what they measured — "Verified Human" is published
-// twice under two observers on staging today, and a row that said only the
-// title would offer the reader two identical lines.
+// The row leads with the name and counts underneath. `metric` rides along
+// because two lists can share a title and differ only in what they measured.
 registerRow([30392, 30393, 30394, 30395], (ev) => ({
   name: titleOf(ev) || tagOf(ev, "d") || "",
   sub: [plural(membersOf(ev).length, MEMBER_NOUN[ev.kind] || "member"), tagOf(ev, "metric")].filter(Boolean).join(" · "),

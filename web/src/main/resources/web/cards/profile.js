@@ -1,6 +1,5 @@
-// kind 0 — the profile card, rendered purely from the event, no server-side
-// numbers. The one card with its own frame (big avatar header) instead of the
-// shared byline shell.
+// kind 0 — the profile card, rendered from the event alone. The one card
+// with its own frame (big avatar header) instead of the shared byline shell.
 
 import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
@@ -19,20 +18,12 @@ function profileCard(ev, opts) {
   }
   if (p.website) props.push(["website", extLink(p.website)]);
   if (p.lud16) props.push(["lightning", esc(p.lud16)]);
-  // The pubkey row only when the profile carries no name. With one, the name
-  // IS how the person is shown — the npub stays in the page URL and one click
-  // away behind "json", instead of trailing every named human as a hex-shaped
-  // string nobody reads.
+  // The pubkey row only when the profile carries no name; the npub is in the page url and under "json".
   if (!displayName(p)) props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
   const about = clipIf(opts, p.about, 400);
-  // This frame is hand-rolled rather than shell()'s, so everything shell does
-  // for a card has to be done here too. Two of those, and both were paid for:
-  // the card's own click target (a profile's is the PERSON's page, not the
-  // kind 0's id, which names one revision of it), and the PROVENANCE row —
-  // which matters most precisely here, since a profile is what a Trusted List
-  // of pubkeys and a contact card both splice. A profile arriving with no word
-  // about why is the exact case the row exists for, and this frame is the one
-  // that could silently miss it.
+  // This frame is hand-rolled, so everything shell() does for a card is done
+  // here too: the click target (the person's page, not this revision's id)
+  // and the provenance row, which a spliced profile needs most.
   const href = opts && opts.full ? null : selfHref(ev);
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
@@ -52,10 +43,9 @@ function profileCard(ev, opts) {
 }
 
 register([0], profileCard);
-// The one row whose subject IS its author, which is what `self` says: without
-// it the second line would repeat the name the first line already is — and
-// from the EVENT, so a person the profile cache has not learned yet is still
-// named by their own kind 0 rather than by the npub it falls back to.
+// `self`: the row's subject is its author, so the second line must not repeat
+// the name. Named from the event, so a profile the cache has not learned yet
+// still gets its own name rather than an npub.
 registerRow([0], (ev) => {
   const p = parseProfile(ev);
   return { name: displayName(p) || shortNpub(ev.pubkey), sub: p.about, pic: p.picture, self: true };

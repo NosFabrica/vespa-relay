@@ -1,13 +1,7 @@
-// The reactive kinds: the events that are ABOUT other events. Reactions,
-// reposts, zaps, comments, approvals, reports, labels and deletions all share
-// one problem the generic floor cannot solve — their own content is a
-// fragment ("+", "", a bolt11 invoice) and the interesting half is whatever
-// they point at. So every card here leads with the RELATION and links the
-// target, rather than printing a payload that means nothing on its own.
-//
-// They earn cards because a search over the whole corpus returns them by the
-// thousand: a "kind 7" badge over an empty body was the most common shape of
-// nothing this page could produce.
+// The reactive kinds: reactions, reposts, zaps, comments, approvals, reports,
+// labels and deletions. Their own content is a fragment ("+", "", a bolt11
+// invoice) and the meaning is in what they point at, so every card here leads
+// with the relation and links the target.
 
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
@@ -27,14 +21,9 @@ function targetLink(ev) {
 }
 
 /**
- * The same target as a NOUN — " a note", " an entry", or nothing at all —
- * since a row has the words a link would have carried and nowhere to put one.
- *
- * The precedence is targetLink's, and so is the distinction: an `a` names
- * something addressable, which is as often an article or a live stream as a
- * note, and "liked a note" under a reaction to an article is the row inventing
- * a kind. With no target the noun goes entirely: the card renders a bare
- * "liked" there too, because that is all the event says.
+ * The same target as a noun for a row, in targetLink's precedence. An `a` is
+ * "an entry", not "a note": it is as often an article or a stream. No target,
+ * no noun.
  */
 const targetNoun = (ev) => {
   if (tagsOf(ev, "e").some((t) => /^[0-9a-f]{64}$/.test(t[1]))) return " a note";
@@ -46,15 +35,13 @@ const relationLine = (verb, target) =>
 
 /** NIP-25's three cases, in the words the card and the row both use. */
 const reactionVerb = (c) => (c === "+" || c === "" ? "liked" : c === "-" ? "disliked" : "reacted to");
-/** …and whether this one HAS a glyph, rather than being a bare vote. */
+/** Whether the reaction is a glyph rather than a bare vote. */
 const isGlyph = (c) => !!c && c !== "+" && c !== "-";
 
 /**
- * 7 / 17 — a reaction. NIP-25 says "+" is a like, "-" a dislike, and anything
- * else is the reaction itself: a literal emoji, or a `:shortcode:` whose image
- * rides in an `emoji` tag. All three are shown as what they are — mapping the
- * custom ones to a generic "reacted" would throw away the only content the
- * event has.
+ * 7 / 17 — a reaction. "+" is a like, "-" a dislike, anything else is the
+ * reaction itself: a literal emoji, or a `:shortcode:` whose image rides in
+ * an `emoji` tag. All three are shown as what they are.
  */
 function reactionCard(ev, opts) {
   const c = (ev.content || "").trim();
@@ -70,23 +57,13 @@ function reactionCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * The event carried INSIDE another one's content — NIP-18 puts the whole
- * reposted event there, NIP-72 the whole approved post — reduced to its text.
- * Both cards quote it and both rows lead with it, since the wrapper's own
- * content is nothing.
- */
+/** The text of the event carried inside this one's content: a NIP-18 repost, a NIP-72 approved post. */
 function quotedText(ev) {
   const inner = jsonContent(ev);
   return inner && typeof inner.content === "string" ? inner.content : "";
 }
 
-/**
- * 6 / 16 — a repost. NIP-18 puts the whole reposted event in `content` as
- * JSON, so the card can show what was actually shared instead of the word
- * "repost" over a link — and falls back to the link when the content is empty,
- * which plenty of clients leave it.
- */
+/** 6 / 16 — a repost: the reposted text when the content carries it, the link otherwise. */
 function repostCard(ev, opts) {
   const quoted = quotedText(ev);
   const target = targetLink(ev);
@@ -95,7 +72,7 @@ function repostCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The zap REQUEST a receipt carries, stringified, in its `description` tag. */
+/** The zap request a receipt carries, stringified, in its `description` tag. */
 function zapRequest(ev) {
   try { return JSON.parse(tagOf(ev, "description") || "{}") || {}; } catch (e) { return {}; }
 }
@@ -104,10 +81,8 @@ const zapSats = (ev, req) =>
   satsOf(tagOf(ev, "amount") || ((req.tags || []).find((t) => Array.isArray(t) && t[0] === "amount") || [])[1]);
 
 /**
- * 9735 — a zap receipt. The amount is not in this event: it is in the zap
- * REQUEST, which rides stringified in the `description` tag. Reading it there
- * is the difference between "1,000 sats" and a bolt11 invoice nobody can read,
- * and the comment the zapper typed is in that same nested event.
+ * 9735 — a zap receipt. The amount, the zapper and the comment are in the
+ * nested zap request, not in this event's own fields.
  */
 function zapCard(ev, opts) {
   const req = zapRequest(ev);
@@ -135,16 +110,9 @@ function zapRequestCard(ev, opts) {
 }
 
 /**
- * 1111 — a NIP-22 comment. It is a note whose whole point is what it replies
- * to, and the uppercase tags name the ROOT while the lowercase ones name the
- * immediate parent.
- *
- * The parent leads the card as a PERSON now — replyLine reads the same `e`/`a`
- * pair this used to print as two bech32 ids side by side, and a comment whose
- * card says "replying to note1qqq… under note1qqq…" told a reader nothing
- * twice. The root stays a row, and only when it differs from the parent: on a
- * direct comment the two are the same event, which is where the duplicate came
- * from.
+ * 1111 — a NIP-22 comment. Uppercase tags name the root, lowercase the
+ * parent. The parent leads as a person via replyLine; the root is a row only
+ * when it differs from the parent.
  */
 function commentCard(ev, opts) {
   const ref = (id, addr) => {
@@ -158,14 +126,13 @@ function commentCard(ev, opts) {
   const line = replyLine(ev);
   const inner = line + bodyHtml(opts, ev.content, 500);
   return shell(ev, opts, inner, [
-    // The parent's own id, kept as a row only when the line above could not
-    // name it — otherwise the card says the same thing in two registers.
+    // The parent's id is a row only when the reply line could not name it.
     ["replying to", line ? null : parent],
     ["under", root && root !== parent ? root : null],
   ]);
 }
 
-/** A poll's choices: `["option", <id>, <label>]`, so the LABEL is element 2. */
+/** A poll's choices: `["option", <id>, <label>]`, so the label is element 2. */
 const pollOptions = (ev) => tagsOf(ev, "option").map((t) => t[2]).filter(Boolean);
 
 /** 1068 — a poll: the question is the content, the choices are `option` tags. */
@@ -189,16 +156,12 @@ function pollResponseCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** Which p/e tag names the reported thing, and therefore carries the category. */
+/** The p/e tag that names the reported thing, and therefore carries the category. */
 const flaggedTag = (ev) => tagsWhere(ev, (name, t) => (name === "p" || name === "e") && t[2])[0];
-/** "spam", "nudity", … — as a `report` tag when no p/e carried one. */
+/** "spam", "nudity", … — from a `report` tag when no p/e carried one. */
 const reportCategory = (ev) => (flaggedTag(ev) || [])[2] || tagOf(ev, "report");
 
-/**
- * 1984 — a report. The category is the THIRD element of the p/e tag that names
- * the reported thing ("spam", "nudity", …), which is the one field a moderator
- * reading a list of these actually filters on.
- */
+/** 1984 — a report. The category is the third element of the p/e tag naming the reported thing. */
 function reportCard(ev, opts) {
   const flagged = flaggedTag(ev);
   const category = reportCategory(ev);
@@ -211,7 +174,7 @@ function reportCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The labels a 1985 puts on something — `l` values, the `L` being their namespace. */
+/** The labels a 1985 puts on something: `l` values, the `L` being their namespace. */
 const labelsOf = (ev) => tagsOf(ev, "l").map((t) => t[1]).filter(Boolean);
 
 /** 1985 — a NIP-32 label: the namespace, the labels, and what they were put on. */
@@ -229,9 +192,8 @@ function labelCard(ev, opts) {
 const deletionCount = (ev) => tagsOf(ev, "e").length + tagsOf(ev, "a").length;
 
 /**
- * 5 — a deletion REQUEST, and the card says request on purpose. Whether the
- * events are gone is this relay's business, not the event's claim; what the
- * event carries is an ask and a reason.
+ * 5 — a deletion request. The card says "asks to delete": whether the events
+ * are gone is this relay's business, not the event's claim.
  */
 function deletionCard(ev, opts) {
   const kinds = [...new Set(tagsOf(ev, "k").map((t) => t[1]).filter(Boolean))];
@@ -241,7 +203,7 @@ function deletionCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** Who a badge was awarded to — the `p` tags that are actually keys. */
+/** Who a badge was awarded to: the `p` tags that are keys. */
 const winnersOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
 
 /** 8 — a badge award: which badge, to whom. */
@@ -266,16 +228,10 @@ function approvalCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 34550 — a NIP-72 community definition. The `d` is the community's name and
- * there is usually no `title` tag, so titleOf's `d` fallback is doing real
- * work here rather than leaking an opaque identifier.
- */
+/** 34550 — a NIP-72 community. The `d` is its name and there is usually no `title`, so titleOf's `d` fallback is the title. */
 function communityCard(ev, opts) {
   const img = imageOf(ev);
-  // Every `p` on a 34550 IS a moderator — the role rides in a later element
-  // whose position clients disagree on, so the tag's presence is the fact and
-  // its shape is not worth guessing at.
+  // Every `p` on a 34550 is a moderator; the role's position in the tag varies by client.
   const mods = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
   const full = opts && opts.full;
   const inner =
@@ -286,11 +242,7 @@ function communityCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 30315 — a NIP-38 status. The `d` is which status it is ("general",
- * "music"), and a music status routinely carries only an `r` link with the
- * track — so the link is shown rather than an empty body.
- */
+/** 30315 — a NIP-38 status. The `d` says which status ("general", "music"); a music status is often only an `r` link. */
 function statusCard(ev, opts) {
   const kindOfStatus = tagOf(ev, "d");
   const link = tagOf(ev, "r");
@@ -318,17 +270,10 @@ register([4550], approvalCard);
 register([34550], communityCard);
 register([30315], statusCard);
 
-// The rows. This family's whole argument — that these events are about OTHER
-// events, and their own content is a fragment — is what the type-ahead row
-// needed most: "+" was a row reading "+", a zap receipt was a row reading its
-// bolt11 invoice, and a deletion request was a row reading nothing at all. So
-// each row leads with the RELATION, exactly as the card does, minus the link
-// there is no room for.
+// The rows lead with the relation, as the cards do, minus the link.
 registerRow([7, 17], (ev) => {
   const c = (ev.content || "").trim();
-  // A custom reaction IS its glyph, and a `:shortcode:`'s image cannot ride in
-  // a line of text — so the row shows what the event wrote, which is at worst
-  // the code itself.
+  // A `:shortcode:` image cannot ride in a line of text, so the row shows the code itself.
   return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)}${targetNoun(ev)}` };
 });
 registerRow([6, 16], (ev) => ({ name: quotedText(ev) || `reposted${targetNoun(ev)}` }));
@@ -356,6 +301,5 @@ registerRow([5], (ev) => ({ name: `asks to delete ${plural(deletionCount(ev), "e
 registerRow([8], (ev) => ({ name: `awards a badge to ${plural(winnersOf(ev).length, "recipient")}` }));
 registerRow([4550], (ev) => ({ name: "approved a post", sub: quotedText(ev) }));
 registerRow([34550], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || ev.content }));
-// A status with no text is a status CLEARED, which is a fact worth a row —
-// blank would read as a row that failed to render.
+// A status with no text is a status cleared, which is a fact worth a row.
 registerRow([30315], (ev) => ({ name: ev.content || "cleared" }));
