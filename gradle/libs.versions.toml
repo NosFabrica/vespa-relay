@@ -373,9 +373,14 @@ quartz = "cecc3287b2"
 # LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
 # replaces — the safe direction, and as the previous two notes say, one that
 # has never been needed: nothing else in the graph names vespa-eventstore.
-# e6fc675d21 = claude/distinct-tags-grouping, NOT a main commit: it carries the
-# aggregate this branch's discovery fast path calls. Re-pin to a main sha once
-# that PR merges.
+# 8a643d4e27 = vespa-eventstore main @ 2026-09-04, the merge of PR #103 — the
+# grouping aggregate the discovery fast path calls.
+#
+# ON A MAIN COMMIT AGAIN. #196 merged while this line still named
+# `claude/distinct-tags-grouping`'s own sha, which resolved (that commit is an
+# ancestor of the merge) but left `main` carrying a branch dependency. The two
+# repos land in one order — store PR first, then re-pin, then the relay PR —
+# and this is the step that gets skipped when both merge together.
 #
 # Superseded: 3cadb285d5 = the merge of PR #102, which
 # fixes a bug #101 shipped: the trust gate was taken by `insert` but not by
@@ -390,7 +395,7 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-vespaEventStore = "e6fc675d21"
+vespaEventStore = "8a643d4e27"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
