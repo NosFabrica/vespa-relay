@@ -11,12 +11,11 @@
 <link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
 <!--
   Every kind-10040 observer with a `30382:rank` service, and whether their
-  scores got here. A 10040 names, per dimension, a service pubkey and the
-  relay that serves its scores; the page counts that service's kind-30382
-  events here and there, one query per distinct question. Counted anonymously,
-  because an authenticated reader is trust-gated and would answer a different
-  question. A relay that does not answer COUNT gets "no COUNT", not a zero,
-  and a count landing exactly on a common page-size cap is flagged.
+  scores got here. A 10040 names, per dimension, a service pubkey and the relay
+  that serves its scores; the page counts that service's kind-30382 events here
+  and there, one query per distinct question. Counted anonymously: an
+  authenticated reader is trust-gated and would answer a different question.
+  A relay that does not answer COUNT gets "no COUNT", never a zero.
 -->
 <style>
   :root {
@@ -106,9 +105,8 @@
 <script>
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 /**
- * Idle time, reset by every message on the connection: a relay working
- * through a queue is never cut off, only one that has stopped talking. It must
- * cover the slowest single COUNT, since a relay answers serially.
+ * Idle time, reset by every message on the connection, so a relay working through
+ * a queue is never cut off. Must cover the slowest single COUNT: relays answer serially.
  */
 const IDLE_TIMEOUT_MS = 60000;
 
@@ -117,8 +115,7 @@ const TIMED_OUT = { state: "timeout" };
 const REFUSED = { state: "refused" };
 // Remote relays are other people's servers. A handful at a time, never a burst.
 const REMOTE_CONCURRENCY = 4;
-// COUNTs in flight within one relay. One relay can hold most of the pairs, so
-// parallelising across relays alone did not help.
+// COUNTs in flight within one relay, which can hold most of the pairs.
 const PER_RELAY_CONCURRENCY = 4;
 // The same courtesy for this relay, which is also serving clients.
 const LOCAL_CONCURRENCY = 4;
@@ -170,11 +167,9 @@ function npub(hex) {
 const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 12) + "…" + n.slice(-6); };
 
 /**
- * A tiny COUNT + REQ client, every ask multiplexed by subscription id through
- * one `pending` map and one message handler, so overlapping asks never shadow
- * each other's handler. `lensless` is for this relay only: it appends the
- * NIP-50 `include:spam` token, which an unauthenticated read here needs and a
- * remote relay would take for a search word.
+ * A tiny COUNT + REQ client, every ask multiplexed by subscription id through one
+ * `pending` map. `lensless` is for this relay only: it appends the NIP-50
+ * `include:spam` token an unauthenticated read here needs; a remote relay would take it for a word.
  */
 function client(url, { lensless = false } = {}) {
   // Appended, so a filter that already carries a search keeps it.
@@ -190,9 +185,8 @@ function client(url, { lensless = false } = {}) {
     const pending = new Map();
     const fail = (reason) => { for (const [, p] of pending) p.abort(reason); pending.clear(); };
 
-    // One idle watchdog for the connection, reset by any message. A per-request
-    // deadline is the wrong clock: the relay answers serially, so a cheap COUNT
-    // queued behind an expensive one would expire while waiting in line.
+    // One idle watchdog for the connection, not a per-request deadline: the relay
+    // answers serially, so a cheap COUNT queued behind an expensive one would expire in line.
     let idle = null;
     const stopIdle = () => { if (idle) { clearTimeout(idle); idle = null; } };
     const bumpIdle = () => {
@@ -205,8 +199,7 @@ function client(url, { lensless = false } = {}) {
     ws.onclose = () => { stopIdle(); fail(REFUSED); };
     ws.onopen = () => resolve(ws);
     ws.onmessage = (ev) => {
-      // Bumped before parsing and whatever the message was: any traffic is proof
-      // the relay is still working.
+      // Bumped before parsing: any traffic is proof the relay is still working.
       bumpIdle();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       const p = pending.get(m[1]);
@@ -235,8 +228,7 @@ function client(url, { lensless = false } = {}) {
       new Promise((res) => {
         const id = subId("r");
         const acc = [];
-        // One exit, closing the subscription however we leave: relays cap concurrent
-        // subscriptions.
+        // One exit, closing the subscription however we leave: relays cap open subscriptions.
         const finish = () => {
           try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
           res(acc);
@@ -365,10 +357,9 @@ async function run() {
     if (!prev || prev.created_at < ev.created_at) byPubkey.set(ev.pubkey, ev);
   }
   /**
-   * A relay url as written in a tag, reduced to the relay it means, so
-   * `wss://host` and `wss://host/` are one connection and one row. Null for a
-   * non-ws scheme and for loopback or private hosts, which from this browser
-   * would mean the reader's machine.
+   * A relay url as written in a tag, reduced to the relay it means, so `wss://host`
+   * and `wss://host/` are one row. Null for a non-ws scheme and for loopback or
+   * private hosts, which from this browser would mean the reader's machine.
    */
   function normalizeRelay(raw) {
     if (!raw) return null;

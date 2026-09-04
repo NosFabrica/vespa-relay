@@ -6,32 +6,25 @@
 <meta name="color-scheme" content="light dark" />
 <meta name="description" content="What this deployment holds and is doing: the relay's corpus, the mirror's coverage, and the monitor's verdicts — one page, served by whichever of the three you point it at." />
 <title>Relay stats</title>
-<!-- Both icons, like the search page. Every reference on this page is
-     document-relative: this one file is served by the relay, the mirror and the
-     monitor, and two of them may be mounted under a path prefix. Relative is
-     safe here because the imports are in an inline module (specifiers resolve
-     against the document url) and the page never rewrites its own url. The
-     leading `./` on an import is required: a bare `web/...` is an import-map
-     key, not a path. -->
+<!-- Every reference is document-relative: this one file is served by the relay,
+     the mirror and the monitor, two of which may sit under a path prefix. The
+     leading `./` on an import is required: a bare `web/...` is an import-map key. -->
 <link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
 <link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
 <!--
   The corpus this deployment holds, charted from GET /stats.json.
 
-  The JSON is the artifact and this page is one reader of it: nothing here
-  speaks the relay protocol except the verdicts panel, which has no rollup to
-  read. Every number describes this store, not the Nostr network, and is
-  counted anonymously (an authenticated reader is trust-gated). A stale or
-  missing rollup is said, never drawn as zeros. Charts are single-series with
-  no legend; events and pubkeys are two charts, never two y-axes, and the
-  three grains are three series the rollup computed separately.
+  The JSON is the artifact and this page is one reader of it; only the verdicts
+  panel speaks the relay protocol, since it has no rollup to read. Every number
+  describes this store, counted anonymously. A stale or missing rollup is said,
+  never drawn as zeros. Charts are single-series: events and pubkeys are two
+  charts, never two y-axes.
 -->
 <link rel="stylesheet" href="./web/shared/stats.css" />
 </head>
 <body>
 <main>
-  <!-- Replaced from the document's own `title` on the first render: this one
-       file is served by the relay, the mirror and the monitor. -->
+  <!-- Replaced from the document's own `title` on the first render. -->
   <h1>Relay stats</h1>
   <p class="sub" id="scope">Loading…</p>
 
@@ -45,24 +38,17 @@
 import { kindLabel } from "./web/shared/kinds.js";
 import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "./web/shared/page.js";
 import { mountStatsPage } from "./web/shared/statspage.js";
-// Imported unconditionally: one page serves all three services, and each
-// draws what its own document carries (see PANELS).
+// Imported unconditionally: one page serves all three services (see PANELS).
 import { syncCard } from "./web/sync/cards.js";
 import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
 
-/**
- * What to call a kind: the document's own name (Quartz's registry) first,
- * `kinds.js` as the fallback. The two sets are not nested, so neither is enough alone.
- */
+/** What to call a kind: the document's own name first, `kinds.js` as the fallback; the two sets are not nested. */
 const kindName = (kind, given) => given || kindLabel(kind);
 
 /** Past this an age is coloured. Not a verdict: a serve-only deployment has every right to an old corpus. */
 const STALE_CORPUS_SECONDS = 24 * 3600;
 
-/**
- * The document schema this page reads; see SCHEMA_VERSION in StatsRollup.
- * One constant, used by both the check and the sentence it prints.
- */
+/** The document schema this page reads; see SCHEMA_VERSION in StatsRollup. */
 const SCHEMA = 2;
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -76,16 +62,15 @@ const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}
 function tickStride(points, plotW) {
   const widest = points.reduce((m, p) => Math.max(m, (p.tick || "").length), 0);
   if (!widest) return points.length;
-  // ~6.2px per character at the 10px tick size, plus a gutter. Two labels is the floor.
+  // Character width at the tick size plus a gutter; two labels is the floor.
   const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
   return Math.max(1, Math.ceil(points.length / room));
 }
 
 /**
- * Hide the sync frame's axis ticks that would overlap. They are positioned in
- * percentages of a fluid track, so the measuring has to wait for layout. The
- * two end labels win and the years give way; the start yields only when even
- * the two ends cannot both fit.
+ * Hide the sync frame's axis ticks that would overlap. They sit at percentages of
+ * a fluid track, so measuring waits for layout; the two end labels win, and the
+ * start yields only when the ends cannot both fit.
  */
 function thinTicks(track) {
   if (!track) return;
@@ -109,7 +94,7 @@ function thinTicks(track) {
 /** A bar chart of one series. */
 function barChart(points, { label, height = 130 }) {
   // A fixed viewBox scaled by CSS, so nothing re-measures on resize. PAD_L fits
-  // the widest label `short` produces ("1.2M") plus a 6px inset.
+  // the widest label `short` produces plus an inset.
   const W = 720, H = height, PAD_L = 34, PAD_B = 20, PAD_T = 8;
   const plotW = W - PAD_L, plotH = H - PAD_B - PAD_T;
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label });
@@ -134,8 +119,7 @@ function barChart(points, { label, height = 130 }) {
   }
 
   const band = plotW / points.length;
-  // A gap in the surface colour separates bars, never a stroke; capped at 24px
-  // and at a fraction of the band.
+  // Bars are separated by a gap, never a stroke.
   const w = Math.max(1, Math.min(24, band - 2, band * 0.72));
   points.forEach((p, i) => {
     const x = PAD_L + i * band + (band - w) / 2;
@@ -148,9 +132,8 @@ function barChart(points, { label, height = 130 }) {
       if (h > r) marks.push(svgEl("rect", { class: "mark", x, y: top + r, width: w, height: h - r }));
       marks.forEach((m) => svg.appendChild(m));
     }
-    // The hit target is the whole band: a 3px bar is unhoverable. The highlight
-    // is applied to this bar's own marks rather than via a CSS sibling selector,
-    // since each bar's marks are appended before its hit.
+    // The hit target is the whole band: a thin bar is unhoverable. The highlight
+    // goes on this bar's own marks, which are appended before its hit.
     const hit = svgEl("rect", { class: "hit", x: PAD_L + i * band, y: PAD_T, width: band, height: plotH });
     hit.addEventListener("pointerenter", (e) => {
       marks.forEach((m) => m.classList.add("on"));
@@ -180,9 +163,9 @@ function barChart(points, { label, height = 130 }) {
 }
 
 /**
- * The hero numbers, read from three sections that refresh on different
- * cadences (see `StatsTier` in StatsRollup). The Kinds tile takes the
- * histogram's own `total`, so it can never disagree with the table.
+ * The hero numbers, from three sections refreshing on different cadences
+ * (`StatsTier` in StatsRollup). The Kinds tile takes the histogram's own
+ * `total`, so it cannot disagree with the table.
  */
 function tiles(doc) {
   const out = [];
@@ -236,9 +219,8 @@ function tiles(doc) {
 }
 
 /**
- * One chart card, or a stated empty window. An all-zero series is drawn as
- * "No … in this window", never dropped: a missing chart cannot be told from a
- * panel this page does not know about.
+ * One chart card, or a stated empty window. An all-zero series is said, never
+ * dropped: a missing chart cannot be told from a panel this page does not know.
  */
 function chartCard(title, sub, points, section, noun = "events") {
   const card = el("div", "card");
@@ -246,7 +228,6 @@ function chartCard(title, sub, points, section, noun = "events") {
   if (!points.length) {
     card.appendChild(el("p", "why", "Not in this document."));
   } else if (points.every((p) => !p.value)) {
-    // [noun] names what the series counts; the sentence is the whole finding.
     card.appendChild(el("p", "err", `No ${noun} in this window.`));
   } else {
     card.appendChild(barChart(points, { label: title }));
@@ -260,9 +241,8 @@ function chartCard(title, sub, points, section, noun = "events") {
  * weekly granularity and never built out of days.
  */
 const GRAINS = [
-  // [tick] is the axis label, [tip] the hover: a week bucket is keyed by its
-  // Monday, so the tooltip says so. [span] is the whole phrase and is null when
-  // the document states no window, so the card title never mentions one.
+  // [tick] is the axis label, [tip] the hover (a week is keyed by its Monday).
+  // [span] is null when the document states no window, so the title omits it.
   { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `last ${d.windowDays} days`), tick: dayTick, tip: (p) => p },
   { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `last ${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
   { key: "months", label: "Monthly", unit: "month", span: monthSpan, tick: monthTick, tip: (p) => p },
@@ -293,7 +273,6 @@ function settleGrain(activity) {
 
 function grainToggle(activity, onChange) {
   const row = el("div", "seg");
-  // Only the granularities the document carries.
   const available = grainsIn(activity);
   if (available.length < 2) return null;
   for (const g of available) {
@@ -404,10 +383,9 @@ function kindActivityCard(section) {
 }
 
 /**
- * Whether ranked search can rank at all. The four numbers are a chain
- * (observers name providers, providers publish scores, scores project onto
- * pubkeys), and reading them together localises a break the charts cannot see.
- * A bare `.panel`, not a `.card`: these are the same kind of tile as the corpus totals.
+ * Whether ranked search can rank at all. The four numbers are a chain (observers
+ * name providers, providers publish scores, scores project onto pubkeys), read
+ * together to localise a break. A `.panel`, not a `.card`, like the corpus totals.
  */
 function trustCard(section) {
   const d = (section && section.data) || {};
@@ -432,7 +410,6 @@ function trustCard(section) {
   }
   card.appendChild(fitTiles(row));
 
-  // The one state worth shouting about.
   if (d.scoredPubkeys === 0) {
     card.appendChild(el("p", "err",
       "No pubkey carries trust state, so every ranked search is falling back to unranked — " +
@@ -460,7 +437,6 @@ function relaysCard(section) {
   if (!top.length) return card;
 
   const max = Math.max(...top.map((r) => r.lists));
-  // Bounded and scrolling, like the Kinds table.
   const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
@@ -522,9 +498,8 @@ function wrapTitle(node, title) {
 }
 
 /**
- * Every kind in the store, largest first. The rollup's histogram enumerates
- * what is there, so this table is complete rather than a top-N and never
- * speaks the protocol.
+ * Every kind in the store, largest first. The rollup's histogram enumerates what
+ * is there, so this table is complete rather than a top-N.
  */
 function kindsCard(kinds) {
   const card = el("div", "card");
@@ -534,7 +509,6 @@ function kindsCard(kinds) {
   cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
   if (!all.length) return card;
 
-  // Filtering by number or name beats scrolling a tail of thousands.
   const controls = el("div", "bar-row");
   const filter = el("input");
   filter.type = "search";
@@ -619,11 +593,9 @@ function activityPanel(activity) {
 }
 
 /**
- * The body, panel by panel. `reads` is the redraw key: a panel is rebuilt
- * when a section it reads has been recomputed and left alone otherwise, so a
- * one-minute poll does not destroy what the reader typed or scrolled. `has()`
- * is the presence test: three services serve this page with disjoint
- * sections, and a panel whose section is absent draws nothing, not an empty card.
+ * The body, panel by panel. `reads` is the redraw key: a panel is rebuilt only
+ * when a section it reads was recomputed, so a poll does not destroy what the
+ * reader typed. A panel whose section is absent draws nothing, not an empty card.
  */
 const has = (doc, ...members) => members.some((m) => doc[m]);
 
@@ -635,16 +607,14 @@ const PANELS = [
   { name: "zaps", reads: ["zaps"], build: (doc) => (has(doc, "zaps") ? [zapsCard(doc.zaps)] : []) },
   { name: "relays", reads: ["relayDistribution"], build: (doc) => (has(doc, "relayDistribution") ? [relaysCard(doc.relayDistribution)] : []) },
   { name: "kinds", reads: ["kinds"], build: (doc) => (has(doc, "kinds") ? [kindsCard(doc.kinds)] : []) },
-  // The router's two planes. The mirror's card is guarded on the coverage
-  // itself, not the section: the relay's document carries a `sync` section too,
-  // holding only the manifest. `relays` counts as coverage, since a roster that
-  // is entirely refused has no bands and no walked streams.
+  // The mirror's card is guarded on the coverage itself, not the section: the
+  // relay's document carries a `sync` section too, holding only the manifest.
+  // `relays` counts as coverage: an entirely refused roster has no bands.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams || doc.sync?.data?.relays ? [syncCard(doc.sync)] : []) },
   { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
-  // `reads: []`: built once and never rebuilt by the poller, because it holds
-  // what the reader asked for over a websocket. `doc.relay` is the served
-  // relay's ws url; a page on the monitor's port must not derive its socket
-  // from `location`.
+  // `reads: []`: built once, because it holds what the reader asked for over a
+  // websocket. `doc.relay` is the served relay's ws url; a page on the monitor's
+  // port must not derive its socket from `location`.
   { name: "verdicts", reads: [], build: (doc) => (has(doc, "monitor") ? [verdictsCard(doc.relay)] : []) },
 ];
 
