@@ -167,6 +167,48 @@ states its own admission rule:
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# Asks each relay whether what it SERVES matches what it was ASKED — the kind,
+# the window, the size — and prints what each bar in `RelayCompliance` would
+# decide from it. The check the stability gate above structurally cannot make:
+# that one compares two answers to each other, so a relay serving the same wrong
+# events to every REQ passes it at 1.000. The bars it prints are PROVISIONAL;
+# run this more than once before moving either, for the reason the table in
+# RelayConsistency.ANCHOR_LAG_SECONDS records. Asserts nothing.
+./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
+#   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
+
+# DOES THE ABORT SAMPLER FIRE AT ALL — the half `RelayPagesTest` cannot reach.
+# That suite builds the Sample by hand and gives ClientRelayPages a client that
+# never delivers a message, so every assertion in it would pass just as happily
+# if quartz never dispatched an EventMessage to a connection listener in its
+# life — which is the whole mechanism, and was inferred from bytecode. This runs
+# a real client at a real relay and stages the aborting shape: a live tail, and
+# a walk over an empty window that ends DRAINED with downloaded=0 so the pool's
+# own onEvent never fires. Measured on nos.lol: the walk downloaded 0, onEvent
+# fired 0 times, and the sampler recorded 3 events under the tail's own
+# subscription id, flagged as above the `until`. Wants a BUSY relay. Asserts
+# nothing.
+./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i
+
+# DO #187'S RELAYS WORK ON EVERY STREAM: the real VisitPool, both outbox ask
+# shapes (141 kinds and 3), ALL 137 relays the issue names, a real Vespa, and a
+# store seeded first with real kind-10002 relay lists off the deployment's own
+# relay. The issue's 109 failed on ONE stream and served the other, which cannot
+# be a cursor fault — the ask is the only thing that differs. Measured
+# 2026-09-04: 1,065 visits, 2,488 relay lists seeded, ZERO abortedUnpageable,
+# 58 of 137 clean, 77 failing on BOTH streams and only 2 on one. What failed
+# went QUIET (End.IDLE), 71/71 across the two widths. Run it with the
+# deployment's own nsec before believing any of it — a throwaway key reads a
+# relay's policy as its behaviour.
+DOCKER_MIN_API_VERSION=1.24 dockerd &
+VESPA_MEM_LIMIT=6g docker compose up -d vespa
+until curl -sS http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 5; done
+ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCensusLiveProbe*' --rerun -i
+#   …relays of your own: -DabortCensusUrls='wss://a.example,wss://b.example'
+#   …and longer, since a revisit is five minutes: -DabortCensusMinutes=15
+#   …AND THE DEPLOYMENT'S OWN KEY, which is the one relays allowlist:
+#   -DabortCensusNsec=nsec1…
+
 # THE WHOLE #185 FIX, RUNNING: the real VisitPool, the real relay client, relays
 # that refuse us, and a real Vespa the events have to land in. Everything else
 # written for that issue is a unit test over a fake, a browser probe over a
@@ -190,6 +232,7 @@ WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRes
 #   …with the deployment's own identity, which is the one relays allowlist:
 #   -DreachNsec=nsec1…      -DreachUrls='wss://a.example,wss://b.example'
 #   …and the control arm:   -DreachNoAuth=true
+
 # Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
 # true, explicit false, and the derived default — and prints hasAuthResponder()
 # beside them. Pins that this router's client really does have a NIP-42
@@ -701,6 +744,12 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           NOTICE/CLOSED text quartz's PagedFetchResult has no
                           room for, kept per relay and dated so a walk can only
                           read the sentence its own REQ earned
+    RelayPages.kt         …and what it SENT: the page an abort could not name,
+                          because a walk aborts on `downloaded == 0` and the
+                          events that would say why are dropped by the match
+                          that produced the abort. ARMED per ask rather than
+                          always on — it is a listener on every event of every
+                          socket of both planes
     FilterWidths.kt       how many kinds each relay takes in one filter,
                           learned from its own refusal, so an over-wide ask is
                           re-sent in chunks instead of refused forever
@@ -741,6 +790,14 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     RelayAliases.kt       which discovered urls are ONE relay (see below)
     ConsistencyPass.kt    the pass that measures the stability gate
     RelayConsistency.kt   which relays answer one filter the same way twice
+    RelayCompliance.kt    …and which relays answer THE FILTER at all — the
+                          other half, and the one the gate above structurally
+                          cannot see: it compares two answers to each other, so
+                          a relay serving the same wrong events to every REQ
+                          scores 1.000. Graded by the fitness pass, on the ask
+                          ladder it was already paying for plus ONE second page
+                          — which is also what proves the relay can be walked
+                          rather than merely answered once (#187)
     FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
                           the 30166 record, earned by answering a settled-anchor
                           probe — the tag [VisitPool]'s roster selects on
@@ -2032,7 +2089,7 @@ still pins them; `processorFact` is where the choice lives:
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
 not.** The passes write tags onto the same addressable kind 30166 record per url
 — `same-as` from the fold, `self-consistent` from the stability gate, `s` /
-`pageable` / `nip77` from the fitness pass — which is why
+`pageable` / `compliant` / `nip77` from the fitness pass — which is why
 `RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
 between the other's read and its store, silently, since the result is still a
@@ -3310,6 +3367,333 @@ for. Re-run this probe more than once before moving the bar or the depth.
 The seven-day anchor is not there to let a relay converge — it is there to
 remove OUR anchor from the list of explanations, so a failure cannot be blamed
 on new events, indexing lag, or replication.
+
+**Consistency is not compliance, and the gate above cannot become one.** It
+compares two answers to EACH OTHER — set containment over ids, and nothing in it
+ever opens an event — so it catches the relay whose window is a fresh random
+slice per REQ and is blind by construction to the relay whose window is the SAME
+wrong slice every time. That second relay answers identically twice, scores
+1.000, and was certified `prime`. The failure it produces downstream is the one
+`RelayConsistency`'s own header describes for the first: bands and coverage
+built over events the ask never wanted.
+
+So the second question — **do the events match the filter that asked for
+them** — is `RelayCompliance`, graded by `FitnessPass` and published as a
+`compliant` tag beside `pageable`, with `noncompliant` as the refusal. What is
+checked, and where the evidence comes from:
+
+| check | evidence | where it comes from |
+|---|---|---|
+| `kinds` | events of a kind the filter did not name | the second page, which carries one where the ladder's bare rung cannot |
+| `until` | events stamped above the cursor they were asked under | every page of the walk, against THAT page's own cursor |
+| `limit` | events beyond what the page asked for | every page — published as a fact, never graded on |
+
+Three things about the shape:
+
+- **The tally is per PAGE, not per walk.** `until` steps down as a walk pages
+  backwards, so an event above page four's cursor is the cursor being ignored
+  even when it sits below the anchor. `FitnessPass` counted against the anchor
+  alone before this and scored those relays clean.
+- **One extra REQ per url per sweep** — `AliasProbe.pageBelow`, ten events,
+  which is also the second page #187 needs. It carries the rung's own shape, so
+  on a bare walk `kinds` goes unchecked; see the three rules below the table. Its budget is a quarter of the
+  url's whole deadline, and when that clock fires the url is still graded on
+  one page; the pass says so on its own line, because a check that silently
+  stops checking looks exactly like a corpus that passed.
+- **Over-serving the `limit` is deliberately not a refusal.** An over-served
+  event matches the filter; it was simply not asked for yet. It costs bandwidth,
+  which is why it is measured, and it does not make the answer wrong.
+
+**The 300s slack applies to the ANCHOR and never to a cursor the relay itself
+supplied.** An anchor is our clock against an author's `created_at`, so a
+publisher running fast puts an honestly-served event above the line and the
+slack absorbs it. Page two's cursor is one of the relay's OWN stamps minus one
+— no second clock, nothing to absorb — and leaving the slack there is not
+conservative but blind: twenty events at a busy relay span SECONDS, so a
+cursor-ignoring relay re-serving them lands inside five minutes of the cursor
+every time and scores as a walk that advanced. That is #187's failure surviving
+the check written for it, and it is what `Compliance.of(slack = 0)` is for.
+
+**The two bars are PROVISIONAL and the probe for them is written.** A relay is
+refused at ≥3 off-filter events AND ≥10% of the answer — both, because a share
+alone refuses a thin answer (one wrong out of two) and a count alone refuses a
+firehose (three wrong out of five hundred). Neither number has been taken
+against the network yet. `RelayComplianceProbe` prints exactly what each bar
+would decide per url, asserts nothing, and the table above this one is the
+standing warning about believing a single run of it:
+
+```bash
+./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i
+#   …or hosts of your own: -DcomplianceUrls='wss://relay.example,wss://other.example'
+```
+
+Record what it says here when it has been run twice, and move the bars in the
+same commit as a `FITNESS_EPOCH` bump — which is what took every epoch-1 `prime`
+back when this check shipped, since none of them was ever tested against it.
+
+**One page is not a walk, and for a year the `pageable` tag said it was
+(#187).** The pass sizes its walk at `FITNESS_TARGET` (20) and asks for that
+many at once, so a relay serving a full page satisfies the target on the FIRST
+`fetch` and `AliasProbe.walk` returns having never moved the cursor. The tag
+then read `"20 events, all at or below the anchor"` — a statement about one
+anchored page, published as a statement about paging.
+
+Measured on `vespa-eventstore-staging`, one 11-minute window on a fresh pod:
+
+| | |
+|---|---|
+| relays the mirror aborted with `End.UNPAGEABLE` | 137 |
+| of those, found in the monitor's own 30166 records | 137 |
+| graded `prime` | **137 (100%)** |
+| tagged `pageable: true` | **137 (100%)** |
+
+`nostr.wine`, `relay.primal.net`, `eden.nostr.land`, `nostr.mom`,
+`relay.nostr.com` and `nostr.bitcoiner.social` are in that list, so this is not
+a fringe of broken hobby relays. It is also the most expensive kind of bad
+roster entry, because it does not fail — it answers, takes a visit, delivers
+events, advances nothing, and leaves its relay unreconciled.
+
+**THE MECHANISM IS NOT CONFIRMED, AND THE OBVIOUS ONE IS RULED OUT.** The
+reading that produced the fix below — "honours `until` for the first ask, serves
+the present ever after" — was checked against the relays the issue names and
+does NOT hold. `RelayComplianceProbe` dialled eight of them in five ask shapes
+each: the monitor's bare rung, the second page below it, the mirror's
+`kinds=[0] since=…` and `kinds=[1] since=…`, and the OUTBOX shape with `authors`
+bound to pubkeys the relay had just served. Every relay that answered advanced
+the cursor or drained honestly, on every shape:
+
+| url | page two | mirror `k0` | mirror `k1` | outbox `k0` (authors bound) |
+|---|---|---|---|---|
+| `relay.nostr.com` | advanced | advanced | advanced | drained |
+| `relay.primal.net` | advanced | advanced | advanced | drained |
+| `nostr.mom` | advanced | advanced | advanced | drained |
+| `nostr.semisol.dev` | advanced | advanced | advanced | drained |
+| `nostr.einundzwanzig.space` | advanced | advanced | advanced | drained |
+| `relay.pleb.one` | advanced | advanced | advanced | advanced |
+| `ec1.f7z.io` | advanced | advanced | advanced | drained |
+| `relay.bchnostr.com` | advanced | advanced | advanced | drained |
+
+(`nostr.wine` answered no window at all — it is auth-gated — and
+`haven.dergigi.com` answered an empty one.)
+
+**AND THE ABORT ONLY FIRES ON A WALK THAT DELIVERED NOTHING**, which reframes
+what is being looked for. `VisitPool.refusedOutright` is `downloaded == 0 &&
+end in {IDLE, CLOSED, AUTH_REQUIRED, CANNOT_CONNECT, UNPAGEABLE}` — so
+`abortedUnpageable` counts a walk where NOT ONE EVENT MATCHED THE ASK, on any
+page. An `UNPAGEABLE` that downloaded anything is recorded as a band, not
+aborted. "Honours page one, stalls on page two" cannot produce the counter at
+all: page one's events would already have been downloaded. The fault is at the
+FIRST page, and it is closer to "the relay served something that was not asked
+for" than to "the relay would not step its cursor" — which is
+[RelayCompliance]'s subject, not this one's.
+
+Six ask shapes were then run against the named relays, each through the code
+that would see the fault, and NONE reproduces it:
+
+| shape | what it tests | result |
+|---|---|---|
+| monitor bare rung + page two | our own check | advanced or drained, every relay |
+| mirror `kinds=[0] since=…` | the aborting kind | advanced |
+| mirror `kinds=[1] since=…` | a busy kind | advanced |
+| outbox `kinds=[0] authors=…` | the replaceable current-version path | drained |
+| older leg `since` AND `until` together | the only ask whose FIRST page carries a cursor | window honoured |
+| `contentViaOutbox`'s real 141 kinds + one author, through quartz's own `fetchAllPages` | the production ask, the production pager, quartz's own `End` | **DRAINED, every relay** |
+
+The last row is the one that matters: same kinds, same single-author split
+(`RosterBuilder.asksOf` binds one author per filter, structurally), same
+`fetchAllPages`, and the ending quartz itself reports. Twelve relays, all
+DRAINED.
+
+What a clean dial still is NOT: the pool visits at `visitConcurrency = 96` with
+up to 500 live tails, over sockets shared between streams, under the
+deployment's own NIP-42 identity, and its authors are 30382-paired providers
+rather than pubkeys the relay was just seen to serve. So the remaining
+hypotheses are about LOAD AND STATE rather than about a relay's cursor
+handling, and none of them can be reached from outside the deployment.
+
+Two things follow, and the second is the open one:
+
+- **The second page is still the right check** and the argument for it needs no
+  relay to misbehave: one page cannot be evidence about paging, and it was
+  being published as if it were. The same goes for the empty-page claim below.
+  Both are about what this pass may honestly SAY.
+- **What the mirror is aborting on is still unexplained.** A clean single-socket
+  dial is not the mirror's situation: its asks carry real author sets, many
+  filters merged onto one REQ, and a socket shared with live tail subscriptions
+  from other streams. `PagedFetchResult.End.UNPAGEABLE` is quartz's verdict, not
+  ours, and reading its bytecode it has more than one path — one fires when a
+  page's ids were ALL already seen, and one when a page ARRIVED but nothing on
+  it matched the filter (the min-`created_at` ref is still `Long.MAX_VALUE`).
+  The second is a walk that made no progress because the answer was not an
+  answer, which is not a paging fault at all. **The next step is on the mirror's
+  side, and only the deployment can take it** — which is what `RelayPages` is
+  for, below.
+
+**So the mirror now catches the page itself** — `RelayPages`, read by
+`VisitAborts`. An abort line had two of the three things it needs: `asked` (what
+we sent) and, through `RelayComplaints`, `said` (what the relay answered in
+words). The third is what the relay answered in EVENTS, and no instrument in the
+process could see it: quartz calls the pool's `onEvent` only for events matching
+the filter, and an abort is `downloaded == 0` — so on exactly the walks worth
+diagnosing, the pool's own hook never fires. The events crossed the socket and
+were dropped by the match that produced the abort.
+
+The sample is taken on the connection listener, the one seam upstream of that
+match, and every part of the design is about not paying for it:
+
+- **Armed, not always on.** This runs for every event of every socket of both
+  planes — the mirror's ingest and the monitor's 20,000-url probe passes alike.
+  Disarmed it costs one `isEmpty` per message; armed it costs a map lookup and,
+  for at most five events per walk, a small append. The slot is taken before the
+  ask and given back in a `finally`.
+- **One sampler per relay.** Several streams walk one relay over one socket, so
+  `arm` takes the slot with `putIfAbsent` and hands the loser nothing — a second
+  sample would be the first walk's events, and a line attributing them would be
+  worse than no line.
+- **Subscription ids are reported, not filtered on.** The walk's own id is not
+  knowable from a connection listener (`fetchAllPages` mints its own), and a
+  page carrying another subscription's events is itself the answer: one id is
+  the walk, several means the socket's other traffic landed inside the ask,
+  which is a different fault with a different fix.
+- **The sentence is comparisons, not counts.** "3 off-kind", "2 above the
+  `until`" — because the question is never what the relay sent, it is which part
+  of the ask went unhonoured. And a page that matched everything says so in
+  those words, since that reading is not a relay misbehaving at all but our own
+  side of the walk, and an operator has to be able to tell.
+- **Nothing sampled prints nothing.** A socket that carried no event is not
+  evidence, and "sent 0 events" would read as a finding.
+
+One line, on the existing half-hourly per-(stream, relay, reason) gate, should
+settle in a single production pass what six shapes of clean dial could not.
+
+**AND THE 109 WERE PUT THROUGH THE REAL POOL.** #187 splits its relays into 28
+that failed on BOTH outbox streams and 109 that failed on ONE, and that second
+number is the sharpest fact in the issue: a relay refusing one stream and
+serving the other is the same server on the same socket under the same pool and
+the same quartz, so nothing about its cursor can differ between them. The ASK is
+what differs — `contentViaOutbox` carries 141 kinds, `profileViaOutbox` carries
+3. A fault that follows the STREAM is the filter's; one that follows the RELAY
+is the relay's; and they want opposite fixes.
+
+`AbortCensusLiveProbe` runs both streams over **all 137** through the real
+`VisitPool`, the real client and a real Vespa, seeded first with 2,488 real
+kind-10002 relay lists pulled off `search-staging.brainstorm.world` — the
+deployment's own corpus, through its NIP-42 and its trust lens. Twenty minutes,
+**1,065 visits**:
+
+| | |
+|---|---|
+| `abortedUnpageable` | **0** |
+| `abortedQuiet` | 417 |
+| `abortedUnreachable` | 4 |
+| relays that never aborted | 58 of 137 |
+| aborted on BOTH streams | 77 |
+| aborted on ONE stream | **2** — `nostr.bitcoiner.social`, `relay.nmail.li` |
+
+**The fault does not follow the stream, and it is not `unpageable`.** The quiet
+aborts split 71 / 71 between the 141-kind ask and the 3-kind one — identical
+counts, so width discriminates nothing — and 77 of the 79 failing relays failed
+on both. #187's "109 failed on ONE stream" did not reproduce: two did.
+
+**What DID fail is a relay that connects and then never EOSEs**, which is
+`PagedFetchResult.End.IDLE`, not the cursor. Every one of those lines carries no
+page sample — correctly, since a silent relay sends nothing to sample and the
+instrument says nothing rather than "sent 0 events". A relay serving the wrong
+events would have shown its page there, which is the point of having it.
+
+**A CORRECTION, because an earlier note here had it backwards.** The outbox
+streams do NOT bind authors. Both `relaySource` blocks are a bare
+`{"kinds":[30166],"#l":["prime"]}` with no `select`, so `bindings` is empty and
+`RosterBuilder.asksOf` returns ONE unbound ask carrying the stream's whole
+filter. The per-author split belongs to the `assertions` stream, whose select
+binds `authors = 1` off a 30382 tag. So the census above sent exactly the ask
+production sends, and there is no author gap to close.
+
+**What is still missing is the IDENTITY.** This ran under a throwaway key, and
+`RelayReachLiveProbe` already measured what that costs: sixteen of #185's fifty
+"unreadable" relays served us once NIP-42 was answered, and the key relays
+allowlist is the deployment's own. A run without it reads a relay's POLICY as
+its behaviour, which is very likely what the 417 quiet aborts are. Re-run with
+`-DabortCensusNsec=nsec1…` before concluding anything about a particular relay
+on the list — that, and the deployment's 96-way concurrency with 500 live tails,
+are the two differences left.
+
+**The seam was verified against a real relay before being believed**, because
+the unit suite structurally cannot: it builds the sample by hand and gives the
+listener a client that never delivers a message, so it would be just as green if
+quartz dispatched no event to a connection listener at all — and that dispatch
+was inferred from bytecode. `RelayPagesLiveProbe` stages the aborting shape on
+`nos.lol`: the walk ended DRAINED with `downloaded = 0` and its `onEvent` fired
+zero times, while the sampler recorded three events under the tail's own
+subscription id, flagged as above the `until`. That is both claims at once — the
+events are there when every instrument downstream of the match has lost them,
+and a foreign subscription is legible as foreign.
+
+Two things that probe corrected on the way, and both are the same lesson:
+
+- **A first cut armed the sampler for ~100ms** — the drain is instant — against
+  a relay serving an event every few seconds, saw nothing, and read it as the
+  seam being broken. The instrument was fine and the measurement was not.
+- **The sentence hard-coded "quartz then counted as none"**, which is true where
+  `VisitPool` calls it (a refusal is `downloaded == 0` by definition) and false
+  the first time anything else does — the probe was told quartz had counted none
+  of the 158 events it had just downloaded. `render` takes the count now.
+
+With that said, the pass asks a second page at `until = <oldest event of page
+one> - 1`, strictly below, and reads its three possible answers:
+
+**Three rules the pre-merge audit put here, each of which was violated by the
+first cut of this check and none of which a passing test caught:**
+
+- **Page two is page two OF PAGE ONE.** It asks the shape the rung that answered
+  used — null included. Substituting `kinds=[1]` on a bare walk so the tally
+  could see `offKind` re-creates the exact unearned claim: a relay that answered
+  a bare page one and holds no kind 1 below the cursor drains that page two
+  honestly, and the drain reads as "the walk terminates" for a walk nobody made.
+  What it costs is the `kinds` dimension on the relays that answer the bare rung
+  — most of them — and that is not recoverable in one round trip. It is a fair
+  price: a relay answering with events it was not asked for is answering ABOVE
+  THE CURSOR too, which a bare page two sees perfectly well.
+- **The verdict is handed over BEFORE any further dial.** The second page can
+  change it, so it was tempting to wait — and waiting meant the per-url deadline
+  firing during that ask left the url with no verdict at all, where the ladder
+  had already proved one. Those urls count as `abandoned`, `abandoned` feeds the
+  batch guard's blind share, and a slow enough batch would then refuse to
+  publish any of its own verdicts. A paging check must not be able to cost a
+  pass its output. A later refusal simply replaces the handover, exactly as the
+  NEG-OPEN's fuller verdict already does.
+- **The slack belongs to the ANCHOR alone.** Only page one's `until` is our
+  clock against an author's stamp. Every page after it — inside a walk as much
+  as in `pageBelow` — is asked below a timestamp the relay itself served, where
+  five minutes of grace is not conservative but blind: a busy relay's page spans
+  seconds, so a cursor-ignoring relay re-serving it lands inside the slack every
+  time. `Compliance.of` takes the slack as a parameter for exactly this.
+
+And one for the sampler: **`RelayPages` counts on arrival and keeps rows only
+for display.** Tallied at render over the retained rows, a 158-event page whose
+first five happened to match reported "all of them MATCHING the ask" — the
+sharpest sentence the instrument has, the one pointing at OUR side of the walk —
+about a page that was mostly the relay's fault.
+
+| page two | what it proves | verdict |
+|---|---|---|
+| events at or below the cursor | the cursor advanced; a walk terminates | `pageable: true` |
+| **empty** | a DRAIN — a cursor-ignoring relay would have served its newest events again | `pageable: true`, the strongest of the three |
+| its newest events again | the cursor was ignored | **`unpageable`** |
+
+It is the same REQ as the compliance check above, which is why the whole of
+this costs one round trip: it carries a `kinds`, a `limit` and an `until`, so
+one answer settles both questions. It is asked through the rung that answered,
+because a group host holds no kind 1 and would drain a `kinds=[1]` ask honestly
+— which this would then read as a walk that terminated.
+
+**`pageable: true` on an empty first page is gone** — 26% of the 137, granted on
+`"empty anchored page, honestly EOSEd"`. An honest EOSE proves the relay
+answers; there was never anything there to page from. Those urls now carry NO
+`pageable` tag and are counted on the pass's own line. They keep their grade:
+absence of evidence is not a refusal here, for the reason the `silent` branch
+spells out at length, and an empty anchored page is the honest answer of every
+relay holding nothing recent.
 
 **Most of a candidate set is never decided, and that is the normal state rather
 than a fault.** A pass dials its whole set — the per-pass budget was dropped —

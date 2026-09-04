@@ -357,7 +357,235 @@ class AliasProbe(
          * instantly.
          */
         val firstPageMs: Long? = null,
+        /**
+         * What the relay DID with the filter it was handed — see [Compliance].
+         *
+         * Zeroed on a walk that got no page, which is the same "no evidence"
+         * a null [ids] already says. A caller must read [seen][Compliance.seen]
+         * before believing a zero: nothing off-filter and nothing at all look
+         * identical in the counters and are opposite findings.
+         */
+        val compliance: Compliance = Compliance(),
+        /**
+         * The OLDEST `created_at` among the ids kept — where a walk of this url
+         * would ask next, and the only thing a second page can be anchored on.
+         *
+         * Of the KEPT ids, not of everything the walk saw: a walk that overshot
+         * its target by a page has trimmed the excess, and a floor taken from
+         * events that are not in the window would step past events the window
+         * claims to contain.
+         *
+         * Null when nothing came back, which is exactly the case that cannot be
+         * paged-tested at all — see [FitnessPass]'s unproven branch.
+         */
+        val oldestAt: Long? = null,
     )
+
+    /**
+     * DID THE ANSWER MATCH THE ASK — the counters, and nothing that judges them.
+     *
+     * ## Why this is not the same question as consistency
+     *
+     * [RelayConsistency] asks one filter twice and compares the two answers to
+     * EACH OTHER. That catches a relay whose answer is a fresh random slice
+     * every time, and it is blind by construction to the one next door: a relay
+     * that answers every REQ with the same wrong events agrees with itself
+     * perfectly, scores 1.000 containment, and is certified. Nothing in that
+     * comparison ever reads a field of an event, so nothing in it can notice
+     * that the events are not what was asked for.
+     *
+     * This is the other half. Every check here is one event against the filter
+     * that fetched it, so it needs no second walk and no second relay — the
+     * evidence is already in hand on any ask the pass was going to make anyway.
+     *
+     * ## What is counted, and against what
+     *
+     * Against THE PAGE'S OWN filter, never the walk's first one. `until` steps
+     * down as a walk pages backwards, so an event above page four's cursor is
+     * the cursor being ignored even when it sits below the anchor the walk
+     * started at — and a tally kept against the anchor alone would score that
+     * relay clean.
+     *
+     * [offKind] is the check that needs an ask shaped for it: a bare
+     * `{"limit": n, "until": …}` constrains no kind, so nothing it returns can
+     * be off-kind and a zero here means only that the question was not put. That
+     * is what [kindsAsked] exists to say, and what [pageBelow] — the second page,
+     * which carries one — exists to make true for the relays that answer the
+     * bare rung.
+     */
+    data class Compliance(
+        /** Events the answer carried, off-filter ones included. The denominator. */
+        val seen: Int = 0,
+        /** …of which carried a kind the filter did not ask for. Only meaningful when [kindsAsked]. */
+        val offKind: Int = 0,
+        /** …of which were stamped above the `until` they were asked under, past [WINDOW_SLACK_SECONDS]. */
+        val offWindow: Int = 0,
+        /**
+         * Events served BEYOND the `limit` asked for, summed over pages.
+         *
+         * Counted apart from [offFilter] and deliberately not a per-event fault:
+         * an over-served event is a real event that really matches, so the
+         * answer is not WRONG, it is merely larger than the ask. It costs
+         * bandwidth and it says something about the relay, which is why it is
+         * measured; it does not poison a walk the way a wrong kind does, which
+         * is why [RelayCompliance] does not refuse on it.
+         */
+        val overLimit: Int = 0,
+        /**
+         * DISTINCT events failing at least one per-event check — the numerator.
+         *
+         * Not [offKind] + [offWindow]: one event can be both, and a share built
+         * by adding the two would climb past 1.0 on exactly the relay this is
+         * for, the one answering a narrow ask with its newest firehose.
+         */
+        val offFilter: Int = 0,
+        /** Was a `kinds` actually asked? A zero [offKind] means nothing without it. */
+        val kindsAsked: Boolean = false,
+    ) {
+        /** Two tallies of the same relay — pages of one walk, or a walk and the second page below it. */
+        operator fun plus(other: Compliance) =
+            Compliance(
+                seen = seen + other.seen,
+                offKind = offKind + other.offKind,
+                offWindow = offWindow + other.offWindow,
+                overLimit = overLimit + other.overLimit,
+                offFilter = offFilter + other.offFilter,
+                kindsAsked = kindsAsked || other.kindsAsked,
+            )
+
+        companion object {
+            /** One page against the filter that asked for it. */
+            fun of(
+                events: List<Event>,
+                limit: Int,
+                until: Long?,
+                kinds: List<Int>?,
+                /**
+                 * How far above [until] an event may be stamped before it
+                 * counts — [WINDOW_SLACK_SECONDS], and ZERO where the cursor is
+                 * the relay's own arithmetic.
+                 *
+                 * The slack exists because an ANCHOR is our clock and a
+                 * `created_at` is the author's: a publisher running a few
+                 * minutes fast puts an honestly-served event above the line.
+                 * That argument evaporates the moment the cursor is derived
+                 * from the relay's OWN stamps — [pageBelow] asks below an event
+                 * the relay itself served — and leaving the slack in there is
+                 * not conservative, it is blind: 20 events at a busy relay span
+                 * SECONDS, so a relay re-serving the same page against a
+                 * stepped cursor lands inside five minutes of it every time and
+                 * scores as a cursor that advanced. That is the exact failure
+                 * #187 is about, surviving the check written for it.
+                 */
+                slack: Long = WINDOW_SLACK_SECONDS,
+            ): Compliance {
+                var offKind = 0
+                var offWindow = 0
+                var offFilter = 0
+                for (event in events) {
+                    val wrongKind = kinds != null && event.kind !in kinds
+                    val aboveWindow = until != null && event.createdAt > until + slack
+                    if (wrongKind) offKind++
+                    if (aboveWindow) offWindow++
+                    if (wrongKind || aboveWindow) offFilter++
+                }
+                return Compliance(
+                    seen = events.size,
+                    offKind = offKind,
+                    offWindow = offWindow,
+                    overLimit = (events.size - limit).coerceAtLeast(0),
+                    offFilter = offFilter,
+                    kindsAsked = kinds != null,
+                )
+            }
+        }
+    }
+
+    /**
+     * THE SECOND PAGE — one ask below where the first one ended, and the only
+     * evidence that a relay can actually be WALKED.
+     *
+     * ## Why one page is not a walk (#187)
+     *
+     * The fitness pass sizes its walk at [FitnessPass.FITNESS_TARGET] events and
+     * asks for that many at once, so a relay serving a full page satisfies the
+     * target on the FIRST fetch and [walk] returns without ever moving the
+     * cursor. Its `pageable` tag then said "20 events, all at or below the
+     * anchor" — a statement about one anchored page that was being read as a
+     * statement about paging.
+     *
+     * Measured on `vespa-eventstore-staging`, one 11-minute window: 137 relays
+     * the mirror aborted with `PagedFetchResult.End.UNPAGEABLE` were ALL in our
+     * own records, ALL graded `prime`, and ALL tagged `pageable: true` — 100% of
+     * them, and 49% of every aborted visit in that window.
+     *
+     * **WHAT THE MIRROR TRIPS ON IS NOT PROVEN TO BE THIS.** Eight of those
+     * relays were then dialled directly, in five ask shapes each including the
+     * mirror's own and the outbox shape with `authors` bound, and every one that
+     * answered advanced the cursor or drained honestly — see
+     * `RelayComplianceProbe` and AGENTS.md for the table. So the second page is
+     * NOT justified here as a reproduction of that fault, and the argument for
+     * it does not need one: one page cannot be evidence about paging, and this
+     * pass was publishing it as if it were.
+     *
+     * ## What this proves, in three answers
+     *
+     * Asked at `until = <the oldest event of the first page> - 1`, strictly
+     * below, so the cursor has to have moved for anything at all to be correct:
+     *
+     *  - **a page of events at or below it** — the cursor advanced. A walk
+     *    against this relay terminates.
+     *  - **an empty page** — a DRAIN, and the strongest answer of the three: a
+     *    relay ignoring the cursor would have served its newest events again,
+     *    and this one served nothing. The walk terminates here.
+     *  - **its newest events again** — the cursor was ignored, which is
+     *    [Verdict.UNPAGEABLE] word for word and exactly what the mirror aborts
+     *    on.
+     *
+     * ## THE SHAPE IS THE LADDER'S, and substituting one breaks the claim
+     *
+     * [kinds] is passed through exactly as the rung that answered used it —
+     * null included. An earlier cut defaulted a null to [FALLBACK_KINDS] so the
+     * ask would carry a `kinds` and the compliance tally could see `offKind`,
+     * and that is the same unearned claim this whole check exists to remove: a
+     * relay that answered a BARE first page and holds no kind 1 below the
+     * cursor drains a `kinds=[1]` page two honestly, and the drain would be
+     * read as "the walk terminates" for a walk nobody made. Page two must be
+     * page two OF PAGE ONE.
+     *
+     * What that costs is the `kinds` dimension on the relays that answer the
+     * bare rung — most of them. It is not recoverable in one round trip, and a
+     * second REQ per url per sweep is not worth a check that only sharpens a
+     * fault `until` and `limit` already catch: a relay answering with events it
+     * was not asked for is answering ABOVE THE CURSOR too, which a bare page
+     * two sees perfectly well. [Compliance.kindsAsked] is what stops the
+     * resulting zero from being read as a clean sheet.
+     *
+     * Null is the relay not answering at all, empty is the drain above — the
+     * distinction the whole class is built on, and here the difference between
+     * "we could not test it" and "it passed".
+     *
+     * Everything it returns goes to [onEvent] like any other window: a check
+     * that also syncs, same bargain as the rest of the class.
+     */
+    suspend fun pageBelow(
+        url: NormalizedRelayUrl,
+        until: Long,
+        /**
+         * The shape the rung that answered used, passed through UNCHANGED —
+         * null for the bare rung. See the header: substituting a `kinds` here
+         * makes a drain prove nothing.
+         */
+        kinds: List<Int>?,
+        onEvent: suspend (Event) -> Unit,
+    ): Compliance? {
+        val events = fetch(url, COMPLIANCE_LIMIT, until, kinds).events ?: return null
+        for (event in events) onEvent(event)
+        // NO SLACK — see [Compliance.of]'s parameter. This cursor is one of the
+        // relay's own timestamps minus one, so there is no clock but its own on
+        // either side of the comparison and nothing for a slack to absorb.
+        return Compliance.of(events, COMPLIANCE_LIMIT, until, kinds, slack = 0)
+    }
 
     private suspend fun walk(
         url: NormalizedRelayUrl,
@@ -378,6 +606,13 @@ class AliasProbe(
         var stalls = 0
         // Set once, by the first ask that comes back — see [Window.firstPageMs].
         var firstPageMs: Long? = null
+        // What every page of this walk did with the filter that asked for it.
+        // Accumulated rather than taken from the last page: a relay that serves
+        // one honest page and then stops honouring the cursor has done both
+        // things, and only the sum says so.
+        var compliance = Compliance()
+        // Which page this is, for the slack rule at the tally below.
+        var pagesAsked = 0
 
         // Every exit from this walk goes through here, so the measurement
         // cannot be dropped by whichever of the seven returns is taken.
@@ -385,7 +620,16 @@ class AliasProbe(
             found: Set<String>?,
             authRefused: Boolean = false,
             reason: String? = null,
-        ) = Window(found, authRefused, reason, firstPageMs)
+        ) = Window(
+            found,
+            authRefused,
+            reason,
+            firstPageMs,
+            compliance,
+            // Over the KEPT ids rather than over everything walked — see
+            // [Window.oldestAt].
+            found?.let { kept -> ids.entries.filter { it.key in kept }.minOfOrNull { it.value } },
+        )
 
         repeat(maxPages) {
             if (ids.size >= target) return done(newest(ids))
@@ -428,6 +672,23 @@ class AliasProbe(
                 }
                 return done(newest(ids))
             }
+            // AGAINST THIS PAGE'S OWN FILTER — `size`, `until` and `kinds` as
+            // they stand on this iteration, not as the walk began. See
+            // [Compliance]. Tallied before the events are folded into `ids`,
+            // because a duplicate id collapses there and an off-filter event
+            // the relay sent twice was sent twice.
+            //
+            // AND THE SLACK IS THE FIRST PAGE'S ALONE. Only page one's `until`
+            // is the CALLER's anchor, our clock against an author's stamp, which
+            // is the whole argument for [WINDOW_SLACK_SECONDS]. Every page after
+            // it is asked below a timestamp the relay itself served, where there
+            // is no second clock and nothing to absorb — and where five minutes
+            // of grace is not conservative but blind, because a busy relay's
+            // page spans seconds and a cursor-ignoring one re-serving it lands
+            // inside the slack every time. The same distinction [pageBelow]
+            // makes, applied where the walk makes it too.
+            compliance += Compliance.of(events, size, until, kinds, slack = if (pagesAsked == 0) WINDOW_SLACK_SECONDS else 0)
+            pagesAsked++
             val before = ids.size
             for (event in events) {
                 onEvent(event)
@@ -541,6 +802,26 @@ class AliasProbe(
 
         /** Consecutive pages that add nothing before the walk gives up. */
         private const val MAX_STALLS = 2
+
+        /**
+         * How far above an `until` an event may be stamped before it counts as
+         * the cursor being ignored: FIVE MINUTES.
+         *
+         * A compliant relay owes us `created_at <= until` exactly, so in
+         * principle the slack is zero. It is not zero because the number being
+         * compared is not ours on both sides: the cursor is our clock and the
+         * stamp is the AUTHOR's, and a relay that accepted an event from a
+         * publisher running a few minutes fast is serving it honestly at a
+         * `created_at` we would score above the line. Five minutes is wide
+         * enough to cover the ordinary fast clock and far too narrow to hide
+         * the failure this is for, where the answer is the relay's newest
+         * events and the gap is the whole anchor lag — a minute for the fold,
+         * SEVEN DAYS for the stability gate.
+         *
+         * Was [FitnessPass]'s own `ANCHOR_SLACK_SECONDS` and moved here with
+         * the check, so the one number is not two numbers kept in step by hand.
+         */
+        const val WINDOW_SLACK_SECONDS = 300L
 
         /**
          * The live wiring: one paged REQ per ask, over the router's own client.
@@ -671,6 +952,19 @@ class AliasProbe(
          * ordinary REQ.
          */
         const val MIN_PAGE = 10
+
+        /**
+         * How many events the second page asks for — see [pageBelow].
+         *
+         * [MIN_PAGE], because this is the one ask in the class whose size is a
+         * fact being TESTED rather than a depth being reached: a relay serving
+         * more than this asked for is over-serving, and the smallest ordinary
+         * REQ is the cheapest way to find that out. It is also all the depth the
+         * question needs — "did the cursor move" is answered by the first event
+         * of the second page — so a corpus-wide sweep pays ten events a relay
+         * for both this and the compliance check.
+         */
+        const val COMPLIANCE_LIMIT = MIN_PAGE
 
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
         private const val CANNOT_CONNECT = "cannot:"

@@ -479,6 +479,19 @@ class RelayVerdictRecord(
         evidence: String,
         pageable: Pair<Boolean, String>?,
         nip77: Pair<Boolean, String>?,
+        /**
+         * Did the answer match the ask — see [COMPLIANT_TAG].
+         *
+         * DEFAULTED where the two above are not, and the asymmetry is about
+         * what a null means. A caller that names neither `pageable` nor `nip77`
+         * is saying it took neither measurement; the same null here is the
+         * commoner case by far — a dial that got no page has nothing to check,
+         * and every caller that only cares which grade lands on a record has
+         * nothing to say about a filter it never asked. Naming it would be
+         * ceremony at those call sites, and the fitness pass, which is the only
+         * writer that ever HAS the fact, passes it explicitly.
+         */
+        compliant: Pair<Boolean, String>? = null,
         facts: RelayFacts = RelayFacts(),
     ): Event? {
         val at = nowSeconds().toString()
@@ -488,6 +501,7 @@ class RelayVerdictRecord(
                 add(arrayOf(LABEL_NAMESPACE_TAG, FITNESS_NAMESPACE))
                 pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 nip77?.let { (yes, why) -> add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+                compliant?.let { (yes, why) -> add(arrayOf(COMPLIANT_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 addAll(facts.tags())
             }
         return edit(url, owns = ::ownedByFitness, add = add)
@@ -550,7 +564,7 @@ class RelayVerdictRecord(
 
             LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX).let { it == null || it == FITNESS_NAMESPACE }
 
-            PAGEABLE_TAG, NIP77_TAG -> true
+            PAGEABLE_TAG, NIP77_TAG, COMPLIANT_TAG -> true
 
             else -> name in RelayFacts.OWNED
         }
@@ -1063,6 +1077,20 @@ class RelayVerdictRecord(
         /** Measured: does the relay honour `until`, i.e. can a paged walk terminate? */
         const val PAGEABLE_TAG = "pageable"
 
+        /**
+         * Measured: did the events it served MATCH the filter that asked for
+         * them — the kind, the window, the size?
+         *
+         * Beside [PAGEABLE_TAG] and not folded into it, because the two are a
+         * general fact and one special case of it: a relay whose every event is
+         * above the cursor cannot be paged at all (that is [Verdict.UNPAGEABLE],
+         * and a walk against it never terminates), while one that gets the kind
+         * wrong pages perfectly and still is not answering. A reader wanting
+         * "can I walk this" reads the first; one wanting "is this a relay"
+         * reads this.
+         */
+        const val COMPLIANT_TAG = "compliant"
+
         /** Measured: did it answer a NEG-OPEN, i.e. is reconcile on the table? */
         const val NIP77_TAG = "nip77"
 
@@ -1079,8 +1107,15 @@ class RelayVerdictRecord(
          * which is what lets a stream read a foreign monitor's records at all.
          *
          * **1** — the vocabulary and checks as first shipped.
+         *
+         * **2** — the filter-compliance check. A new refusal
+         * ([Verdict.NONCOMPLIANT]) that no epoch-1 verdict was ever tested
+         * against, so every `prime` taken under 1 is a claim this build no
+         * longer makes: the url may be answering with anything at all and the
+         * old pass would not have looked. The epoch is what takes those back
+         * rather than leaving them standing until their TTL runs out.
          */
-        const val FITNESS_EPOCH = "1"
+        const val FITNESS_EPOCH = "2"
 
         /**
          * Thirty days. Long enough that the probe is a one-off per url rather

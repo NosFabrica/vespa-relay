@@ -88,6 +88,21 @@ class ProbeDeadlineTest {
     private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
     /**
+     * A page of [events] at or below `until`, [want] at a time — an ordinary
+     * relay, which is what these tests need their fakes to be.
+     *
+     * A fetch that ignores the cursor IS a cursor-ignoring relay, and since
+     * #187 the fitness pass asks a second page and grades one `unpageable`.
+     * These tests are about clocks and write loops, so their relays have to
+     * page properly or every one of them measures the wrong thing.
+     */
+    private fun paged(
+        events: List<Event>,
+        want: Int,
+        until: Long?,
+    ) = AliasProbe.Page(events.filter { until == null || it.createdAt <= until }.take(want))
+
+    /**
      * A window short enough that the whole deadline fits in a test.
      *
      * The point of deriving the deadline from the idle window rather than from
@@ -109,13 +124,13 @@ class ProbeDeadlineTest {
      * failure — a fetch loop whose idle window is never armed.
      */
     private fun stalling(hits: AtomicInteger? = null): suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page =
-        { url, _, _, _ ->
+        { url, want, until, _ ->
             hits?.incrementAndGet()
             if (url == wedged) {
                 CompletableDeferred<Unit>().await()
                 error("unreachable")
             } else {
-                AliasProbe.Page(corpus())
+                paged(corpus(), want, until)
             }
         }
 
@@ -140,8 +155,8 @@ class ProbeDeadlineTest {
                 FitnessPass(
                     record = RelayVerdictRecord(store, signer),
                     probe =
-                        probe { url, _, _, _ ->
-                            if (url in fine) AliasProbe.Page(corpus()) else AliasProbe.Page(events = null, reason = null)
+                        probe { url, want, until, _ ->
+                            if (url in fine) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = null)
                         },
                     client = EmptyNostrClient(),
                     foldedAway = { emptyMap() },

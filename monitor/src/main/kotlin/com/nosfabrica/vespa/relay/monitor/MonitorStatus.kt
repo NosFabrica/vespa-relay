@@ -117,8 +117,8 @@ class MonitorStatus(
             put(
                 "scope",
                 "What this router has decided about the relay urls it discovers — which are one server wearing " +
-                    "several addresses, which cannot answer the same question twice, which are graded prime, and " +
-                    "which are unreachable. NOT what the mirror is doing with them: that is the sync service's page.",
+                    "several addresses, which cannot answer the same question twice, which do not answer the " +
+                    "question that was asked, which are graded prime, and which are unreachable. NOT what the mirror is doing with them: that is the sync service's page.",
             )
             put("timezone", "UTC")
             put("counted", "Counted over the relay urls this router discovers, not over its corpus.")

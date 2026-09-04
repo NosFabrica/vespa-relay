@@ -56,13 +56,20 @@ import java.util.concurrent.atomic.AtomicInteger
  * A sync stream's relay list is built from one filter over kind-30166 records:
  * `"#l": ["prime"]`. For that filter to be the WHOLE admission decision, the
  * value has to be a composite: reachable AND answering AND canonical AND
- * consistent AND pageable AND readable by us. Five of the refusals below
- * describe relays that are perfectly alive — an alias serves events, an
- * inconsistent relay answers promptly, a cursor-ignoring relay EOSEs every
- * page — which is why the value is not called "live". Slow is not a refusal
- * (rtt is a fact, not a fault), empty is not a refusal (a drain is the relay's
- * honest answer), and a small message cap is not a refusal (a shape the asks
- * respect).
+ * consistent AND pageable AND ANSWERING THE FILTER ASKED AND readable by us.
+ * Six of the refusals below describe relays that are perfectly alive — an alias
+ * serves events, an inconsistent relay answers promptly, a cursor-ignoring
+ * relay EOSEs every page, a noncompliant one serves real signed events all day
+ * — which is why the value is not called "live". Slow is not a refusal (rtt is
+ * a fact, not a fault), empty is not a refusal (a drain is the relay's honest
+ * answer), and a small message cap is not a refusal (a shape the asks respect).
+ *
+ * **`noncompliant` is the newest of them and the one no other pass could ever
+ * have earned.** The stability gate compares two answers to each other, so a
+ * relay serving the same wrong events to every REQ passes it at 1.000; nothing
+ * in that comparison opens an event. This pass reads them — see
+ * [RelayCompliance], which owns the rules, and [AliasProbe.Compliance], which
+ * owns the counters.
  *
  * The grade is a NIP-32 label under [RelayVerdictRecord.FITNESS_NAMESPACE] and
  * it names the RELAY, not our use of it — see [Verdict] for why that stopped
@@ -71,9 +78,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * ## No VERDICT is read off NIP-11; the descriptive fields are
  *
  * Every verdict here comes from what the relay DID: the ask ladder for whether
- * it answers, the anchored walk for whether it honours `until`, one NEG-OPEN
- * for whether it reconciles, quartz's own NIP-42 flow for whether our auth
- * sticks. NIP-11 documents routinely disagree with the relay's own practice —
+ * it answers, a SECOND PAGE below the first for whether it can be walked at
+ * all and whether the events it serves are the ones asked for, one NEG-OPEN for
+ * whether it reconciles, quartz's own NIP-42 flow for whether our auth sticks. NIP-11 documents routinely disagree with the relay's own practice —
  * measured on this corpus: a relay that served a REQ over its declared
  * `max_message_length`, a fleet that publishes no document at all — so nothing
  * that changes a decision is taken from one.
@@ -97,8 +104,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## One writer per tag
  *
- * This pass owns its own NIP-32 namespace, `pageable`, `nip77` and the
- * descriptive tags in [RelayFacts.OWNED] — and nothing else. The fold's
+ * This pass owns its own NIP-32 namespace, `pageable`, `nip77`, `compliant` and
+ * the descriptive tags in [RelayFacts.OWNED] — and nothing else. The fold's
  * `same-as` and the consistency pass's tag are read, never written; another
  * labeller's namespace on the same record rides through untouched, which is
  * exactly what moving off `s` bought. The alias and inconsistency REFUSALS
@@ -118,6 +125,12 @@ class FitnessPass(
     private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl>,
     /** The consistency pass's standing refusals — same bargain. */
     private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
+    /**
+     * The bars a relay's answer is held to — see [RelayCompliance], whose own
+     * header says how provisional they are. A parameter so the probe that has
+     * to MEASURE them can sweep them without a second copy of the rules.
+     */
+    private val compliance: RelayCompliance = RelayCompliance(),
     val progress: Processors.Handle,
     /**
      * The relay's own NIP-11 document, for the descriptive fields no dial can
@@ -212,6 +225,33 @@ class FitnessPass(
     )
 
     /**
+     * The `compliant` fact for one reading, or NOTHING where the bars do not
+     * support one — the single place every path asks [RelayCompliance] rather
+     * than asserting.
+     *
+     * It exists because two of the three publishing paths are refusals, and a
+     * refusal is exactly where it is tempting to state the fact rather than
+     * measure it: a relay that put one event above the anchor is `unpageable`
+     * by a rule that needs no share and no count, and a `compliant false`
+     * written beside it on that evidence is the claim
+     * [RelayCompliance.minOffFilterEvents] exists to refuse.
+     */
+    private fun factOf(reading: AliasProbe.Compliance): Pair<Boolean, String>? =
+        when (compliance.decide(reading)) {
+            RelayCompliance.Verdict.UNMEASURABLE -> null
+            RelayCompliance.Verdict.NONCOMPLIANT -> false to compliance.evidence(reading)
+            RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
+        }
+
+    /**
+     * What the second page came back with, boxed — see [Reconciled], whose
+     * argument this is one for one.
+     */
+    private class Paged(
+        val window: AliasProbe.Compliance?,
+    )
+
+    /**
      * One url's outcome, for the pass's own funnel — carrying the measured
      * facts that ride the same record edit. Fields on the return value
      * rather than side maps keyed by url: a dial that throws after learning
@@ -222,6 +262,8 @@ class FitnessPass(
         val evidence: String,
         val pageable: Pair<Boolean, String>? = null,
         val nip77: Pair<Boolean, String>? = null,
+        /** Did the events match the filter that asked for them — see [RelayCompliance]. */
+        val compliant: Pair<Boolean, String>? = null,
         /**
          * NIP-66's `rtt-read`: how long the relay took to answer the ask that
          * settled the verdict.
@@ -314,6 +356,14 @@ class FitnessPass(
         // already earned and is published. It is counted because a budget that
         // spends itself in silence is exactly what made #172 hard.
         val negOpenCut = AtomicInteger()
+        // …and the urls whose SECOND PAGE was cut by its own — see
+        // [COMPLIANCE_BUDGET_DIVISOR]. Kept apart from the count above because
+        // this one costs a check the verdict rests on: the url is graded on ONE
+        // page, which is the state #187 is about.
+        val secondPageCut = AtomicInteger()
+        // …and the urls that end with no `pageable` claim at all, for any
+        // reason: nothing came back to page from, or page two never answered.
+        val pageUnproven = AtomicInteger()
         // …and the urls this pass ASKED and got no answer of any kind about:
         // no EOSE, no CLOSED, no transport word, or a throw on our side of the
         // socket. Kept apart from [outcomes] because they are not verdicts and
@@ -366,7 +416,20 @@ class FitnessPass(
                             val ran =
                                 withTimeoutOrNull(probe.deadlineMs(url)) {
                                     try {
-                                        measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, onEvent)
+                                        measureOne(
+                                            url,
+                                            anchor,
+                                            canDial,
+                                            sockets,
+                                            outcomes,
+                                            unmeasured,
+                                            readings,
+                                            downloaded,
+                                            negOpenCut,
+                                            secondPageCut,
+                                            pageUnproven,
+                                            onEvent,
+                                        )
                                     } finally {
                                         // Whatever ended it — a verdict, a
                                         // throw, the deadline, a shutdown — the
@@ -461,6 +524,8 @@ class FitnessPass(
                     downloaded.get(),
                     cutLate = cutLate.get(),
                     negOpenCut = negOpenCut.get(),
+                    secondPageCut = secondPageCut.get(),
+                    pageUnproven = pageUnproven.get(),
                 )
                 return downloaded.get()
             }
@@ -619,6 +684,7 @@ class FitnessPass(
                                 evidence = outcome.evidence,
                                 pageable = outcome.pageable,
                                 nip77 = outcome.nip77,
+                                compliant = outcome.compliant,
                                 facts = factsOf(url, outcome, readings[url]),
                             ) != null
                         }
@@ -702,6 +768,8 @@ class FitnessPass(
                 skippedWrites = skipped,
                 stoppedBy = stoppedBy,
                 negOpenCut = negOpenCut.get(),
+                secondPageCut = secondPageCut.get(),
+                pageUnproven = pageUnproven.get(),
             )
         } finally {
             progress.finish()
@@ -733,6 +801,8 @@ class FitnessPass(
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
         negOpenCut: AtomicInteger,
+        secondPageCut: AtomicInteger,
+        pageUnproven: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_REACHABILITY)
@@ -762,7 +832,14 @@ class FitnessPass(
         sockets.claim(url)
         try {
             val outcome =
-                dialVerdict(url, anchor, settled = { outcomes[url] = it }, negOpenCut = negOpenCut) { event ->
+                dialVerdict(
+                    url,
+                    anchor,
+                    settled = { outcomes[url] = it },
+                    negOpenCut = negOpenCut,
+                    secondPageCut = secondPageCut,
+                    pageUnproven = pageUnproven,
+                ) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
                 }
@@ -819,26 +896,36 @@ class FitnessPass(
         settled: (Outcome) -> Unit,
         /** Bumped when the NEG-OPEN's own wall clock fires — see [NIP77_DEADLINE_MS]. */
         negOpenCut: AtomicInteger,
+        /**
+         * …and when the SECOND PAGE's does — see [COMPLIANCE_BUDGET_DIVISOR].
+         *
+         * Counted for [negOpenCut]'s reason and one degree more sharply: this
+         * clock CAN cost a check the verdict depends on, because a url whose
+         * second page never came back is graded on the ladder's one page —
+         * which is precisely the state #187 is about. A pass silently cutting
+         * every one of them would publish `prime` across a corpus it had
+         * stopped walking, and that looks from the outside exactly like a
+         * corpus that passed.
+         */
+        secondPageCut: AtomicInteger,
+        /**
+         * …and the urls that end with NO `pageable` claim at all: nothing came
+         * back to page from, or page two never answered.
+         *
+         * Not a refusal and not a fault — see the branch that bumps it. It is
+         * counted because it is the number that used to be published as
+         * `pageable: true`, and an operator watching this land needs to see how
+         * much of the corpus was making a claim on no evidence.
+         */
+        pageUnproven: AtomicInteger,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
-        // Events ABOVE the anchor are the relay answering a question it was not
-        // asked: the walk's `until` is the anchor, so an honest relay never
-        // sends one. Counted across every rung — the shape of the ask does not
-        // change what the cursor means.
-        var above = 0
-        var seen = 0
-        val counting: suspend (Event) -> Unit = { event ->
-            seen++
-            if (event.createdAt > anchor + ANCHOR_SLACK_SECONDS) above++
-            onEvent(event)
-        }
-
         var lastReason: String? = null
         var answered: AliasProbe.Window? = null
         var shape: List<Int>? = null
         var readMs: Long? = null
         for (rung in listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS)) {
-            val window = probe.window(url, anchor, rung, counting)
+            val window = probe.window(url, anchor, rung, onEvent)
             if (window.authRefused) {
                 return Outcome(
                     Verdict.AUTH_REFUSED,
@@ -929,28 +1016,151 @@ class FitnessPass(
             }
         }
 
-        // The pageable fact, from the same events the ladder already paid for.
-        // Vacuously pageable when the anchored window is empty: an EOSE on an
-        // empty page is a drain, which is exactly how a paged walk terminates.
-        if (above > 0 && above == seen) {
+        // WHAT THE LADDER'S ANSWER DID WITH THE LADDER'S ASK — taken from the
+        // rung that answered, which is every event this dial saw: a rung
+        // returning null [AliasProbe.Window.ids] delivered no page at all, so
+        // there is nothing on the rungs above to add. It is also checked
+        // against each PAGE's own cursor rather than the anchor, which the
+        // counter this replaced could not do — see [AliasProbe.Compliance].
+        val walked = answered.compliance
+        val seen = walked.seen
+
+        // THE ANCHOR ITSELF IGNORED — the one cursor fault the first page can
+        // prove on its own, and the cheapest to catch: every event came back
+        // above the `until` the ask carried, so there is nothing to walk from
+        // and no point paying for a second page to find that out.
+        //
+        // ALL-OR-NOTHING on purpose: a relay that puts SOME events above the
+        // cursor still advances it, and it is the compliance check below that
+        // has something to say about that.
+        if (walked.offWindow > 0 && walked.offWindow == seen) {
             return Outcome(
                 Verdict.UNPAGEABLE,
                 "every event answered above the `until` it was asked for",
-                pageable = false to "$above of $seen events came back above the anchor — the cursor was ignored",
+                pageable = false to "${walked.offWindow} of $seen events came back above the anchor — the cursor was ignored",
                 // A relay that ignores the cursor still answered, and how fast
                 // it did so is a fact about it either way.
                 rttReadMs = readMs,
+                // ASKED OF THE JUDGE, not asserted. A relay that answered ONE
+                // event above the anchor is unpageable by the rule above and
+                // below [RelayCompliance]'s own floors, and a hard-coded
+                // `compliant false` beside it would publish a claim those bars
+                // exist to refuse.
+                compliant = factOf(walked),
             )
         }
-        val pageable = true to (if (seen == 0) "empty anchored page, honestly EOSEd" else "$seen events, all at or below the anchor")
         val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
 
-        // THE VERDICT IS EARNED HERE, AND IT IS HANDED OVER HERE — one line
-        // before the only step of this job that can outlive the url's wall
-        // clock. Everything `prime` asserts has been measured by now; what
-        // follows is one more FACT beside it, and a fact must never be able to
-        // cost the verdict it rides on. See [measure]'s cut-late branch.
-        settled(Outcome(Verdict.PRIME, evidence, pageable = pageable, rttReadMs = readMs))
+        // THE VERDICT THE LADDER EARNED, HANDED OVER BEFORE ANY FURTHER DIAL —
+        // and it moved back up here for the reason [measure]'s cut-late branch
+        // exists. The second page below can change it, so it was tempting to
+        // wait; what waiting cost is that the per-url deadline firing during
+        // that ask left the url with NO verdict at all, where it used to keep
+        // the one the ladder had already proved. Those urls are counted
+        // `abandoned`, `abandoned` feeds the batch guard's blind share, and a
+        // slow enough batch could then refuse to publish any of its own
+        // verdicts — a paging check costing a pass its output.
+        //
+        // A later refusal simply replaces this: both paths below return an
+        // Outcome the write loop records over it, exactly as the NEG-OPEN's
+        // fuller verdict replaces this same handover today.
+        settled(Outcome(Verdict.PRIME, evidence, rttReadMs = readMs))
+
+        // THE SECOND PAGE — the whole of #187, and the one ask that answers
+        // both open questions at once. See [AliasProbe.pageBelow] for the
+        // measurement that produced it: 137 relays the mirror aborted for
+        // ignoring the cursor were all graded `prime` AND `pageable: true`
+        // here, because the pass had only ever asked ONE page.
+        //
+        // Bounded, and its own clock. A clock that fires here publishes no
+        // `pageable` claim and no refusal — our instrument giving up is not the
+        // relay ignoring a cursor, the same rule [AliasProbe.deadlineMs] states
+        // one level up — and the verdict above is already down, so it costs a
+        // fact rather than a url.
+        //
+        // ASKED THROUGH THE RUNG THAT ANSWERED, unchanged: a page two of a
+        // different shape is not page two of page one, and its drain would
+        // prove nothing. See [AliasProbe.pageBelow].
+        val floor = answered.oldestAt
+        val asked =
+            if (floor == null) {
+                null
+            } else {
+                progress.holding(url.url, STAGE_COMPLIANCE)
+                withTimeoutOrNull(probe.deadlineMs(url) / COMPLIANCE_BUDGET_DIVISOR) {
+                    Paged(probe.pageBelow(url, floor - 1, shape, onEvent))
+                }
+            }
+        // BOXED, for [Reconciled]'s reason exactly: `withTimeoutOrNull`
+        // collapses "the ask returned null" and "the clock fired" into one
+        // null, and here those are a relay that went quiet on page two and a
+        // budget of OURS being spent. Only the second is this pass's fault and
+        // only the second belongs in the count.
+        if (floor != null && asked == null) secondPageCut.incrementAndGet()
+        val second = asked?.window
+
+        // A CLAIM WE COULD NOT EARN IS NOT PUBLISHED, and this is where the
+        // second half of #187 lands: `pageable: true` used to be granted on an
+        // empty first page — "empty anchored page, honestly EOSEd", 26% of the
+        // 137 — which proves the relay ANSWERS and cannot prove it can be
+        // walked. There is nothing to page from, so there is nothing to say.
+        //
+        // It does not cost the relay its grade. Absence of evidence is not a
+        // refusal here for the reason the silence branch above spells out at
+        // length, and an empty anchored page is the honest answer of every
+        // relay that holds nothing recent.
+        if (second == null) pageUnproven.incrementAndGet()
+
+        val pageable =
+            when {
+                second == null -> {
+                    null
+                }
+
+                // A DRAIN, and the strongest of the three answers: a relay
+                // ignoring the cursor would have served its newest events
+                // again, and this one served nothing at all. The walk
+                // terminates here, which is what pageable means.
+                second.seen == 0 -> {
+                    true to "page two below $floor drained — the walk terminates"
+                }
+
+                // THE FAULT THE MIRROR ABORTS ON, now caught before the roster
+                // rather than after a visit. Every event of page two came back
+                // above the cursor it was asked under: the walk cannot advance.
+                second.offWindow == second.seen -> {
+                    return Outcome(
+                        Verdict.UNPAGEABLE,
+                        "honoured the anchor and then ignored the cursor: page two came back entirely above it",
+                        pageable = false to "page one walked to $floor; page two asked below it and answered ${second.seen} events, all above it",
+                        rttReadMs = readMs,
+                        compliant = factOf(walked + second),
+                    )
+                }
+
+                else -> {
+                    true to
+                        "walked two pages, cursor advanced past $floor " +
+                        "(${second.seen - second.offWindow} of ${second.seen} event(s) below it)"
+                }
+            }
+
+        val checked = walked + (second ?: AliasProbe.Compliance())
+        if (compliance.decide(checked) == RelayCompliance.Verdict.NONCOMPLIANT) {
+            return Outcome(
+                Verdict.NONCOMPLIANT,
+                "answered with events the filter did not ask for",
+                pageable = pageable,
+                rttReadMs = readMs,
+                compliant = factOf(checked),
+            )
+        }
+        val compliantFact = factOf(checked)
+
+        // …AND RE-HANDED with the facts the two steps above earned, so a
+        // NEG-OPEN that outlives the url's clock leaves the fuller verdict
+        // down rather than the bare one. The write loop records the latest.
+        settled(Outcome(Verdict.PRIME, evidence, pageable = pageable, compliant = compliantFact, rttReadMs = readMs))
 
         // One NEG-OPEN against a sliver of the window. A normal return —
         // however empty — is the relay speaking NIP-77; the dedicated
@@ -986,6 +1196,7 @@ class FitnessPass(
             evidence,
             pageable = pageable,
             nip77 = nip77,
+            compliant = compliantFact,
             rttReadMs = readMs,
         )
     }
@@ -1133,6 +1344,18 @@ class FitnessPass(
          * #172 turned out to be.
          */
         negOpenCut: Int = 0,
+        /**
+         * How many urls had their SECOND PAGE cut by its own wall clock — see
+         * [COMPLIANCE_BUDGET_DIVISOR].
+         *
+         * Reported SEPARATELY from [negOpenCut] and with a sharper line,
+         * because the two budgets cost different things. That one costs a fact
+         * beside a verdict already earned; this one costs a CHECK the verdict
+         * depends on — the url is still graded, on one page.
+         */
+        secondPageCut: Int = 0,
+        /** …and how many ended with no `pageable` claim at all — see the parameter on [dialVerdict]. */
+        pageUnproven: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -1167,6 +1390,25 @@ class FitnessPass(
             System.err.println(
                 "router: fitness [$label] — $negOpenCut NEG-OPEN(s) cut at the ${NIP77_DEADLINE_MS / 1000}s wall clock; " +
                     "no nip77 fact published for them, which is our clock and NOT the relay declining",
+            )
+        }
+        if (secondPageCut > 0) {
+            System.err.println(
+                "router: fitness [$label] — $secondPageCut second page(s) cut at our own wall clock; those urls " +
+                    "were graded on ONE page, which is the state #187 is about — our clock, and NOT the relay " +
+                    "ignoring a cursor",
+            )
+        }
+        // NOT A REFUSAL, AND THE NUMBER #187 IS ABOUT. Every one of these used
+        // to leave the pass carrying `pageable: true` on no evidence at all.
+        // They are still graded — absence of evidence is not a refusal — so
+        // this line is how an operator sees the size of what is now honestly
+        // unclaimed.
+        if (pageUnproven > 0) {
+            System.err.println(
+                "router: fitness [$label] — $pageUnproven url(s) carry NO `pageable` claim: nothing came back to " +
+                    "page from, or page two never answered. Their grade stands; the claim is simply not one this " +
+                    "pass earned",
             )
         }
         if (cutLate > 0) {
@@ -1436,12 +1678,19 @@ class FitnessPass(
         const val FITNESS_TARGET = 20
 
         /**
-         * How far above the anchor an event may sit before it counts as the
-         * relay ignoring the cursor. Publishers' clocks run fast by seconds,
-         * not minutes; a relay that ignores `until` answers with its newest
-         * events, which sit a WEEK above a settled anchor.
+         * What share of a url's whole budget the second page may spend — a
+         * QUARTER, which at [AliasProbe.WINDOWS_PER_URL] is three idle
+         * windows.
+         *
+         * A divisor rather than a duration, so the bound scales with the
+         * transport the way [AliasProbe.deadlineMs] does: a fixed number of
+         * milliseconds here would cut every `.onion` the pass measures, which
+         * is the exact failure that header exists to warn about. Three windows
+         * is generous for ONE REQ — the ladder just established that this relay
+         * answers — and a quarter of the job is what a step that can change the
+         * verdict is worth paying.
          */
-        const val ANCHOR_SLACK_SECONDS = 300L
+        const val COMPLIANCE_BUDGET_DIVISOR = 4
 
         /** The NEG-OPEN sliver: one hour is enough to prove the verb. */
         const val NIP77_WINDOW_SECONDS = 3600L
@@ -1503,6 +1752,9 @@ class FitnessPass(
         const val STAGE_LADDER = "ask ladder"
 
         const val STAGE_NIP77 = "neg-open"
+
+        /** …and the one ask below the ladder's window, which is a REQ and not a rung of it. */
+        const val STAGE_COMPLIANCE = "second page"
 
         /**
          * …and the one stage that is not a dial: the record edit that puts a

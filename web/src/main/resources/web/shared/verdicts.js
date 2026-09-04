@@ -131,11 +131,15 @@ const OWNED = new Set([
   SELF_CONSISTENT,
   LABEL,
   LABEL_NAMESPACE,
-  // The fitness pass's two measured facts. They were in neither list before, so
+  // The fitness pass's measured facts. They were in neither list before, so
   // the panel counted the monitor's OWN writes as tags it had never heard of
-  // and reported `+2 other tag(s)` on every graded row.
+  // and reported `+2 other tag(s)` on every graded row — and `compliant` was
+  // added to the record without being added here, which would have made it
+  // `+1` on every graded row all over again. A tag this pass WRITES is never
+  // an unknown tag.
   "pageable",
   "nip77",
+  "compliant",
   ...Object.keys(RENDERED),
 ]);
 
@@ -179,7 +183,7 @@ const LABEL_EPOCH_INDEX = 5;
  * Same duplication and the same mitigation as the two below: an out-of-epoch
  * grade is drawn as expired WITH its evidence and age, never hidden.
  */
-export const FITNESS_EPOCH = "1";
+export const FITNESS_EPOCH = "2";
 
 /**
  * The rule versions the router currently acts on — `RelayAliasRecord.FOLD_EPOCH`

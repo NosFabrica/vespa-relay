@@ -87,6 +87,21 @@ class PublishDeadlineTest {
     /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE], as one page. */
     private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
+    /**
+     * A page of [events] at or below `until`, [want] at a time — an ordinary
+     * relay, which is what these tests need their fakes to be.
+     *
+     * A fetch that ignores the cursor IS a cursor-ignoring relay, and since
+     * #187 the fitness pass asks a second page and grades one `unpageable`.
+     * These tests are about clocks and write loops, so their relays have to
+     * page properly or every one of them measures the wrong thing.
+     */
+    private fun paged(
+        events: List<Event>,
+        want: Int,
+        until: Long?,
+    ) = AliasProbe.Page(events.filter { until == null || it.createdAt <= until }.take(want))
+
     private val tinyIdleMs = 20L
 
     /**
@@ -120,7 +135,7 @@ class PublishDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
-                            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+                            fetch = { _, want, until, _ -> paged(corpus(), want, until) },
                             target = 40,
                             page = 40,
                             fallbackPage = 40,
@@ -193,7 +208,7 @@ class PublishDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
-                            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+                            fetch = { _, want, until, _ -> paged(corpus(), want, until) },
                             target = 40,
                             page = 40,
                             fallbackPage = 40,
@@ -265,7 +280,7 @@ class PublishDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
-                            fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) },
+                            fetch = { _, want, until, _ -> paged(corpus(), want, until) },
                             target = 40,
                             page = 40,
                             fallbackPage = 40,

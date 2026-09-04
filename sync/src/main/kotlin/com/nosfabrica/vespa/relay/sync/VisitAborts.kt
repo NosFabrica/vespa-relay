@@ -217,6 +217,23 @@ internal class VisitAborts(
         reason: Reason,
         asked: String,
         said: String?,
+        /**
+         * WHAT THE SOCKET ACTUALLY CARRIED during the refused ask — see
+         * [RelayPages], and #187 for why no other instrument in this process
+         * can see it.
+         *
+         * The third of the three things an abort needs to be actionable, and
+         * the one that was missing: [asked] is what we sent, [said] is what the
+         * relay answered in words, and this is what it answered in EVENTS. A
+         * walk aborts on `downloaded == 0`, which means every event it received
+         * failed to match — so the page is the only place the reason lives, and
+         * it was being discarded by the match that produced the abort.
+         *
+         * Null when nothing was sampled: another walk held the sampler, the
+         * socket carried nothing, or this pool has none. Absent rather than
+         * "0 events", which would read as a finding.
+         */
+        sent: String? = null,
     ): String? {
         counters[reason]?.incrementAndGet()
         totalAborts.incrementAndGet()
@@ -231,7 +248,8 @@ internal class VisitAborts(
         }
         if (!worthSaying(key, reason, at)) return null
         return "router: visit $stream ${url.url} aborted — ${reason.says} [$asked]" +
-            (said?.let { " — the relay said: $it" } ?: "")
+            (said?.let { " — the relay said: $it" } ?: "") +
+            (sent?.let { " — $it" } ?: "")
     }
 
     private fun worthSaying(

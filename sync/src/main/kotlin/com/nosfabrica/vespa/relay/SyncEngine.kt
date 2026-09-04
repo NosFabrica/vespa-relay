@@ -41,6 +41,7 @@ import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.sync.ClientRelayComplaints
+import com.nosfabrica.vespa.relay.sync.ClientRelayPages
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
 import com.nosfabrica.vespa.relay.sync.FilterWidths
@@ -229,6 +230,16 @@ class SyncEngine(
     private val complaints = ClientRelayComplaints(client)
 
     /**
+     * …AND WHAT THEY SEND, on the one ask in a hundred that refuses. Beside
+     * [complaints] and for the same reasons — the client this engine owns, let
+     * go in [close] — and a SECOND listener rather than a widening of that one:
+     * a complaint is a sentence and a page is events, they are read by
+     * different callers, and only this one has to be armed to stay off the hot
+     * path. See [ClientRelayPages].
+     */
+    private val pages = ClientRelayPages(client)
+
+    /**
      * WHAT EACH RELAY TAKES IN ONE FILTER, learned from its own refusals — one
      * instance for the whole process.
      *
@@ -301,6 +312,7 @@ class SyncEngine(
         VisitPool(
             reads = ClientRelayReads(client),
             complaints = complaints,
+            pages = pages,
             bands = bands,
             ingest = ingest,
             pager = pager,
@@ -877,6 +889,7 @@ class SyncEngine(
         // a closing pool is the leak `RelayAuthenticator.destroy` is called for
         // two lines down, in `peers.close()`.
         runCatching { complaints.close() }
+        runCatching { pages.close() }
         peers.close()
         ingest.closeIntake()
         // After the scope, so a worker mid-batch is cancelled rather than

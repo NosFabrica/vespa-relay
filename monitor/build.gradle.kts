@@ -47,6 +47,8 @@ tasks.test {
     System.getProperty("authRefusalCensus")?.let { systemProperty("authRefusalCensus", it) }
     System.getProperty("authRefusalProbe")?.let { systemProperty("authRefusalProbe", it) }
     System.getProperty("authRefusalUrls")?.let { systemProperty("authRefusalUrls", it) }
+    System.getProperty("complianceProbe")?.let { systemProperty("complianceProbe", it) }
+    System.getProperty("complianceUrls")?.let { systemProperty("complianceUrls", it) }
     System.getProperty("liveBudget")?.let { systemProperty("liveBudget", it) }
     System.getProperty("writeOrderTsv")?.let { systemProperty("writeOrderTsv", it) }
     System.getProperty("writeOrderReplayUrls")?.let { systemProperty("writeOrderReplayUrls", it) }
