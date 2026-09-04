@@ -36,7 +36,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -470,10 +472,13 @@ class MonitorEngine(
      * [hasSources] a second time and cannot get a different answer.
      */
     fun start(): Boolean {
-        // Runs whatever the sources say, and BEFORE the gate below: a
+        // Runs whatever the sources say, and regardless of the gate below: a
         // deployment that has stopped discovering still holds verdicts it
-        // signed, and the mirror still selects on them.
-        retireOwnStaleVerdicts()
+        // signed, and the mirror still selects on them. OFF THE BOOT PATH —
+        // it is a paged walk of the whole graded corpus, and the passes below
+        // wait for it while the mirror does not; see [retireOwnStaleVerdicts]
+        // for the trade.
+        val retired = scope.async { retireOwnStaleVerdicts() }
         if (!hasSources) {
             // Said out loud, in the document, because a row left at `starting`
             // for the life of the process reads as a pass that is about to run.
@@ -497,16 +502,33 @@ class MonitorEngine(
         // to buy onion throughput can see from this line that it did not move,
         // and reach for `SYNC_TOR_MAX_SOCKETS` instead. See [DialGate].
         System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
-        aliasMonitor?.start()
+        // The passes read verdicts, so they start once the retraction has
+        // run — the ordering the retraction's KDoc asks for, kept without
+        // holding the mirror's boot for it.
+        scope.launch {
+            retired.await()
+            aliasMonitor?.start()
+        }
         return true
     }
 
-    // BEFORE any pass reads a verdict and before the roster's first
-    // rebuild, which is why it blocks: the reads downstream ask only
-    // whether a url holds a verdict, so a record standing under rules this
-    // build no longer applies would be acted on as current. See
-    // [FitnessPass.retireStaleEpochs] for why the retraction belongs here
-    // rather than in every reader.
+    // BEFORE any pass reads a verdict, which is why the passes wait for it:
+    // the reads downstream ask only whether a url holds a verdict, so a
+    // record standing under rules this build no longer applies would be
+    // acted on as current. See [FitnessPass.retireStaleEpochs] for why the
+    // retraction belongs here rather than in every reader.
+    //
+    // NOT before the roster's first rebuild any more. It used to block
+    // `start()` for that too, and on staging (2026-09-04) that parked `main`
+    // for the life of the process: the walk queued behind twenty-odd
+    // deadline-less store reads (#167), and since it ran synchronously from
+    // `SyncEngine.start()` the mirror never opened a stream, ingest sat at
+    // 0 ev/s, and the status sites — created after `start()` returned — were
+    // never bound. The trade now: the roster's FIRST rebuild may select on a
+    // verdict this walk is about to retract, for one discovery interval; the
+    // rebuild after it sees the retraction. A stale verdict standing one
+    // interval longer is the cost; a mirror that never boots was the
+    // alternative. The passes, which SIGN on what they read, still wait.
     //
     // Costs a PAGED walk of our own graded records on every boot — the
     // epoch and the legacy tag are both decided per record rather than in
@@ -530,34 +552,37 @@ class MonitorEngine(
      * vocabulary decides which are in a tag that now means something else. It
      * ran in `SyncEngine.start()` when there was one engine, which put a
      * boot-blocking store walk on the mirror's critical path for the monitor's
-     * bookkeeping.
+     * bookkeeping — and then from here, synchronously, which was the same
+     * path by another name. A coroutine on [scope] now; [start] orders the
+     * passes after it.
      */
-    private fun retireOwnStaleVerdicts() {
+    private suspend fun retireOwnStaleVerdicts() {
         signer?.let { s ->
             val record = RelayVerdictRecord(store, s)
-            runCatching { runBlocking(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
+            runCatching { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
                 .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
             // …and the grades written before the move off `s`, which are not
             // stale readings but readings in a tag that now means something
             // else entirely. Same boot, same reason it cannot be left to the
             // readers, and now its own failure to report.
-            runCatching { runBlocking(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+            runCatching { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
                 .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
         }
     }
 
     /**
-     * The store-call registry, lifted off [scope] for the two `runBlocking`s
+     * The store-call registry, lifted off [scope] for the two retractions
      * above — see [StoreCalls].
      *
-     * `runBlocking` with no context starts a FRESH one: it is called from a
-     * plain function, so there is no coroutine to inherit from and the element
-     * this engine's scope carries does not reach the block. These two are the
-     * worst possible pair to lose. They run at BOOT, they walk the whole
-     * 30166 corpus a page at a time, and they re-sign what they find — so a
-     * router that looks hung on startup is quite likely inside one of them, and
-     * without this they are the two long store passes the `store` section would
-     * swear were not happening.
+     * They ran under `runBlocking` from a plain function once, where the
+     * element this engine's scope carries did not reach the block; they are
+     * coroutines on [scope] now and would inherit it, but the element is
+     * still named here so a future move off the scope cannot lose it
+     * silently. These two are the worst possible pair to lose. They run at
+     * BOOT, they walk the whole 30166 corpus a page at a time, and they
+     * re-sign what they find — so a router that looks hung on startup is
+     * quite likely inside one of them, and without this they are the two long
+     * store passes the `store` section would swear were not happening.
      *
      * Only the element, never the whole context: taking `scope.coroutineContext`
      * would bring its `Job` (a `runBlocking` under a cancelled parent would
