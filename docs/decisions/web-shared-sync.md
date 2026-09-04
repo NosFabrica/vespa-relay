@@ -98,6 +98,24 @@ pool's unit is a (relay, stream) pair.
 **`biting` needs both halves.** `deferred` is cumulative since boot, so on its
 own a single refusal at boot painted the row hot for the life of the process.
 
+**`HELD_SHOWN` is three and `CALLS_SHOWN` six where `IN_FLIGHT_SHOWN` is
+unbounded.** A stream's legs are bounded by its transfer pool and every row is
+interesting; a probe pass at the monitor's default dial concurrency holds five
+hundred urls of which 499 are ordinary dials a second old, and the router
+publishes up to two hundred store calls. Both lists arrive longest first, so
+the front is the answer and `more` discloses the rest.
+
+**Stage time is shares of the poll window, not durations.** The poll is clamped
+to 30s to 5min and the chain waits for the previous response, so the window is
+a different length every time and two readings of `write 45s` are not
+comparable. A ratio also sidesteps `fmtDur` flooring a 400ms stage to "0s".
+`before` null yields nothing rather than cumulative totals dressed as a rate.
+
+**Limits and schedule are one row per job.** They were two tables keyed by
+(stream, job) at two ends of the card, and a cap at its ceiling only means
+something beside the queue backing up behind it, which was in the other table.
+The union is walked so a job with only one half is still drawn.
+
 ## processors.js
 
 **The held urls are on the card.** A fitness pass held one url of 12,374 for 74
@@ -121,6 +139,16 @@ members the sync card's pool summary already partitions, in a second vocabulary
 **Hosts are joined with a dash.** Two of the gate's seven reasons end in a
 preposition, so ` on N host(s)` rendered `too few events to judge on on 501
 host(s)`, and the reasons are free text off the wire.
+
+**`visitsRun` is drawn unconditionally.** Every other counter on the row is
+drawn on being non-zero, which is right for each and wrong for all at once: a
+pool that has just booted has zero of everything, and a cell guarded all the
+way down rendered empty beside a row that was plainly working.
+
+**The quiet clock is drawn only past `STUCK_PASS_SEC`.** On a healthy pass it
+is a number between 0 and 2 and the line is already long; past the threshold
+it is the finding. `12,373 of 12,374, ~0s left` read as a pass about to finish
+for 74 minutes, and nothing else on the row said otherwise.
 
 ## statspage.js
 
@@ -245,3 +273,14 @@ axis at 0px.
 
 **The `.why` rule is unscoped.** Scoped to `.pending`, the identical sentence in
 a chart card fell through to the UA's `margin: 1em 0` and body size.
+
+**Group heads are `nowrap`.** The head is sticky, so a stream naming twenty
+kinds that wrapped its counts to a second line took those lines off the top of
+every row scrolling under it. The filter chip ellipsises and the counts do not;
+on a 390px phone the counts alone ran 50px past the card and clipped "relays
+walked" away, so below 45rem they take their own row.
+
+**The search boxes are styled at the element.** A raw `input[type=search]`
+inherits the platform's chrome, and in dark mode drew a white field with black
+text in the middle of a dark card; three boxes on the page had each been left
+that way, since a class is what the next search box forgets.

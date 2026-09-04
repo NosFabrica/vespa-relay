@@ -1,17 +1,11 @@
 // Is this relay ready to rank for the reader who just signed in, and if not,
-// which link of the chain is missing?
-//
-// Signing in switches search to the reader's web of trust, and the store
-// treats that lens as a filter: a reader whose chain has not been mirrored
-// gets an empty ranked search, not a degraded one. Each link is how the
-// router finds the next: their kind 10002 names the write relays, their kind
-// 10040 (read from those) names the service whose scores they trust, the
-// `assertions` stream syncs that service's kind 30382 cards, and ranked
-// search works once those cards are here and projected.
-//
-// This module is the decision only; the words live in web/readiness.js. The
-// one ordering rule: the first unmet link wins, and every link below it
-// reports `waiting`, never a second failure.
+// which link of the chain is missing? The store treats the trust lens as a
+// filter, so an unmirrored chain gives an empty ranked search. Each link finds
+// the next: kind 10002 names the write relays, kind 10040 (read from those)
+// names the scoring service, the `assertions` stream syncs its kind 30382
+// cards, and ranked search works once they are here and projected. The
+// decision only; the words live in web/readiness.js. The first unmet link
+// wins, and every link below it reports `waiting`, never a second failure.
 
 // Facts about a connection (it declined, or it went quiet), re-exported
 // because this is where the difference gets decided.
