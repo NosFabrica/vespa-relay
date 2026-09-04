@@ -27,29 +27,17 @@ import { mountSearchField, softKeyboard } from "./searchfield.js";
 import { AskCache } from "./shared/asks.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
 
-// Rows the popup DRAWS. Not what it asks for: the ask is one results page
-// with its preload (paging.js's askLimit), because the relay's cost is the
-// match set rather than the rows, and an ask at that width is what Enter can
-// reuse — see shared/asks.js.
+// Rows the popup draws. The ask itself is one results page wide (askLimit),
+// so Enter can reuse it through shared/asks.js.
 const POPUP_LIMIT = 8;
-// A keystroke gap this long is a pause worth answering. 150ms fired on nearly
-// every keystroke of ordinary typing (a 200ms cadence), and each firing was a
-// full ranked search — the seven prefixes of `bitcoin`, then the word. The
-// serialisation in runPopup() is the real fix (one ask in flight, the latest
-// text runs next); this only stops the first character from being it.
+// A keystroke gap long enough to count as a pause. runPopup() serialises the
+// asks; this only keeps the first character from being one.
 const DEBOUNCE_MS = 250;
 
 // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
-// `slug` is the tab's name in the URL (`?tab=notes`). A slug, not the label
-// ("Code & git" percent-encodes into line noise) and not the kinds list
-// (which this page is free to tune without breaking every bookmarked URL).
-//
-// A tab's kinds must be the ones the matching FAMILY renders, and were not:
-// Media asked for 31922 — a NIP-52 date-based calendar event, which renders
-// under Live — while leaving out 1986 audio, so the audio tab kind was
-// unreachable from any chip and every "Media" result set could contain a
-// conference date. Kept in sync with shared/kinds.js by hand; the tone table
-// there is the reference for which family a kind belongs to.
+// `slug` names the tab in the URL, so the kinds can change without breaking
+// bookmarks. A tab's kinds must be the ones the matching family in
+// shared/kinds.js renders; the tone table there is the reference.
 const KIND_TABS = [
   { label: "Everything", slug: "all", kinds: null },
   { label: "People", slug: "people", kinds: [0] },
@@ -62,10 +50,8 @@ const KIND_TABS = [
 ];
 
 // ---- signed-in preference, shared across the relay's pages ----------------
-// A cookie rather than localStorage: same-origin, survives a page switch, and
-// the pages are served by the relay itself so there is nothing cross-site about
-// it. Default is SIGNED IN — an unset cookie means "not chosen yet", and the
-// useful default is the one that makes ranking work.
+// A cookie so every page the relay serves reads it. Unset means "not chosen
+// yet", which defaults to signed in.
 const AUTH_COOKIE = "sot_signedin";
 function wantsSignIn() {
   const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
@@ -76,20 +62,9 @@ function rememberSignIn(yes) {
 }
 
 // ---- the face you ended on, kept across loads ----------------------------
-//
-// Every full load — a reload, a pasted /npub1… link, a click in from anywhere
-// — is a new socket, a new challenge, a new signature, and only THEN a REQ for
-// your kind 0. The field therefore sat on a placeholder for that entire chain
-// on every single load, redrawing an answer that had not changed since the
-// last one. The picture url and name of the account you signed in as are kept
-// here so the field can draw them at once.
-//
-// Keyed BY PUBKEY, and dropped the moment the key it is keyed to stops being
-// the one on screen — see the boot note at the foot of this file for the one
-// window where it is drawn on an assumption rather than on an answer. This is a
-// cache of what was already on your own screen, not a session: it authorises
-// nothing, the proof still has to happen, and until it does the field says so
-// rather than claiming you are signed in.
+// The picture and name of the last signed-in account, keyed by pubkey, so the
+// field can draw them before the socket, the challenge and the kind 0 read.
+// A cache of what was on screen, not a session: it authorises nothing.
 const FACE_KEY = "sot_face";
 let meFace = readFace();
 function readFace() {
@@ -99,13 +74,9 @@ function readFace() {
   } catch (e) { return null; }
 }
 /**
- * Keep what the relay just said about [pk]'s face.
- *
- * Only when it ANSWERED — `has` is true once it has, profile or no profile.
- * A dropped or timed-out read is not "you have no picture", and recording it
- * as one would throw away a good face AND cost the next load the head start
- * this whole cache exists for. Same rule, and the same reason, as the one
- * profiles.js spells out about caching absences off incomplete reads.
+ * Keep what the relay said about [pk]'s face, but only once it answered:
+ * `has` is true then, profile or no profile. A dropped read is not "no
+ * picture" (the same rule profiles.js applies to caching absences).
  */
 function rememberFace(pk) {
   if (!pk || !profiles.has(pk)) return;
@@ -126,38 +97,25 @@ function writeFace() {
 }
 
 // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
-// Signing the challenge switches the CONNECTION's ranking observer to you.
-//
-// It does NOT start anything syncing on your behalf — this comment used to say
-// it enrolled you, and index.html's header said the same, while the relay's
-// enrolment hook (NostrRelayServer's `onObserver`) was never wired to anything.
-// The router reaches you through the streams it already runs, on their own six-
-// hourly cycle, or not at all; readiness.js is what says which, and what to do
-// about it.
-let me = null;        // the pubkey the relay ACCEPTED a NIP-42 AUTH for
+// Signing the challenge switches the connection's ranking observer to you. It
+// enrols nothing: the router reaches you through its own streams or not at
+// all, and readiness.js says which.
+let me = null;        // the pubkey the relay accepted a NIP-42 AUTH for
 let mePending = null; // the pubkey the extension named, before that proof
 
-// A dropped socket loses the AUTH, not the identity. Keeping `me` means the
-// page still knows who you are and re-authenticates on the next request,
-// instead of silently dropping you to UNRANKED results with nothing on screen
-// to say the results changed meaning. That downgrade got sharper when the
-// relay stopped applying a default observer: signed out is now the whole
-// corpus with no trust applied, not someone else's ranking of it.
+// A dropped socket loses the AUTH, not the identity: `me` stays set and the
+// next request re-authenticates rather than silently running unranked.
 relay.onclose = () => { renderWhoami(); };
 
-// The restore half of the back/forward cache dance (the pagehide half lives
-// with the sockets in shared/conn.js). Coming back from the cache runs no
-// load code, so `me` was still set and the field still showed a face, while
-// the socket was closed and nothing was authenticated: a page that looked
-// signed in and ranked nothing.
+// The restore half of the back/forward cache (pagehide is in shared/conn.js).
+// A restore runs no load code: `me` is still set, the socket is closed and
+// nothing is authenticated.
 window.addEventListener("pageshow", (ev) => {
-  // Only a restore FROM the cache needs this; a normal load already connects
-  // on its own path and re-running it would open a second socket.
+  // A normal load connects on its own path; re-running it here would open a
+  // second socket.
   if (!ev.persisted) return;
-  // Re-authenticate rather than merely reconnect: NIP-42 belongs to the
-  // connection, so the identity survived the freeze but the proof did not.
-  // The settled flight is stale for the same reason — cleared, so the next
-  // ensureLogin() runs a real sign-in instead of awaiting old success.
+  // NIP-42 belongs to the connection, so the proof and the settled flight are
+  // both stale; the next ensureLogin() must run a real sign-in.
   loginTried = false;
   loginFlight = null;
   scores.clear();
@@ -166,16 +124,9 @@ window.addEventListener("pageshow", (ev) => {
   ensureLogin().then(paintScores).catch(() => {});
 });
 
-// Sign the CURRENT challenge and send it, retrying if the connection changed
-// underneath us.
-//
-// NIP-07 signing waits on a human clicking approve in an extension popup,
-// which is seconds — and a challenge belongs to one connection. If the socket
-// is replaced in that window (an idle drop, or the relay restarting), the
-// signature we are about to send is for a challenge the server has never
-// heard of, and it answers "invalid: challenge does not match". Re-reading
-// the challenge after signing and retrying against the new one is the whole
-// fix; without it the only recovery is for the user to click again.
+// Sign the current challenge and send it. Signing waits on a human in the
+// extension popup, and a challenge belongs to one connection: if the socket
+// was replaced meanwhile, re-read the challenge and sign again.
 async function signAndAuth(attempt = 0, waitMs = 3000) {
   const challenge = await relay.waitForChallenge(waitMs);
   if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
@@ -197,34 +148,24 @@ async function signAndAuth(attempt = 0, waitMs = 3000) {
 }
 
 /**
- * Who the extension says you are, and your face — both BEFORE the proof.
- *
- * Nothing about a public profile depends on NIP-42. `getPublicKey()` is a local
- * call: no network, no signature, no challenge. So naming the account and
- * reading its kind 0 can happen BESIDE the handshake, the challenge and the
- * signing popup instead of behind all three — and the read is what the picture
- * actually waits on.
- *
- * The pubkey it returns draws and prefetches; it never authorises. `me` is
- * still set from the signature the relay accepted, and until that lands the
- * field renders the face faded and titled "signing in as".
+ * Who the extension says you are, and your face, both before the proof.
+ * `getPublicKey()` is local, so naming the account and reading its kind 0 run
+ * beside the handshake and the signing popup. The pubkey draws and prefetches;
+ * it never authorises.
  */
 async function prefetchFace() {
   let pk = null;
   try { pk = await window.nostr.getPublicKey(); } catch (e) { pk = null; }
   if (!/^[0-9a-f]{64}$/.test(pk || "")) {
-    // The extension would not say. Whatever the boot assumed is unsupported —
-    // take it down rather than leave a face nothing is going to confirm.
+    // The extension would not say, so the boot's assumed face comes down.
     mePending = null;
     renderMe();
     return null;
   }
   mePending = pk;
   renderMe();                 // the remembered face, if this is the same account
-  // enrichProfiles skips a pubkey it has already seen — including one recorded
-  // as `null` by a lookup that ran before this account was on screen — so a
-  // cached miss survived signing in and the avatar kept the old face until a
-  // reload. Deleting first forces the re-read.
+  // enrichProfiles skips a pubkey it has seen, including a cached `null`, so
+  // delete first to force the re-read.
   profiles.delete(pk);
   try { await enrichProfiles([pk]); } catch (e) {}
   renderMe();
@@ -233,46 +174,26 @@ async function prefetchFace() {
 
 async function login() {
   if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
-  // The socket and the face start TOGETHER, because neither needs the other.
-  // This was strictly serial — connect, challenge, sign, AUTH, and only then
-  // open a second socket from cold and ask for one kind 0 — so the picture
-  // landed a full connect-plus-round-trip after the relay had already accepted
-  // the login, with the extension's popup sitting in the middle of the chain.
-  // Now the only step that needs both halves is the AUTH itself.
+  // The socket and the face start together; only the AUTH needs both.
   const connecting = relay.connect();
   const face = prefetchFace();
   await connecting;
-  // A CLICK gets a longer wait than a background attempt. The socket may have
-  // only just opened — the page does not connect at all until something needs
-  // it — and the AUTH challenge is a message that arrives after the handshake,
-  // so a 3s budget was being spent on connecting rather than waiting, and the
-  // first press simply failed. That is why it took a few presses.
+  // A click gets a longer wait than a background attempt: the socket may have
+  // only just opened, and the challenge arrives after the handshake.
   me = await signAndAuth(0, 10000);
   mePending = null;
   renderWhoami();
-  // Usually already resolved during the signing popup. AWAITED all the same,
-  // so a caller can still rely on the face being fetched by the time login()
-  // returns — that is what the retry below and the sign-in click both assume.
+  // Awaited so callers can rely on the face being fetched when login() returns.
   const named = await face;
   if (named !== me) {
-    // The extension never answered getPublicKey, or signed as an account other
-    // than the one it named. Fall back to the read login() always did.
+    // The extension never answered getPublicKey, or signed as another account.
     profiles.delete(me);
     try { await enrichProfiles([me]); } catch (e) {}
   }
   rememberFace(me);
   renderWhoami();
-  // The fetch above races page load: the reference socket is opening at the
-  // same time as the main one, and when it loses, `me` is signed in with no
-  // profile and NOTHING retries — the avatar sat on a placeholder until the
-  // user clicked twice, which signed them out and back in again. Retry a
-  // couple of times, quietly, and stop as soon as a face arrives.
-  //
-  // `has`, not `get`: the cache records `null` for a pubkey the relay ANSWERED
-  // about and has no kind 0 for. Retrying on that spent 3.6s of sleeps and
-  // three more REQs re-asking a question already answered, for every account
-  // that simply has no profile. Only a read that came back with nothing at all
-  // is worth repeating.
+  // The read above races the reference socket's opening. Retry quietly, but
+  // only on `has`: a cached `null` is an answer, not a dropped read.
   for (let i = 0; i < 3 && me && !profiles.has(me); i++) {
     await new Promise((r) => setTimeout(r, 600 * (i + 1)));
     if (!me) break;
@@ -283,50 +204,22 @@ async function login() {
   }
 }
 
-// Signed in automatically, once, best effort.
-//
-// There used to be an "as me" toggle next to this that meant "authenticate",
-// and a separate picker that meant "rank as somebody". Off + somebody was a
-// legal combination that did NOTHING: the lens needs an authenticated reader,
-// so the picker silently had no effect. One thing you choose (whose trust) and
-// one thing that just happens (being signed in) is the same feature without
-// the inert corner.
-//
-// A relay read is still fine without an extension — it is the whole corpus,
-// unranked — so a failure here downgrades rather than blocks, and says so.
-//
-// ONE sign-in, shared as an in-flight promise that every caller awaits. The
-// previous shape used a bare `loginTried` flag, and it raced: while the first
-// caller sat inside login() waiting on the extension popup, the type-ahead
-// fired more searches, each saw the flag already set with `me` still null,
-// returned early, and sent its REQ UNAUTHENTICATED. Those results render from
-// the whole corpus, unranked — and nothing ever corrects them, because a
-// relay does not re-run a subscription it answered under the old auth state;
-// AUTH only changes what later REQs see. Waiting on the shared flight means
-// no REQ is ever sent on this socket before its auth question is settled —
-// stronger than resending after the fact, because nothing wrong renders.
-let loginTried = false;   // the first attempt has SETTLED (labels key on this)
+// Signed in automatically, once, best effort: a failure downgrades to the
+// unranked corpus and says so. One in-flight promise that every read awaits,
+// so no REQ goes out on this socket before its auth question is settled; a
+// relay never re-runs a subscription it answered under the old auth state.
+let loginTried = false;   // the first attempt has settled (labels key on this)
 let loginFlight = null;   // the first attempt itself, awaited by every search
 async function ensureLogin() {
-  // STARTED, not awaited. This used to gate the whole login flight on the
-  // handshake, which put the three independent waits — the socket, the
-  // extension, the profile read — back in series behind the slowest thing
-  // nobody was waiting for yet. Only the AUTH itself needs both halves, and it
-  // does its own connect. Everything else that sends anything connects on its
-  // own too (Relay.req does), so a failure here surfaces at the ask.
+  // Started, not awaited: only the AUTH needs the socket, and it connects itself.
   relay.connect().catch(() => {});
   if (!loginFlight) {
     loginFlight = (async () => {
-      // A remembered "signed out" is a decision, not an absence — respect it
-      // rather than prompting the extension on every page load.
+      // A remembered "signed out" is a decision; do not prompt the extension.
       if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
-        // Nobody is going to prove the assumed face below, so take it down.
         mePending = null;
-        // The lens label, now that "signed out" is settled: with nobody picked
-        // it reads "nobody" rather than "me". The picker itself stays LIVE —
-        // it used to grey out here, back when `observer:` was only sent
-        // alongside a signature; it is now a signed-out reader's only way to
-        // get a ranked answer at all.
+        // The picker stays live: it is a signed-out reader's only way to a ranked
+        // answer.
         applyViewingAs(viewingAs, $obsCurrent.textContent);
         renderWhoami();
         return;
@@ -341,66 +234,39 @@ async function ensureLogin() {
   }
   await loginFlight;
   if (!me) { clearReadiness(); return; }
-  // Keyed on the CONNECTION's auth state, not on whether we remember a
-  // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
-  // and searching then really would rank by nobody — there is no default
-  // observer behind it any more.
+  // Keyed on the connection's auth state: a reconnect leaves `me` set but the
+  // new socket unauthenticated.
   if (relay.authed) { checkReadiness(me); return; }
   me = await signAndAuth();
   renderWhoami();
-  // Whether this relay can actually rank for the account that just proved
-  // itself. Asked from HERE rather than from login(), because this is the one
-  // place both paths to an authenticated socket meet — the first sign-in and
-  // the re-auth after a reconnect — and the check is about the connection's
-  // lens, not about the sign-in. It is idempotent per pubkey and it waits;
-  // see readiness.js on why nothing here is on the critical path.
+  // Here rather than in login(): both paths to an authenticated socket meet
+  // here, and the check is about the connection's lens.
   checkReadiness(me);
 }
 
-// The resend half of NIP-42, wired to the client: if the store ever answers
-// a REQ with CLOSED "auth-required:" — a reconnect gap, a stricter policy —
-// authenticate through the same shared flow and the client resends that REQ
-// itself. The anonymous reference connection gets no such hook: it must
-// never authenticate, so for it auth-required is a real answer.
+// The resend half of NIP-42: on CLOSED "auth-required:" the client authenticates
+// through the shared flow and resends the REQ. The anonymous reference
+// connection gets no such hook; for it auth-required is a real answer.
 relay.onAuthRequired = () => ensureLogin();
 
 // ---- search over NIP-50 ---------------------------------------------------
 let tab = KIND_TABS[0];
 
 /**
- * Does this page have a web of trust to read through at all?
- *
- * Nothing signed in and nobody picked. It is the ONE question the relay now
- * asks of every read (its LensRequiredPolicy), so the page answers it in one
- * place: `include:spam` rides every search that has no lens, whatever the spam
- * switch says — and the export names which of the two put it there, because a
- * switch reading "off" over results that include everything is exactly the
- * quiet disagreement this page is meant not to have.
- *
- * `me` and not `mePending`: an unproved pubkey is not a lens. Every read on
- * this socket awaits ensureLogin() first, so this is a settled fact by the
- * time anything asks — and if a future caller skips that step it sends no
- * stamp, gets `auth-required:` and retries through the login, which is a round
- * trip rather than a silent unranked answer.
+ * Whether this page has a web of trust to read through at all. `me`, not
+ * `mePending`: an unproved pubkey is not a lens. Every read awaits
+ * ensureLogin() first, so this is settled by the time anything asks.
  */
 const lensless = () => !me && !viewingAs;
 
-/** Whether this read waives a lens — the reader's switch, or having none. */
+/** Whether this read waives a lens: the reader's switch, or having none. */
 const spamOn = () => $spam.checked || lensless();
 
 /**
- * The NIP-50 string a ONE-OFF ask needs to be answered at all: the words, plus
- * this page's lens where the connection does not already carry one.
- *
- * Signed in, that is nothing — the socket's NIP-42 identity IS the lens, and
- * adding anything here would change what a type-ahead ranks by. Signed out it
- * is the picked observer if there is one and `include:spam` if there is not,
- * which are the relay's only two other answers.
- *
- * Separate from [searchString] because these asks are not the search box: no
- * sort menu, no spam switch, no export to keep byte-identical. What they share
- * is the one rule, and sharing it is the point — the type-aheads and the feed
- * are exactly the reads a later change forgets.
+ * The NIP-50 string a one-off ask needs to be answered: the words, plus this
+ * page's lens where the connection does not already carry one. Signed in, the
+ * NIP-42 identity is the lens; signed out it is the picked observer, else
+ * `include:spam`. Separate from [searchString]: no sort menu, no spam switch.
  */
 function askString(words) {
   if (me) return words || "";
@@ -413,96 +279,44 @@ function searchString(text) {
   const sort = $sort.value;
   const parts = text ? [text] : [];
   if (sort) parts.push("sort:" + sort);
-  // Whose web of trust ranks this. Absent, the store uses the connection's
-  // authenticated pubkey — you. Present, it uses theirs, which is how you
-  // read the index through somebody else's eyes without holding their key.
-  //
-  // Sent signed OUT as well, and that is the point of the control now: scores
-  // here are public, the store resolves an `observer:` on an anonymous socket
-  // exactly as it does on a signed-in one, and since the relay stopped
-  // answering lensless reads this token is the only way a reader without an
-  // extension gets a ranked answer instead of the raw corpus.
+  // Whose web of trust ranks this; absent, the connection's own pubkey. Sent
+  // signed out too: the store resolves `observer:` on an anonymous socket.
   if (viewingAs) parts.push("observer:" + viewingAs);
-  // Last, so a reader reading the exported string sees the lens and the waiver
-  // in the order they are decided. Never both: `lensless()` is false whenever
-  // `observer:` went out, so this can only be the switch then.
+  // Last, so the exported string reads lens then waiver. Never both: lensless()
+  // is false whenever `observer:` went out.
   if (spamOn()) parts.push("include:spam");
   return parts.join(" ");
 }
 
 /**
- * The filters this page's REQ carries, from what the person typed.
- *
- * The construction itself lives in shared/query.js — pure, and tested there
- * against the whole of the box's language. What is HERE is the page state it
- * needs: which tab is on, how many rows this view wants, and the NIP-50
- * extension string the sort menu, the spam toggle and the "ranking as" lens
- * build between them.
- *
- * Shared with exportText() so the filters a reader is shown are the filters
- * that were sent, byte for byte, rather than a second construction of them.
+ * The filters this page's REQ carries. The construction lives in
+ * shared/query.js; this adds the page state (tab, limit, NIP-50 string).
+ * Shared with exportText() so the filters shown are the filters sent.
  */
 function buildFilters(text, limit) {
   return filtersFor(text, { kinds: tab.kinds, limit, searchString });
 }
 
 /**
- * The feed's ask: the SAME builder with nothing to say but its kinds.
- *
- * No words, and none of the SEARCH string the search view sends: the sort menu
- * and the spam toggle do not ride along, because either would make this a
- * NIP-50 query for an ORDER and the page would be saying "latest" over a
- * ranked list. That is why the feed view hides the Filters disclosure rather
- * than leaving controls on screen that this ask cannot carry.
- *
- * What it DOES send is `feedSearchString` — the lens declaration and nothing
- * else, which the relay now requires of any read and which carries neither an
- * order nor a floor on a termless filter. See its own doc below: the shape is
- * still `{ kinds, limit }` plus the one token that makes it answerable.
- *
- * `kinds` is the exception, and the reason the chip row stays: it is a field
- * of this filter, not an extension on a search string, so the tab narrows the
- * feed exactly as it narrows a search. feed.js's feedKinds() owns which list
- * that is.
+ * The feed's ask: the same builder with nothing to say but its kinds. The sort
+ * menu and the spam switch do not ride along, since either would put an order
+ * under a heading that says "latest"; the tab does, because `kinds` is a
+ * filter field rather than a search extension.
  */
 const feedFilters = (limit) =>
   filtersFor("", { kinds: feedKinds(tab.kinds), limit, searchString: feedSearchString });
 
 /**
- * The feed's whole NIP-50 string, which is a lens declaration or nothing.
- *
- * A plain `{ kinds, limit }` read is what the store answers newest-first, and
- * that is still the ask — but a lensless one now has to SAY it is lensless or
- * the relay refuses it, and "latest" with nothing on the wire to explain it is
- * precisely the silent empty page that gate exists to prevent. `include:spam`
- * carries no order and no floor on a termless filter (the store maps it to
- * plain recall), so the feed's shape is unchanged by the one token that makes
- * it answerable. A signed-out reader who picked an observer gets THAT instead
- * and the feed stays newest-first: a termless filter with a lens is the
- * store's gated-recency profile, which is NIP-01 order with the untrusted
- * dropped — what a signed-in reader's feed already is.
- *
- * The sort menu and the spam switch still do NOT ride along: those would make
- * it a ranked query under a heading that says newest.
+ * The feed's whole NIP-50 string: a lens declaration or nothing. A lensless
+ * read has to say so or the relay refuses it, and `include:spam` carries no
+ * order on a termless filter, so the feed stays newest-first either way.
  */
 const feedSearchString = () => askString("");
 
 /**
- * One event, one card, however many filters it answered.
- *
- * A hashtag search is four filters in one REQ, and one event can answer several
- * of them: a top-level comment on the topic carries it in both `i` and `I`, and
- * a note that tags `t` and also labels itself answers two.
- *
- * THIS relay's store already dedupes across the filters of a subscription
- * (NostrSemanticsStore.recallOrdered — `distinctBy(idOf)` whenever there is
- * more than one query), so this is belt and braces rather than the fix for a
- * known duplicate. It stays because NIP-01 does not require that of a relay and
- * the same note rendering twice is a visible bug; it is a Set and one pass over
- * a list the page is about to render anyway. Arrival order is kept, and since
- * store 8a45e4d1a2 that order is one ranking over all four filters rather than
- * one run per filter, so keeping the first copy of a duplicate keeps it at the
- * best position it earned.
+ * One event, one card, however many filters it answered. This store already
+ * dedupes across a subscription's filters; NIP-01 does not require it. Arrival
+ * order is kept, so a duplicate stays at the best position it earned.
  */
 function uniqueById(events) {
   const seen = new Set();
@@ -516,54 +330,35 @@ function uniqueById(events) {
 }
 
 /**
- * [deep] is the FULL RESULTS view, and it decides two lookups rather than one.
- *
- * The reply lines are the obvious one. The provenance row is the other, and it
- * matters more per keystroke than per search: the type-ahead popup draws
- * `popupRow`, which is a face, two lines and a badge — `provHtml` is reached
- * only from `shell()`, so a popup row cannot render a pill however many are
- * computed for it. Fetching them there was a REQ of up to six filters, one of
- * them an ungated label read, on every debounced keystroke, for a row that
- * does not exist. The cards view asks; the popup does not.
+ * [deep] is the full results view: it fetches reply lines and the provenance
+ * row, which a popup row cannot draw (`provHtml` is reached only from
+ * `shell()`), so the type-ahead does not pay for them per keystroke.
  */
 async function search(text, limit, deep, signal) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  // Through the cache: the popup and the results view ask the same question
-  // at the same width, and the second of them gets the first one's answer.
-  // [signal] is the popup's, so a type-ahead Enter has overtaken can be
-  // closed at the relay rather than left to finish for nobody.
+  // Through the cache, so Enter reuses the popup's answer at the same width.
+  // [signal] is the popup's, so an overtaken type-ahead is closed at the relay.
   const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }));
-  // `complete` is EOSE rather than the ten-second timeout, and it rides out of
-  // here because the PAGER reasons about it: an answer shorter than the prefix
-  // it asked for means the corpus ends there — but only if the relay said so.
-  // A read we stopped listening to is short for our own reasons, and reading
-  // that as the end of the results puts a full stop after page three of a
-  // search over a slow connection. shared/relay.js marks the array; uniqueById
-  // returns a new one, so it is read before the copy loses it.
+  // `complete` is EOSE, not the timeout: the pager reads a short answer as
+  // the end of the corpus only if the relay said so. shared/relay.js marks
+  // the array and uniqueById returns a new one, so read it first.
   return {
     ...hydrate(uniqueById(answer), deep, { row: deep ? "own" : "keep" }),
     text,
     complete: answer.complete !== false,
     asked: limit,
-    // The RAW count, before uniqueById — "the relay had less than the prefix I
-    // asked for" is a claim about what the relay sent. This store dedupes
-    // across the filters of one REQ, so the two numbers agree today; NIP-01
-    // does not require that of a relay, and against one that repeats an event
-    // the deduped count would fall short of the ask and end the pager early,
-    // on a page that has plenty more.
+    // The raw count: "less than asked" is a claim about what the relay sent,
+    // and a relay that repeats an event would otherwise end the pager early.
     got: answer.length,
   };
 }
 
 /**
- * The newest content, for the hero's preview and for the feed page.
- *
- * The ask is over-sized and then cut back, because NIP-01 has no way to say
- * "not a reply" — feed.js owns both halves of that arithmetic. `deep` is
- * false for the same reason: once the replies are gone there is no "in reply
- * to" line to fill in, so the two round trips replyParents() costs would buy
- * nothing.
+ * The newest content, for the hero's preview and the feed page. The ask is
+ * over-sized and cut back because NIP-01 cannot say "not a reply"; feed.js
+ * owns that arithmetic. Not deep: with the replies gone there is no "in reply
+ * to" line to fill.
  */
 async function fetchFeed(want) {
   await ensureLogin();
@@ -573,89 +368,37 @@ async function fetchFeed(want) {
 }
 
 /**
- * The lookups a list of events needs once it has arrived — everything between
- * "the relay answered" and "the cards can be dressed".
- *
- * Split out of search() when the feed appeared: the feed asks a completely
- * different question (a plain NIP-01 read, no NIP-50 anything) and needs
- * exactly the same names, faces and reply lines afterwards. Two copies of this
- * would drift the first time a renderer started naming somebody new.
+ * The lookups a list of events needs once it has arrived, shared by the
+ * search and the feed so the two cannot drift.
  */
 function hydrate(events, deep, { row = "own" } = {}) {
   seedProfiles(events);
-  // THE PROVENANCE ROW IS NOT SEEDED HERE — it is handed back as [row] for the
-  // caller to run once it has decided this answer is the one on screen. Every
-  // other lookup in this function writes an ADDITIVE cache (a name, a group, a
-  // parent author), where a stale answer costs nothing but a wasted write.
-  // `seedProvenance` REPLACES, and three views come through here: the results
-  // list, the type-ahead popup and the hero's feed preview. Seeding eagerly
-  // meant a superseded read still overwrote the row of the view that had won —
-  // which is how a search's pills came to be dropped by the debounced
-  // keystroke that was still in flight when Enter was pressed.
-  // The same for the search box's `group:` pill, and it is nearly free: a
-  // `group:` query already asks for the group's own kind 39000 beside its
-  // posts (query.js's buildFilters sends the `#d` with the `#h`), so the name
-  // the pill wants is usually in the answer the reader just got, with no
-  // second round trip to pay for it. Repainted on the same "only if it learned
-  // something" terms the chips are, and reaching `field` from here is safe for
-  // the ordinary reason: hydrate runs on a search, which cannot happen before
-  // the box that search was typed into exists.
+  // The provenance row is not seeded here but handed back as [row]: every
+  // other cache here is additive, seedProvenance replaces, and a superseded
+  // read must not overwrite the row of the view that won.
+  // A `group:` query already asks for the group's kind 39000, so the pill's
+  // name is usually in this answer.
   if (seedGroupEvents(events)) field.repaint();
-  // Authors, plus everyone the cards will NAME — a 30382's d subject, a
-  // 10040's service column, a zap's sender. The names rule holds in the
-  // results list, not only on permalinks. This used to be a tag scan written
-  // here, which meant it could only cover the slots that existed when it was
-  // written; namedPubkeys lives with the renderers and is held to them by a
-  // test, so a new family that names somebody cannot silently stop being
-  // enriched — including the people a list's grid names, which arrive here
-  // capped at what one card can draw rather than at what the list carries.
-  //
-  // NOT awaited. This used to block the return, so the results existed and
-  // the page showed a skeleton until a SECOND round trip finished — up to the
-  // 5s enrichProfiles timeout of nothing, over a list the relay had already
-  // sent. base.js says it plainly about the score chip: "the score is a
-  // second round trip, and a face should not wait on it." A name is the same
-  // round trip; it was just on the other side of the render.
-  // Called with ONE argument on purpose. namedPubkeys takes the render depth
-  // as its second, and `flatMap(namedPubkeys)` hands it the array INDEX —
-  // harmless while a number has no `.full`, and a silent depth switch the
-  // moment that argument grows a second field somebody reads.
+  // Authors plus everyone the cards will name; namedPubkeys lives with the
+  // renderers and is held to them by a test. Not awaited: a face should not
+  // wait on a second round trip. One argument on purpose: namedPubkeys takes
+  // the render depth as its second, and flatMap would pass the index.
   const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  // The rooms those events were said in, on exactly the same terms as the
-  // names: a NIP-29 chat card draws the group beside its badge, an `h` tag
-  // carries nothing but the id, and the seed above has already taken whatever
-  // 39000s came back with the results — so this asks only for the ids nothing
-  // on the page can name yet, and reports how many it learned so a lookup that
-  // learned nothing costs no repaint. Not awaited, for the reason the names
-  // are not: a card should not wait on the label above it.
+  // The rooms those events were said in, on the same terms as the names: only
+  // the ids nothing on the page can name yet, and not awaited.
   const groups = enrichGroupNames(events.map(postedTo).filter(Boolean));
-  // Free, and it removes most of the asks below: a thread in the results
-  // carries its own parents, and an event is ground truth about who wrote it.
+  // Free, and it removes most of the asks below: a thread carries its own
+  // parents, and an event is ground truth about who wrote it.
   seedParentAuthors(events);
   return { events, names, groups, row: rowSeed(events, row), parents: deep ? replyParents(events) : null };
 }
 
 /**
- * The reply lines' own lookups, as a SEPARATE promise from the names.
- *
- * "In reply to <person>" needs a person, and most `e` tags name only an event
- * — so an unhinted parent is a lookup by id to learn its author, and then that
- * author's profile. Two more round trips behind the one the names already
- * cost, which is why they are not chained onto it: this began as `await names`
- * followed by the rest, and that made every author name in the list wait for
- * the parent lookup to finish — a repaint that used to land in one round trip
- * arrived in three, or after the 5s timeout when a parent was missing. The two
- * are independent facts and now repaint independently.
- *
- * Only the parent AUTHORS are enriched here, not namedPubkeys again: the names
- * promise is asking for that set concurrently, and enrichProfiles dedupes
- * against the cache rather than against what is in flight, so the overlap
- * would be a second REQ for pubkeys already being fetched.
- *
- * Full renders only (the `deep` flag): the type-ahead popup draws a name and a
- * line of text per row, no reply lines, so a debounced keystroke has nothing
- * to spend two round trips on.
+ * The reply lines' own lookups, as a separate promise from the names so the
+ * author names do not wait two more round trips. Only the parent authors are
+ * enriched: enrichProfiles dedupes against the cache, not against what is in
+ * flight, so re-asking namedPubkeys here would be a second REQ.
  */
 async function replyParents(events) {
   const learned = await loadParentAuthors(unknownParents(events));
@@ -663,39 +406,21 @@ async function replyParents(events) {
 }
 
 // ---- viewing as somebody else -------------------------------------------
-//
-// Only a pubkey that has published a kind 10040 is a usable observer: that
-// event is what names the services whose scores the store projects. Anyone
-// else ranks nothing, so offering them would be offering an empty feed.
-//
-// The whole set is small enough to hold — 271 of them on this relay against
-// 12.28M profiles — so it is fetched once and filtered by name in the page.
-// A server-side name search would have to join kind 0 against kind 10040,
-// which NIP-01 filters cannot express in one REQ.
+// Only a pubkey with a kind 10040 is a usable observer; anyone else ranks
+// nothing. The set is small, so it is fetched once and filtered by name here
+// (NIP-01 cannot join kind 0 against kind 10040 in one REQ).
 let viewingAs = null;         // hex pubkey, or null for "as me"
 let observers = null;         // [{pubkey, name}] once loaded
 
 async function loadObservers() {
   if (observers) return observers;
-  // Read on an ANONYMOUS connection, deliberately.
-  //
-  // The shared `relay` socket is authenticated, and the store gates an
-  // authenticated reader to authors that reader has scored — so asking there
-  // returned only the observers YOU already trust. The one list that must not
-  // be personalised is the list of lenses you could switch to; a picker that
-  // hides everyone you have not met is a picker that can never introduce you
-  // to anyone.
-  // On the shared reference connection, which is already anonymous for this
-  // exact reason — this used to open a THIRD socket of its own to say the
-  // same thing.
+  // Anonymous on purpose: the authenticated socket is gated to authors the
+  // reader has scored, and the list of lenses you could switch to must not
+  // be personalised.
   const anon = await refConn();
   const lists = await anon.req({ kinds: [10040], limit: 2000 });
   const ks = [...new Set(lists.map((e) => e.pubkey))];
-  // The batches are chunks of ONE question, so they go out together rather
-  // than one round trip after another — 271 observers is two REQs, and asking
-  // them serially made the picker's first open cost two full waits for no
-  // reason. NIP-01 subscriptions are concurrent by design and this client
-  // already keys replies by subscription id; only the `await` was serialising.
+  // The chunks are one question, so they go out together.
   const chunks = [];
   for (let i = 0; i < ks.length; i += 200) chunks.push(ks.slice(i, i + 200));
   const answers = await Promise.all(chunks.map((c) => anon.req({ kinds: [0], authors: c, limit: c.length })));
@@ -729,15 +454,11 @@ function renderObserverOptions(filterText) {
   }
 }
 
-/** The lens state and its widget, with no search behind it — what a history
-    restore needs, since the restore runs its own search exactly once. */
+/** The lens state and its widget, with no search behind it; a history restore runs its own. */
 function applyViewingAs(pubkey, name) {
   viewingAs = pubkey;
   $obsBox.classList.toggle("active", !!pubkey);
-  // "me" only when there is a me. Signed out with nobody picked the page ranks
-  // through nothing at all and says so, rather than naming a lens it does not
-  // have — that reading is the one the relay now refuses to answer, and the
-  // control is where a reader fixes it without an extension.
+  // "me" only when there is a me; signed out with nobody picked says "nobody".
   $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : me || mePending ? "me" : "nobody";
   $obsList.innerHTML = "";
   $obsFilter.value = "";
@@ -750,28 +471,15 @@ function setViewingAs(pubkey, name) {
 }
 
 // ---- the provenance row's own lookup ------------------------------------
-//
-// WHY THIS IS A LOOKUP NOW. The row used to be free: the relay's expansion
-// spliced a Trusted List in beside the members it named, so one answer carried
-// both the card and its reason and provenance.js only had to index the array.
-// A search that asks for `kinds:[0]` is now answered with kind 0 and nothing
-// else — the profiles are still FOUND through those lists, labels and
-// assertions, they simply do not ride along any more — so the reasons have to
-// be asked for.
-//
-// Everything about the shape is the score chip's, because the score chip had
-// the same problem first: paint what the page supports, ask anonymously for
-// the rest, repaint when it lands, and never block a card on the row under its
-// byline. shared/pointers.js builds the ask and re-imposes the trust gate the
-// relay used to apply for us.
+// A search for `kinds:[0]` is answered with kind 0 and nothing else, so the
+// lists, labels and assertions a profile was found through have to be asked
+// for. Same shape as the score chip: paint what is known, ask anonymously,
+// repaint when it lands, never block a card. shared/pointers.js builds the
+// ask and re-imposes the trust gate.
 
 /**
- * WHOSE WORD THIS LENS TOOK, from the Map already in hand.
- *
- * Synchronous, because the first seed runs before the render and a pill is a
- * claim about who vouched — there is no honest way to draw one while the
- * answer to "did you delegate them" is still in flight. It is usually there:
- * the readiness panel files the Map at sign-in, well before a search.
+ * Whose word this lens took, from the Map already in hand. Synchronous: the
+ * first seed runs before the render, and readiness.js files the Map at sign-in.
  */
 const trustedNow = () => {
   const lens = viewingAs || me;
@@ -779,12 +487,8 @@ const trustedNow = () => {
 };
 
 /**
- * What the row currently says, as one string — the "did anything change" signal.
- *
- * A COUNT IS NOT ENOUGH, and it stopped being enough the moment the second
- * seed could REMOVE a pill as well as add one: a stranger's list dropped and a
- * delegated one fetched nets to zero, and `run` would skip the repaint and
- * leave the stale row on screen. This compares what is drawn, not how much.
+ * What the row currently says, as one string. A count is not enough: the
+ * second seed can remove a pill as well as add one, netting to zero.
  */
 function pillPrint() {
   const out = [];
@@ -793,20 +497,11 @@ function pillPrint() {
 }
 
 /**
- * WHO OWNS THE PROVENANCE ROW, per view — returned as a thunk, run by [run]
- * once it knows this answer is the one on screen.
- *
- * `own`   the results list. It draws `provHtml` and it is the only view whose
- *         question the row answers, so it seeds and then asks for the rest.
- * `clear` the feed and the hero's preview. They draw full cards, so a row left
- *         over from the last search would appear under them saying "this is
- *         why it is here" about a list nobody searched — but a plain NIP-01
- *         read expands nothing, so they have no row of their own to put there.
- * `keep`  the type-ahead popup. `popupRow` is a face, two lines and a badge;
- *         `provHtml` is reached only from `shell()`, so a popup row cannot
- *         draw a pill however many are computed. And it is drawn OVER the
- *         results list, which is still on screen underneath — so touching the
- *         map at all is the popup vandalising the view it is floating above.
+ * Who owns the provenance row, per view, as a thunk [run] fires once the
+ * answer is the one on screen. `own` is the results list, which draws it.
+ * `clear` is the feed and the hero's preview: a plain NIP-01 read has no row,
+ * and a leftover one would explain a list nobody searched. `keep` is the
+ * popup, which cannot draw a pill and floats over the results list.
  */
 function rowSeed(events, mode) {
   if (mode === "keep") return null;
@@ -819,114 +514,57 @@ function rowSeed(events, mode) {
 
 /**
  * Fetch the pointers this page was not sent and fold them into the row.
- *
- * Returns how many pills the page GAINED, because that is what `run` repaints
- * on: a lookup that learned nothing must not cost a re-render, and re-seeding
- * with the same events would otherwise report a full row every time.
- *
- * Seeded from `[...events, ...pointers]` and never from the pointers alone —
- * a pointer the relay did splice is still in the page and still contributes.
- * provenance.js dedupes per pointer and collapses by value, so an event
- * arriving both ways is one pill with one count, not two.
+ * Returns how many pills the page gained, since that is what `run` repaints
+ * on. Seeded from `[...events, ...pointers]`: a spliced pointer still counts,
+ * and provenance.js collapses an event arriving both ways into one pill.
  */
 function enrichProvenance(events) {
   const lens = viewingAs || me;
-  // The epoch this row owns. It MOVES as we seed — each half's own write makes
-  // it the current owner again — which is what lets the second half fold in on
-  // top of the first instead of reading its write as somebody else's.
+  // The epoch this row owns; it moves with each half's own write so the second
+  // half folds on top of the first.
   let mine = provenanceEpoch();
   const carried = [];   // every pointer folded so far, both halves
 
   const fold = async (opts) => {
     const got = await fetchPointers(events, lens, opts).catch(() => []);
-    // BOTH AWAITS BEFORE THE GUARD. providersFor is cached and deduped so this
-    // is free, but it is still an await, and having it after the check
-    // reopened the window the check exists to close.
+    // Both awaits before the guard, or the await reopens the window it closes.
     const trusted = trustedSigners(await providersFor(lens).catch(() => new Map()), lens);
     if (mine !== provenanceEpoch()) return 0;
     const before = pillPrint();
     carried.push(...got);
-    // RE-SEEDED FROM EVERYTHING, EVEN WITH NOTHING FETCHED. The Map may have
-    // landed on this very read, and the first seed is gated on what was known
-    // THEN — so a cold cache draws no declaration pill and this is where the
-    // page stops understating itself. And from `carried` rather than this
-    // half's own answer, so the second write does not drop the first's.
+    // Re-seeded from everything: the Map may have landed on this read, and
+    // `carried` keeps the first half's pointers under the second's write.
     seedProvenance([...events, ...carried], trusted);
     mine = provenanceEpoch();
     return pillPrint() === before ? 0 : 1;
   };
 
-  // TWO ASKS, TWO REPAINTS. The gated half is small and author-narrowed; the
-  // open half is 6x its bytes and cannot be narrowed at all. Sent as one REQ
-  // they shared one EOSE, so the pills a reader asked for waited on the ones
-  // nobody did — 252ms against 67ms, measured over a page of 42 profiles.
+  // Two asks, two repaints: the open half is far larger than the gated one,
+  // and in one REQ the pills a reader asked for waited on the ones nobody did.
   return [fold({ labels: false }), fold({ declarations: false })];
 }
 
-// ---- trust scores, as the ACTIVE LENS sees them -------------------------
-//
-// The chip on a face answers "what does this ranking think of them", which is
-// the question the whole relay is organised around and was nowhere on screen.
-// The lens is whoever the page is reading as: you, or the observer picked in
-// "ranking as" — the same key that ranks the results, so the chip and the
-// order can never disagree.
-//
-// Read ANONYMOUSLY. A score is a fact about a subject, not about the reader,
-// and asking on the authenticated socket would gate the lookup to authors the
-// reader already scored — which is circular: you would only see scores for
-// people you had already scored.
+// ---- trust scores, as the active lens sees them -------------------------
+// The chip on a face reads through the same key that ranks the results, so
+// the two cannot disagree. Read anonymously: a score is a fact about a
+// subject, and the authenticated socket is gated to authors already scored.
 const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
 
 /**
- * The `30382:rank` services an observer trusts, from their kind 10040.
- *
- * The read, and the rule that a dropped one must not be cached as "this lens
- * ranks nothing", now live in shared/providers.js — the provenance row needs
- * the same Map, and two reads of one replaceable event with two chances to get
- * that rule wrong is what this used to be half of.
- *
- * ALL of them, and specifically the `rank` dimension. Both halves are fixes.
- * Reading only the first told a reader whose SECOND provider is mirrored that
- * their scores were missing, on every login (TrustNotice.kt measured it); and
- * a Map's `30382:followers` entry names a service that orders a set and cannot
- * rank one, so the dimension is not a label on the delegation, it IS the
- * delegation. `authors` is an OR, so all of them cost the one round trip.
+ * The `30382:rank` services an observer trusts, from their kind 10040, via
+ * shared/providers.js. All of them, in the reader's order: the dimension is
+ * the delegation, and a `followers` service cannot rank.
  */
 async function rankServicesOf(observer) {
   return (await providersFor(observer)).get("30382:rank") || [];
 }
 
 /**
- * Fill in any score chips currently on the page.
- *
- * A KNOWN DUPLICATE READ LIVES HERE, measured and deliberately left. The
- * provenance row asks the delegated publishers for kind 30382 about the
- * page's authors; this asks the rank service for kind 30382 about the same
- * people. Against staging over a page of 42 profiles the two came back with
- * the SAME 42 events, 20 KB each way — a 100% overlap, on every search — and
- * in a browser the page sends `kinds:[30382] #d:89` twice.
- *
- * The obvious fix is for this to join the read already in flight instead of
- * repeating it. It was tried and it made things WORSE: 4 asks where there had
- * been 2. The reason is worth keeping, because it is a trap for the next
- * attempt. This function has no in-flight dedupe, so `need` is computed after
- * every await it contains — and the callers are plural (paintList on each
- * render, entity.js, the late repaints). Today the only await before `need`
- * is `rankServicesOf`, which resolves out of a cache, so the window is a tick
- * and no two calls collide. Add a NETWORK await there and the window becomes
- * a round trip: two concurrent calls both see the same unknowns and both ask.
- *
- * So the order is: make this coalesce concurrent runs FIRST, then join. One
- * round trip of ~39ms and 20 KB is not worth a coalescing bug in the code
- * that fills every avatar's number, which is why it is written down rather
- * than done.
- *
- * Every exit paints, including the ones that have nothing to say. Most chips
- * live inside HTML that is rebuilt per search, so a lens with no scores used
- * to clear itself simply by being re-rendered — but the SEARCH FIELD's chips
- * outlive every search, and returning early there left one lens's numbers
- * sitting on a face under the next lens, or after signing out.
+ * Fill in any score chips currently on the page. The provenance row asks the
+ * same kind 30382 read for the page's authors; see docs/decisions/web-app.md
+ * before joining the two. Every exit paints, even with nothing to say: the
+ * search field's chips outlive every search.
  */
 async function paintScores() {
   const lens = viewingAs || me;
@@ -934,36 +572,22 @@ async function paintScores() {
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
   const svc = lens ? await rankServicesOf(lens) : [];
-  // Nobody to rank by, or a lens that ranks nothing: the chips are not stale,
-  // they are ANSWERED — with no number.
+  // Nobody to rank by, or a lens that ranks nothing: answered, with no number.
   if (!svc.length) { paintChips(chips); return; }
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
-  // In flight together: the chips are already on screen waiting to be filled,
-  // and one batch's answer never informs the next one's ask. An entity page
-  // with a long face strip was paying a full round trip per hundred faces.
+  // In flight together: one batch's answer never informs the next one's ask.
   const conn = batches.length ? await refConn().catch(() => null) : null;
   const reads = await Promise.all(batches.map((batch) =>
-    // A failed read leaves this batch unknown rather than wrong — an empty
-    // array is NOT marked complete, so nothing gets cached as "no score".
+    // A failed read leaves this batch unknown: an empty array is not complete.
     (conn ? conn.req({ kinds: [30382], authors: svc, "#d": batch, limit: batch.length * svc.length }) : Promise.resolve([]))
       .catch(() => [])));
-  // The lens can change WHILE these are in flight — the reader picks another
-  // observer, or signs out — and `scores` was cleared and re-keyed to the new
-  // one by the paint that followed them. Writing these answers into it now
-  // files one lens's numbers under another's name, and the `null`s below are
-  // worse: they are cached as "this lens gives them no score", which nothing
-  // re-asks. The answers are simply stale; drop them.
+  // The lens changed while these were in flight; filing them, and the nulls
+  // below, under the new lens would be permanent.
   if (scoreLensKey !== lens) return;
-  // BY SERVICE PRIORITY, NOT BY ARRIVAL. `authors` is an OR, so a reader who
-  // names two rank services gets both services' cards interleaved in one
-  // answer — and writing each as it comes made the number on a face depend on
-  // which card the relay happened to send last, so the same reader could see
-  // two different scores on two renders of the same page. The Map's own order
-  // is the reader's stated order of preference, and `publishersOf` preserves
-  // it; first service wins, and a service that scored nobody simply never
-  // shadows the next.
+  // By service priority, not arrival: `authors` is an OR, so two services'
+  // cards interleave, and the reader's stated order decides which wins.
   const priority = new Map(svc.map((pk, i) => [pk, i]));
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i], evs = reads[i];
@@ -979,11 +603,8 @@ async function paintScores() {
       from.set(d, pri);
       scores.set(d, rank == null ? null : Number(rank));
     }
-    // "The service returned no card for this pubkey" is only a fact once the
-    // service finished answering. EOSE, not merely "resolved": req() hands
-    // back whatever arrived when its timeout fired, so caching the gap off a
-    // slow read records a `null` the relay never stated — and `scores` is
-    // consulted before every repaint, so that null is permanent for the lens.
+    // "No card for this pubkey" is a fact only after EOSE; req() also resolves
+    // on its timeout, and a null cached here is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
   paintChips(chips);
@@ -1001,17 +622,9 @@ function paintChips(chips) {
 }
 
 /**
- * The whole search, written out so somebody else can argue with it.
- *
- * The point is not a backup — it is handing a ranked list to a reader who was
- * not here and letting them judge the ORDER. That takes more than the titles:
- * what was asked, whose web of trust was applied, what each author scores
- * under that lens, and how old each result is. Rank without the inputs is
- * just a list.
- *
- * Text, not JSON: the intended reader is a person or a model reasoning about
- * whether position 7 deserves to be above position 3, and prose beats a
- * structure they have to re-derive. The raw event stays one click away.
+ * The whole search, written out so somebody else can argue with the order:
+ * what was asked, whose web of trust applied, what each author scores under
+ * it. Text rather than JSON, because the reader is a person or a model.
  */
 function exportText() {
   const lens = viewingAs || me;
@@ -1024,44 +637,25 @@ function exportText() {
   const typed = $q.value.trim();
   const q = parseQuery(typed);
   const full = buildFilters(typed, s.asked || PAGE_SIZE);
-  // The order the STORE will apply, which is not always the one the menu shows:
-  // a `sort:` typed into the box rides through parseQuery untouched, so
-  // `/?q=cats sort:recent` is a chronological search with the menu on "Best
-  // match". Every line below that reasons about the ORDER reads this rather
-  // than $sort — an audit of an order has to name the order that was served.
+  // The order the store applies, which is not always the menu's: a `sort:`
+  // typed into the box rides through parseQuery untouched.
   const sort = effectiveSort(full[0].search ?? "");
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
   L.push(`  typed         ${JSON.stringify(typed)}`);
   L.push(`  terms         ${JSON.stringify(q.terms)}`);
-  // The person filters are the reason an order can look wrong and be right:
-  // a reader judging position 7 has to know the list was narrowed to two
-  // authors before it was ranked at all.
   if (q.authors.length) L.push(`  from          ${people(q.authors)}`);
   if (q.mentions.length) L.push(`  to            ${people(q.mentions)}`);
-  // Same reason, and one more: a hashtag search is a union, so a reader
-  // comparing two results has to know one may have arrived as a `t` tag, the
-  // next as a NIP-22 comment on the topic, and the next as a NIP-32 label —
-  // three different claims, ranked into one list.
+  // A hashtag search is a union of three claims: a `t` tag, a NIP-22 comment, a NIP-32 label.
   if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
-  // As typed, not as asked: the id spellings the filter actually carries are in
-  // the full filter lines below, and a reader auditing the order needs to see
-  // both — what the person meant, and what the relay was asked for it.
+  // As typed; the ids the filter carries are in the full filter lines below.
   if (q.scopes.length) L.push(`  scopes        ${q.scopes.map((s) => `${s.field}:${s.value}`).join(", ")}`);
-  // The id and nothing else, because the id is all the filter carries. A group
-  // is the pair (id, host relay) and an `h` tag holds only the id, so a reader
-  // auditing this order has to be told that the rows could have come from more
-  // than one relay's group of that name — it is not recoverable from the events.
+  // An `h` tag holds only the id, so the host is not recoverable from the events.
   if (q.groups.length) L.push(`  groups        ${q.groups.map((g) => `group:${g}`).join(", ")}  (matched by id alone — any host's group with this id)`);
-  // The window, as both the second the filter carries and the moment it stands
-  // for. A reader auditing an order has to be able to tell an empty page from a
-  // window that excluded everything, and a bare epoch second cannot say which.
   const when = (at) => `${at}  (${new Date(at * 1000).toISOString()})`;
   if (q.since != null) L.push(`  since         ${when(q.since)}`);
   if (q.until != null) L.push(`  until         ${when(q.until)}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
-  // Named from the string, and told apart from the menu when the two differ —
-  // a reader auditing the order needs to know a token in the box produced it.
   L.push(`  sort          ${sort || "(relevance — NIP-50 default)"}${sort && sort !== $sort.value ? "  (from the search box, not the Filters menu)" : ""}`);
   L.push(
     `  include spam  ${
@@ -1075,16 +669,11 @@ function exportText() {
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
   L.push(`  search string ${full[0].search == null ? "(none — no words and no sort/spam/lens to carry, so this is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
-  // Every filter of the REQ, one per line: they are ORed in one subscription,
-  // and a reader shown only the first would think the comments came from
-  // nowhere. The label stays singular for the ordinary one-filter search.
+  // Every filter of the REQ, one per line; the label stays singular for one.
   L.push(`  full filter${full.length > 1 ? "s " : "  "} ${JSON.stringify(full[0])}`);
   for (const f of full.slice(1)) L.push(`                ${JSON.stringify(f)}`);
   L.push("");
-  // Whose scores produced this order, listed once rather than repeated per
-  // result — and kept OUT of the events themselves, which are reproduced
-  // exactly as the relay sent them. Annotating an event with a number the
-  // relay never put there would be inventing evidence.
+  // Scores listed once, and kept out of the events, which stay verbatim.
   const authors = [...new Set(s.hits.map((e) => e.pubkey))];
   if (lens) {
     L.push("AUTHOR SCORES UNDER THIS LENS");
@@ -1094,32 +683,17 @@ function exportText() {
     }
     L.push("");
   }
-  // Every page FETCHED, not the forty on screen: the ORDER is what this file
-  // exists to let somebody argue with, and an order cannot be judged one page
-  // at a time. The cut on screen is a reader's screen; a text file has no such
-  // reason to make one.
+  // Every page fetched, not the page on screen: an order is judged whole.
   L.push(`RESULTS  ${s.hits.length} event(s) over ${Math.max(1, pageCount(s.hits))} page(s) of ${PAGE_SIZE}, in the order the relay returned them.`);
   L.push(`On screen: page ${s.page + 1}.  ${s.exhausted ? "This is the whole answer — the relay had nothing past it." : "There may be more behind it; the pager had not reached the end."}`);
-  // The timing is the FIRST ask's and says so. The pages behind it were
-  // fetched by later asks the reader never waited on, and quoting one number
-  // over all of them would price a search that was never made.
   L.push(`The first ${Math.min(PAGE_SIZE, s.hits.length)} came back in ${s.lastMs ?? "?"} ms; the pages after them were fetched separately.`);
   L.push("Verbatim, unmodified — these are the events the page is drawing from.");
   L.push("");
   L.push(JSON.stringify(s.hits, null, 2));
   L.push("");
   L.push("QUESTION FOR THE READER");
-  // Which question, because `sort:recent` changes what a wrong answer looks
-  // like. The trust question below asks whether the ORDER earned itself; under
-  // "Newest" the relay was told not to order by trust at all, so asking it
-  // would send the reader hunting for a misranking in a list that is supposed
-  // to be chronological — and would say nothing about the one thing the lens
-  // still does there, which is decide who is IN the list.
-  //
-  // Keyed on the SENT string (see `sort` above), not on $sort: a shared
-  // `/?q=cats sort:recent` link is a chronological search with the menu
-  // untouched, and it was getting the trust question this branch exists to
-  // avoid.
+  // Under `sort:recent` the lens still decides membership but not order, so
+  // the question changes. Keyed on the sent string, not on $sort.
   if (sort === "recent") {
     L.push("  This order is not a ranking: `sort:recent` asked for the search's");
     L.push("  own match set in time order, newest first, so a weak match sitting");
@@ -1136,14 +710,6 @@ function exportText() {
     L.push("  low-scoring author near the top, is worth challenging.");
   }
   L.push("  The events are verbatim: nothing has been trimmed or annotated.");
-  // No union caveat any more. This block used to warn that a multi-filter REQ
-  // came back as each filter's ranked run end to end, so a jump back up the
-  // trust scale was a seam and not a misranking — true of the store until
-  // vespaEventStore 8a45e4d1a2, which merges the filters of one REQ on the
-  // engine's scores when they share a rank profile (which this page's four
-  // hashtag filters always do: they carry the same search string). The order is
-  // now one ranking of the union, so a jump back up the scale IS worth
-  // challenging, and the question above stands unqualified.
   return L.join("\n");
 }
 
@@ -1159,53 +725,35 @@ const $sort = document.getElementById("sort");
 const $spam = document.getElementById("spam");
 const $whoami = document.getElementById("whoami");
 const $me = document.getElementById("me");
-// By class, because the class is the thing being asked about: `.hero` is what
-// `body.searching .hero` makes a sticky toolbar, and its height is what the
-// keyboard cursor has to scroll clear of.
+// By class: `.hero` is what `body.searching .hero` makes a sticky toolbar.
 const $hero = document.querySelector(".hero");
 
 /** The avatar in the field: your picture signed in, a neutral mark signed out. */
 function renderMe() {
-  // Two states, deliberately distinct. `me` is PROVEN — an AUTH this relay
-  // accepted. `mePending` is only what the extension answered when the page
-  // opened: enough to draw a face, not enough to claim a session, so the field
-  // shows it faded and says "signing in as" until the proof lands.
+  // `me` is proven; `mePending` is only what the extension named, drawn faded.
   const who = me || mePending;
   const p = who ? profiles.get(who) : null;
-  // The remembered face stands in only until the relay has ANSWERED about this
-  // pubkey — `has` is true once it has, profile or no profile. So a kept
-  // picture can outlive the truth by at most one round trip, and there is no
-  // flash of placeholder in between while the real read is in flight.
+  // The remembered face stands in until the relay has answered (`has`), so it
+  // outlives the truth by at most one round trip.
   const kept = who && !profiles.has(who) && meFace && meFace.pubkey === who ? meFace : null;
   const pic = (p && p.picture) || (kept && kept.picture) || "";
   const nm = displayName(p) || (kept ? kept.name : "");
   $me.classList.toggle("in", !!me);
   $me.classList.toggle("pending", !!who && !me);
   if (who && pic) {
-    // The page's one face renderer, at whatever size this button happens to
-    // be — it is pinned to the field's box, so "fill" is the honest answer.
-    // Its own hand-rolled <img> removed itself when the picture failed to
-    // load, which left the button empty; the shared face falls back to the
-    // generated one, the same as every other picture of the same person.
-    //
-    // Rewritten only when the url actually changed: the kept face and the
-    // fetched one are usually the same picture, and replacing the <img> with
-    // an identical one makes it blink for a frame.
+    // Rewritten only when the url changed: replacing an identical <img> blinks.
     const img = $me.querySelector("img.avatar");
     if (!img || img.getAttribute("src") !== pic) $me.innerHTML = avatarHtml(pic, who, "fill");
   } else if (who && nm) {
     $me.textContent = nm.slice(0, 2).toUpperCase();
   } else if (who) {
-    // Signed in, profile not (yet) known. Initials off an npub spell "NP" for
-    // every account on earth, which reads as a broken avatar rather than as a
-    // missing profile.
+    // Signed in, profile not (yet) known; initials off an npub would spell "NP".
     $me.innerHTML =
       `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
       ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
       `<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>`;
   } else {
-    // A person outline, not two dots: "no account" should look like an empty
-    // seat, and a dot pair looked like something still loading.
+    // "No account" is an empty seat, not something still loading.
     $me.innerHTML =
       `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
       ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
@@ -1221,9 +769,7 @@ function renderMe() {
   $me.setAttribute("aria-label", me ? "Sign out" : "Sign in");
 }
 
-// NIP-42 auth belongs to the SOCKET, so signing out is a reconnect, not a
-// flag. Anything less would leave the relay still treating the connection as
-// authenticated while the page claimed otherwise.
+// NIP-42 auth belongs to the socket, so signing out is a reconnect, not a flag.
 $me.addEventListener("click", async () => {
   $me.classList.add("busy");
   try {
@@ -1231,28 +777,15 @@ $me.addEventListener("click", async () => {
       rememberSignIn(false);
       me = null;
       mePending = null;
-      // Forgotten here, not merely unrendered: the kept face is drawn from the
-      // pubkey the extension names, and it would otherwise flash back on the
-      // next load of a page the reader had deliberately signed out of.
+      // Forgotten, not merely unrendered, or it flashes back on the next load.
       forgetFace();
-      // And the names that came out of the ENCRYPTED half of this reader's
-      // group list, for the same reason: the public ones are the network's to
-      // read, but a label somebody gave a group in private must not still be
-      // on a pill for whoever uses this tab next. forgetOwnGroups() covers the
-      // rows themselves on the next lookup; this is the copy the search box
-      // draws from.
+      // A label given to a group in private must not stay on a pill for
+      // whoever uses this tab next.
       forgetPrivateGroupNames();
-      // Clearing the cache is only half of forgetting: both pills that read it
-      // are ALREADY DRAWN, and neither repaints on its own — the two repaint
-      // call sites on this page both fire only when a lookup LEARNED
-      // something, and forgetting is the opposite of learning. So the field is
-      // repainted here, and `rerun()` in the finally below redraws the cards —
-      // including the entity view, which is where a chat permalink would
-      // otherwise sit with a private label on it for whoever uses this tab next.
+      // Both pills that read the cache are already drawn and repaint only on a
+      // lookup that learned something; the rerun() below redraws the cards.
       field.repaint();
-      // The render-only half: the finally below reruns the search once for
-      // the whole click, and setViewingAs here meant every sign-out searched
-      // twice — two REQs for one action, with the first result thrown away.
+      // The render-only half; the finally below reruns the search once.
       applyViewingAs(null, null);
       if (relay.ws) relay.ws.close();
       await relay.connect();
@@ -1269,14 +802,10 @@ $me.addEventListener("click", async () => {
     $me.classList.remove("busy");
     renderMe();
     renderWhoami();
-    // Signing OUT takes the panel down immediately: it is about one account's
-    // trust chain, and leaving it up over a signed-out page would be a claim
-    // about somebody who is no longer here.
+    // The readiness panel is about one account's trust chain.
     me ? checkReadiness(me) : clearReadiness();
     rerun();
-    // The hero's feed is a different list for a signed-in reader than for
-    // anyone else — and for a signed-OUT one it is not drawn at all — so it
-    // follows this click the way the results do.
+    // The hero's feed is a different list per reader, and none signed out.
     showFeedPreview();
   }
 });
@@ -1286,8 +815,7 @@ const $obsFilter = document.getElementById("obsfilter");
 const $obsList = document.getElementById("obslist");
 const $obsReset = document.getElementById("obsreset");
 
-// Loaded lazily: the picker is a power feature, and 271 REQs' worth of
-// profiles should not be on the path of somebody who just wants to search.
+// Loaded lazily: the observers' profiles are not on the path of a plain search.
 $obsFilter.addEventListener("focus", async () => {
   renderObserverOptions($obsFilter.value);
   await loadObservers();
@@ -1295,24 +823,19 @@ $obsFilter.addEventListener("focus", async () => {
 });
 $obsFilter.addEventListener("input", () => renderObserverOptions($obsFilter.value));
 $obsReset.addEventListener("click", () => setViewingAs(null, null));
-// Dismissed like any other popup. It is absolutely positioned over the page,
-// so without this it sat open over whatever you clicked next.
+// Dismissed like any other popup: it is absolutely positioned over the page.
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#obsbox")) $obsList.innerHTML = "";
 });
 
 // ---- the advanced filters -------------------------------------------------
-//
-// The disclosure itself is the <details> element's job — open/closed, the
-// keyboard, the ARIA. What is left for this file is the part hiding a control
-// costs: the badge, which is the only thing on screen that admits a filter is
-// on while the panel is shut. web/src/test/js/filters.test.mjs holds the three
-// of them — panel control, badge fact, URL param — in step.
+// The <details> element owns the disclosure; this file owns the badge, the
+// one thing that admits a filter is on while the panel is shut.
+// web/src/test/js/filters.test.mjs holds panel, badge and URL param in step.
 const $adv = document.getElementById("adv");
 const $advBtn = document.getElementById("advbtn");
 const $advCount = document.getElementById("advcount");
-// The idle tooltip, read off the markup rather than repeated here: two copies
-// of one sentence is one sentence that gets edited and one that does not.
+// The idle tooltip, read off the markup rather than repeated here.
 const advIdleTitle = $advBtn.title;
 
 /** What is on, on the button: a count while shut, and the list as its title. */
@@ -1320,63 +843,43 @@ function renderAdvCount() {
   const on = [];
   if ($sort.value) on.push("Sort: " + $sort.options[$sort.selectedIndex].text);
   if (viewingAs) on.push("Ranking as: " + $obsCurrent.textContent);
-  // The reader's own switch only: a waiver forced by having no lens is not a
-  // filter they set, and counting it would put a permanent 1 on the button of
-  // every signed-out visitor.
+  // The reader's own switch only; a waiver forced by having no lens is not a
+  // filter they set.
   if ($spam.checked) on.push("Spam included");
   $advCount.textContent = String(on.length);
   $advCount.hidden = !on.length;
   $advBtn.title = on.length ? on.join(" · ") : advIdleTitle;
 }
 
-// Dismissed like the popups it sits next to, and for the same reason: it is
-// absolutely positioned over the page. The observer list inside it is a click
-// within #adv, so picking somebody does not close the panel out from under the
-// list they picked from.
+// Dismissed like the popups beside it. A click in the observer list is inside #adv.
 document.addEventListener("click", (e) => {
   if ($adv.open && !e.target.closest("#adv")) $adv.open = false;
 });
 
-// ONE Escape handler for the two things stacked here, asked in order rather
-// than each stopping the key on its way past: a stopPropagation() in the
-// observer field would swallow Escape for every other listener on the page,
-// including ones written later that have no idea this field exists.
+// One Escape handler for the things stacked here, innermost first, rather
+// than a stopPropagation() that would swallow Escape for every other listener.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  // The syntax sheet is innermost of all when it is up, and the <dialog> closes
-  // itself on this very press — so anything here would be the second thing
-  // dismissed by one key. The panel can genuinely be open behind it: `?` opens
-  // the sheet from the panel's own summary button, which is not a field, so
-  // isTyping() lets the key through. This listener still sees `open === true`
-  // at that moment (the element closes on the default action, after dispatch),
-  // which is what makes the guard readable rather than a race.
+  // The <dialog> closes itself on this press (after dispatch, so `open` still
+  // reads true here); anything more would dismiss two things for one key.
   if ($help.open) return;
-  // Innermost first — the list is drawn INSIDE the panel, so closing the panel
-  // on the same press would dismiss two things for one key.
+  // The list is drawn inside the panel; one key closes one thing.
   if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
   if (!$adv.open) return;
-  // Focus returns to the button only if it was inside the panel: Escape is also
-  // how the search popup closes, and that press must not yank the caret out of
-  // the field somebody is typing in.
+  // Escape also closes the search popup, and must not yank the caret from the field.
   const inside = $adv.contains(document.activeElement);
   $adv.open = false;
   if (inside) $advBtn.focus();
 });
 
 // ---- the syntax sheet -----------------------------------------------------
-//
-// What the search box understands, as a modal <dialog> — index.html holds the
-// sheet itself and says why it is written there rather than generated here.
-// This is the whole of its behaviour, and it is this short for a reason: a
-// <dialog> opened with showModal() already closes on Escape, already keeps Tab
-// inside itself, already makes the page behind it inert, and already returns
-// focus to whatever opened it. The only things left are the two ways OUT that
-// the element does not have an opinion about — the close button and a click on
-// the backdrop — and the shortcut in.
+// A modal <dialog> already closes on Escape, traps Tab, inerts the page and
+// returns focus. What is left is the close button, the backdrop click and the
+// shortcut in.
 const $help = document.getElementById("help");
 const $helpBtn = document.getElementById("helpbtn");
 
-/** Open it, or shut it if it is already up — the `?` press is a toggle. */
+/** Open it, or shut it if it is already up: the `?` press is a toggle. */
 function toggleHelp() {
   if ($help.open) $help.close();
   else $help.showModal();
@@ -1384,26 +887,13 @@ function toggleHelp() {
 
 $helpBtn.addEventListener("click", () => $help.showModal());
 document.getElementById("helpclose").addEventListener("click", () => $help.close());
-// The backdrop is not an element to hang a listener on: a click on it is
-// dispatched at the <dialog> itself, and one on the sheet hits a child. So the
-// target BEING the dialog is what "outside" means here — the same test the
-// popups above make with closest(), asked the way this element allows.
+// A backdrop click is dispatched at the <dialog> itself; one on the sheet hits a child.
 $help.addEventListener("click", (e) => { if (e.target === $help) $help.close(); });
 
-// Back closes it. This page answers popstate by re-rendering the view rather
-// than leaving the site, so a sheet left open would hang over a page that just
-// changed underneath it — and on a phone, Back IS the gesture for dismissing
-// something that is in the way. It does not push a history entry of its own:
-// one press should get you back to what you were reading, not out of a sheet
-// you would then have to press Back again to leave. `close()` on a shut dialog
-// is a no-op, so this needs no guard.
+// Back closes it, with no history entry of its own; close() on a shut dialog is a no-op.
 window.addEventListener("popstate", () => $help.close());
 
-// `?` opens it, the way `/` focuses the box — one key, guarded by the same
-// rule, because a `?` typed INTO a query is a question mark. Shift is how the
-// key is reached on most layouts and is therefore not a modifier to refuse
-// here; the other three still are, since ⌘? and Alt-? belong to the browser
-// and to a screen reader.
+// `?` opens it, guarded like `/`. Shift is how the key is reached, so it is not refused.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "?" || e.metaKey || e.ctrlKey || e.altKey) return;
   const el = document.activeElement;
@@ -1413,31 +903,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- the field renders its own contents ----------------------------------
-//
-// `$q` stops being an <input> here and becomes a field that draws the people
-// in it as faces (searchfield.js says why an input could not). Everything
-// below still reads and writes `$q.value`, and the URL still carries the
-// plain `from:npub1…` text — the rendering is a view of that string.
-//
-// Mounted before applyUrl() runs at the bottom of this file: the restore path
-// assigns `$q.value`, and until this call that property is an ordinary DOM
-// attribute with nothing rendering behind it.
+// `$q` becomes a field that draws the people in it as faces (searchfield.js);
+// everything below still reads and writes `$q.value`. Mounted before applyUrl()
+// assigns `$q.value` at the foot of this file.
 
 /**
- * Who the picker offers for a half-typed `from:`/`to:`.
- *
- * On the AUTHENTICATED socket, unlike the "ranking as" list beside it. That
- * one must never be personalised — it is the list of lenses you could switch
- * to, and hiding everyone you have not met would make it useless. This one is
- * the opposite question: "who do I mean by ali", and the right answer is the
- * one your own web of trust puts first. So it is a plain NIP-50 profile
- * search down the same connection every other search uses, ranked by you.
- *
- * A pasted HEX key resolves to itself rather than being searched for: it
- * already names one person, and the full-text index has never heard of it.
- * (A pasted npub never reaches here — query.js calls that token finished, so
- * it becomes a face without a round trip at all. Hex does not, precisely so
- * that picking it here is what rewrites it as an npub.)
+ * Who the picker offers for a half-typed `from:`/`to:`: a NIP-50 profile
+ * search on the authenticated socket, ranked by the reader, unlike the
+ * "ranking as" list. A pasted hex key resolves to itself (an npub never
+ * reaches here; query.js calls that token finished).
  */
 async function lookupAuthors(partial) {
   const direct = pubkeyParam(partial);
@@ -1448,47 +922,17 @@ async function lookupAuthors(partial) {
   return [...new Set(events.map((e) => e.pubkey))];
 }
 
-// The reader's own kind 10009, held for the session. One event, and it is the
-// only place the protocol writes an id, its host relay and a name down
-// together — so it is worth a round trip and not worth a second one.
-//
-// READ ON THE AUTHENTICATED SOCKET, so this list is behind the same lens as
-// everything else the relay serves a signed-in reader — and comes back EMPTY,
-// on purpose, for a reader with no scores and no 10040 mirrored here.
-//
-// That is worth stating because it looks like a bug from the outside and is
-// not. The store applies the observer as a FILTER (its "observer gate"), so a
-// reader whose trust chain has not reached this relay reads back nothing at
-// all — including their own events. Measured against a real Vespa: signed in
-// on a store with no scores, `{kinds:[10009], authors:[me]}` returned 0 of the
-// reader's OWN event, and returned it the moment a provider they trust scored
-// them. Routing this one read around that — down the anonymous connection,
-// which does answer — would make the group picker the single place on the page
-// that shows a reader content this relay has otherwise decided it cannot rank
-// for them. So it does not: no chain here, no personal groups, and
-// readiness.js is the panel that explains why rather than a special case here.
-//
-// (Whether an observer should be gated by their own trust AT ALL is a separate
-// question, and one for the store: the reputation tensor is derived only from
-// 30382s about a subject, so there is no self-edge and you score 0 under your
-// own lens. That is being fixed where it lives. Nothing here should anticipate
-// it — when the store stops gating a reader out of their own events, this read
-// starts answering, with no change on this side.)
-//
-// The 39000 name search below is on the same socket for the ordinary reason:
-// which groups exist and are worth showing first IS a ranked question, exactly
-// as the people picker's is.
-//
-// Cached only when the relay ANSWERED, the rule shared/providers.js and
-// profiles.js both state at length: a dropped read cached as "you have no
-// groups" would leave `group:` opening on an empty list for the rest of the
-// session, with nothing on screen to say the list was missing rather than
-// empty.
-let ownGroupList = null;   // the parsed candidates, from the PUBLIC tags
+// The reader's own kind 10009, held for the session. Read on the authenticated
+// socket, so it comes back empty for a reader with no scores mirrored here;
+// routing it around the observer gate would make the group picker the one
+// place showing content the relay cannot rank for them (readiness.js explains
+// instead). Cached only when the relay answered, as providers.js and
+// profiles.js do.
+let ownGroupList = null;   // the parsed candidates, from the public tags
 let ownGroupsFor = null;   // whose they are, so signing out drops them
 let ownGroupLock = null;   // sealed(): the encrypted half, or null if there is none
 let ownGroupSecret = null; // the rows behind that lock, once it has been opened
-let unlockAsk = null;      // the in-flight decrypt, so N keystrokes are ONE prompt
+let unlockAsk = null;      // the in-flight decrypt, so N keystrokes are one prompt
 let unlockDenied = false;  // the extension said no; do not ask again unasked
 
 /** Every cached thing about the reader's own list, dropped when the reader changes. */
@@ -1519,14 +963,9 @@ async function ownGroupCandidates() {
 }
 
 /**
- * Whether the extension in front of us can open a payload of this scheme.
- *
- * Both halves of NIP-07's encryption API are OPTIONAL, and the two are
- * advertised separately — an extension may implement `nip04` and not `nip44`,
- * which for a 10009 is the difference between an openable list and one that
- * simply cannot be read here. Asked before the call rather than discovered
- * from the exception, because "your extension does not do this" and "you said
- * no" want different words and a different offer.
+ * Whether the extension can open a payload of this scheme. NIP-07's nip04 and
+ * nip44 are optional and advertised separately; asked up front because
+ * "unsupported" and "denied" want different words.
  */
 const canDecrypt = (scheme) => {
   const api = window.nostr && window.nostr[scheme];
@@ -1534,34 +973,10 @@ const canDecrypt = (scheme) => {
 };
 
 /**
- * Open the private half of the reader's own group list — ONE prompt, ever.
- *
- * This is the only place on the page that asks the signer for anything beyond
- * a signature, so what it costs is worth being explicit about: a NIP-07
- * extension answers a decrypt request by putting a permission dialog in front
- * of the reader. Three rules follow, and all three exist to keep that dialog
- * from becoming noise:
- *
- *  - **Only when there is a payload.** No `.content`, no ask. `sealed()` is
- *    that test, and its doc explains why a payload is not proof there is
- *    anything IN it — an empty private list encrypts the empty string, so a
- *    reader who removed their last private group still carries a ciphertext.
- *    Asking is the only way to find out, and finding out that the answer is
- *    "nothing" is a fine outcome: it is cached like any other.
- *  - **Once per reader.** `unlockAsk` holds the in-flight promise, so the eight
- *    keystrokes of `group:chachi` produce one dialog and not eight. It is
- *    cleared only when the answer is known or when a retry is asked for by
- *    hand.
- *  - **A refusal is final until the reader changes their mind.** A denied
- *    prompt sets `unlockDenied` and NOTHING re-asks on its own — not the next
- *    keystroke, not the next search. The picker offers a row to try again, and
- *    a click on it is the reader asking, which is the only thing that should
- *    reopen a dialog they just dismissed.
- *
- * The peer key is the reader's OWN pubkey. NIP-51 private items are
- * self-encrypted (quartz's `PrivateTagsInContent`), which reads oddly the
- * first time — you are the sender and the recipient — and is what makes the
- * list readable on a new device with nothing but the key.
+ * Open the private half of the reader's own group list: one prompt, ever.
+ * Only when there is a payload; once per reader (`unlockAsk` holds the flight);
+ * and a refusal is final until the reader clicks the retry row. The peer key
+ * is the reader's own pubkey: NIP-51 private items are self-encrypted.
  */
 async function unlockOwnGroups() {
   if (ownGroupSecret) return ownGroupSecret;
@@ -1574,32 +989,21 @@ async function unlockOwnGroups() {
     return privateGroups(plain);
   })()
     .then((rows) => {
-      // Cached even when it is EMPTY, which is the case worth naming: the
-      // payload decrypted to nothing, so there was never anything to unlock,
-      // and re-prompting a reader to be told that again would be the exact
-      // noise the rules above exist to prevent.
+      // Cached even when empty, so the reader is not re-prompted to learn that.
       ownGroupSecret = rows;
       ownGroupLock = null;
       unlockDenied = false;
       return rows;
     })
     .catch(() => {
-      // Refused, dismissed, or the extension failed. All three are "not
-      // opened", and none of them is evidence about what is inside — so the
-      // lock STAYS, and only a click asks again.
+      // Refused, dismissed or failed: the lock stays, and only a click asks again.
       unlockDenied = true;
       return [];
     })
     .finally(() => {
       unlockAsk = null;
-      // The answer arrived after the picker had already drawn what it had, so
-      // the picker is told to ask again. Guarded on the token still being
-      // there, inside the field: an extension dialog takes focus out of the
-      // page, and the reader may be somewhere else entirely by now. The catch
-      // is for `field` itself — it is declared below this function and only
-      // reachable through it, so it is always initialised by the time this
-      // runs, and a bare reference would be a TDZ throw rather than a null
-      // check if that ever stopped being true.
+      // The picker drew before this landed. `field` is declared below this
+      // function; the catch covers the TDZ.
       try { field.refreshGroups(); } catch (e) { /* nothing mounted, so nothing is showing */ }
     });
   return unlockAsk;
@@ -1613,13 +1017,8 @@ async function retryUnlockGroups() {
 }
 
 /**
- * What the picker should SAY about the locked half, or null when there is
- * nothing to say — which is the common case and has to stay silent.
- *
- * `unsupported` and `denied` are deliberately different states rather than one
- * "could not unlock": one of them is a thing the reader can fix by clicking,
- * and the other is a thing they can only fix by changing extensions. Offering
- * a retry for the second would be a button that cannot work.
+ * What the picker should say about the locked half, or null. `unsupported`
+ * and `denied` differ: only one of them a click can fix.
  */
 function groupLockState() {
   if (!ownGroupLock || !me) return null;
@@ -1629,74 +1028,30 @@ function groupLockState() {
 }
 
 /**
- * Which groups the picker offers for a half-typed `group:`.
- *
- * Two asks, and they answer different questions — see shared/groups.js for why
- * they are never folded into one row. Your own kind 10009 says which groups are
- * YOURS, with the host relay's url written down; a NIP-50 search over kind
- * 39000 says which groups EXIST, ranked by the relay against the corpus.
- *
- * The 39000 half is an ordinary search of the same shape the people picker
- * makes: a group's `name` lands in the store's primary search tier and its
- * `about` in the secondary, and the primary carries the prefix/fuzzy `near`
- * column — so a half-typed name reaches "Alice's Club" while it is still being
- * typed, exactly as a half-typed person does.
- *
- * The hosts are enriched as PEOPLE, because for this purpose they are: a NIP-29
- * relay signs its own groups' metadata, and a relay that also publishes a kind 0
- * for that key (this one does — see RelayProfile) gives the row a name to show
- * instead of a hex prefix. It stays a claim the key made about itself, and
- * groups.js draws it differently for that reason.
- *
- * A failed 39000 read leaves the reader's own groups standing rather than
- * throwing the lot away: half an answer is the honest amount here, and the
- * half that survives is the one they are most likely to have meant.
- *
- * THE PERMISSION PROMPT LIVES HERE, and its trigger is the whole feature: a
- * reader whose 10009 carries an encrypted payload is asked to open it the
- * first time they use `group:` at all — not on page load, where the dialog
- * would arrive with no question attached to it, and not never, which is what
- * shipping the public half alone amounted to. See [unlockOwnGroups] for the
- * three rules that keep one prompt from becoming eight.
- *
- * The private rows are folded in as `own`, not kept beside it. rank() dedupes
- * a reader's rows on (id, host), so a group that is in BOTH halves collapses
- * to one — and to the public one, which is correct: it is not a secret if the
- * tag is in the clear.
+ * Which groups the picker offers for a half-typed `group:`: the reader's own
+ * kind 10009 (which groups are yours, with host) and a NIP-50 search over kind
+ * 39000 (which exist), never folded into one row; see shared/groups.js. Hosts
+ * are enriched as people, since a NIP-29 relay signs its own groups. The
+ * decrypt prompt is raised here, on first use of `group:`, not on page load.
  */
 async function lookupGroups(partial) {
   await ensureLogin().catch(() => {});
   const own = await ownGroupCandidates().catch(() => []);
-  // Started, NOT awaited, and that is the difference between a picker and a
-  // hostage. A permission dialog is answered by a human on their own schedule
-  // — or ignored entirely, with the tab still sitting there — so awaiting it
-  // would leave the list on "Finding groups…" for as long as the reader
-  // wanted to think about it, with their PUBLIC groups already in hand and
-  // not being shown. So the ask is fired, the rows we have are returned with
-  // a notice saying what is still pending, and `onUnlocked` re-asks when the
-  // answer lands. The prompt is not raised again while one is open, nor after
-  // a refusal — unlockOwnGroups()'s rules, which this call site deliberately
-  // does not repeat.
+  // Started, not awaited: the public rows return now with a notice, and the
+  // picker re-asks when the dialog is answered.
   if (ownGroupLock && canDecrypt(ownGroupLock.scheme) && !unlockDenied) unlockOwnGroups();
   const secret = ownGroupSecret || [];
   let found = [];
   try {
-    // Empty partial asks nothing of the relay: `group:` alone is "show me my
-    // groups", and a match-all over every 39000 in the corpus is neither that
-    // question nor a useful answer to it.
+    // `group:` alone is "show me my groups", not a match-all over every 39000.
     if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 });
   } catch (e) { found = []; }
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
   if (hosts.length) await enrichProfiles(hosts).catch(() => {});
   const rows = rankGroups(partial, { own: [...own, ...secret], meta });
-  // Every row here is a group and a name, which is the one thing the pill
-  // cannot work out for itself — so a pick draws the name the reader picked BY
-  // without a second round trip, and without the pill flashing the id first.
-  // What it must not become is a shortcut past groupnames.js's own rule: rows
-  // go in as candidates, so a name from your list and a name from the corpus
-  // stay told apart there, and two hosts disagreeing about an id still leaves
-  // the id on the pill.
+  // Rows go in as candidates, so groupnames.js still tells a list name from a
+  // corpus name.
   seedGroupNames(rows);
   return { rows, lock: groupLockState() };
 }
@@ -1706,50 +1061,35 @@ function onQueryEdit() {
   const text = $q.value.trim();
   document.body.classList.toggle("has-query", text.length > 0);
   clearTimeout(debounceTimer);
-  // A half-written `from:` is not a search for "from:", and neither is a
-  // `since:` with a calendar under it. All three popups share one square of
-  // screen and one set of arrow keys, so while a picker owns them the results
-  // preview stays shut.
+  // The pickers and the preview share one square of screen and the arrow keys.
   if (!text || field.picking) { closePopup(); return; }
   armPopup(text);
 }
 
-// paintScores goes in for the same reason the entity page takes it: the faces
-// the field and its picker draw carry the same score chip a card's does, and
-// which lens fills it in is app state.
+// paintScores goes in because which lens fills a chip is app state.
 const field = mountSearchField($q, $mentions, {
   lookup: lookupAuthors, lookupGroup: lookupGroups, unlockGroups: retryUnlockGroups,
   onEdit: onQueryEdit, onSubmit: submitField, paintScores,
 });
 
-// `hitsFor` is the text `hits` actually answers. They outlive each other:
-// results stay on screen while the box is edited, and a debounce can be
-// abandoned before it ever runs — so "there are hits" is not "these hits are
-// about what the box says", and reopening the popup on that assumption showed
-// one query's answers under another query's words.
 // The last ranked ask, so Enter after a type-ahead is one search, not two.
 const asks = new AskCache();
 
+// `hitsFor` is the text `hits` answers; the box may say something else by now.
 const s = {
   requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
-  // ---- the pager, which is five more facts about that same array ----------
-  page: 0,           // the slice of it on screen, 0-based like everything else here
-  asked: 0,          // the prefix the last ask named — what canGrow() is measured against
-  exhausted: false,  // the relay PROVED there is nothing past what we hold (paging.js's drained)
+  // ---- the pager, five more facts about that same array ----------
+  page: 0,           // the slice of it on screen, 0-based
+  asked: 0,          // the prefix the last ask named; what canGrow() measures against
+  exhausted: false,  // the relay proved there is nothing past what we hold (paging.js's drained)
   more: null,        // this view's query, re-askable at a longer limit; null on a view that cannot page
   preloading: false, // one widening ask at a time
 };
 
 /**
- * The type-ahead's answers, which are NOT the results view's.
- *
- * One object used to serve both. A keystroke over a page of results replaced
- * `hits` with the popup's eight rows underneath it, and since nothing
- * repainted the list it stayed invisible until something read the array back:
- * the json toggle answered "no longer in the current results" about a card
- * that was on screen. A pager reads it back constantly — Next would have cut
- * page two out of the eight rows of a query nobody submitted — so the two
- * answers get two states, which is what they always were.
+ * The type-ahead's answers, kept apart from the results view's: a keystroke
+ * over a page of results must not replace `hits` under the pager and the
+ * json toggle.
  */
 const pop = {
   requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
@@ -1768,31 +1108,15 @@ let debounceTimer = null;
 let activeKey = null;
 
 /**
- * The text waiting for the popup while an ask is in flight — the latest only.
- *
- * ONE TYPE-AHEAD ASK AT A TIME, and the reason is what an ask costs. A ranked
- * search is the one read this relay cannot make cheap (a common word ranks
- * millions of postings), and the engine shares its match threads between
- * concurrent asks, so stacking them makes every one slower: measured against
- * staging (2026-09-03) the popup's asks for `b`, `bi`, `bit` … `bitcoin` were
- * seven ranked searches in flight together, answering in 1.6s to 7.4s each,
- * and the results view's own ask — sent when Enter was pressed at 2.4s — came
- * back at 9.1s for a query that answers alone in 3.7s. The relay now holds a
- * connection's ranked reads to one at a time as well (SearchGate), so the
- * stack would queue there rather than run together; but a queue of prefixes
- * nobody is looking at any more is still work done for nothing, and the
- * fix belongs where the asks are made. So: while an ask is in flight the
- * keystrokes only replace the text waiting here, and when the ask lands the
- * waiting text runs — which is how `bitcoin` becomes two searches (`b`, then
- * `bitcoin`) instead of seven.
+ * The text waiting for the popup while an ask is in flight, latest only. One
+ * type-ahead ask at a time: a ranked search is the one read the relay cannot
+ * make cheap, so `bitcoin` becomes two searches rather than seven.
  */
 let popupQueued = null;
 
 /**
- * The avatar says who you are; the "ranking as" control says whose trust is
- * applied. A sentence repeating both was noise, so this slot now carries only
- * what neither widget can show: an error, or the fact that you are signed out
- * BY CHOICE rather than because signing in failed.
+ * Only what the avatar and the "ranking as" control cannot show: an error, or
+ * being signed out by choice.
  */
 function renderWhoami() {
   renderMe();
@@ -1827,25 +1151,16 @@ const skelRows = (n) => Array.from({ length: n }, () =>
    </div>`).join("");
 
 /**
- * Nothing came back — but "nothing matched" and "nothing COULD match" are two
- * different answers, and only one of them is worth trying a different term for.
- *
- * A window whose `until` is before its `since` is the second: it excludes every
- * event that has ever existed, and the relay returning zero is not evidence
- * about the search. It is easy to build without noticing — pick a `since`, then
- * pick an `until` from the same calendar a month too early — and easier still
- * to inherit from a shared URL, so the check is on the query rather than on the
- * picker that usually makes it.
+ * "Nothing matched" against "nothing could match": an `until` before `since`
+ * excludes everything, and is easy to inherit from a shared URL.
  */
 function emptyWindow(text) {
   const q = parseQuery(text || "");
   return q.since != null && q.until != null && q.since > q.until;
 }
 
-// `empty` is a view's own way of saying it has nothing, for a view that was
-// asked no question: both sentences below answer "no results" by talking about
-// the QUERY, and the feed has none — telling a reader of an empty feed that the
-// window is inverted, or to try a different term, names things they never typed.
+// `empty` is what a view that was asked no question says: both sentences below
+// talk about the query, and the feed has none.
 function statusBody(st, placeholder, empty) {
   if (st.error) return `<div class="error">${esc(st.error)}</div>`;
   if (st.loading && !st.hits.length) return placeholder;
@@ -1869,17 +1184,9 @@ function renderPopup() {
 }
 
 /**
- * Which corpus this feed is, in one line, wherever it is drawn.
- *
- * It is not decoration. Signed in, the relay applies the reader's trust floor
- * to a plain NIP-01 read as well as to a search, so the feed IS a web-of-trust
- * feed and nothing in the ask says so. Signed out, exactly the same request is
- * the whole mirror in time order — a completely different list under the same
- * heading, and the reader is entitled to know which one they are looking at.
- *
- * The title attribute answers the question the "ranking as" control raises by
- * sitting a few pixels above this: it is a NIP-50 extension, it rides on a
- * search string, and this view sends none.
+ * Which corpus this feed is, in one line: signed in the relay applies the
+ * trust floor to a plain NIP-01 read too, signed out the same ask is the whole
+ * mirror. The title answers why the "ranking as" lens does not apply here.
  */
 const lensNote = () =>
   `<div class="prov" title="The feed is a plain NIP-01 read, so the &quot;ranking as&quot; lens — a NIP-50 observer: extension — applies to searches, not here.">` +
@@ -1889,13 +1196,8 @@ const lensNote = () =>
   `</div>`;
 
 /**
- * What the feed's heading says: "Latest", and what it was narrowed to.
- *
- * The chip that narrowed it is lit, but it is one of eight in a row that
- * scrolls sideways on a phone — where the lit one can be off screen entirely —
- * and it lives up in the header while the list is what the reader is looking
- * at. A hundred pictures under a bare "Latest" reads as the whole feed having
- * changed rather than as a filter being on, so the heading names the tab.
+ * "Latest", and what it was narrowed to: the lit chip can be off screen on a
+ * phone, and a hundred pictures under a bare "Latest" reads as the feed changing.
  */
 const feedTitle = () => (tab.kinds ? `Latest &middot; ${esc(tab.label)}` : "Latest");
 
@@ -1904,13 +1206,8 @@ const listHead = (title, right) =>
   `<div class="list-head"><div class="list-title">${title}</div><div class="list-right">${right}</div></div>`;
 
 /**
- * The cards, and the two repaints that MUST follow them.
- *
- * A score chip is filled in by paintScores and a nip05 is verified by
- * watchNip05, both after the fact — so every list of cards ends in the same
- * three lines, and a list that forgets one draws chips that never fill or
- * verification marks that never resolve. Nothing about it announces itself, so
- * it is a function rather than a convention repeated at three call sites.
+ * The cards, and the repaints that must follow them: score chips, the cursor
+ * and nip05 marks are all filled in after the fact.
  */
 function paintList($el, html) {
   $el.innerHTML = html;
@@ -1922,46 +1219,24 @@ function paintList($el, html) {
 /** The feed page: the same cards as a search, over a list nobody searched for. */
 function renderFeed() {
   const stats = s.error ? "" : `${s.hits.length} event${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
-  // An empty feed is a fact about the INDEX (or about the reader's trust
-  // floor), never about a query — there is no query. Both readings are named,
-  // because "nothing here" means two different things depending on which of
-  // them is looking. A third reading arrived with the chips: an empty MEDIA
-  // feed says nothing about the relay's notes, and a reader who does not
-  // notice which chip is lit would read it as one.
+  // An empty feed is about the index or the trust floor, never a query; the
+  // chip is named because an empty Media feed says nothing about notes.
   const empty = `<div class="empty"><b>Nothing here yet</b>` +
     (me
       ? "This relay holds no recent posts from anyone your web of trust reaches."
       : "This relay's index holds no recent posts of these kinds.") +
     (tab.kinds ? ` The ${esc(tab.label)} filter is on — pick Everything for the whole feed.` : "") +
     `</div>`;
-  // No Export button, unlike a search: that download exists to let somebody
-  // argue with a RANKING — the query, the lens, the scores behind the order.
-  // A time-ordered list has no order to defend.
+  // No Export button: a time-ordered list has no ranking to defend.
   const body = statusBody(s, skelCards(4), empty) ?? s.hits.map((ev) => card(ev)).join("");
   paintList($results, listHead(feedTitle(), `<span class="list-stats">${stats}</span>`) + lensNote() + body);
 }
 
 // ---- the same feed, three cards, under the hero ---------------------------
-//
-// The landing page was a search box over an empty page: nothing to read, and
-// no evidence that the index behind it holds anything at all. Three of the
-// newest cards fix both, and "see more" opens the full page above.
-//
-// Only for a SIGNED-IN reader, which is the one condition this preview has.
-// Signed out the same read is the whole mirror in time order — the firehose,
-// including everything nobody's web of trust vouches for — and putting that
-// under the search box would be the house showing you a feed it does not
-// stand behind. The feed page still serves it to anyone who asks, labelled;
-// the hero stays the clean page it is.
-//
-// Its own state of the same SHAPE as the results view's, driven by the same
-// run(): it is on screen exactly when the results are not, so sharing `s`
-// would have the two taking turns clearing each other — but everything after
-// the ask (the stale-answer guard, the timing, the skeleton, the repaint when
-// the names land) is identical, and writing that dance out a second time is
-// how the two drift. It already had: the hand-written copy repainted over an
-// expanded json panel, which run() has known not to do since the day a reader
-// lost one mid-read.
+// Only for a signed-in reader: signed out the same read is the firehose, which
+// the hero does not stand behind (the feed page serves it, labelled). Its own
+// state of the same shape as `s`, driven by the same run(), since it is on
+// screen exactly when the results are not.
 const feedPreview = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, reader: null, tab: null };
 
 function hideFeedPreview() {
@@ -1972,32 +1247,15 @@ function hideFeedPreview() {
 }
 
 /**
- * Where "see more" goes.
- *
- * A parameter on the ROOT, not a path of its own. The feed is the results view
- * with an empty query, and `/` is already the page — so `/?feed=1` is served
- * from cold by the route that serves the landing page, while `/feed` would be
- * a 404 until somebody added a route for it. The only thing the prettier url
- * would buy is being prettier, and the server has no business knowing this
- * view exists. `=1` is the page's existing idiom for a flag, as `spam=1`.
- *
- * One spelling, read by the link and by the click interceptor that turns it
- * into a render — two literals could drift into a link that reloads the page.
+ * Where "see more" goes. A parameter on the root, not a `/feed` path: the root
+ * already serves this page from cold, and the server need not know the view
+ * exists. One spelling, read by the link and by the click interceptor.
  */
 const FEED_URL = "/?feed=1";
 
 /**
- * That url, carrying the chip — `/?feed=1&tab=media`.
- *
- * The feed used to be one flag and nothing else, which was true while its
- * kinds were its own. Now the chips narrow it, and a narrowed feed that cannot
- * be linked to is a view whose state dies on reload — the same lie as a
- * control that does nothing, one step later. "Everything" writes no parameter,
- * so the plain `/?feed=1` still means what it always did and nothing that
- * already links to it changes.
- *
- * `tab` is spelled the same here as in a search url on purpose: it is the same
- * chip, and one slug means one thing wherever it appears.
+ * That url carrying the chip, `/?feed=1&tab=media`. "Everything" writes no
+ * parameter, so plain `/?feed=1` keeps meaning what it did.
  */
 const feedUrl = (t = tab) => FEED_URL + (t.kinds ? `&tab=${t.slug}` : "");
 
@@ -2005,37 +1263,20 @@ const feedUrl = (t = tab) => FEED_URL + (t.kinds ? `&tab=${t.slug}` : "");
 const isFeedHref = (href) => href === FEED_URL || href.startsWith(FEED_URL + "&");
 
 function renderFeedPreview() {
-  // Nothing, and nothing still coming: the hero goes back to being the hero
-  // rather than standing a heading and a "see more" over an empty box. This is
-  // also the error path — a feed that could not be read is not worth putting
-  // an error where the landing page's content goes.
+  // Nothing and nothing coming, including the error path: the hero stays the hero.
   if (!feedPreview.loading && !feedPreview.hits.length) { hideFeedPreview(); return; }
   const body = feedPreview.hits.length
     ? feedPreview.hits.map((ev) => card(ev)).join("")
     : skelCards(PREVIEW_CARDS);
-  // The link carries the chip: "see more" of THESE three, not of a feed the
-  // reader has just narrowed away from.
+  // The link carries the chip: "see more" of these three.
   paintList($feedPreview, listHead(feedTitle(), `<a class="feed-more" href="${feedUrl()}">See more &rarr;</a>`) + body);
 }
 
 /**
- * Draw the preview, if this is the hero and there is a reader to draw it for.
- *
- * Safe to call from anywhere that might have changed either of those — the
- * hero being shown, a sign-in, a sign-out — because it re-checks both rather
- * than trusting the caller to know.
- *
- * It re-asks every time, like every other view on this page, rather than
- * holding an answer for a while: a feed that says "latest" and hands back a
- * two-minute-old list on the way home is wrong in the one way this view is not
- * allowed to be wrong. What it does keep is the CARDS, so the wait redraws
- * nothing — the skeleton is for the first ask only. Two things it must not
- * keep across: a change of reader, because those cards were gated by the
- * previous account's web of trust and flashing them under the next one's name
- * for a round trip would be showing somebody another person's feed; and a
- * change of CHIP, because the heading and the "see more" link repaint from the
- * new tab immediately while the cards would still be the old one's — "Latest ·
- * Media" over three notes, which reads as the filter having answered.
+ * Draw the preview if this is the hero and there is a reader; re-checks both.
+ * It re-asks every time but keeps the cards through the wait, except across a
+ * change of reader (another account's gated feed) or of chip (the heading
+ * would repaint before the cards).
  */
 async function showFeedPreview() {
   const my = feedPreview.requestId;
@@ -2054,59 +1295,23 @@ async function showFeedPreview() {
 }
 
 /**
- * Where the page on screen sits in the answer, in the head's own voice.
- *
- * The denominator is the delicate half. `s.hits` is how far we have ASKED, not
- * how much there is — it grows every time a page is turned — so "80 of 160"
- * would be a claim about the size of the answer that the next click falsifies.
- * It appears only once `exhausted` says the relay proved there is nothing
- * past what we hold, which is the one moment the buffer IS the answer.
+ * Where the page on screen sits in the answer. The denominator appears only
+ * once `exhausted` says so: `s.hits` is how far we asked, not how much there is.
  */
 function rangeLabel(shown) {
   const total = s.hits.length;
-  // The reader outran the preload: the page they asked for is still in flight,
-  // and a range over cards that are not on the screen would be counting them.
+  // The reader outran the preload; the page they asked for is in flight.
   if (!shown.length) return `page ${s.page + 1}`;
-  // A count only where the count is the whole answer. "40 results" is a plain
-  // number, and a plain number beside a live Next button is a page saying it
-  // holds forty results and offering a forty-first — which is what the first
-  // paint of every search did, for the second between its own answer and the
-  // preload behind it: the ask had been for exactly a page, so the buffer WAS
-  // one page, and this branch could not tell that from an answer that ended.
+  // A plain count beside a live Next button would claim to hold the whole answer.
   if (!lastPage(s.hits, s)) return `${total} result${total === 1 ? "" : "s"}`;
   const from = s.page * PAGE_SIZE + 1;
   return `${from}–${from + shown.length - 1}${s.exhausted ? ` of ${total}` : ""}`;
 }
 
 /**
- * The pager under the cards: back, the pages held, and forward.
- *
- * Numbers rather than an infinite scroll, because the reader has to be able to
- * come BACK to where they were — a card opens a page of its own, and Back onto
- * a list that has to re-scroll itself to a position it guessed is the thing
- * infinite scroll never gets right. `?page=` carries it instead.
- *
- * The page past the buffer is offered as "…" rather than as a number: it is a
- * page we know can be ASKED for, not one we hold, and numbering it would
- * promise a count of results nobody has yet. Nothing is offered past THAT,
- * which is the difference between the two ways this list ends — the corpus
- * running out (`exhausted`, and the head's "of N" says so) and this page
- * declining to follow a ranking any deeper (canGrow, and the note below says
- * that instead). Silence about which is how a pager lies.
- */
-/**
- * The pager, redrawn WITHOUT touching the cards.
- *
- * A widening ask usually changes nothing on screen but which buttons exist,
- * and re-rendering the list for that is not free in the way an innerHTML
- * rewrite is cheap (measured at 1–2ms for forty cards): it destroys and
- * rebuilds every card element, which re-arms the lazy-media observers, drops
- * whatever a browser had begun loading inside them, and takes any selection
- * the reader was making with it. So the foot has its own container and the
- * preload repaints THAT when the page's own cards are unchanged.
- *
- * Falls back to the whole list when there is no foot to replace — a list that
- * was drawn without one is a list whose shape has changed.
+ * The pager, redrawn without touching the cards: an innerHTML rewrite of the
+ * list re-arms the lazy-media observers, drops loads in progress and takes
+ * any selection with it. Falls back to the whole list when there is no foot.
  */
 function repaintPager() {
   const foot = $results.querySelector(".pager-foot");
@@ -2114,6 +1319,12 @@ function repaintPager() {
   foot.innerHTML = pagerHtml();
 }
 
+/**
+ * Back, the pages held, and forward. Numbers rather than infinite scroll so
+ * Back can return to a place (`?page=`). The page past the buffer is "…", one
+ * we can ask for but do not hold; nothing is offered past that, and the note
+ * says which way the list ended.
+ */
 function pagerHtml() {
   const loaded = pageCount(s.hits);
   const last = lastPage(s.hits, s);
@@ -2123,8 +1334,7 @@ function pagerHtml() {
     ? `<div class="pg-note">${MAX_ASK} results deep is as far as this page follows a ranking. ` +
       `Narrow the search — a word, a <code>from:</code>, a date — to see past it.</div>`
     : "";
-  // One page and nothing behind it is not a pager, it is furniture. The note
-  // cannot be up yet either: reaching the ceiling takes ten pages.
+  // One page and nothing behind it is furniture; the note cannot be up yet.
   if (last <= 0) return "";
   const cells = [];
   for (let i = 0; i <= last; i++) {
@@ -2140,77 +1350,46 @@ function pagerHtml() {
 }
 
 /**
- * ONE PAGE of the results, and the pager that says where it sits.
- *
- * `s.hits` is the whole buffer — every page fetched so far, including the
- * three ahead of this one — and the cut happens here rather than in the ask
- * because the ask cannot make it: a NIP-01 filter has a `limit` and no offset,
- * so what a longer ask buys is a longer PREFIX (paging.js opens with why).
+ * One page of the results and the pager. `s.hits` is the whole buffer; the
+ * cut happens here because a NIP-01 filter has a `limit` and no offset.
  */
 function renderResults() {
   const shown = pageOf(s.hits, s.page);
   const stats = s.error ? "" : `${rangeLabel(shown)} · ${s.lastMs ?? "?"} ms`;
   const right = `<span class="list-stats">${stats}</span>` +
     `<button type="button" id="export" class="export" title="Download this search and its results as text">Export</button>`;
-  // Not `.map(card)`: map hands the index as card's second argument, where a
-  // renderer would read it as the opts object.
-  //
+  // Not `.map(card)`: map would hand the index as card's opts argument.
   // A page with no cards under a buffer that has some is the reader having
-  // outrun the preload — four pages turned inside one round trip — so it draws
-  // the skeleton rather than the "No results" statusBody() would give an empty
-  // answer. The pager stays up through it: the way back is the control they
-  // are most likely to want.
+  // outrun the preload, so it draws the skeleton and keeps the pager up.
   const body = statusBody(s, skelCards(4)) ??
     (shown.length ? shown.map((ev) => card(ev)).join("") : skelCards(3)) +
     `<div class="pager-foot">${pagerHtml()}</div>`;
   paintList($results, listHead(esc(tab.label), right) + body);
 }
 
-/**
- * Turn to page [n]: the pager's clicks and nothing else — a restore from the
- * URL comes in through runFull(), which has a search to run as well.
- */
+/** Turn to page [n], from the pager's clicks; a URL restore comes in through runFull(). */
 function goPage(n) {
   if (!Number.isInteger(n)) return;   // a disabled button carries no data-page
   const want = Math.max(0, Math.min(n, lastPage(s.hits, s)));
   if (want === s.page) return;
   s.page = want;
-  // A page turn is a PLACE. It goes in the url for the same reason the query,
-  // the chip and the lens do: Back undoes it, and a link to page four of a
-  // search is a link to what the sender was reading. Pushed here rather than
-  // through syncUrl(), which reads the search BOX — see pageUrl().
+  // A page turn is a place: Back undoes it. Pushed here rather than through
+  // syncUrl(), which reads the search box; see pageUrl().
   const url = pageUrl();
   if (url !== location.pathname + location.search) history.pushState(null, "", url);
   renderResults();
-  // Back to the top of the list. A page turned from the bottom of forty cards
-  // otherwise lands the reader in the middle of the next forty, which reads as
-  // the list having grown rather than turned. `scrollMarginTop` because the
-  // toolbar is sticky over the top of the page once results are up — measured
-  // rather than guessed, exactly as moveCursor measures it, since that bar is
-  // a different height on a phone and grows again when the chip row wraps.
+  // Back to the top of the list, clear of the sticky toolbar, whose height
+  // differs on a phone and grows when the chip row wraps.
   $results.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
   $results.scrollIntoView({ block: "start" });
   preload();
 }
 
 /**
- * Where the buffer leaves the reader once an answer has landed.
- *
- * A page can stop existing between the click and the answer — `?page=99`
- * pasted over a two-page search, or Next into a "…" the relay then had nothing
- * for — and a skeleton over nothing is a page that never finishes loading. So
- * the reader lands on the last page there is.
- *
- * Says whether it MOVED, because moving is a repaint. It did not, and
- * `?q=…&page=99` drew the skeleton for the page it had been asked for and
- * then sat there forever: this function had corrected the state behind it and
- * nothing on either path (here or in preload) drew the correction. Caught
- * against a real relay, by pasting exactly that url; both of the callers below
- * now paint what it decides.
- *
- * replaceState rather than the pushState syncUrl() would do: this corrects a
- * place that turned out not to exist, and pushing it would leave a phantom
- * entry in the backstack pointing at the same page under a different number.
+ * Land the reader on the last page there is when the one they asked for
+ * stopped existing (`?page=99`, or Next into a "…" the relay had nothing for).
+ * Returns whether it moved, because moving is a repaint the caller owes.
+ * replaceState: pushing would leave a phantom entry at the same page.
  */
 function settlePage() {
   const end = lastPage(s.hits, s);
@@ -2221,62 +1400,21 @@ function settlePage() {
 }
 
 /**
- * Where THIS page of THESE results lives — named from `hitsFor`, the text the
- * hits actually answer, and never from the search box.
- *
- * The box is not the query while a page is being read: it holds whatever the
- * reader has typed since, and they may be halfway through the next search when
- * they click Next on this one. Measured, because it is invisible from the
- * page — type a new query without submitting it, turn the page, and the url
- * read `?q=something+else+entirely&page=2` over page two of the search still
- * on screen. Shared, so a link to it came back with no results at all.
- *
- * syncUrl() is right to read the box — every one of its callers has just
- * submitted what is in it — and that is exactly why a page turn cannot use it:
- * it is the one url this page writes without a search behind it.
+ * The url of this page of these results, named from `hitsFor` and never from
+ * the search box, which may hold the next query half-typed. syncUrl() reads
+ * the box because every caller of it has just submitted it.
  */
 const pageUrl = () => currentUrl(s.hitsFor || $q.value.trim(), true, s.page);
 
 /**
- * The three pages ahead of the one on screen, fetched before anybody asks.
- *
- * This is the whole point of the pager being a prefix rather than a cursor:
- * the ask that reaches page four is the same ask that reached page one, only
- * longer, so it can be made while the reader is still on page one and the only
- * thing they ever see is a Next button that answers instantly.
- *
- * Four guards, and each one is a round trip not taken: no query to re-ask
- * (the feed, the hero, an entity page), one already in flight, the relay has
- * proved there is nothing more, or the buffer is already three pages ahead —
- * that last asked in PAGES rather than in events, because a hashtag search is
- * four filters in one REQ and NIP-01's `limit` is per filter, so an ask of
- * forty can come back with a hundred and sixty already paged.
- *
- * It does NOT bump requestId. This is the same answer asked for at greater
- * length, not a new one: bumping would cancel the first ask's own late
- * lookups, and the reader would watch the names fall out of the page they are
- * reading.
- *
- * WHAT IT COSTS, counted on the wire against a real relay over a 305-event
- * corpus, signed out: landing on page one is 4 REQs — the search, this
- * preload, and the provenance row's two pointer reads — and three page turns
- * cost 6 more, a widened search plus one or two pointer reads each. Two of
- * those are known waste and are left alone deliberately:
- *
- * - Each widened ask RE-SENDS the pages already held. That is the missing
- *   offset, and it is paid here rather than in front of the reader.
- * - hydrate() re-asks the POINTERS of the whole buffer, not just of the events
- *   this answer brought. Narrowing that means caching pointers across asks,
- *   because the row seeds by REPLACING — so the fix is a change to what the
- *   provenance row means, not to what the pager does, and it belongs to
- *   whoever next has a reason to touch that row. The re-seed also has a window
- *   where a pill fetched by the first ask is out of the map and the second's
- *   fetch has not landed; sampled at every repaint over a corpus with 120
- *   NIP-32 labels on it, the count went 0 -> 35 -> 35 -> 35 and never dropped,
- *   because the render runs before the re-seed and the fold re-seeds from
- *   everything it has carried. The window is real, the flicker was not
- *   reproducible, and this note is here so the next person to see one knows
- *   where to look.
+ * The three pages ahead of the one on screen, fetched before anybody asks:
+ * the ask that reaches page four is the one that reached page one, only longer.
+ * Four guards, each a round trip not taken: no query, one in flight, the relay
+ * proved there is no more, or the buffer is already three pages ahead (in
+ * pages, since a hashtag REQ's `limit` is per filter). It does not bump
+ * requestId: the first ask's late lookups must still land. Each widened ask
+ * re-sends the pages already held, and hydrate() re-asks the whole buffer's
+ * pointers; see docs/decisions/web-app.md.
  */
 async function preload() {
   if (!s.more || s.preloading || s.exhausted || s.error) return;
@@ -2285,20 +1423,16 @@ async function preload() {
   if (want <= s.asked) return;
   const myId = s.requestId;
   const ask = s.more;
-  // Only the SUCCESS path asks again (below): an error that re-kicked would
-  // be a retry loop against a relay that has just failed to answer.
+  // Only the success path asks again; an error that re-kicked would loop.
   let again = false;
   s.preloading = true;
   try {
     const found = await ask(want);
     if (myId !== s.requestId) return;
     const grown = mergePages(s.hits, found.events);
-    // Did the reader outrun us? Asked of the OLD buffer, because this answer
-    // is about to become the new one.
+    // Did the reader outrun us? Asked of the old buffer.
     const waiting = !pageOf(s.hits, s.page).length;
-    // What the reader is looking at, before and after the fold. Usually
-    // identical — the widened answer's prefix is the pages already drawn — but
-    // not always: a part page fills up when the rest of it arrives.
+    // What the reader is looking at before the fold; a part page can fill up.
     const wasOnScreen = pageOf(s.hits, s.page).map((e) => e.id).join();
     let moved = false;
     s.exhausted = drained({
@@ -2307,17 +1441,9 @@ async function preload() {
     s.asked = want;
     s.hits = grown;
     moved = settlePage();
-    // A preload lands UNDER the reader: mergePages keeps the pages already
-    // drawn in the order they were drawn, so the only visible change here is
-    // the pager growing a button — not worth collapsing an expanded json panel
-    // for, which is the same repaint run() declines for the same reason.
-    // Unless the page on screen is EMPTY, in which case this answer is the one
-    // the reader is waiting on and it is drawn whatever else is open.
+    // A preload lands under the reader, so it is not worth collapsing an open
+    // json panel for, unless the page on screen is empty or changed.
     const sameCards = wasOnScreen === pageOf(s.hits, s.page).map((e) => e.id).join();
-    // The cards under the reader are the same cards: the only thing this
-    // answer changed is how many pages there are, so only the pager is drawn.
-    // That also sidesteps the json-panel question entirely — nothing the
-    // reader has open is inside the foot.
     if (moved || waiting || !sameCards) {
       if (moved || waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
       else repaintPager();
@@ -2325,19 +1451,13 @@ async function preload() {
     paintLate(s, myId, [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean), renderResults);
     again = true;
   } catch (e) {
-    // A failed widening is not a failed search. The pages already on screen
-    // are still the relay's answer, and blanking them over a round trip the
-    // reader never asked for would be the page punishing them for reading on.
-    // Nothing is marked exhausted either, so Next tries again.
+    // A failed widening is not a failed search; nothing is marked exhausted,
+    // so Next tries again.
   } finally {
     s.preloading = false;
   }
-  // And once more, because the reader may have moved while that was in
-  // flight: a page turned during the round trip leaves the buffer short of
-  // three ahead again, and the turn's own preload() call found this one
-  // already running and stood down. The guards at the top are what makes this
-  // terminate — each pass asks for strictly more than the last, up to the
-  // ceiling, and an answer that brings nothing new is the end of the corpus.
+  // Once more, in case the reader moved during the round trip; each pass asks
+  // for strictly more, up to the ceiling, so this terminates.
   if (again && myId === s.requestId) preload();
 }
 
@@ -2349,14 +1469,10 @@ function resetPages() {
 /** Whether the list already on screen survives the wait for the next answer. */
 const REPLACE = false, KEEP = true;
 
-// One ask, rendered. Two parameters carry what used to be assumed: `st` is the
-// state it drives, because the hero's preview is a second list on a page that
-// only ever had one; `fetch` is a thunk rather than a query string, because
-// the results view now answers two different questions — a NIP-50 search, and
-// the feed's plain NIP-01 read. Everything after the ask is the same for all
-// three callers: the stale-answer guard, the timing, the skeleton, and the
-// repaint when the names land — which knows not to fire over a json panel the
-// reader has opened.
+// One ask, rendered. `st` is the state it drives (the hero's preview is a
+// second list); `fetch` is a thunk (a NIP-50 search or the feed's NIP-01 read).
+// The stale-answer guard, the timing, the skeleton and the late repaints are
+// the same for every caller.
 async function run(st, fetch, keep, render) {
   const myId = ++st.requestId;
   st.loading = true; st.error = null;
@@ -2367,25 +1483,17 @@ async function run(st, fetch, keep, render) {
   try {
     const found = await fetch();
     if (myId !== st.requestId) return;
-    // `hitsFor` is what the SEARCH BOX would have to say for these hits to be
-    // about it, and the feed's answer is "nothing does" — null, so reopening
-    // the popup on focus can never show the feed under a typed query.
+    // The feed's `hitsFor` is null, so focus can never reopen the popup on it.
     st.hits = found.events; st.hitsFor = found.text ?? null;
-    // What the PAGER needs from an answer, recorded where the answer is
-    // rather than in the caller's `.then`, so the render below already knows
-    // it: how far this ask reached, and whether the relay ran out before it
-    // did. `complete` is EOSE — a read WE stopped listening to is short for
-    // our own reasons and proves nothing about the corpus. Only an ask that
-    // named its limit gets the second half, which is what leaves the feed
-    // (fetchFeed names none) and the popup out of it.
+    // What the pager needs: how far this ask reached, and whether the relay
+    // ran out first (EOSE, not our own timeout). Only an ask that named its
+    // limit gets the second half; the feed and the popup do not.
     st.complete = found.complete !== false;
     if (found.asked != null) {
       st.asked = found.asked;
       st.exhausted = drained({ complete: st.complete, got: found.got ?? found.events.length, asked: found.asked, added: found.events.length });
     }
-    // AFTER the guard above, never before: this is the one lookup in hydrate
-    // that REPLACES rather than adds, so a superseded answer must not get to
-    // run it. See rowSeed.
+    // After the guard: the row seed replaces rather than adds. See rowSeed.
     late = [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== st.requestId) return;
@@ -2394,33 +1502,20 @@ async function run(st, fetch, keep, render) {
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
   render();
   paintLate(st, myId, late, render);
-  // Whether the answer this call drove is the one on screen. The pager's
-  // bookkeeping hangs off it: a superseded search must not settle the page
-  // count, and must not start preloading pages of a query nobody is reading.
+  // Whether this answer is the one on screen; a superseded search must not page.
   return myId === st.requestId;
 }
 
 /**
- * The lookups that land AFTER the list — names, group names, the provenance
- * row, reply parents — each painting when it arrives.
- *
- * Independently, because they are: chaining them meant the names could not
- * repaint until the parents had also answered. And only if that lookup
- * actually learned something. Skipped while a raw event is expanded: a
- * re-render would collapse a panel the reader opened, and a name appearing is
- * not worth taking that away.
- *
- * Its own function since the pager: a widening ask hydrates its new pages
- * exactly like a first one, and the second copy of this loop is where the two
- * would drift.
+ * The lookups that land after the list, each painting when it arrives and
+ * only if it learned something. Skipped while a raw event is expanded, since
+ * a re-render would collapse it.
  */
 function paintLate(st, myId, late, render) {
   for (const lookup of late) {
     lookup.then((learned) => {
       if (!learned || myId !== st.requestId) return;
-      // The field's own chips are named from the same cache, and a `from:`
-      // whose profile arrived on THIS lookup would otherwise sit on a short
-      // npub until the next edit.
+      // The field's chips are named from the same cache.
       field.repaint();
       if (document.querySelector(".raw-body:not([hidden])")) return;
       render();
@@ -2436,10 +1531,7 @@ function openPopup() {
 function closePopup() {
   popupQueued = null; // a text that queued for the popup is not run into a popup that closed
   $popup.classList.remove("open");
-  // Two listboxes hang off one combobox, and only one is ever up. When the
-  // PICKER is the one showing, these attributes are describing it — lowering
-  // them here told a screen reader the list had closed while the people list
-  // was on screen and being arrowed through.
+  // Two listboxes hang off one combobox; when the picker is up these describe it.
   if (!field.pickerOpen) {
     $q.setAttribute("aria-expanded", "false");
     $q.removeAttribute("aria-activedescendant");
@@ -2468,20 +1560,13 @@ function runPopup(text) {
   const abort = new AbortController();
   pop.inFlightFor = text;
   pop.abort = abort;
-  // askLimit(0), the results view's first ask: the same question at the same
-  // width, so Enter reuses this answer (shared/asks.js) instead of asking it
-  // again — and the width costs nothing the popup's eight rows did not.
+  // askLimit(0), the results view's first ask, so Enter reuses this answer.
   run(pop, () => search(text, askLimit(0), false, abort.signal), KEEP, renderPopup).then((live) => {
     if (pop.abort === abort) { pop.inFlightFor = null; pop.abort = null; }
     const next = popupQueued;
     popupQueued = null;
-    // Only for a popup that is still the view on screen, and only for a text
-    // the box still says — and through the DEBOUNCE again, not straight away.
-    // The text that queued while this ask ran is the box as it was mid-word:
-    // measured against staging, running it at once searched `bitco` for four
-    // seconds while the reader had already finished typing `bitcoin`, and
-    // the word itself waited behind it. Another pause is another keystroke
-    // gap, and it is the only evidence there is that a text is finished.
+    // Only while the popup is still the view and the box still says the text,
+    // and through the debounce again: the queued text is the box mid-word.
     if (live && next != null && next !== text && $q.value.trim() === next) armPopup(next);
   });
 }
@@ -2493,123 +1578,77 @@ function armPopup(text) {
 }
 
 /**
- * The full results view, opening on [page] — 0 for every way in but a restore.
- *
- * A deep-linked `?q=cats&page=4` is the one caller that passes anything else,
- * and it is why the first ask is firstAsk(page) rather than one page: the page
- * being restored has to be drawable the moment the answer lands, or the
- * restore is a skeleton over a page that arrives a round trip later.
+ * The full results view, opening on [page]: 0 for every way in but a restore.
+ * The first ask is firstAsk(page) so a deep-linked `?page=4` is drawable the
+ * moment the answer lands.
  */
 function runFull(text, page = 0) {
-  clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
-  pop.requestId++;             // …and its answer must not repaint a popup this view has closed
-  // A type-ahead in flight for THIS text is this view's answer, about to be
-  // taken over through shared/asks.js. One for any other text is a search
-  // nobody will draw, and left open it holds the connection's ranked-read
-  // lane at the relay (SearchGate) — the submit below would queue behind it.
-  // Closed here, the relay cancels it and the submit takes the lane.
+  clearTimeout(debounceTimer); // a type-ahead in flight would re-open the popup over the results
+  pop.requestId++;             // and its answer must not repaint a popup this view has closed
+  // A type-ahead for this text is this view's answer (shared/asks.js). One for
+  // any other text holds the connection's ranked-read lane at the relay
+  // (SearchGate), so it is closed and the submit takes the lane.
   if (pop.abort && pop.inFlightFor !== text) pop.abort.abort();
-  cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
-  hideFeedPreview();   // …and the hero's preview is not part of a results page
+  cancelEntity(); // a search launched from an entity page must not be painted over by its fetch
+  hideFeedPreview();   // the hero's preview is not part of a results page
   document.title = "SearchOverTrust";
   closePopup();
   field.close(); // Enter with nothing highlighted searches; the picker is done
-  // The field lets go of the keyboard on submit, so the results are what it is
-  // aimed at. j/k are the LETTERS j and k while a caret is in a text field —
-  // keeping focus here would have made the whole shortcut unreachable without
-  // first clicking somewhere else — and "/" brings the box back in one key.
-  // On a phone it also puts the on-screen keyboard away, which was covering
-  // the answer it had just been used to ask for.
+  // j/k are letters while a caret is in a text field, and "/" brings the box
+  // back; on a phone this also puts the keyboard away.
   $q.blur();
   $results.hidden = false;
   document.body.classList.add("searching");
-  document.body.classList.remove("feed"); // searching FROM the feed leaves it
-  // Every one of those ways in is a NEW answer, so the pager starts over: page
-  // one of nothing fetched yet. Before syncUrl(), which now writes the page
-  // number and would otherwise carry the previous search's over to this one.
+  document.body.classList.remove("feed"); // searching from the feed leaves it
+  // A new answer, so the pager starts over. Before syncUrl(), which writes
+  // the page number.
   resetPages();
   s.page = page;
   const ask = firstAsk(page);
-  // The same query, re-askable at greater length — the pager's only handle on
-  // this view. A thunk rather than the text, for the reason run() takes one:
-  // what an ask carries is this page's state at the moment it was made (the
-  // sort menu, the spam switch, the lens), every one of which re-runs the
-  // search from page one when it changes, so the closure and the live controls
-  // cannot come apart.
+  // The pager's handle on this view. A thunk, so the closure and the live
+  // controls cannot come apart: every control change re-runs from page one.
   s.more = (limit) => search(text, limit, true);
-  // Every way into the full view converges here — Enter, a chip/sort/spam/
-  // lens change via rerun() — so this is the one place the URL learns about
-  // it. Pushed, not replaced: each of those is a state the user chose and
-  // Back should be able to undo. A restore FROM history is the exception,
-  // and syncUrl() itself knows to stand down there.
+  // Every way into the full view converges here, so this is where the URL
+  // learns about it. Pushed, since each is a state Back should undo.
   syncUrl();
   run(s, () => search(text, ask, true), REPLACE, renderResults).then((live) => {
-    // Not this answer's page any more, or no answer at all: either way there
-    // is nothing to page through and nothing to fetch ahead of.
     if (!live || s.error) return;
-    // The repaint is the point: run() has just drawn the page it was ASKED
-    // for, and if that page does not exist this is the only thing that draws
-    // the one that does.
+    // run() drew the page it was asked for; if it does not exist, draw the one
+    // that does.
     if (settlePage()) renderResults();
     preload();
   });
 }
 
 /**
- * The feed page: the newest [PAGE_CARDS] content events, full cards.
- *
- * Reached from the hero's "see more", from a pasted link, and from Back — all
- * three through applyUrl(), which holds navRestoring for exactly this reason,
- * so the syncUrl() below is a no-op on every one of them. It is here for the
- * fourth way in: a chip picked while already on this page, which is a place
- * the reader chose and Back should be able to undo, the same as a chip picked
- * during a search. `feed=1` plus that chip IS the whole state; the other four
- * parameters this view still takes none of.
+ * The feed page: the newest [PAGE_CARDS] content events, full cards. The
+ * syncUrl() below is a no-op on every way in but a chip picked on this page.
  */
 function runFeed() {
   clearTimeout(debounceTimer);
   pop.requestId++;
-  // The feed is one ask of a hundred and no pager: its answer is a plain
-  // NIP-01 read, whose only cursor is `until` — a real one, and a different
-  // mechanism from the ranked prefix this page's pager grows. Until that is
-  // built, resetPages() is what makes sure the previous search's pager state
-  // cannot be read against the feed's hits.
+  // No pager: the feed's only cursor would be `until`, a different mechanism.
   resetPages();
   cancelEntity();
   hideFeedPreview();   // the preview and the page are the same feed; one at a time
-  // The chip belongs in the title for the same reason it belongs in the
-  // heading: two tabs open on two narrowings of this feed are otherwise the
-  // same word twice.
   document.title = `SearchOverTrust — latest${tab.kinds ? ` ${tab.label.toLowerCase()}` : ""}`;
   closePopup();
   field.close();
   $q.blur();   // a full-page list takes the keyboard, exactly as a search does
   $results.hidden = false;
-  // `feed` hides the Filters half of the bar and keeps the chips. The three
-  // behind Filters are NIP-50 extensions riding on a search string this view
-  // does not send; the chips are the `kinds` of the read it does send, so they
-  // are the half that works here. Taking a working control off the screen is
-  // the same waste as leaving a dead one on it.
+  // `feed` hides the Filters half of the bar, whose extensions this view does
+  // not send, and keeps the chips, which are the `kinds` it does.
   document.body.classList.add("searching", "feed");
   syncUrl();
   run(s, () => fetchFeed(PAGE_CARDS), REPLACE, renderFeed);
 }
 
 /**
- * A picked popup result opens as its own page — the record itself, full
- * screen, not the full results list scrolled to it (which is what this used
- * to do, and readers took as landing "near" the thing instead of ON it). A
- * profile is named by its key, everything else by its id; the event's KIND
- * still decides the card, over in entity.js. Routed through the same
- * pushState + applyUrl() pair as any internal link, so the entity page is a
- * real history entry and Back undoes the click.
+ * A picked popup result opens as its own page, through the same pushState +
+ * applyUrl() pair as any internal link, so Back undoes the click.
  */
 function openPicked(ev) {
-  // selfHref, not a second spelling of it. This used to build the path here —
-  // `kind 0 ? npub : note` — which is the same rule the cards apply, written
-  // twice: a type-ahead row and the card for the same event could disagree
-  // about where that event lives, and the copy here had no guard, so an event
-  // with no id navigated to "/" and looked like the picker had reset the page.
+  // selfHref, not a second spelling of the same rule; it also guards a missing id.
   const href = ev && selfHref(ev);
   if (href) navigate(href);
 }
@@ -2617,37 +1656,21 @@ function openPicked(ev) {
 const onFeed = () => document.body.classList.contains("feed");
 
 function rerun() {
-  // The entity view answers to the lens harder than either of the others: it
-  // GATES on the reader's web of trust, so a permalink fetched signed in is a
-  // different page signed out. It is also the one view `$q` is empty on, so
-  // without this it fell through the "nothing typed" branch below and was left
-  // standing — a card fetched under an identity the page no longer has, with
-  // whatever that identity's caches had written on it. Every caller of this is
-  // a deliberate act (sign-in/out, a lens, a chip, a sort), so the re-fetch is
-  // one round trip per decision the reader made.
+  // The entity view gates on the reader's web of trust, and `$q` is empty on
+  // it, so it would otherwise fall through the "nothing typed" branch.
   const seg = entitySeg();
   if (seg) { openEntity(seg); return; }
-  // The feed has no query to re-run, but it does have an answer that changes
-  // with who is asking and with which chip is on: signing in applies the trust
-  // floor, signing out lifts it, and the line under the head says which. Same
-  // reason a search re-runs.
+  // The feed's answer changes with who is asking and which chip is on.
   if (onFeed()) { runFeed(); return; }
   const text = $q.value.trim();
-  // The hero, with the preview under it, is the third thing a chip can change.
-  // Nothing re-ran here at all before the preview existed — there was nothing
-  // on the page to re-run — so a chip picked on the landing page lit up and
-  // left the same three cards sitting underneath it, which is a filter that
-  // says it is on and is not. The preview is the same feed as the page, so it
-  // answers the same chip. Nothing goes to the URL: `/` is the floor Back
-  // lands on, three cards under a hero are not a destination, and the "see
-  // more" link is what carries the chip on to one.
+  // The hero's preview is the same feed, so it answers the same chip. Nothing
+  // goes to the URL: `/` is the floor Back lands on.
   if (!text) { if ($results.hidden) showFeedPreview(); return; }
   if (!$results.hidden) runFull(text);
   else if ($popup.classList.contains("open")) runPopup(text);
 }
 
-/** Back to the landing hero: no query, no results, nothing sticky. The view
-    change only — history restore uses this too, and must not push. */
+/** Back to the landing hero. The view change only; history restore uses this too, and must not push. */
 function showHero() {
   clearTimeout(debounceTimer);
   cancelEntity(); // same for "← Search" out of an entity page mid-fetch
@@ -2660,14 +1683,11 @@ function showHero() {
   $results.innerHTML = "";
   document.body.classList.remove("searching", "has-query", "feed");
   closePopup();
-  // The hero's own three cards, if there is a reader to draw them for. Here
-  // rather than at each call site: every route to the hero — boot, Back, the
-  // clear button, the brand — goes through this function.
+  // Every route to the hero goes through here, so the preview is drawn here.
   showFeedPreview();
 }
 
-/** The hero as a NAVIGATION — clear button, brand click. Pushed, so Back
-    returns to the search that was just cleared instead of losing it. */
+/** The hero as a navigation (clear button, brand click), pushed so Back returns to the search. */
 function reset() {
   showHero();
   syncUrl();
@@ -2675,27 +1695,19 @@ function reset() {
 }
 
 /**
- * Enter in the search box, however it arrived.
- *
- * A function rather than the body of the keydown branch below, because a
- * phone's action key is not reliably a keydown at all — searchfield.js takes
- * it off the `beforeinput` a soft keyboard DOES produce and calls this. Both
- * doors, one behaviour.
+ * Enter in the search box, however it arrived: a phone's action key is not
+ * reliably a keydown, so searchfield.js also calls this off `beforeinput`.
  */
 function submitField() {
-  // An arrowed-to row is a selection, same as a click on it: Enter opens
-  // that record. A plain Enter with nothing highlighted stays the full
-  // search — the popup is a preview of it, not a gate in front of it.
+  // An arrowed-to row is a selection; a plain Enter is the full search.
   if ($popup.classList.contains("open") && activeKey != null) { openPicked(pop.hits[activeKey]); return; }
   const text = $q.value.trim();
   if (text) runFull(text);
 }
 
 $q.addEventListener("keydown", (e) => {
-  // The picker gets first refusal on the arrows, Enter, Tab and Escape while
-  // it is open — asked outright rather than by racing this listener in the
-  // capture phase, because which of two listeners on one element runs first
-  // is registration order and that is not a thing to depend on.
+  // The picker gets first refusal while open, asked outright rather than by
+  // racing this listener on registration order.
   if (field.handleKey(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
@@ -2711,14 +1723,9 @@ $q.addEventListener("keydown", (e) => {
 
 $clear.addEventListener("click", reset);
 
-// "/" anywhere focuses the search box, the way every search page does it.
-// Not while something is being typed into — see keynav.js's isTyping(), which
-// is that rule, written once for the three shortcuts that need it.
-//
-// And not while the syntax sheet is up. The page under a modal <dialog> is
-// inert to the mouse and to Tab, but a document-level keydown listener is
-// neither: the key still arrives here, and focusing an inert field is a
-// preventDefault() spent on nothing. j/k below is the same story.
+// "/" focuses the search box, except while typing (keynav.js's isTyping) and
+// while the syntax sheet is up: a document-level keydown still arrives under
+// a modal <dialog>, and focusing an inert field spends the key on nothing.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
   const el = document.activeElement;
@@ -2729,33 +1736,18 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- j and k walk the results --------------------------------------------
-//
-// The cursor is an EVENT, not a row number. The list re-renders under it more
-// often than it looks: names and reply parents land after the cards do and
-// repaint them, and a filter change replaces the list wholesale. Holding a row
-// number through that would leave the cursor on whatever slid into position 3;
-// holding the id keeps it on the thing the reader was reading, and a card that
-// is no longer in the list is a cursor that no longer points at anything.
+// The cursor is an event id, not a row number: names and reply parents
+// repaint the list after the cards land, and a filter change replaces it.
 let cursorId = null;
 
-// The cards a cursor can sit on are the ones that OPEN something. A permalink
-// card carries no `data-href` — it is already the page it would open — so on
-// an entity view this is empty and j/k do nothing at all, rather than lighting
-// up a card with nowhere to go.
+// Only cards that open something: a permalink card carries no `data-href`.
 const cursorCards = () => [...$results.querySelectorAll(".result[data-href]")];
 const cursorAt = (cards) => cards.findIndex((el) => el.dataset.id === cursorId);
 
 /**
- * Draw the cursor where it is — after every render, which replaced the very
- * elements that were carrying the class.
- *
- * An id the list no longer holds is a cursor pointing at nothing, so it goes —
- * but only against a list that HAS cards. Every search paints a skeleton
- * first, and forgetting the id there cost the cursor everything that re-runs
- * the query: Back out of a card landed on the list with nothing selected, and
- * a chip change dropped the cursor off an event that was still in the results.
- * Keying this to the event instead of the row is only worth anything if the id
- * outlives the moment the list is empty.
+ * Draw the cursor after every render. An id the list no longer holds is
+ * dropped, but only against a list that has cards: every search paints a
+ * skeleton first, and the id has to outlive it.
  */
 function paintCursor() {
   const cards = cursorCards();
@@ -2768,11 +1760,8 @@ function moveCursor(cards, delta) {
   const el = cards[stepIndex(cursorAt(cards), cards.length, delta)];
   cursorId = el.dataset.id;
   paintCursor();
-  // `nearest` scrolls the least, which is what walking a list wants — but the
-  // toolbar is sticky once results are up, and "nearest" knows nothing about
-  // what is floating over the top of the page. Measured rather than guessed:
-  // that bar is a different height on a phone, and grows again when the chip
-  // row wraps.
+  // `nearest` knows nothing about the sticky toolbar, whose height differs on
+  // a phone and grows when the chip row wraps.
   el.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
   el.style.scrollMarginBottom = "12px";
   el.scrollIntoView({ block: "nearest" });
@@ -2782,17 +1771,10 @@ document.addEventListener("keydown", (e) => {
   const move = navKey(e, document.activeElement);
   if (!move || $results.hidden || $help.open) return;
   const cards = cursorCards();
-  // Nothing to walk — a permalink, an empty result set, the error card — so
-  // the key is not ours. This has to be decided BEFORE preventDefault(): a
-  // shortcut that takes a key and then does nothing with it is worse than no
-  // shortcut, and `j` is a key Firefox's find-as-you-type is otherwise about
-  // to use.
+  // Nothing to walk, so the key is not ours; decided before preventDefault().
   if (!cards.length) return;
   if (move === "open") {
-    // Enter is only ours while the cursor is actually on something. Every
-    // other Enter on this page belongs to whatever has focus — a chip, the
-    // json button, a link — and swallowing those to do nothing would be worse
-    // than not having the shortcut.
+    // Enter is ours only while the cursor is on something.
     const el = cards[cursorAt(cards)];
     if (!el) return;
     e.preventDefault();
@@ -2800,8 +1782,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   e.preventDefault();
-  // A type-ahead preview left open over the list is furniture at this point:
-  // the reader is walking the results themselves.
+  // A type-ahead preview left open over the list is furniture now.
   closePopup();
   moveCursor(cards, move === "next" ? 1 : -1);
 });
@@ -2815,29 +1796,17 @@ $popup.addEventListener("mousedown", (e) => {
 
 document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
 $q.addEventListener("focus", () => {
-  // Never over a half-written `from:`/`to:` — the picker owns that box, and
-  // it may be shut simply because the blur that took focus away closed it.
+  // Never over a half-written `from:`/`to:`; the picker owns that box.
   if (field.picking) return;
   const text = $q.value.trim();
   if (pop.hits.length && pop.hitsFor === text && text && $results.hidden) openPopup();
 });
 
-// Clicks inside a LIST OF CARDS. Two lists exist now — the results view and
-// the hero's feed preview — and they behave identically down to the json
-// panel, so the behaviour is a factory over "which events is this list
-// showing" rather than a second copy under the preview. (`#export` can only
-// ever appear in the results head; the preview never renders one.)
-//
-// Note the thunk: each answer REPLACES the preview's array, so a handler closed
-// over the array itself would keep serving the first answer's events to the
-// json panel forever.
+// Clicks inside a list of cards, for the results view and the hero's preview.
+// `hitsOf` is a thunk because each answer replaces the preview's array.
 const cardClicks = (hitsOf) => (e) => {
-  // The pager, which lives in the same list and could not be delegated
-  // anywhere else: the buttons are re-rendered with the cards, so a listener
-  // bound to one of them dies with the page it turned. Before the `button`
-  // bail-out further down, which exists to keep real controls from being read
-  // as a click on the card behind them — this IS the control. (Like #export,
-  // the results view is the only list that draws one; the preview never does.)
+  // The pager's buttons are re-rendered with the cards, so they are delegated
+  // here, before the `button` bail-out below: this is the control.
   const pg = e.target.closest(".pg");
   if (pg) { goPage(Number(pg.dataset.page)); return; }
   if (e.target.closest("#export")) {
@@ -2850,9 +1819,7 @@ const cardClicks = (hitsOf) => (e) => {
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
     return;
   }
-  // The provenance row's overflow. The pills are already in the DOM behind
-  // `hidden`, so this reveals rather than re-renders — no second pass over the
-  // page's pointers, and the card keeps its height until asked.
+  // The provenance row's overflow: the pills are already in the DOM behind `hidden`.
   const more = e.target.closest(".prov-more");
   if (more) {
     const open = more.getAttribute("aria-expanded") === "true";
@@ -2872,27 +1839,12 @@ const cardClicks = (hitsOf) => (e) => {
     btn.textContent = "hide json";
     return;
   }
-  // The card itself opens its own page. The hover lift has always said it
-  // does — border, shadow and a 1px rise, the page's own vocabulary for
-  // "this is a thing you click" — while only the links inside it navigated,
-  // so a note card promised a destination and delivered nothing.
-  //
-  // Three things it must NOT swallow, in order of how easily they are lost:
-  // a real control (a link, the json button, an audio scrubber), which owns
-  // its own click and usually goes somewhere else entirely; a text SELECTION,
-  // because dragging across a body to copy it ends in a mouseup that is not a
-  // navigation; and anything at permalink depth, where cards.js sets no
-  // data-href because the card IS the page.
-  //
-  // Keyboard and middle-click are served by the byline date, which is a real
-  // anchor to the same place — that is what makes this safe to add rather
-  // than a div pretending to be a link.
-  // `.raw` covers the whole json block, not just its button: a click inside
-  // an expanded raw event is somebody reading it, and navigating away would
-  // close the panel they just opened.
+  // The card itself opens its own page (the byline date is the real anchor
+  // for keyboard and middle-click). Not over a real control, a text selection,
+  // or the json block a reader just opened; at permalink depth there is no
+  // data-href at all.
   if (e.target.closest("a, button, input, textarea, select, label, audio, video, summary, .raw")) return;
-  // `getSelection()` may return null, and String(null) is "null" — truthy,
-  // which would have made every card unclickable wherever that happens.
+  // `getSelection()` may return null, and String(null) is truthy.
   const sel = window.getSelection && window.getSelection();
   if (sel && String(sel).trim()) return;
   const art = e.target.closest(".result[data-href]");
@@ -2913,38 +1865,20 @@ $sort.addEventListener("change", () => { renderAdvCount(); rerun(); });
 $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 
 // ---- the URL is the search ------------------------------------------------
-//
-// Everything the results view shows is derived from five inputs — q, tab,
-// sort, spam, lens — so those five ARE the location: `/?q=…&tab=notes&
-// sort=rank&spam=1&as=npub…`. Sign-in state is deliberately not among them;
-// auth belongs to the socket and to the person holding the extension, and a
-// shared URL must not try to carry it.
-//
-// The hero is the clean path with no params, which gives Back a floor to
-// land on. The popup preview never appears here: it is keystroke feedback,
-// and pushing an entry per keystroke is how Back buttons become useless.
-//
-// `feed=1` is the sixth and last thing this url can say, and it is exclusive
-// with four of the five: the feed is the results view with an empty query and
-// none of the bar's extensions. `tab` is the exception, because the chips are
-// the one control that acts on this view — so `/?feed=1&tab=media` is the
-// whole of the feed's state, and the pair is written and read together. A
-// parameter rather than a `/feed` path deliberately — the root already serves
-// this page, and a new path would need a route on the server before a reload
-// of it could work at all.
+// The results view is derived from q, tab, sort, spam and lens, so those are
+// the location. Sign-in state is not among them: auth belongs to the socket.
+// The hero is the bare path, the floor Back lands on; the popup never appears
+// here. `feed=1` is exclusive with everything but `tab`, and is a parameter
+// rather than a path so the root serves it from cold.
 
 // A restore must not re-push what it is restoring — popstate would otherwise
 // truncate the forward stack it is trying to walk.
 let navRestoring = false;
 
 /**
- * `?page=4` as this page counts pages: 0-based, and 0 for anything that is not
- * one — absent, junk, a fraction, or the 1 that is already the default.
- *
- * Clamped at the ceiling the ask itself stops at, so a hand-made `?page=900`
- * opens the deepest page this view can fetch rather than a skeleton the
- * relay will never fill. Anything past THAT the answer settles (settlePage),
- * which is the same clamp against a corpus that turns out to be shorter.
+ * `?page=4` as this page counts pages: 0-based, 0 for anything that is not a
+ * page, clamped at the ceiling the ask stops at. settlePage() clamps against
+ * the corpus.
  */
 function pageParam(p) {
   const n = Number(p.get("page"));
@@ -2952,60 +1886,36 @@ function pageParam(p) {
 }
 
 /**
- * The url for the page as it stands — optionally with a DIFFERENT query, which
- * is what a hashtag chip navigates to. applyUrl() reads the url as the whole
- * of the page's state, so anything a chip's url omits is a setting the chip
- * silently clears: the kind tab, the sort, include:spam, and the ranking lens
- * — three of which the Filters badge is at that moment counting. A chip
- * changes the query and nothing else.
- *
- * Deliberately knows nothing about the feed, even though the feed is a url this
- * page can be at. A chip on a feed CARD is the reason: it asks this function
- * for a search, from a page that is not one, and an early return of `/?feed=1`
- * here would answer a question nobody asked. "Where am I now" is syncUrl's
- * question, and that is where the feed is answered.
+ * The url for the page as it stands, optionally with a different query, which
+ * is what a hashtag chip navigates to: a chip changes the query and nothing
+ * else. Knows nothing about the feed; "where am I now" is syncUrl's question.
  */
 function currentUrl(text = $q.value.trim(), showing = !$results.hidden, page = s.page) {
   const p = new URLSearchParams();
   if (showing && text) p.set("q", text);
-  // Page four of a search is a place, and a link to it is a link to what the
-  // sender was reading. Written ONE-BASED because a person reads it: the
-  // pager's buttons say 1, 2, 3, and `?page=2` had better be the one labelled
-  // 2. Absent on the first page, which is what a url with no `page` means —
-  // and absent with the query, since a page number over no results names
-  // nothing.
+  // One-based, because a person reads it against the pager's buttons.
   if (showing && text && page > 0) p.set("page", String(page + 1));
   if (tab.slug !== KIND_TABS[0].slug) p.set("tab", tab.slug);
   if ($sort.value) p.set("sort", $sort.value);
   if ($spam.checked) p.set("spam", "1");
-  // npub, like everywhere else on the page — this string gets pasted into
-  // chats, and a 64-char hash is not how anyone names a person.
+  // npub, like everywhere else on the page.
   if (viewingAs) p.set("as", npub(viewingAs));
   const qs = p.toString();
-  // Anchored at "/", not location.pathname: with entity pages the pathname
-  // can be /note1…, and a search launched from one belongs at the root — a
-  // URL like /note1…?q=cats would name two places at once.
+  // Anchored at "/": a search launched from /note1… belongs at the root.
   return "/" + (qs ? "?" + qs : "");
 }
 
 function syncUrl() {
   if (navRestoring) return;
-  // The feed is the flag and the chip, and nothing else, because it reads
-  // nothing else: a url carrying a sort this view ignores would be state that
-  // cannot be restored, which is the same lie as a control that does nothing.
-  // Every path here today leaves the feed before syncing, so this is the guard
-  // for the next caller rather than for any current one.
+  // The feed url is the flag and the chip, since the view reads nothing else.
   const url = onFeed() ? feedUrl() : $results.hidden ? "/" : currentUrl();
-  // Re-submitting the same search re-queries the relay but is not a second
-  // place; pushing it would make Back appear to do nothing.
+  // Re-submitting the same search is not a second place.
   if (url === location.pathname + location.search) return;
   history.pushState(null, "", url);
 }
 
-// A NIP-19 path is the third view: not the hero, not the results — the one
-// thing the identifier names. The shape test only ROUTES; whether the
-// identifier validates is entity.js's question, so a bad checksum still lands
-// on a page that explains itself.
+// A NIP-19 path is the third view. The shape test only routes; entity.js
+// validates, so a bad checksum still lands on a page that explains itself.
 const ENTITY_PATH = /^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i;
 
 /** The identifier this page is showing, or null when it is showing anything else. */
@@ -3015,22 +1925,13 @@ function entitySeg() {
 }
 
 /**
- * Draw the entity view for [seg] — the ONE call, so the router and [rerun]
- * cannot open it two different ways.
- *
- * The entity view hands its drawn events BACK: the `json` toggle looks an
- * event up by id among the page's current results, and a permalink used to
- * leave that empty — so the one card on the page answered "no longer in the
- * current results" about itself.
+ * Draw the entity view for [seg]: the one call, so the router and [rerun]
+ * cannot open it two ways. A declaration rather than a const, since [rerun]
+ * sits above this and calls it.
  */
-// A declaration rather than a const: [rerun] sits three hundred lines above
-// this and calls it, and a const would only be safe there by the accident of
-// nothing calling rerun during module evaluation.
 function openEntity(seg) {
-  // seedRow for the same reason paintScores is a hook: the lens the ask reads
-  // through is this module's state. It is the SAME thunk the results list runs
-  // (rowSeed's `own`), so a permalink and a card in a list cannot come to
-  // different views of who vouched for the thing they are both drawing.
+  // seedRow is the same thunk the results list runs, so a permalink and a
+  // card in a list agree on who vouched.
   return showEntity(seg, {
     paintScores,
     ensureLogin,
@@ -3040,10 +1941,9 @@ function openEntity(seg) {
 }
 
 /**
- * URL -> page, the single restore path: initial load, Back, and Forward all
- * come through here. Returns whether it started a search, so the boot path
- * knows whether sign-in is already being driven by that search or needs its
- * own kick.
+ * URL to page, the single restore path: initial load, Back and Forward.
+ * Returns whether it started a search, so boot knows whether sign-in is
+ * already being driven.
  */
 function applyUrl() {
   navRestoring = true;
@@ -3053,23 +1953,12 @@ function applyUrl() {
       clearTimeout(debounceTimer);
       forget(s); forget(pop); // cancel any in-flight search or type-ahead render
       resetPages();
-      // THE LENS IS PART OF A PERMALINK TOO, and this branch used to return
-      // before reading it — so `/npub1…?as=npub1…` pasted cold ranked as
-      // nobody. It cost the score chips their numbers even before this row
-      // existed (paintScores reads the same `viewingAs || me`), and it is the
-      // whole answer here: with no lens there are no delegations, so no
-      // declaration is asked for and the row is empty. Only when the URL
-      // CARRIES one: arriving by a click keeps whatever the session already
-      // had, and clearing it here would drop the reader's chosen observer on
-      // the way into a permalink.
+      // The lens is part of a permalink too, but only when the URL carries one:
+      // arriving by a click keeps the session's observer.
       const asHere = pubkeyParam(new URLSearchParams(location.search).get("as"));
       if (asHere) {
         applyViewingAs(asHere, null);
-        // The URL carries the key and the control wants the name — the same
-        // fill the search branch does below, and for the same reason: the
-        // restore itself must not wait on a profile lookup, and "ranking as
-        // npub1abc…" beside a page that names everyone else properly reads as
-        // a different kind of thing.
+        // The name is filled in after the fact so the restore never waits on it.
         enrichProfiles([asHere]).then(() => {
           const nm = displayName(profiles.get(asHere));
           if (nm && viewingAs === asHere) { $obsCurrent.textContent = nm; renderAdvCount(); }
@@ -3082,37 +1971,24 @@ function applyUrl() {
       closePopup();
       $results.hidden = false;
       openEntity(seg);
-      return false; // no search running — boot still signs in eagerly
+      return false; // no search running; boot still signs in eagerly
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch
     document.title = "SearchOverTrust";
     const p = new URLSearchParams(location.search);
-    // The fourth view, and the only one that is a whole page from one flag and
-    // one chip: the feed takes no q and none of the bar's three extensions. So
-    // those controls go back to their DEFAULTS with the url that carries none
-    // of them — the Filters panel is hidden here, and a `sort:rank` left over
-    // from the previous search would otherwise be applied, invisibly, to the
-    // next search typed from this page. The tab is read instead of cleared,
-    // because on this view it is not a leftover: it is what the feed asked
-    // for. runFeed() awaits sign-in itself, hence `true`: boot does not need
-    // to kick it a second time.
+    // The feed takes no q and none of the bar's extensions, so those go back
+    // to their defaults; a leftover sort would apply invisibly to the next
+    // search. The tab is read, not cleared. runFeed() awaits sign-in itself.
     if (p.get("feed") === "1") {
       tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
-      // A hand-made `/?feed=1&q=cats&sort=rank` is a url naming two views.
-      // The feed wins — it is checked first — so the address bar is corrected
-      // to what is actually on screen rather than left describing a search
-      // that is not running. Compared against the url this view WOULD write,
-      // so an unknown `tab=nonsense` is corrected too rather than left naming
-      // a chip that is not lit. replaceState, not push: this is the same
-      // place, spelled properly, and it leaves the forward stack alone.
+      // A url naming two views, or an unknown tab, is corrected to what is on
+      // screen. replaceState: the same place, spelled properly.
       if (location.search !== feedUrl().slice(1)) history.replaceState(null, "", feedUrl());
       renderChips();
       $sort.value = "";
       $spam.checked = false;
-      applyViewingAs(null, null); // last of the three on purpose: it recounts the
-                                  // badge, and the two above fire no `change` of
-                                  // their own — the same order the search branch
-                                  // below relies on
+      applyViewingAs(null, null); // last: it recounts the badge, and the two
+                                  // above fire no `change` of their own
       $q.value = "";
       document.body.classList.remove("has-query");
       runFeed();
@@ -3128,8 +2004,7 @@ function applyUrl() {
     applyViewingAs(as, null); // recounts the badge for all three: setting the
                               // two above fires no `change` of its own
     if (as) {
-      // The URL carries the key; the label wants the name. Filled in after
-      // the fact so the restore itself never waits on a profile lookup.
+      // The name is filled in after the fact so the restore never waits on it.
       enrichProfiles([as]).then(() => {
         const nm = displayName(profiles.get(as));
         if (nm && viewingAs === as) { $obsCurrent.textContent = nm; renderAdvCount(); }
@@ -3146,46 +2021,23 @@ function applyUrl() {
 
 window.addEventListener("popstate", applyUrl);
 
-// Internal navigation: every link this app can render itself — the brand's
-// and entity head's "/", and any /npub1…, /note1… a card emits — stays a real
-// <a> (middle-click and copy-link work) but a plain left click becomes a
-// pushState render instead of a full reload that would tear down the socket
-// and the NIP-42 auth on it. One document-level listener rather than wiring
-// per card: cards are HTML strings re-rendered wholesale, so per-element
-// handlers would need re-attachment on every render.
+// Internal navigation: every link this app renders stays a real <a>, but a
+// plain left click becomes a pushState render instead of a reload that would
+// tear down the socket and its NIP-42 auth. One document-level listener,
+// since cards are re-rendered wholesale.
 document.addEventListener("click", (e) => {
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = e.target.closest("a[href^='/']");
   if (!a) return;
   const href = a.getAttribute("href");
   if (href === "/") { e.preventDefault(); reset(); return; }
-  // "See more" is a real anchor to a real url — middle-click, copy-link and a
-  // cold load all work, because it is the root with a parameter and the root
-  // is the page — but a plain click renders it in place like every other
-  // internal link, socket and NIP-42 auth intact. Tested before the `?q=` arm
-  // below only because it is the cheaper question; a feed url does not match
-  // that pattern either way.
   if (isFeedHref(href)) { e.preventDefault(); navigate(href); return; }
-  // `/?q=…` is the third shape a card can link to, after "/" and the NIP-19
-  // paths: a hashtag chip is a SEARCH, and applyUrl() already restores one
-  // from exactly this url. Without this arm the chip still worked — as a full
-  // page load, which tears down the socket and re-does the NIP-42 handshake
-  // to arrive at the same results.
-  //
-  // The chip's url is rebuilt through currentUrl() rather than followed as
-  // written: it names a query and knows nothing about the page it was clicked
-  // on, and every filter it does not name is one applyUrl() would clear. From
-  // a FEED card that rebuild carries the kind chip and nothing else — the feed
-  // resets the sort, the spam toggle and the lens, and keeps the tab because
-  // the tab is a filter it was itself running under. A hashtag clicked in a
-  // Media feed searches that tag in Media, which is the same rule the chip
-  // follows inside a search.
+  // A hashtag chip is a search. Its url is rebuilt through currentUrl() rather
+  // than followed as written, so the filters it does not name are kept: a tag
+  // clicked in a Media feed searches that tag in Media.
   if (/^\/\?q=/.test(href)) {
     e.preventDefault();
-    // Page ONE, explicitly: a hashtag clicked on page four of one search is a
-    // different search, and page four of it is a page nobody has looked at —
-    // the reader would land on a "…" over an answer they have not seen the
-    // start of.
+    // Page one: a hashtag clicked on page four is a different search.
     navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true, 0));
     return;
   }
@@ -3195,18 +2047,9 @@ document.addEventListener("click", (e) => {
 });
 
 // ---- media that loads when it is nearly on screen -------------------------
-//
-// A video card renders its url in `data-src`. `preload="metadata"` is a range
-// request per card — two for an mp4 whose moov atom is at the end — so a
-// search returning sixty short videos opened sixty of them before the reader
-// had scrolled past the second. This promotes the url one screen ahead, which
-// still leaves the first frame time to paint before the card arrives.
-//
-// Armed from a MutationObserver rather than from each render because cards are
-// inserted from more than one place — renderResults() here, and entity.js for
-// a permalink — and a path that forgot to arm would show a video that never
-// loads at all. A card renderer cannot know about the page's scroll, and a
-// render path cannot forget a call it does not have to make.
+// `preload="metadata"` is a range request per video card, so a video's url
+// waits in `data-src` until the card is a screen away. Armed from a
+// MutationObserver because cards are inserted from more than one place.
 const loadMedia = (v) => { v.src = v.dataset.src; delete v.dataset.src; };
 const nearViewport = "IntersectionObserver" in window
   ? new IntersectionObserver((entries, obs) => {
@@ -3224,59 +2067,26 @@ new MutationObserver((records) => {
   for (const r of records) for (const n of r.addedNodes) armMedia(n);
 }).observe(document.body, { childList: true, subtree: true });
 
-/** An internal path as a pushState render — the one place both click paths
-    (a card's anchors, and the card itself) turn a href into a view. */
+/** An internal path as a pushState render: the one place a href becomes a view. */
 function navigate(href) {
   if (location.pathname + location.search !== href) history.pushState(null, "", href);
   applyUrl();
 }
 
-// Chips render at boot, not only inside applyUrl's search branch: the entity
-// branch returns before that code, so a direct load of /npub1… used to show
-// an empty chip row until the first Back into a search view.
-// The face from the LAST load, drawn on the first paint — before the extension
-// has been asked anything, let alone the relay.
-//
-// getPublicKey() is a local call but it is still a round trip to the extension,
-// and everything after it is network. Assuming the account you were last signed
-// in as, when you have not since chosen to be signed out, is what makes the
-// picture present at first paint instead of a hole that fills in later.
-//
-// It is an ASSUMPTION and the field says so: `.pending` renders it faded and
-// titled "signing in as", the same as any other unproven state. Switch accounts
-// in your extension between loads and it is wrong for the few milliseconds
-// prefetchFace() takes to correct it — the honest cost of not showing an empty
-// seat to everybody else. Signed out by choice, nothing is assumed at all.
+// The face from the last load, drawn on the first paint as an assumption the
+// field shows faded; prefetchFace() corrects it. Signed out by choice, nothing
+// is assumed. Chips render here too: the entity branch of applyUrl() returns
+// before drawing them.
 if (wantsSignIn() && meFace) mePending = meFace.pubkey;
 renderChips();
 renderWhoami();
-// The anonymous reference socket, opened at BOOT rather than on first use.
-// Every path this page can take needs it within a second or two — the face in
-// the field, the names under the results, the score chips, the entity view's
-// whole-index fallback — and it used to be opened from cold at the moment one
-// of them asked, which put a WebSocket handshake in front of the first answer
-// instead of alongside the main socket's. refConn() dedupes its own opening,
-// so this is a warm-up rather than a connection anybody has to account for.
+// The anonymous reference socket, warmed at boot so its handshake runs beside
+// the main socket's rather than in front of the first answer.
 refConn().catch(() => {});
-// applyUrl() either restores a deep-linked search, shows an entity page, or
-// shows the hero. When it starts a search, that search's own ensureLogin()
-// is already driving sign-in, so the extra call is skipped as redundant —
-// every caller shares the one login flight now, so a second call would
-// merely be noise rather than the race it used to be.
-// On an idle load, sign in eagerly rather than on the first keystroke: the
-// lens picker is only meaningful once there is an authenticated reader, and
-// an idle page should not sit on "signing in…" until somebody types.
+// A restored search drives sign-in itself; an idle load signs in eagerly so
+// the lens picker does not wait on the first keystroke.
 if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
-// What `autofocus` did while the field was an <input>. A contenteditable takes
-// the attribute inconsistently across browsers, and the condition is the one
-// that was always meant: focus the box when the page IS the box — never on an
-// entity permalink, which has its own content to read.
-//
-// And never where a caret arrives without a keyboard behind it. `focus()` from
-// script cannot raise a soft keyboard — mobile browsers raise one only for a
-// focus a finger caused — so on a phone this autofocus landed a blinking caret
-// in a field nothing could type into, and left it there: tapping the box did
-// nothing either, the element being focused already. softKeyboard() is that
-// distinction, and searchfield.js owns it because the field's own rules turn
-// on the same question.
+// What `autofocus` did while the field was an <input>: focus the box when the
+// page is the box, and never on a phone, where a scripted focus() cannot raise
+// the keyboard and leaves a dead caret (softKeyboard() is that distinction).
 if ($results.hidden && !softKeyboard()) $q.focus();
