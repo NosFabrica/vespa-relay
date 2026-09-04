@@ -20,7 +20,7 @@ const now = Math.floor(Date.now() / 1000);
 const ev = (kind, tags = [], content = "") => ({ id: eid, pubkey: pk, kind, created_at: now - 3600, tags, content });
 
 // One fixture per kind, each asserting the renderer's distinctive output.
-// [kind, event, substring the FULL render must contain]
+// [kind, event, substring the full render must contain]
 const FIXTURES = [
   [0,     ev(0, [], JSON.stringify({ name: "alice", about: "hi", picture: "https://x/p.png", nip05: "a@b.co", website: "https://a.co" })), "nip05"],
   [1,     ev(1, [], "hello world"), "hello world"],
@@ -67,7 +67,7 @@ const FIXTURES = [
   [31989, ev(31989, [["d", "30023"], ["a", "31990:x:y"], ["a", "31990:z:w"]]), "2 handlers for kind 30023"],
   [31890, ev(31890, [["title", "My feed"], ["description", "stuff"]]), "My feed"],
 
-  // ---- the reactive kinds: what they point AT is the card ------------------
+  // ---- the reactive kinds: what they point at is the card ------------------
   [5,     ev(5, [["e", eid], ["k", "1"]], "posted by mistake"), "asks to delete 1 event"],
   [6,     ev(6, [["e", eid]], JSON.stringify({ content: "the original note" })), "the original note"],
   [16,    ev(16, [["e", eid]], ""), "reposted"],
@@ -89,7 +89,7 @@ const FIXTURES = [
   [30315, ev(30315, [["d", "music"], ["r", "https://track.example"]], "listening to something"), "listening to something"],
   [34550, ev(34550, [["d", "dev"], ["description", "a community"], ["p", pk2, "", "moderator"]]), "1 moderator"],
 
-  // ---- NIP-51: every list and set, which is what 30003 was missing ---------
+  // ---- NIP-51: every list and set --------------------------------------
   [10000, ev(10000, [["p", pk2], ["t", "spam"], ["word", "airdrop"], ["e", eid]]), "1 word"],
   [10001, ev(10001, [["e", eid]]), "1 note"],
   [10003, ev(10003, [["e", eid], ["a", `30023:${pk}:art`], ["t", "reading"], ["r", "https://x.example"]]), "1 article"],
@@ -98,11 +98,8 @@ const FIXTURES = [
   [10006, ev(10006, [["relay", "wss://bad.example"]]), "bad.example"],
   [10007, ev(10007, [["relay", "wss://search.example"]]), "search.example"],
   [10008, ev(10008, [["a", `30009:${pk}:b`], ["e", eid]]), "1 badge"],
-  // A `group` tag is `["group", <id>, <relay url>, <name?>]` — the one entry in
-  // the NIP-51 table whose value is not element 1. It used to go through the
-  // relay-row renderer over `t[1]`, so the card printed the group ID as a relay
-  // url and dropped the real host and the name; the expectation is the URL for
-  // exactly that reason.
+  // A `group` tag is `["group", <id>, <relay url>, <name?>]`, the one NIP-51
+  // entry whose value is not element 1.
   [10009, ev(10009, [["group", "abc123", "wss://groups.example", "My Group"]]), "groups.example"],
   [10011, ev(10011, [["a", `30000:${pk}:friends`]]), "1 follow set"],
   [10012, ev(10012, [["relay", "wss://feed.example"], ["a", `30002:${pk}:set`]]), "1 relay set"],
@@ -154,9 +151,7 @@ const FIXTURES = [
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
-  // The Trusted Lists, one per member type — the `p`/`e`/`a`/`i` dispatch is
-  // the whole reason there are four kinds, so each fixture asserts the noun
-  // its own kind counts in rather than all four asserting "member".
+  // One Trusted List per member type, each asserting the noun its own kind counts in.
   [30392, ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["metric", "influence"],
                      ["p", pk, "", "88"]]), "1 member"],
   [30393, ev(30393, [["d", "tl-notes"], ["title", "Worth Reading"], ["e", eid]]), "1 event"],
@@ -164,8 +159,7 @@ const FIXTURES = [
   [30395, ev(30395, [["d", "tl-ids"], ["title", "Known Books"], ["i", "isbn:9780316769488"]]), "1 identifier"],
 ];
 
-// THE COVERAGE CLAIM, enforced: every registered kind must have a fixture,
-// and every fixture must target a registered kind.
+// Every registered kind has a fixture, and every fixture targets a registered kind.
 const registered = new Set(renderers.keys());
 const covered = new Set(FIXTURES.map(([k]) => k));
 const missing = [...registered].filter((k) => !covered.has(k)).sort((a, b) => a - b);
@@ -174,36 +168,24 @@ assert.deepStrictEqual(missing, [], `registered kinds without a fixture: ${missi
 assert.deepStrictEqual(stale, [], `fixtures for unregistered kinds: ${stale}`);
 
 // A card and its type-ahead row are one kind's knowledge at two sizes, so the
-// two registries are ONE key set — the same identity KNOWN_KINDS is held to,
-// and for the same reason. A kind with a card and no row falls back to a
-// ladder that ends in the raw content, which is how the search field came to
-// answer "group" with `{"about":"","name":"Test group","picture":""}` while
-// the card beside it drew the channel properly.
+// two registries are one key set.
 assert.deepStrictEqual([...rows.keys()].sort((a, b) => a - b), [...registered].sort((a, b) => a - b),
   "every card must bring the popup row that goes with it, and no row may name a kind nothing renders");
 
-// The badge is the only part of a card that says WHAT it is, so a kind good
-// enough to render is a kind good enough to name and tint. Without this,
-// dressing a kind and forgetting its label ships a beautifully rendered
-// bookmark set whose badge still reads "kind 30003" — which is the shape of
-// the bug this suite grew to catch.
+// The badge is the only part of a card that says what it is, so a kind good
+// enough to render is good enough to name and tint.
 const unnamed = [...registered].filter((k) => kindLabel(k) === `kind ${k}`).sort((a, b) => a - b);
 const untinted = [...registered].filter((k) => !kindTone(k)).sort((a, b) => a - b);
 assert.deepStrictEqual(unnamed, [], `registered kinds with no label: ${unnamed}`);
 assert.deepStrictEqual(untinted, [], `registered kinds with no family tone: ${untinted}`);
 
-// KNOWN_KINDS is the answer to "which kinds do we support". An identity, not a
-// subset: a label for a kind nothing renders promises a card the search cannot
-// show, and a renderer missing from it renders under a bare "kind N".
+// KNOWN_KINDS is an identity, not a subset: a label for a kind nothing renders
+// promises a card the search cannot show.
 assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
   "the kinds we name and the kinds we render must be the same set");
 
-// The operator page NAMES kinds from this same registry rather than carrying a
-// second table. It no longer takes the LIST from here — kind_stats.html did,
-// which is exactly why it was replaced: a page that can only count the kinds it
-// already knows to name cannot answer "what does this relay hold", and the
-// grouping histogram behind stats.html enumerates the store instead. What must
-// not come back is a private copy of the labels.
+// The operator page names kinds from this registry rather than carrying a
+// second table; the list it counts comes from the store.
 const statsPage = readFileSync(new URL("../../main/resources/stats.html", import.meta.url), "utf8");
 assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\.\/web\/shared\/kinds\.js"/.test(statsPage),
   "stats.html must take kind names from shared/kinds.js, not carry a second copy");
@@ -223,21 +205,15 @@ assert(unknown.includes("kind 12345") && unknown.includes("Mystery"), "generic f
 
 // ---- the type-ahead row ----------------------------------------------------
 //
-// The same card, in the two lines the search field's popup has. It used to be
-// one ladder for all 118 kinds — a `title`-ish tag, else the raw content — so
-// every kind whose payload is JSON printed its own source document, every kind
-// whose content is a FRAGMENT printed the fragment, and every countable kind
-// (a follow list, a relay list, a score) printed the author's name twice.
-//
-// THE ROW THIS STARTED FROM: a channel keeps its name, description and picture
-// in a profile-shaped JSON content.
+// The same card in the two lines the search field's popup has. One ladder for
+// every kind printed the raw JSON of a channel, the fragment of a reaction and
+// the author's name twice on a countable kind.
 const channel = FIXTURES.find(([k]) => k === 40)[1];
 assert.deepStrictEqual(rowOf(channel), { name: "my channel", sub: "chat", pic: "https://x/c.png" },
   "a channel's row is its name, its description, and its own picture");
 assert(!popupRow(channel, 0).includes("{&quot;"), "…and no part of that JSON reaches the page");
 
-// What every row owes, for every registered kind: something to say, and none
-// of the four ways this had of saying nothing.
+// What every row owes: something to say, and none of the four ways of saying nothing.
 for (const [kind, fixture] of FIXTURES) {
   const { name, sub } = rowOf(fixture);
   const html = popupRow(fixture, 0);
@@ -249,9 +225,8 @@ for (const [kind, fixture] of FIXTURES) {
   assert(html.includes(`class="popup-item"`) && html.includes("kind-badge"), `kind ${kind}: the row lost its frame`);
 }
 
-// What each row SAYS, where the row is more than the card's own title: the
-// JSON payloads (the bug), the fragments, and everything countable. Written as
-// `name · sub`, because which line a fact lands on is the row's business.
+// What each row says where it is more than the card's title, written as
+// `name · sub` because which line a fact lands on is the row's business.
 const ROW_SAYS = [
   // A payload is a document, not a line of text.
   [40, "my channel · chat"], [30017, "My stall · shop"], [30018, "Widget · 10 EUR · a widget"],
@@ -263,16 +238,14 @@ const ROW_SAYS = [
   [1984, "reports as spam"], [1985, "labels photo"], [8, "awards a badge to 1 recipient"],
   [31989, "recommends 2 handlers for kind 30023"], [10166, "monitors relays every 1h"],
   [1631, "applied or merged"], [31925, "rsvp: accepted"],
-  // The countable kinds, which carry no prose at all and so used to carry
-  // nothing: the count is the card's first line and it is the row's too.
+  // The countable kinds carry no prose, so the count is the row's first line too.
   [3, "follows 2 people"], [10002, "2 relays"], [30000, "Friends · 1 member"],
   [10040, "trusts 1 score dimension"],
-  // A named set says what it holds AND what it is for — the description used
-  // to be the whole second line, and the count is not worth losing it over.
+  // A named set says what it holds and what it is for.
   [30003, "Reading list · 1 event · 1 article · 1 hashtag · things worth keeping"],
   [30618, "repo · 1 branch"], [30040, "The Book · 1 section"], [30030, "Pack · 1 emoji"],
   [10000, "1 person · 1 hashtag · 1 word · 1 event"],
-  // …and the ones whose fact has to be read out of somewhere first.
+  // The ones whose fact has to be read out of somewhere first.
   [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
   [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
   [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
@@ -283,11 +256,8 @@ for (const [kind, expect] of ROW_SAYS) {
   assert(`${name} · ${sub}`.includes(expect), `kind ${kind}: the row reads "${name} · ${sub}", not "${expect}"`);
 }
 
-// The two fallbacks, which are what a family leaning on them is relying on.
-//
-// The NAME falls back to the AUTHOR, never to the content — "else the content"
-// is the rung that printed the JSON, and every kind here has a better answer or
-// none. The SUB then carries that author, unless the name already is them.
+// The name falls back to the author, never to the content; the sub then
+// carries the author unless the name already is them.
 const unnamedChannel = ev(40, [], JSON.stringify({ about: "a channel whose creator left the name off" }));
 assert.strictEqual(rowOf(unnamedChannel).name, shortNpub(pk), "with nothing to name it, a row leads with who made it");
 assert.strictEqual(rowOf(unnamedChannel).sub, "a channel whose creator left the name off", "…and still says what it knows");
@@ -296,22 +266,18 @@ assert.strictEqual(rowOf(ev(1, [], "hello")).sub, shortNpub(pk), "…and one tha
 // A profile is the one row whose subject is its own author.
 assert.deepStrictEqual(rowOf(ev(0, [], JSON.stringify({ name: "carol" }))), { name: "carol", sub: "", pic: "" },
   "a profile with no bio says nothing under its name — least of all the name again, as an npub");
-// `clip` counts CHARACTERS, so a note opening with a paragraph break spent its
-// whole row on whitespace and rendered blank.
+// `clip` counts characters, so a note opening with a paragraph break spent its row on whitespace.
 assert.strictEqual(rowOf(ev(1, [], "\n\n\n  the first line\n\nand the next")).name, "the first line and the next",
   "a row is ONE line, whatever the text did with its newlines");
-// A relation is to what the event POINTS AT, and an `a` tag names an article
-// or a live stream as readily as a note — "liked a note" over a reaction to an
-// article is the row inventing a kind. With no target at all the noun goes,
-// which is what the card does there too.
+// A relation is to what the event points at, and an `a` tag names an article
+// as readily as a note; with no target the noun goes.
 assert.strictEqual(rowOf(ev(7, [["a", `30023:${pk}:art`]], "+")).name, "liked an entry");
 assert.strictEqual(rowOf(ev(7, [["e", eid]], "+")).name, "liked a note");
 assert.strictEqual(rowOf(ev(7, [], "+")).name, "liked", "with nothing to point at, the row says only what it knows");
 assert.strictEqual(rowOf(ev(6, [["a", `30023:${pk}:art`]])).name, "reposted an entry");
 
-// Whatever a row says, the card it opens must say too. A named set's
-// DESCRIPTION was the one thing that reached the popup and not the page: four
-// set renderers drew a title and a count and dropped it.
+// Whatever a row says, the card it opens must say too; a set's description
+// reached the popup and not the page.
 for (const [kind, tags] of [
   [30000, [["p", pk2]]], [30002, [["relay", "wss://r.example"]]],
   [30005, [["a", "34235:x:y"]]], [30030, [["emoji", "wave", "https://x/w.png"]]],
@@ -321,21 +287,16 @@ for (const [kind, tags] of [
   assert(card(set, { full: true }).includes("what the set is for"), `kind ${kind}: its card drops the description its row shows`);
 }
 
-// A second line that repeats the first is not a second line, and half these
-// families draw their two from slots one author can fill with the same words.
-// The families that can see it coming guard it themselves (a media caption
-// that IS the title); this holds for the ones that cannot.
+// A second line that repeats the first is not a second line; the families
+// that cannot see it coming rely on this.
 const echoed = ev(40, [], JSON.stringify({ name: "Bitcoin India", about: "Bitcoin India" }));
 assert.strictEqual(rowOf(echoed).name, "Bitcoin India");
 assert.strictEqual(rowOf(echoed).sub, shortNpub(pk), "a description that is the name gives way to who posted it");
-// The generic floor keeps the content on BOTH lines: for a kind nothing
-// renders it is all anybody knows, so the row must not answer with less than
-// the ladder it replaced did.
+// The generic floor keeps the content on both lines: for a kind nothing renders it is all anybody knows.
 assert.deepStrictEqual(rowOf(ev(12345, [["title", "Mystery"]], "the only thing known about it")),
   { name: "Mystery", sub: "the only thing known about it", pic: "" },
   "an unregistered kind still says what it carries");
-// A JSON field can be any type at all, and `${}` on an object is the words
-// "[object Object]" in a row where a name belongs.
+// A JSON field can be any type, and `${}` on an object is "[object Object]".
 assert.strictEqual(rowOf(ev(40, [], JSON.stringify({ name: { evil: 1 }, about: "x" }))).name, shortNpub(pk),
   "a name that is not text is not a name");
 
@@ -346,19 +307,16 @@ const full = card(ev(1, [], long), { full: true });
 assert(preview.includes("clamp") && preview.includes("…"), "preview clips and clamps");
 assert(!full.includes("clamp") && full.includes(long), "full mode renders every character");
 
-// Media corner cases: a full-depth video with no url renders its text ONCE
-// (the embed-vs-body composition double-rendered it), and a preview picture
-// with no url still shows its text (it used to show nothing).
+// A full-depth video with no url renders its text once, and a preview picture
+// with no url still shows its text.
 const noUrlVideo = card(ev(21, [["title", "the only body line"]]), { full: true });
 assert.strictEqual((noUrlVideo.match(/the only body line/g) || []).length, 1, "video full/no-url: body once");
 assert(card(ev(20, [], "picture text, no url")).includes("picture text, no url"), "picture preview keeps text without a url");
 
 // ---- the git family -------------------------------------------------------
 //
-// The one card layer doing real parsing. NIP-34 puts `git format-patch` output
-// in `content`, and every field of a patch card is downstream of taking that
-// mail apart — so the parser is asserted directly, and then the card is
-// asserted on the property that made it worth writing.
+// NIP-34 puts `git format-patch` output in `content`, so the parser is
+// asserted directly and then the card on the property that made it worth writing.
 const FORMAT_PATCH = `From 4f4d5c1a9e8b7f6d5c4b3a2918273645ffee0011 Mon Sep 17 00:00:00 2001
 From: Alice <alice@example.com>
 Date: Tue, 4 Aug 2026 11:02:31 +0200
@@ -382,8 +340,7 @@ index 3a4f2b1..9c8e7d0 100644
 +    }
 `;
 const parsed = parsePatch(FORMAT_PATCH);
-// The subject is a folded RFC2822 header, and the fold is INSIDE a sentence:
-// joined wrong it reads "the relayis under read pressure".
+// The fold is inside a sentence: joined wrong it reads "the relayis under read pressure".
 assert.strictEqual(parsed.subject, "router: yield ingest while the relay is under read pressure",
   "a folded subject is one line again, with the space the fold stood for");
 assert.deepStrictEqual(parsed.markers, ["PATCH v2 2/3"], "the bracket is metadata, not words in the title");
@@ -391,24 +348,20 @@ assert.strictEqual(parsed.message, "The poller did nothing with the mean it got 
   "the commit message is prose, and stops at git's `---`");
 assert(parsed.diffLines[0].startsWith("diff --git "), "the diff starts at the diff");
 assert(!parsed.diffLines.some((l) => l.includes("1 file changed")), "git's own stat block is not part of it");
-// LINES, not a string: a megabyte patch is split once and sliced, never joined
-// back together for a preview that shows fourteen of them.
+// Lines, not a string: a megabyte patch is split once and sliced.
 assert(Array.isArray(parsed.diffLines), "the diff stays a view of the lines it was split into");
-// A bare diff — no mail at all, which some clients send — keeps every line.
+// A bare diff, with no mail at all, keeps every line.
 const bare = parsePatch("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
 assert.strictEqual(bare.subject, "", "no mail, no subject to take from it");
 assert(bare.diffLines[0] === "--- a/f" && bare.diffLines.includes("+b"), "and the whole diff survives");
-// A `---` inside the message is prose; the separator is the last one before
-// the patch. Read forwards, the card lost the half of the message below it.
+// A `---` inside the message is prose; the separator is the last one before the patch.
 const ruled = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: t\n\nabove\n---\nbelow\n\n---\ndiff --git a/f b/f\n+x\n");
 assert(ruled.message.includes("above") && ruled.message.includes("below"), "a rule inside a commit message is message");
-// A mail with no blank line before its diff: the header scan used to eat the
-// patch, and the card drew a title over nothing.
+// A mail with no blank line before its diff: the diff ends the headers too.
 const unterminated = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: t\ndiff --git a/f b/f\n@@ -1 +1 @@\n+x\n");
 assert(unterminated.subject === "t" && unterminated.diffLines.length > 1,
   "the diff ends the headers too, for a mail that never wrote a blank line");
-// A repeated header keeps the first value AND takes no continuation from the
-// second — folding one onto the other builds a sentence neither wrote.
+// A repeated header keeps the first value and takes no continuation from the second.
 const twiceHeaded = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: first\nSubject: second\n and its fold\n\nbody\n");
 assert.strictEqual(twiceHeaded.subject, "first", "the first header wins, whole");
 // Nothing here throws on a stranger's string.
@@ -417,42 +370,34 @@ for (const junk of ["", null, undefined, "From\n\n\n", "Subject: no from line", 
 }
 
 const patchCard = card(ev(1617, [["a", `30617:${pk2}:vespa-relay`], ["t", "root"]], FORMAT_PATCH), { full: true });
-// The bug that started this: the card's title was git's own first line, which
-// is the same 40 hex and the same fake date on every patch ever made.
+// Git's own first line is the same 40 hex and the same fake date on every patch.
 assert(!patchCard.includes("Mon Sep 17 00:00:00 2001"), "git's From line is not a title");
 assert(patchCard.includes("router: yield ingest while the relay is under read pressure"), "the subject is");
 assert(patchCard.includes(">PATCH v2 2/3<"), "the series rides as a pill");
 assert(!patchCard.includes(">root<"), "…and the `t` tag saying the same thing does not double it");
 assert(card(ev(1617, [["t", "root"]], "--- a/f\n+++ b/f\n@@ -1 +1 @@\n+x\n")).includes(">root<"),
   "…but with no series in the mail, the tag is what says so");
-// The diff is counted from the diff itself, so the numbers describe the lines
-// on the card rather than a stat block that may not be there.
+// Counted from the diff itself, so the numbers describe the lines on the card.
 assert(patchCard.includes("+3") && patchCard.includes("−1") && patchCard.includes("1 file"),
   "the change is measured, in the line a reviewer reads first");
 assert(/class="[^"]*d-add[^"]*"/.test(patchCard) && /class="[^"]*d-hunk/.test(patchCard),
   "and the diff is tinted rather than being one grey wall");
-// The type-ahead row reads the mail for the same reason, and it is where that
-// bug is worst: a row is one line, so `From <sha> Mon Sep 17 00:00:00 2001`
-// was the entire result.
+// A row is one line, so the From line was the entire result.
 const patchRow = rowOf(ev(1617, [["a", `30617:${pk2}:vespa-relay`]], FORMAT_PATCH));
 assert(!patchRow.name.includes("Mon Sep 17 00:00:00 2001"), "git's From line is not a row either");
 assert.strictEqual(patchRow.name, "router: yield ingest while the relay is under read pressure", "the subject is");
 assert.strictEqual(patchRow.sub, "vespa-relay", "…over the repository it is a patch for");
 
-// A diff's `+++`/`---` are file headers OUTSIDE a hunk and ordinary added and
-// removed lines INSIDE one. Read without that state, a markdown rule deleted
-// from a file is grey where it should be red, and missing from a stat that
-// claims to be the size of the change.
+// `+++`/`---` are file headers outside a hunk and ordinary lines inside one;
+// a markdown rule deleted from a file is red.
 const rules = card(ev(1617, [], "diff --git a/R.md b/R.md\n--- a/R.md\n+++ b/R.md\n@@ -1,2 +1,2 @@\n---- old rule\n+++++ new rule\n"), { full: true });
 assert(/d-del[^>]*>---- old rule/.test(rules), "a deleted line is a deletion, whatever its text starts with");
 assert(/d-add[^>]*>\+\+\+\+\+ new rule/.test(rules), "…and so is an added one");
 assert(rules.includes("+1") && rules.includes("−1") && rules.includes("1 file"),
   "and both are counted once, under one file");
 
-// Rendering a card must never be a way to freeze the tab. `/\s+$/` — the
-// obvious way to drop trailing blank lines — retries every start position
-// inside a run of whitespace, so 80k spaces in the MIDDLE of a line cost five
-// seconds on the main thread, per card, from a stranger's event.
+// `/\s+$/` retries every start position inside a run of whitespace, so 80k
+// spaces in the middle of a line cost seconds per card.
 const spaces = "a" + " ".repeat(80000) + "b\nreal line\n\n\n";
 const started = Date.now();
 const wide = card(ev(1337, [], spaces));
@@ -460,56 +405,50 @@ const took = Date.now() - started;
 assert(took < 250, `a line of 80k spaces must not cost ${took}ms to render`);
 assert(wide.includes("real line") && !/\n\s*\n\s*<\/pre>/.test(wide), "…and the trailing blank lines still go");
 
-// Code is clipped by LINES. A diff cut mid-line is not a diff, and `clip()`
-// would also have trimmed the indentation off every line it kept.
+// Code is clipped by lines: a diff cut mid-line is not a diff, and `clip()` would trim the indentation.
 const longCode = Array.from({ length: 40 }, (_, i) => `    line ${i}`).join("\n");
 const clipped = card(ev(1337, [["name", "F.kt"], ["l", "kotlin"]], longCode));
 assert(clipped.includes("    line 0"), "indentation is not whitespace to be trimmed, it is the code");
 assert(clipped.includes("26 more lines") && !clipped.includes("line 39"), "and the preview says what it left");
 assert(card(ev(1337, [], longCode), { full: true }).includes("line 39"), "the permalink keeps every line");
-// The filename is ON the file now, not a row in a table under it.
+// The filename is on the file, not a row in a table under it.
 assert(clipped.includes('class="code-head"') && clipped.includes(">F.kt<"), "a file is named on its header bar");
 assert(!/<dt>name<\/dt>/.test(clipped), "…and not in the props table it used to sit in");
 
-// Which repository, on every kind that names one — the fact none of these
-// cards used to show, so a page of issues from four projects read as one.
+// Which repository, on every kind that names one.
 for (const [kind, tags] of [
   [1617, [["a", `30617:${pk2}:my-repo`]]],
   [1621, [["a", `30617:${pk2}:my-repo`]]],
   [1631, [["a", `30617:${pk2}:my-repo`], ["e", eid]]],
   [30618, [["d", "my-repo"]]],                       // no `a` at all: derived from `d`
-  [30063, [["d", "my-repo@v1"], ["title", "v1"]]],   // …and from `<repo>@<version>`
+  [30063, [["d", "my-repo@v1"], ["title", "v1"]]],   // and from `<repo>@<version>`
 ]) {
   const html = card(ev(kind, tags), { full: true });
   assert(html.includes("repo-line") && html.includes(">my-repo<"), `kind ${kind} must say which repository it is in`);
 }
-// An `a` tag that is not a repository is not a repository line — a NIP-22
+// An `a` tag that is not a repository is not a repository line: a NIP-22
 // comment on a patch carries the patch's address in the same slot.
 assert(!card(ev(1621, [["a", `30023:${pk2}:an-article`]])).includes("repo-line"),
   "only a 30617 address is the repository");
-// …and a card drawn UNDER that repository's own page does not repeat it.
+// A card drawn under that repository's own page does not repeat it.
 assert(!card(ev(1621, [["a", `30617:${pk2}:my-repo`]]), { within: `30617:${pk2}:my-repo` }).includes("repo-line"),
   "the page already said which repository this is");
 
-// A status is the kind, and the kind is the whole event: a pill, and what it
-// is a verdict ON. The ROOT `e` is the target — NIP-34 lets a status also name
-// the revisions and the statuses it supersedes, and the first `e` is as likely
-// to be one of those.
+// The root `e` is the target: NIP-34 lets a status also name the revisions
+// and statuses it supersedes.
 const gitRootId = "a".repeat(64);
 const superseding = card(ev(1632, [["e", eid, "", "mention"], ["e", gitRootId, "", "root"]], "wontfix"), { full: true });
 assert(superseding.includes(noteId(gitRootId)), "the root `e` is what the verdict is about");
 assert(superseding.includes("supersedes 1 earlier event"), "and the others are said to be what they are");
 
-// A repository names its maintainers, from the VALUES of one tag — the slot no
-// scan of `p` tags reaches, which is why base.js grew a way to declare it.
+// Maintainers come from the values of one tag, the slot no scan of `p` tags reaches.
 const repo = ev(30617, [["d", "r"], ["name", "r"], ["maintainers", pk2, "not-a-pubkey", pk]]);
 assert(card(repo, { full: true }).includes(npub(pk2)), "a maintainer is named");
 assert(namedPubkeys(repo, { full: true }).includes(pk2), "…and declared, or the name renders as an npub");
 assert(!namedPubkeys(repo, { full: true }).includes(pk), "the repo's own author is already its byline");
 
-// Branches and tags are two groups, not one row of chips in which `main` and
-// `v0.9.3` look identical — and HEAD names the default branch instead of
-// printing `ref: refs/heads/main` as a props row nobody can act on.
+// Branches and tags are two groups, and HEAD names the default branch rather
+// than printing `ref: refs/heads/main`.
 const state = card(ev(30618, [["d", "r"], ["HEAD", "ref: refs/heads/main"],
   ["refs/heads/main", "4f4d5c1aaaa"], ["refs/tags/v1", "bb22cc33ddd"]]), { full: true });
 assert(state.includes("1 branch") && state.includes("1 tag"), "each group counts itself");
@@ -523,13 +462,10 @@ assert(release.includes('href="https://x.example/downloads/relay-1.0.jar"'), "an
 assert(card(ev(30063, [["d", "vespa-relay@v0.9.3"]]), { full: true }).includes("v0.9.3"),
   "with no `title`, the version in `d` is the title");
 
-// ---- a video card in the FEED --------------------------------------------
+// ---- a video card in the feed --------------------------------------------
 //
-// The real event this was written against: a kind 22 whose `d` is a UUID its
-// client generated, whose caption is in `content`, and which names no poster
-// image at all. Every part of the old card failed on it — the title ladder
-// showed the UUID, the poster slot was empty, and the caption never rendered
-// — so the assertions are about the whole card, not one helper.
+// A kind 22 whose `d` is a client-generated UUID, whose caption is in
+// `content`, and which names no poster; the assertions are about the whole card.
 const short22 = ev(22, [
   ["d", "f56d739a-09c9-4f0b-ba82-f8c21e1a6b8e"],
   ["alt", "Vertical Video"],
@@ -541,8 +477,7 @@ assert(!shortPreview.includes("f56d739a"), "a generated `d` is an identifier, no
 assert(shortPreview.includes("Vlogging directly from the phone"), "the caption in `content` reaches the card");
 assert(shortPreview.includes("<video") && shortPreview.includes("https://video.example/x.mp4"),
   "the video plays in the results list, not only on its permalink");
-// The url rides in `data-src` — app.js promotes it when the card nears the
-// viewport, so a list of sixty videos is not sixty range requests up front.
+// The url rides in `data-src`; app.js promotes it when the card nears the viewport.
 assert(/data-src="https:\/\/video\.example/.test(shortPreview) && !/<video[^>]* src=/.test(shortPreview),
   "the video url is deferred, not fetched by every card in the list");
 assert(shortPreview.includes("#t=0.1"), "with no poster, ask for the first frame rather than a black box");
@@ -555,9 +490,8 @@ const dupTags = card(ev(22, [["imeta", "url https://x/v.mp4"],
 assert.strictEqual((dupTags.match(/tag-chip/g) || []).length, 1, "one topic, one chip");
 assert(dupTags.includes(">#Scotland<"), "and it keeps the spelling the author wrote first");
 
-// With no content, the media's own description carries the card — the NIP-31
-// `alt` is a line for clients that cannot render kind 22 at all, and saying
-// "Vertical Video" under a vertical video is the card describing itself.
+// With no content, the media's own description carries the card; the NIP-31
+// `alt` is for clients that cannot render kind 22 at all.
 const alted = card(ev(22, [["alt", "Vertical Video"], ["imeta", "url https://x/v.mp4", "alt A puffin, up close"]]));
 assert(alted.includes("A puffin, up close") && !alted.includes("Vertical Video"), "the media's description beats the NIP-31 fallback");
 
@@ -566,13 +500,11 @@ const posterVideo = card(ev(21, [["imeta", "url https://x/v.mp4", "image https:/
 assert(posterVideo.includes('poster="https://x/p.jpg"') && posterVideo.includes('preload="none"'), "poster instead of a metadata fetch");
 assert(!posterVideo.includes("#t=0.1"), "no first-frame seek when the event named a poster");
 
-// The title has its own line, so it must not also be the body — the old card
-// put it in the body, which is how a titled video said everything twice.
+// The title has its own line, so it must not also be the body.
 const titled = card(ev(21, [["imeta", "url https://x/v.mp4"], ["title", "One Title"]], "One Title"), { full: true });
 assert.strictEqual((titled.match(/One Title/g) || []).length, 1, "title once, never as its own caption");
 
-// `dim` is the one event-supplied value that reaches a style attribute, so a
-// value that is not two short runs of digits must produce no attribute at all.
+// `dim` is the one event-supplied value that reaches a style attribute.
 const hostileDim = card(ev(22, [["imeta", "url https://x/v.mp4", "dim 1x1;background:url(javascript:alert(1))"]]));
 assert(!hostileDim.includes("aspect-ratio") && !hostileDim.includes("javascript:"), "a `dim` that is not WxH styles nothing");
 
@@ -581,19 +513,15 @@ assert(card(ev(34550, [["d", "nostr-devs"]])).includes("nostr-devs"), "a readabl
 
 // ---- a hashtag chip is a search --------------------------------------------
 //
-// The chip's href and the search field's language are the SAME language, and
-// that is the assertion worth making: not that the href has some shape, but
-// that feeding it back to the tokenizer this app runs its REQ from asks for
-// the topic the chip named. A chip that linked to a query the field cannot
-// parse would look right in the markup and land on an empty page.
+// The chip's href and the search field's language are the same language, so
+// the href is fed back to the tokenizer this app runs its REQ from.
 const chipHref = (html) => (/<a class="tag-chip" href="([^"]*)"/.exec(html) || [])[1] || null;
 const tagged = card(ev(22, [["imeta", "url https://x/v.mp4"], ["t", "isleofskye"]], "a video"));
 const href = chipHref(tagged);
 assert(href, "a topic tag renders as a link, not as inert text");
 const q = new URLSearchParams(href.slice(href.indexOf("?"))).get("q");
 assert.strictEqual(q, "#isleofskye", "the chip asks for the topic as the field would have written it");
-// (The filter carries the case variants people write topics in — that is the
-// query builder's business, and the chip's is only that the topic is in there.)
+// The case variants are the query builder's business; the chip's is only that the topic is in there.
 assert(buildFilters(q, { kinds: null, limit: 10 })[0]["#t"].includes("isleofskye"),
   "and that query builds the REQ for that topic");
 // NIP-51 interests carry the same hashtags in bare form and link the same way.
@@ -604,9 +532,7 @@ assert(!chipHref(card(ev(10000, [["word", "spoilers"]]))), "a mute word is not a
 
 // ---- a group is a search too, and its host is not its id --------------------
 //
-// The hashtag rule above, applied to NIP-29: a group named on a list or drawn
-// as its own record links to the search that finds what was posted in it, in
-// the same language the field speaks.
+// The hashtag rule, applied to NIP-29.
 const groupList = card(ev(10009, [["group", "abc123", "wss://groups.example/", "My Group"]]), { full: true });
 const groupHrefOf = (html) => (/<a href="(\/\?q=group[^"]*)"/.exec(html) || [])[1] || null;
 let gh = groupHrefOf(groupList);
@@ -616,41 +542,31 @@ assert.strictEqual(gq, "group:abc123", "it asks for the id, which is what an `h`
 assert.deepStrictEqual(buildFilters(gq, { kinds: null, limit: 10 })[0]["#h"], ["abc123"],
   "and that query builds the REQ for that group");
 
-// THE BUG THIS CLOSES. A `group` tag's second element is the id and its third
-// is the HOST RELAY; the card used to read element 1 like every other tag and
-// hand it to the relay-row renderer, so it printed the id in a list of urls
-// and threw the host and the name away. Both halves are asserted, because
-// showing the url is only half a fix if the id stopped being reachable.
+// Read as element 1 the id went to the relay-row renderer; both halves are
+// asserted, since showing the url is half a fix if the id stopped being reachable.
 assert(groupList.includes("groups.example"), "the host relay is shown");
 assert(groupList.includes("My Group"), "…and so is the name the list cached");
 assert(!/relay-list[^]*?>abc123</.test(groupList), "the group id is never drawn as a relay url");
 
-// A card draws what somebody ELSE's list says, so the host is optional here:
-// an entry with an id and no relay url is still an entry they saved and still a
-// searchable id. Requiring both dropped it, and a list of only such entries
-// rendered as "nothing public here" — a card claiming its author saved nothing.
+// The host is optional here: an entry with an id and no relay url is still
+// one they saved, and requiring both made a list of them read as empty.
 const hostless = card(ev(10009, [["group", "orphan-id", "", "Orphan"]]), { full: true });
 assert(hostless.includes("Orphan"), "a group tag with no host relay is still drawn");
 assert(!/nothing public here/i.test(hostless), "…so the card never reports an empty list it does not have");
 assert.strictEqual(new URLSearchParams(groupHrefOf(hostless).slice(1)).get("q"), "group:orphan-id",
   "…and it still links to the search for its id");
 
-// A group's own record links the same way, and says which id it is: a group
-// called "General" tells the reader nothing about WHICH general it is.
+// A group called "General" tells the reader nothing about which general it is.
 const groupRec = card(ev(39000, [["d", "chachi"], ["name", "Chachi"], ["private"]]), { full: true });
 assert.strictEqual(new URLSearchParams(groupHrefOf(groupRec).slice(1)).get("q"), "group:chachi",
   "the record's title is the search for its own posts");
 assert(groupRec.includes("chachi") && groupRec.includes("group id"), "the id is on the card, not only in its json");
 assert(groupRec.includes("members only"), "a bare `private` tag is a flag, and its PRESENCE is the value");
 
-// ---- a chat line says WHICH chat -------------------------------------------
+// ---- a chat line says which chat -------------------------------------------
 //
-// The card a NIP-29 message draws is the one card on this page that was
-// missing its subject. A note is its text and an article is its title, but a
-// line of chat is a fragment of a conversation, and a byline reading "Alice ·
-// 4m ago · chat" leaves out the only thing a reader scanning a mixed list
-// needs: which room. So the `h` tag draws as a pill beside the badge, linking
-// into the same `group:` search every other route to a group uses.
+// A line of chat is a fragment of a conversation, so the `h` tag draws as a
+// pill beside the badge, linking into the same `group:` search.
 const chatIn = (tags, opts) => card(ev(9, tags, "a chat line"), opts);
 const pillOf = (html) => (/<a class="group-pill" href="([^"]+)" title="([^"]*)">([^<]*)<\/a>/.exec(html) || null);
 
@@ -665,28 +581,22 @@ assert(!pillOf(card(ev(1, [], "a plain note"), { full: true })), "an event with 
 assert(!pillOf(card(ev(9, [], "a chat line with no room"), { full: true })),
   "…and neither does a chat line that carries none");
 
-// The pill sits to the LEFT of the badge, which is the whole of its placement:
-// the two are the same kind of fact — what this event is, and where it was
-// said — and the reader's eye finds them together at the end of the byline.
+// The pill sits to the left of the badge: what this event is, and where it was said, found together.
 const bylinePill = chatIn([["h", "unknown-room"]], { full: true });
 assert(bylinePill.indexOf('class="group-pill"') < bylinePill.indexOf('class="kind-badge"'),
   "the room comes before the badge that says it is a chat");
 
-// A name replaces the id the moment anything on the page can say one — the
-// search pill's bargain, in the one other place that holds a bare group id.
-// Both halves come from the same cache, so a card and the search box can never
-// disagree about what a group is called.
+// Both halves come from one cache, so a card and the search box can never
+// disagree about a group's name.
 seedGroupEvents([{ id: eid, kind: 39000, pubkey: pk2, created_at: now, content: "",
   tags: [["d", "nos"], ["name", "nos engineers"]] }]);
 pill = pillOf(chatIn([["h", "nos"]], { full: true }));
 assert.strictEqual(pill[3], "nos engineers", "a group the page has met draws its name");
 assert(pill[2].includes("nos"), "…and the hover still carries the id, which is what the filter actually asks for");
 
-// What the pill does NOT claim. Two relays that signed one id under different
-// names is groupnames.js's disagreement case, and it reaches this card as the
-// bare id — which is the only honest drawing: an `h` names no host, nothing
-// here records which relay an event came from, and a name over a colliding id
-// would say this line is from one room when the search returns several.
+// Two relays signing one id under different names reach this card as the
+// bare id: an `h` names no host, so a name would claim one room where the
+// search returns several.
 seedGroupEvents([
   { id: eid, kind: 39000, pubkey: pk, created_at: now, content: "", tags: [["d", "general"], ["name", "General"]] },
   { id: eid, kind: 39000, pubkey: pk2, created_at: now, content: "", tags: [["d", "general"], ["name", "Generalists"]] },
@@ -694,10 +604,8 @@ seedGroupEvents([
 assert.strictEqual(pillOf(chatIn([["h", "general"]], { full: true }))[3], "general",
   "an id its hosts disagree about keeps the id, on the card exactly as in the search box");
 
-// AN ID THE SEARCH LANGUAGE CANNOT CARRY LOSES ITS LINK, not its label. A
-// group token ends at whitespace and drops a trailing sentence stop, so
-// `group:my group` asks for the group `my` — the wrong room, silently. The
-// room is still what the pill is for, so the name stands as text.
+// An id the search language cannot carry loses its link, not its label:
+// `group:my group` would ask for the group `my`.
 for (const bad of ["my group", "hello.", "x?"]) {
   const html = chatIn([["h", bad]], { full: true });
   assert(!pillOf(html), `\`${bad}\` must not be drawn as a link to another group`);
@@ -705,8 +613,7 @@ for (const bad of ["my group", "hello.", "x?"]) {
   assert(span, `\`${bad}\` still names the room it was posted to`);
   assert.strictEqual(span[2], bad, "…as its own id, unlinked");
 }
-// The same guard, at the two older call sites that mint the same href — a
-// group's own record, and a group on somebody's list.
+// The same guard at the two older call sites that mint the same href.
 const badRec = card(ev(39000, [["d", "my group"], ["name", "Mine"]]), { full: true });
 assert(!/href="\/\?q=group/.test(badRec), "a 39000 whose `d` cannot be tokenized links nowhere");
 assert(badRec.includes("Mine"), "…and still draws the group");
@@ -714,17 +621,15 @@ const badList = card(ev(10009, [["group", "my group", "wss://r.example/", "Liste
 assert(!/href="\/\?q=group/.test(badList), "the same for a `group` tag on a list");
 assert(badList.includes("Listed"), "…which also keeps its name");
 
-// The pill is an interpolation site like any other, and its id is a stranger's
-// string: the poison loop below cannot reach it, since an `h` tag on a fixture
-// that has none is a tag it never gets.
+// An `h` tag on a fixture that has none is a tag the poison loop below never gets.
 const hostileRoom = card(ev(9, [["h", `"><b BAD>`]], "x"), { full: true });
 assert(!hostileRoom.includes("<b BAD>"), "a group id reached the card as MARKUP");
 assert(!/href="[^"]*<b/.test(hostileRoom), "…and its href is a query string, not a document");
 
 // ---- a picture post is an album --------------------------------------------
 //
-// NIP-68 gives a picture post one imeta PER PICTURE. Reading only the first
-// showed one photo of five, in a 92px thumbnail, next to text.
+// NIP-68 gives a picture post one imeta per picture; reading only the first
+// showed one photo of five.
 const album = ev(20, [
   ["title", "Five days on Skye"],
   ["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"],
@@ -737,8 +642,7 @@ assert(albumPreview.includes("…and 1 more"), "and says so rather than silently
 assert.strictEqual((albumFull.match(/<img/g) || []).length, 5, "the permalink shows every picture");
 assert(albumPreview.includes("media-grid"), "several pictures are a grid, not a stack");
 
-// A lone picture gets the frame a video gets, shaped by its own `dim`, and the
-// description the event wrote for it becomes the image's alt text.
+// A lone picture gets the frame a video gets, shaped by its own `dim`.
 const onePic = card(ev(20, [["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"]], "one photo"));
 assert(onePic.includes("media-frame sized") && onePic.includes("aspect-ratio: 1600 / 1200"), "one picture, one shaped frame");
 assert(onePic.includes('alt="the Cuillin ridge"'), "the imeta description IS the alt text");
@@ -748,27 +652,22 @@ assert(!onePic.includes("media-grid"), "one picture is not a grid");
 const hostile = card(ev(1, [], `<img src=x onerror=alert(1)>`), { full: true });
 assert(!hostile.includes("<img src=x"), "content is escaped");
 
-// Cards link internally now, not to njump.
+// Cards link internally, not to njump.
 const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
 
 // ---- a Trusted List's members are people, deduped and hex-only ------------
 //
-// Two halves, both paid for elsewhere in this file's history. Lists in the
-// wild REPEAT entries — clients append without checking — and a raw `p` scan
-// counts a member twice and draws two faces for one person. And a value that
-// is not a key must never reach npub(), which would label somebody who does
-// not exist. `peopleOf` is the one answer, which is also what gridPeople
-// declares to the profile loader: the faces on the page and the profiles
-// fetched for them cannot be two different sets.
+// Lists in the wild repeat entries, and a value that is not a key must never
+// reach npub(). `peopleOf` is the one answer, and what gridPeople declares to
+// the profile loader, so the faces drawn and the profiles fetched are one set.
 {
   const lister = "b".repeat(64);
   const dup = ev(30392, [["d", "x"], ["title", "VH"], ["p", pk], ["p", pk], ["p", "not-a-key"]]);
   const html = card({ ...dup, pubkey: lister }, { full: true });
   assert(/>1 member</.test(html), `a repeated member is counted once: ${/result-body">([^<]*)</.exec(html)[1]}`);
-  // person-cell, not av-wrap: the byline draws a face of its own, and counting
-  // those together would pass whatever the grid did.
+  // person-cell, not av-wrap: the byline draws a face of its own.
   assert.strictEqual((html.match(/person-cell/g) || []).length, 1, "and drawn once");
   assert.deepStrictEqual(namedPubkeys({ ...dup, pubkey: lister }, { full: true }), [pk],
     "the profiles the page fetches are exactly the faces it draws");
@@ -776,16 +675,12 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
 
 // ---- the provenance row ---------------------------------------------------
 //
-// The pills are the whole row: no standing label, because a word repeated down
-// forty cards teaches the reader nothing after the first. Every card gets the
-// row from ONE seam (shell), so this is asserted through the renderer rather
-// than by calling provHtml directly.
+// No standing label: a word repeated down forty cards teaches nothing. Every
+// card gets the row from one seam (shell), so it is asserted through the renderer.
 {
   const { seedProvenance } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
   const lister = "b".repeat(64), bot = "d".repeat(64);
-  // The reader delegated `lister` for every declaration kind — the gate
-  // provenance.js now applies over whatever filled the page. Labels take no
-  // delegation and are unaffected.
+  // The reader delegated `lister` for every declaration kind; labels take no delegation.
   const trusted = new Map([30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395].map((k) => [k, new Set([lister])]));
   const target = { id: eid, pubkey: pk, kind: 0, created_at: now, tags: [], content: "{}" };
   const page = [
@@ -810,22 +705,17 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
   assert(/Verified Human <span class="n">2<\/span>/.test(html),
     "two lists with one title are one pill and a count, not two identical chips");
 
-  // Attribution: one delegated publisher on this page, so a face on the gated
-  // pill would be the same face every time. The ungated one always carries it.
+  // One delegated publisher on this page, so a face on the gated pill would be the same face every time.
   const gated = /<a class="prov-pill vouched"[^>]*>(.*?)<\/a>/.exec(html)[1];
   const open = /<a class="prov-pill open"[^>]*>(.*?)<\/a>/.exec(html)[1];
   assert(!gated.includes("av-wrap"), "one publisher: the tone already says it is yours");
   assert(open.includes("av-wrap"), "nothing gated a label, so who said it is the whole question");
 
-  // EVERY RENDERER, not just the ones that go through shell(). The profile
-  // card is hand-rolled and was missing the row until this asserted it — which
-  // is the worst possible one to miss, since a profile is what a Trusted List
-  // of pubkeys and a contact card both splice. A family that rolls its own
-  // frame must not be able to drop the row silently.
+  // Every renderer, not just the ones through shell(): the hand-rolled profile
+  // card was missing the row, and a profile is what a Trusted List splices.
   for (const [kind, fixture] of FIXTURES) {
-    // ONE POINTER for every target shape: a NIP-32 label may name an event, a
-    // pubkey and an address at once, which is exactly the three ways a card
-    // can be the thing something points at.
+    // A NIP-32 label may name an event, a pubkey and an address at once: the
+    // three ways a card can be pointed at.
     seedProvenance([
       fixture,
       { id: "2".repeat(64), pubkey: bot, kind: 1985, created_at: now,
@@ -837,17 +727,14 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
       `kind ${kind}: a spliced card draws no provenance row — a hand-rolled frame that forgot it`);
   }
 
-  // THE TYPE-AHEAD ROW HAS NO PROVENANCE, and app.js leans on that hard: the
-  // popup is drawn OVER the results list, both on screen at once, so its
-  // hydrate is the one that must not touch the shared provenance map at all
-  // (`row: "keep"`). That is only safe while this holds. It held silently
-  // until a debounced keystroke was found taking a search's whole row down
-  // with it, so it is checked now rather than assumed.
+  // The popup is drawn over the results list, so app.js's hydrate must not
+  // touch the shared provenance map (`row: "keep"`); that is only safe while
+  // this holds.
   seedProvenance(page, trusted);
   assert(!popupRow(target, 0).includes("prov"),
     "a type-ahead row draws no provenance — if it ever should, app.js's `keep` mode is wrong");
 
-  // A card nothing points at draws no row at all — its presence is the signal.
+  // A card nothing points at draws no row at all: its presence is the signal.
   seedProvenance(page, trusted);
   assert(!card({ id: "9".repeat(64), pubkey: pk, kind: 1, created_at: now, tags: [], content: "hi" }).includes("prov pills"),
     "an ordinary hit gets no row");
@@ -857,15 +744,10 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
 
 // ---- every card is a link to its own page --------------------------------
 //
-// Two routes to one destination, and the pair is the point: `data-href` is
-// what app.js navigates on when the card is clicked (the hover lift promises
-// exactly that), and the same destination is ALSO a real anchor inside the
-// card, so middle-click, copy-link and Tab keep working. Without the anchor
-// this is a div pretending to be a link. Which anchor differs by family —
-// the byline date on every shell card, the person's name on a profile, whose
-// frame carries no date — so the assertion is that the two agree, not which
-// element carries it. Neither may appear at permalink depth, where the card
-// is already the page it would open.
+// `data-href` is what app.js navigates on, and the same destination is also a
+// real anchor inside the card so middle-click, copy-link and Tab work. Which
+// anchor differs by family, so the assertion is that the two agree. Neither
+// appears at permalink depth.
 const hrefAttr = (html) => (/data-href="([^"]*)"/.exec(html) || [])[1] || null;
 for (const [kind, fixture] of FIXTURES) {
   const preview = card(fixture);
@@ -875,27 +757,19 @@ for (const [kind, fixture] of FIXTURES) {
     `kind ${kind}: the card navigates somewhere no link goes — unreachable by keyboard or middle-click`);
   assert.strictEqual(hrefAttr(card(fixture, { full: true })), null, `kind ${kind}: the permalink links to itself`);
 }
-// One rule, one spelling. Where an event LIVES is selfHref's answer, and the
-// page has three ways in — a card click, the byline date, a type-ahead row —
-// which is three chances to write `kind 0 ? npub : note` again and have two of
-// them disagree. app.js did exactly that for the picker, without selfHref's
-// guard, so an event with no id opened "/" and looked like a page reset.
+// Where an event lives is selfHref's answer; app.js built the path by hand
+// for the picker once, and an event with no id opened "/".
 const appSrc = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
   "app.js builds an entity path by hand — ask cards/base.js's selfHref instead, so every route to an event agrees");
 
-// A profile's page is the PERSON, not the kind 0's id — that id names one
-// revision of a bio and stops resolving the moment it is edited.
+// A profile's page is the person: the kind 0's id names one revision of a bio.
 assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
 assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "a regular event opens the event");
 
-// A PARAMETERIZED REPLACEABLE event's page is its ADDRESS, for the same reason
-// a profile's is the person: an id names one revision. It bites hardest on the
-// Trusted Lists, whose entire purpose is to be recomputed and republished — a
-// note1… to one has a shelf life measured in hours. It is also what makes the
-// provenance pill on a spliced result and the list card it came from open the
-// same page; two links to one list that agree only sometimes is a bug the
-// spelling should not permit.
+// A parameterized replaceable event's page is its address: an id names one
+// revision, and a Trusted List is recomputed constantly. It is also what makes
+// a provenance pill and the list card open the same page.
 assert.strictEqual(hrefAttr(card(ev(30392, [["d", "tl-verified"], ["title", "Verified Human"], ["p", pk]]))),
   `/${naddr(`30392:${pk}:tl-verified`)}`, "a Trusted List opens its address, not one revision of it");
 assert.strictEqual(hrefAttr(card(ev(30023, [["d", "essay"], ["title", "An Essay"]], "words"))),
@@ -904,24 +778,17 @@ assert.strictEqual(hrefAttr(card(ev(30023, [["d", "essay"], ["title", "An Essay"
 // the card still opens its coordinate rather than falling back to the id.
 assert.strictEqual(hrefAttr(card(ev(30392, [["title", "Untitled"], ["p", pk]]))),
   `/${naddr(`30392:${pk}:`)}`, "an addressable event with no d is addressed by the empty d");
-// Not addressable: 10040 is a plain replaceable kind, outside 30000-39999, and
-// has no `d` to be addressed by.
+// 10040 is a plain replaceable kind outside 30000-39999, with no `d` to be addressed by.
 assert.strictEqual(hrefAttr(card(ev(10040, [["30382:rank", pk, "wss://x"]]))),
   `/${noteId(eid)}`, "a non-addressable replaceable kind still opens by id");
-// ADDRESSABLE IS NOT THE SAME AS ENCODABLE, and the address is a PREFERENCE
-// rather than a commitment. `naddr`'s TLV length prefix is one byte, so a `d`
-// over 255 UTF-8 bytes has no legal encoding — the spec's limit, on a
-// perfectly well-formed tag — and the addressable branch used to return that
-// null straight through. The card then had no link AT ALL: not its date, not
-// its body, and `openPicked` silently did nothing for it, with the event id
-// sitting right there unused.
+// `naddr`'s TLV length prefix is one byte, so a `d` over 255 UTF-8 bytes has
+// no encoding; returned straight through, that null left the card with no link at all.
 assert.strictEqual(
   hrefAttr(card(ev(30023, [["d", "d".repeat(256)], ["title", "Long d"]], "words"))),
   `/${noteId(eid)}`,
   "an address that cannot be encoded falls through to the note — a card with an id is never unclickable",
 );
-// …and the fall-through is the ENCODING's, not a relaxation of the rule: an
-// address that encodes is still what the card opens.
+// The fall-through is the encoding's, not a relaxation of the rule.
 assert.strictEqual(hrefAttr(card(ev(30023, [["d", "d".repeat(255)], ["title", "Long d"]], "words"))),
   `/${naddr(`30023:${pk}:${"d".repeat(255)}`)}`, "…and one that fits its byte is still addressed");
 
@@ -930,8 +797,6 @@ assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [
   "no id, no click target — navigating to the home page is not the same as opening the note");
 
 // Names over npubs, npubs over nothing, hex never.
-// With a profile in the cache, the score and observer cards name the person;
-// the npub survives only in the hover title and the href.
 seedProfiles([
   ev(0, [], JSON.stringify({ name: "bob", display_name: "Bob Score" }), now),            // pk
   { ...ev(0, [], JSON.stringify({ name: "olga" }), now), pubkey: pk2 },                  // pk2, the author
@@ -945,21 +810,18 @@ assert(observer.includes(">Bob Score</a>"), "observer service shows the name");
 assert(!card(ev(0, [], JSON.stringify({ name: "carol" })), { full: true }).includes("<dt>pubkey</dt>"), "named profile: no pubkey row");
 const nameless = card(ev(0, [], "{}"), { full: true });
 assert(nameless.includes("<dt>pubkey</dt>") && nameless.includes(">npub1"), "nameless profile: npub row remains");
-// Rendered TEXT never contains a bare hex pubkey (attributes like data-pk may).
+// Rendered text never contains a bare hex pubkey (attributes like data-pk may).
 for (const html of [scored, observer, nameless]) {
   const text = html.replace(/<[^>]*>/g, " ");
   assert(!text.includes(pk) && !text.includes(pk2), "hex is a storage format, not display text");
 }
 
-// ---- replies name a PERSON, and link the PARENT ---------------------------
+// ---- replies name a person, and link the parent ---------------------------
 //
-// Three claims, and they are separable — a card can name the right person and
-// link the wrong place:
-//   WHICH `e` tag is the parent  (NIP-10: reply, else root, else the last one)
-//   WHO wrote it                 (the tag's 5th slot, its 4th, a NIP-22 `p`)
-//   WHERE the link goes          (the parent EVENT, never the parent's profile)
-// Asserted on the reply line alone, because the card around it legitimately
-// links both the author's npub (the byline) and a note id (its own permalink).
+// Three separable claims: which `e` tag is the parent (NIP-10: reply, else
+// root, else the last one), who wrote it (the tag's 5th slot, its 4th, a
+// NIP-22 `p`), and where the link goes (the parent event, never the profile).
+// Asserted on the reply line alone, since the card around it links both.
 const parentId = "a".repeat(64);
 const rootId = "c".repeat(64);
 const lineOf = (html) => (/<div class="reply-line">([\s\S]*?)<\/div>/.exec(html) || ["", ""])[1];
@@ -968,8 +830,7 @@ const linkedTo = (html) => {
   return href ? nip19Parse(href) : null;
 };
 
-// pk2 is "olga" in the cache seeded above; here she is the parent's author,
-// hinted where NIP-10 puts it.
+// pk2 is "olga" in the cache; here she is the parent's author, hinted where NIP-10 puts it.
 const reply = card(ev(1, [["e", gitRootId, "", "root"], ["e", parentId, "wss://hint.example", "reply", pk2]], "my answer"), { full: true });
 assert(lineOf(reply).includes("in reply to"), "a reply says what it is");
 assert(lineOf(reply).includes(">olga</a>"), "the parent is a person, named");
@@ -978,11 +839,10 @@ assert(!/href="\/npub1/.test(lineOf(reply)), "the link is not the parent's profi
 assert.strictEqual(linkedTo(reply).id, parentId, "the `reply` marker wins over `root`");
 assert.deepStrictEqual(linkedTo(reply).relays, ["wss://hint.example"], "the tag's relay hint rides into the link");
 assert.strictEqual(linkedTo(reply).author, pk2, "…and so does the author, for the entity page's fallback");
-// The preview and the permalink say the same thing — one template, two depths.
+// The preview and the permalink say the same thing: one template, two depths.
 assert(lineOf(card(ev(1, [["e", parentId, "", "reply", pk2]], "x"))).includes(">olga</a>"), "the results list names them too");
 
-// Marker precedence, and the positional fallback the NIP deprecated but the
-// corpus is full of: no markers at all means the LAST `e` tag is the parent.
+// Marker precedence, and the deprecated positional fallback the corpus is full of.
 assert.strictEqual(linkedTo(card(ev(1, [["e", parentId, "", "root"]], "x"), { full: true })).id, parentId,
   "a lone root marker IS the parent — a direct reply to the opening post marks nothing else");
 assert.strictEqual(linkedTo(card(ev(1, [["e", rootId], ["e", parentId]], "x"), { full: true })).id, parentId,
@@ -993,33 +853,26 @@ assert.strictEqual(lineOf(card(ev(1, [], "not a reply at all"), { full: true }))
 assert.strictEqual(lineOf(card(ev(7, [["e", parentId]], "+"), { full: true })), "",
   "a reaction already says 'liked <note>' — it does not also reply to it");
 
-// Nobody named: the label falls back to the parent's id, and the link still
-// opens the parent. This is the shape a reply takes before the lookup lands.
+// Nobody named: the shape a reply takes before the lookup lands.
 const unresolved = card(ev(1, [["e", parentId]], "x"), { full: true });
 assert(lineOf(unresolved).includes("note1"), "an unresolved parent still shows what it points at");
 assert.strictEqual(linkedTo(unresolved).id, parentId, "…and still links there");
 
-// NIP-22 puts the author where NIP-10 puts the marker, and REQUIRES a `p` tag
-// naming that same person — two more slots for the same fact.
+// NIP-22 puts the author where NIP-10 puts the marker, and requires a `p` naming the same person.
 assert(lineOf(card(ev(1111, [["e", parentId, "", pk2]], "c"), { full: true })).includes(">olga</a>"), "NIP-22's 4th slot is the author");
 assert(lineOf(card(ev(1111, [["e", parentId], ["p", pk2]], "c"), { full: true })).includes(">olga</a>"), "a NIP-22 comment's `p` names the parent's author");
-// A comment on an ARTICLE has no `e` at all: the author is in the address.
+// A comment on an article has no `e` at all: the author is in the address.
 const onArticle = card(ev(1111, [["A", `30023:${pk2}:art`], ["a", `30023:${pk2}:art`]], "c"), { full: true });
 assert(lineOf(onArticle).includes(">olga</a>") && /href="\/naddr1/.test(lineOf(onArticle)), "an addressable parent names its author and links the address");
 
-// A NIP-28 channel message carries the CHANNEL in its root `e` tag. Reading
-// that as a parent would put "in reply to <whoever opened the room>" over
-// every line ever typed in it.
+// A NIP-28 channel message carries the channel in its root `e` tag; read as a
+// parent it would put "in reply to" over every line in the room.
 assert.strictEqual(lineOf(card(ev(42, [["e", gitRootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
 assert.strictEqual(linkedTo(card(ev(42, [["e", gitRootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
   "…but a reply inside one is");
 
-// REPLY_KINDS is a claim about the RENDERERS — "these kinds lead with who they
-// answer" — and it is read by namedPubkeys to decide whose profile to load.
-// One list, so the two cannot cover different sets: a kind in it whose card
-// never calls replyLine is a profile fetched for a line nobody draws, and a
-// card drawing the line for a kind outside it renders an npub where a name
-// belongs. Asserted as an identity, the same way KNOWN_KINDS is.
+// REPLY_KINDS is read by namedPubkeys to decide whose profile to load, so it
+// must be exactly the kinds whose card draws the line, in both directions.
 for (const kind of REPLY_KINDS) {
   const html = card(ev(kind, [["e", parentId, "", "reply", pk2]], "answering"), { full: true });
   assert(lineOf(html).includes(">olga</a>"), `kind ${kind} is declared reply-shaped, but its card names no parent`);
@@ -1029,16 +882,12 @@ for (const kind of [...renderers.keys()].filter((k) => !REPLY_KINDS.has(k))) {
     `kind ${kind} draws a reply line without being declared reply-shaped, so its parent's profile is never loaded`);
 }
 
-// The enrichment claim, for the one person no scan of the tags would find on
-// its own: whoever the line names, namedPubkeys must declare.
+// Whoever the line names, namedPubkeys must declare.
 assert(namedPubkeys(ev(1, [["e", parentId, "", "reply", pk2]])).includes(pk2), "the parent's author is a name this page owes itself");
 assert(namedPubkeys(ev(1111, [["a", `30023:${pk2}:art`]])).includes(pk2), "…including the one written into an address");
 assert.deepStrictEqual(namedPubkeys(ev(1, [["e", parentId]])), [], "an unhinted parent declares nobody until the lookup lands");
 
-// A set renders its CONTENTS, which is the whole complaint that started this:
-// a 30003 with twelve saved articles used to render as a title and a badge
-// reading "kind 30003". Now it names itself, counts what it holds, and links
-// each entry — the `a` tags as naddr pages, the `e` tags as note pages.
+// A set renders its contents: a 30003 with twelve saved articles was a title and a badge.
 const bookmarks = card(ev(30003, [
   ["d", "reading"], ["title", "Reading list"], ["description", "things worth keeping"],
   ["a", `30023:${pk}:art`], ["e", eid], ["t", "books"],
@@ -1049,29 +898,22 @@ assert(bookmarks.includes('href="/naddr1'), "an `a` tag links to its entity page
 assert(bookmarks.includes('href="/note1'), "an `e` tag links to its note page");
 assert(bookmarks.includes("1 article") && bookmarks.includes("1 hashtag"), "each section counts what it holds");
 
-// A list whose items are all NIP-44 encrypted is legal and common. Saying
-// "0 people" would read as an empty list, which is a different claim.
+// A list whose items are all NIP-44 encrypted is common; "0 people" would claim an empty list.
 const private_ = card(ev(10000, [], "AbCdEf==?iv=xyz"), { full: true });
 assert(private_.includes("nothing public here") && private_.includes("encrypted"), "an all-private list says so");
 assert(!private_.includes("0 people"), "an encrypted list is not an empty one");
 
-// A list's PEOPLE are its contents, so they are drawn as a grid of face +
-// name — one cell per person, not a row of anonymous 30px circles. Both the
-// standard lists (this 10000's `p` section) and the follow kinds.
+// A list's people are drawn as a grid of face + name, one cell per person.
 const muted = card(ev(10000, [["p", pk2]]), { full: true });
 assert(muted.includes('class="people-grid full"') && muted.includes('class="person-cell"'), "a list's people get a cell each");
 assert(muted.includes(">olga</span>"), "…with the name under the face");
 assert(!card(ev(10000, [["p", pk2]])).includes("face-strip"), "the preview draws the same grid the permalink does");
-// The two depths are one template at two densities, and the stylesheet is
-// told which by the same `full` the card frame carries. A preview that drew
-// the permalink's face is a result row as tall as a page.
+// Two depths, one template: the stylesheet is told which by the same `full` the frame carries.
 assert(card(ev(10000, [["p", pk2]])).includes("av-xl") && muted.includes("av-xxl"),
   "the preview takes the smaller face and the permalink the larger one");
 
-// The caps are per depth, and when a list overruns one, the LAST CELL is the
-// count: the row stays rectangular, and nobody reads a ragged row as the
-// whole list. A follow list of thousands saying nothing about the rest would
-// be the card lying by omission.
+// When a list overruns its cap, the last cell is the count, so the row stays
+// rectangular and says what it left out.
 const crowd = Array.from({ length: PEOPLE_GRID.full + 5 }, (_, i) => i.toString(16).padStart(64, "0"));
 // The more-cell is `person-cell more`, so the open-ended match counts every
 // cell and the `href` one counts only the cells that are a person.
@@ -1089,41 +931,31 @@ const short = card(ev(3, [["p", pk2], ["p", pk]]));
 assert.strictEqual(cells(short), 2);
 assert.strictEqual(faces(short), 2, "a list inside the cap spends no cell on a count");
 assert(!short.includes("more-face"), "…and claims nothing beyond itself");
-// Four digits do not fit in a 46px circle. 8,432 people is `+8.4k`.
+// Four digits do not fit in a 46px circle.
 const many = card(ev(3, Array.from({ length: 8433 }, (_, i) => ["p", i.toString(16).padStart(64, "0")])));
 assert(many.includes("+8.4k"), "a four-figure remainder is compacted, not printed in full");
 
-// A nameless person still gets an identity, truncated ONCE: shortNpub's
-// head-and-tail form is 19 characters, so the cell's ellipsis cut it a second
-// time and the label read `npub1eedm57z…ag…`.
+// shortNpub's head-and-tail form is 19 characters, so the cell's ellipsis cut it a second time.
 const strangerCell = card(ev(3, [["p", "a".repeat(64)]]));
 assert(/class="person-name mono">npub1[a-z0-9]{7}…</.test(strangerCell), "the grid's npub fallback is truncated once");
 assert(strangerCell.includes(`title="${npub("a".repeat(64))}"`), "…and the whole key is in the title");
 
-// A list holds a thing ONCE. Repeated `p` tags are common — clients append
-// without checking, two copies of a list get merged — and the card drew that
-// person twice, in two cells linking to one page, under a count that said
-// they were two members.
+// Repeated `p` tags are common, and the card drew that person twice under a count of two.
 const twice = card(ev(3, [["p", pk2], ["p", pk2], ["p", pk], ["p", "not-a-pubkey"]]), { full: true });
 assert.strictEqual(cells(twice), 2, "a repeated person is one person");
 assert(twice.includes("follows <b>2</b> people"), "…and the count says the same number the grid draws");
 const twiceList = card(ev(10000, [["p", pk2], ["p", pk2]]), { full: true });
 assert(twiceList.includes("1 person"), "the same rule, counted by the NIP-51 table");
 
-// PEOPLE_GRID_KINDS is what cards.js loads profiles from, so it must be the
-// same set as the kinds whose card actually draws a grid — in BOTH directions.
-// A kind that declares one and draws none fetches profiles for nobody; a kind
-// that draws one without declaring puts an npub under every face in it, which
-// is the failure the whole enrichment claim below exists to prevent.
+// PEOPLE_GRID_KINDS is what cards.js loads profiles from, so it must be
+// exactly the kinds whose card draws a grid, in both directions.
 for (const kind of renderers.keys()) {
   const drawn = card(ev(kind, [["d", "x"], ["p", pk2]]), { full: true }).includes("people-grid");
   assert.strictEqual(drawn, PEOPLE_GRID_KINDS.has(kind),
     `kind ${kind}: draws a people grid = ${drawn}, but declares one = ${PEOPLE_GRID_KINDS.has(kind)}`);
 }
 
-// A tab is a `kinds` filter, so a kind in the wrong tab is a search that
-// cannot find it under any chip. "Media" carried 31922 — a calendar date the
-// live family renders — while 1986 audio was in no tab at all.
+// A tab is a `kinds` filter, so a kind in the wrong tab is a search that cannot find it under any chip.
 const TAB_TONE = { people: "people", notes: "note", articles: "article", media: "media", code: "code", live: "live", lists: "list" };
 const appJs = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 const tabs = [...appJs.matchAll(/slug:\s*"([a-z]+)",\s*kinds:\s*(null|\[([^\]]*)\])/g)]
@@ -1136,15 +968,9 @@ for (const [slug, kinds] of tabs) {
   }
 }
 
-// TOTALITY: no renderer may throw, whatever the event looks like.
-//
-// Not a hypothetical. entity.js dials the relay hints in an identifier this
-// relay does not hold, renders what comes back, and only THEN submits it here
-// for verification — deliberately, so the reader sees the thing and the
-// relay's verdict on it. That render is outside showEntity's try/catch and
-// its caller adds no .catch, so a throwing renderer left the page on its
-// skeleton with "fetching names…" still showing. 70 of the 118 kinds threw on
-// an event with no `tags` array.
+// Totality: no renderer may throw, whatever the event looks like. entity.js
+// renders what a hinted relay returned before the relay's verdict, outside
+// showEntity's try/catch, so a throwing renderer left the page on its skeleton.
 const DEGENERATE = [
   ["no tags array", (k) => ({ id: eid, pubkey: pk, kind: k, created_at: now })],
   ["null in tags", (k) => ({ id: eid, pubkey: pk, kind: k, created_at: now, tags: [["title"], null, ["e"], []] })],
@@ -1162,9 +988,7 @@ for (const [label, make] of DEGENERATE) {
       assert(!html.includes("Invalid Date"), `kind ${kind}: "Invalid Date" reached the page on a ${label} event`);
       assert(!html.includes("undefined"), `kind ${kind}: leaked "undefined" on a ${label} event`);
     }
-    // The same rule for the row, and it is not the same code path: a row reads
-    // fields a card never touches (a patch's mail, a product's JSON) and it
-    // renders on every keystroke, where a throw takes the type-ahead down.
+    // Not the same code path: a row reads fields a card never touches, and renders on every keystroke.
     let row;
     try { row = popupRow(make(kind), 0); }
     catch (e) { assert.fail(`kind ${kind}: its type-ahead row threw on a ${label} event: ${e.message}`); }
@@ -1173,15 +997,9 @@ for (const [label, make] of DEGENERATE) {
   }
 }
 
-// THE ENRICHMENT CLAIM: whoever a card writes a NAME for, namedPubkeys must
-// name too — on both pages, since both now ask it rather than scanning tags
-// themselves. Rendering was always shared; loading the profiles was not, and
-// the results list showed npubs where the permalink showed names.
-//
-// Asserted by rendering with an EMPTY profile cache: personLink puts the full
-// npub in the title attribute whether or not a name was found, so every one
-// that appears is a person this card names and therefore a profile the page
-// owed itself.
+// The enrichment claim: whoever a card writes a name for, namedPubkeys must
+// name too. Rendered with an empty profile cache, since personLink puts the
+// full npub in the title attribute whether or not a name was found.
 seedProfiles([]);
 for (const [kind, fixture] of FIXTURES) {
   const html = card(fixture, { full: true });
@@ -1191,47 +1009,27 @@ for (const [kind, fixture] of FIXTURES) {
   const undeclared = shown.filter((p) => p !== fixture.pubkey && !declared.has(p));
   assert.deepStrictEqual(undeclared, [], `kind ${kind}: names ${undeclared.length} pubkey(s) namedPubkeys does not declare, so they render as npubs`);
 }
-// …and the zap receipt's sender, the one who lives in no tag at all.
+// The zap receipt's sender lives in no tag at all.
 const zapper = "d".repeat(64);
 assert(namedPubkeys(ev(9735, [["p", pk2],
   ["description", JSON.stringify({ pubkey: zapper, tags: [["amount", "1000"]] })]])).includes(zapper),
   "the zap sender comes out of the stringified request, not the tags");
 assert.deepStrictEqual(namedPubkeys(ev(9735, [["description", "not json at all"]])), [],
   "a malformed receipt names nobody rather than throwing");
-// A list's people are DRAWN with names now, so they are declared — but only
-// as far as the grid reaches, and only as far as THIS depth's grid reaches.
-// Naming a follow list's thousands would be a profile fetch per member on
-// every result in a list of results; naming none of them was the version that
-// put an npub under every face in the grid; and naming the permalink's set on
-// a page of previews fetched three times what any card on it could show.
+// A list's people are declared only as far as this depth's grid reaches: the
+// permalink's set on a page of previews fetched three times what a card could show.
 for (const [depth, opts, cap] of [["preview", undefined, PEOPLE_GRID.preview], ["full", { full: true }, PEOPLE_GRID.full]]) {
   const declared = namedPubkeys(follows, opts);
   assert.deepStrictEqual(declared, crowd.slice(0, cap - 1),
     `at ${depth} depth a follow list declares exactly the faces it draws, in order`);
 }
-// The people a card only shows a PICTURE of stay undeclared: a face needs no
-// lookup to be right, and 34550 carries its moderators as a strip.
+// People a card only shows a picture of stay undeclared: a face needs no lookup.
 assert.deepStrictEqual(namedPubkeys(ev(34550, [["d", "c"], ["p", pk2, "", "moderator"]])), [], "faces are not names");
 
-// THE ESCAPING CLAIM: nothing an event carries reaches the page as markup.
-//
-// Every renderer builds HTML by string concatenation, and a props table takes
-// its VALUE raw so a row can be a link — so "escaped" is a promise each card
-// makes one interpolation at a time, and four of them had quietly broken it:
-// `fmtTs(tagOf(ev, …))` hands its argument back verbatim when it is not a
-// number, so `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed.
-// A page that renders strangers' events cannot hold that promise by review.
-//
-// Asserted for the WHOLE registry, in both depths, with the payload in every
-// tag value, in the content, and as a tag NAME — the last because tagsWhere
-// hands names through to `<dt>` and to the mono spans in the 10040 card.
-// Short on purpose: cards clip long values, and a payload longer than the
-// tightest clip could be truncated past recognition and score a false pass.
-// It opens with a quote so an attribute-context break-out is caught too — and
-// the assertion is that the payload never appears VERBATIM, which is exactly
-// what escaping prevents (`"` becomes &quot;, `<` becomes &lt;) and what raw
-// interpolation produces. `onerror=…` would not do: escaped output still
-// contains that text, inertly, and the test would fail on correct code.
+// The escaping claim: nothing an event carries reaches the page as markup.
+// The payload is short so no clip truncates it past recognition, opens with a
+// quote to catch an attribute break-out, and is asserted never to appear
+// verbatim, which `onerror=` would in correctly escaped output too.
 const XSS = `"><b BAD>`;
 const poison = (fixture) => ({
   ...fixture,
@@ -1241,15 +1039,12 @@ const poison = (fixture) => ({
 const ESCAPED = (html) => !html.includes("<b BAD>");
 
 for (const [kind, fixture] of FIXTURES) {
-  // The row is a third interpolation site for the same strings, and the one
-  // whose values come straight off a stranger's JSON.
+  // The row is a third interpolation site, whose values come straight off a stranger's JSON.
   assert(ESCAPED(popupRow(poison(fixture), 0)), `kind ${kind}: an event's own text reached the type-ahead row as MARKUP`);
   for (const opts of [undefined, { full: true }]) {
     const depth = opts ? "permalink" : "preview";
     assert(ESCAPED(card(poison(fixture), opts)), `kind ${kind}: an event's own text reached the ${depth} as MARKUP`);
-    // The same, with the payload only where a timestamp is read — the tag
-    // shapes above are replaced wholesale, and these four cards read a named
-    // tag whose value they formatted rather than escaped.
+    // The four cards that read a named timestamp tag formatted its value rather than escaping it.
     for (const name of ["endsAt", "expiration", "starts", "start", "end", "published_at"]) {
       const html = card({ ...fixture, tags: [...(fixture.tags || []), [name, XSS]] }, opts);
       assert(ESCAPED(html), `kind ${kind}: a "${name}" tag reached the ${depth} as MARKUP`);
@@ -1257,8 +1052,7 @@ for (const [kind, fixture] of FIXTURES) {
   }
 }
 
-// …and a url is not linkable just because it is escaped: `javascript:` in an
-// href is a script the reader runs on themselves by clicking.
+// A url is not linkable just because it is escaped: `javascript:` in an href runs on click.
 for (const [kind, fixture] of FIXTURES) {
   for (const name of ["r", "web", "url", "website", "streaming", "recording"]) {
     const html = card({ ...fixture, tags: [...(fixture.tags || []), [name, "javascript:BAD"]] }, { full: true });
@@ -1271,17 +1065,10 @@ assert.strictEqual(safeUrl("data:text/html,<script>"), null, "data: documents ar
 assert.strictEqual(safeUrl("/local/path"), null, "a relative url never meant this origin");
 assert.strictEqual(safeUrl("https://ok.example/x?a=1"), "https://ok.example/x?a=1", "http(s) passes through unchanged");
 
-// The reply line is an interpolation site the loop above cannot reach: poison()
-// replaces every tag VALUE, which destroys the `e` tag shape the line needs to
-// render at all — the id has to be 64 hex or there is no parent. So it gets its
-// own poisoning, in the slots that survive validation: the relay hint, the
-// marker, the author, and an addressable parent's `d`.
-//
-// Some of those never reach the output as text at all — the hint is minted into
-// an nevent, whose alphabet is bech32, and the id is hex-checked before
-// anything is built from it. That is the point of asserting the composite
-// rather than the escaping: this passes today because the inputs are validated
-// AND the outputs escaped, and it fails the moment either half is dropped.
+// poison() destroys the `e` tag shape the reply line needs, so the line gets
+// its own poisoning in the slots that survive validation. Asserting the
+// composite means this fails the moment either the validation or the escaping
+// is dropped.
 for (const kind of REPLY_KINDS) {
   for (const opts of [undefined, { full: true }]) {
     const html = card(ev(kind, [
@@ -1297,13 +1084,8 @@ for (const kind of REPLY_KINDS) {
 
 // ---- an article previews as cover, title, summary --------------------------
 //
-// The three things a long-form card is for, and each was almost that: the
-// cover shared the square avatar frame, and the summary slot showed raw NIP-23
-// markdown whenever the event carried no `summary` tag — which most do not.
-//
-// Asserted on the CARD rather than on the reducer, because the property is
-// what a reader sees: prose, in one voice, once. The reducer is free to change
-// its rules underneath this.
+// Asserted on the card rather than the reducer: the property is what a reader
+// sees, prose in one voice, once.
 const marked = ev(30023, [["d", "a"], ["title", "On Relays, Bandwidth, and Who Pays"], ["image", "https://x/cover.jpg"],
   ["published_at", String(now - 400)]],
   "# On Relays, Bandwidth, and Who Pays\n\n## Somebody is paying for this\n\nA relay that accepts **every** event " +
@@ -1319,9 +1101,7 @@ assert(!markedPreview.includes("Somebody is paying for this A relay"),
   "a heading labels the prose under it; joined into one run it reads as a sentence that isn't there");
 assert.strictEqual((markedPreview.match(/On Relays, Bandwidth, and Who Pays/g) || []).length, 1,
   "a body opening with the article's own title must not make the preview say it twice");
-// One voice: whether the line came from the `summary` tag or from the body, it
-// stands in for the article and is styled as such. It used to be muted only in
-// the first case, so two articles side by side disagreed about what that slot was.
+// One voice: the line stands in for the article whether it came from the `summary` tag or the body.
 const summarised = card(ev(30023, [["d", "b"], ["title", "T"], ["summary", "the summary tag itself"]], "body"));
 assert(summarised.includes("the summary tag itself") && /result-body[^"]*muted/.test(summarised), "tag summary is muted");
 assert(/result-body[^"]*muted/.test(markedPreview), "and so is the one reduced from the body");
