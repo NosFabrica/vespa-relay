@@ -33,36 +33,21 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * What this router is configured to mirror, written as JSON where the relay
- * can read it.
- *
- * A client comparing our count for an author against the author's own relay
- * compares a filtered mirror against an unfiltered total unless both sides
- * are scoped to the kinds the mirror asks for, and `router.conf` is the only
- * place that list exists. The router is the only writer, once at boot (a
- * config edit is a restart, never a reload), and the relay's read is
- * best-effort. The streams are the ones this process is running, not every
- * stream in the config; a stream with no `kinds` gets no `kinds` member;
- * `since` rides along where a stream has one; `writtenAt` lets a reader spot
- * a document that outlived its writer. No union is computed here: the relay's
- * `MirrorReport` does that, so two places cannot disagree about it.
+ * What this router is configured to mirror, written as JSON where the relay can read it, so a
+ * client comparing our count against an upstream's total can scope both sides to the kinds the
+ * mirror asks for. Written once at boot by the router alone; the relay's read is best-effort.
  */
 class SyncManifest(
     /** Where the manifest is written; null publishes nothing. */
     private val file: File?,
 ) {
     /**
-     * Whether `SYNC_MANIFEST_FILE` named a path at all. Separate from [write]'s
-     * result: a router never given a path and one whose disk refused the write
-     * need different fixes.
+     * Whether `SYNC_MANIFEST_FILE` named a path at all. Separate from [write]'s result: no path
+     * and a refused write need different fixes.
      */
     val publishes: Boolean get() = file != null
 
-    /**
-     * Publishes [streams]; returns whether anything was written. Never throws:
-     * a router that cannot write this file still mirrors, so the failure is
-     * logged loudly and swallowed.
-     */
+    /** Publishes [streams]; returns whether anything was written. Never throws: the mirror does not need this file. */
     fun write(
         streams: List<SyncStream>,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
@@ -72,7 +57,7 @@ class SyncManifest(
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, nowSeconds)))
-            // Temp file plus an atomic move: the relay reads on its own schedule and must never see half a document.
+            // Temp file plus an atomic move, so the relay never reads half a document.
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: AtomicMoveNotSupportedException) {
@@ -84,7 +69,7 @@ class SyncManifest(
     }
 
     companion object {
-        // Pretty-printed: an operator reads it, and the relay reads it from disk on its own rollup.
+        // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
 
         /** The document, pure, so it can be asserted without a filesystem. */

@@ -34,13 +34,8 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * The mirror's own `/stats.json`: what it is doing and how far it has walked.
- *
- * The writer and the reader share one heap, so `SyncProgress.latest` is served
- * as built, and liveness is answered by whether the request answers. The
- * envelope matches the relay's document (`schema`, `generatedAt`, `tiers`, a
- * `status`/`generatedAt`/`data` section) because the two pages share a
- * rendering engine.
+ * The mirror's own `/stats.json`: what it is doing and how far it has walked. The envelope
+ * matches the relay's document because the two pages share a rendering engine.
  */
 class SyncStatus(
     private val bands: SyncBands,
@@ -50,22 +45,20 @@ class SyncStatus(
     /** How often [publish] is called; published so the page polls on the stated cadence. */
     private val everySeconds: Long,
     /**
-     * Every prime (relay, stream) unit the pool holds, read once per tick
-     * because the roster is rebuilt on its own clock. Empty publishes no
-     * `relays` section at all.
+     * Every prime (relay, stream) unit the pool holds, read once per tick. Empty publishes no
+     * `relays` section.
      */
     private val primeUnits: () -> List<RelayStatusReport.PrimeUnit> = { emptyList() },
 ) {
     /**
-     * Build the document and hand it to [snapshot]. Never throws: a failed
-     * part is published under `errors` instead.
+     * Build the document and hand it to [snapshot]. Never throws: a failed part is published
+     * under `errors`.
      */
     fun publish(nowSeconds: Long = System.currentTimeMillis() / 1000) {
         val startedMs = System.currentTimeMillis()
         val errors = LinkedHashMap<String, String>()
 
-        // The band snapshot is the expensive part of the tick; both reports
-        // walk it, so it is built once.
+        // Both reports walk the band snapshot, so it is built once.
         val bandsDoc =
             runCatching { bands.snapshot() }
                 .onFailure { errors["bands"] = it.message ?: it::class.simpleName.orEmpty() }
@@ -76,8 +69,7 @@ class SyncStatus(
                 .onFailure { errors["sync"] = it.message ?: it::class.simpleName.orEmpty() }
                 .getOrNull()
 
-        // Its own member: the coverage fold groups by stream over relays a
-        // stream has touched, and this one's subject is the roster.
+        // Its own member: the coverage fold groups by stream, and this one's subject is the roster.
         val relays =
             runCatching { RelayStatusReport.build(bandsDoc, primeUnits(), nowSeconds) }
                 .onFailure { errors["relays"] = it.message ?: it::class.simpleName.orEmpty() }
@@ -106,14 +98,13 @@ class SyncStatus(
                 }
             }
 
-        // Only the vocabulary this document's members use; see [StatusVocabulary.termsFor].
+        // Only the vocabulary this document's members use.
         val withTerms = data?.let { JsonObject(it + ("terms" to StatusVocabulary.termsFor(it))) }
 
         snapshot.publish(
             buildJsonObject {
                 put("schema", SCHEMA_VERSION)
-                // One markup file serves all three services, so the title, scope
-                // and what the numbers cover come from the document.
+                // One markup file serves all three services, so the title and scope come from here.
                 put("title", "Mirror status")
                 put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                 put(
@@ -159,7 +150,7 @@ class SyncStatus(
         /** The one tier: everything here is a fold over maps this process already holds. */
         const val TIER = "status"
 
-        /** Bumped when a released member changes meaning or leaves. Versioned apart from the relay's document. */
+        /** Bumped when a released member changes meaning or leaves; versioned apart from the relay's. */
         const val SCHEMA_VERSION = 1
     }
 }

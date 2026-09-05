@@ -24,10 +24,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Rebuilds a status document on a timer, one instance per plane.
- *
- * Runs on its own daemon thread rather than a coroutine on the engine's scope,
- * so the page keeps refreshing while the mirror's dispatchers are saturated.
+ * Rebuilds a status document on a timer, one instance per plane. Its own daemon thread, so
+ * the page keeps refreshing while the mirror's dispatchers are saturated.
  */
 internal class StatusRollup(
     /** Names the thread and the log line a failed pass prints. */

@@ -24,12 +24,9 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What each stream is doing right now, for the progress document and the log.
- *
- * A configured stream is never absent: it appears from registration on, and
- * every phase reports its elapsed time so stillness can be told from silence.
- * Counts name nobody; the per-relay truth is the [InFlight] list beside the
- * phase.
+ * What each stream is doing right now, for the progress document and the log. A configured
+ * stream is never absent, and every phase reports its elapsed time so stillness can be told
+ * from silence.
  */
 class StreamPhases {
     sealed interface Phase {
@@ -37,32 +34,28 @@ class StreamPhases {
         data object Starting : Phase
 
         /**
-         * Riding the visit pool, from the first roster to the end of the
-         * process. Zero relays is a report, not an absence: the roster is
+         * Riding the visit pool. Zero relays is a report, not an absence: the roster is
          * waiting on its first certified relay.
          */
         data class Rotating(
             val relays: Int,
             val tailed: Int,
-            /** Relays waiting for a worker rather than on a revisit timer; separates a starved stream from a resting one. */
+            /** Relays waiting for a worker rather than on a revisit timer. */
             val queued: Int,
         ) : Phase
     }
 
-    /**
-     * One stream's state, flattened at one instant. A snapshot rather than a
-     * view, so the document's members are not read at different times.
-     */
+    /** One stream's state at one instant, so the document's members are not read at different times. */
     class Stream(
         val name: String,
         /** The phase's own word, never the rendered line. */
         val phase: String,
         val phaseForSec: Long,
-        /** This stream's units, which per stream are also its relays; [tails] and [queued] partition it. */
+        /** This stream's units, one per relay; [tails] and [queued] partition it. */
         val roster: Int? = null,
         val tails: Int? = null,
         val queued: Int? = null,
-        /** Relays with a worker on them right now, quietest first. Null when nothing registered a source. */
+        /** Relays with a worker on them, quietest first; null when no source is registered. */
         val inFlight: InFlight? = null,
         /** Empty for a stream whose engine caps nothing. */
         val limits: List<Limit> = emptyList(),
@@ -71,13 +64,8 @@ class StreamPhases {
     )
 
     /**
-     * One scheduled job's clock over every ask this stream has.
-     *
-     * Work leaves [waiting] only by the clock running out, so a steady
-     * `waiting` beside a climbing run count is the schedule being broken.
-     * [neverRun] is counted apart from [due] because an ask with no completed
-     * pass is always due, and a fresh deployment's audit storm is that rule
-     * working rather than the period being ignored.
+     * One scheduled job's clock over every ask this stream has. [neverRun] is counted apart
+     * from [due] because an ask with no completed pass is always due.
      */
     class Scheduled(
         /** The pool word this clocks: `negentropy` or `re-fetching`. */
@@ -94,9 +82,8 @@ class StreamPhases {
     )
 
     /**
-     * One stream's share of one pool job: the cap, what is out against it, and
-     * how much work the cap has turned away. The last is what tells a capped
-     * stream from one whose bands have not aged.
+     * One stream's share of one pool job: the cap, what is out against it, and how much work
+     * the cap has turned away.
      */
     class Limit(
         /** The pool word this bounds: `visiting`, `live`, `re-fetching`, `negentropy`. */
@@ -130,9 +117,8 @@ class StreamPhases {
     }
 
     /**
-     * Where to ask [name] about itself. Each source is invoked at snapshot
-     * time, not copied. An omitted argument leaves that source alone rather
-     * than clearing it.
+     * Where to ask [name] about itself. Each source is invoked at snapshot time; an omitted
+     * argument leaves that source alone rather than clearing it.
      */
     @Synchronized
     fun names(
@@ -148,7 +134,7 @@ class StreamPhases {
         schedule?.let { entry.schedule = it }
     }
 
-    /** Move [name] to [phase]. The elapsed clock restarts only when the phase changes kind, not when its numbers move. */
+    /** Move [name] to [phase]. The elapsed clock restarts only when the phase changes kind. */
     @Synchronized
     fun set(
         name: String,
@@ -188,11 +174,7 @@ class StreamPhases {
             "router: $name ${describe(e.phase, elapsed)}${stuck(e)}"
         }
 
-    /**
-     * The oldest held leg, named, once it has been held past
-     * [STUCK_LEG_SECONDS]; empty below that, since every healthy rotation has
-     * legs in flight.
-     */
+    /** The oldest held leg, named, once it has been held past [STUCK_LEG_SECONDS]; empty below that. */
     private fun stuck(e: Entry): String {
         val oldest =
             e.inFlight
@@ -201,8 +183,7 @@ class StreamPhases {
                 ?.firstOrNull() ?: return ""
         if (oldest.heldForSec < STUCK_LEG_SECONDS) return ""
         return " — ${oldest.relay} held ${fmtDuration(oldest.heldForSec * 1000)}" +
-            // Both counts, always: zero events alone reads as a dead socket on
-            // a leg that is reconciling, and a large count alone as healthy.
+            // Both counts: zero events alone reads as a dead socket on a reconciling leg.
             ", ${oldest.events} event(s), quiet ${fmtDuration(oldest.quietForSec * 1000)}" +
             (if (oldest.transferringForSec == null) " (not on a socket)" else "")
     }
@@ -230,7 +211,7 @@ class StreamPhases {
         }
 
     companion object {
-        /** Past this a held leg is stuck, not slow; set comfortably above the slowest healthy leg seen. */
+        /** Past this a held leg is stuck, not slow. */
         const val STUCK_LEG_SECONDS = 600L
     }
 }

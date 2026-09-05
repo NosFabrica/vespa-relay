@@ -21,26 +21,20 @@
 package com.nosfabrica.vespa.relay.sync
 
 /**
- * How long a sync-plane transfer may sit silent before it is abandoned. An
- * idle clock, not a deadline: it resets on every message, so a relay still
- * delivering is never cut off. The probe passes size theirs per url from
- * `connectionTimeout` through [probeIdleMs], because a probe answers one
- * twenty-event ask and a transfer delivers a history.
+ * How long a sync-plane transfer may sit silent before it is abandoned. An idle clock, not a
+ * deadline: it resets on every message, so a relay still delivering is never cut off.
  */
 internal const val NEG_IDLE_MS = 30_000L
 
 /**
- * How long one relay may deliver nothing across a sequence of asks before the
- * rest are left for the next visit. [NEG_IDLE_MS] bounds one ask; this bounds
- * the run of them, and is likewise reset by every event that arrives.
+ * How long one relay may deliver nothing across a run of asks before the rest are left for
+ * the next visit. Reset by every event that arrives, like [NEG_IDLE_MS].
  */
 internal const val LEG_QUIET_GIVE_UP_MS = 10 * NEG_IDLE_MS
 
 /**
- * How many times one leg may be narrowed and re-walked inside a single visit
- * when a relay refuses it on filter width. A cost bound, not a convergence
- * one: the learned cap outlives the visit, so the next visit starts where this
- * one stopped. See [FilterWidths].
+ * How many times one leg may be narrowed and re-walked inside one visit. A cost bound, not a
+ * convergence one: the learned cap outlives the visit.
  */
 internal const val MAX_NARROWINGS = 3
 

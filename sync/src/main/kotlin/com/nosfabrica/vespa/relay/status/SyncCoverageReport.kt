@@ -35,21 +35,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * The bands and sweep cursors folded into per-stream coverage groups the
- * status page can chart.
- *
- * Both inputs nest stream → filter → relay (`SyncBands`, `SweepState`), so a
- * group is a stream and joining them is looking up the same three names. A
- * group's `filter` is what every leg agrees on exactly; the members legs
- * disagree on are named in `narrowedBy` instead, since an author-narrowed
- * stream reaches the file as thousands of distinct filters. The denominator
- * is relays a stream has touched, not relays it names: a dynamic stream has
- * no configured list. Read-only and best-effort: a shape this build does not
- * understand costs a thinner card, never the rollup.
- *
- * Flat pre-stream keys (`"<relay> <filter>"` for a band, `"<relay>|<filter>"`
- * for a sweep) are charted as unnamed groups keyed by [shapeOf]. Only the
- * sweep half is still written; the band half goes when the sweep half does.
+ * The bands and sweep cursors folded into per-stream coverage groups the status page can
+ * chart. A group's `filter` is what every leg agrees on exactly; members the legs disagree on
+ * are named in `narrowedBy`. Best-effort: a shape this build does not understand costs a card.
  */
 internal object SyncCoverageReport {
     private val lenient =
@@ -58,17 +46,10 @@ internal object SyncCoverageReport {
             isLenient = true
         }
 
-    /**
-     * A filter member a discovery narrow can vary per relay: named in
-     * `narrowedBy`, never published by value. `kinds` is deliberately not here.
-     */
+    /** A filter member a discovery narrow can vary per relay: named in `narrowedBy`, never published. */
     private fun varies(member: String) = member == "authors" || member == "ids" || member.startsWith("#")
 
-    /**
-     * One group of the card, accumulated as the two inputs are read. [marks]
-     * is held beside [rows] because a sweep can exist for a relay with no
-     * band yet.
-     */
+    /** One group of the card. [marks] sits beside [rows] because a sweep can exist before a band does. */
     private class Group(
         /** The stream the router wrote, or null for a pre-stream group. */
         val name: String?,
@@ -87,9 +68,8 @@ internal object SyncCoverageReport {
         val narrowedBy = LinkedHashSet<String>()
 
         /**
-         * Fold one leg's filter into what the group can publish. Equality is
-         * exact, including array order. `since`/`until`/`limit` never survive:
-         * they are one window's bounds, not the stream's.
+         * Fold one leg's filter into what the group can publish. Equality is exact, array order
+         * included; `since`/`until`/`limit` never survive, being one window's bounds.
          */
         fun fold(leg: JsonObject) {
             val incoming = JsonObject(leg.filterKeys { it != "since" && it != "until" && it != "limit" })
@@ -109,7 +89,7 @@ internal object SyncCoverageReport {
             filter = JsonObject(agreed)
         }
 
-        /** One relay's band, merged into any this group already holds for it; several legs of one stream can reach one relay. */
+        /** One relay's band, merged into any this group already holds for it. */
         fun band(
             relay: String,
             o: JsonObject,
@@ -131,7 +111,7 @@ internal object SyncCoverageReport {
             rows.merge(relay, row) { a, b -> a.mergedWith(b) }
         }
 
-        /** One relay's in-flight slice, merged the same way: the widest slice with the most recent advance. */
+        /** One relay's in-flight slice, merged the same way. */
         fun mark(
             relay: String,
             o: JsonObject,
@@ -147,14 +127,13 @@ internal object SyncCoverageReport {
         val max: Long,
         val complete: Boolean,
         val fullAt: Long,
-        // The part of [min]..[max] every kind in the filter has been walked over; see [narrowed].
+        // The part of [min]..[max] every kind in the filter has been walked over.
         val everyKindMin: Long,
         val everyKindMax: Long,
     ) {
         /**
-         * Two legs of one stream against the same relay, as one row. Outer
-         * edges union, `complete` ands, the every-kind window intersects and
-         * falls back to the outer edges when the legs share none.
+         * Two legs of one stream against one relay, as one row: outer edges union, `complete`
+         * ands, the every-kind window intersects and falls back to the outer edges.
          */
         fun mergedWith(other: Row): Row {
             val lo = maxOf(everyKindMin, other.everyKindMin)
@@ -181,9 +160,8 @@ internal object SyncCoverageReport {
     ): JsonObject? = build(parse(bandsJson), parse(sweepsJson), nowSeconds)
 
     /**
-     * Fold [SyncBands.snapshot] and [SweepState.snapshot] into the `data` of a
-     * `sync` section. Null when there is nothing to say: "does not mirror" and
-     * "has covered nothing" are different facts.
+     * Fold [SyncBands.snapshot] and [SweepState.snapshot] into the `data` of a `sync` section.
+     * Null when there is nothing to say: "does not mirror" and "has covered nothing" differ.
      */
     fun build(
         bandsDoc: JsonObject?,
@@ -194,15 +172,11 @@ internal object SyncCoverageReport {
         val sweeps = sweepsDoc ?: JsonObject(emptyMap())
         if (bands.isEmpty() && sweeps.isEmpty()) return null
 
-        // Insertion-ordered throughout, so the report can be diffed between
-        // rollups. Stream and shape ids carry a prefix so they cannot collide.
+        // Insertion-ordered so the report diffs between rollups; the prefix keeps stream and
+        // shape ids from colliding.
         val groups = LinkedHashMap<String, Group>()
 
-        /**
-         * The group a flat, pre-stream key belongs to, by the filter's shape.
-         * Only the shape is cached, never the parsed filter, and null is
-         * cached as null.
-         */
+        /** The group a flat, pre-stream key belongs to, by the filter's shape; null is cached too. */
         val shapeCache = HashMap<String, String?>()
 
         fun preStream(filterJson: String): Group? {
@@ -222,8 +196,7 @@ internal object SyncCoverageReport {
 
         for ((streamOrFlatKey, value) in bands) {
             val o = value as? JsonObject ?: continue
-            // A pre-stream entry is the band itself; a stream is filters all
-            // the way down. A filter can never be named `min`.
+            // A pre-stream entry is the band itself; a filter can never be named `min`.
             if (o["min"] != null) {
                 val (rawRelay, filterJson) = split(streamOrFlatKey, ' ') ?: continue
                 preStream(filterJson)?.band(canonicalRelay(rawRelay), o)
@@ -233,12 +206,10 @@ internal object SyncCoverageReport {
             for ((filterJson, byRelay) in o) {
                 val relays = byRelay as? JsonObject ?: continue
                 if (relays.isEmpty()) continue
-                // Parsed once per distinct filter, which the nesting makes once per key.
                 val parsed = parse(filterJson) ?: continue
                 group.fold(parsed)
                 for ((rawRelay, band) in relays) {
-                    // The same spelling everywhere in the document; applied to
-                    // both inputs and the peer map, so it cannot split a pair.
+                    // One spelling for both inputs and the peer map, so it cannot split a pair.
                     group.band(canonicalRelay(rawRelay), band as? JsonObject ?: continue)
                 }
             }
@@ -259,8 +230,7 @@ internal object SyncCoverageReport {
             for ((filterJson, byRelay) in o) {
                 val relays = byRelay as? JsonObject ?: continue
                 if (relays.isEmpty()) continue
-                // A stream sweeping its first leg has no band yet, so its
-                // filter is published from the cursor.
+                // A stream on its first sweep has no band yet, so its filter comes from the cursor.
                 parse(filterJson)?.let { group.fold(it) }
                 for ((rawRelay, mark) in relays) {
                     group.mark(canonicalRelay(rawRelay), mark as? JsonObject ?: continue)
@@ -268,8 +238,7 @@ internal object SyncCoverageReport {
             }
         }
 
-        // The frame every row is read against: as deep as anything here
-        // reaches, since these filters carry no `since` to measure against.
+        // The frame every row is read against: as deep as anything here reaches.
         var from = Long.MAX_VALUE
         for (group in groups.values) {
             for (r in group.rows.values) if (r.min < from) from = r.min
@@ -279,17 +248,14 @@ internal object SyncCoverageReport {
             }
         }
         if (from == Long.MAX_VALUE) return null
-        // The frame must not invert: `created_at` is author-signed and a band
-        // can sit ahead of now, and a negative span is a division every
-        // drawing multiplies by.
+        // `created_at` is author-signed, so a band can sit ahead of now; the frame must not invert.
         if (from > nowSeconds) from = nowSeconds
 
         val published = groups.values.filter { it.rows.isNotEmpty() || it.marks.isNotEmpty() }
         return buildJsonObject {
             put("from", from)
             put("to", nowSeconds)
-            // Distinct across streams: summing the streams' own counts would
-            // count a relay once per stream that walked it.
+            // Distinct across streams, or a relay counts once per stream that walked it.
             val everyRelay = published.flatMap { it.rows.keys + it.marks.keys }.distinct()
             put("relays", everyRelay.size)
             put("hosts", everyRelay.mapNotNull { it.substringAfter("://").substringBefore("/").ifEmpty { null } }.distinct().size)
@@ -301,9 +267,8 @@ internal object SyncCoverageReport {
     }
 
     /**
-     * Two sweep cursors on one relay, as the one slice they jointly cover. A
-     * cursor missing an edge loses to one that has both rather than poisoning
-     * the pair.
+     * Two sweep cursors on one relay, as the one slice they jointly cover. A cursor missing an
+     * edge loses to one that has both rather than poisoning the pair.
      */
     private fun widest(
         a: JsonObject,
@@ -325,7 +290,7 @@ internal object SyncCoverageReport {
         }
     }
 
-    /** A cursor's span, or null when either edge is unreadable. The one definition the `sweeping` count and the row's `sweep` share. */
+    /** A cursor's span, or null when either edge is unreadable; `sweeping` and the row's `sweep` share it. */
     private fun span(m: JsonObject): Pair<Long, Long>? {
         val downTo = m["downTo"]?.jsonPrimitive?.longOrNull ?: return null
         val upTo = m["upTo"]?.jsonPrimitive?.longOrNull ?: return null
@@ -338,43 +303,36 @@ internal object SyncCoverageReport {
     ): JsonObject {
         val rows = group.rows
         val marks = group.marks
-        // Deepest first; a relay with a sweep but no band sorts last. The key
-        // is read into a pair first because `sortedBy` calls its selector on
-        // every comparison.
+        // Deepest first; a relay with a sweep but no band sorts last.
         val relays =
             (rows.keys + marks.keys)
                 .map { it to (rows[it]?.min ?: Long.MAX_VALUE) }
                 .sortedBy { it.second }
                 .map { it.first }
-        // Distinct authorities beside `relays`, not instead of it: the gap is
-        // the disclosure of url inflation the alias fold has not yet decided.
+        // Beside `relays`, not instead of it: the gap is the url inflation the fold has not decided.
         val hosts = relays.mapNotNull { it.substringAfter("://").substringBefore("/").ifEmpty { null } }.distinct().size
         return buildJsonObject {
             group.name?.let { put("name", it) }
             // Said rather than left to be inferred from a missing member.
             if (group.name == null) put("unnamed", true)
-            // Varying members are dropped even when every leg agrees on them:
-            // a discovery filter's `authors` runs to thousands of keys. Their
-            // names survive in `narrowedBy`.
+            // Varying members are dropped even when every leg agrees on them: a discovery
+            // filter's `authors` runs to thousands of keys.
             group.filter?.let { put("filter", JsonObject(it.filterKeys { m -> !varies(m) })) }
             val varying = LinkedHashSet(group.narrowedBy)
             group.filter?.keys?.forEach { if (varies(it)) varying += it }
             if (varying.isNotEmpty()) {
                 putJsonArray("narrowedBy") { for (m in varying) add(m) }
-                // Against `rows`, the band-bearing relays, not `relays`, which
-                // also counts cursors: `legs > rows.size` is exactly "some
-                // relay was reached more than once".
+                // Against `rows`, not `relays`, which also counts cursors: `legs > rows.size` is
+                // exactly "some relay was reached more than once".
                 if (group.legs > rows.size) put("legs", group.legs)
             }
             put("relays", relays.size)
             put("hosts", hosts)
-            // Settled against still open, not negentropy against REQ: a
-            // drained paged walk earns `complete` too. The key keeps its
-            // published name.
+            // Settled against still open, not negentropy against REQ: a drained paged walk
+            // earns `complete` too.
             put("reconciled", rows.values.count { it.complete })
             put("paged", rows.values.count { !it.complete })
-            // Only the cursors the rows below will describe; `marks` tolerates
-            // one with a missing edge.
+            // Only the cursors the rows below will describe.
             put("sweeping", marks.values.count { span(it) != null })
             putJsonArray("rows") {
                 for (relay in relays) {
@@ -417,10 +375,8 @@ internal object SyncCoverageReport {
     }
 
     /**
-     * The intersection of a band's per-kind `spans`: the widest window inside
-     * which no kind is missing. The outer `min`/`max` over-claim, since one
-     * long-lived kind vouches for a short-lived one. Falls back to the outer
-     * span when there are no per-kind spans.
+     * The intersection of a band's per-kind `spans`: the widest window inside which no kind is
+     * missing, since the outer edges let one long-lived kind vouch for a short-lived one.
      */
     private fun narrowed(
         band: JsonObject,
@@ -445,9 +401,8 @@ internal object SyncCoverageReport {
     }
 
     /**
-     * A filter reduced to the key a pre-stream group is gathered under: time
-     * bounds dropped as [SweepState.keyFor] drops them, members ordered, and a
-     * varying member keeping its name but not its value.
+     * A filter reduced to the key a pre-stream group is gathered under: time bounds dropped,
+     * members ordered, and a varying member keeping its name but not its value.
      */
     private fun shapeOf(filter: JsonObject): String =
         filter
@@ -476,9 +431,8 @@ internal object SyncCoverageReport {
     }
 
     /**
-     * A corrupt input costs this card, not the rollup. Catches `Exception`,
-     * not `Throwable`: an `OutOfMemoryError` on a large file belongs to the
-     * rollup loop, which logs it and keeps serving the previous document.
+     * A corrupt input costs this card, not the rollup. `Exception`, not `Throwable`: an
+     * `OutOfMemoryError` belongs to the rollup loop, which keeps serving the previous document.
      */
     private fun parse(text: String?): JsonObject? {
         if (text.isNullOrBlank()) return null

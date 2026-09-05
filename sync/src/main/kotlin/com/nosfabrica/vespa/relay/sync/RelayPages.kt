@@ -30,17 +30,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What the relay sent when the walk says it sent nothing: a sample of the
- * events that crossed the socket during one ask, taken on the connection
- * listener, which is the only place upstream of the filter match that
- * discards them (issue 187).
- *
- * The listener is on the hottest path in the process, so it is armed per walk
- * rather than always on: disarmed, the work per message is one `isEmpty`.
- * One sampler per relay at a time, because several streams share one socket
- * and a second walk's sample would be the first walk's events. Subscription
- * ids are reported rather than filtered on: the walk's own id is not knowable
- * here, and a page carrying another subscription's events is itself the answer.
+ * What the relay sent when the walk says it sent nothing: a sample of the events that crossed
+ * the socket during one ask, taken on the connection listener, upstream of the filter match.
+ * Armed per walk, one sampler per relay at a time, because several streams share one socket.
  */
 internal interface RelayPages {
     /** Starts sampling [url], or returns null when another walk already is. */
@@ -50,35 +42,27 @@ internal interface RelayPages {
         asked: Filter,
     ): Sample?
 
-    /**
-     * Gives the slot back. Called from a `finally`, always: a walk that throws
-     * must not leave its relay unsampleable. Separate from [render] because
-     * the slot belongs to the ask and the sentence is wanted only on the path
-     * that refuses.
-     */
+    /** Gives the slot back, always from a `finally`, so a throwing walk cannot leave its relay unsampleable. */
     fun free(sample: Sample?)
 
     /**
-     * The sentence, against the filter that was asked. Null for a walk that
-     * never held the slot or saw nothing: "sent 0 events" would read as a
-     * finding where there is none.
+     * The sentence, against the filter that was asked. Null for a walk that never held the slot
+     * or saw nothing: "sent 0 events" would read as a finding where there is none.
      */
     fun render(
         sample: Sample?,
-        /** What the walk itself counted; the "quartz counted none" reading is only true at zero. */
+        /** What the walk itself counted. */
         downloaded: Int,
     ): String?
 
     /**
-     * One walk's worth of what crossed the socket. Written on the relay's
-     * dispatcher thread and read by the worker after [free], hence the lock;
-     * at most [MAX_ROWS] appends, so it is never contended for long.
+     * One walk's worth of what crossed the socket. Written on the relay's dispatcher thread
+     * and read by the worker after [free], hence the lock.
      */
     class Sample(
         val url: NormalizedRelayUrl,
         private val asked: Filter,
     ) {
-        /** A set, once: every event of an armed walk is classified against it. */
         private val kinds = asked.kinds?.toSet()
         private val rows = ArrayList<Row>(MAX_ROWS)
         private val subs = LinkedHashSet<String>()
@@ -93,7 +77,7 @@ internal interface RelayPages {
             val createdAt: Long,
         )
 
-        /** Counted on arrival, kept for display only up to [MAX_ROWS]: the rows are a sample, the numbers are not. */
+        /** Counted on arrival; only the first [MAX_ROWS] are kept for display. */
         @Synchronized
         fun add(
             subId: String,
@@ -108,11 +92,7 @@ internal interface RelayPages {
             if (rows.size < MAX_ROWS) rows += Row(subId, kind, createdAt)
         }
 
-        /**
-         * The sentence, or null when nothing arrived. Everything in it is a
-         * comparison against [asked]: the question is which part of the ask
-         * the relay failed to honour, not what it sent.
-         */
+        /** The sentence, or null when nothing arrived. Everything in it is a comparison against [asked]. */
         @Synchronized
         fun render(downloaded: Int): String? {
             if (seen == 0) return null
@@ -138,7 +118,7 @@ internal interface RelayPages {
     }
 
     companion object {
-        /** Events kept per walk: enough to see a page's shape, few enough that a firehose costs a counter after the fifth. */
+        /** Events kept per walk: enough to see a page's shape. */
         const val MAX_ROWS = 5
 
         /** Samples nothing: the probes, and any pool built without a client to listen on. */
@@ -159,15 +139,12 @@ internal interface RelayPages {
     }
 }
 
-/**
- * A connection listener on the shared client, registered on construction and
- * unregistered on [close], as [ClientRelayComplaints] is.
- */
+/** A connection listener on the shared client, registered on construction and unregistered on [close]. */
 internal class ClientRelayPages(
     private val client: INostrClient,
 ) : RelayPages,
     AutoCloseable {
-    /** The armed walks. Empty is the ordinary state, and an empty map is one volatile read per message. */
+    /** The armed walks; empty is the ordinary state. */
     private val armed = ConcurrentHashMap<NormalizedRelayUrl, RelayPages.Sample>()
 
     override fun arm(
@@ -195,7 +172,7 @@ internal class ClientRelayPages(
                 msgStr: String,
                 msg: Message,
             ) {
-                // Both guards before any work: this runs for every event of every socket of both planes.
+                // Both guards before any work: this runs for every event of every socket.
                 if (armed.isEmpty()) return
                 if (msg !is EventMessage) return
                 armed[relay.url]?.add(msg.subId, msg.event.kind, msg.event.createdAt)

@@ -31,17 +31,14 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The last thing each relay said when it would not answer: the `CLOSED` or
- * `NOTICE` sentence `PagedFetchResult` has no room for. Read by [VisitAborts]
- * to name a cause and by [FilterWidths] to learn a width. A NOTICE counts as
- * much as a CLOSED: a relay refusing a wide filter often answers with a bare
- * NOTICE and never EOSEs, so the sentence is the refusal's only trace.
+ * The last thing each relay said when it would not answer: the `CLOSED` or `NOTICE` sentence
+ * `PagedFetchResult` has no room for. A NOTICE counts as a CLOSED, since a relay refusing a
+ * wide filter often answers with a bare NOTICE and never EOSEs.
  */
 internal interface RelayComplaints {
     /**
-     * The last thing [url] said at or after [sinceMs], else null. One entry
-     * per relay is kept, so callers pass the instant their own ask went out;
-     * anything older is another ask's answer.
+     * The last thing [url] said at or after [sinceMs], else null. One entry per relay is
+     * kept, so callers pass the instant their own ask went out.
      */
     fun since(
         url: NormalizedRelayUrl,
@@ -49,10 +46,8 @@ internal interface RelayComplaints {
     ): String?
 
     /**
-     * [since], with a moment for the sentence to arrive. Quartz dispatches a
-     * `CLOSED` to subscription listeners before connection listeners, so a
-     * plain [since] right after `fetchAllPages` returns can be a hop too
-     * early. Paid only on a refusal; the fast path is one map read.
+     * [since], with a moment for the sentence to arrive: quartz dispatches a `CLOSED` to
+     * subscription listeners before connection listeners, so a plain read can be a hop early.
      */
     suspend fun awaitSince(
         url: NormalizedRelayUrl,
@@ -68,7 +63,7 @@ internal interface RelayComplaints {
     }
 
     companion object {
-        /** How long [awaitSince] waits for a sentence that has not landed: a scheduling hop, not a user-facing wait. */
+        /** How long [awaitSince] waits for a sentence that has not landed. */
         const val GRACE_MS = 250L
 
         /** How often [awaitSince] checks inside that grace. */
@@ -86,9 +81,8 @@ internal interface RelayComplaints {
 }
 
 /**
- * A connection listener on the shared client, registered on construction and
- * unregistered on [close]. One entry per relay, overwritten: this is not a
- * log, and its reader already knows which relay and which instant it wants.
+ * A connection listener on the shared client, registered on construction and unregistered
+ * on [close]. One entry per relay, overwritten: this is not a log.
  */
 internal class ClientRelayComplaints(
     private val client: INostrClient,
@@ -131,9 +125,8 @@ internal class ClientRelayComplaints(
     ) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        // Bounded, because this listens on the client both planes share and a probe pass
-        // dials every url discovery ever named. Past the bound a known relay stays fresh
-        // and a new one is dropped: the repeat complainers are the ones anything reads.
+        // Bounded, because a probe pass dials every url discovery ever named through this
+        // client. Past the bound a known relay stays fresh and a new one is dropped.
         if (said.size >= MAX_RELAYS && !said.containsKey(url)) return
         said[url] = Said(trimmed.take(MAX_SAID), now())
     }
@@ -148,10 +141,10 @@ internal class ClientRelayComplaints(
     }
 
     companion object {
-        /** How much of a relay's sentence is kept: every refusal seen fits, and a page of prose does not. */
+        /** How much of a relay's sentence is kept: a refusal fits, a page of prose does not. */
         const val MAX_SAID = 200
 
-        /** How many relays are remembered at all: above any roster, below a discovery sweep. See [remember]. */
+        /** How many relays are remembered: above any roster, below a discovery sweep. */
         const val MAX_RELAYS = 4_096
     }
 }

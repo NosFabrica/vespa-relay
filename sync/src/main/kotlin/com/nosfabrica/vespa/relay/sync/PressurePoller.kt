@@ -32,11 +32,9 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * The sync process's half of the clients-first rule: the relay serves its
- * mean read latency on `/pressure`, and this poller adopts it into the
- * [ServingPressure] ingest consults. After [MISSES_BEFORE_RESET] consecutive
- * failures the pressure resets to none and the log says so once, whether or
- * not the feed ever connected; reconnection is announced too.
+ * The sync process's half of the clients-first rule: adopts the relay's mean read latency from
+ * `/pressure` into the [ServingPressure] ingest consults. After [MISSES_BEFORE_RESET] misses
+ * the pressure resets to none and the log says so once, whether or not the feed ever connected.
  */
 class PressurePoller(
     private val url: String,
@@ -131,7 +129,7 @@ class PressurePoller(
     }
 
     companion object {
-        /** Often enough that a latency spike reaches ingest within a batch or two, rare enough to be no load. */
+        /** Often enough that a latency spike reaches ingest within a batch or two. */
         const val POLL_INTERVAL_MS = 5_000L
 
         /** Three misses is a relay gone or a wrong url, not one dropped packet. */

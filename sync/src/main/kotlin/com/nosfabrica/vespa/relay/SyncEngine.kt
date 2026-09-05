@@ -74,15 +74,9 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
 /**
- * The router: a strfry-style mirror that moves events between each configured
- * upstream and the served relay's store.
- *
- * Down streams ride [VisitPool], which catches up on history, audits the past
- * and holds a live tail per relay; a dynamic stream builds its roster from the
- * monitor's kind-30166 verdicts. Up streams are [UpstreamPush]. This class
- * owns the shared plumbing (the websocket client, the NIP-66 monitor, NIP-42
- * auth, the health and stats lines) and hands the work to those collaborators.
- * [close] stops touching the store before the store closes.
+ * The router: a strfry-style mirror that moves events between each configured upstream and
+ * the served relay's store. Down streams ride [VisitPool], up streams are [UpstreamPush]; this
+ * class owns the shared plumbing, and [close] stops touching the store before the store closes.
  */
 class SyncEngine(
     private val store: IEventStore,
@@ -128,7 +122,7 @@ class SyncEngine(
     private val upUpstreams = config.upUpstreams()
     private val discoveryStreams = config.discoveryStreams()
 
-    /** The streams on the pool, retracting ones included. See [VisitPool.ridesThePool]. */
+    /** The streams on the pool, retracting ones included. */
     private val visitStreams = config.streams.filter { VisitPool.ridesThePool(it) }
 
     /** Relays we hold a live subscription on; a discovery sync must not drop their sockets. */
@@ -136,14 +130,14 @@ class SyncEngine(
 
     private val phases = StreamPhases()
 
-    /** The jobs that are not streams. See [Processors] and [registerProcessors]. */
+    /** The jobs that are not streams. */
     private val processors = Processors()
 
     /** Repairs discovered by ingest, drained per relay at the end of its visit. Drops rather than backpressures. */
     private val healQueue = HealQueue()
     private val writeCaps = WriteCapability()
 
-    /** Whether ingest has to carry per-event origins at all. See RefusalSink.tracksOrigins. */
+    /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
     private val ingest = IngestPipeline(store, IngestTuning(config.ingestConcurrency, config.ingestBatch), audit, servingPressure, scope, knownIds, newestVersions, refusals)
@@ -152,13 +146,13 @@ class SyncEngine(
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */
     private val complaints = ClientRelayComplaints(client)
 
-    /** What a refused ask carried anyway. A second listener because only this one needs arming to stay off the hot path. */
+    /** What a refused ask carried anyway. Its own listener, because it needs arming to stay off the hot path. */
     private val pages = ClientRelayPages(client)
 
     /** Per-relay kind caps, one instance for the pool and the pager alike. */
     private val widths = FilterWidths()
 
-    /** The window chunker. A peer's cap arrives parsed through quartz's `NegentropySyncResult.peerCap`. */
+    /** The window chunker. */
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
@@ -173,7 +167,7 @@ class SyncEngine(
             complaints,
         )
 
-    /** One socket refcount across every stream and probe pass. See [RelaySockets]. */
+    /** One socket refcount across every stream and probe pass. */
     private val sockets = RelaySockets(client, pinnedUrls)
 
     /** The monitor plane, on its own clock, writing the verdicts the roster selects on. */
@@ -189,7 +183,7 @@ class SyncEngine(
             scope = scope,
         )
 
-    /** The deleteMissing comparison for the pool's retracting asks. See [RetractionAudit]. */
+    /** The deleteMissing comparison for the pool's retracting asks. */
     private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
 
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
@@ -232,9 +226,8 @@ class SyncEngine(
     fun start(): SyncEngine {
         if (visitStreams.isEmpty() && upUpstreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
-            // A monitor-only node is a whole deployment. It needs ingest
-            // draining (probes submit into a bounded channel), a connected
-            // client (subscribe sends nothing before connect) and the document.
+            // A monitor-only node still needs ingest draining, a connected client and the
+            // progress document; each of those fails silently when skipped.
             ingest.start()
             registerProcessors()
             peers.announceTor()
@@ -257,15 +250,13 @@ class SyncEngine(
 
         peers.connect()
 
-        // Registered before anything is launched, so a configured stream is in
-        // the report from the first tick and silence never reads as unconfigured.
+        // Registered before anything is launched, so silence never reads as unconfigured.
         visitStreams.forEach { phases.register(it.name) }
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
         visitPool.start()
 
-        // Starts only where it has sources. See [MonitorEngine.hasSources].
         monitor.start()
 
         // Its own loop: the phase report below is skipped for a push-only router.
@@ -298,10 +289,8 @@ class SyncEngine(
     }
 
     /**
-     * Wires the non-stream jobs to the counters they already keep, as
-     * suppliers over live atomics. A job that is not running is not registered
-     * at all: a zeroed row would claim it exists. The probe passes and the
-     * monitor's rows register themselves.
+     * Wires the non-stream jobs to the counters they already keep. A job that is not running
+     * is not registered at all: a zeroed row would claim it exists.
      */
     private fun registerProcessors() {
         processors.of(INGEST_PROCESSOR).let { p ->
@@ -315,9 +304,7 @@ class SyncEngine(
                     Processors.Count("rejected", ingest.rejected.get()),
                     // The one counter that means data loss: verified events the store could not write.
                     Processors.Count("lostToStore", ingest.lostToStore.get()),
-                    // inBatch against the configured worker count separates a
-                    // backpressured queue from a stopped one; a worker that
-                    // exited shows as the gap to workersRunning.
+                    // inBatch against workers separates a backpressured queue from a stopped one.
                     Processors.Count("inBatch", ingest.inBatch().toLong()),
                     Processors.Count("workers", ingest.workerCount.toLong()),
                     Processors.Count("oldestBatchSec", ingest.oldestBatchMs() / 1000),
@@ -347,9 +334,8 @@ class SyncEngine(
     }
 
     /**
-     * Where the constraint is, decided once for both the health line and the
-     * document. A full queue is `ingest` only while it drains; a worker held
-     * inside one batch pass for minutes is `wedged`. See [IngestPipeline.wedged].
+     * Where the constraint is, read once for both the health line and the document. A full
+     * queue is `ingest` only while it drains; a worker held inside one batch for minutes is `wedged`.
      */
     private fun bottleneckOf(
         depth: Int,
@@ -364,21 +350,8 @@ class SyncEngine(
         }
 
     /**
-     * Every ingest stage the store has booked, busiest first, with the SHAPE of
-     * each one's time beside its total.
-     *
-     * ONE READ, not two. This used to be two: `stageMs` came from parsing
-     * `IngestStats.dump()`'s String — a format the store never promised, so
-     * the relay pinned it with a test of its own — and `stageDetail` came from
-     * `IngestStats.snapshot()` beside it. Two reads of a live counter describe
-     * two instants, so a row's `ms` could disagree with the `calls` published
-     * next to it; and the parser lost precision on the way through `%.2fs`,
-     * which for a stage under 5 ms rounded to nothing at all.
-     *
-     * `snapshot()` is now the structured read the parser was standing in for,
-     * so both members come off one map at one instant and the totals are exact
-     * nanoseconds. Sorted here rather than by the store: the ordering is this
-     * page's presentation choice, and `snapshot()` deliberately returns a map.
+     * Every ingest stage the store has booked, busiest first, with the shape of each one's
+     * time beside its total. One `snapshot()` read, so a row's members describe one instant.
      */
     private fun stageSplit(): List<SyncProgress.StageDetail> =
         IngestStats
@@ -393,7 +366,7 @@ class SyncEngine(
                 )
             }.sortedByDescending { it.ms }
 
-    /** The latest health, for the progress tick to publish. See [bottleneckOf]. */
+    /** The latest health, for the progress tick to publish. */
     @Volatile
     private var health: SyncProgress.Health? = null
 
@@ -439,8 +412,8 @@ class SyncEngine(
             val maxMb = rt.maxMemory() / 1_048_576
             val heapPct = if (maxMb > 0) usedMb * 100 / maxMb else 0
             val events = ingest.accepted.get() + ingest.rejected.get()
-            // `rate` is what came out of a batch and `arriving` what went in;
-            // only the pair reads a full queue at 0 ev/s.
+            // `rate` is what left a batch and `arriving` what went in; only the pair tells a
+            // full queue at 0 ev/s from a fan-out gone quiet.
             val submitted = ingest.submitted.get()
             val now = System.currentTimeMillis()
             val windowMs = (now - lastAt).coerceAtLeast(1)
@@ -454,7 +427,6 @@ class SyncEngine(
             val constraint = bottleneckOf(depth, rate)
             val open = client.connectedRelaysFlow().value.size
             val load = peers.socketLoad()
-            // Read once, before the document is built, so every stage member describes one instant.
             val stages = stageSplit()
             health =
                 SyncProgress.Health(
@@ -470,8 +442,7 @@ class SyncEngine(
                     servingMs = pressure?.meanMs(),
                     // On this clock rather than the progress tick: the stage split explains `bottleneck`.
                     stageDetail = stages,
-                    // Present tense: what holds the store's write lock now. Null is
-                    // the common case and means nothing does.
+                    // What holds the store's write lock now; null means nothing does.
                     lockHeld =
                         IngestStats.heldNow()?.let { held ->
                             SyncProgress.LockHeld(
@@ -480,7 +451,6 @@ class SyncEngine(
                                 detail = held.detail,
                             )
                         },
-                    // Only a VespaEventStore has a feed; the cast is the feature detection.
                     feed = (store as? VespaEventStore)?.runCatching { feedStatus() }?.getOrNull(),
                 )
             System.err.println(
@@ -542,7 +512,7 @@ class SyncEngine(
                         }
                     ),
             )
-            // On the health clock so `wedged` above and the call it is stuck in read together. See [StoreCalls.warnSlow].
+            // On the health clock so `wedged` above and the call it is stuck in read together.
             storeCalls.warnSlow().forEach { System.err.println(it) }
             monitor.heldOutDead().takeIf { it > 0 }?.let { dead ->
                 System.err.println(
@@ -559,7 +529,7 @@ class SyncEngine(
                 "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                     ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
                     (if (upUpstreams.isNotEmpty()) ", pushed ${upPush.pushed.get()} up" else "") +
-                    // Discovery connects relays outside every upstream list, so connected is reported beside pinned, not over it.
+                    // Discovery connects relays outside every upstream list, so connected sits beside pinned.
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
                     (if (discoveryStreams.isNotEmpty()) " + discovery" else "") +
                     (if (refusedIds.enabled) "; ${refusedIds.summary()}" else "") +
@@ -599,10 +569,10 @@ class SyncEngine(
         )
     }
 
-    /** The pool's roster as the status page's per-relay table needs it. A method because the roster is rebuilt on its own clock. */
+    /** The pool's current roster, as the status page's per-relay table needs it. */
     fun primeUnits(): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnits()
 
-    /** The monitor plane's status document. See [MonitorEngine.status]. */
+    /** The monitor plane's status document. */
     fun monitorStatus(
         everySeconds: Long,
         relayUrl: String?,
@@ -610,8 +580,6 @@ class SyncEngine(
 
     companion object {
         // Published names in the progress document; a rename breaks readers charting them.
-
-        /** The rotating pool. See [VisitPool]. */
         const val VISITS_PROCESSOR = "visits"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"

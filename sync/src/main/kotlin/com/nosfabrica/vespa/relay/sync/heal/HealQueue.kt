@@ -38,9 +38,8 @@ enum class HealMode {
 }
 
 /**
- * What needs repairing at one relay. The key is an address or an author,
- * never a resolved event: the healer finds the thing to push at drain time,
- * so the sweep pays one map insert and whatever is current then goes out.
+ * What needs repairing at one relay. The key is an address or an author, never a resolved
+ * event: the healer finds the thing to push at drain time.
  */
 data class HealKey(
     val mode: HealMode,
@@ -72,9 +71,8 @@ data class HealKey(
 }
 
 /**
- * The stale copy that triggered the repair, so a permanent refusal can
- * suppress the exact id the relay is serving. Overwritten on coalesce: the
- * newest stale copy is the one the relay is still handing out.
+ * The stale copy that triggered the repair, so a permanent refusal can suppress the exact id
+ * the relay is serving. Overwritten on coalesce with the newest.
  */
 data class StaleRef(
     val id: String,
@@ -82,10 +80,9 @@ data class StaleRef(
 )
 
 /**
- * Repairs the reconcile discovered and left for the healer. Bounded,
- * coalescing on (relay, key), and it drops rather than blocks: a dropped heal
- * is rediscovered the next time the relay offers the stale copy, whereas
- * blocking the sweep would trade the thing being fixed for the fix.
+ * Repairs the reconcile discovered and left for the healer. Bounded, coalescing on
+ * (relay, key), and it drops rather than blocks: a dropped heal is rediscovered on the next
+ * offer of the stale copy.
  */
 class HealQueue(
     private val perRelayLimit: Int = DEFAULT_PER_RELAY,
@@ -102,8 +99,8 @@ class HealQueue(
     fun sizeFor(url: NormalizedRelayUrl): Int = byRelay[url]?.size ?: 0
 
     /**
-     * Records that [url] serves a stale [stale] for [key]. False when the
-     * entry was dropped for want of room; never retried, never blocking.
+     * Records that [url] serves a stale [stale] for [key]. False when the entry was dropped
+     * for want of room; never blocking.
      */
     fun offer(
         url: NormalizedRelayUrl,
@@ -126,11 +123,8 @@ class HealQueue(
     }
 
     /**
-     * Takes up to [limit] repairs queued for [url], leaving the remainder for
-     * the next pass. Entries are removed one at a time from the live map,
-     * never by swapping the map out, so each entry is counted by the thread
-     * that inserted it and uncounted by the thread that took it. The emptied
-     * per-relay map stays in place for the same reason.
+     * Takes up to [limit] repairs queued for [url], leaving the remainder. Entries are removed
+     * one at a time from the live map, never by swapping it out, so [total] stays exact.
      */
     fun drain(
         url: NormalizedRelayUrl,
@@ -155,10 +149,10 @@ class HealQueue(
     }
 
     companion object {
-        /** One relay's worth; a relay stale on more addresses than this will not finish in one pass anyway. */
+        /** One relay's worth; more than this will not finish in one pass anyway. */
         const val DEFAULT_PER_RELAY = 2_000
 
-        /** Across every relay; the drop path keeps the queue from being why the process runs out of room. */
+        /** Across every relay, so the queue is never why the process runs out of room. */
         const val DEFAULT_TOTAL = 200_000
     }
 }

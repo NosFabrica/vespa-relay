@@ -32,17 +32,14 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * The last [MAX_SAMPLES] readings of the process gauges, one sample per rollup.
- *
- * The series lives in the served document and is carried across rollups by
- * the merge and across restarts by the stats file; nothing else holds it.
+ * The last [MAX_SAMPLES] readings of the process gauges, one sample per rollup. The series
+ * lives in the served document, carried across rollups by the merge and across restarts by
+ * the stats file; nothing else holds it.
  */
 internal object GaugeSeries {
     /**
-     * The previous series with this tick's sample appended, or null when there
-     * is nothing to sample and no history to keep.
-     *
-     * `at` is published beside the values because the cadence is configurable
+     * The previous series with this tick's sample appended, or null when there is nothing to
+     * sample and no history to keep. `at` is published because the cadence is configurable
      * and a restart leaves a hole.
      */
     fun next(
@@ -52,8 +49,7 @@ internal object GaugeSeries {
         nowSeconds: Long,
     ): JsonObject? {
         val prior = previous?.get("series") as? JsonObject
-        // One sample per rollup: a document republished without a new reading
-        // has the same clock as the last sample and appends nothing.
+        // One sample per rollup: a republish without a new reading appends nothing.
         val lastAt = (prior?.get("at") as? JsonArray)?.lastOrNull()?.let { num(it) }
         if (lastAt != null && nowSeconds <= lastAt) return prior
         val sample =

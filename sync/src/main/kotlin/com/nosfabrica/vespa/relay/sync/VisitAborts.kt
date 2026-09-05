@@ -28,14 +28,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Why visits end early: one counter per [Reason], summing to `abortedVisits`,
- * and one log line per abort naming the relay, the stream, the ask, the
- * reason and what the relay said. Rows are published even at zero, so an
- * absent row cannot be read as a forgotten counter.
- *
- * A line is spoken once per (stream, relay, reason) and re-said no more than
- * every [resayAfterMs]. The dedup map stops growing at [MAX_SPOKEN], past
- * which aborts are still counted but no longer narrated.
+ * Why visits end early: one counter per [Reason], summing to `abortedVisits`, and one log line
+ * per abort naming the relay, the stream, the ask, the reason and what the relay said. A line
+ * is said once per (stream, relay, reason) and re-said no more than every [resayAfterMs].
  */
 internal class VisitAborts(
     /** How long before the same (stream, relay, reason) is worth a line again. */
@@ -44,10 +39,8 @@ internal class VisitAborts(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /**
-     * The ways a visit ends early, with the counter each is published under
-     * and the sentence it is said in. Five are quartz's own walk endings
-     * ([VisitPool.refusedOutright] decides which abort at all); three are the
-     * pool's. The counter names are a wire contract the glossary defines.
+     * The ways a visit ends early, with the counter each is published under and the sentence
+     * it is said in. The counter names are a wire contract.
      */
     enum class Reason(
         val count: String,
@@ -77,9 +70,8 @@ internal class VisitAborts(
         FAILED("abortedFailed", "the visit failed"),
 
         /**
-         * A hook of ours was parked in the full ingest queue when the walk gave
-         * up, so the ending quartz reported was manufactured on our side of the
-         * socket. Read beside the ingest row's `queued` against `capacity`.
+         * A hook of ours was parked in the full ingest queue when the walk gave up, so the
+         * ending quartz reported was manufactured on our side of the socket.
          */
         BACKPRESSURED("abortedBackpressured", "our own ingest queue held the socket — nothing the relay did", ours = true),
     }
@@ -87,11 +79,7 @@ internal class VisitAborts(
     private val counters = Reason.entries.associateWith { AtomicLong() }
     private val totalAborts = AtomicLong()
 
-    /**
-     * The last abort per (stream, relay), for the status table's per-row
-     * question, asked hours after the line scrolled away. Bounded by
-     * [MAX_SPOKEN] like the narration map beside it.
-     */
+    /** The last abort per (stream, relay), for the status table. Bounded by [MAX_SPOKEN]. */
     private val lastByUnit = ConcurrentHashMap<String, Last>()
 
     /** The last time this unit ended early, and what the relay said about it. */
@@ -108,10 +96,7 @@ internal class VisitAborts(
         url: NormalizedRelayUrl,
     ): Last? = lastByUnit[unitKey(stream, url)]
 
-    /**
-     * Forgets the unit's last abort when a visit comes back clean. The row is
-     * about where a pair stands now; the counters are the lifetime record.
-     */
+    /** Forgets the unit's last abort when a visit comes back clean; the row is where a pair stands now. */
     fun cleared(
         stream: String,
         url: NormalizedRelayUrl,
@@ -125,11 +110,7 @@ internal class VisitAborts(
     /** Every abort since boot, which the reason rows partition. */
     val total: Long get() = totalAborts.get()
 
-    /**
-     * Counts one abort and returns the line to print, or null when the line
-     * is rationed. The count always happens. A sentence rather than a boolean,
-     * so every abort line in this router reads the same way.
-     */
+    /** Counts one abort and returns the line to print, or null when it is rationed. The count always happens. */
     fun record(
         stream: String,
         url: NormalizedRelayUrl,
@@ -142,8 +123,7 @@ internal class VisitAborts(
         counters[reason]?.incrementAndGet()
         totalAborts.incrementAndGet()
         val at = now()
-        // Recorded before the narration gate: the gate rations lines, and the status row
-        // must not go blank because this abort fell inside a re-say window.
+        // Recorded before the narration gate, so a rationed line cannot blank the status row.
         val key = unitKey(stream, url)
         // A stall of ours neither writes the relay's row nor clears it.
         if (!reason.ours && (lastByUnit.containsKey(key) || lastByUnit.size < MAX_SPOKEN)) {
@@ -182,10 +162,7 @@ internal class VisitAborts(
     ) = "$stream ${url.url}"
 
     companion object {
-        /**
-         * Which reason a quartz walk ending is. Exhaustive rather than
-         * defaulting, so an ending quartz adds later must be decided.
-         */
+        /** Which reason a quartz walk ending is. Exhaustive, so a new quartz ending must be decided. */
         fun of(end: PagedFetchResult.End): Reason =
             when (end) {
                 PagedFetchResult.End.AUTH_REQUIRED -> Reason.AUTH_REQUIRED
@@ -198,14 +175,11 @@ internal class VisitAborts(
 
                 PagedFetchResult.End.UNPAGEABLE -> Reason.UNPAGEABLE
 
-                // Not refusals; see [VisitPool.refusedOutright]. Named so the `when` stays exhaustive.
+                // Not refusals; named so the `when` stays exhaustive.
                 PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> Reason.CLOSED
             }
 
-        /**
-         * The refused ask, short enough for a log line. Kinds are counted past
-         * [KINDS_LISTED] rather than listed: the width is the fact that matters.
-         */
+        /** The refused ask, short enough for a log line; past [KINDS_LISTED] kinds are counted, not listed. */
         fun asked(filter: Filter): String =
             buildList {
                 filter.kinds?.takeIf { it.isNotEmpty() }?.let {
@@ -219,10 +193,9 @@ internal class VisitAborts(
                 filter.until?.let { add("until $it") }
             }.joinToString(", ").ifEmpty { "everything" }
 
-        /** Above this many, the width is printed instead of the list; see [asked]. */
+        /** Above this many kinds, the width is printed instead of the list. */
         const val KINDS_LISTED = 8
 
-        /** Half an hour: a handful of lines a minute on a roster of hundreds, readable across a shift. */
         const val DEFAULT_RESAY_AFTER_MS = 30 * 60 * 1000L
 
         /** How many distinct (stream, relay, reason) triples are ever narrated. */

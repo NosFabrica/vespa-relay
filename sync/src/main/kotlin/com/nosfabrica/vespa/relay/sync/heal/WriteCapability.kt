@@ -24,12 +24,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Which relays will take our repairs, learned once per relay. A policy
- * refusal closes the relay at once; silence closes it only after
- * [strikeThreshold] unanswered publishes spread over at least
- * [MIN_DISTINCT_PASSES] drain passes, because one bad session must not close
- * a relay. Closed gates only the push; the refused-ids filter still
- * suppresses the relay's stale offers.
+ * Which relays will take our repairs, learned once per relay. A policy refusal closes the
+ * relay at once; silence closes it only after [strikeThreshold] unanswered publishes over at
+ * least [MIN_DISTINCT_PASSES] drain passes. Closed gates only the push.
  */
 class WriteCapability(
     private val strikeThreshold: Int = DEFAULT_STRIKES,
@@ -65,8 +62,7 @@ class WriteCapability(
     }
 
     /**
-     * The relay answered: clears any strikes and records the relay as probed.
-     * One `compute`, so a concurrent [strike] is not lost. A closed relay
+     * The relay answered: clears any strikes and records the relay as probed. A closed relay
      * stays closed.
      */
     fun succeeded(url: NormalizedRelayUrl) {
