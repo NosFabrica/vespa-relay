@@ -21,15 +21,12 @@
 package com.nosfabrica.vespa.relay.progress
 
 /**
- * The relays a stream has a worker on right now, named rather than counted.
- *
- * Only urls with a live worker: not the roster, not the queue. The list is
- * published whole, quietest first, and is bounded by the pool's worker count.
+ * The relays a stream has a worker on right now, named rather than counted: not the roster,
+ * not the queue. Published whole, quietest first.
  */
 class InFlight(
-    /** Every relay with a worker on it, quietest first. */
     val relays: List<Relay>,
-    /** How many more had a worker and are not named here. Zero from the pool. */
+    /** How many more had a worker and are not named here. */
     val omitted: Int,
 ) {
     /** One relay a worker is holding, and the clocks that say what it is doing with it. */
@@ -38,32 +35,26 @@ class InFlight(
         /** Since the rotation claimed it, which is before the guards and the wait for a slot. */
         val heldForSec: Long,
         /**
-         * Since it took a transfer slot, or null while it waits for one. The
-         * connect happens inside the slot, so a leg stuck on a handshake is
-         * transferring, and absent with a large [heldForSec] means the pool is full.
+         * Since it took a transfer slot, or null while it waits for one. The connect happens
+         * inside the slot, so a leg stuck on a handshake is transferring.
          */
         val transferringForSec: Long?,
         /** Events this leg has received off the wire, counted before ingest. */
         val events: Long,
-        /** Since the last event arrived, or since the claim if none did. The number that decides. */
+        /** Since the last event arrived, or since the claim if none did. */
         val quietForSec: Long,
-        /**
-         * What the leg is doing, as a sentence naming the job and then the
-         * transport. Null before a leg reaches a stage worth the word.
-         */
+        /** What the leg is doing, as a sentence. Null before a leg reaches a stage worth the word. */
         val stage: String? = null,
-        /** The owning stream, on the pool-wide list only; null where every row is one stream's. */
+        /** The owning stream, on the pool-wide list only. */
         val stream: String? = null,
         /**
-         * The pool workload this row is in (`live`, `catching-up`, `re-fetching`,
-         * `negentropy`), the word a reader may group by. Absent for a visit
-         * between jobs, which is still drawn, under its [stage].
+         * The pool workload this row is in (`live`, `catching-up`, `re-fetching`, `negentropy`),
+         * the word a reader may group by. Absent for a visit between jobs.
          */
         val pool: String? = null,
         /**
-         * How far back the leg has got, always the older edge: the paged cursor's
-         * `created_at`, or the `since` of the negentropy window being compared.
-         * Null in the guards, queued, or on a retraction pass.
+         * How far back the leg has got, always the older edge: the paged cursor's `created_at`,
+         * or the `since` of the negentropy window. Null in the guards, queued, or on a retraction.
          */
         val pagingUntil: Long? = null,
     )

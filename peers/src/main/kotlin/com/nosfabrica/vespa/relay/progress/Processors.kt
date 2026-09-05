@@ -30,54 +30,27 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The work this router does that is not a stream: the alias source, the
- * alias fold, the stability and fitness passes, the rotating pool, ingest,
- * the healer and the upstream push.
- *
- * Two kinds of job share one schema. A pass-shaped processor (fold, stability
- * gate, fitness) has a clock, a last run and a next one, with progress per
- * stream. A counter-shaped one (pool, ingest, healer, push) is always running
- * and has gauges. Both publish `phase` and `phaseForSec` like a stream, and
- * each fills in only the members it can honestly answer.
- *
- * Counters are read through a supplier at snapshot time rather than pushed:
- * they are live atomics owned by the component, and a hand-kept copy is how
- * a report comes to disagree with the thing it reports on.
+ * The work this router does that is not a stream: the probe passes, the rotating pool, ingest,
+ * the healer and the push. A pass-shaped processor has a clock and progress per stream; a
+ * counter-shaped one is always running and has gauges read live through a supplier at snapshot time.
  */
 class Processors {
-    /**
-     * How far one pass got over one stream's candidate set. Per stream because
-     * two streams discover different corners of the network and summing them
-     * would double-count every shared url.
-     */
+    /** How far one pass got over one stream's candidate set. Per stream, since streams share urls. */
     class Work(
         val stream: String,
-        /** Urls that stream submitted, before anything was decided. The code's own word. */
+        /** Urls that stream submitted, before anything was decided. */
         val candidates: Int,
-        /**
-         * Of those, how many arrived with no verdict: the pass's subject and
-         * the denominator the card counts against. Null on a pass that does
-         * not report it; a zero would claim nothing arrived undecided.
-         */
+        /** Of those, how many arrived with no verdict: the denominator. Null on a pass that does not report it. */
         val newUrls: Int? = null,
         /**
-         * Of those, how many a fold has taken out of the fan-out. First in
-         * the partition: a folded url is never measured for stability. Null,
-         * with the two below, on a pass that does not measure it; absent is
-         * "does not answer", zero is "answered none".
+         * Of those, how many a fold has taken out of the fan-out. Null, with the two below, on a
+         * pass that does not measure it: absent is "does not answer", zero is "answered none".
          */
         val foldedAway: Int? = null,
-        /**
-         * The two standing verdicts across the whole candidate set, including
-         * those read back from the store at boot. [decided] counts what this
-         * pass learned.
-         */
+        /** The two standing verdicts across the whole candidate set, including those read back at boot. */
         val consistent: Int? = null,
         val inconsistent: Int? = null,
-        /**
-         * How many still have no verdict after this pass: the progress number.
-         * Not the complement of [dialled], which counts what this pass spent.
-         */
+        /** How many still have no verdict after this pass. Not the complement of [dialled]. */
         val unmeasured: Int,
         /** Dials this pass spent: fingerprints for the fold, paired walks for the stability gate. */
         val dialled: Int,
@@ -89,41 +62,25 @@ class Processors {
         val undecidedOmitted: Int = 0,
     )
 
-    /**
-     * How far the pass running right now has got, the live half of [Work],
-     * which is written only when a pass returns. The unit is carried because
-     * the passes count different things: a url for the gate and fitness, a
-     * host for the fold.
-     */
+    /** How far the pass running right now has got, the live half of [Work]. */
     class Measuring(
         /** [UNIT_URL] or [UNIT_HOST]: what the two counts are counts of. */
         val unit: String,
-        /** How many have ended, however they ended. What was learned is [Work.decided]. */
+        /** How many have ended, however they ended. */
         val attempted: Int,
         /** How many this pass set out to walk, after dropping what already carries a verdict. */
         val toProbe: Int,
-        /**
-         * Seconds left at the rate so far, or null before the first unit
-         * lands. The fold walks widest first, so its estimate reads long and improves.
-         */
+        /** Seconds left at the rate so far, or null before the first unit lands. */
         val etaSec: Long?,
-        /**
-         * Seconds since a unit last ended. Tells a pass about to finish from
-         * one whose last unit has wedged; [etaSec] reads 0 for both.
-         */
+        /** Seconds since a unit last ended; tells a finishing pass from a wedged last unit. */
         val quietForSec: Long,
     )
 
     /**
-     * The urls a pass is holding right now and what it is doing with each.
-     *
-     * Its own shape rather than [InFlight]'s: a probe leg is a ladder, not a
-     * transfer, so it has no slot and no delivery clocks. Longest-held first,
-     * since every leg is bounded by a deadline and one near it is the anomaly.
-     * Published whole, because the pass's own dial gates bound the set.
+     * The urls a pass is holding right now and what it is doing with each. Not [InFlight]'s
+     * shape: a probe leg has no slot and no delivery clocks. Published whole, longest-held first.
      */
     class Holding(
-        /** Urls with a live job, longest-held first. */
         val relays: List<Held>,
         /** Always zero; kept so absent cannot read as "nothing dropped". */
         val omitted: Int,
@@ -148,25 +105,14 @@ class Processors {
     class Undecided(
         /** The reason, in the words the router's own log uses. */
         val reason: String,
-        /**
-         * The reason this one refines, or null. The list stays flat and still
-         * sums to [Work.unmeasured]; the parent lets a reader nest rows
-         * without the arithmetic having to survive a tree.
-         */
+        /** The reason this one refines, or null. The list stays flat and still sums to [Work.unmeasured]. */
         val parent: String? = null,
         val hosts: Int,
-        /** Hosts by name, for a pass that has only names to give (the fold). Bounded at [MAX_UNDECIDED_EXAMPLES]. */
+        /** Hosts by name, for a pass that has only names to give. Bounded at [MAX_UNDECIDED_EXAMPLES]. */
         val examples: List<String> = emptyList(),
-        /**
-         * The widest few with their url counts, for a pass that measures urls.
-         * Bounded at [MAX_UNDECIDED_HOSTS] and never summing to the reason; the
-         * remainder is the reader's to see.
-         */
+        /** The widest few with their url counts. Bounded at [MAX_UNDECIDED_HOSTS]; never sums to the reason. */
         val top: List<HostCount> = emptyList(),
-        /**
-         * How many urls ended the pass that way; the count that sums back to
-         * [Work.unmeasured]. Zero on a pass that counts hosts alone.
-         */
+        /** How many urls ended the pass that way. Zero on a pass that counts hosts alone. */
         val urls: Int = 0,
     )
 
@@ -204,26 +150,19 @@ class Processors {
         val reasons: List<Breakdown> = emptyList(),
     )
 
-    /**
-     * One pass's live position. The counter lives inside the object so a
-     * reader takes unit, size and count from one pass in one volatile read.
-     */
+    /** One pass's live position, swapped whole so a reader takes unit, size and count from one pass. */
     internal class Run(
         val unit: String,
         val toProbe: Int,
-        /**
-         * When the walk started, not when the pass did. A pass derives its set
-         * first, and that derivation must not land in the rate's numerator.
-         */
+        /** When the walk started, not when the pass did; deriving the set must not land in the rate. */
         val startedMs: Long,
     ) {
         val attempted = AtomicInteger()
 
-        /** When a unit last ended, or the walk's start before the first one. See [Measuring.quietForSec]. */
+        /** When a unit last ended, or the walk's start before the first one. */
         val lastUnitMs = AtomicLong(startedMs)
     }
 
-    // Internal rather than private because [Handle] takes one as a parameter.
     internal class Entry(
         val name: String,
         @Volatile var phase: String,
@@ -244,19 +183,11 @@ class Processors {
         @Volatile
         var nextAt: (() -> Long?)? = null
 
-        /**
-         * The running pass's position, or null between passes and before a
-         * pass has derived its set. One reference swapped whole, so a snapshot
-         * taken from another thread cannot pair one pass's unit with the next's size.
-         */
+        /** The running pass's position, or null between passes and before a pass has derived its set. */
         @Volatile
         var run: Run? = null
 
-        /**
-         * What this processor is holding: url to (taken at, step). A plain map
-         * rather than a swapped reference because each entry is one job's own.
-         * Cleared on both pass boundaries.
-         */
+        /** What this processor is holding: url to (taken at, step). Cleared on both pass boundaries. */
         val held = ConcurrentHashMap<String, Pair<Long, String>>()
 
         @Volatile
@@ -274,7 +205,7 @@ class Processors {
     /** Registration order, so the report reads the same way every tick. */
     private val order = mutableListOf<String>()
 
-    /** The handle [name] reports through. Idempotent, so a component can be wired from one place and driven from another. */
+    /** The handle [name] reports through. Idempotent. */
     @Synchronized
     fun of(name: String): Handle {
         val entry =
@@ -297,22 +228,16 @@ class Processors {
                 passes = e.passes.get().takeIf { it > 0 || e.startedMs != null },
                 lastPassAt = e.lastPassAtSec,
                 lastPassSec = e.lastPassSec,
-                // Never negative: an overdue pass has a due time in the past.
                 nextInSec = e.nextAt?.invoke()?.let { ((it - nowMs) / 1000).coerceAtLeast(0) },
                 measuring = measuring(e, nowMs),
                 inFlight = holding(e, nowMs),
-                // Ordered so two rollups of one state produce the same document.
                 work = e.work.values.sortedBy { it.stream },
                 counts = e.counts?.invoke().orEmpty(),
                 reasons = e.reasons?.invoke().orEmpty(),
             )
         }
 
-    /**
-     * The pass in flight as of [nowMs], or null. Guarded by [Entry.run] alone:
-     * it is set when a pass declares its set and cleared by both [Handle.begin]
-     * and [Handle.finish], so a stale position is never published under `idle`.
-     */
+    /** The pass in flight as of [nowMs], or null. */
     private fun measuring(
         e: Entry,
         nowMs: Long,
@@ -326,8 +251,7 @@ class Processors {
             unit = run.unit,
             attempted = attempted,
             toProbe = toProbe,
-            // Null before the first unit and again after the last: nothing to
-            // extrapolate from, and no remainder to estimate.
+            // Null before the first unit and again after the last.
             etaSec =
                 if (attempted in 1 until toProbe) {
                     ((elapsedMs.toDouble() / attempted) * (toProbe - attempted) / 1000).toLong()
@@ -338,21 +262,16 @@ class Processors {
         )
     }
 
-    /**
-     * What the pass is holding as of [nowMs], or null. Not guarded by
-     * [Entry.run]: the fold takes its first dial before it can declare a set.
-     */
+    /** What the pass is holding as of [nowMs], or null. Not guarded by [Entry.run]: the fold dials before it declares a set. */
     private fun holding(
         e: Entry,
         nowMs: Long,
     ): Holding? {
         if (e.held.isEmpty()) return null
-        // Snapshotted before sorting: the map moves under a wide pass on every
-        // dial, and a comparator reading a moving value could throw.
+        // Snapshotted before sorting: a comparator reading the moving map could throw.
         val rows = e.held.entries.map { (relay, taken) -> Triple(relay, taken.first, taken.second) }
         val named =
             rows
-                // Longest-held first, then by name so one state rolls up one way.
                 .sortedWith(compareBy({ it.second }, { it.first }))
                 .map { (relay, takenMs, stage) ->
                     Holding.Held(
@@ -364,7 +283,7 @@ class Processors {
         return Holding(named, 0)
     }
 
-    /** What a processor holds to report through. Cheap to keep; safe to call from anywhere. */
+    /** What a processor holds to report through. Safe to call from anywhere. */
     class Handle internal constructor(
         private val entry: Entry,
     ) {
@@ -376,24 +295,18 @@ class Processors {
             }
         }
 
-        /** A pass has started. [nowMs] is a parameter so a test can set both ends of the elapsed time. */
+        /** A pass has started. */
         fun begin(
             word: String = MEASURING,
             nowMs: Long = System.currentTimeMillis(),
         ) {
             entry.startedMs = nowMs
-            // The previous pass's position and held urls go before this one can
-            // be read against them; a pass derives its set some way in.
             entry.run = null
             entry.held.clear()
             phase(word)
         }
 
-        /**
-         * A pass has ended, however it ended. Called from a `finally`, so a
-         * pass that threw still stamps its clock. A finish with no begin does
-         * nothing, which keeps a self-bracketing pass from being counted twice.
-         */
+        /** A pass has ended, however it ended. Call from a `finally`. A finish with no begin does nothing. */
         fun finish(
             word: String = IDLE,
             nowMs: Long = System.currentTimeMillis(),
@@ -408,10 +321,7 @@ class Processors {
             phase(word)
         }
 
-        /**
-         * What this pass set out to walk, declared from inside the pass once
-         * its store reads have said. The rate is timed from here, not [begin].
-         */
+        /** What this pass set out to walk, declared once its store reads have said. The rate is timed from here. */
         fun measuring(
             toProbe: Int,
             unit: String,
@@ -425,17 +335,13 @@ class Processors {
             units: Int = 1,
             nowMs: Long = System.currentTimeMillis(),
         ) {
-            // Silent when no pass has declared a set: a numerator with no
-            // denominator is better dropped than invented.
+            // Silent when no pass has declared a set.
             val run = entry.run ?: return
             run.attempted.addAndGet(units)
             run.lastUnitMs.set(nowMs)
         }
 
-        /**
-         * This pass has taken [relay] and is [stage] on it. Called again as the
-         * job moves on, which updates the step and keeps the clock.
-         */
+        /** This pass has taken [relay] and is [stage] on it. Calling again updates the step and keeps the clock. */
         fun holding(
             relay: String,
             stage: String,
@@ -464,17 +370,14 @@ class Processors {
             entry.reasons = supplier
         }
 
-        /** What the last pass over [Work.stream]'s candidates achieved, replacing that stream's previous row. */
+        /** What the last pass over [Work.stream]'s candidates achieved, replacing the previous row. */
         fun record(work: Work) {
             entry.work[work.stream] = work
         }
     }
 
     companion object {
-        /**
-         * One processor row, as both status documents publish it. Here rather
-         * than in either plane's builder so there is one shape for the card.
-         */
+        /** One processor row, as both status documents publish it. */
         fun published(p: Snapshot): JsonObject =
             buildJsonObject {
                 put("name", p.name)
@@ -485,8 +388,7 @@ class Processors {
                 p.lastPassAt?.let { put("lastPassAt", it) }
                 p.lastPassSec?.let { put("lastPassSec", it) }
                 p.nextInSec?.let { put("nextInSec", it) }
-                // Not exclusive with the countdown: a fast-lane pass runs
-                // between sweeps, so the fitness row can carry both.
+                // Not exclusive with the countdown: a fast-lane pass runs between sweeps.
                 p.measuring?.let { m ->
                     put(
                         "measuring",
@@ -499,7 +401,6 @@ class Processors {
                         },
                     )
                 }
-                // Longest-held first, the reverse of a stream's [InFlight].
                 p.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { f ->
                     put(
                         "inFlight",
@@ -520,8 +421,6 @@ class Processors {
                     )
                 }
                 for (c in p.counts) put(c.name, c.value)
-                // `rejected` is mostly the pipeline working: a mirror is offered
-                // an event once per relay holding it. The split is what says so.
                 p.reasons.takeIf { it.isNotEmpty() }?.let { rows ->
                     put(
                         "rejections",
@@ -547,10 +446,8 @@ class Processors {
                                     put("name", w.stream)
                                     put("candidates", w.candidates)
                                     w.newUrls?.let { put("newUrls", it) }
-                                    // The partition, in precedence order:
-                                    // `candidates = foldedAway + consistent + inconsistent + unmeasured`.
-                                    // Written at zero so a reader can sum them, but absent
-                                    // from a pass that does not measure them (the fold).
+                                    // `candidates = foldedAway + consistent + inconsistent + unmeasured`;
+                                    // written at zero, absent from a pass that does not measure them.
                                     w.foldedAway?.let { put("foldedAway", it) }
                                     w.consistent?.let { put("consistent", it) }
                                     w.inconsistent?.let { put("inconsistent", it) }
@@ -567,7 +464,6 @@ class Processors {
                                                             buildJsonObject {
                                                                 put("reason", u.reason)
                                                                 u.parent?.let { put("parent", it) }
-                                                                // Urls sum back to `unmeasured`; hosts name who to chase.
                                                                 put("urls", u.urls)
                                                                 put("hosts", u.hosts)
                                                                 u.examples.takeIf { it.isNotEmpty() }?.let { names ->
@@ -606,25 +502,15 @@ class Processors {
         /** A pass is dialling right now. */
         const val MEASURING = "measuring"
 
-        /**
-         * A pass is reading the store to work out what to dial: the alias
-         * source's whole job and the first minutes of a sweep. No socket is
-         * open, which is why it is not [MEASURING].
-         */
+        /** A pass is reading the store to work out what to dial; no socket is open. */
         const val COLLECTING = "collecting"
 
-        /**
-         * What a pass counts its progress in. See [Measuring.unit]. The gate
-         * and fitness answer about a url; the fold answers about a host.
-         */
+        /** What a pass counts its progress in: the gate and fitness answer about a url, the fold about a host. */
         const val UNIT_URL = "url"
 
         const val UNIT_HOST = "host"
 
-        /**
-         * The alias source walks one configured relay-list source at a time;
-         * how many urls it yields is only known once the walk has finished.
-         */
+        /** The alias source walks one configured relay-list source at a time. */
         const val UNIT_SOURCE = "source"
 
         /** Between passes: the last one finished and the next is on the clock. */
@@ -633,21 +519,13 @@ class Processors {
         /** Always on, no passes: ingest, the healer, the push. */
         const val RUNNING = "running"
 
-        /** Built and never started because this deployment gives it nothing to do. Permanent, unlike [STARTING]. */
+        /** Built and never started because this deployment gives it nothing to do. Permanent. */
         const val OFF = "off"
 
-        /**
-         * Named hosts per reason. A safety ceiling, not an editorial one: the
-         * host universe has no bound but discovery, and which servers will not
-         * fold is the actionable half of the row.
-         */
+        /** Named hosts per reason: a safety ceiling, not an editorial one. */
         const val MAX_UNDECIDED_EXAMPLES = 100
 
-        /**
-         * Hosts named with their url counts, where a pass can count them. See
-         * [Undecided.top]. A safety ceiling on the same terms as
-         * [MAX_UNDECIDED_EXAMPLES]; the list never sums to the reason's urls.
-         */
+        /** Hosts named with their url counts, on the same terms as [MAX_UNDECIDED_EXAMPLES]. */
         const val MAX_UNDECIDED_HOSTS = 100
     }
 }

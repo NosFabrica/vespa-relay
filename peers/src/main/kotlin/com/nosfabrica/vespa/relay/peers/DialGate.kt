@@ -25,22 +25,16 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * What bounds a probe pass's dials: one gate per transport, because a
- * clearnet dial draws on the router's OkHttp dispatcher and an onion dial on
- * the Tor client's own, and a url only ever wants one. [routesTor] is
- * [TorTransport.routes], the predicate that also picks the OkHttp client, so
- * the gate a url waits on and the dispatcher it lands in cannot disagree.
- *
- * One instance per pass object, not per run: `AliasMonitor` serialises
- * passes behind a mutex and every permit returns in `withPermit`'s finally.
- * Not "probe gate": `ingest.ProbeGate` is the store-probe hit-rate gate.
+ * What bounds a probe pass's dials: one gate per transport, chosen by [routesTor] so the gate
+ * a url waits on and the OkHttp dispatcher it lands in cannot disagree. Not to be confused
+ * with `ingest.ProbeGate`, the store-probe hit-rate gate.
  */
 class DialGate(
     /** Dials in flight over the direct client: the operator's `monitor { dialConcurrency }`. */
     val clearnetPermits: Int,
-    /** Whether there is a proxy at all; [describe] needs it because equal permit counts do not mean one gate. */
+    /** Whether there is a proxy at all; equal permit counts do not mean one gate. */
     private val proxied: Boolean = false,
-    /** Dials in flight over the proxy, sized to the Tor dispatcher and capped by `dialConcurrency`. */
+    /** Dials in flight over the proxy, sized to the Tor dispatcher. */
     val torPermits: Int = clearnetPermits,
     /** [TorTransport.routes], or "nothing does" on a deployment with no proxy. */
     private val routesTor: (NormalizedRelayUrl) -> Boolean = { false },
@@ -50,25 +44,19 @@ class DialGate(
     private val tor = Semaphore(torPermits)
 
     /**
-     * Hold [url]'s transport's permit for the length of [block]. The deadline
-     * goes inside this, never around it: outside it would time the wait for a
-     * permit, which is the pass's shape and no relay's fault.
+     * Hold [url]'s transport's permit for the length of [block]. A deadline goes inside this,
+     * never around it, or it times the wait for a permit and blames the relay.
      */
     suspend fun <T> withPermit(
         url: NormalizedRelayUrl,
         block: suspend () -> T,
     ): T = (if (routesTor(url)) tor else clearnet).withPermit { block() }
 
-    /** What a pass is bounded by, for the line the router prints when the monitor starts. */
+    /** What a pass is bounded by, for the monitor's boot line. */
     fun describe(): String = if (!proxied) "$clearnetPermits dial(s)" else "$clearnetPermits clearnet dial(s), $torPermits over Tor"
 
     companion object {
-        /**
-         * The gate the monitor passes run behind. The Tor side is `min` of the
-         * knob and the dispatcher width: more than `maxSockets` buys queueing,
-         * and a deployment that lowered `dialConcurrency` did not ask for
-         * thirty-two onion dials.
-         */
+        /** The gate the monitor passes run behind; the Tor side is capped by the Tor dispatcher width. */
         fun over(
             concurrency: Int,
             tor: TorTransport?,

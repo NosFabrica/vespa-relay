@@ -25,10 +25,9 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
 
 /**
- * Write [events] through [write]; if that throws, split the batch and write
- * the halves, down to the single event the writer cannot take, which goes to
- * [onPoison]. Re-writing a good half is safe: an already-applied event comes
- * back as a duplicate.
+ * Write [events] through [write]; if that throws, split the batch and write the halves, down
+ * to the single event the writer cannot take, which goes to [onPoison]. Re-writing a good
+ * half is safe: an already-applied event comes back as a duplicate.
  */
 internal suspend fun insertBisecting(
     events: List<Event>,
@@ -48,8 +47,7 @@ private suspend fun bisect(
 ) {
     if (events.isEmpty()) return
     try {
-        // Outcomes are positionally aligned with the batch; that alignment is
-        // what attributes a rejection to the event that earned it.
+        // Outcomes are positionally aligned with the batch.
         onOutcomes(events, write(events))
     } catch (e: CancellationException) {
         throw e
@@ -58,8 +56,7 @@ private suspend fun bisect(
             onPoison(events.single(), e)
             return
         }
-        // Splitting assumes one event is at fault. When the store itself is
-        // refusing, every half fails, and the budget bounds the extra writes.
+        // When the store itself is refusing every half fails; the budget bounds those writes.
         if (budget[0] <= 0) {
             onGaveUp(events, e)
             return

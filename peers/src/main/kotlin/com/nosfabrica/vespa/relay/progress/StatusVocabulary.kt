@@ -26,19 +26,12 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * What every number in the status documents means, shipped inside the
- * document so the reader of the JSON has the definition beside the value.
- *
- * One entry per published member and no entry without one;
- * `StatusVocabularyTest` pins both directions. An entry says what the number
- * is not where it has been misread, and marks approximations as such.
+ * What every number in the status documents means, shipped inside the document so the reader
+ * of the JSON has the definition beside the value. One entry per published member and no
+ * entry without one; `StatusVocabularyTest` pins both directions.
  */
 object StatusVocabulary {
-    /**
-     * Every member either status document can publish, defined. Describes the
-     * schema, not this deployment, so it is built once; ship it through
-     * [termsFor], since each document publishes about half of it.
-     */
+    /** Every member either status document can publish, defined. Ship it through [termsFor]. */
     val TERMS: JsonObject =
         buildJsonObject {
             put(
@@ -1039,8 +1032,7 @@ object StatusVocabulary {
                     "deliberately absent: the alias fold runs on a six-hour clock, so an hour of samples would not " +
                     "contain one of its passes.",
             )
-            // The fitness pass's verdict funnel. Each member is one value of the
-            // NIP-32 label signed onto a relay's kind-30166 record.
+            // The fitness pass's verdict funnel: one member per NIP-32 label value.
             put(
                 "prime",
                 "Relays the monitor currently grades prime: reachable AND answering AND canonical AND " +
@@ -1087,7 +1079,7 @@ object StatusVocabulary {
                     "a filter service minting per-user paths. Probed with the same shaped-ask ladder the fold climbs " +
                     "before the verdict is written.",
             )
-            // The rotating pool, the visit-mode streams' engine. A slot is a socket here.
+            // The rotating pool. A slot is a socket here.
             put(
                 "roster",
                 "Relays currently graded prime and in rotation: the pool's whole world, rebuilt from the " +
@@ -1402,12 +1394,7 @@ object StatusVocabulary {
             )
         }
 
-    /**
-     * The definitions [document] needs: every member it publishes, at any
-     * depth, and no others. A term for a member the document does not carry
-     * is a promise it does not keep. Walks the document rather than taking a
-     * list, so there is no third thing to keep in step.
-     */
+    /** The definitions [document] needs: every member it publishes, at any depth, and no others. */
     fun termsFor(document: JsonObject): JsonObject {
         val published = LinkedHashSet<String>()
 

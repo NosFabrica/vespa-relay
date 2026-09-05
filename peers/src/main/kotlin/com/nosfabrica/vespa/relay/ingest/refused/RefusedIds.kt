@@ -27,30 +27,23 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** What [RefusedIds.record] did with one refusal. */
 enum class RecordOutcome {
-    /** First refusal seen for this id. Downloaded again next time, on purpose. */
+    /** First refusal seen for this id; downloaded again next time, on purpose. */
     CANDIDATE,
 
-    /** Second independent refusal. From now on the id is suppressed. */
+    /** Second independent refusal; the id is suppressed from now on. */
     SUPPRESSED,
 
-    /** Already suppressed; nothing to do. */
+    /** Already suppressed. */
     ALREADY,
 
-    /** The partition is full and sealed. Nothing was recorded. */
+    /** The partition is sealed; nothing was recorded. */
     REFUSED_FULL,
 }
 
 /**
- * The ids this relay has decided it will never store, so a reconcile stops
- * asking for them. Two filters per epoch: a first refusal only makes an id
- * a candidate, and it must be refused a second time before it is suppressed.
- * A sighting is a completed download plus a store refusal, never an
- * appearance in a diff.
- *
- * Partitioned by `created_at` epoch so an epoch entirely below the lowest
- * `since` any stream asks for can be dropped exactly. Insertion keys on the
- * event's own `created_at`; a window lookup must consult every epoch the
- * window overlaps, since windows do not respect epoch edges.
+ * The ids this relay has decided it will never store, so a reconcile stops asking for them.
+ * A first refusal only makes an id a candidate; it must be refused a second time before it is
+ * suppressed. Partitioned by `created_at` epoch, and a window lookup consults every epoch it overlaps.
  */
 class RefusedIds(
     private val dir: File?,
@@ -61,7 +54,7 @@ class RefusedIds(
         val candidate: CuckooFilter,
         val suppress: CuckooFilter,
     ) {
-        /** Set when either table refuses an insert; a sealed epoch answers lookups and accepts nothing new. */
+        /** Set when either table refuses an insert; a sealed epoch answers lookups and takes nothing new. */
         @Volatile var sealedOff: Boolean = false
     }
 
@@ -75,8 +68,7 @@ class RefusedIds(
     @Volatile private var flusher: Thread? = null
 
     init {
-        // Epochs open lazily on record, so after a restart the partitions on
-        // disk must be adopted here or suppression is silent until a fresh refusal.
+        // Epochs open lazily on record, so the partitions on disk must be adopted here.
         dir
             ?.listFiles { f -> f.name.startsWith("refused-e") && f.name.endsWith("-supp.cf") }
             ?.forEach { file ->
@@ -91,7 +83,7 @@ class RefusedIds(
         }
     }
 
-    /** Whether this instance records anything at all. Off with no directory. */
+    /** Off with no directory. */
     val enabled: Boolean get() = dir != null
 
     fun epochOf(createdAt: Long): Long = Math.floorDiv(createdAt, epochSeconds)
@@ -107,10 +99,7 @@ class RefusedIds(
         return hit
     }
 
-    /**
-     * Is this id suppressed, when all we know is the window it was offered in?
-     * Consults every epoch the window touches.
-     */
+    /** Is this id suppressed, when all we know is the window it was offered in? */
     fun suppressedInWindow(
         id: String,
         since: Long?,
@@ -120,8 +109,7 @@ class RefusedIds(
         val lo = epochOf(since ?: 0L)
         val hi = epochOf(until ?: (System.currentTimeMillis() / 1000))
         if (hi < lo) return false
-        // Walk the epochs that exist rather than counting from lo to hi: an
-        // open-ended window starts at epoch 0.
+        // Walk the epochs that exist, not lo to hi: an open-ended window starts at epoch 0.
         for ((key, epoch) in epochs) {
             if (key < lo || key > hi) continue
             if (epoch.suppress.contains(id)) {
@@ -132,7 +120,7 @@ class RefusedIds(
         return false
     }
 
-    /** One completed download that the store refused. First time makes a candidate; second time suppresses. */
+    /** One completed download that the store refused. */
     fun record(
         id: String,
         createdAt: Long,
@@ -164,10 +152,7 @@ class RefusedIds(
         }
     }
 
-    /**
-     * Straight to suppressed, no candidate stage, for a relay's own `OK false`
-     * in the permanent class (auth-required, restricted, blocked).
-     */
+    /** Straight to suppressed, for a relay's own `OK false` in the permanent class. */
     fun suppressNow(
         id: String,
         createdAt: Long,
@@ -187,10 +172,7 @@ class RefusedIds(
         }
     }
 
-    /**
-     * Drop every epoch entirely below [floor], the lowest `created_at` any
-     * configured stream still asks for. Nothing can ask inside a retired range.
-     */
+    /** Drop every epoch entirely below [floor], the lowest `created_at` any stream still asks for. */
     fun retireBelow(floor: Long) {
         val cutoff = epochOf(floor)
         epochs.keys.filter { it < cutoff }.forEach { key ->
@@ -237,13 +219,12 @@ class RefusedIds(
         flush()
     }
 
-    /** What the health line prints. A partition's load approaching 1.0 is about to seal. */
+    /** What the health line prints. */
     fun summary(): String {
         if (epochs.isEmpty()) return "refused 0 epochs"
         val worst = epochs.values.maxOf { maxOf(it.candidate.load, it.suppress.load) }
         val suppressing = epochs.values.sumOf { it.suppress.count }
-        // A healthy gate spends its first cycles with nothing suppressed; the
-        // candidate count is what tells that apart from an inert mechanism.
+        // The candidate count tells a gate in its first cycles apart from an inert one.
         val candidates = epochs.values.sumOf { it.candidate.count }
         val sealedCount = epochs.values.count { it.sealedOff }
         return "refused ${epochs.size} epoch(s), ${fmtCount(candidates)} candidate(s), " +
@@ -258,8 +239,7 @@ class RefusedIds(
         val epoch = epochs[key] ?: return RecordOutcome.REFUSED_FULL
         if (!epoch.sealedOff) {
             epoch.sealedOff = true
-            // Report the table's real ceiling: bucket counts round up to a
-            // power of two, so the configured request is not the binding number.
+            // The table's real ceiling, not the configured request, which is not the binding number.
             val held = CuckooFilter.capacityOf(epoch.suppress.buckets)
             System.err.println(
                 "router: refused-ids epoch $key SEALED — its $which table would not take another id " +
@@ -285,26 +265,17 @@ class RefusedIds(
     ) = "refused-e$key-$which.cf"
 
     companion object {
-        /** One partition per quarter: few files a year, and retiring one frees something. */
         const val DEFAULT_EPOCH_SECONDS = 90L * 24 * 60 * 60
 
-        /**
-         * Ids one epoch's table is sized for. The bucket count rounds up to a
-         * power of two, so the tables are larger than this number suggests;
-         * they live in page cache, not heap.
-         */
+        /** Ids one epoch's table is sized for; the tables live in page cache, not heap. */
         const val DEFAULT_EPOCH_CAPACITY = 8_000_000
 
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
-        /** Disabled: answers "no" to everything and records nothing. */
+        /** Answers "no" to everything and records nothing. */
         fun disabled(): RefusedIds = RefusedIds(null, DEFAULT_EPOCH_SECONDS, 1024)
 
-        /**
-         * `SYNC_REFUSED_DIR` is where the per-epoch filters live; unset is off.
-         * `SYNC_REFUSED_EPOCH_SECONDS` and `SYNC_REFUSED_EPOCH_CAPACITY` size
-         * the partitions; a capacity set too low seals loudly rather than silently.
-         */
+        /** `SYNC_REFUSED_DIR` is where the per-epoch filters live; unset is off. */
         fun fromEnv(env: Map<String, String>): RefusedIds {
             val dir = env["SYNC_REFUSED_DIR"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)
             val epoch =

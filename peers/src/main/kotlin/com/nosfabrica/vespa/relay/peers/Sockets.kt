@@ -23,9 +23,8 @@ package com.nosfabrica.vespa.relay.peers
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * The stream's socket refcount. Quartz never closes a connection it opened,
- * so whoever dials a url claims it first and releases it after; the socket
- * closes when the last holder lets go. Claim before the dial, or the probe
+ * The stream's socket refcount: quartz never closes a connection it opened, so whoever dials
+ * a url claims it first and releases it after. Claim before the dial, or the release
  * decrements somebody else's count.
  */
 interface Sockets {
@@ -36,7 +35,7 @@ interface Sockets {
     fun release(url: NormalizedRelayUrl)
 
     companion object {
-        /** Leaves every socket where it is: a leaked connection is recoverable, one closed under a live transfer is not. */
+        /** Leaves every socket open: a leak is recoverable, a close under a live transfer is not. */
         val NONE =
             object : Sockets {
                 override fun claim(url: NormalizedRelayUrl) = Unit
