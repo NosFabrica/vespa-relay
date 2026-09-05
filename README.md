@@ -361,10 +361,11 @@ administrator.
   files rather than in the markup.
 
 **Still don't publish this port.** The sign-in is the boundary that matters;
-the port is the one that survives a mistake in it. Bind it on the private side
-and reach it over an SSH tunnel. Behind a reverse proxy, set `PULSE_PUBLIC_URL`
-to the origin the browser reaches — the `u` a token is signed over is an
-operator setting, never the `Host` header the caller sent.
+the port is the one that survives a mistake in it. Compose publishes both pulse
+ports on `127.0.0.1` only — like Vespa's, and unlike the status pages — so reach
+them over an SSH tunnel. Behind a reverse proxy, set `PULSE_PUBLIC_URL` to the
+origin the browser reaches: the `u` a token is signed over is an operator
+setting, never the `Host` header the caller sent.
 
 `PULSE_CLIENT_DETAIL` stays a separate switch from all of this: sign-in governs
 who can *read* those sections, that switch governs whether the store *retains*

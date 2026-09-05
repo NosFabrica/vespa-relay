@@ -62,6 +62,14 @@ tasks.named("processResources") {
 
 tasks.test {
     useJUnitPlatform()
+    // ComposePassesEnvTest reads these two files, which live outside every
+    // source set. Undeclared, Gradle calls this task up to date after either
+    // changes and the check silently stops running — which is the same class of
+    // silence the test itself exists to catch.
+    inputs
+        .files(rootProject.file(".env.example"), rootProject.file("docker-compose.yml"))
+        .withPropertyName("deploymentDescriptors")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     // Every property a probe reads must be forwarded here: the forked test JVM does not
     // inherit them, and a probe missing its switch skips itself silently.
     System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
