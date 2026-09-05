@@ -25,7 +25,19 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
   that serves them. Depends on Ktor and kotlinx.serialization, nothing of ours.
 
 The rule between them: engines produce documents, `:web` renders them, and the
-seam is `/stats.json` (`NoBrowserFilesInEngineModulesTest`). One `stats.html`
+seam is `/stats.json` — and `/pulse.json`, whose builder is in `:common` for
+the same reason (`NoBrowserFilesInEngineModulesTest`). `:web` also owns the
+admin gate on `/pulse.json` (`AdminGate`, `Nip98AdminGate`, `AdminSessions`),
+which is why it depends on quartz: verifying an `Authorization` header belongs
+beside the routes it protects, and the dependency can only run one way — Ktor
+must never reach `:common`.
+
+`pulse.html` is the one page here whose logic and styling are NOT inline
+(`web/pulse/page.js`, `web/pulse/pulse.css`). It is the one page serving a
+non-public document, so its policy is `default-src 'none'` with no
+`unsafe-inline` on script or style — which an inline `<script>` cannot satisfy.
+Putting one back would not fail loudly; the page would just stop working, in a
+browser only, so `PulseSiteTest` fails the build instead. One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.
@@ -111,6 +123,11 @@ form, file by file with the reasoning, is [docs/layout.md](docs/layout.md).
 common/…/relay/
   config/RelayIdentity.kt     RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor; both processes read it
   server/ServingPressure.kt   EWMA of client read latency, served on GET /pressure
+  pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings
+                              (PULSE_* parsing, the fail-closed admin check); here because both processes
+                              open a store, and because :web must not depend on one
+  config/PubKeys.kt           every pubkey setting (npub only, no bare hex) + adminPubkeysFromEnv;
+                              both processes read RELAY_ADMIN_PUBKEYS now, so one parser
   maintenance/, util/         QuartzLogLevel (QUARTZ_LOG_LEVEL), SchemaDeploy, StoreTopology; fmtDuration
 peers/…/relay/
   peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
@@ -214,6 +231,16 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md).
 - `/stats.json` and `/stats.html` on the relay, the mirror (`SYNC_STATUS_PORT`,
   7778) and the monitor; `/observer_stats.html` and `/pressure` on the relay.
   One relay is looked up with `jq` over the document, not on the page.
+- `/pulse.json` and `/pulse.html` (`PULSE_PORT` / `SYNC_PULSE_PORT`, off by
+  default) — WHERE THE STORE'S RESOURCES GO, live off the store's own counters:
+  engine time by the activity that spent it, calls per document, matched
+  against served per rank profile, admission outcomes over their denominator,
+  and lock wait split by WHAT EACH WAITER WAS BEHIND. ADMINISTRATORS ONLY —
+  NIP-98 against `RELAY_ADMIN_PUBKEYS`, a signature traded for a short session
+  cookie, and a port set with no admin keys stops the boot. It is the one
+  non-public page here: with `PULSE_CLIENT_DETAIL` it names the observer lenses
+  and search terms driving the load and quotes slow queries. Read it with a
+  NIP-07 extension in a browser, or sign a kind-27235 token for a script.
 - The progress document (`SyncProgress`): each stream's phase and clock,
   `roster`/`tails`, the in-flight legs, every running pass.
 - `store` on `/stats.json` and the `store call SLOW` lines: which store calls

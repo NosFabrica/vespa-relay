@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="Where this process's event-store resources go: engine time by activity, admission outcomes, lock waits and what they were behind — read live from the store's own counters." />
+<title>Eventstore pulse</title>
+<!-- Every reference is document-relative: this one file is served by the relay
+     and by the mirror, either of which may sit under a path prefix. The
+     leading `./` on an import is required: a bare `web/...` is an import-map key. -->
+<link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
+<!--
+  WHERE THE RESOURCES GO, charted from GET /pulse.json.
+
+  ADMINISTRATORS ONLY. That document names the observer lenses and the search
+  terms driving this relay's load and, with the slow-read log on, quotes the
+  queries people typed — so it is served only to a pubkey in the relay's admin
+  list, proven with NIP-98. This markup carries no numbers at all: it asks a
+  NIP-07 extension for one signature, trades it for a short-lived HttpOnly
+  session cookie, and polls with that. An unauthenticated visitor gets the
+  prompt below and nothing else.
+
+  Every total in that document is CUMULATIVE since the process started, so this
+  page keeps the previous poll and differences the two to recover a rate. That
+  is the whole method, and it is why nothing here is consumed by being read:
+  any number of tabs may watch this page at once.
+
+  Gauges are the exception and are drawn apart from every counter: a queue
+  depth is not a rate and must never be differenced.
+
+  This is ONE PROCESS's store, not the cluster's. The relay and the mirror hold
+  separate stores over one Vespa; each serves its own page. Vespa's own memory,
+  disk and transaction log are not here at all — it has a metrics proxy that
+  already reports them.
+-->
+<link rel="stylesheet" href="./web/shared/stats.css" />
+<link rel="stylesheet" href="./web/pulse/pulse.css" />
+</head>
+<body>
+<main>
+  <h1>Eventstore pulse</h1>
+  <p class="sub" id="scope">Loading…</p>
+
+  <noscript>
+    <p class="err">This page needs JavaScript. It holds no numbers itself: it asks a Nostr
+    extension for one signature, and reads the store's counters with the session that
+    signature opens.</p>
+  </noscript>
+
+  <div id="body"></div>
+
+  <footer id="foot"></footer>
+  <!-- The session's own line, outside the footer on purpose: the footer is
+       rebuilt on every poll and the sign-out control must not be. -->
+  <p class="foot" id="who"></p>
+</main>
+<div class="tip" id="tip"></div>
+
+<script type="module" src="./web/pulse/page.js"></script>
+</body>
+</html>

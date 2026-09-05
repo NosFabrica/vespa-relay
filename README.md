@@ -288,6 +288,94 @@ own, on its own port — see below):
   *35% mirrored* on a mirror that was missing nothing, the entire gap being
   kinds — reactions, DMs, gift wraps — that no stream here ever asks for.
 
+### Where the resources go — `/pulse.html`
+
+On its own port (`PULSE_PORT` on the relay, `SYNC_PULSE_PORT` on the mirror),
+**off by default**, **administrators only**, and deliberately not next to the
+two pages above.
+
+The pages above say what this deployment *holds* and what the mirror is
+*doing*. This one says what any of it **costs** — read live from the store's own
+counters, so there is no rollup and nothing to go stale:
+
+- **What the store is doing** — wall time inside the engine calls this process
+  made, grouped by the work that made them (REQ reads, bulk ingest, the trust
+  drain, the sweeps), with **calls per document** beside each. That ratio is the
+  store's own performance contract in a number: a bulk path booking several
+  engine calls per document it writes is the shape "never ingest in a loop over
+  `insert()`" exists to prevent, and the page calls it out.
+- **What the engine did** — Vespa's own timings per rank profile, and
+  **matched against served**. A profile matching 561K documents to serve 53K is
+  doing work no client sees; it is also the clearest picture of what the
+  observer gate buys.
+- **Locks** — what holds a store mutex *at this instant* and what it says it is
+  doing, and cumulative wait split by **what each waiter was queued behind**.
+  That split is the point of the page: `lock.ingest.wait 41s` only raises a
+  question, `38s of it behind "derive 500 subject(s) in 10 chunk(s)"` names a
+  fix.
+- **What became of the events offered** — admitted against duplicate, replaced,
+  deleted, expired. "81% of what this node is offered is already stored" is what
+  tells you to narrow a sync, and no port-level counter can see it: a refused
+  event never reaches the index.
+- **Right now** — the gauges (feed operations in flight, trust backlog, mutexes
+  held), drawn apart from every counter because a queue depth must never be
+  differenced into a rate.
+
+Every total is cumulative since the process started and the page differences two
+consecutive polls to recover a rate, so any number of tabs may watch it and
+nothing is consumed by being read. Each process serves its own — the relay and
+the mirror hold separate stores over one Vespa, so the relay's page has the
+reads and the mirror's has the ingest.
+
+#### Who may read it
+
+Every page above is public because every field in it is a fact about stored
+events. This one is not that document: with `PULSE_CLIENT_DETAIL` on it names
+the heaviest observer lenses and search terms driving the load and carries a
+slow-read log that **quotes the query**. So `/pulse.json` is served only to an
+administrator.
+
+- **The proof is NIP-98** against the same `RELAY_ADMIN_PUBKEYS` the NIP-86
+  admin RPC uses — one list for the deployment, one thing to leak, and the
+  answer to "who can read this?" is the same as to "who can ban a pubkey?".
+- **A port set with no admin keys stops the boot.** "No administrators" and
+  "everyone is an administrator" are one mistake apart, and an open page is
+  never the right answer to a missing setting.
+- **In a browser**: open the port and press sign in. A NIP-07 extension signs
+  once and the relay returns a 30-minute `HttpOnly`, `SameSite=Strict` session
+  cookie; the page polls with that. NIP-98 tokens are single-use, so without
+  the session a page polling every two seconds would need an extension popup
+  every two seconds.
+- **From a script**: sign a kind-27235 event over the request's url and method
+  and send `Authorization: Nostr <base64>`. Poll through a session rather than
+  signing per request — two identical tokens in one second are one event, and
+  the second is a replay.
+- **The page shell is served unauthenticated on purpose** and carries no
+  numbers. A browser cannot put an `Authorization` header on a navigation, so
+  gating the markup would make the page unreachable rather than more private.
+  Everything with data is behind the guard; an anonymous visitor gets a sign-in
+  prompt.
+- The site installs **no CORS** and refuses to be framed, because it answers
+  with a cookie. Its policy is `default-src 'none'` with no `unsafe-inline` on
+  script or style — which is why this page alone keeps its logic and styling in
+  files rather than in the markup.
+
+**Still don't publish this port.** The sign-in is the boundary that matters;
+the port is the one that survives a mistake in it. Compose publishes both pulse
+ports on `127.0.0.1` only — like Vespa's, and unlike the status pages — so reach
+them over an SSH tunnel. Behind a reverse proxy, set `PULSE_PUBLIC_URL` to the
+origin the browser reaches: the `u` a token is signed over is an operator
+setting, never the `Host` header the caller sent.
+
+`PULSE_CLIENT_DETAIL` stays a separate switch from all of this: sign-in governs
+who can *read* those sections, that switch governs whether the store *retains*
+them at all, which is the stronger guarantee.
+
+The design record for what is measured, what it costs, and what is deliberately
+left to Vespa's own metrics proxy is
+[`docs/telemetry.md`](https://github.com/NosFabrica/vespa-eventstore/blob/main/docs/telemetry.md)
+in the event store.
+
 And on the mirror's own port (`SYNC_STATUS_PORT`, 7778) when the `sync` profile
 is up:
 

@@ -364,26 +364,34 @@ class SyncEngine(
         }
 
     /**
-     * `IngestStats.dump()` turned back into per-stage milliseconds. The format
-     * is `stages <name> <n>.<nn>s ...`, busiest first, or `stages (none)`.
-     * `IngestStageParseTest` pins the coupling to the real formatter.
+     * Every ingest stage the store has booked, busiest first, with the SHAPE of
+     * each one's time beside its total.
+     *
+     * ONE READ, not two. This used to be two: `stageMs` came from parsing
+     * `IngestStats.dump()`'s String — a format the store never promised, so
+     * the relay pinned it with a test of its own — and `stageDetail` came from
+     * `IngestStats.snapshot()` beside it. Two reads of a live counter describe
+     * two instants, so a row's `ms` could disagree with the `calls` published
+     * next to it; and the parser lost precision on the way through `%.2fs`,
+     * which for a stage under 5 ms rounded to nothing at all.
+     *
+     * `snapshot()` is now the structured read the parser was standing in for,
+     * so both members come off one map at one instant and the totals are exact
+     * nanoseconds. Sorted here rather than by the store: the ordering is this
+     * page's presentation choice, and `snapshot()` deliberately returns a map.
      */
-    private fun stageMs(dump: String): List<Pair<String, Long>> {
-        val parts =
-            dump
-                .removePrefix("stages ")
-                .trim()
-                .split(' ')
-                .filter { it.isNotEmpty() }
-        if (parts.size < 2) return emptyList()
-        return parts
-            .chunked(2)
-            .mapNotNull { pair ->
-                if (pair.size != 2) return@mapNotNull null
-                val seconds = pair[1].removeSuffix("s").toDoubleOrNull() ?: return@mapNotNull null
-                pair[0] to (seconds * 1000).toLong()
-            }
-    }
+    private fun stageSplit(): List<SyncProgress.StageDetail> =
+        IngestStats
+            .snapshot()
+            .map { (name, st) ->
+                SyncProgress.StageDetail(
+                    stage = name,
+                    ms = st.totalNanos / 1_000_000,
+                    calls = st.calls,
+                    meanMs = st.meanNanos / 1_000_000,
+                    maxMs = st.maxNanos / 1_000_000,
+                )
+            }.sortedByDescending { it.ms }
 
     /** The latest health, for the progress tick to publish. See [bottleneckOf]. */
     @Volatile
@@ -446,6 +454,8 @@ class SyncEngine(
             val constraint = bottleneckOf(depth, rate)
             val open = client.connectedRelaysFlow().value.size
             val load = peers.socketLoad()
+            // Read once, before the document is built, so every stage member describes one instant.
+            val stages = stageSplit()
             health =
                 SyncProgress.Health(
                     bottleneck = constraint,
@@ -459,19 +469,7 @@ class SyncEngine(
                     socketsQueued = load.queued,
                     servingMs = pressure?.meanMs(),
                     // On this clock rather than the progress tick: the stage split explains `bottleneck`.
-                    stageMs = stageMs(IngestStats.dump()),
-                    // The structured read the parser above was waiting for; both
-                    // are read in one tick so they describe one instant.
-                    stageDetail =
-                        IngestStats.snapshot().map { (name, st) ->
-                            SyncProgress.StageDetail(
-                                stage = name,
-                                ms = st.totalNanos / 1_000_000,
-                                calls = st.calls,
-                                meanMs = st.meanNanos / 1_000_000,
-                                maxMs = st.maxNanos / 1_000_000,
-                            )
-                        },
+                    stageDetail = stages,
                     // Present tense: what holds the store's write lock now. Null is
                     // the common case and means nothing does.
                     lockHeld =

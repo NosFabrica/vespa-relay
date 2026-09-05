@@ -49,16 +49,16 @@ class SyncProgress {
         /** Events handed to ingest per second over the same minute; the arrival side. */
         val arrivingPerSec: Int,
         /**
-         * Cumulative milliseconds per ingest stage since boot, busiest first.
+         * Every ingest stage since boot, busiest first: the cumulative
+         * milliseconds AND the shape of that time — calls, mean, worst single
+         * call. One pathological call and a hundred thousand ordinary ones sum
+         * the same and need different fixes.
+         *
          * Cumulative because `IngestStats.statusLine` is destructive; the page
-         * differences consecutive polls to recover a rate.
-         */
-        val stageMs: List<Pair<String, Long>> = emptyList(),
-        /**
-         * The same stages with the SHAPE of the time, not just the total:
-         * calls, mean and worst single call. One pathological call and a
-         * hundred thousand ordinary ones sum the same and need different
-         * fixes. Empty against a store without `IngestStats.snapshot()`.
+         * differences consecutive polls to recover a rate. One list rather
+         * than a total list beside a detail list: they came off one
+         * `IngestStats.snapshot()` at one instant, and two lists invited a row
+         * whose `ms` and `calls` were read seconds apart.
          */
         val stageDetail: List<StageDetail> = emptyList(),
         /**
@@ -174,22 +174,21 @@ class SyncProgress {
                                     },
                                 )
                             }
-                            val detail = h.stageDetail.associateBy { it.stage }
                             // Rows, not a member per stage: the names are the
                             // store's, and a dynamic member name is one the
                             // glossary can never define.
-                            if (h.stageMs.isNotEmpty()) {
+                            if (h.stageDetail.isNotEmpty()) {
                                 putJsonArray("stages") {
-                                    for ((stage, ms) in h.stageMs) {
+                                    for (d in h.stageDetail) {
                                         add(
                                             buildJsonObject {
-                                                put("stage", stage)
-                                                put("ms", ms)
+                                                put("stage", d.stage)
+                                                put("ms", d.ms)
                                                 // Only where the store timed the stage as
                                                 // calls: a lock's wait/hold pair has no call
                                                 // count, and inventing one would put a mean
                                                 // over a denominator that does not exist.
-                                                detail[stage]?.takeIf { it.calls > 0 }?.let { d ->
+                                                if (d.calls > 0) {
                                                     put("calls", d.calls)
                                                     put("meanMs", d.meanMs)
                                                     put("maxMs", d.maxMs)

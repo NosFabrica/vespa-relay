@@ -97,3 +97,14 @@ object PubKeys {
             }
         }
 }
+
+/**
+ * The relay's administrators, from `RELAY_ADMIN_PUBKEYS`. Empty disables
+ * NIP-86 and refuses to serve the pulse page at all.
+ *
+ * IN `:common`, WITH THE PARSER, because both processes read it now: the
+ * serving relay for the NIP-86 admin RPC and its pulse page, the mirror for
+ * its own. One list and one parser — a security setting is the last place two
+ * processes should be reading the same variable through different code.
+ */
+fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["RELAY_ADMIN_PUBKEYS"], "RELAY_ADMIN_PUBKEYS")

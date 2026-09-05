@@ -79,9 +79,6 @@ fun negentropySettingsFromEnv(env: Map<String, String>): NegentropySettings {
     )
 }
 
-/** NIP-86 admin pubkeys from `RELAY_ADMIN_PUBKEYS`. Empty disables NIP-86. */
-fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["RELAY_ADMIN_PUBKEYS"], "RELAY_ADMIN_PUBKEYS")
-
 /** Deploy-time write authorization: `ALLOW_PUBKEYS` (empty is everyone) minus `DENY_PUBKEYS`. */
 fun allowPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["ALLOW_PUBKEYS"], "ALLOW_PUBKEYS")
 

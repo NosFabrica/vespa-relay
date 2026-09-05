@@ -111,6 +111,23 @@ services:
       ALLOW_KINDS: ${ALLOW_KINDS:-}
       DENY_KINDS: ${DENY_KINDS:-}
       RELAY_ADMIN_PUBKEYS: ${RELAY_ADMIN_PUBKEYS:-}
+      # THE PULSE PAGE — where this process's store resources go, on its own
+      # port and ADMINISTRATORS ONLY (NIP-98 against RELAY_ADMIN_PUBKEYS above).
+      # Passed through explicitly like everything else here: compose injects
+      # only what is mapped, and an unmapped PULSE_PORT in a .env would leave
+      # the operator with a page that silently never appears — the same failure
+      # the ban list had before it was added to this list. Setting a port with
+      # no admin keys STOPS THE BOOT rather than opening the page.
+      PULSE_PORT: ${PULSE_PORT:-}
+      # The origin tokens are signed against. Defaults to the loopback address
+      # the port below publishes, which is right for an SSH tunnel; set it only
+      # behind a reverse proxy.
+      PULSE_PUBLIC_URL: ${PULSE_PUBLIC_URL:-}
+      # Whether the store RETAINS the sections that describe the people using
+      # this relay — heaviest observer lenses, heaviest search terms, and a
+      # slow-read log that quotes the query. Off unless you say so.
+      PULSE_CLIENT_DETAIL: ${PULSE_CLIENT_DETAIL:-}
+      PULSE_SLOW_READ_MS: ${PULSE_SLOW_READ_MS:-}
       # NIP-86 ban state that must outlive the container — put it in the
       # mounted volume, e.g. /var/lib/vespa-relay/relay-state.json.
       RELAY_STATE_FILE: ${RELAY_STATE_FILE:-}
@@ -216,6 +233,15 @@ services:
       RELAY_NSEC: ${RELAY_NSEC:-}
     ports:
       - "${RELAY_PORT:-7777}:7777"
+      # LOOPBACK ONLY, like Vespa's ports above and unlike the status pages
+      # below. This one is not a public document: with client detail on it
+      # names the observer lenses and search terms driving the load and quotes
+      # slow queries. The sign-in is the boundary that matters — nothing here
+      # is reachable without an administrator's signature — and this is the one
+      # that survives a mistake in it. Reach it over an SSH tunnel. Published
+      # whether or not PULSE_PORT is set; with the page off nothing listens and
+      # the port simply refuses.
+      - "127.0.0.1:${PULSE_PORT:-7780}:${PULSE_PORT:-7780}"
     volumes:
       # Where FTS_CURSOR_FILE lands, so the walk's position survives the
       # container and is readable on the host. Shared with the sync service,
@@ -363,6 +389,15 @@ services:
       # that. Set the port to 0 to serve no page; SYNC_PROGRESS_FILE is now
       # REFUSED at boot rather than ignored.
       SYNC_STATUS_PORT: 7778
+      # THE MIRROR'S OWN PULSE PAGE, and the administrator list it checks
+      # against — the same one the relay uses, so there is one list for the
+      # deployment. Needed here now: this process serves its own pulse page and
+      # refuses to boot with a port set and no administrators.
+      RELAY_ADMIN_PUBKEYS: ${RELAY_ADMIN_PUBKEYS:-}
+      SYNC_PULSE_PORT: ${SYNC_PULSE_PORT:-}
+      SYNC_PULSE_PUBLIC_URL: ${SYNC_PULSE_PUBLIC_URL:-}
+      SYNC_PULSE_CLIENT_DETAIL: ${SYNC_PULSE_CLIENT_DETAIL:-}
+      SYNC_PULSE_SLOW_READ_MS: ${SYNC_PULSE_SLOW_READ_MS:-}
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
       # Survives a restart, so a redeploy does not blank the page for a tick.
       SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
@@ -428,6 +463,9 @@ services:
       - "${SYNC_STATUS_PORT:-7778}:7778"
       # …and the monitor's, for the same reason.
       - "${MONITOR_STATUS_PORT:-7779}:7779"
+      # The mirror's pulse page, LOOPBACK ONLY — see the relay service. Unlike
+      # the two above it, this document is not public.
+      - "127.0.0.1:${SYNC_PULSE_PORT:-7781}:${SYNC_PULSE_PORT:-7781}"
     volumes:
       # Mounts your local ./router.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.
