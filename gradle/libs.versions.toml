@@ -414,7 +414,7 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# c87880f7a1 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
+# ffe8c43129 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
 # telemetry branch (its docs/telemetry.md is the design record).
 #
 # A BRANCH COMMIT, deliberately and temporarily. The store PR is open; this
@@ -449,15 +449,23 @@ quartz = "cecc3287b2"
 # nanoseconds per booked port call, and a fixed ~50KB of sketches and
 # histograms per process.
 #
-# DIRECTION: ec2976b679 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — the branch carries main's lock audit.
+# IT ALSO CARRIES MAIN THROUGH 1a3f91b (PR #106), the service-keyed trust
+# tensors: the tensors are keyed by the SIGNING SERVICE and the observer's
+# kind-10040 is resolved at query time. That is a store-side change this repo
+# does not name anywhere, and it comes with its own migration
+# (TrustKeyingMigration) and its own docs/service-keyed-trust.md — read that
+# note before deploying this pin, not this one.
 #
-# LEXICOGRAPHIC: 'd779…' < 'ec29…', so this sorts BELOW the pin it replaces —
-# the unsafe direction, for the first time on this line. It still needs no
-# `force(…)`, for the reason the notes above give: nothing else in the graph
-# names vespa-eventstore, so there is no conflict for ordering to settle. The
-# resolved graph is the proof, and every eventstore line reads c87880f7a1 with
-# no `->` left anywhere:
+# DIRECTION: 1a3f91b is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — this branch is main plus the telemetry.
+#
+# LEXICOGRAPHIC: 'ffe8…' > 'ec29…' ('f' > 'e'), so this sorts ABOVE the pin it
+# replaces — the safe direction. (The first cut of this line named 'd779…',
+# which sorted BELOW it; re-pinning past the merge put it back on the safe
+# side.) It needs no `force(…)` either way, for the reason the notes above
+# give: nothing else in the graph names vespa-eventstore, so there is no
+# conflict for ordering to settle. The resolved graph is the proof, and every
+# eventstore line reads ffe8c43129 with no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # WHAT THE THIRD COMMIT ON THAT BRANCH IS: the load sketch was being handed
@@ -477,8 +485,9 @@ quartz = "cecc3287b2"
 # pin this line first carried) draws three blank panels.
 #
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
-# PR #104 and #105 (the lock audit) over #103's grouping aggregate.
-vespaEventStore = "c87880f7a1"
+# PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
+# reached through 1a3f91b, which is main including it.
+vespaEventStore = "ffe8c43129"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
