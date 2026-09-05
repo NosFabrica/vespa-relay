@@ -70,7 +70,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /** Spoken by hand: no http client exposes a 101's headers, and the `Host` sent is itself under test. */
+    /** Spoken by hand: no http client exposes a 101's headers, and the `Host` sent is under test. */
     private fun headersOf(
         port: Int,
         host: String,
@@ -134,7 +134,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /** Amethyst keys its cache by the host asked for; a request over Tor would cache the onion as its own alternative. */
+    /** Amethyst keys its cache by the host asked for, so the onion would become its own alternative. */
     @Test
     fun `a request that already arrived on the onion is not told about it`() {
         serving({ onion }) { port ->
@@ -164,7 +164,7 @@ class RelayOnionLocationTest {
         }
     }
 
-    /** A returning visitor's request ends in a bodiless 304 with a trimmed header set; the advertisement has to survive it. */
+    /** A 304 carries a trimmed header set; the advertisement has to survive it. */
     @Test
     fun `a 304 still carries the header`() {
         val page = "<html><body>search</body></html>"

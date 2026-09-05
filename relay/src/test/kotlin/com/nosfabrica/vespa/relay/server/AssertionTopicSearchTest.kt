@@ -34,8 +34,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * `t` tags reach the search index on a 30382 Contact Card and on no other NIP-85 kind, because only
- * `ContactCardEvent` is a `SearchableEvent` upstream. Driven over the wire so `EventFactory` does the typing.
+ * `t` tags reach the search index on a 30382 Contact Card and on no other NIP-85 kind, because
+ * only `ContactCardEvent` is a `SearchableEvent` upstream. Driven over the wire so `EventFactory`
+ * does the typing.
  */
 class AssertionTopicSearchTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7778")
@@ -56,7 +57,7 @@ class AssertionTopicSearchTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // No petname, no summary: the `t` tag is the only thing that can make this card a search hit.
+                // No petname, no summary: the `t` tag is the only thing that can make this card a hit.
                 val card =
                     service.sign<Event>(
                         1_700_000_000L,

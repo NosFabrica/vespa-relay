@@ -42,11 +42,9 @@ import kotlin.test.Test
 import kotlin.test.fail
 
 /**
- * What the reference expansion costs a read, measured through the whole serving stack by running the
- * same REQ against two relays over one store that differ only in [SearchExpansionLimits.enabled]. Five
- * arms: a termless recall, a search no kind can point from, one that could but none does, a page of
- * Trusted Lists, a page of NIP-32 labels. Prints medians, p90s, store round trips and frames per REQ;
- * asserts nothing. Selected by `-DsearchExpansionBench`; `BENCH_VESPA_URL` points it at a real engine.
+ * What the reference expansion costs a read: the same REQ against two relays over one store that
+ * differ only in [SearchExpansionLimits.enabled]. Prints and asserts nothing. Selected by
+ * `-DsearchExpansionBench`; `BENCH_VESPA_URL` points it at a real engine.
  */
 class SearchExpansionCostBench {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -78,7 +76,7 @@ class SearchExpansionCostBench {
     private val reader = NostrSignerSync()
     private val curator = NostrSignerSync()
 
-    /** One arm's numbers: the median and the p90, never the mean, which mostly reports where the GC pauses landed. */
+    /** One arm's numbers: the median and the p90, never the mean, which reports where the GC pauses landed. */
     private class Timing(
         val label: String,
         samples: LongArray,
@@ -109,7 +107,7 @@ class SearchExpansionCostBench {
         NostrSemanticsStore(index, relay = relayUrl).use { runBench(it, index, counted) }
     }
 
-    /** The real engine, deployed if absent. The caller puts the [TrustProjection] around the counter, as `VespaEventStore.open` would. */
+    /** The real engine, deployed if absent; the caller wraps the counter in the [TrustProjection]. */
     private fun vespaEvents(url: String): EventIndex {
         SchemaDeployer(System.getenv("BENCH_VESPA_CONFIG_URL") ?: url.replace(":8080", ":19071")).deployIfAbsent(url)
         return VespaEventIndex(url)
@@ -148,7 +146,7 @@ class SearchExpansionCostBench {
             println("------------------------------------------------------------------------------------------")
             for ((label, filter) in arms) {
                 for (page in PAGES) {
-                    // Interleaved, one REQ each per round: a GC pause inside a whole arm reads as that arm being slower.
+                    // Interleaved, one REQ each per round, so a GC pause does not land on one arm alone.
                     val offSamples = LongArray(ROUNDS)
                     val onSamples = LongArray(ROUNDS)
                     var offFrames = 0L
@@ -228,8 +226,8 @@ class SearchExpansionCostBench {
         try {
             val members = (0 until MEMBERS).map { NostrSignerSync() }
             val events = ArrayList<Event>()
-            // Both delegation shapes: the gate is per kind, and a Map carrying only `30382:rank` leaves every
-            // Trusted List unexpanded, so the pointer arm would price a splice that never happens.
+            // Both delegation shapes: the gate is per kind, and a Map carrying only `30382:rank` would
+            // leave the pointer arm pricing a splice that never happens.
             events +=
                 reader.sign<Event>(
                     1_699_999_000L,
@@ -298,7 +296,7 @@ class SearchExpansionCostBench {
         const val ROUNDS = 201
         const val WARMUP = 30
 
-        /** Two sizes, because the change has a fixed cost per REQ and a per-row one, and one size cannot tell them apart. */
+        /** Two sizes, because the change has a fixed cost per REQ and a per-row one. */
         val PAGES = listOf(50, 500)
         const val SMALL_PAGE = 50
 
@@ -307,7 +305,6 @@ class SearchExpansionCostBench {
         const val MEMBERS = 20
         const val LABELS = 1_000
 
-        /** The `l` value every bench label shares. */
         const val LABEL_VALUE = "benchlabelvalue"
     }
 }

@@ -34,8 +34,8 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * A Trusted List's title is searchable, which holds only while the quartz this repo forces on the store
- * carries the `EventFactory` branch for kinds 30392-30395; an older pin fails here and nowhere else.
+ * A Trusted List's title is searchable, which holds only while the quartz this repo forces on the
+ * store carries the `EventFactory` branch for kinds 30392-30395; an older pin fails here only.
  */
 class TrustedListSearchTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -76,10 +76,10 @@ class TrustedListSearchTest {
                 session.receive("""["REQ","title",{"kinds":[30392],"search":"podcaster include:spam"}]""")
                 awaitMessage(out) { it.startsWith("""["EVENT","title",""") && list.id in it }
 
-                // `metric` names a computation; a common word must not return every list that ran the same job.
+                // `metric` names a computation; a common word must not return every list that ran it.
                 assertNoEventBeforeEose(session, out, "metric", """{"kinds":[30392],"search":"influence include:spam"}""")
 
-                // The membership is hex ids and a JSON echo of them: out of the search text, served by tag recall.
+                // The membership is hex ids and a JSON echo of them: out of the search text, served by tag.
                 assertNoEventBeforeEose(session, out, "hex", """{"kinds":[30392],"search":"$member include:spam"}""")
                 session.receive("""["REQ","tag",{"kinds":[30392],"#p":["$member"],"search":"include:spam"}]""")
                 val byTag = awaitMessage(out) { it.startsWith("""["EVENT","tag",""") }
@@ -95,7 +95,7 @@ class TrustedListSearchTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                // `indexableContent()` runs on the insert path, so a titleless list must index "" rather than fail the write.
+                // `indexableContent()` runs on the insert path, so a titleless list must index "" not throw.
                 val untitled = signer.sign<Event>(1_700_000_100L, 30393, arrayOf(arrayOf("d", "untitled")), "")
                 session.receive("""["EVENT",${untitled.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${untitled.id}",true""") }

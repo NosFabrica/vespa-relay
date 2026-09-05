@@ -123,7 +123,7 @@ class TrustNoticeTest {
             }
         }
 
-    /** The store's provider map credits the reader through every named rank service, so either one's cards mean ranking works. */
+    /** The store credits the reader through every named rank service, so either one's cards mean ranking works. */
     @Test
     fun `either of two named rank services is enough`() =
         runBlocking {
@@ -157,7 +157,7 @@ class TrustNoticeTest {
             assertEquals(listOf(TrustNotice.NO_PROVIDER), notice.notices(reader.pubKey))
         }
 
-    /** A notice sends a reader off to republish their list; only the store may claim it is missing, and an unreachable one has not. */
+    /** A notice sends a reader off to republish their list; an unreachable store has not claimed it is missing. */
     @Test
     fun `an unanswerable check says nothing rather than guessing`() =
         runBlocking {

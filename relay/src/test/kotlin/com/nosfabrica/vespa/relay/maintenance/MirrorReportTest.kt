@@ -98,7 +98,7 @@ class MirrorReportTest {
         assertEquals(listOf(1, 62), kindsOf(MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("heal", dir = "both", kinds = "[62]")))))
     }
 
-    /** A stream with no kind bound mirrors whatever its relays serve, so a union over the others would under-count. */
+    /** A stream with no kind bound mirrors everything, so a union over the others would under-count. */
     @Test
     fun `an unbounded stream suppresses the list rather than shrinking it`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("everything")))
@@ -131,7 +131,7 @@ class MirrorReportTest {
         assertEquals(listOf(1), kindsOf(MirrorReport.build(manifest(stream("content", dir = null, kinds = "[1]")))))
     }
 
-    /** A `kinds` member that cannot be read is a bound that failed to parse, not the absence of one. */
+    /** An unreadable `kinds` member is a bound that failed to parse, not the absence of one. */
     @Test
     fun `an unreadable kinds member neither widens nor is invented`() {
         val doc = MirrorReport.build(manifest(stream("content", kinds = "[1]"), stream("broken", kinds = "\"0,1\"")))
@@ -148,9 +148,8 @@ class MirrorReportTest {
     }
 
     /**
-     * The exact bytes `SyncManifest` wrote for a three-stream config. The two
-     * halves live in modules that cannot import each other, so a rename on the
-     * writing side otherwise passes both suites. Re-capture, do not hand-edit.
+     * The exact bytes `SyncManifest` wrote. The writer lives in a module this one cannot
+     * import, so a rename there would otherwise pass both suites. Re-capture, never hand-edit.
      */
     @Test
     fun `a manifest the router actually wrote reads back whole`() {
@@ -206,10 +205,7 @@ class MirrorReportTest {
         assertNull(MirrorReport.build("not json at all"))
     }
 
-    /**
-     * `jsonPrimitive` throws on an object or an array, and [StatsRollup] catches
-     * per section, so a throw here takes the coverage card down with it.
-     */
+    /** [StatsRollup] catches per section, so a throw here takes the coverage card down with it. */
     @Test
     fun `a member of the wrong type costs that member, never a throw`() {
         val doc =
@@ -270,7 +266,7 @@ class MirrorReportTest {
         assertEquals(listOf(1), kindsOf(doc))
     }
 
-    /** The document is rebuilt member by member, so a manifest cannot smuggle its own JSON into ours. */
+    /** The document is rebuilt member by member, so a manifest cannot smuggle JSON into ours. */
     @Test
     fun `unknown members of the manifest are not relayed`() {
         val doc = MirrorReport.build("{\"streams\":[{\"name\":\"content\",\"dir\":\"down\",\"kinds\":[1],\"note\":\"hello\"}],\"extra\":{\"x\":1}}")

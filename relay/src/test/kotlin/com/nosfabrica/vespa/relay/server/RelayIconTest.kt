@@ -46,7 +46,7 @@ class RelayIconTest {
     fun `an unset icon becomes this relay's own, at the origin and never at the relay's path`() {
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com"))
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com/"))
-        // The icon is at the root wherever the websocket answers, because that is where `favicon()` mounts it.
+        // The icon is at the root wherever the websocket answers; that is where `favicon()` mounts it.
         assertEquals("https://relay.example.com/favicon.ico", selfIconUrl("wss://relay.example.com/alpha"))
         assertEquals("https://relay.example.com:8443/favicon.ico", selfIconUrl("wss://relay.example.com:8443"))
         // RELAY_HTTP_URL is already http; the caller passes whichever it has.
@@ -55,7 +55,7 @@ class RelayIconTest {
 
     @Test
     fun `an address a stranger cannot reach publishes no icon at all`() {
-        // The compose default: concatenating blindly would sign `localhost` into a public kind 0 on every development boot.
+        // The compose default: concatenating blindly would sign `localhost` into a public kind 0.
         assertNull(selfIconUrl("ws://localhost:7777"))
         assertNull(selfIconUrl("http://192.168.1.4:7777"))
         assertNull(selfIconUrl("ws://relay.example.com"), "plain ws clearnet is not a deployment we can name")
@@ -71,7 +71,7 @@ class RelayIconTest {
     @Test
     fun `our own url is not an override, the redirect would point at itself`() {
         val self = "https://relay.example.com/favicon.ico"
-        // With RELAY_ICON unset the doc carries our own url; as an override it would redirect /favicon.ico to itself.
+        // With RELAY_ICON unset the doc carries our own url, which must not redirect to itself.
         assertNull(iconOverride(self, self))
         assertNull(iconOverride(null, self))
         assertNull(iconOverride("", self))
@@ -106,7 +106,7 @@ class RelayIconTest {
     @Test
     fun `an icon from a NIP-86 rpc cannot break out of the attribute it lands in`() {
         val html = assertNotNull(javaClass.getResource("/index.html")?.readText())
-        // `changerelayicon` is an admin rpc over the network, and this puts its argument into a page served to everyone.
+        // `changerelayicon` is a network rpc whose argument lands in a page served to everyone.
         val themed = pageWithIcon(html, """x" onerror="alert(1)" a="<script>&""")
         assertFalse(themed.contains("onerror=\""), "the quote must not close the attribute")
         assertFalse(themed.contains("<script>"))
@@ -127,7 +127,7 @@ class RelayIconTest {
         page.icon("https://cdn.example/logo.png")
         assertTrue(page.page.html.contains("https://cdn.example/logo.png"))
         assertFalse(page.page.html.contains("./web/favicon.svg"))
-        // The etag has to move too, or a reader who has the page keeps the old icon until a `no-cache` page expires, which is never.
+        // The etag has to move too, or a reader who has the page keeps the old icon forever.
         assertTrue(before.etag != page.page.etag, "a new drawing needs a new validator")
 
         page.icon(null)

@@ -26,25 +26,12 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * EVERY SETTING `.env.example` DOCUMENTS HAS TO REACH A CONTAINER.
- *
- * Compose injects only what a service maps. A variable documented here and
- * unmapped there does not fail — it is simply ignored, and the operator gets a
- * relay that quietly does not do the thing they configured. This repo has been
- * bitten twice: the NIP-86 ban list was read by the relay and never passed
- * through, so a `.env` ban was silently unenforced; and the pulse page's port
- * was documented before it was mapped, so the page never appeared.
- *
- * The check is deliberately loose about HOW a name reaches compose — an
- * `environment:` mapping, a `ports:` entry, a `mem_limit`, a volume path — and
- * strict about it appearing at all.
+ * Every setting `.env.example` documents has to reach a container. Compose injects only
+ * what a service maps, and an unmapped setting is ignored rather than refused. The check
+ * is loose about how a name reaches compose and strict about it appearing at all.
  */
 class ComposePassesEnvTest {
-    /**
-     * Documented settings that deliberately never reach a container, each for
-     * its own reason. A short list on purpose: every addition is a claim that
-     * an operator setting the variable should see nothing happen under compose.
-     */
+    /** Documented settings that deliberately never reach a container, each with its reason. */
     private val exempt =
         mapOf(
             "RELAY_HTTP_URL" to "derived from RELAY_URL; only set on a deployment that terminates TLS elsewhere",
@@ -63,8 +50,6 @@ class ComposePassesEnvTest {
     fun `every documented setting is mapped, referenced, or exempt`() {
         val documented = DOCUMENTED.findAll(repoFile(".env.example").readText()).map { it.groupValues[1] }.toSet()
         val compose = repoFile("docker-compose.yml").readText()
-        // Either mapped into a service's environment, or used anywhere else in
-        // the file — a port, a memory limit, a mounted path.
         val reaching =
             MAPPED.findAll(compose).map { it.groupValues[1] }.toSet() +
                 REFERENCED.findAll(compose).map { it.groupValues[1] }.toSet()
@@ -76,8 +61,7 @@ class ComposePassesEnvTest {
             "documented in .env.example and never reaching a container: $unreachable — add each to the " +
                 "service's `environment:` block, or to this test's `exempt` map with the reason it does nothing.",
         )
-        // And the exemptions have to stay real: one for a setting that has been
-        // deleted is a note nobody will ever read again.
+        // An exemption for a deleted setting is a note nobody will read again.
         val stale = exempt.keys.filterNot { it in documented }.sorted()
         assertTrue(stale.isEmpty(), "exempt but no longer documented in .env.example: $stale")
     }
@@ -86,10 +70,8 @@ class ComposePassesEnvTest {
     fun `the pulse settings reach both services`() {
         val compose = repoFile("docker-compose.yml").readText()
 
-        // Named rather than left to the sweep above: this page is the one whose
-        // absence is silent in BOTH directions — an unmapped port means no page,
-        // and an unmapped admin list means a boot that stops. The mirror needs
-        // RELAY_ADMIN_PUBKEYS for the same gate the relay uses.
+        // Named outright because both halves fail silently: an unmapped port means no
+        // page, an unmapped admin list means a boot that stops.
         for (name in listOf("PULSE_PORT", "PULSE_PUBLIC_URL", "PULSE_CLIENT_DETAIL", "PULSE_SLOW_READ_MS")) {
             assertTrue(compose.contains("$name: \${$name"), "$name is not passed to the relay service")
         }
@@ -106,8 +88,7 @@ class ComposePassesEnvTest {
     fun `the pulse ports are published on loopback only`() {
         val compose = repoFile("docker-compose.yml").readText()
 
-        // The one document here that is not public. The status pages beside it
-        // are published on every interface on purpose; these must not be.
+        // The status pages beside it are public on purpose; the pulse document is not.
         for (port in listOf("PULSE_PORT", "SYNC_PULSE_PORT")) {
             assertTrue(
                 compose.contains("\"127.0.0.1:\${$port"),
@@ -124,7 +105,7 @@ class ComposePassesEnvTest {
         /** `NAME: ${…}` inside a service's `environment:` block. */
         val MAPPED = Regex("""^\s{6}([A-Z][A-Z0-9_]{2,}):""", RegexOption.MULTILINE)
 
-        /** `${NAME…}` anywhere — a port, a memory limit, a mounted path. */
+        /** `${NAME` anywhere in the file: a port, a memory limit, a mounted path. */
         val REFERENCED = Regex("""\$\{([A-Z][A-Z0-9_]{2,})""")
     }
 }

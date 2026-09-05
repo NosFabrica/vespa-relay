@@ -50,10 +50,7 @@ class StatsYqlTest {
         assertEquals(listOf("2025-01-05", "2025-10-09"), groups.mapNotNull { StatsYql.valueOf(it)?.let(StatsYql::isoDay) })
     }
 
-    /**
-     * The fixture's own pair, `2025-1-5` beside `2025-10-9`, happens to sort
-     * correctly as text; the values that break differ in digit count at one position.
-     */
+    /** The values that misorder as text differ in digit count at one position; the fixture's pair does not. */
     @Test
     fun `unpadded day values are the ones that misorder`() {
         val calendar = listOf("2025-2-1", "2025-11-1", "2026-1-5", "2026-1-15")
@@ -95,7 +92,7 @@ class StatsYqlTest {
         assertTrue(events.keys == authors.keys && authors.all { (kind, a) -> a < events.getValue(kind) }, "authors cannot exceed their own events")
     }
 
-    /** Hand-built, not captured: no version we run answers uncollapsed, but an upgrade that does must still give a number. */
+    /** Hand-built, not captured: an upgrade that answers uncollapsed must still give a number. */
     @Test
     fun `distinct count also reads an uncollapsed nested list`() {
         val nested =
@@ -177,10 +174,7 @@ class StatsYqlTest {
 
     // ---- the other bucket decoders ------------------------------------------
 
-    /**
-     * Epoch second 0 is a Thursday, so the shift in [StatsYql.WEEK] is what
-     * puts buckets on Mondays. The indices came back from a real node.
-     */
+    /** Epoch second 0 is a Thursday; the shift in [StatsYql.WEEK] is what puts buckets on Mondays. */
     @Test
     fun `week buckets start on monday`() {
         assertEquals("2026-04-06", StatsYql.isoWeekStart("2936"))
@@ -193,7 +187,7 @@ class StatsYqlTest {
         assertEquals(0, StatsYql.WEEK.count { it == '%' }, "the pipeline is a literal expression, not a format string")
     }
 
-    /** `year * 12 + month`, where December must stay in its year rather than rolling into January. */
+    /** `year * 12 + month`; December must stay in its year rather than roll into January. */
     @Test
     fun `month buckets decode year and month, december included`() {
         assertEquals("2026-04", StatsYql.isoMonth("24316"), "the value a real node returned for April 2026")
@@ -207,9 +201,8 @@ class StatsYqlTest {
     }
 
     /**
-     * Every label must be one [StatsYql.isoMonth] would produce: the rollup
-     * fills gaps by matching these strings against decoded buckets, and a month
-     * spelled two ways draws twice.
+     * Every label must be one [StatsYql.isoMonth] would produce: the rollup fills gaps by
+     * matching these strings against decoded buckets, and a month spelled two ways draws twice.
      */
     @Test
     fun `the month axis runs from the anchor to now, in the format the buckets decode to`() {
@@ -226,7 +219,7 @@ class StatsYqlTest {
         assertEquals("2026-08", later.last())
         assertEquals(44, later.size, "Jan 2023 through Aug 2026 inclusive")
 
-        // One second before the anchor month is December, and a window opening there returns a bucket for it.
+        // One second before the anchor month is December, and a window opening there buckets it.
         val start = StatsYql.startOfMonth(jan2023)
         assertEquals(at("2023-01-01T00:00:00Z"), start)
         assertEquals("2022-12", months(YearMonth.of(2022, 12), start - 1).last())
@@ -337,7 +330,7 @@ class StatsYqlTest {
     fun `every aggregation is unranked, unlimited and unsorted`() {
         val q = StatsYql.query(StatsYql.countsBy("kind"), StatsYql.window(100, 200))
         assertEquals("select * from event where created_at >= 100 and created_at <= 200 limit 0 | all(group(kind) each(output(count())))", q)
-        // `order by` would reintroduce the match phase that unranked avoids, and a capped match set undercounts silently.
+        // `order by` would reintroduce the match phase unranked avoids; a capped match set undercounts.
         assertTrue(!q.contains("order by"))
         assertEquals("-1", StatsYql.params["grouping.defaultMaxGroups"])
         assertEquals("-1", StatsYql.params["grouping.defaultMaxHits"])
@@ -361,13 +354,13 @@ class StatsYqlTest {
         assertEquals("created_at <= 500", StatsYql.upTo(500))
         assertEquals("created_at > 500", StatsYql.after(500))
         assertEquals("kind = 1 and created_at <= 500", StatsYql.kindUpTo(1, 500))
-        // The two partition the corpus at one instant, so a total can be reassembled from the pair.
+        // The two partition the corpus at one instant, so a total reassembles from the pair.
         assertTrue(StatsYql.upTo(500).contains("<= 500") && StatsYql.after(500).contains("> 500"))
     }
 
     @Test
     fun `the window is closed at both ends`() {
-        // The upper bound keeps one event dated 2100 from opening a bucket 74 years out.
+        // The upper bound keeps a future-dated event from opening a bucket years out.
         assertEquals("created_at >= 10 and created_at <= 20", StatsYql.window(10, 20))
         assertEquals("kind = 1 and created_at >= 10 and created_at <= 20", StatsYql.windowOfKind(1, 10, 20))
     }
