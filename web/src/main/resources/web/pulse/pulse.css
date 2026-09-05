@@ -1,0 +1,29 @@
+/*
+ * The pulse page's own styling, on top of the stats pages' shared stylesheet.
+ * A file rather than a <style> block so this page's Content-Security-Policy can
+ * be `style-src 'self'` with no `unsafe-inline` — see installPulseDefaults.
+ */
+/* The health strip's own tone: a tile whose number is a rate reads as a
+   rate, not as a total, without a second glance at the label. */
+.tile .v small { font-size: .5em; font-weight: 500; color: var(--muted); margin-left: .2em; }
+/* Ports under their activity: indented, quieter, and never a card of their own. */
+tr.port td:first-child { padding-left: 1.1rem; color: var(--muted); }
+tr.act td { font-weight: 620; border-top: 1px solid var(--line); }
+/* The share bar sits inside its cell so the column stays scannable. */
+td .frac { min-width: 4rem; }
+/* A hex key or a query string: monospace and breakable, never widening the table. */
+td.q { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .71rem; word-break: break-all; }
+/* A slow read's YQL, kept to one line with the whole of it on hover. Without
+   the cap, thirty rows of a query carrying two hundred ids IS the page. */
+td.q.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 26rem; word-break: normal; }
+.note { color: var(--muted); font-size: .78rem; margin: .5rem 0 0; }
+/* The one action on the page, and the one way back off it. */
+button.signin {
+  font: inherit; margin-top: .6rem; padding: .5rem .9rem; border-radius: 6px;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--surface); cursor: pointer;
+}
+button.signin[disabled] { opacity: .6; cursor: default; }
+button.linkish {
+  font: inherit; font-size: .74rem; padding: 0; border: 0; background: none;
+  color: var(--accent); cursor: pointer; text-decoration: underline;
+}

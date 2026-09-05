@@ -356,7 +356,9 @@ administrator.
   Everything with data is behind the guard; an anonymous visitor gets a sign-in
   prompt.
 - The site installs **no CORS** and refuses to be framed, because it answers
-  with a cookie.
+  with a cookie. Its policy is `default-src 'none'` with no `unsafe-inline` on
+  script or style — which is why this page alone keeps its logic and styling in
+  files rather than in the markup.
 
 **Still don't publish this port.** The sign-in is the boundary that matters;
 the port is the one that survives a mistake in it. Bind it on the private side

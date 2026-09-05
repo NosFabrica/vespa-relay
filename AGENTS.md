@@ -30,7 +30,14 @@ the same reason (`NoBrowserFilesInEngineModulesTest`). `:web` also owns the
 admin gate on `/pulse.json` (`AdminGate`, `Nip98AdminGate`, `AdminSessions`),
 which is why it depends on quartz: verifying an `Authorization` header belongs
 beside the routes it protects, and the dependency can only run one way — Ktor
-must never reach `:common`. One `stats.html`
+must never reach `:common`.
+
+`pulse.html` is the one page here whose logic and styling are NOT inline
+(`web/pulse/page.js`, `web/pulse/pulse.css`). It is the one page serving a
+non-public document, so its policy is `default-src 'none'` with no
+`unsafe-inline` on script or style — which an inline `<script>` cannot satisfy.
+Putting one back would not fail loudly; the page would just stop working, in a
+browser only, so `PulseSiteTest` fails the build instead. One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.

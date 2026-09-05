@@ -326,12 +326,55 @@ class PulseSiteTest {
             // signature; every number is behind the guard.
             assertEquals(HttpStatusCode.OK, html.status)
             val body = html.bodyAsText()
-            assertTrue(body.contains("pulse.json"), "the page must read the document this site serves")
-            assertTrue(body.contains("Administrators only"), "an unauthenticated visitor must be told what this is")
+            // The shell is now markup only — the prompt itself lives in the module,
+            // which is where it has to be checked.
+            assertTrue(body.contains("./web/pulse/page.js"), "the page must load its logic")
+            assertTrue(
+                client.get("/web/pulse/page.js").bodyAsText().contains("Administrators only"),
+                "an unauthenticated visitor must be told what this is",
+            )
+            assertTrue(client.get("/web/pulse/page.js").bodyAsText().contains("pulse.json"), "the page must read the document this site serves")
 
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the pulse page")
             }
+        }
+
+    @Test
+    fun `the page carries no inline script or style, so the policy can forbid both`() =
+        testApplication {
+            mount(guard())
+
+            val body = client.get("/").bodyAsText()
+
+            // THE REASON THIS PAGE IS SHAPED DIFFERENTLY from every other page
+            // here. `script-src 'self'` cannot admit an inline script, so putting
+            // one back would not fail loudly — the page would simply stop
+            // working, and only in a browser. This fails in the build instead.
+            assertFalse(body.contains("<script>") || body.contains("<script type=\"module\">"), "the page carries an inline script")
+            assertFalse(body.contains("<style"), "the page carries an inline stylesheet")
+            assertFalse(body.contains("style=\""), "the page carries an inline style attribute")
+            assertTrue(body.contains("src=\"./web/pulse/page.js\""), "the page must load its logic from a file")
+        }
+
+    @Test
+    fun `the policy denies by default and admits no inline code`() =
+        testApplication {
+            mount(guard())
+
+            val csp = assertNotNull(client.get("/").headers["Content-Security-Policy"])
+
+            assertTrue(csp.contains("default-src 'none'"), "every kind of load must be named explicitly")
+            assertTrue(csp.contains("script-src 'self'") && !csp.contains("script-src 'self' 'unsafe-inline'"))
+            assertFalse(csp.contains("unsafe-inline"), "an injected script or style must not be able to run")
+            assertFalse(csp.contains("unsafe-eval"))
+            assertTrue(csp.contains("connect-src 'self'"), "the page may only talk to its own origin")
+            assertTrue(csp.contains("frame-ancestors 'none'"))
+            assertTrue(csp.contains("base-uri 'none'"), "nothing may rewrite what a relative url resolves against")
+            // The one relaxation, and only for images: a NIP-86 rpc can point this
+            // deployment's icon at another origin, and a favicon loads under
+            // `img-src`. An image cannot execute.
+            assertTrue(csp.contains("img-src 'self' data: https:"))
         }
 
     @Test
@@ -399,6 +442,8 @@ class PulseSiteTest {
                 "/web/shared/page.js",
                 "/web/shared/pulse.js",
                 "/web/shared/pulseauth.js",
+                "/web/pulse/page.js",
+                "/web/pulse/pulse.css",
             )
     }
 }

@@ -110,7 +110,11 @@ export async function signIn(session) {
   // dialled); the request goes to the address this browser can actually reach.
   // Signing one and sending to the other is what makes a tunnelled or proxied
   // deployment work without the operator having to make the two agree.
-  const here = new URL("/pulse/session", location.href).href;
+  // Document-relative, not root-absolute: if this page were ever mounted behind
+  // a path prefix, `/pulse/session` would leave the prefix behind. The url the
+  // TOKEN is signed over still comes from the relay, which is the only side
+  // that knows its own configured origin.
+  const here = new URL("./pulse/session", location.href).href;
   const token = await nip98Token(session?.url || here, method);
   const res = await fetch(here, {
     method,
@@ -125,6 +129,6 @@ export async function signIn(session) {
 /** End the session. Best effort: a logout that fails must still clear the page. */
 export async function signOut() {
   try {
-    await fetch(new URL("/pulse/logout", location.href).href, { method: "POST", credentials: "same-origin" });
+    await fetch(new URL("./pulse/logout", location.href).href, { method: "POST", credentials: "same-origin" });
   } catch (e) { /* the cookie expires on its own */ }
 }

@@ -88,8 +88,19 @@ class PulseGuard(
  * `SameSite=Strict` on the cookie is the other half; both are needed, because
  * either alone has been enough to lose this argument before.
  *
- * The CSP is the same rule for embedding: nothing frames this page, and it
- * loads nothing but its own origin.
+ * THE CSP DENIES BY DEFAULT and names every kind of load this page makes. No
+ * `unsafe-inline` on either script or style, which is why this page — alone
+ * among the pages in this repo — keeps its logic in `/web/pulse/page.js` and
+ * its styling in `/web/pulse/pulse.css` rather than in the markup: an inline
+ * `<script>` cannot satisfy `script-src 'self'`, and that is the point. Every
+ * value the page renders already goes through `textContent`, so this is the
+ * second lock rather than the first; on the one page here that is not public,
+ * a second lock is worth the file.
+ *
+ * `img-src` is the one relaxation, and only for `https:`. A NIP-86 rpc can
+ * point this deployment's icon at another origin, and a favicon is fetched
+ * under `img-src`; refusing it would break a setting that has nothing to do
+ * with this page. An image cannot execute.
  */
 fun Application.installPulseDefaults() {
     install(Compression) {
@@ -105,8 +116,8 @@ fun Application.installPulseDefaults() {
                 call.response.header("Referrer-Policy", "no-referrer")
                 call.response.header(
                     "Content-Security-Policy",
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-                        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+                    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+                        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
                 )
             }
         },
