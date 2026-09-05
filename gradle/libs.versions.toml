@@ -373,8 +373,27 @@ quartz = "cecc3287b2"
 # LEXICOGRAPHIC: 'e0e6…' > '9f07…' ('e' > '9'), so this sorts ABOVE the pin it
 # replaces — the safe direction, and as the previous two notes say, one that
 # has never been needed: nothing else in the graph names vespa-eventstore.
-# 8a643d4e27 = vespa-eventstore main @ 2026-09-04, the merge of PR #103 — the
-# grouping aggregate the discovery fast path calls.
+# ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of PR #104 and
+# #105 (the lock audit) over #103's grouping aggregate.
+#
+# WHY THIS BUMP: the trust-gate split shipped with the locks in the wrong
+# order. A card took `writes` and then waited for `trustGate` WHILE HOLDING IT,
+# so for the length of a drain slice every plain writer in the process queued
+# behind the card — measured here at a 20s hold on `lock.ingest.hold` with
+# `lock.ingest.trust.wait` at 13,645,290ms. `cedd2aa` inverts it: the gate is
+# taken first, holding nothing, then `writes` for one short hold. It also
+# splits pure-record batches so only the card portion pays the gate at all,
+# and `364d419` makes the dirt ledger lock-free.
+#
+# WHAT IT DOES NOT FIX, so the next reader does not expect it to: the trust
+# derive still reads inside the gate, ~25,000 documents per 50 subjects
+# (FETCH_CHUNK), ~14.5s per 500-subject slice. One kind-10040 provider-list
+# change re-derives every subject its services ever scored — three of them in
+# 24h produced ~4 hours of gate time here. Cards stay slow; what this bump
+# frees is everything that is NOT a card, above all the monitor's kind-30166
+# verdicts, which had fallen to ~1/min with 18,157 grades still to restore.
+# Superseded: 8a643d4e27 = the merge of PR #103 — the grouping aggregate the
+# discovery fast path calls.
 #
 # ON A MAIN COMMIT AGAIN. #196 merged while this line still named
 # `claude/distinct-tags-grouping`'s own sha, which resolved (that commit is an
@@ -395,7 +414,7 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-vespaEventStore = "8a643d4e27"
+vespaEventStore = "ec2976b679"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
