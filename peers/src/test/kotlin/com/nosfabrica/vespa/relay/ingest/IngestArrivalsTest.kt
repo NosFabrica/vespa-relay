@@ -34,10 +34,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * What `submitted` counts: every event that entered the channel, and nothing the
- * refusal filter turned away before it, which has its own counter.
- */
+/** `submitted` counts what entered the channel, not what the refusal filter turned away. */
 class IngestArrivalsTest {
     private fun event(n: Int) =
         Event(

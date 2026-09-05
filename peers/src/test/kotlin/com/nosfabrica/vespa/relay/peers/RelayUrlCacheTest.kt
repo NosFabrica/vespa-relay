@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
 
 /** The memo over [RelayDiscovery.normalize]'s rules. Every test is about the answer, not the hit. */
 class RelayUrlCacheTest {
-    /** `allowOnion` is not part of the key, so one cache must answer both ways for the same string, in either order. */
+    /** `allowOnion` is not part of the key, so one cache must answer both ways for one string. */
     @Test
     fun `the onion gate survives being cached under the other answer`() {
         val onion = "wss://vespaxyz2h4pnvxvxjyklnvvbfvvvvvvvvvvvvvvvvvvvvvvvvvvid.onion"
@@ -76,7 +76,7 @@ class RelayUrlCacheTest {
         assertEquals(1, cache.size(), "one spelling is one entry however often it arrives")
     }
 
-    /** The keys come from strangers' relay lists, so the map is dropped whole at the cap; a miss costs a parse, never an answer. */
+    /** The keys come from strangers' lists, so the map is dropped whole at the cap; a miss costs a parse. */
     @Test
     fun `an invented flood cannot grow the map without bound`() {
         val cache = RelayUrlCache(maxEntries = 64)

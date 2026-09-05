@@ -26,11 +26,9 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 
 /**
- * Prices a relay-list read two ways against a real store: the paged `/search/`
- * scan [RelayDiscovery.discover] runs, and the per-tag `distinctTagValues`
- * corpus visit it replaced. Asserts nothing; prints both clocks and any
- * disagreement between the two answers. Read-only, selected by `BENCH_VESPA_URL`;
- * `BENCH_LIST_VISIT=0` skips the visit arm, which is a real corpus walk.
+ * Prices a relay-list read two ways against a real store: the paged scan
+ * [RelayDiscovery.discover] runs and the per-tag `distinctTagValues` corpus visit.
+ * Read-only; selected by `BENCH_VESPA_URL`, and `BENCH_LIST_VISIT=0` skips the visit arm.
  */
 class RelayListReadCostBench {
     private val url = System.getenv("BENCH_VESPA_URL")
@@ -65,8 +63,7 @@ class RelayListReadCostBench {
                 }
                 val visitTotal = System.nanoTime() - visitStart
 
-                // One paged walk answering every tag, with `distinctTagValues`' own
-                // predicate so the two sides compare as sets and not only as clocks.
+                // The same predicate as `distinctTagValues`, so the two sides compare as sets, not only clocks.
                 val viaIndex = HashMap<String, MutableSet<String>>()
                 val at = System.nanoTime()
                 var events = 0
@@ -81,8 +78,7 @@ class RelayListReadCostBench {
                 val indexTotal = System.nanoTime() - at
 
                 println("  TOTAL  index ${secs(indexTotal)} over 1 walk of $events event(s)")
-                // Paging is a function of the match set, so this rate is what says
-                // when the store needs to project `tags` off a search.
+                // This rate says when the store needs to project `tags` off a search.
                 println("  RATE   index ${"%.3f".format(indexTotal / 1_000_000.0 / events.coerceAtLeast(1))} ms/event")
                 if (viaVisit.isNotEmpty()) {
                     println("  TOTAL  visit ${secs(visitTotal)} over ${tags.size} corpus walk(s)")

@@ -77,8 +77,7 @@ class IngestDedupTest {
             val pipeline =
                 IngestPipeline(
                     store,
-                    // One worker: two would split the offer into halves that
-                    // each fall under the probe's width gate.
+                    // One worker: two would split the offer under the probe's width gate.
                     IngestTuning(concurrency = 1, batch = 1000),
                     audit = null,
                     servingPressure = null,
@@ -103,8 +102,7 @@ class IngestDedupTest {
             // Queued before the workers start, so the whole offer drains as one batch.
             offer.forEach { pipeline.submit(it, skipVerify = false) }
             pipeline.start()
-            // Every offered event lands in exactly one of the two counters, so
-            // their sum is the settled condition.
+            // Every offered event lands in exactly one counter, so their sum is the settled condition.
             var waitedMs = 0
             while (pipeline.accepted.get() + pipeline.rejected.get() < offer.size && waitedMs < SETTLE_TIMEOUT_MS) {
                 delay(5)
@@ -177,8 +175,7 @@ class IngestDedupTest {
     fun `a replaceable the store already beats is dropped without being verified`() {
         val people = (0 until 200).map { NostrSignerSync() }
         val newest = people.map { profile(it, 1_700_001_000L) }
-        // Older versions of the same addresses, forged. Different ids, so only
-        // the version probe can see them.
+        // Different ids, so only the version probe can see them.
         val stale = people.map { forge(profile(it, 1_700_000_000L)) }
 
         val (pipeline, _, stored) = ingest(preload = newest, offer = stale)
@@ -227,8 +224,7 @@ class IngestDedupTest {
     @Test
     fun `an addressable is left to the store, whose version query the router does not reproduce`() {
         val author = NostrSignerSync()
-        // One address (same d tag), older then newer. Dropping one on a query
-        // shape the router got wrong would be a lost event, not a slow one.
+        // Dropped on a query shape the router got wrong, this is a lost event, not a slow one.
         val d = arrayOf(arrayOf("d", "rank"))
         val older = author.sign<Event>(1_700_000_000L, 30382, d, "old")
         val newer = author.sign<Event>(1_700_001_000L, 30382, d, "new")
@@ -245,8 +241,7 @@ class IngestDedupTest {
         val author = NostrSignerSync()
         val v1 = profile(author, 1_700_000_000L)
         val v2 = profile(author, 1_700_001_000L)
-        // v2 lands on its own tombstone and v1 survives; collapsing the batch
-        // to v2 would leave the address empty.
+        // v2 lands on its own tombstone and v1 survives; collapsed to v2 the address is empty.
         val delete = author.sign<Event>(1_700_002_000L, 5, arrayOf(arrayOf("e", v2.id)), "")
 
         val (pipeline, store, _) = ingest(preload = emptyList(), offer = listOf(v1, delete, v2))

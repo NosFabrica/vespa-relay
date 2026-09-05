@@ -74,8 +74,7 @@ class RelaySocketsTest {
         try {
             val sockets = RelaySockets(client, pinnedUrls = emptySet())
 
-            // Nothing ever subscribed to this url, so quartz's pool holds nothing
-            // for it: the state a release lands in once the fetch has unsubscribed.
+            // The pool holds nothing for this url: the state a release lands in once the fetch has unsubscribed.
             sockets.claim(probed)
             sockets.release(probed)
 

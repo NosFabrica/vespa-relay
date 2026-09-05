@@ -38,10 +38,9 @@ import kotlin.random.Random
 import kotlin.test.Test
 
 /**
- * What one arriving event costs ingest, split by the verdict it ends on,
- * measured end to end through the real [IngestPipeline] against a live Vespa.
- * Asserts nothing; prints one `COST-BENCH` line per arm. Skipped unless
- * `BENCH_VESPA_URL` names an engine (see the Commands section of AGENTS.md).
+ * What one arriving event costs ingest, by the verdict it ends on, through the real
+ * [IngestPipeline] against a live Vespa. Asserts nothing; prints one `COST-BENCH` line
+ * per arm. Skipped unless `BENCH_VESPA_URL` names an engine.
  */
 class IngestCostBench {
     private val url = System.getenv("BENCH_VESPA_URL")
@@ -53,14 +52,13 @@ class IngestCostBench {
         gen: Int = 0,
     ): List<Event> = (0 until n).map { signer.sign<Event>(BASE_TIME + gen * 1_000_000L + it, 1, emptyArray(), "note $it gen $gen") }
 
-    /** Kind-0 profiles for [n] distinct authors; a later [gen] is a newer version of the same address with a different id. */
+    /** Kind-0 profiles for [n] authors; a later [gen] is a newer version of the same address. */
     private fun profiles(
         n: Int,
         gen: Int,
     ): List<Event> =
         (0 until n).map {
-            // A signer per author: kind 0's address is (kind, pubkey), so one
-            // signer would make these n generations of one profile.
+            // A signer per author, or these are n generations of one profile.
             authors[it].sign<Event>(BASE_TIME + gen * 1_000_000L, 0, emptyArray(), """{"name":"author $it","about":"gen $gen"}""")
         }
 
@@ -70,7 +68,6 @@ class IngestCostBench {
         val label: String,
         val events: List<Event>,
         val probe: Boolean,
-        /** The pipeline shape to price this arm at. See [sweepShapes]. */
         val tuning: IngestTuning = IngestTuning(concurrency = 2, batch = 1000),
     )
 
@@ -129,57 +126,44 @@ class IngestCostBench {
 
             run(store, Arm("warm-up (ignore)", notes(CORPUS, gen = 9), probe = true))
 
-            // 1. Fresh: nothing is known, every event is written, the probe is
-            //    a guaranteed miss.
             run(store, Arm("fresh notes", base, probe = false))
             run(store, Arm("fresh profiles gen1", genOne, probe = false))
 
-            // 2. Exact duplicates, with and without the probe.
             run(store, Arm("duplicate notes", base, probe = false))
             run(store, Arm("duplicate notes", base, probe = true))
 
-            // 3. Stale replaceables arriving after gen1 is stored: new ids, same
-            //    addresses, older. Only the version probe can see them.
+            // Stale replaceables have new ids at held addresses, so only the version probe sees them.
             val genZero = profiles(CORPUS, gen = 0)
             run(store, Arm("stale replaceable, no version probe", genZero, probe = false))
             run(store, Arm("stale replaceable, version probe", genZero, probe = true))
             run(store, Arm("stale replaceable, no version probe (repeat)", genZero, probe = false))
             run(store, Arm("stale replaceable, version probe (repeat)", genZero, probe = true))
 
-            // 4. Newer replaceables over gen1: same addresses, accepted, superseding.
             run(store, Arm("newer replaceable profiles", profiles(CORPUS, gen = 2), probe = true))
 
-            // 5. The deciding pair again, interleaved, so a warming engine
-            //    cannot be read as a difference between arms.
+            // Interleaved repeats, so a warming engine cannot be read as a difference between arms.
             run(store, Arm("duplicate notes (repeat)", base, probe = false))
             run(store, Arm("duplicate notes (repeat)", base, probe = true))
 
-            // 6. The production mix: 98% held, 2% new, which is where the write
-            //    and the writer lock come into play. A distinct generation per
-            //    arm, because each arm stores its 2%; a fixed seed so runs compare.
+            // A distinct generation per arm, because each arm stores its 2%; a fixed seed so runs compare.
             val keep = CORPUS * 98 / 100
             val add = CORPUS - keep
             run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 5)).shuffled(Random(7)), probe = false))
             run(store, Arm("98% dup / 2% fresh", (base.take(keep) + notes(add, gen = 6)).shuffled(Random(7)), probe = true))
             run(store, Arm("98% dup / 2% fresh (repeat)", (base.take(keep) + notes(add, gen = 7)).shuffled(Random(7)), probe = true))
 
-            // 7. The same 98/2 work through three pipeline shapes. See [sweepShapes].
             sweepShapes(store, base.take(keep))
 
-            // 8. The same shapes on an all-fresh burst. See [sweepFreshShapes].
             sweepFreshShapes(store)
 
-            // 9. What a supersession pre-filter would cost, priced against arm 3.
             priceVersionLookup(store, genZero)
             priceIdProbe(store, base)
         }
     }
 
     /**
-     * A 100%-fresh burst through the same three shapes, forwards then backwards.
-     * Every arm writes [CORPUS] new documents, so each meets a bigger index than
-     * the last; the reversed pass puts that drift against the width. If the two
-     * passes disagree about which shape wins, the ordering is corpus growth.
+     * An all-fresh burst through the same shapes, forwards then backwards: every arm
+     * grows the index, so a shape that wins only one way is winning on corpus growth.
      */
     private fun sweepFreshShapes(store: VespaEventStore) {
         val shapes =
@@ -194,11 +178,9 @@ class IngestCostBench {
     }
 
     /**
-     * The same 98/2 batch through three pipeline shapes. The store takes one
-     * writer mutex per commit, so a lock hold is worth the survivors it writes,
-     * `batch x (1 - dropRate)`; the shapes ask whether fewer, wider workers beat
-     * more, narrower ones. [IngestPipeline] caps a batch at `capacity / workers`,
-     * which is the reason for the third row.
+     * The 98/2 batch through three shapes: a writer-lock hold is worth the survivors it
+     * writes, so fewer, wider workers may beat more, narrower ones. The third row is the
+     * pipeline's `capacity / workers` cap.
      */
     private fun sweepShapes(
         store: VespaEventStore,

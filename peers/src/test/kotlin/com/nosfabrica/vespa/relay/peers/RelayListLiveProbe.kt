@@ -43,10 +43,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 
 /**
- * Pulls real kind-10040 declarations off a live relay into a real Vespa, runs
- * [RelayDiscovery.discover] over `router.conf.example`'s monitor sources, then
- * re-answers through the tags projection so the two can be compared. Asserts nothing.
- * Selected by `-DliveListProbe=true`; `-DliveListRelay`, `-DliveListVespa`, `-DliveListKind` override.
+ * Pulls live kind-10040 declarations into a real Vespa, runs [RelayDiscovery.discover]
+ * over `router.conf.example`'s monitor sources, and re-answers through the tags projection
+ * so the two can be compared. Asserts nothing. Selected by `-DliveListProbe=true`;
+ * `-DliveListRelay`, `-DliveListVespa` and `-DliveListKind` override the defaults.
  */
 class RelayListLiveProbe {
     private val enabled = System.getProperty("liveListProbe") == "true"
@@ -105,8 +105,7 @@ class RelayListLiveProbe {
                 val visitTook = System.nanoTime() - visitAt
                 println("LIVE-LIST projection: ${viaVisit.size} raw value(s) in ${secs(visitTook)} over ${selects.size} corpus walk(s)")
 
-                // The projection returns raw values the scan's url rules then filter, so
-                // only a url the scan found and the projection did not is a disagreement.
+                // The projection is unfiltered, so only a url the scan found and it missed is a disagreement.
                 val scanned = found.map { it.url.url }.toSet()
                 val onlyScan = scanned.filterNot { s -> viaVisit.any { it.trimEnd('/') == s.trimEnd('/') } }
                 println("LIVE-LIST agreement: ${scanned.size} scanned, ${viaVisit.size} projected, ${onlyScan.size} the projection missed")
@@ -117,10 +116,7 @@ class RelayListLiveProbe {
             }
         }
 
-    /**
-     * One REQ collected to EOSE, answering NIP-42 with a throwaway key if the relay
-     * asks. Every control frame is printed; the relay saying no is part of the reading.
-     */
+    /** One REQ collected to EOSE, answering NIP-42 with a throwaway key; every control frame is printed. */
     private fun pull(
         url: String,
         kind: Int,
@@ -136,8 +132,7 @@ class RelayListLiveProbe {
             java.util.concurrent.atomic
                 .AtomicBoolean(false)
 
-        // A throwaway key has no kind 10040, so this relay's trust lens answers a plain REQ
-        // with nothing; its auth-required notice names `include:spam` as the unranked ask.
+        // Under the relay's trust lens a throwaway key gets nothing; `include:spam` is the unranked ask.
         fun req(
             ws: WebSocket,
             unranked: Boolean,
@@ -191,8 +186,7 @@ class RelayListLiveProbe {
                                 }
                             }
 
-                            // Not a finish line: a relay refusing the unauthenticated REQ closes
-                            // that subscription and then serves the next one.
+                            // Not a finish line: a refused subscription is followed by the next one being served.
                             "CLOSED", "NOTICE", "OK" -> {
                                 println("LIVE-LIST relay said: $text".take(300))
                             }

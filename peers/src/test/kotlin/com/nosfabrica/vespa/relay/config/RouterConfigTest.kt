@@ -37,7 +37,6 @@ class RouterConfigTest {
             TagCondition(maxSize = 2),
         )
 
-    // The exact strfry-style routerConfigOverride an operator would drop in.
     private val streamsConfig =
         """
         connectionTimeout = 20
@@ -252,19 +251,16 @@ class RouterConfigTest {
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.urls.map { it.url })
         assertEquals(2, outbox.sources.size)
 
-        // One scan over three kinds, three selects sorting them out.
         val lists = outbox.sources[0]
         assertEquals(listOf(10002, 10040, 10050), lists.filter.kinds)
         assertEquals(3, lists.selects.size)
 
-        // Defaults: index 1, no where filter, and a kind-less select applies to all.
         val nip65 = lists.selects[0]
         assertEquals(10002, nip65.kind)
         assertEquals("r", nip65.tag)
         assertEquals(1, nip65.urlIndex)
         assertEquals(nip65Write, nip65.where)
 
-        // A NIP-85 service tag, named exactly, with the url after the pubkey.
         val provider = lists.selects[1]
         assertEquals("30382:rank", provider.tag)
         assertEquals(2, provider.urlIndex)
@@ -272,7 +268,6 @@ class RouterConfigTest {
 
         assertNull(lists.selects[2].kind, "no kind = every event the filter collected")
 
-        // The second scan is a bounded sweep of a regular kind, filter fields and all.
         val hints = outbox.sources[1]
         assertEquals(listOf(1), hints.filter.kinds)
         assertEquals(1000, hints.filter.limit)
@@ -320,8 +315,7 @@ class RouterConfigTest {
                 .single()
                 .discovery!!
                 .exclude
-        // No regex metacharacter (a dot is not one), so the first two are plain
-        // urls, normalized like a `urls` entry and matching exactly one relay each.
+        // A dot is not a regex metacharacter, so the first two are plain urls matching one relay each.
         assertTrue(RelayUrlNormalizer.normalize("wss://purplepag.es") in exclude)
         assertTrue(RelayUrlNormalizer.normalize("wss://directory.yabu.me") in exclude)
         // Never a longer url it sits inside, nor the host its dots would reach as a regex.
@@ -394,20 +388,17 @@ class RouterConfigTest {
 
     @Test
     fun `a negative since, until or limit is refused at parse time`() {
-        // NIP-01 allows none of the three negative, and a relay's reaction never
-        // names the config behind it.
+        // A relay's reaction to a negative bound never names the config behind it.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": -1 }"""))
         }
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": -1 }"""))
         }
-        // quartz drops a filter whose limit is already met, so a negative limit
-        // reads as a relay with no events.
+        // quartz drops a filter whose limit is already met, so a negative limit reads as an empty relay.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": -1 }"""))
         }
-        // Zero is legal for each, for its own reason; see the two tests below.
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": 0 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
@@ -415,8 +406,7 @@ class RouterConfigTest {
 
     @Test
     fun `a zero limit stays legal, it is the live-only idiom, not a mistake`() {
-        // `limit = 0` is NIP-01 for "no stored events, only the live tail": the paged
-        // walk drops the filter before its first REQ, and the tail still subscribes with it.
+        // `limit = 0` is NIP-01 for the live tail only: the paged walk drops the filter, the tail keeps it.
         val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
         assertEquals(
             0,
@@ -432,8 +422,7 @@ class RouterConfigTest {
 
     @Test
     fun `a zero since is the absence of a floor, so it is normalised to absent`() {
-        // `created_at` is unsigned, so `since = 0` asks for what omitting `since`
-        // asks for; kept as 0 it read as bounded to every `since != null` check.
+        // `created_at` is unsigned, so `since = 0` and no `since` ask for the same thing.
         val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
         assertNull(
             cfg
@@ -464,8 +453,7 @@ class RouterConfigTest {
 
     @Test
     fun `an inverted window is refused rather than recorded as settled history`() {
-        // since > until matches nothing, the relay EOSEs an empty page, the walk
-        // reports DRAINED, and the band records a settled past that could hold no event.
+        // since > until drains an empty page, and the band records a settled past that could hold no event.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1700000000, "until": 1600000000 }"""))
         }
@@ -568,8 +556,7 @@ class RouterConfigTest {
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 4, maxSize = 3 } ] }""") }
         // An equals whose element can't exist under the entry's own maxSize.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { index = 2, equals = "write", maxSize = 2 } ] }""") }
-        // A minSize the url guard already guarantees is always true, and one
-        // always-true entry in an OR list disables the others.
+        // An always-true minSize disables every other entry in the OR list.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 2 } ] }""") }
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 0 } ] }""") }
         // The smallest minSize that can actually filter is one past the url slot.
@@ -578,8 +565,6 @@ class RouterConfigTest {
 
     @Test
     fun `deleteMissing needs the pool's audit, a relay source and its clock`() {
-        // The comparison runs as the history audit over asks paired with their
-        // owners, so both the relaySource and the audit's clock are required.
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -650,8 +635,6 @@ class RouterConfigTest {
 
     @Test
     fun `a stream may set its own re-walk period, floored and read per stream`() {
-        // A visit pages before it audits, so a re-walk on the audit's period
-        // re-pages everything and then reconciles the same ground.
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -677,8 +660,7 @@ class RouterConfigTest {
 
     @Test
     fun `the renamed knobs still answer to their old names, loudly`() {
-        // Every old spelling parses, warns, and means the same thing: a renamed
-        // key must never silently turn a deployment's reconciles or fast lane off.
+        // A renamed key must never silently turn a deployment's reconciles or fast lane off.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -704,8 +686,7 @@ class RouterConfigTest {
 
     @Test
     fun `a retracting stream's every ask must be author-bound, the delete's whole licence is per provider`() {
-        // An unbound ask on a retracting stream would reconcile every provider's
-        // owned records against one relay and delete whatever it happens not to hold.
+        // An unbound ask would reconcile every provider's records against one relay and delete the rest.
         fun stream(source: String) =
             RouterConfigLoader.parse(
                 """
@@ -769,8 +750,7 @@ class RouterConfigTest {
             ).streams
             .single()
 
-        // Without ownedKinds every other kind in the filter is deleted for being
-        // absent from a relay that never held it.
+        // Without ownedKinds every kind in the filter is deleted for being absent from a relay that never held it.
         assertFailsWith<IllegalArgumentException> {
             stream(""""kinds": [0, 10002, 30382]""", """deleteMissing = true""")
         }
@@ -849,8 +829,7 @@ class RouterConfigTest {
 
         // Element 0 is the tag name, never a value.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "30382:rank", relay = 2, authors = 0 }""") }
-        // Rejected rather than ignored: a binding that silently bound nothing
-        // is a stream quietly syncing the wrong thing.
+        // Rejected rather than ignored: a binding that bound nothing is a stream syncing the wrong thing.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "30382:rank", relay = 2, authors = "author" }""") }
         // `relay` and `index` are the same slot under two names.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", relay = 1, index = 1 }""") }
@@ -1063,7 +1042,6 @@ class RouterConfigTest {
                 )
             }
         }
-        // A stream that says nothing about transport still parses.
         assertEquals(1, RouterConfigLoader.parse(stream("""urls = [ "wss://a.example" ]""")).streams.size)
     }
 
@@ -1076,8 +1054,6 @@ class RouterConfigTest {
 
     @Test
     fun `a relaySource asking for kind 30166 is the monitor's verdicts, verified`() {
-        // The verdict-built list is a relaySource: the same filter spelling,
-        // routed to the verified read instead of the tag scan.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -1128,8 +1104,7 @@ class RouterConfigTest {
                 .single()
         assertEquals(null, bare.maxAgeSeconds, "no bound is inferred from the kind, or from any tag in the filter")
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), bare.selects)
-        // A wide config stays wide: a filter asking for every verdict, `dead`
-        // included, is not narrowed to `prime` by any layer.
+        // A filter asking for every verdict, `dead` included, is not narrowed to `prime` by any layer.
         assertEquals(null, bare.filter.tags, "no tag predicate is added to a filter that carries none")
         // A select written by hand is honoured.
         assertEquals(
@@ -1143,11 +1118,9 @@ class RouterConfigTest {
                 .single()
                 .selects,
         )
-        // Any tag value parses: what a value in a tag means is the operator's
-        // opinion, not the loader's.
+        // What a tag value means is the operator's opinion, not the loader's.
         RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#l": ["dead"] } }"""))
-        // The `d`-tag default is a NIP-66 fact about kind 30166 and says nothing
-        // about where kind 10002 keeps its urls.
+        // The `d`-tag default is a fact about kind 30166, not about where kind 10002 keeps its urls.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166, 10002] } }"""))
         }
@@ -1193,8 +1166,7 @@ class RouterConfigTest {
                 .single()
                 .filter.authors,
         )
-        // Bech32 is refused rather than decoded, an nsec by name, and a malformed
-        // value for shape; a malformed key selects nothing and says nothing.
+        // Bech32 is refused rather than decoded; a malformed key selects nothing and says nothing.
         RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
         for (bad in listOf(
             "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2",
@@ -1324,8 +1296,7 @@ class RouterConfigTest {
         assertEquals(64, tuned.streams.single().visitConcurrency)
         assertEquals(900, tuned.streams.single().maxLiveConcurrency)
 
-        // Absent is uncapped, not defaulted onto the stream: the pool stands in
-        // its own number for a stream that names none.
+        // Absent is uncapped: the pool stands in its own number for a stream that names none.
         val silent = RouterConfigLoader.parse(block(""))
         assertNull(silent.streams.single().visitConcurrency)
         assertNull(silent.streams.single().maxLiveConcurrency)
@@ -1335,8 +1306,7 @@ class RouterConfigTest {
         assertEquals(1, floored.streams.single().visitConcurrency)
         assertEquals(1, floored.streams.single().maxLiveConcurrency)
 
-        // At the router level they are refused: accepted and dropped, a
-        // deployment would believe it had bounded its dials.
+        // Accepted and dropped at the router level, a deployment would believe it had bounded its dials.
         for (moved in listOf("visitConcurrency = 64", "tailBudget = 900")) {
             val boom = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse("$moved\n${block("")}") }
             assertTrue(boom.message!!.contains("moved inside"), boom.message!!)
@@ -1345,8 +1315,7 @@ class RouterConfigTest {
 
     @Test
     fun `gatedBy is a stream-level filter over any kind`() {
-        // `gatedBy` sits on the stream, beside `exclude`: the right to be dialled
-        // is not a property of how a url was found.
+        // The right to be dialled is not a property of how a url was found.
         val cfg =
             RouterConfigLoader.parse(
                 stream(
@@ -1371,8 +1340,7 @@ class RouterConfigTest {
         assertEquals(null, gate.filter.authors, "absent authors is the unscoped read, not a substituted identity")
         // NIP-66 fixes the url in the `d` tag, so a 30166 gate needs no select.
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), gate.selects)
-        // Nothing is inferred where none is written: which filters go stale is
-        // the operator's knowledge.
+        // Which filters go stale is the operator's knowledge, so no age is inferred.
         assertEquals(
             null,
             RouterConfigLoader
@@ -1394,8 +1362,7 @@ class RouterConfigTest {
 
     @Test
     fun `a source or gate over anything but kind 30166 has to say where its urls sit`() {
-        // Only NIP-66 fixes the url's position; a guessed index for any other
-        // kind reads the wrong slot in silence.
+        // A guessed url index for any kind but 30166 reads the wrong slot in silence.
         val e =
             assertFailsWith<IllegalArgumentException> {
                 RouterConfigLoader.parse(
@@ -1434,8 +1401,7 @@ class RouterConfigTest {
 
     @Test
     fun `an absolute and a relative bound cannot both be written`() {
-        // The relative bound wins at read time, so an absolute one beside it
-        // would be read by a human and by nothing else.
+        // The relative bound wins at read time, so an absolute one beside it is read by nobody.
         for (body in listOf(
             """relaySource = [ { filter = { "kinds": [30166], "since": 1700000000 }, maxAgeSeconds = 3600 } ]""",
             """relaySource = [ { filter = { "kinds": [30166] } } ]
@@ -1450,8 +1416,7 @@ class RouterConfigTest {
 
     @Test
     fun `an ungated stream parses, because nothing here can tell a gate from a scan`() {
-        // Which tag and value constitute a vouching is the operator's choice, so
-        // the loader cannot tell a gate from a scan; an ungated stream says so at boot.
+        // Which tag and value vouch is the operator's choice; an ungated stream is warned about at boot.
         val ungated =
             RouterConfigLoader.parse(
                 stream("""relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]"""),
@@ -1488,7 +1453,6 @@ class RouterConfigTest {
 
     @Test
     fun `the old spellings name their replacements`() {
-        // Both shipped in running configs, so the error says what to write instead.
         for ((body, expect) in listOf(
             """relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] }, certified = {} } ]""" to "gatedBy",
             """relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] },
@@ -1526,8 +1490,7 @@ class RouterConfigTest {
         val discovery = cfg.streams.single().discovery!!
         assertEquals(2, discovery.sources.size, "two ways of finding urls, one list")
         assertEquals(7200L, discovery.sources.first().maxAgeSeconds)
-        // One gate over both: permission is a question about the stream, not
-        // about how a url was found.
+        // One gate over both: permission is about the stream, not how a url was found.
         assertEquals(1, discovery.gatedBy.size)
         assertEquals(
             listOf(listOf(30166), listOf(10009)),
