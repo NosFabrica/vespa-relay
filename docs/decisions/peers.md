@@ -208,3 +208,24 @@ never lost to it.
 **The verdict word is `prime`, not `syncable`.** The old word named our use of
 the relay on a record published for everyone; a crawler, an archiver and a
 client choosing read relays want the same composite and none of them sync.
+
+**Discovery lets the engine's `tag_index` aggregate answer a source, and the
+preconditions are the whole of the safety.** `RelayDiscovery.aggregable` is
+pure and public so each condition can be tested on its own, because a wrong
+yes does not throw: it answers a superset, urls nobody named, dialled as if
+they had been. `tag_index` is lossy three ways at once (single-letter names,
+first values only, nothing of the rest of the tag), and every clause is a way
+the caller's question stops surviving all three: `maxRelaysPerList` drops an
+event for naming too many relays and an aggregate has no events to drop, so
+the multi-thousand-entry synthetic lists would come straight back in; a
+`where` is a condition on another element of the tag; `bindings` pair a url
+with a value from the same tag occurrence and an aggregate has no occurrences;
+a multi-character tag name is not in the index at all and `urlIndex != 1`
+reads a value it does not keep. Where it applies, one grouping per select
+replaces a walk of the corpus (about a second against minutes over millions
+of NIP-65 lists), and the raw urls take the same `normalize` the paged path
+applies per tag.
+
+**`RelayFacts` writes no `g` and no `T`.** Both need something this process
+does not have: a GeoIP database for the geohash and a classifier for the
+relay type. A tag left out is honest; a guessed one is a signed claim.

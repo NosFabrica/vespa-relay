@@ -225,3 +225,9 @@ pass that is late rather than one in progress.
 **The fast lane does not bump `generation`.** The counter has no reader in the
 router today, and making the lane move it would be an unobservable behaviour
 change; worth revisiting the day something reads it.
+
+**`collapse` leaves two cases alone on purpose.** A present but un-dialable
+survivor, and an elected stand-in that the caller's own gate then drops, are not
+handled there: the stand-in election only fires for a survivor absent from the
+candidate set, and a survivor that is present but does not answer is the
+fitness pass's `dead` verdict to take, which then holds it out of the next set.

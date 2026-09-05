@@ -168,3 +168,39 @@ everything they were walking through.
 **One `avatarHtml`, with size as an argument.** Four modules had grown their own
 face markup; they differed only in how big the face was and in which of the
 three parts (picture, generated fallback, score chip) they had forgotten.
+
+**The pulse page polls every two seconds.** `/pulse.json` is a read of in-process counters,
+not a rollup of Vespa queries, so it costs the relay nothing comparable to the stats page's
+thirty-second floor, and a thirty-second window smooths away the spike an operator opened the
+page to see. `shared/pulse.js` differences cumulative counters into rates over that window.
+
+**Rates are measured on the server's own clock, never the browser's.** `windowOf` takes the
+window between two documents from `uptimeSeconds`; a reader whose clock is minutes off would
+otherwise see every rate scaled by the error. Uptime going backwards means the process
+restarted and every counter with it, so the baseline is dropped rather than differenced into a
+large negative rate.
+
+**Gauges are never differenced, and have their own accessor and panel.** A queue depth is not
+a rate and "total ever queued" answers nothing, so `gaugesOf` is kept apart from every counter
+accessor and the gauges are drawn in their own panel, never mixed into the rate strip, so the
+distinction survives a refactor.
+
+**A lock wait is charged to its first holder.** Over a long wait the store mutex may change
+hands several times; all of that wait is attributed to whoever held it when the waiter
+arrived, and the page states that rather than implying a per-holder split.
+
+**Client sections are gated on the document's own flag.** `showsClients` reads
+`clientDerived`, not whether the observer, search-term and slow-read arrays are present: a
+build that serves no client sections and a relay nobody has searched yet both produce empty
+arrays, and only the flag tells them apart.
+
+**The slow-read column shows the predicate.** Every YQL the store emits opens with the same
+projection (`select id, pubkey, created_at, ... from event where ...`), so a column of them
+truncated to forty characters read identically; `whereOf` cuts at ` where ` and the whole
+statement stays on the row's tooltip. A shape with no `where` is shown untouched rather than blank.
+
+**`DOMINANT_SHARE` is strictly past one half, and `CHATTY_CALLS_PER_DOC` is four.** An even
+two-way split is exactly 0.5 and has no dominant half, so naming one there would be a sentence
+the table contradicts. One engine call per document is the floor for a read that returns what
+it asked for and two is a probe plus a write, so four is the store's own "never ingest in a
+loop over insert()" contract as a number.
