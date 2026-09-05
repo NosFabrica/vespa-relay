@@ -414,15 +414,14 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 598ec75e30 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
-# telemetry branch (its docs/telemetry.md is the design record).
+# b7c32aeb6d = vespa-eventstore main @ 2026-09-05, the merge of PR #107 — the
+# telemetry work (its docs/telemetry.md is the design record).
 #
-# A BRANCH COMMIT, deliberately and temporarily. The store PR is open; this
-# repo's own rule is that `main` must never carry a branch dependency, so this
-# line is re-pinned to the merge sha before the relay PR merges — the same two
-# repos, one order: store PR first, then re-pin, then the relay PR. It is here
-# now because the page below cannot compile against a store that does not yet
-# have `metrics()`.
+# BACK ON A MAIN COMMIT, which is the state this line has to land in. While the
+# store PR was open this named a branch sha, deliberately and temporarily: the
+# page below cannot compile against a store without `metrics()`. The two repos
+# land in one order — store PR, then this re-pin, then the relay PR — and this
+# is the step that gets skipped when both merge together.
 #
 # WHY THIS BUMP: `/pulse.html`. The relay could say what it was DOING (the
 # store-call registry, the ingest stage split) but not what any of it COST.
@@ -457,18 +456,18 @@ quartz = "cecc3287b2"
 # note before deploying this pin, not this one.
 #
 # DIRECTION: 1a3f91b is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this branch is main plus the telemetry.
+# --is-ancestor`, not the dates) — this is main including PR #106.
 #
-# LEXICOGRAPHIC: '598e…' < 'ec29…' ('5' < 'e'), so this sorts BELOW the pin it
-# replaces — the unsafe direction, which a branch sha will be about half the
-# time. It needs no `force(…)` either way, for the reason the notes above give:
-# nothing else in the graph names vespa-eventstore, so there is no conflict for
-# ordering to settle, and the merge sha this is re-pinned to before landing
-# settles it for good. The resolved graph is the proof, and every
-# eventstore line reads 598ec75e30 with no `->` left anywhere:
+# LEXICOGRAPHIC: 'b7c3…' < 'ec29…' ('b' < 'e'), so this sorts BELOW the pin it
+# replaces — the unsafe direction, which roughly half of all shas will be, and
+# the reason this file states it every time rather than trusting to luck. It
+# needs no `force(…)`, for the reason the notes above give: nothing else in the
+# graph names vespa-eventstore, so there is no conflict for ordering to settle.
+# The resolved graph is the proof, and every eventstore line reads b7c32aeb6d
+# with no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# WHAT THE LAST COMMIT ON THAT BRANCH IS: `TrustReconciler` was handed the RAW
+# WHAT THE LAST COMMIT UNDER #107 IS: `TrustReconciler` was handed the RAW
 # engine index while everything else got the metered decorator, so its corpus
 # walks — the heaviest read the store makes — were booked under no activity at
 # all. Watching /pulse.html during a reconcile showed a store doing nothing
@@ -482,7 +481,7 @@ quartz = "cecc3287b2"
 # Truncated to 16 chars at the producer, with the rule now asserted on both
 # sides rather than written in prose.
 #
-# WHAT THE SECOND COMMIT ON THAT BRANCH IS, because building this page is what
+# AND THE ONE THAT PRECEDED BOTH, because building this page is what
 # found it: `topObservers`, `topTerms` and `slowReads` were ALWAYS EMPTY. All
 # three were built, bounded, unit-tested and published in the snapshot, and
 # nothing ever wrote to them — the join between the pieces did not exist, and
@@ -494,7 +493,7 @@ quartz = "cecc3287b2"
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
 # PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
 # reached through 1a3f91b, which is main including it.
-vespaEventStore = "598ec75e30"
+vespaEventStore = "b7c32aeb6d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
