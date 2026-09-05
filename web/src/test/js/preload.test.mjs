@@ -1,15 +1,12 @@
-// The modulepreload hints in index.html must match what app.js reaches: a
-// stale hint is a wasted 404, a missing one puts the module back on the slow
-// path, and neither fails anywhere else.
+// The modulepreload hints in index.html must match what app.js reaches: a stale hint is a
+// wasted 404, a missing one puts the module back on the slow path.
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-// Resolved from this file, not the working directory: a crawler that finds no
-// files reports an empty graph and calls the hints stale.
+// Resolved from this file, not the working directory, or an empty graph calls the hints stale.
 const RES = fileURLToPath(new URL("../../main/resources/", import.meta.url));
-// Resource-root-relative with no leading slash, which is what both the
-// document-relative hints and the file walk normalise to.
+// Resource-root-relative with no leading slash, which both the hints and the file walk normalise to.
 const entry = "web/app.js";
 
 const reached = new Set();

@@ -1,7 +1,5 @@
-// What the pulse page decides: turning cumulative counters into rates, and the
-// judgements that can be wrong silently. The page's DOM is not tested here;
-// its arithmetic is, because a rate over the wrong window is a number an
-// operator will act on and cannot see is wrong.
+// What the pulse page decides: turning cumulative counters into rates, and the judgements that
+// can be wrong silently.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -17,13 +15,11 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 
 // ── the window every rate is measured over ──────────────────────────────────
 {
-  // The server's own clock, not the browser's: a reader whose clock is minutes
-  // off would otherwise see every rate on the page scaled by the error.
+  // The server's own clock, not the browser's.
   assert.equal(windowOf(doc({ uptimeSeconds: 110 }), doc({ uptimeSeconds: 100 })), 10);
   assert.equal(windowOf(doc(), null), null, "the first poll has no baseline and must show no rate");
 
-  // THE RESTART. Uptime going backwards means every counter reset with it;
-  // differencing across that would draw one enormous spike that never happened.
+  // Uptime going backwards means every counter reset with it; there is no window across a restart.
   assert.equal(windowOf(doc({ uptimeSeconds: 3 }), doc({ uptimeSeconds: 9_000 })), null);
   // Two polls inside the same second are not a window either.
   assert.equal(windowOf(doc({ uptimeSeconds: 100 }), doc({ uptimeSeconds: 100 })), null);
@@ -34,8 +30,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
   assert.equal(rateOf(150, 100, 10), 5);
   assert.equal(rateOf(100, null, 10), null, "no previous value is no rate, not a rate of zero");
   assert.equal(rateOf(100, 100, null), null, "no window is no rate");
-  // A counter that went backwards without uptime doing so (a ledger reset) is
-  // clamped rather than drawn as a negative rate.
+  // A counter that went backwards without uptime doing so is clamped, not a negative rate.
   assert.equal(rateOf(10, 100, 10), 0);
   ok("a rate needs both a baseline and a window, and is never negative");
 }
@@ -60,9 +55,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 
   assert.equal(rows[0].callsPerSec, 10, "100 more calls over a 10s window");
   assert.equal(rows[1].callsPerSec, 10);
-  // The share is of PORT TIME — the store's wall time inside the engine calls —
-  // which is the only total this page has. Against the engine's own internal
-  // time it would be a different number and a different claim.
+  // The share is of port time, the store's wall time inside the engine calls, the only total this page has.
   assert.equal(rows[0].share, 0.9);
   assert.equal(rows[0].label, ACTIVITY_LABELS.BatchInsert);
   assert.equal(rows[0].ports[0].callsPerSec, 1);
@@ -82,16 +75,14 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 }
 
 {
-  // A process that has done nothing has no shares, not shares of zero: 0/0 as
-  // a bar would draw every activity at nothing and read as a bug in the page.
+  // A process that has done nothing has no shares, not shares of zero.
   const rows = activityRowsOf(doc({ activities: [{ activity: "Query", calls: 3, ms: 0, docs: 0, ports: [] }] }), null);
   assert.equal(rows[0].share, null);
   ok("no time booked yet is no share, not a share of zero");
 }
 
 {
-  // The store's own contract ("never ingest in a loop over insert()") as a
-  // number: a port booking several calls per document is the shape that broke it.
+  // The store's own contract ("never ingest in a loop over insert()") as a number.
   const rows = activityRowsOf(doc({ activities: [{ activity: "Insert", calls: 12_000, ms: 60_000, docs: 1_000, ports: [
     { call: "Search", calls: 11_000, ms: 50_000, docs: 1_000, callsPerDoc: 11 },
     { call: "Put", calls: 1_000, ms: 10_000, docs: 1_000, callsPerDoc: 1 },
@@ -103,9 +94,8 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 
 // ── percentiles ─────────────────────────────────────────────────────────────
 {
-  // THE BUG THIS IS WRITTEN AGAINST. A write shape keeps no histogram; the
-  // document publishes no percentile for it, and the page must not fill the
-  // hole with a zero — "p99 0ms" reads as instant when it means unmeasured.
+  // A write shape keeps no histogram, so the document publishes no percentile for it, and a
+  // zero would read as instant where it means unmeasured.
   const worst = slowestOf(doc({ activities: [
     { activity: "BatchInsert", calls: 1, ms: 9_000, docs: 1, ports: [{ call: "Put", calls: 1, ms: 9_000, docs: 1, callsPerDoc: 1 }] },
     { activity: "Query", calls: 1, ms: 5, docs: 1, ports: [{ call: "Search", calls: 1, ms: 5, docs: 1, callsPerDoc: 1, p50Ms: 1, p99Ms: 40, measured: 900 }] },
@@ -126,8 +116,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
   assert.equal(a.admittedPerSec, 10);
   assert.equal(a.offeredPerSec, 40, "the gap between the two is what says to narrow a sync");
 
-  // A fresh process has no admission rate. Drawing 0% would read as a store
-  // refusing everything, which is the opposite of the truth.
+  // A fresh process has no admission rate; a zero would read as a store refusing everything.
   assert.equal(admissionOf(doc({ outcomes: { admitted: 0, offered: 0 } }), null), null);
   assert.equal(admissionOf(doc(), null), null);
   ok("admission is a share of what was offered, and nothing offered is no share");
@@ -160,8 +149,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
   assert.equal(rows[0].servedShare, 0.025, "2.5% of what the engine matched reached a client");
   assert.equal(rows[0].matchedPerQuery, 400);
 
-  // Nothing matched is not "0% served": a query that matched nothing and a
-  // relay that ran no queries are different facts and must not draw alike.
+  // A query that matched nothing and a relay that ran no queries are different facts.
   assert.equal(engineRowsOf(doc({ engine: [{ profile: "text", queries: 3, engineMs: 1, summaryMs: 0, docsMatched: 0, hitsServed: 0, degraded: 0, rungs: 0 }] }), null)[0].servedShare, null);
   ok("the engine's matched-against-served is a share, and nothing matched is no share");
 }
@@ -175,13 +163,11 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
     ] }],
   } }));
   assert.equal(held[0].heldSec, 20);
-  // The whole reason the `behind` member exists: `lock.ingest.wait 40s` only
-  // prompts a question; "95% of it behind derive" names a fix.
+  // `behind` is what turns a wait into a fix: it names what the wait was behind.
   assert.equal(wait[0].behind[0].share, 0.95);
   assert.equal(wait[0].behind[1].share, 0.05);
 
-  // A wait attributed to nobody must not divide by zero into NaN — that is
-  // exactly the state the store was in before the mutex-identity fix.
+  // A wait attributed to nobody must not divide by zero into NaN.
   const orphan = locksOf(doc({ locks: { wait: [{ stage: "lock.gate.wait", ms: 0, behind: [{ holder: "?", ms: 0 }] }] } }));
   assert.equal(orphan.wait[0].behind[0].share, 0);
   assert.deepEqual(locksOf(doc()), { held: [], wait: [] });
@@ -194,8 +180,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
     doc({ uptimeSeconds: 110, stages: [{ stage: "proj.fetch.derive", ms: 20_000, calls: 12, meanMs: 1_666, maxMs: 9_000 }, { stage: "lock.ingest.wait", ms: 5_000 }] }),
     doc({ uptimeSeconds: 100, stages: [{ stage: "proj.fetch.derive", ms: 10_000, calls: 6, meanMs: 1_666, maxMs: 9_000 }, { stage: "lock.ingest.wait", ms: 4_000 }] }),
   );
-  // Seconds of work per second of wall clock. 1.0 saturates one thread; above
-  // 1.0 is concurrency and not an error, which is why this is not a percentage.
+  // Seconds of work per second of wall clock: above 1.0 is concurrency, not an error, so not a percentage.
   assert.equal(rows[0].busy, 1, "10s of stage time over a 10s window is one saturated thread");
   assert.equal(rows[1].busy, 0.1);
   assert.equal(rows[1].calls, undefined, "a lock's wait/hold pair carries no call count, and no mean can be made from one");
@@ -205,9 +190,8 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 
 // ── what a document says about itself ───────────────────────────────────────
 {
-  // Read from the flag, never inferred from the arrays: a build that serves no
-  // client sections and a relay nobody has searched yet both publish nothing,
-  // and only the flag tells them apart.
+  // Read from the flag, never inferred from the arrays: a build that serves no client sections
+  // and a relay nobody has searched yet both publish nothing.
   assert.equal(showsClients(doc({ clientDerived: true })), true);
   assert.equal(showsClients(doc({ clientDerived: false, hotspots: { observers: [], terms: [] } })), false);
   assert.equal(showsClients(doc({})), false, "a document that does not say is treated as not saying it");
@@ -215,9 +199,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 }
 
 {
-  // Every YQL this store emits opens with the same projection, so a column of
-  // them truncates to the same forty characters and says nothing. What differs
-  // between two slow reads is the predicate.
+  // Every YQL this store emits opens with the same projection; what differs is the predicate.
   assert.equal(
     whereOf('select id, pubkey, created_at, kind, tags, content, sig, owner from event where kind in (1) order by created_at desc'),
     "kind in (1) order by created_at desc",
@@ -230,8 +212,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 }
 
 {
-  // Space-Saving overestimates and publishes by how much; a row whose error is
-  // most of its own weight may not belong in the list at all.
+  // Space-Saving overestimates and publishes by how much.
   assert.equal(uncertain({ key: "a", weight: 100, error: 90 }), true);
   assert.equal(uncertain({ key: "b", weight: 100, error: 2 }), false);
   assert.equal(uncertain({ key: "c", weight: 0, error: 0 }), false, "a zero-weight row is not 'uncertain', it is empty");
@@ -239,8 +220,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 }
 
 {
-  // Labelled for reading, but a gauge the store adds and this page has never
-  // heard of still draws — under its own key, rather than vanishing.
+  // A gauge the store adds and this page has never heard of still draws, under its own key.
   const labelled = gaugesOf(doc({ gauges: [{ gauge: "feed.inflight", value: 3 }, { gauge: "vacuum.depth", value: 9 }] }));
   assert.equal(labelled[0].label, GAUGE_LABELS["feed.inflight"]);
   assert.equal(labelled[1].label, "vacuum.depth");
@@ -251,8 +231,7 @@ const doc = (over = {}) => ({ schema: 1, uptimeSeconds: 100, clientDerived: fals
 
 // ── the glossary the page and the document have to agree on ─────────────────
 {
-  // A member renamed in Kotlin empties a panel with no failure in either
-  // language. These are the members this page reads by name.
+  // The members this page reads by name, so a rename in Kotlin fails here.
   const kt = readFileSync(new URL("../../../../common/src/main/kotlin/com/nosfabrica/vespa/relay/pulse/PulseDocument.kt", import.meta.url), "utf8");
   for (const member of [
     "activities", "ports", "callsPerDoc", "p50Ms", "p99Ms", "measured",

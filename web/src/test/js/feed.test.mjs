@@ -1,7 +1,5 @@
-// The latest feed's three rules: what counts as content, which kinds a chip
-// asks for, and what a time-ordered list drops before it can be called
-// "latest". The ask itself is the page's ordinary buildFilters(), covered by
-// query.test.mjs; only `kinds`, the field the chips set, is the feed's own.
+// The latest feed's three rules: what counts as content, which kinds a chip asks for, and what a
+// time-ordered list drops before it can be called "latest".
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
@@ -18,16 +16,14 @@ const NOW = 1_800_000_000;
 const id = (n) => String(n).padStart(64, "0");
 const ev = (n, over = {}) => ({ id: id(n), pubkey: "a".repeat(64), kind: 1, created_at: NOW - n, tags: [], ...over });
 
-// No `search` field is what makes this a plain NIP-01 read, the only read the
-// store answers newest-first. This is the signed-in shape: feedSearchString
-// returns "" only when there is a `me`.
+// No `search` field is what makes this a plain NIP-01 read, the only read the store answers
+// newest-first. feedSearchString returns "" only when there is a `me`.
 const filters = buildFilters("", { kinds: FEED_KINDS, limit: askFor(PAGE_CARDS) });
 assert.strictEqual(filters.length, 1, "no hashtags, no union — one filter");
 assert.deepStrictEqual(Object.keys(filters[0]).sort(), ["kinds", "limit"], "kinds and limit and nothing else");
 assert.deepStrictEqual(filters[0].kinds, FEED_KINDS);
 
-// Signed out, the ask must declare the waiver or the relay refuses it, and
-// `include:spam` carries no order.
+// Signed out, the ask must declare the waiver or the relay refuses it.
 const anon = buildFilters("", { kinds: FEED_KINDS, limit: askFor(PAGE_CARDS), searchString: () => "include:spam" });
 assert.deepStrictEqual(Object.keys(anon[0]).sort(), ["kinds", "limit", "search"], "the waiver and nothing else joins it");
 assert.strictEqual(anon[0].search, "include:spam", "no sort: and no observer: rode along with it");
@@ -57,8 +53,7 @@ for (const [slug, kinds] of tabs) {
   assert.deepStrictEqual(Object.keys(f[0]).sort(), ["kinds", "limit"], `chip "${slug}": no search field`);
 }
 
-// Why the chip replaces the default rather than intersecting it: pinned,
-// because an edit to either table is when the intersection looks tempting.
+// The chip replaces the default rather than intersecting it.
 const inert = tabs.filter(([, kinds]) => kinds && !kinds.some((k) => FEED_KINDS.includes(k)));
 assert.ok(
   inert.length >= 3,
@@ -75,14 +70,12 @@ assert.ok(
   "applyUrl()'s feed branch must read ?tab= — otherwise a shared narrowed feed opens as Everything",
 );
 
-// The rule hides the panel (three controls that ride on a search string this
-// view does not send), not the row, which also carries the chips and the syntax button.
+// The rule hides the panel, not the row, which also carries the chips and the syntax button.
 const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
 assert.ok(/body\.feed #adv \{ display: none/.test(html), "the feed hides the Filters panel");
 assert.ok(!/body\.feed \.bar(-right)? \{ display: none/.test(html), "…and not the row it sits in, which carries the chips and the syntax button");
 
-// Replies are dropped after the relay answers (NIP-01 cannot ask for their
-// absence), so the ask is widened; at the preview's size the floor does the work.
+// Replies are dropped after the relay answers (NIP-01 cannot ask for their absence), so the ask is widened.
 assert.ok(askFor(PREVIEW_CARDS) >= 24, "three cards are asked for as a sample, not as three");
 assert.ok(askFor(PAGE_CARDS) > PAGE_CARDS, "…and a hundred are asked for as more than a hundred");
 

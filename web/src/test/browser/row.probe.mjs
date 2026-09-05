@@ -1,8 +1,6 @@
-// The provenance row in a real Chromium against a real relay and an observer
-// corpus: the wiring the module tests cannot reach. Run by hand, never by
-// `./gradlew build`. The observer is passed as `as=` rather than signed in, so
-// a green run says nothing about the reader's own NIP-51 lists (see
-// docs/decisions/tests-web-b.md).
+// The provenance row in a real Chromium against a real relay and an observer corpus. Run by
+// hand, never by `./gradlew build`. The observer is passed as `as=` rather than signed in, so a
+// green run says nothing about the reader's own NIP-51 lists.
 //
 //   docker run -d --name vespa -m 9g -p 127.0.0.1:8080:8080 \
 //       -p 127.0.0.1:19071:19071 vespaengine/vespa
@@ -68,8 +66,7 @@ await page.waitForTimeout(4000);
 const afterTyping = await pills();
 ok(afterTyping > 0, `typing into the box leaves the row standing (${afterTyping} pills)`);
 
-// The entity view clears the row on the way in and must ask again for its
-// own subject; `related` is appended after the card, so the answer lands in the card.
+// The entity view clears the row on the way in and must ask again for its own subject.
 console.log("\nclicking through to a profile");
 await page.goto(`${BASE}/?q=${encodeURIComponent(QUERY)}&tab=people&as=${AS}`, { waitUntil: "domcontentloaded" });
 await waitForPills();

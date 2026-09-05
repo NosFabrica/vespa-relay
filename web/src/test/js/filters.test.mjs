@@ -1,7 +1,5 @@
-// The advanced filters panel against the badge count and the URL params: a
-// control added to the panel without both is a filter the page applies
-// invisibly. Adding one fails here until it has a badge fact and a URL param,
-// or is named below as not a filter.
+// The advanced filters panel against the badge count and the URL params: a control added to the
+// panel fails here until it has a badge fact and a URL param, or is named below as not a filter.
 
 import assert from "assert";
 import { readFileSync } from "node:fs";
@@ -23,8 +21,7 @@ assert.notStrictEqual(panelAt, -1, "index.html has no .adv-panel");
 const panel = html.slice(panelAt, html.indexOf("</details>", panelAt));
 const controls = [...panel.matchAll(/<(?:select|input)\b[^>]*\bid="([^"]+)"/g)].map((m) => m[1]).sort();
 
-// `state` is what the badge reads, which is not always the control itself:
-// the observer field is a search box over the picker, and the filter it sets is the lens.
+// `state` is what the badge reads, which is not always the control itself.
 const FILTERS = {
   sort:      { state: "$sort.value",    param: "sort" },
   obsfilter: { state: "viewingAs",      param: "as" },
@@ -53,9 +50,7 @@ for (const [id, f] of Object.entries(FILTERS)) {
   assert.ok(read.includes(`p.get("${f.param}")`), `applyUrl() never reads ?${f.param}= — #${id} does not survive a reload`);
 }
 
-// exportText() compares `sort` against a bare token to pick the reader's
-// question, so a renamed option restores the wrong question silently. Only
-// the spelling is held here; the behaviour lives in query.test.mjs.
+// exportText() compares `sort` against a bare token, so only the spelling is held here.
 const sortOptions = [...panel.matchAll(/<select id="sort"[\s\S]*?<\/select>/g)]
   .flatMap((sel) => [...sel[0].matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]));
 assert.ok(sortOptions.includes(""), "#sort must offer the empty default (relevance)");
