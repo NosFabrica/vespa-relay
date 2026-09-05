@@ -74,7 +74,7 @@ class AliasMonitorTest {
     private class World(
         private val urls: List<NormalizedRelayUrl>,
         override val progress: Processors.Handle? = null,
-        /** Run inside the derivation, the only moment its own phase is observable. */
+        /** Runs inside the derivation, the only moment its phase is observable. */
         private val whileDeriving: () -> Unit = {},
         private val fail: (() -> Throwable)? = null,
     ) : AliasMonitor.CandidateSource {
@@ -139,8 +139,7 @@ class AliasMonitorTest {
     @Test
     fun `a derivation that throws still stamps its clock`() =
         runBlocking {
-            // A walk that fails every sweep and one that never returns are different
-            // faults; a frozen clock under a phase stuck on `collecting` is what separates them.
+            // The clock is what tells a walk that fails from one that never returns.
             val processors = Processors()
             val row = processors.of("aliasSource")
             val world = World(listOf(a, b, c), progress = row, fail = { IllegalStateException("the store is down") })
@@ -156,7 +155,6 @@ class AliasMonitorTest {
     @Test
     fun `an empty world is an empty pass, not a measured one`() =
         runBlocking {
-            // A cold store has no relay lists yet; that is a retry, not a pass that ran.
             val pass = Recording()
             val m = sourced(pass, World(emptyList()))
 
@@ -168,7 +166,6 @@ class AliasMonitorTest {
     @Test
     fun `a world of ONE is measured, because only the fold needs a second url`() =
         runBlocking {
-            // The fold's own refusal lives in `AliasFolding.measure`, against the world it assembles.
             val pass = Recording()
             val m = sourced(pass, World(listOf(a)))
 
@@ -193,7 +190,6 @@ class AliasMonitorTest {
     @Test
     fun `cancellation ends the pass rather than being logged`() =
         runBlocking {
-            // Swallowed, the monitor would grind through every remaining stream after the scope was told to stop.
             val cancelling = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { CancellationException("scope closing") }))
             val after = Recording()
             val m = AliasMonitor(listOf(cancelling, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
@@ -238,8 +234,7 @@ class AliasMonitorTest {
     @Test
     fun `the generation moves only when a pass learns something`() =
         runBlocking {
-            // A version for streams holding a relay list across cycles; bumping it on a
-            // pass that learned nothing would force a full rediscovery for no gain.
+            // Bumping it on a pass that learned nothing would force a full rediscovery.
             var learn = 0
             val pass =
                 AliasMonitor.Pass { _, _, _, _, _ -> learn }
@@ -260,7 +255,6 @@ class AliasMonitorTest {
     @Test
     fun `the union's verdicts move one generation for every stream`() =
         runBlocking {
-            // A verdict is about a url, and two streams routinely discover the same one.
             val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == AliasMonitor.ALL_STREAMS) 4 else 0 }
             val m = monitor(pass, a, b, c)
 

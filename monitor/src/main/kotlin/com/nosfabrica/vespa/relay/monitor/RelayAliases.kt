@@ -275,7 +275,8 @@ class RelayAliases(
 
     /**
      * Fold a group nothing could be read from onto its leader, on the shared hostname alone.
-     * The one fold that rests on no measurement; every url must have been asked and been silent.
+     * The one fold that rests on no measurement. Every url must have answered; a silent url
+     * keeps its group out, or our own outage becomes a claim about their server.
      */
     fun foldUnreadable(
         group: List<NormalizedRelayUrl>,

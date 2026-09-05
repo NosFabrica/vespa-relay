@@ -37,10 +37,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/**
- * What the stability gate says about the urls it could not decide: each way of
- * failing comes out under its own reason, and the candidate set divides exactly once.
- */
+/** Each way of failing the stability gate comes out under its own reason, and the candidate set divides exactly once. */
 class ConsistencyReportTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val steady = RelayUrlNormalizer.normalize("wss://nos.lol")
@@ -52,10 +49,10 @@ class ConsistencyReportTest {
 
     private fun newStore() = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
 
-    /** A corpus deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE], as one page. */
+    /** A corpus deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE] as one page. */
     private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
-    /** A pass whose every url answers the same way, reporting into a real [Processors] handle. */
+    /** A pass whose every url answers through [fetch], reporting into a real [Processors] handle. */
     private fun pass(
         handle: Processors.Handle,
         store: NostrSemanticsStore = newStore(),
@@ -79,7 +76,6 @@ class ConsistencyReportTest {
     @Test
     fun `a url our own transport will not carry is not a claim about the relay`() =
         runBlocking {
-            // No socket is opened, so it must not count as a dial.
             val processors = Processors()
             val dials = AtomicInteger()
             val gate =
@@ -144,7 +140,7 @@ class ConsistencyReportTest {
                     .parent,
             )
 
-            // One of the two is a rate limiter's shape, not a dead host's.
+            // One answer of two is a rate limiter's shape, not a dead host's.
             val half = Processors()
             val answers = AtomicInteger()
             val once =
@@ -172,7 +168,6 @@ class ConsistencyReportTest {
     @Test
     fun `a credential refusal ends the ladder instead of paying for a second pair`() =
         runBlocking {
-            // After a refused AUTH the relay answers nothing more on that socket, so every further rung waits out its window.
             val processors = Processors()
             val dials = AtomicInteger()
             val gate =
@@ -189,8 +184,6 @@ class ConsistencyReportTest {
     @Test
     fun `the hosts under a reason are ranked, and do not pretend to be all of them`() =
         runBlocking {
-            // One host with four dead urls, four hosts with one each: the rank tells a dead network spread
-            // thin from a few servers wearing many urls.
             val processors = Processors()
             val wide = (1..4).map { RelayUrlNormalizer.normalize("wss://busy.example/$it") }
             val thin = (1..4).map { RelayUrlNormalizer.normalize("wss://lonely$it.example") }
@@ -202,7 +195,7 @@ class ConsistencyReportTest {
             assertEquals(8, row.urls)
             assertEquals(5, row.hosts)
             assertEquals("busy.example" to 4, row.top.first().let { it.host to it.urls })
-            // Sorted by host name within a count, so an unchanged network publishes the same document every tick.
+            // Sorted by host name within a count, so an unchanged network publishes the same document.
             assertEquals(
                 listOf("busy.example", "lonely1.example", "lonely2.example", "lonely3.example", "lonely4.example"),
                 row.top.map { it.host },
@@ -213,7 +206,7 @@ class ConsistencyReportTest {
     @Test
     fun `the named hosts are capped, and the reason still counts every url`() =
         runBlocking {
-            // Sized off the constant: a literal case stopped testing anything when the cap grew past it.
+            // Sized off the constant, so the case survives the cap growing.
             val processors = Processors()
             val hostCount = Processors.MAX_UNDECIDED_HOSTS + 20
             val many = (1..hostCount).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
@@ -233,8 +226,7 @@ class ConsistencyReportTest {
 
     @Test
     fun `every row the gate can emit survives, because nothing cuts them any more`() {
-        // A reason is an enum value, so the list is bounded by source, not by the network.
-        // Every reason the gate can emit: each `Unmeasured` except the one `Silence` refines, plus every cause it splits into.
+        // Every reason the gate can emit: each `Unmeasured` except the one `Silence` refines, plus its causes.
         val widest = (ConsistencyPass.Unmeasured.entries.size - 1) + Silence.entries.size
         val processors = Processors()
         processors.of("consistency").record(
@@ -262,10 +254,8 @@ class ConsistencyReportTest {
     @Test
     fun `the candidate set divides exactly once`() =
         runBlocking {
-            //   candidates = foldedAway + consistent + inconsistent + unmeasured
-            //   unmeasured = the undecided rows' urls
             val store = newStore()
-            // A url the fold has already taken out counts once, as folded; it is never measured.
+            // A url the fold already took out counts once, as folded, and is never measured.
             RelayVerdictRecord(store, signer).publish(duplicate, steady, sampled = 40, shared = 40)
 
             val processors = Processors()
@@ -276,7 +266,7 @@ class ConsistencyReportTest {
                     when (at) {
                         steady -> AliasProbe.Page(whole.take(want))
 
-                        // A window that walks forward on every ask, so no two answers agree.
+                        // A window that walks forward on every ask.
                         shuffler -> AliasProbe.Page(corpus(120).drop(drift.getAndAdd(40)).take(want))
 
                         else -> AliasProbe.Page(corpus(9).take(want))
@@ -288,7 +278,7 @@ class ConsistencyReportTest {
 
             val work = row(processors)
             assertEquals(4, work.candidates)
-            // Nullable so a pass that measures no verdicts (the fold) publishes none rather than three zeroes.
+            // Nullable so a pass that measures no verdicts publishes none rather than three zeroes.
             val foldedAway = assertNotNull(work.foldedAway, "the gate measures this and must publish it")
             val consistent = assertNotNull(work.consistent, "the gate measures this and must publish it")
             val inconsistent = assertNotNull(work.inconsistent, "the gate measures this and must publish it")

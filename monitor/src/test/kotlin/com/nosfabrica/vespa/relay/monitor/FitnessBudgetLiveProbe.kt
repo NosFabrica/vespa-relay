@@ -43,17 +43,15 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Where a url's fitness budget goes: times the pre-probe, NIP-11, ladder and
- * NEG-OPEN separately against real relays, then runs the real [FitnessPass]
- * over the same urls into an in-memory store. Asserts nothing. Selected by
- * `-DliveBudget=true`; urls via `-DliveBudgetUrls=a,b`.
+ * Where a url's fitness budget goes: times the pre-probe, NIP-11, ladder and NEG-OPEN
+ * separately against real relays, then runs the real [FitnessPass] over the same urls.
+ * Asserts nothing. `-DliveBudget=true` selects it; `-DliveBudgetUrls=a,b` picks the urls.
  */
 class FitnessBudgetLiveProbe {
     private val urls: List<NormalizedRelayUrl> =
         (
             System.getProperty("liveBudgetUrls")
                 ?: listOf(
-                    // The two #172 is about, then the middle and the fast end of its table.
                     "wss://nip85.nosfabrica.com",
                     "wss://nip85-staging.nosfabrica.com",
                     "wss://nip85-staging.relay.tools",
@@ -112,13 +110,12 @@ class FitnessBudgetLiveProbe {
                     var window: AliasProbe.Window? = null
                     leg.ladderMs =
                         timed {
-                            // First rung only: a rung that is not taken is not a cost to attribute.
+                            // First rung only.
                             window = runCatching { probe.window(url, anchor, null) { seen++ } }.getOrNull()
                         }
                     leg.firstPageMs = window?.firstPageMs
                     leg.events = seen
-                    // Same call, sliver and idle window as the pass, with no wall clock around it,
-                    // so the number printed is how long it would actually run inside a url's budget.
+                    // The same call, sliver and idle window as the pass.
                     val sliver =
                         Filter(
                             kinds = null,

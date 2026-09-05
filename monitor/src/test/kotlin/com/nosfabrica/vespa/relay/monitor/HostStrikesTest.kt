@@ -28,10 +28,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Failures count per host, so a filtering relay's per-user urls add up; a host
- * that has ever delivered is never dropped, whichever order the race lands in.
- */
+/** Failures count per host, and a host that has ever delivered is never dropped. */
 class HostStrikesTest {
     private fun url(u: String) = RelayUrlNormalizer.normalize(u)
 
@@ -77,7 +74,7 @@ class HostStrikesTest {
 
     @Test
     fun `eviction returns a verdict once, so it is published once`() {
-        // Sibling urls are skipped undialled from here on, so this is the only finding they ever get.
+        // Sibling urls are skipped undialled from here on, so this is the only finding they get.
         val h = HostStrikes()
         assertNull(h.strike(url("wss://filter.example/npub1")), "one strike is not a verdict")
         assertNull(h.strike(url("wss://filter.example/npub2")), "two is not either")

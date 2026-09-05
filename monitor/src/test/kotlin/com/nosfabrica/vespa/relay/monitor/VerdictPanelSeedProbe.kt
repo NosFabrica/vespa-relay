@@ -39,11 +39,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Seeds a local relay with a monitor corpus, through its own websocket, so the
- * stats page's verdicts panel can be driven against a real store. Asserts
- * nothing; the page is the verdict. Selected by `-DseedVerdicts=true`, signed
- * with `-DseedVerdictsNsec=` (the relay's own `RELAY_NSEC`, or the panel counts
- * the records as another monitor's).
+ * Seeds a local relay with a monitor corpus through its own websocket, so the stats page's
+ * verdicts panel can be driven against a real store. Asserts nothing. `-DseedVerdicts=true`
+ * selects it; `-DseedVerdictsNsec=` signs as the relay's own monitor, `-DseedVerdictsUrl`,
+ * `-DseedVerdictsCount` and `-DseedVerdictsLegacy` shape the corpus.
  */
 class VerdictPanelSeedProbe {
     @Test
@@ -83,7 +82,7 @@ class VerdictPanelSeedProbe {
         }
     }
 
-    /** One record in the shape the fitness pass writes, with a few crowded hosts and a long tail of single ones. */
+    /** One record in the shape the fitness pass writes, with a few crowded hosts and a long tail. */
     private suspend fun record(
         signer: NostrSignerInternal,
         i: Int,
@@ -124,7 +123,7 @@ class VerdictPanelSeedProbe {
                     add(arrayOf(RelayVerdictRecord.LABEL_NAMESPACE_TAG, RelayVerdictRecord.FITNESS_NAMESPACE))
                     addAll(facts.tags())
                 }
-                // A foreign labeller on the same record, which a panel matching on tag name would draw as a grade.
+                // A foreign labeller on the same record.
                 if (i % 7 == 0) {
                     add(arrayOf("l", "CA", "countryCode"))
                     add(arrayOf("L", "countryCode"))
@@ -143,14 +142,14 @@ class VerdictPanelSeedProbe {
                         ),
                     )
                 }
-                // A tag no reader knows, so the panel's "+N other tag(s)" counter has something to count.
+                // A tag no reader knows, for the panel's other-tags counter.
                 if (i % 23 == 0) add(arrayOf("something-new", "42"))
             }.toTypedArray()
         return signer.sign(now - (i % 20) * 3600, 30166, tags, "")
     }
 
     private companion object {
-        /** Weighted the way a real sweep comes out: mostly prime, then the refusals. */
+        /** Weighted the way a real sweep comes out. */
         val GRADES =
             listOf(
                 "prime",

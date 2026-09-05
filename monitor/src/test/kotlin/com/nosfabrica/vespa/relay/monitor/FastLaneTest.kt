@@ -44,10 +44,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-/**
- * The fast lane runs the stability gate before fitness, so a new relay is
- * never admitted `prime` before anyone asked whether it answers twice alike.
- */
+/** The fast lane runs the stability gate before fitness, so a new relay is never admitted `prime` unasked. */
 class FastLaneTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val steady = RelayUrlNormalizer.normalize("wss://steady.example")
@@ -60,7 +57,7 @@ class FastLaneTest {
     /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE] as one page. */
     private val corpus: List<Event> = (0 until 60).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
-    /** [candidatesSince] is the lane's door and [candidates] the sweep's, so a test can drive either. */
+    /** [candidatesSince] is the lane's door and [candidates] the sweep's. */
     private class Fresh(
         private val urls: List<NormalizedRelayUrl>,
     ) : AliasMonitor.CandidateSource {
@@ -75,11 +72,7 @@ class FastLaneTest {
         override val sockets = Sockets.NONE
     }
 
-    /**
-     * [shuffler] walks its window forward on every ask; everything else pages
-     * properly, or the fitness pass refuses it `unpageable` for a reason this
-     * test is not measuring.
-     */
+    /** [shuffler] walks its window forward on every ask; everything else pages properly. */
     private fun shufflingFetch(
         dials: AtomicInteger,
         drift: AtomicInteger,
@@ -104,7 +97,7 @@ class FastLaneTest {
         store: NostrSemanticsStore,
         urls: List<NormalizedRelayUrl>,
         fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page,
-        /** False stages the lane with fitness alone, the control below. */
+        /** False stages the lane with fitness alone, the control. */
         gateInLane: Boolean = true,
     ): Lane {
         val processors = Processors()
@@ -167,7 +160,6 @@ class FastLaneTest {
 
             assertEquals(Verdict.INCONSISTENT.value, gradeOf(store, shuffler))
             assertNotEquals(Verdict.PRIME.value, gradeOf(store, shuffler))
-            // The steady relay still gets its grade on the same tick.
             assertEquals(Verdict.PRIME.value, gradeOf(store, steady))
         }
 
@@ -190,7 +182,6 @@ class FastLaneTest {
     @Test
     fun `the work moves earlier and does not repeat, so the sweep re-dials nothing the lane measured`() =
         runBlocking {
-            // A stability verdict stands for RelayVerdictRecord.DEFAULT_TTL_SECONDS, so over a month this is the same dials, sooner.
             val store = newStore()
             val dials = AtomicInteger()
             val l = lane(store, listOf(steady, shuffler), shufflingFetch(dials, AtomicInteger()))

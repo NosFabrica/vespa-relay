@@ -41,27 +41,25 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * A whole stability pass over real urls (good, dead, unresolvable, auth-gated),
- * printing the published partition so the unrecognised bucket names the strings
- * [Silence] still has to learn. Asserts only that the partition closes.
- * Selected by `-DliveConsistency=true`; urls via `-DliveConsistencyUrls=a,b`.
+ * A whole stability pass over real urls, printing the published partition so the unrecognised
+ * bucket names the strings [Silence] still has to learn. Asserts only that the partition closes.
+ * `-DliveConsistency=true` selects it; `-DliveConsistencyUrls=a,b` picks the urls.
  */
 class ConsistencyLivePassProbe {
     private val urls: List<NormalizedRelayUrl> =
         (
             System.getProperty("liveConsistencyUrls")
                 ?: listOf(
-                    // The fold's reference hosts.
                     "wss://nos.lol",
                     "wss://nostr.oxtr.dev",
                     "wss://relay.damus.io",
-                    // Caps a bare filter, so the kinds rung is exercised.
+                    // Caps a bare filter.
                     "wss://purplepag.es",
-                    // Measured unstable at every anchor depth.
+                    // Inconsistent between walks.
                     "wss://fiatjaf.com",
-                    // Auth-gated: the ladder must stop on the refusal.
+                    // Auth-gated.
                     "wss://filter.nostr.wine",
-                    // A name that cannot resolve, and a port nothing listens on.
+                    // Unresolvable, and a port nothing listens on.
                     "wss://this-relay-does-not-exist-vespa.example",
                     "wss://localhost:1",
                 ).joinToString(",")
@@ -82,7 +80,7 @@ class ConsistencyLivePassProbe {
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
-        // Attached for its side effect: without a responder an auth-gated relay reads as silent.
+        // Without a responder an auth-gated relay reads as silent.
         RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
         val processors = Processors()

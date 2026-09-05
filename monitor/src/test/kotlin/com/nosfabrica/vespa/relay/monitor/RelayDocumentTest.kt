@@ -26,10 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * A NIP-11 document is a stranger's JSON: every field optional, every type a
- * suggestion, and a parse that throws costs the facts beside the malformed one.
- */
+/** A NIP-11 document is a stranger's JSON: every field optional, every type a suggestion. */
 class RelayDocumentTest {
     @Test
     fun `the four fields with somewhere to go are read, in NIP-66's spelling`() {

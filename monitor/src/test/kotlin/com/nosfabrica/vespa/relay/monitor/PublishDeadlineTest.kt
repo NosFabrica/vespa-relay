@@ -45,19 +45,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * A store that stops answering must not hold the monitor open: the verdict
- * writes after the dials are bounded like the dials themselves.
- */
+/** A store that stops answering must not hold the monitor open: verdict writes are bounded like dials. */
 class PublishDeadlineTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val signer = NostrSignerInternal(KeyPair())
     private val events = NostrSignerSync()
 
-    /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE], as one page. */
+    /** Deep enough to clear [RelayAliases.DEFAULT_MIN_SAMPLE] as one page. */
     private fun corpus(n: Int = 40): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
 
-    /** A relay that honours the cursor; one that ignores it is graded `unpageable` before any write happens. */
+    /** A relay that honours the cursor; one that ignores it is graded `unpageable` before any write. */
     private fun paged(
         events: List<Event>,
         want: Int,
@@ -66,11 +63,7 @@ class PublishDeadlineTest {
 
     private val tinyIdleMs = 20L
 
-    /**
-     * Reads answer, writes never do. Everything but `insert` delegates to a real
-     * store so `currentRecord`'s read-before-write works and the suspension is
-     * exactly where production suspended.
-     */
+    /** Reads answer, writes never do; only `insert` is wedged so the read-before-write still works. */
     private class WedgedWrites(
         inner: NostrSemanticsStore,
     ) : IEventStore by inner {
@@ -108,7 +101,7 @@ class PublishDeadlineTest {
                     publishDeadlineMs = 100L,
                 )
 
-            // The assertion is the call completing at all, generously against the pass's own budget.
+            // The assertion is the call completing at all.
             withTimeout(30_000) {
                 pass.measure("wedged store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
             }
@@ -119,14 +112,14 @@ class PublishDeadlineTest {
                 "a wedged store must cost the wedge limit, not one deadline per verdict",
             )
 
-            // Clock stamped, position dropped, phase idle: this is what frees [AliasMonitor]'s gate and the fast lane.
+            // Clock stamped, position dropped, phase idle: what frees [AliasMonitor]'s gate and the fast lane.
             val row = processors.snapshot().single()
             assertEquals(1L, row.passes, "a pass the store wedged must still count as a pass that ran")
             assertEquals(Processors.IDLE, row.phase, "…and must not be left reading `measuring` forever")
             assertNull(row.measuring, "a finished pass holds no position")
         }
 
-    /** A store that answers every write with a throw: the fast-fail shape of the same outage. */
+    /** A store that answers every write with a throw, the fast-fail shape of the same outage. */
     private class DecliningWrites(
         inner: NostrSemanticsStore,
     ) : IEventStore by inner {
@@ -161,7 +154,7 @@ class PublishDeadlineTest {
                     publishDeadlineMs = 100L,
                 )
 
-            // The report's counters are the only place "published" exists, so the assertion reads the line itself.
+            // The report line is the only place "published" exists.
             val captured = ByteArrayOutputStream()
             val realErr = System.err
             System.setErr(PrintStream(captured, true))
@@ -179,11 +172,7 @@ class PublishDeadlineTest {
             assertTrue("failed outright" in err, "a prompt failure must be told apart from a deadline; got: $err")
         }
 
-    /**
-     * One write stalls, the writes around it succeed: ordinary load, not a
-     * wedge. The wedge limit is consecutive, so a straggler costs its own
-     * verdict and nothing after it.
-     */
+    /** One write stalls and the writes around it succeed: ordinary load, not a wedge. */
     private class OneStraggler(
         private val inner: NostrSemanticsStore,
     ) : IEventStore by inner {

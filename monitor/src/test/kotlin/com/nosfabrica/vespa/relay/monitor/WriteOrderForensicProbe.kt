@@ -41,11 +41,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * Was the verdict corpus cut, or skipped? Rebuilds the fitness pass's old
- * `ConcurrentHashMap` from a `url<TAB>measured-at` TSV, walks it in iteration
- * order and prints how the fresh/stale split falls across the walk; then replays
- * the same corpus through the real pass against a store that stops answering.
- * Dials nothing, asserts nothing. Selected by `-DwriteOrderTsv=<file>`.
+ * Was the verdict corpus cut, or skipped? Rebuilds a `ConcurrentHashMap` from a `url<TAB>measured-at`
+ * TSV and prints how the fresh/stale split falls across its iteration order, then replays the corpus
+ * through the real pass against a store that stops answering. Dials nothing, asserts nothing.
+ * `-DwriteOrderTsv=<file>` selects it; `-DwriteOrderReplayUrls=<n>` caps the replay.
  */
 class WriteOrderForensicProbe {
     @Test
@@ -65,7 +64,7 @@ class WriteOrderForensicProbe {
             println("[skip] WriteOrderForensicProbe — $path parsed to no usable rows (want `url<TAB>epoch-seconds`)")
             return
         }
-        // Bucket order does not depend on insertion order, which is why it was stable across passes.
+        // Bucket order does not depend on insertion order.
         val outcomes = ConcurrentHashMap<NormalizedRelayUrl, Long>()
         for ((url, at) in parsed) outcomes[url] = at
 
@@ -112,7 +111,7 @@ class WriteOrderForensicProbe {
         }
         println("  longest unbroken run                $bestRun ${if (bestClass) "FRESH" else "STALE"} at position $bestAt")
         println()
-        // If the cut point is stable, each older cohort is the slice just beyond the one before it.
+        // With a stable cut point, each older cohort is the slice just beyond the one before it.
         println("  cohorts by position (median verdict age per bucket):")
         val nowSec = System.currentTimeMillis() / 1000
         for (b in 0 until 40) {
@@ -134,7 +133,7 @@ class WriteOrderForensicProbe {
         }
     }
 
-    /** The same corpus through the real pass, cut at production's share, reporting coverage over passes. */
+    /** The same corpus through the real pass, reporting coverage over passes. */
     @Test
     fun coverageOverPassesOnTheRealCorpus() {
         val path =
@@ -148,7 +147,7 @@ class WriteOrderForensicProbe {
                 .mapNotNull { line ->
                     RelayUrlNormalizer.normalizeOrNull(line.substringBefore('\t').trim())
                 }.distinct()
-                // Scaled because the in-memory store's read-before-write is linear; the property is positional and scale-free.
+                // The property is positional and scale-free, and the in-memory store's read-before-write is linear.
                 .let { all -> all.take(System.getProperty("writeOrderReplayUrls")?.toIntOrNull() ?: 4_000) }
         if (urls.isEmpty()) {
             println("[skip] WriteOrderForensicProbe — $path named no usable urls")
@@ -159,7 +158,7 @@ class WriteOrderForensicProbe {
         val signer = NostrSignerInternal(KeyPair())
         val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
         val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
-        // The store takes writes and past a point in a batch stops answering them, at production's observed share.
+        // The store stops answering writes past a point in each batch.
         val cutAt = urls.size * 12191 / 20072
         val writesThisPass = AtomicInteger()
         val store =
