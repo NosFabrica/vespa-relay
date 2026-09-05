@@ -414,7 +414,7 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# ffe8c43129 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
+# 598ec75e30 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
 # telemetry branch (its docs/telemetry.md is the design record).
 #
 # A BRANCH COMMIT, deliberately and temporarily. The store PR is open; this
@@ -459,16 +459,23 @@ quartz = "cecc3287b2"
 # DIRECTION: 1a3f91b is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates) — this branch is main plus the telemetry.
 #
-# LEXICOGRAPHIC: 'ffe8…' > 'ec29…' ('f' > 'e'), so this sorts ABOVE the pin it
-# replaces — the safe direction. (The first cut of this line named 'd779…',
-# which sorted BELOW it; re-pinning past the merge put it back on the safe
-# side.) It needs no `force(…)` either way, for the reason the notes above
-# give: nothing else in the graph names vespa-eventstore, so there is no
-# conflict for ordering to settle. The resolved graph is the proof, and every
-# eventstore line reads ffe8c43129 with no `->` left anywhere:
+# LEXICOGRAPHIC: '598e…' < 'ec29…' ('5' < 'e'), so this sorts BELOW the pin it
+# replaces — the unsafe direction, which a branch sha will be about half the
+# time. It needs no `force(…)` either way, for the reason the notes above give:
+# nothing else in the graph names vespa-eventstore, so there is no conflict for
+# ordering to settle, and the merge sha this is re-pinned to before landing
+# settles it for good. The resolved graph is the proof, and every
+# eventstore line reads 598ec75e30 with no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# WHAT THE THIRD COMMIT ON THAT BRANCH IS: the load sketch was being handed
+# WHAT THE LAST COMMIT ON THAT BRANCH IS: `TrustReconciler` was handed the RAW
+# engine index while everything else got the metered decorator, so its corpus
+# walks — the heaviest read the store makes — were booked under no activity at
+# all. Watching /pulse.html during a reconcile showed a store doing nothing
+# while Vespa was busy. One word at the wiring; the meter is a decorator, so
+# anything built with the undecorated index is invisible by construction.
+#
+# AND THE ONE BEFORE IT: the load sketch was being handed
 # WHOLE 64-hex observer pubkeys, against `HeavyHitters`' own documented
 # contract and the design doc's §11.2 ("truncate the key to a prefix"). Every
 # row of the live page carried a key that could be lifted out of a screenshot.
@@ -487,7 +494,7 @@ quartz = "cecc3287b2"
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
 # PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
 # reached through 1a3f91b, which is main including it.
-vespaEventStore = "ffe8c43129"
+vespaEventStore = "598ec75e30"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

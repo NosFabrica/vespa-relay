@@ -10,7 +10,7 @@
 // Nothing here holds a credential: the session cookie is HttpOnly and this
 // script cannot read it.
 
-import { ago, cardHead, el, fitTiles, fmt, fmtDur, hideTip, isoOf, moveTip, short, showTip } from "../shared/page.js";
+import { ago, cardHead, el, fitTiles, fmt, fmtDur, isoOf, short } from "../shared/page.js";
 import {
   POLL_MS, activityRowsOf, admissionOf, dominantOf, engineRowsOf, gaugesOf,
   locksOf, outcomeSplitOf, showsClients, slowestOf, stageRowsOf, uncertain, whereOf,
@@ -24,6 +24,7 @@ const docUrl = "./pulse.json";
 const bodyEl = document.getElementById("body");
 const scopeEl = document.getElementById("scope");
 const footEl = document.getElementById("foot");
+const whoEl = document.getElementById("who");
 
 /** The previous document, kept solely so the counters above can be differenced into rates. */
 let prev = null;
@@ -408,39 +409,27 @@ function render(doc) {
   }
   scopeEl.textContent = doc.scope || "";
   const rows = activityRowsOf(doc, prev);
-  const parts = [
-    healthStrip(doc, rows),
-    activityPanel(rows),
-    enginePanel(engineRowsOf(doc, prev)),
-    outcomesPanel(doc),
-    locksPanel(doc),
-    stagesPanel(stageRowsOf(doc, prev)),
-    gaugesPanel(doc),
-    hotspotsPanel(doc),
-    slowPanel(doc),
-  ];
-  if (!showsClients(doc)) {
-    const c = card("Not on this page", null);
-    c.appendChild(
-      el(
-        "p",
-        "why",
-        "This process publishes no client-derived sections. The heaviest observers, the heaviest search terms and the slow-read log describe the people using this relay rather than the relay itself, so they are served only where an operator has asked for them.",
-      ),
-    );
-    parts.push(c);
-  }
-  // The whole body is rebuilt every poll, so anything the reader was doing
-  // inside it is lost unless it is carried across. Scroll is the one that
-  // matters: the slow-read table is a scroll box, and resetting it to the top
-  // twice a second makes it unreadable. Restored by index — the panels are
-  // built in a fixed order, so box N is the same box it was.
-  const scrolled = [...bodyEl.querySelectorAll(".wrap.tall")].map((b) => b.scrollTop);
-  bodyEl.replaceChildren(...parts.filter(Boolean));
-  [...bodyEl.querySelectorAll(".wrap.tall")].forEach((b, i) => {
-    if (scrolled[i]) b.scrollTop = scrolled[i];
-  });
+  layout();
+  // A stamp per panel, so a panel whose input has not moved keeps the DOM it
+  // already had. Most of these change every poll by design — a rate is what
+  // they are — and take the document's own timestamp as their stamp, which is
+  // always new. The two that do not are the two big ones: the slow-read ring
+  // moves only when a read is slow, and the load sketch only when its order
+  // changes. Those were rebuilding a few hundred rows twice a second and
+  // taking the reader's text selection with them.
+  const tick = doc.generatedAt;
+  fill("strip", tick, () => healthStrip(doc, rows));
+  fill("activity", tick, () => activityPanel(rows));
+  fill("engine", tick, () => enginePanel(engineRowsOf(doc, prev)));
+  fill("outcomes", stampOf(doc.outcomes), () => outcomesPanel(doc));
+  fill("locks", tick, () => locksPanel(doc));
+  fill("stages", tick, () => stagesPanel(stageRowsOf(doc, prev)));
+  fill("gauges", stampOf(doc.gauges), () => gaugesPanel(doc));
+  fill("hotspots", stampOf(doc.hotspots), () => hotspotsPanel(doc));
+  fill("slow", stampOf(doc.slowReads), () => slowPanel(doc));
+  fill("closed", String(showsClients(doc)), () => (showsClients(doc) ? null : clientSectionsCard()));
   renderFoot(doc);
+  renderWho();
   shown = doc;
   prev = doc;
 }
@@ -454,26 +443,6 @@ function renderFoot(doc) {
   footEl.appendChild(a);
   footEl.append(` (schema ${doc.schema}, read at ${doc.generatedAt}).`);
   if (doc.feed) footEl.appendChild(el("p", "foot", doc.feed));
-  if (authed) {
-    const line = el("p", "foot");
-    // The pubkey only when this page load signed in; a reload that inherited a
-    // live session is authorised without this script knowing as whom, and
-    // guessing would be worse than saying less.
-    line.append(admin ? `Signed in as ${admin.slice(0, 12)}… ` : "Signed in. ");
-    const out = el("button", "linkish", "sign out");
-    out.addEventListener("click", async () => {
-      await signOut();
-      admin = null;
-      authed = false;
-      // `load()`, not a card built here: the refusal it gets back carries the
-      // relay's own `session` block, and a card built with none would sign the
-      // url this browser dialled — which behind a proxy is not the one the
-      // relay checks, so the next sign-in would fail for no visible reason.
-      await load();
-    });
-    line.appendChild(out);
-    footEl.appendChild(line);
-  }
   if (doc.schema > SCHEMA) {
     footEl.appendChild(el("p", "err", `This page was written for schema ${SCHEMA} — some panels may be missing or misread.`));
   }
@@ -490,9 +459,109 @@ let admin = null;
 /** Whether the last read was admitted. The poll rides this, so a signed-out page stops asking. */
 let authed = false;
 
+/**
+ * A section's identity for redraw purposes, cheap enough to compute per poll:
+ * its serialized form. These are small members — a handful of rows — and the
+ * alternative is a hand-written key per panel that goes stale the first time
+ * somebody adds a field to one.
+ */
+const stampOf = (section) => (section == null ? "-" : JSON.stringify(section));
+
+/** The auth state the identity line was last built for, so it is only rebuilt when that changes. */
+let whoDrawn = null;
+
+/**
+ * Who is signed in, and the way out — IN ITS OWN ELEMENT, outside the footer.
+ *
+ * The footer is rebuilt every poll (its timestamp moves), and a control rebuilt
+ * twice a second is one nobody can use: a click can land on a button that has
+ * already been replaced, and a keyboard can never keep focus on it long enough
+ * to press it. This is the only interactive thing on the signed-in page, so it
+ * is drawn once and left alone until the auth state actually changes.
+ */
+function renderWho() {
+  const state = authed ? admin || "?" : "";
+  if (state === whoDrawn) return;
+  whoDrawn = state;
+  whoEl.replaceChildren();
+  if (!authed) return;
+  // The pubkey only when this page load signed in; a reload that inherited a
+  // live session is authorised without this script knowing as whom, and
+  // guessing would be worse than saying less.
+  whoEl.append(admin ? `Signed in as ${admin.slice(0, 12)}… ` : "Signed in. ");
+  const out = el("button", "linkish", "sign out");
+  out.addEventListener("click", async () => {
+    await signOut();
+    admin = null;
+    authed = false;
+    // `load()`, not a card built here: the refusal it gets back carries the
+    // relay's own `session` block, and a card built with none would sign the
+    // url this browser dialled — which behind a proxy is not the one the relay
+    // checks, so the next sign-in would fail for no visible reason.
+    await load();
+  });
+  whoEl.appendChild(out);
+}
+
+/** The panels, laid out once and kept, so an untouched one keeps its scroll and its selection. */
+const PANEL_KEYS = ["strip", "activity", "engine", "outcomes", "locks", "stages", "gauges", "hotspots", "slow", "closed"];
+
+/** What each panel was last built from, by key. Cleared with the body. */
+const drawn = new Map();
+
+/** Put the containers in place if the body does not already hold them. */
+function layout() {
+  if (bodyEl.querySelector("[data-panel]")) return;
+  bodyEl.replaceChildren(
+    ...PANEL_KEYS.map((key) => {
+      const box = el("div");
+      box.dataset.panel = key;
+      return box;
+    }),
+  );
+  drawn.clear();
+}
+
+/** Empty the body and forget what was drawn — every path that shows a card instead of the panels. */
+function resetBody() {
+  bodyEl.replaceChildren();
+  drawn.clear();
+}
+
+/**
+ * Build panel [key] unless [stamp] says it is already what is on screen.
+ *
+ * Scroll is carried across a rebuild: the slow-read table is a scroll box, and
+ * resetting it to the top twice a second makes it unreadable.
+ */
+function fill(key, stamp, build) {
+  const box = bodyEl.querySelector(`[data-panel="${key}"]`);
+  if (!box || (drawn.get(key) === stamp && box.hasChildNodes())) return;
+  drawn.set(key, stamp);
+  const scrolled = [...box.querySelectorAll(".wrap.tall")].map((b) => b.scrollTop);
+  const built = build();
+  box.replaceChildren(...(built ? [built] : []));
+  [...box.querySelectorAll(".wrap.tall")].forEach((b, i) => {
+    if (scrolled[i]) b.scrollTop = scrolled[i];
+  });
+}
+
+/** Said when the document carries no client-derived sections: an absent panel and a disabled one look alike. */
+function clientSectionsCard() {
+  const c = card("Not on this page", null);
+  c.appendChild(
+    el(
+      "p",
+      "why",
+      "This process publishes no client-derived sections. The heaviest observers, the heaviest search terms and the slow-read log describe the people using this relay rather than the relay itself, so they are served only where an operator has asked for them.",
+    ),
+  );
+  return c;
+}
+
 /** The sign-in prompt: the only thing an unauthenticated visitor is ever shown. */
 function signInCard(why, session) {
-  bodyEl.replaceChildren();
+  resetBody();
   shown = null;
   prev = null;
   footEl.replaceChildren();
@@ -531,9 +600,22 @@ function signInCard(why, session) {
   bodyEl.appendChild(c);
   scopeEl.textContent = "Not signed in.";
   document.title = "Eventstore pulse";
+  renderWho();
 }
 
+/**
+ * True while a poll is in flight. Without it a slow answer — a stalled store, a
+ * laptop coming back from sleep — lets the next tick start a second read, and
+ * two answers can land out of order: `prev` ends up NEWER than the document
+ * just rendered, the next window is negative, and every rate on the page falls
+ * to an em dash and stays there. One at a time; a tick that arrives during a
+ * poll is simply skipped, which is what a fixed cadence means anyway.
+ */
+let polling = false;
+
 async function load() {
+  if (polling) return;
+  polling = true;
   try {
     // `no-store` on the route, so every poll is a real read; that is the point.
     const res = await fetchGuarded(docUrl);
@@ -542,7 +624,7 @@ async function load() {
       scopeEl.textContent = "This process serves no metered store.";
       shown = null;
       prev = null;
-      bodyEl.replaceChildren();
+      resetBody();
       const c = el("div", "card pending");
       c.appendChild(el("h2", null, "Nothing to measure"));
       c.appendChild(el("p", "why", "The process answering this port has no metered event store, so there are no counters to read."));
@@ -578,15 +660,18 @@ async function load() {
       return;
     }
     scopeEl.textContent = "Could not load the pulse document.";
-    bodyEl.replaceChildren();
+    resetBody();
     const c = el("div", "card");
     c.appendChild(el("p", "err", why));
     bodyEl.appendChild(c);
+  } finally {
+    polling = false;
   }
 }
 
-addEventListener("mousemove", moveTip);
-addEventListener("mouseleave", hideTip);
+// No hover tooltip is wired: every explanation on this page rides a `title`
+// attribute, which the browser draws itself and a keyboard can reach. The
+// shared `showTip` exists for svg chart marks, and this page has none.
 load();
 // A fixed cadence, not a document-stated one: this document has no rollup to
 // follow, and the rates on screen are only as fresh as the interval. Gated on
