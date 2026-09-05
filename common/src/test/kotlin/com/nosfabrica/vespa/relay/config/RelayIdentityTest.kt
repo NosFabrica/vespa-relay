@@ -30,8 +30,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
- * A misconfigured identity must not start: an upstream refusing an unauthenticated
- * client looks exactly like an upstream with nothing to say.
+ * A misconfigured identity must not start: an upstream refusing an unauthenticated client looks
+ * exactly like one with nothing to say.
  */
 class RelayIdentityTest {
     // A throwaway key, generated for this test and used nowhere.

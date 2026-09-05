@@ -30,7 +30,7 @@ import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import java.security.MessageDigest
 
-/** A strong ETag over [bytes], the first 16 hex of its SHA-256. Content-derived: a jar entry's mtime is the build's. */
+/** A strong ETag over [bytes], the first 16 hex of its SHA-256; a jar entry's mtime is the build's. */
 internal fun etagOf(bytes: ByteArray): String =
     MessageDigest
         .getInstance("SHA-256")
@@ -47,9 +47,8 @@ class CachedPage(
 }
 
 /**
- * A page whose icon links follow the service's relay document. Rebuilt on
- * change rather than rendered per request: a NIP-86 `changerelayicon` arrives
- * approximately never, a page load all the time.
+ * A page whose icon links follow the service's relay document, rebuilt on change rather than
+ * rendered per request.
  */
 class IconedPage(
     private val template: String,
@@ -71,9 +70,8 @@ class IconedPage(
 }
 
 /**
- * The icon an operator set, or null when the doc's icon is [selfIconUrl], the
- * one this service serves anyway. Treating that as an override would point
- * `/favicon.ico` at itself.
+ * The icon an operator set, or null when the doc's icon is [selfIconUrl], the one this service
+ * serves anyway; treating that as an override would point `/favicon.ico` at itself.
  */
 fun iconOverride(
     icon: String?,
@@ -81,8 +79,8 @@ fun iconOverride(
 ): String? = icon?.takeIf { it.isNotBlank() && it != selfIconUrl }
 
 /**
- * An HTML page, revalidated every time and re-sent only when it changed.
- * `no-cache` means ask before reusing, not do not store; the 304 is what it adds.
+ * An HTML page, revalidated every time and re-sent only when it changed. `no-cache` means ask
+ * before reusing, not do not store.
  */
 suspend fun ApplicationCall.respondPage(page: CachedPage) {
     response.header(HttpHeaders.ETag, page.etag)
@@ -95,8 +93,8 @@ suspend fun ApplicationCall.respondPage(page: CachedPage) {
 }
 
 /**
- * A document recomputed behind the server, polled far more often than it
- * changes. `no-cache` rather than a `max-age`, since the interval is an operator setting.
+ * A document recomputed behind the server, polled far more often than it changes. `no-cache`
+ * rather than a `max-age`, since the interval is an operator setting.
  */
 suspend fun ApplicationCall.respondDocument(
     bytes: ByteArray,
@@ -113,8 +111,8 @@ suspend fun ApplicationCall.respondDocument(
 }
 
 /**
- * Does the request already hold this exact version? `If-None-Match` is a list,
- * and a proxy may weaken a tag minted strong; the weak form is the same content here.
+ * Does the request already hold this exact version? `If-None-Match` is a list, and a proxy may
+ * weaken a tag minted strong; the weak form is the same content here.
  */
 internal fun ApplicationCall.matchesEtag(etag: String): Boolean =
     request.headers[HttpHeaders.IfNoneMatch]

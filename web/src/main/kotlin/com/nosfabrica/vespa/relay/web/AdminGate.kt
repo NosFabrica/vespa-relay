@@ -25,10 +25,8 @@ import java.security.SecureRandom
 import java.util.Base64
 
 /**
- * WHO MAY READ AN ADMIN DOCUMENT. One verdict per request, so a route can tell
- * "you sent nothing" from "you sent something broken" from "you are not an
- * administrator here" — three different HTTP answers, and collapsing them
- * makes a misconfiguration indistinguishable from an attack.
+ * Who may read an admin document, as one verdict per request, so a route can tell "sent
+ * nothing" from "sent something broken" from "not an administrator here": three HTTP answers.
  */
 sealed interface Admitted {
     /** Proven to be one of the configured administrators. */
@@ -60,38 +58,12 @@ fun interface AdminGate {
 }
 
 /**
- * The relay's existing definition of an administrator, applied to a GET.
- *
- * NIP-98 AND `RELAY_ADMIN_PUBKEYS` — the same proof and the same list the
- * NIP-86 admin RPC already uses, deliberately, rather than a second
- * credential. One place to add or remove an operator, one thing to leak, and
- * the audit question ("who can read this?") has the same answer as it does for
- * "who can ban a pubkey?".
- *
- * What quartz's verifier checks: the event is kind 27235, signed, recent
- * within tolerance, its `method` tag matches, its `u` tag matches [publicUrl]
- * plus the route's path, and its id has not been seen before. That last one
- * matters here more than it does for NIP-86: this page polls, and a token that
- * could be replayed would be a bearer credential with none of the properties
- * of one.
- *
- * BECAUSE THE TOKEN IS SINGLE-USE, a browser cannot poll with it — it would
- * need a signature per request, which means an extension popup every two
- * seconds. [AdminSessions] is the other half: one signature opens a session,
- * the session carries the polls. A script that would rather sign every request
- * may still do so; both paths end here. Such a script must not sign twice
- * within one second for the same url and method: a NIP-98 event carries no
- * nonce, so those two tokens are the same event with the same id, and the
- * second is a replay.
- *
- * [publicUrl] IS NOT TAKEN FROM THE REQUEST. The `u` tag exists so a token
- * stolen from one service cannot be spent at another, which it cannot do if
- * the server derives the expected url from a header the caller controls. It is
- * an operator setting, and the 401 says what it is so a signer can match it
- * without guessing.
+ * The relay's existing definition of an administrator, applied to a GET: a NIP-98 token from one
+ * of `RELAY_ADMIN_PUBKEYS`, the same proof and list the NIP-86 rpc uses. Tokens are single-use,
+ * so a polling page goes through [AdminSessions]; [publicUrl] is never derived from the request.
  */
 class Nip98AdminGate(
-    /** The administrators, 64-hex. EMPTY ADMITS NOBODY — see [PulseGuard]. */
+    /** The administrators, 64-hex. Empty admits nobody. */
     private val admins: Set<String>,
     /** Origin the tokens are signed against, no trailing slash (e.g. `http://localhost:7780`). */
     val publicUrl: String,
@@ -101,14 +73,8 @@ class Nip98AdminGate(
     fun urlFor(path: String): String = publicUrl.trimEnd('/') + path
 
     /**
-     * Whether this deployment is reached over TLS, and so whether the session
-     * cookie may be marked `Secure`.
-     *
-     * From the operator's declared origin rather than the request, because a
-     * request's scheme here is the local socket's — this site installs no
-     * forwarded-headers plugin, on purpose — so behind a TLS-terminating proxy
-     * the request reads `http` and the cookie would go out unmarked in exactly
-     * the deployment where the mark matters.
+     * Whether the session cookie may be marked `Secure`, from the operator's declared origin: the
+     * request's scheme is the local socket's, since this site installs no forwarded-headers plugin.
      */
     val servesOverTls: Boolean = publicUrl.startsWith("https://", ignoreCase = true)
 
@@ -118,9 +84,8 @@ class Nip98AdminGate(
         url: String,
     ): Admitted {
         if (authorization.isNullOrBlank()) return Admitted.NoCredentials
-        // No body: this gate protects GETs and a bodyless POST, so there is no
-        // payload hash to bind. A token that carries one still verifies —
-        // quartz compares it only against a body it was given.
+        // No body to bind: this gate protects GETs and a bodyless POST. A token carrying a payload
+        // hash still verifies, since quartz compares it only against a body it was given.
         return when (val r = verifier.verify(authorization, method, url, null)) {
             is Nip98AuthVerifier.Result.Verified -> {
                 if (r.pubkey in admins) Admitted.Admin(r.pubkey) else Admitted.NotAdmin(r.pubkey)
@@ -142,21 +107,9 @@ class Nip98AdminGate(
 }
 
 /**
- * The sessions one NIP-98 signature opens, so a polling page does not need a
- * signature per poll.
- *
- * IN MEMORY, ON PURPOSE. A restart signs everyone out, which is the right
- * default for a page that exists to be read during an incident: no session
- * outlives the process whose counters it was reading, there is no signing key
- * to configure or leak, and nothing about who looked at this page is written
- * to disk.
- *
- * FIXED EXPIRY, NOT SLIDING. A tab left open overnight stops being an open
- * door at [ttlMillis] whatever it was doing; renewing costs one more signature.
- *
- * The token is 256 bits from [SecureRandom] and is never logged. Bounded at
- * [max] live sessions, oldest evicted, so a signer that opens sessions in a
- * loop cannot grow this without bound.
+ * The sessions one NIP-98 signature opens, so a polling page does not need a signature per
+ * poll. In memory, so a restart signs everyone out and nothing about who read the page reaches
+ * disk; fixed expiry at [ttlMillis], not sliding; bounded at [max] live sessions, oldest evicted.
  */
 class AdminSessions(
     val ttlMillis: Long = 30 * 60_000L,
@@ -177,9 +130,7 @@ class AdminSessions(
     @Synchronized
     fun open(pubkey: String): String {
         sweep()
-        // `isNotEmpty` as well as the bound: a `max` of zero or less would
-        // otherwise spin on an empty map and throw out of a route that is
-        // supposed to be handing somebody a session.
+        // `isNotEmpty` as well as the bound, or a `max` of zero would spin on an empty map.
         while (live.size >= max && live.isNotEmpty()) live.remove(live.keys.first())
         val token = ByteArray(32).also { random.nextBytes(it) }.let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
         live[token] = Session(pubkey, now() + ttlMillis)
@@ -204,7 +155,7 @@ class AdminSessions(
         token?.let { live.remove(it) }
     }
 
-    /** Live sessions, for a test and for a status line. Never the tokens themselves. */
+    /** Live sessions, never the tokens themselves. */
     @Synchronized
     fun size(): Int {
         sweep()

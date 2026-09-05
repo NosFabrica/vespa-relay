@@ -40,13 +40,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The pulse document, against a real `CostLedger` rather than a hand-built
- * snapshot: what this pins is the JOIN between the store's counters and the
- * page's members, and a fake snapshot would pin only this file against itself.
- *
- * Every assertion is written in the direction its bug would fail — a member
- * quietly renamed empties a panel, and a page drawing nothing looks exactly
- * like a relay doing nothing.
+ * The pulse document against a real `CostLedger`, so what is pinned is the join between the
+ * store's counters and the page's members. Every assertion is written in the direction its bug
+ * would fail: a page drawing nothing looks exactly like a relay doing nothing.
  */
 class PulseDocumentTest {
     private fun docOf(
@@ -81,8 +77,7 @@ class PulseDocumentTest {
 
         assertEquals(PulseDocument.SCHEMA, doc["schema"]!!.jsonPrimitive.int())
         assertEquals(60L, doc["uptimeSeconds"]!!.jsonPrimitive.long, "one minute between start and now")
-        // Absent, not empty: a page that draws "0 calls" for a store that has
-        // done nothing reads as a store that is answering and returning nothing.
+        // Absent, not empty: "0 calls" reads as a store answering and returning nothing.
         assertNull(member(doc, "activities"))
         assertNull(member(doc, "engine"))
         assertNull(doc["outcomes"])
@@ -92,7 +87,6 @@ class PulseDocumentTest {
     @Test
     fun `port calls are grouped under the activity that made them, busiest first`() {
         val ledger = CostLedger()
-        // A read that is cheap per call, and a bulk write that is not.
         repeat(4) { ledger.port(Activity.Query, PortCall.Search, nanos = 1_000_000, docs = 50) }
         ledger.port(Activity.BatchInsert, PortCall.Put, nanos = 900_000_000, docs = 5_000)
         ledger.port(Activity.BatchInsert, PortCall.Search, nanos = 100_000_000, docs = 5_000)
@@ -124,8 +118,7 @@ class PulseDocumentTest {
         val byActivity = acts.associate { it.jsonObject["activity"]!!.jsonPrimitive.content to it.jsonObject }
 
         val put = byActivity.getValue("BatchInsert")["ports"]!!.jsonArray[0].jsonObject
-        // THE BUG THIS IS WRITTEN AGAINST. A write shape keeps no histogram,
-        // and "p99 0.00ms" on a page reads as instant when it means unmeasured.
+        // A write shape keeps no histogram, and "p99 0.00ms" reads as instant when it means unmeasured.
         assertNull(put["p99Ms"], "a write shape keeps no histogram and must publish no percentile")
         assertNull(put["measured"])
 
@@ -158,8 +151,7 @@ class PulseDocumentTest {
 
         assertEquals("trusted", row["profile"]!!.jsonPrimitive.content)
         assertEquals(4_000L, row["docsMatched"]!!.jsonPrimitive.long)
-        // The pair is the point: matched alone cannot say how much work the
-        // client never saw, which is what the observer gate moves most.
+        // Matched alone cannot say how much work the client never saw.
         assertEquals(50L, row["hitsServed"]!!.jsonPrimitive.long)
         assertEquals(40.0, row["engineMs"]!!.jsonPrimitive.double, 1e-9)
         assertEquals(3L, row["rungs"]!!.jsonPrimitive.long)
@@ -184,8 +176,7 @@ class PulseDocumentTest {
         val wait = locks["wait"]!!.jsonArray[0].jsonObject
         assertEquals(40_000L, wait["ms"]!!.jsonPrimitive.long)
         val behind = wait["behind"]!!.jsonArray
-        // The whole reason this member exists: `lock.ingest.wait 40s` prompts a
-        // question, `38s of it behind derive` names a fix.
+        // A total wait prompts a question; the wait behind a named holder names a fix.
         assertEquals("derive 500 subject(s)", behind[0].jsonObject["holder"]!!.jsonPrimitive.content, "the biggest share first")
         assertEquals(38_000L, behind[0].jsonObject["ms"]!!.jsonPrimitive.long)
     }
@@ -218,9 +209,8 @@ class PulseDocumentTest {
         ledger.byTerm.add("bitcoin", 30)
         ledger.slowRead(Activity.Query, "trusted", 5_000_000_000, 4_000_000_000, 500_000_000, 50, 4_000, "search 'bitcoin'")
 
-        // THE DEFAULT IS THE SAFE ONE. These name which lenses and which terms
-        // are driving the load, and quote the query; `/stats.json`'s rule is
-        // that nothing about clients belongs in a public document.
+        // Off by default: these name the lenses and terms driving the load and quote the query,
+        // and nothing about clients belongs in a public document.
         val closed = docOf(ledger, clientDerived = false)
         assertFalse(closed["clientDerived"]!!.jsonPrimitive.boolean)
         assertNull(closed["hotspots"], "the sketches describe this relay's users, not this relay")
@@ -256,9 +246,7 @@ class PulseDocumentTest {
 
         val reads = assertNotNull(member(docOf(ledger, clientDerived = true), "slowReads"))
 
-        // The page draws this table in document order under a heading that says
-        // "newest first". It drew it backwards until an audit, which is the
-        // wrong end of a ring somebody opened during an incident.
+        // The page draws this table in document order under a heading that says "newest first".
         assertEquals(
             listOf("newer", "older"),
             reads.map { it.jsonObject["detail"]!!.jsonPrimitive.content },
@@ -276,9 +264,7 @@ class PulseDocumentTest {
                 it.jsonObject["gauge"]!!.jsonPrimitive.content to it.jsonObject["value"]!!.jsonPrimitive.long
             }
 
-        // Apart from every counter on purpose: a reader that differences a
-        // queue depth between two polls gets nonsense, and the separation is
-        // the only thing stopping it.
+        // A reader that differences a queue depth between two polls gets nonsense.
         assertEquals(mapOf("trust.pending.subjects" to 4_200L, "feed.inflight" to 3L), gauges)
     }
 

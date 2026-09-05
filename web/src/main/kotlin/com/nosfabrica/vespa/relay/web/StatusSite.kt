@@ -42,7 +42,7 @@ import io.ktor.server.routing.routing
 
 /** Compression and CORS, on the terms every page this repo serves wants them. */
 fun Application.installPageDefaults() {
-    // Text above a threshold only: websocket frames are untouched and a small NIP-11 document is not worth it.
+    // Text above a threshold only; websocket frames are untouched.
     install(Compression) {
         gzip { priority = 1.0 }
         deflate { priority = 0.9 }
@@ -58,7 +58,10 @@ fun Application.installPageDefaults() {
     }
 }
 
-/** `GET /stats.json`, the document a status page charts. Its own function so a test can mount it without the writer. */
+/**
+ * `GET /stats.json`, the document a status page charts. Its own function so a test can mount it
+ * without the writer.
+ */
 fun Route.statsDocument(
     snapshot: StatsSnapshot?,
     path: String = "/stats.json",
@@ -67,7 +70,7 @@ fun Route.statsDocument(
     get(path) {
         val doc = snapshot.served()
         if (doc == null) {
-            // 503, not an empty document: a poller should retry, and a 200 of zeros looks like a service holding nothing.
+            // 503, not an empty document: a 200 of zeros looks like a service holding nothing.
             call.respondText(
                 """{"error":"no statistics computed yet"}""",
                 ContentType.Application.Json,
@@ -80,16 +83,14 @@ fun Route.statsDocument(
 }
 
 /**
- * A background service's own status site: one page, the document it charts,
- * and the assets both need. Each service binds its own port so the state stays
- * where it is produced and liveness is the connection. [wait] is false by
- * default: this is never what keeps a process alive.
+ * A background service's own status site: one page, the document it charts, and the assets both
+ * need. Each service binds its own port, so liveness is the connection. [wait] is false by default.
  */
 fun serveStatusSite(
     port: Int,
     page: String,
     snapshot: StatsSnapshot?,
-    // Null keeps the page's markup byte-identical to the classpath's. See [pageWithIcon].
+    // Null keeps the page's markup byte-identical to the classpath's.
     icon: String? = null,
     routes: Route.() -> Unit = {},
     wait: Boolean = false,

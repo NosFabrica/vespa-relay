@@ -32,47 +32,18 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * WHERE THIS PROCESS'S STORE RESOURCES GO, as one document — the store's
- * `metrics()` and the ingest pipeline's stage split, rendered for the pulse
- * page.
- *
- * COUNTERS AND GAUGES, NEVER RATES. Every total here is cumulative since the
- * process started, so the page differences two consecutive polls to recover a
- * rate and any number of readers may poll without consuming anything. The one
- * exception is `gauges`, which are instantaneous by nature (a queue depth,
- * calls in flight) and which a reader must never difference — they are named
- * apart for exactly that reason. See docs/telemetry.md §4 and §10.1 in the
- * store.
- *
- * BUILT ON DEMAND, not on a rollup clock. Unlike `/stats.json`, whose numbers
- * cost Vespa queries, everything here is a read of in-process counters: 96
- * ordinal-indexed slots, a handful of histograms and a few gauge lambdas.
- * There is no rollup thread and no `stale` member, because there is nothing
- * that can go stale — a document that answers at all is current as of the
- * request.
- *
- * PER PROCESS, NOT PER CLUSTER. The relay and the mirror hold separate stores
- * over one Vespa, so each has its own ledger and its own page; the mirror's
- * ingest does not appear on the relay's. Vespa's own resource use — memory,
- * disk, transaction log — is not here at all: it has a metrics proxy that
- * already reports it, and a second, worse source of truth for it would be the
- * wrong thing to build (telemetry.md §9).
+ * This process's store resources as one document for the pulse page: the store's `metrics()`
+ * and the ingest pipeline's stage split. Every total is a cumulative counter the page differences
+ * between two polls; `gauges` are instantaneous and named apart so nobody differences them.
  */
 object PulseDocument {
     /** Bumped when a member changes meaning; the page says so rather than misreading it. */
     const val SCHEMA = 1
 
     /**
-     * The document.
-     *
-     * [clientDerived] carries the two sections that describe the people using
-     * this relay rather than the relay itself — which observer lenses and
-     * which search terms are driving the load, and the slow-read log, whose
-     * `detail` quotes the query. They are the most useful sections an operator
-     * has and they must never be served where `/stats.json` is served: that
-     * document's rule is that every field is a fact about stored events and
-     * nothing about clients belongs in it. Off unless the caller says
-     * otherwise, so the unsafe direction is never the default.
+     * The document. [clientDerived] adds the sections that describe the people using this relay,
+     * the load hotspots and the slow-read log that quotes queries; off by default, and never to be
+     * served where `/stats.json` is served.
      */
     fun of(
         store: VespaEventStore,
@@ -84,14 +55,9 @@ object PulseDocument {
     ): JsonObject = of(store.metrics(), store.runCatching { feedStatus() }.getOrNull(), title, scope, startedAtMillis, clientDerived, nowMillis)
 
     /**
-     * A reader bound to one store, for the route to call per request.
-     *
-     * [startedAtMillis] is WHEN THE STORE'S COUNTERS BEGAN, and the caller must
-     * say: the page states every total as cumulative over `uptimeSeconds`, and
-     * defaulting it to the moment this reader was built would name a window
-     * shorter than the one the counters actually cover — by two minutes on a
-     * relay that deployed a schema first. It is stamped once rather than read
-     * per call so the window only ever grows.
+     * A reader bound to one store, for the route to call per request. [startedAtMillis] is when
+     * the store's counters began, not when this reader was built, so `uptimeSeconds` covers the
+     * whole window the totals do.
      */
     fun reader(
         store: VespaEventStore,
@@ -121,9 +87,8 @@ object PulseDocument {
             put("scope", scope)
             put("generatedAt", Instant.ofEpochMilli(nowMillis).toString())
             put("uptimeSeconds", (nowMillis - startedAtMillis) / 1000)
-            // Said in the document rather than inferred from a missing member:
-            // "this build serves no client sections" and "nobody has searched
-            // yet" produce the same empty arrays and are different facts.
+            // Said outright: "no client sections in this build" and "nobody has searched yet" produce
+            // the same empty arrays.
             put("clientDerived", clientDerived)
 
             putActivities(metrics)
@@ -140,11 +105,8 @@ object PulseDocument {
         }
 
     /**
-     * Port calls, grouped by the ACTIVITY that made them — the model's first
-     * question, "what was the store doing", answered before "which method did
-     * it call". `callsPerDoc` is the ratio the store's own contract is written
-     * in ("never ingest in a loop over insert()"), computed here rather than
-     * by the page because the two numbers it divides come off one slot.
+     * Port calls grouped by the activity that made them. `callsPerDoc` is computed here rather
+     * than by the page because the two numbers it divides come off one slot.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putActivities(m: CostLedger.Snapshot) {
         val byActivity = m.ports.groupBy { it.activity }
@@ -168,9 +130,8 @@ object PulseDocument {
                                             put("ms", p.nanos / 1_000_000)
                                             put("docs", p.docs)
                                             put("callsPerDoc", p.callsPerDoc)
-                                            // Absent, not zero, where no histogram is kept for this
-                                            // call shape: a bulk put reporting "p50 0.00ms" reads as
-                                            // instant when it means unmeasured (telemetry.md §14.4).
+                                            // Absent, not zero, where no histogram is kept for this call
+                                            // shape: "p50 0.00ms" reads as instant when it means unmeasured.
                                             p.latency?.let { l ->
                                                 put("p50Ms", l.p50Nanos / 1_000_000.0)
                                                 put("p99Ms", l.p99Nanos / 1_000_000.0)
@@ -187,11 +148,8 @@ object PulseDocument {
     }
 
     /**
-     * What became of the events this process was offered, per activity and per
-     * reason, over the denominator that makes them a rate. "81% of what this
-     * node is offered is already stored" is the number that tells an operator
-     * to narrow a sync, and it is the one thing no port-level counter can see:
-     * a refused event never reaches the index at all.
+     * What became of the events this process was offered, per activity and per reason, with the
+     * denominator that makes them a rate. A refused event never reaches a port counter.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putOutcomes(m: CostLedger.Snapshot) {
         if (m.outcomes.isEmpty()) return
@@ -206,9 +164,8 @@ object PulseDocument {
                             buildJsonObject {
                                 put("activity", activity.name)
                                 put("offered", row.values.sum())
-                                // Rows, not a member per reason: the reason set is
-                                // the store's closed one, but a dynamic member name
-                                // is one this document's glossary can never define.
+                                // Rows, not a member per reason: a dynamic member name is one
+                                // the glossary can never define.
                                 putJsonArray("reasons") {
                                     row.entries.sortedByDescending { it.value }.forEach { (reason, n) ->
                                         add(
@@ -227,11 +184,8 @@ object PulseDocument {
     }
 
     /**
-     * What the ENGINE did, per rank profile: its own time (which is not our
-     * wall time), how many documents it matched against how many it served,
-     * and how often it degraded. `matched` far above `served` is a query doing
-     * work the client never sees; the two are the recall-versus-page picture
-     * the trust gate moves most.
+     * What the engine did, per rank profile: its own time, documents matched against hits served,
+     * and how often it degraded.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putEngine(m: CostLedger.Snapshot) {
         if (m.engine.isEmpty()) return
@@ -241,12 +195,8 @@ object PulseDocument {
                     buildJsonObject {
                         put("profile", e.profile)
                         put("queries", e.queries)
-                        // Milliseconds as a DECIMAL, not an integer. The page
-                        // divides these by the query count, and a store whose
-                        // engine answers in under a millisecond would otherwise
-                        // publish every profile as a flat zero — the same
-                        // precision the health loop used to lose rounding
-                        // `%.2fs`, one boundary further on.
+                        // Decimal milliseconds: the page divides by the query count, and a sub-millisecond
+                        // engine would otherwise publish every profile as a flat zero.
                         put("engineMs", e.engineNanos / 1_000_000.0)
                         put("summaryMs", e.summaryNanos / 1_000_000.0)
                         put("docsMatched", e.docsMatched)
@@ -259,11 +209,7 @@ object PulseDocument {
         }
     }
 
-    /**
-     * The instantaneous readings, named apart from every counter above so a
-     * reader cannot difference them into nonsense. Pulled at snapshot time, so
-     * they cost nothing until this document is built.
-     */
+    /** The instantaneous readings, named apart from every counter so a reader cannot difference them. */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putGauges(m: CostLedger.Snapshot) {
         if (m.gauges.isEmpty()) return
         putJsonArray("gauges") {
@@ -279,15 +225,9 @@ object PulseDocument {
     }
 
     /**
-     * THE PRESENT TENSE AND ITS CAUSE. `held` is what holds a store mutex at
-     * this instant and what it says it is doing; `wait` is cumulative wait per
-     * lock stage split by what was holding when each waiter arrived.
-     *
-     * The split is the point. `lock.ingest.wait 41s` only prompts a question;
-     * `38.4s of it behind "derive 500 subject(s) in 10 chunk(s)"` names a fix.
-     * First-holder attribution, and the page says so: over a long wait the
-     * lock may change hands, and all of that wait is charged to whoever held
-     * it when the waiter arrived.
+     * `held` is what holds a store mutex at this instant and what it says it is doing; `wait` is
+     * cumulative wait per lock stage, split by what was holding when each waiter arrived. A whole
+     * wait is charged to that first holder even where the lock changed hands.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putLocks(
         held: List<IngestStats.Held>,
@@ -338,10 +278,8 @@ object PulseDocument {
     }
 
     /**
-     * The write path's own stage split, busiest first, with the shape of each
-     * stage's time beside its total. The same rows the mirror's status page
-     * draws, on the same read: one pathological call and a hundred thousand
-     * ordinary ones sum the same and need different fixes.
+     * The write path's own stage split, busiest first, with the shape of each stage's time beside
+     * its total: one pathological call and a hundred thousand ordinary ones sum the same.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putStages(stages: Map<String, IngestStats.Stage>) {
         if (stages.isEmpty()) return
@@ -353,9 +291,8 @@ object PulseDocument {
                         buildJsonObject {
                             put("stage", name)
                             put("ms", st.totalNanos / 1_000_000)
-                            // Only where the store timed the stage as calls: a lock's
-                            // wait/hold pair is booked from a duration measured
-                            // elsewhere, and a mean over no denominator is a fiction.
+                            // Only where the store timed the stage as calls; a lock's wait/hold pair has no
+                            // denominator.
                             if (st.calls > 0) {
                                 put("calls", st.calls)
                                 put("meanMs", st.meanNanos / 1_000_000.0)
@@ -368,15 +305,9 @@ object PulseDocument {
     }
 
     /**
-     * WHO AND WHAT IS DRIVING THE LOAD — the dimension a metrics system is
-     * normally forbidden (an observer pubkey and a search term are both
-     * unbounded key spaces), made safe by a bounded sketch: weighted
-     * Space-Saving over a fixed number of slots, which keeps the heavy hitters
-     * and forgets the tail. `error` is the sketch's own overestimate bound for
-     * that row, published rather than hidden: a row whose error approaches its
-     * weight is a row that may not belong in the list at all.
-     *
-     * CLIENT-DERIVED. See [of].
+     * Who and what is driving the load, from a bounded sketch that keeps the heavy hitters and
+     * forgets the tail; `error` is the sketch's overestimate bound for the row. Client-derived,
+     * see [of].
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putHotspots(m: CostLedger.Snapshot) {
         if (m.topObservers.isEmpty() && m.topTerms.isEmpty()) return
@@ -407,13 +338,8 @@ object PulseDocument {
     }
 
     /**
-     * The reads that beat the slow threshold, newest first: wall time against
-     * the engine's own, what was matched against what was served, and the
-     * store's own sentence about the query. A ring, so this is bounded by the
-     * ring and never by how many distinct queries exist — which is what keeps
-     * a retained query string inside the cardinality rule.
-     *
-     * CLIENT-DERIVED, and the most obviously so: `detail` quotes the query.
+     * The reads that beat the slow threshold, newest first, bounded by the store's ring rather
+     * than by how many distinct queries exist. Client-derived: `detail` quotes the query.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putSlowReads(m: CostLedger.Snapshot) {
         if (m.slowReads.isEmpty()) return

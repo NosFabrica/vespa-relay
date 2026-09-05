@@ -27,9 +27,8 @@ import kotlin.test.assertEquals
 class StoreTopologyTest {
     @Test
     fun `neither process may skip a deletion probe`() {
-        // A constant asserting itself: the relay and the sync process write one
-        // index and each feeds the other, so the faster modes are wrong here for
-        // a reason no profiler will show.
+        // The relay and the sync process write one index and each feeds the other, so the faster
+        // modes are wrong here for a reason no profiler will show.
         assertEquals(
             WriterTopology.SHARED_STRICT,
             STORE_WRITERS,

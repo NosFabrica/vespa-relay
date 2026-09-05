@@ -47,13 +47,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * WHO MAY READ THE PULSE DOCUMENT, driven in-process.
- *
- * This document is the one page in the repo that is NOT public: it names the
- * observer lenses and search terms driving the relay's load and, with the
- * slow-read log on, quotes the queries people typed. Every case here is
- * written in the direction its bug would fail — and the direction that matters
- * is always the same one, a reader getting numbers they should not have.
+ * Who may read the pulse document, driven in-process. The document is the one page in the repo
+ * that is not public, so every case is written in the direction its bug would fail: a reader
+ * getting numbers they should not have.
  */
 class PulseSiteTest {
     private val admin = NostrSignerSync()
@@ -110,18 +106,13 @@ class PulseSiteTest {
             val res = client.get(PULSE_DOC_PATH)
 
             assertEquals(HttpStatusCode.Unauthorized, res.status)
-            // The refusal must carry what to sign: the server checks `u` against
-            // its OWN configured origin, which behind a tunnel is not the address
-            // the browser dialled — and a client left to guess fails forever with
-            // nothing on screen to explain it.
+            // The refusal must carry what to sign: the server checks `u` against its own configured
+            // origin, which behind a tunnel is not the address the browser dialled.
             val sign = res.json()["sign"]!!.jsonObject
             assertEquals("$origin$PULSE_DOC_PATH", sign["url"]!!.jsonPrimitive.content)
             assertEquals("GET", sign["method"]!!.jsonPrimitive.content)
             assertEquals(27235, sign["kind"]!!.jsonPrimitive.content.toInt())
-            // And, separately, what to sign to open a SESSION — a different url and
-            // a different method. A client that signed the document's url and
-            // posted it here would get a 405 and no explanation, which is the
-            // whole reason these are two members and not one.
+            // And, separately, what to sign to open a session: a different url and method.
             val session = res.json()["session"]!!.jsonObject
             assertEquals("$origin$PULSE_SESSION_PATH", session["url"]!!.jsonPrimitive.content)
             assertEquals("POST", session["method"]!!.jsonPrimitive.content)
@@ -140,8 +131,8 @@ class PulseSiteTest {
             client.get(PULSE_DOC_PATH)
             client.get(PULSE_DOC_PATH)
 
-            // Not only "not served" — not even READ. An anonymous poller must not
-            // be able to make this process walk its counters.
+            // Not only unserved but unread: an anonymous poller must not make this process walk
+            // its counters.
             assertEquals(0, built, "the document was built for a request that was refused")
         }
 
@@ -155,9 +146,8 @@ class PulseSiteTest {
                     header(HttpHeaders.Authorization, token(PULSE_DOC_PATH, "GET", by = stranger))
                 }
 
-            // 403, not 401: they proved who they are and the answer is still no.
-            // Saying which key was refused saves an operator from debugging a
-            // silent refusal that was a typo in the admin list.
+            // 403, not 401: they proved who they are and the answer is still no. Naming the refused
+            // key saves an operator from debugging a typo in the admin list.
             assertEquals(HttpStatusCode.Forbidden, res.status)
             assertEquals(stranger.pubKey, res.json()["pubkey"]!!.jsonPrimitive.content)
             assertFalse(res.bodyAsText().contains("schema"), "a refused reader must not receive any part of the document")
@@ -168,8 +158,7 @@ class PulseSiteTest {
         testApplication {
             mount(guard())
 
-            // THE POINT OF THE `u` TAG. A token the administrator signed for some
-            // other service — or for the logout route — is not a bearer credential
+            // A token signed for another service, or for the logout route, is not a bearer credential
             // for this one.
             val res =
                 client.get(PULSE_DOC_PATH) {
@@ -215,17 +204,13 @@ class PulseSiteTest {
             assertEquals(admin.pubKey, opened.json()["pubkey"]!!.jsonPrimitive.content)
 
             val cookie = assertNotNull(opened.headers[HttpHeaders.SetCookie], "no session cookie was set")
-            // THE WHOLE REASON THE SESSION EXISTS. NIP-98 tokens are single-use, so
-            // a page polling every two seconds would need an extension popup every
-            // two seconds. One signature, then the cookie.
+            // NIP-98 tokens are single-use, so a polling page would need an extension popup per poll.
             assertTrue(cookie.startsWith("$PULSE_COOKIE="))
             assertTrue(cookie.contains("HttpOnly", ignoreCase = true), "the cookie must be unreadable from the page's own scripts")
             assertTrue(cookie.contains("SameSite=Strict", ignoreCase = true), "no other site may cause this cookie to be sent")
             assertTrue(cookie.contains("Max-Age=1800"), "the session must state its own lifetime")
             assertTrue(cookie.contains("Path=/"))
-            // Ktor also stamps a `${'$'}x-enc` attribute of its own. Browsers ignore
-            // unknown attributes and never send them back, so it is noise rather
-            // than a property; the four above are the properties.
+            // Ktor also stamps a `${'$'}x-enc` attribute of its own, which browsers ignore.
 
             val read = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Cookie, sessionOf(cookie)) }
             assertEquals(HttpStatusCode.OK, read.status)
@@ -236,10 +221,8 @@ class PulseSiteTest {
         testApplication {
             mount(guard())
 
-            // The expected `u` comes from the ROUTE's path, so a cache-buster or
-            // any other parameter cannot make an administrator's token stop
-            // working — and cannot make a token signed for some other route
-            // start working either.
+            // The expected `u` comes from the route's path, so a cache-buster cannot make a token stop
+            // working, nor a token signed for another route start working.
             val res =
                 client.get("$PULSE_DOC_PATH?t=1") {
                     header(HttpHeaders.Authorization, token(PULSE_DOC_PATH, "GET"))
@@ -260,9 +243,8 @@ class PulseSiteTest {
 
             val opened = client.post(PULSE_SESSION_PATH) { header(HttpHeaders.Authorization, signed) }
 
-            // Decided from the operator's declared origin, not the request's
-            // scheme: behind a TLS-terminating proxy the request reads `http`,
-            // and that is the deployment where the mark matters most.
+            // Decided from the operator's declared origin, not the request's scheme, which behind a
+            // TLS-terminating proxy reads `http`.
             assertTrue(assertNotNull(opened.headers[HttpHeaders.SetCookie]).contains("Secure", ignoreCase = true))
         }
 
@@ -274,8 +256,7 @@ class PulseSiteTest {
 
             assertEquals(HttpStatusCode.OK, client.get(PULSE_DOC_PATH) { header(HttpHeaders.Authorization, once) }.status)
 
-            // Replay protection is what makes this a proof rather than a bearer
-            // token: an Authorization header captured off the wire is already spent.
+            // Replay protection is what makes this a proof rather than a bearer token.
             assertEquals(
                 HttpStatusCode.Unauthorized,
                 client.get(PULSE_DOC_PATH) { header(HttpHeaders.Authorization, once) }.status,
@@ -291,8 +272,7 @@ class PulseSiteTest {
 
             val again = client.post(PULSE_SESSION_PATH) { header(HttpHeaders.Cookie, cookie) }
 
-            // Otherwise an expiring session could renew itself forever and the
-            // fixed lifetime would mean nothing.
+            // Otherwise an expiring session could renew itself forever.
             assertEquals(HttpStatusCode.Unauthorized, again.status)
         }
 
@@ -306,8 +286,7 @@ class PulseSiteTest {
             assertEquals(HttpStatusCode.NoContent, client.post(PULSE_LOGOUT_PATH) { header(HttpHeaders.Cookie, cookie) }.status)
 
             assertEquals(HttpStatusCode.Unauthorized, client.get(PULSE_DOC_PATH) { header(HttpHeaders.Cookie, cookie) }.status)
-            // And a logout with no session is still a 204: it must not report
-            // whether a token was live.
+            // A logout with no session is still a 204: it must not report whether a token was live.
             assertEquals(HttpStatusCode.NoContent, client.post(PULSE_LOGOUT_PATH).status)
         }
 
@@ -320,14 +299,11 @@ class PulseSiteTest {
 
             val html = client.get("/")
 
-            // Deliberately open: a browser cannot put an Authorization header on a
-            // navigation, so gating this would make the page unreachable rather
-            // than more private. It holds markup and a script that asks for a
-            // signature; every number is behind the guard.
+            // Deliberately open: a browser cannot put an Authorization header on a navigation, so
+            // gating the shell would make the page unreachable rather than more private.
             assertEquals(HttpStatusCode.OK, html.status)
             val body = html.bodyAsText()
-            // The shell is now markup only — the prompt itself lives in the module,
-            // which is where it has to be checked.
+            // The prompt itself lives in the module, which is where it has to be checked.
             assertTrue(body.contains("./web/pulse/page.js"), "the page must load its logic")
             assertTrue(
                 client.get("/web/pulse/page.js").bodyAsText().contains("Administrators only"),
@@ -347,10 +323,8 @@ class PulseSiteTest {
 
             val body = client.get("/").bodyAsText()
 
-            // THE REASON THIS PAGE IS SHAPED DIFFERENTLY from every other page
-            // here. `script-src 'self'` cannot admit an inline script, so putting
-            // one back would not fail loudly — the page would simply stop
-            // working, and only in a browser. This fails in the build instead.
+            // `script-src 'self'` cannot admit an inline script, and putting one back would fail only
+            // in a browser; this fails in the build instead.
             assertFalse(body.contains("<script>") || body.contains("<script type=\"module\">"), "the page carries an inline script")
             assertFalse(body.contains("<style"), "the page carries an inline stylesheet")
             assertFalse(body.contains("style=\""), "the page carries an inline style attribute")
@@ -371,9 +345,7 @@ class PulseSiteTest {
             assertTrue(csp.contains("connect-src 'self'"), "the page may only talk to its own origin")
             assertTrue(csp.contains("frame-ancestors 'none'"))
             assertTrue(csp.contains("base-uri 'none'"), "nothing may rewrite what a relative url resolves against")
-            // The one relaxation, and only for images: a NIP-86 rpc can point this
-            // deployment's icon at another origin, and a favicon loads under
-            // `img-src`. An image cannot execute.
+            // The one relaxation, only for images: a NIP-86 rpc can point the icon at another origin.
             assertTrue(csp.contains("img-src 'self' data: https:"))
         }
 
@@ -384,10 +356,8 @@ class PulseSiteTest {
 
             val res = client.get("/")
 
-            // installPageDefaults' anyHost() CORS is right for the public stats
-            // document and would be the whole vulnerability here: this site
-            // answers with a cookie. SameSite=Strict is the other half; both are
-            // needed, and this pins that the permissive one is not installed.
+            // installPageDefaults' anyHost() CORS would be the whole vulnerability here: this site
+            // answers with a cookie.
             assertNull(res.headers["Access-Control-Allow-Origin"])
             assertEquals("DENY", res.headers["X-Frame-Options"])
             assertEquals("nosniff", res.headers["X-Content-Type-Options"])
@@ -402,19 +372,15 @@ class PulseSiteTest {
                 built++
                 buildJsonObject { put("uptimeSeconds", built) }
             }
-            // Different seconds, deliberately. Two NIP-98 tokens for the same url
-            // and method in the same second are the same EVENT — same id — and the
-            // replay check rejects the second. That is the tokens working as
-            // designed, and it is exactly why a polling page uses the session
-            // instead of signing per request.
+            // Different seconds, deliberately: two NIP-98 tokens for the same url and method in the
+            // same second are the same event, and the replay check rejects the second.
             val now = System.currentTimeMillis() / 1000
 
             val first = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Authorization, token(PULSE_DOC_PATH, "GET", createdAt = now)) }
             val second = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Authorization, token(PULSE_DOC_PATH, "GET", createdAt = now - 1)) }
 
-            // The page's whole method is differencing two consecutive polls, so a
-            // cached or 304'd document would leave every rate at zero forever —
-            // and this is admin-only content that must not sit in a shared cache.
+            // The page differences two consecutive polls, so a cached or 304'd document would leave
+            // every rate at zero forever; and admin-only content must not sit in a shared cache.
             assertEquals("no-store", first.headers[HttpHeaders.CacheControl])
             assertNull(first.headers[HttpHeaders.ETag], "an ETag over a document whose every field moves can never match")
             assertEquals(2, built, "each request must read the counters again")
