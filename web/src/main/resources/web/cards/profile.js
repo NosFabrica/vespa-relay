@@ -1,5 +1,4 @@
-// kind 0 — the profile card, rendered from the event alone. The one card
-// with its own frame (big avatar header) instead of the shared byline shell.
+// kind 0 — the profile card, the one card with its own frame instead of the shared shell.
 
 import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
@@ -18,12 +17,11 @@ function profileCard(ev, opts) {
   }
   if (p.website) props.push(["website", extLink(p.website)]);
   if (p.lud16) props.push(["lightning", esc(p.lud16)]);
-  // The pubkey row only when the profile carries no name; the npub is in the page url and under "json".
+  // The pubkey row only when the profile carries no name.
   if (!displayName(p)) props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
   const about = clipIf(opts, p.about, 400);
-  // This frame is hand-rolled, so everything shell() does for a card is done
-  // here too: the click target (the person's page, not this revision's id)
-  // and the provenance row, which a spliced profile needs most.
+  // Everything shell() does is done here too: the click target is the person's page,
+  // not this revision's id, and the provenance row is drawn.
   const href = opts && opts.full ? null : selfHref(ev);
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
@@ -43,9 +41,7 @@ function profileCard(ev, opts) {
 }
 
 register([0], profileCard);
-// `self`: the row's subject is its author, so the second line must not repeat
-// the name. Named from the event, so a profile the cache has not learned yet
-// still gets its own name rather than an npub.
+// `self`: the row's subject is its author, so the second line must not repeat the name.
 registerRow([0], (ev) => {
   const p = parseProfile(ev);
   return { name: displayName(p) || shortNpub(ev.pubkey), sub: p.about, pic: p.picture, self: true };

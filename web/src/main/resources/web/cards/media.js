@@ -1,7 +1,5 @@
-// The media family: pictures, video, audio, files, video sets and emoji
-// packs. The media itself is on the card at both depths, because here the
-// file is the event. URLs come from NIP-92 imeta first, then the legacy
-// url/image tags.
+// The media family. The media itself is on the card at both depths, because here the file
+// is the event. URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
@@ -9,19 +7,12 @@ import {
   imetas, tagOf, tagsOf, clipIf, plural,
 } from "./base.js";
 
-/**
- * The file a single-file card is about: its first imeta, read whole. A NIP-71
- * video may list several (an mp4 and a webm), each with its own url, dim and
- * duration; reading field by field across them can frame one and play another.
- */
+/** The file a single-file card is about: its first imeta, read whole, never fields across several. */
 const EMPTY = Object.freeze(Object.create(null));
 const fileOf = (ev) => imetas(ev)[0] || EMPTY;
-/** An imeta field, else the same field as a top-level tag, which NIP-71 also allows. */
+/** An imeta field, else the same field as a top-level tag. */
 const fieldOf = (m, ev, name) => m[name] || tagOf(ev, name);
-/**
- * The event's topics as searchable chips, each once, case-insensitively.
- * A leading `#` in the tag value is stripped and put back once.
- */
+/** The event's topics as `#` chips, each once, case-insensitively. */
 function topics(ev) {
   const seen = new Set(), out = [];
   for (const t of tagsOf(ev, "t")) {
@@ -33,18 +24,11 @@ function topics(ev) {
   return out;
 }
 
-/**
- * What a media card says in words: the author's text, then the media's
- * description, and last the NIP-31 `alt`, which is boilerplate by design.
- */
+/** The author's text, then the media's description, and last the NIP-31 `alt`. */
 const captionOf = (ev, media) =>
   ev.content || tagOf(ev, "summary", "description") || (media && media.alt) || tagOf(ev, "alt");
 
-/**
- * 20 — a NIP-68 picture post, which is an album: one imeta per image. A single
- * picture gets the frame a video does, shaped by its `dim`; several get a
- * grid, capped in the list and complete on the permalink.
- */
+/** 20 — a NIP-68 picture post, an album of one imeta per image. */
 function pictureCard(ev, opts) {
   const pics = imetas(ev).filter((m) => m.url);
   const legacy = tagOf(ev, "url") || imageOf(ev);
@@ -60,8 +44,8 @@ function pictureCard(ev, opts) {
 }
 
 /**
- * One picture, with the event's description as its alt text. `whenBroken` is
- * what a dead url removes: the frame around a lone picture, the cell inside a grid.
+ * One picture. `whenBroken` is what a dead url removes: the frame around a lone picture,
+ * the cell inside a grid.
  */
 const pictureImg = (m, whenBroken = "this.parentElement.remove()") =>
   `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="${whenBroken}" />`;
@@ -75,7 +59,7 @@ function pictureGrid(pics, opts) {
     (more > 0 ? `<div class="muted-note">…and ${more} more</div>` : "");
 }
 
-/** 21/22/34235/34236 — video: the player itself, at both depths, framed by `dim` before a byte loads. */
+/** 21/22/34235/34236 — video: the player itself, at both depths. */
 function videoCard(ev, opts) {
   const m = fileOf(ev);
   const url = fieldOf(m, ev, "url");
@@ -91,10 +75,7 @@ function videoCard(ev, opts) {
     : []);
 }
 
-/**
- * The player. `#t=0.1` asks for the first frame when there is no poster (Safari
- * paints black otherwise); `preload` drops to `none` behind a poster.
- */
+/** The player, framed by `dim` before a byte loads. `#t=0.1` without a poster, or Safari paints black. */
 function videoFrame(m, ev, url, opts) {
   const p = m.image || imageOf(ev);
   const dur = fmtDuration(fieldOf(m, ev, "duration"));
@@ -109,24 +90,21 @@ function videoFrame(m, ev, url, opts) {
 const mediaFrame = (shape, inner) => `<div class="media-frame${shape ? " sized" : ""}"${shape}>${inner}</div>`;
 
 /**
- * The frame's shape from NIP-92 `dim` as an inline style. The one place an
- * event's numbers reach a `style` attribute, so the parse is a strict
- * full-string match on two short digit runs and anything else yields no
- * attribute. `max-width` is the stylesheet's height cap converted through
- * the ratio, so a portrait video is not a full-width band.
+ * The frame's shape from `dim` as an inline style. The one place an event's numbers reach
+ * a `style` attribute, so anything but two short digit runs yields no attribute at all.
  */
 function frameStyle(dim, opts) {
   const m = /^(\d{1,5})x(\d{1,5})$/.exec(dim || "");
   const w = m ? Number(m[1]) : 0, h = m ? Number(m[2]) : 0;
   if (!w || !h) return "";
-  // The floor keeps an absurd ratio (`dim 100x4000`) at a watchable width; the frame letterboxes below it.
+  // The floor keeps an absurd ratio at a watchable width; the frame letterboxes below it.
   const cap = opts && opts.full
     ? `${Math.max(12, 70 * w / h).toFixed(1)}vh`
     : `${Math.max(96, Math.round(360 * w / h))}px`;
   return ` style="aspect-ratio: ${w} / ${h}; max-width: min(100%, ${cap})"`;
 }
 
-/** NIP-71 `duration` is a count of seconds; it reads as 0:42. */
+/** Seconds as 0:42. */
 const fmtDuration = (secs) => {
   const n = Math.round(Number(secs));
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -144,10 +122,7 @@ const fmtBytes = (n) => {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
-/**
- * 1063 — file metadata: what it is, how big, where; the file itself when it
- * is an image. Same frame as a kind 20, since a 1063 describes the same bytes.
- */
+/** 1063 — file metadata, with the file itself when it is an image. */
 function fileCard(ev, opts) {
   const url = tagOf(ev, "url");
   const mime = tagOf(ev, "m") || "";
@@ -164,10 +139,7 @@ function fileCard(ev, opts) {
   ]);
 }
 
-/**
- * 1986 — audio, playable when a url is present. A 1244 voice reply carries
- * nothing but the audio, so who it answers is the only text on the card.
- */
+/** 1986 — audio; a 1244 voice reply carries nothing but the audio, so the reply line is its text. */
 function audioCard(ev, opts) {
   const url = fieldOf(fileOf(ev), ev, "url");
   const inner =
@@ -177,10 +149,10 @@ function audioCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** How many videos a set names, by address and by id alike. */
+/** How many videos a set names, by address or by id. */
 const setSize = (ev) => tagsOf(ev, "a").length + tagsOf(ev, "e").length;
 
-/** 30005 — a video set: title, description, and how many it holds. */
+/** 30005 — a video set. */
 function videoSetCard(ev, opts) {
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
@@ -189,10 +161,10 @@ function videoSetCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The (shortcode, url) pairs a pack defines; both halves, or it draws nothing. */
+/** The (shortcode, url) pairs a pack defines; a tag missing either half is skipped. */
 const emojiOf = (ev) => tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
 
-/** 30030 — an emoji pack: the emoji, visible. */
+/** 30030 — an emoji pack. */
 function emojiPackCard(ev, opts) {
   const emoji = emojiOf(ev);
   const inner =
@@ -206,12 +178,12 @@ function emojiPackCard(ev, opts) {
 register([20], pictureCard);
 register([21, 22, 34235, 34236], videoCard);
 register([1063], fileCard);
-// 1222/1244 are NIP-A0 voice messages and their replies: an imeta audio url and no transcript.
+// 1222/1244 are NIP-A0 voice messages and their replies.
 register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
 
-/** The row for a file with something to say: its title, else the caption. cards.js drops a caption that repeats the title. */
+/** The title, else the caption; cards.js drops a sub that repeats the name. */
 const captionRow = (ev) => {
   const title = titleOf(ev);
   const caption = captionOf(ev, fileOf(ev));
@@ -231,7 +203,7 @@ registerRow([1986, 1222, 1244], (ev) => ({
   name: ev.content || titleOf(ev),
   sub: fmtDuration(fieldOf(fileOf(ev), ev, "duration")),
 }));
-// The two NIP-51 sets here are counted the way lists.js counts its own.
+// Counted the way lists.js counts its sets.
 registerRow([30005], (ev) => ({
   name: titleOf(ev),
   sub: [plural(setSize(ev), "video"), summaryOf(ev)].filter(Boolean).join(" · "),

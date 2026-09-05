@@ -1,11 +1,7 @@
-// Which NIP-29 group somebody means by `group:chachi`, with no DOM and no
-// relay in it. A group id is opaque and minted by its host relay, so the box
-// offers rows from two sources that are kept apart: the store's kind 39000s,
-// ranked by the relay and kept in that order, and the reader's own kind 10009,
-// whose `group` tags are the only place an id, its host url and a name arrive
-// together. A group's identity is the pair (id, host relay); a 10009 names the
-// host as a url and a 39000 as a signing key, and nothing here joins the two,
-// so rows sharing an id stay separate and [rank] marks them `ambiguous`.
+// Which NIP-29 group somebody means by `group:chachi`, with no DOM and no relay in it. Rows
+// come from two sources kept apart: the store's kind 39000s in the relay's order, and the
+// reader's own kind 10009. A 10009 names the host as a url and a 39000 as a signing key, and
+// nothing here joins the two, so rows sharing an id stay separate and [rank] marks them `ambiguous`.
 
 /** A relay url as a row shows it: no scheme, no trailing slash, still exact. */
 export const relayLabel = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
@@ -13,15 +9,13 @@ export const relayLabel = (url) => String(url || "").replace(/^wss?:\/\//i, "").
 /** A tag's value at [i], trimmed to nothing when it is absent or blank. */
 const at = (tag, i) => (tag.length > i ? String(tag[i] || "").trim() : "");
 
-// The (id, host) pair as one key. `\u0000` because both halves are free-form
-// and any printable separator could appear in one of them; written as the
-// escape, never the byte (searchfield.js's chipFace has the rule).
+// The (id, host) pair as one key. Both halves are free-form, so the separator is `\u0000`,
+// written as the escape and never the byte (searchfield.js's chipFace has the rule).
 const idKey = (id, host) => `${id}\u0000${host}`;
 
 /**
- * The `group` tags of one kind-10009, as candidates. Public tags only: the
- * encrypted half is [sealed] and [privateGroups]. An entry missing its id or
- * host url is dropped, as quartz's `GroupTag.parse` requires both.
+ * The `group` tags of one kind-10009 as candidates, public tags only; the encrypted half is
+ * [sealed] and [privateGroups]. An entry missing its id or host url is dropped.
  */
 export function ownGroups(ev) {
   const out = [];
@@ -40,9 +34,8 @@ export function ownGroups(ev) {
 }
 
 /**
- * Is this ciphertext NIP-04 rather than NIP-44? quartz's `EncryptedInfo.isNIP04`
- * rule for rule: NIP-04 appends `?iv=<24 base64 chars>`, so the marker sits 28
- * characters from the end. The `-null` strip covers a client bug that shipped.
+ * Is this ciphertext NIP-04 rather than NIP-44? NIP-04 appends `?iv=<24 base64 chars>`; the
+ * `-null` strip covers a client bug that shipped.
  */
 export function isNip04(encoded) {
   const s = String(encoded || "").replace(/-null$/, "");
@@ -50,9 +43,8 @@ export function isNip04(encoded) {
 }
 
 /**
- * The locked half of a kind-10009 as `{ content, scheme }`, or null. A
- * non-empty payload is not proof there is anything inside: an empty private
- * list encrypts the empty string, and only decrypting can tell.
+ * The locked half of a kind-10009 as `{ content, scheme }`, or null. A payload may still hold an
+ * empty list.
  */
 export function sealed(ev) {
   const content = String((ev && ev.content) || "").trim();
@@ -61,9 +53,8 @@ export function sealed(ev) {
 }
 
 /**
- * The groups inside a decrypted 10009 payload: [ownGroups] over the tag array
- * it holds, marked `secret`. The empty string, non-JSON (a scheme mix-up) and
- * JSON that is not a tag array are all no groups rather than an error.
+ * The groups inside a decrypted 10009 payload, marked `secret`; anything but a tag array is no
+ * groups, not an error.
  */
 export function privateGroups(plaintext) {
   const t = String(plaintext || "").trim();
@@ -75,8 +66,8 @@ export function privateGroups(plaintext) {
 }
 
 /**
- * The group an event was posted to, NIP-29's `h` tag, or "". The bare id only:
- * the host relay is nowhere in the message, and naming it is groupnames.js's job.
+ * The group an event was posted to (NIP-29's `h` tag), or "". The bare id: the host is nowhere in
+ * the message.
  */
 export const postedTo = (ev) => {
   const tag = ((ev && ev.tags) || []).find((t) => Array.isArray(t) && t[0] === "h");
@@ -104,22 +95,15 @@ export function metaGroup(ev) {
   };
 }
 
-/**
- * Does one of the reader's own groups answer what has been typed? Asked only
- * of the local list, which arrives whole and unsearched. The relay's rows are
- * never put through this: they are here because an index matched them, and a
- * substring test would silently discard the hits it cannot make.
- */
+/** Does one of the reader's own groups answer what has been typed? Never applied to the relay's rows. */
 const hit = (cand, needle) =>
   !needle ||
   cand.id.toLowerCase().includes(needle) ||
   (cand.name || "").toLowerCase().includes(needle);
 
 /**
- * The rows to offer for a half-typed `group:`, best first: an exact id
- * (case-sensitive, as the store matches an `h` tag), then the reader's own
- * groups that [hit], then everything the relay found in the relay's own order.
- * With nothing typed the result is the reader's whole list. `ambiguous` marks
+ * The rows to offer for a half-typed `group:`, best first: an exact id, then the reader's own
+ * groups that [hit], then everything the relay found in the relay's order. `ambiguous` marks
  * every row sharing its id with another, since either writes the same `#h`.
  */
 export function rank(partial, { own = [], meta = [] } = {}) {
@@ -135,8 +119,7 @@ export function rank(partial, { own = [], meta = [] } = {}) {
     rows.push(c);
   };
   const all = [...own, ...meta];
-  // Own before meta within the exact band too: two rows can carry the typed
-  // id, and yours is the one you meant.
+  // Own before meta within the exact band too: yours is the one you meant.
   for (const c of all) if (typed && c.id === typed) take(c);
   for (const c of own) if (hit(c, needle)) take(c);
   for (const c of meta) take(c);
@@ -147,10 +130,8 @@ export function rank(partial, { own = [], meta = [] } = {}) {
 }
 
 /**
- * What a row says about where it is, as `{ text, exact }`. `exact` only for a
- * url out of a `group` tag; a name for the host's signing key is a claim the
- * key made about itself, and [hostName] is passed in because this module
- * holds no caches.
+ * What a row says about where it is, as `{ text, exact }`; `exact` only for a url out of a
+ * `group` tag. [hostName] is passed in because this module holds no caches.
  */
 export function where(cand, hostName = "") {
   if (cand.relayUrl) return { text: relayLabel(cand.relayUrl), exact: true };

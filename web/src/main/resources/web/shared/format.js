@@ -1,6 +1,5 @@
-// Small pure helpers: escaping, clipping, dates, and the tag extractors that
-// decide what a generic event "is" on screen. The extractors mirror the fields
-// the search indexes, so what matched is what shows.
+// Small pure helpers: escaping, clipping, dates, and the tag extractors that decide what a
+// generic event "is" on screen. The extractors mirror the fields the search indexes.
 
 export const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 export const clip = (s, n) => { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
@@ -23,22 +22,14 @@ export function when(ev) {
   return dateOf(ev).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-/**
- * The first value of the first of [names] present. Total over the event: the
- * events these read are not all this relay's, and entity.js renders what a
- * hinted relay returns before handing it over for verification.
- */
+/** The first value of the first of [names] present. Total over any shape of event, tags array or not. */
 export const firstTag = (ev, ...names) => {
   for (const name of names) {
     for (const t of (ev && ev.tags) || []) if (Array.isArray(t) && t[0] === name && t[1]) return t[1];
   }
   return null;
 };
-/**
- * A `d` is an identifier and only sometimes prose. A UUID, a hex blob or a
- * bare unix timestamp is never a title, so the ladder falls past it to
- * whatever the card would have said next.
- */
+/** A `d` that is a UUID, a hex blob or a bare unix timestamp is never a title. */
 const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{10,})$/i;
 export const titleOf = (ev) => {
   const named = firstTag(ev, "title", "name", "subject");
@@ -50,10 +41,8 @@ export const summaryOf = (ev) => firstTag(ev, "summary", "description", "alt");
 export const imageOf = (ev) => firstTag(ev, "image", "thumb", "picture", "icon");
 
 /**
- * A NIP-23 markdown body reduced to the prose a preview can show. A reducer to
- * text, not a renderer to html: it drops what a preview cannot show and
- * unwraps what it can, emits no markup, and the call site still escapes the
- * result. [title] drops a leading heading that only repeats it.
+ * A markdown body reduced to the prose a preview can show. A reducer to text, never a
+ * renderer to html: it emits no markup, and the call site still escapes the result.
  */
 const MD_HEADING = /^\s{0,3}#{1,6}\s+/;
 const MD_RULE = /^\s*(?:[-*_=]\s*){3,}$/;          // thematic break, setext underline
@@ -68,9 +57,7 @@ export function mdExcerpt(md, title = "") {
     .replace(/<((?:https?|wss?|mailto):[^>\s]+)>/g, "$1")        // autolinks, before the tag strip
     .replace(/<\/?[a-zA-Z][^>]*>/g, " ");                        // html tags
 
-  // The excerpt is the first prose run: a heading is a label for the prose
-  // under it, and kept inline it runs straight into the sentence it
-  // introduces. A body that is nothing but headings falls back to them.
+  // The first prose run, without its headings; a body that is nothing but headings falls back to them.
   const heads = [], prose = [];
   let started = false, ended = false;
   for (const raw of body.split("\n")) {

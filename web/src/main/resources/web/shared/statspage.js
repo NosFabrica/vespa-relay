@@ -1,15 +1,10 @@
-// The engine every stats page runs on: fetch the document, draw the panels
-// that changed, keep what the reader was doing in the ones that did not, and
-// poll on the cadence the document states. A page supplies its panels (a name,
-// the sections it reads, a builder) and the engine does the rest.
+// The engine every stats page runs on: fetch the document, draw the panels that changed, keep
+// what the reader was doing in the ones that did not, and poll on the cadence the document
+// states. A page supplies its panels (a name, the sections it reads, a builder).
 
 import { ago, el, fmtDur, isoOf, stampOf } from "./page.js";
 
-/**
- * How old a tier may be before the page says so, for a document that states
- * no cadence. Not a guess at the rollup interval, which is an operator
- * setting; the fallback where `tiers.<name>.everySeconds` is absent.
- */
+/** How old a tier may be before the page says so, when the document states no cadence. */
 const STALE_AFTER_MS = 6 * 3600 * 1000;
 
 /** How many of its own passes a tier may miss before the page calls it late. */
@@ -22,10 +17,8 @@ const drawn = new Map();
 let renderedAt = null;
 
 /**
- * Put `parts` in `box`, keeping what the reader was doing inside it: filter
- * text, keyed by the box's name since the page has two search boxes, and
- * scroll position by index, restored after the filter is re-applied because
- * filtering changes how tall the content is.
+ * Put `parts` in `box`, keeping the reader's filter text (keyed by the box's name) and scroll
+ * position; the scroll is restored after the filter is re-applied, since filtering changes height.
  */
 function fill(box, parts) {
   const typed = new Map();
@@ -44,10 +37,8 @@ function fill(box, parts) {
 }
 
 /**
- * The relay's own statement that this document is no longer current, and why.
- * Distinct from the footer's age line, which only infers. Names the tier
- * where the relay does: with two cadences, "these numbers are not current"
- * over totals forty seconds old is a sentence a reader has to disbelieve.
+ * The relay's own statement that this document is no longer current, and why; names the tier where
+ * the relay does.
  */
 function staleBanner(stale) {
   if (!stale || !stale.reason) return null;
@@ -63,24 +54,19 @@ function staleBanner(stale) {
 }
 
 function render(doc) {
-  // Whose page this is, from the document rather than the markup: one file is
-  // served by the relay, the mirror and the monitor.
+  // Whose page this is, from the document: one file is served by the relay, the mirror and the monitor.
   if (doc.title) {
     document.title = doc.title;
     if (titleEl) titleEl.textContent = doc.title;
   }
   scopeEl.textContent = doc.scope || "";
   settlePoll(doc);
-  // The containers are laid out once and kept, so an untouched panel keeps its
-  // scroll, its filter and its ResizeObserver. Keyed on the containers rather
-  // than on an empty body: a 503 card or an error card must be cleared out
-  // from under the panels rather than left above them.
+  // The containers are laid out once and kept, so an untouched panel keeps its scroll, filter
+  // and ResizeObserver. Keyed on the containers: a 503 or error card must be cleared from under them.
   if (!bodyEl.querySelector("[data-panel]")) {
     bodyEl.replaceChildren();
     drawn.clear();
-    // The staleness banner first, above the hero numbers: a rollup that has
-    // been failing all night otherwise draws a page indistinguishable from a
-    // healthy one.
+    // The staleness banner first, above the hero numbers.
     for (const name of ["stale", ...panels.map((p) => p.name)]) {
       const box = el("div");
       box.dataset.panel = name;
@@ -88,17 +74,14 @@ function render(doc) {
     }
   }
   renderedAt = doc.generatedAt || null;
-  // Unconditionally: one element, nothing the reader can disturb, and the one
-  // thing that can change while no section has.
+  // Unconditionally: the one thing that can change while no section has.
   fill(panelBox("stale"), [staleBanner(doc.stale)]);
-  // A page-supplied hook that must run before the panels: the relay's activity
-  // panel settles on a grain the document may have stopped carrying.
+  // A page-supplied hook that must run before the panels.
   beforePanels(doc);
   for (const panel of panels) {
     const stamp = panel.reads.map((member) => stampOf(doc[member])).join("|");
-    // The memo preserves reader state, but must not preserve emptiness: a panel
-    // memoised on an empty stamp (`reads: []`, which the verdicts panel uses)
-    // would otherwise freeze on the first document for the life of the page.
+    // The memo must not preserve emptiness: a panel with `reads: []` would otherwise freeze on
+    // the first document for the life of the page.
     if (drawn.get(panel.name) === stamp && panelBox(panel.name).hasChildNodes()) continue;
     drawn.set(panel.name, stamp);
     fill(panelBox(panel.name), panel.build(doc));
@@ -109,11 +92,8 @@ function render(doc) {
 const panelBox = (name) => bodyEl.querySelector(`[data-panel="${name}"]`);
 
 /**
- * When each tier of the document was computed, and whether either is late,
- * one line per tier: one line for the document would cover for a charts pass
- * that died hours ago. Late is measured in the tier's own passes. A tier the
- * document carries and the page's `tiers` list does not still gets a line,
- * under its own name.
+ * When each tier was computed and whether it is late, one line per tier, late measured in the
+ * tier's own passes. A tier the page's `tiers` list does not name still gets a line.
  */
 function renderFoot(doc) {
   footEl.replaceChildren();
@@ -144,8 +124,7 @@ function renderFoot(doc) {
   footEl.append("Source: ");
   footEl.appendChild(a);
   footEl.append(` (schema ${doc.schema}).`);
-  // A document written by a newer relay may mean things this page does not
-  // know; saying so beats charting fields we are guessing at.
+  // A document written by a newer relay may mean things this page does not know.
   if (doc.schema > schemaFor(doc)) {
     footEl.appendChild(el("p", "err", `This page was written for schema ${schemaFor(doc)} — some panels may be missing or misread.`));
   }
@@ -153,16 +132,12 @@ function renderFoot(doc) {
 
 async function load() {
   try {
-    // Not `cache: "no-store"`: that neither keeps the response nor sends
-    // `If-None-Match`, so the route's 304 could never fire. The default mode
-    // revalidates, which is what `Cache-Control: no-cache` asks for.
+    // Not `cache: "no-store"`: the default mode revalidates, so the route's 304 can fire.
     const res = await fetch(docUrl);
     if (res.status === 503) {
-      // The honest empty state. Not zeros: "nothing computed yet" and "this
-      // relay holds nothing" are different facts.
+      // Not zeros: "nothing computed yet" and "this relay holds nothing" are different facts.
       scopeEl.textContent = "No statistics computed yet.";
-      // The body no longer shows any document, so the next one must rebuild it
-      // even if it is the rollup drawn before.
+      // The body no longer shows any document, so the next one must rebuild it.
       renderedAt = null;
       bodyEl.replaceChildren();
       const c = el("div", "card pending");
@@ -176,8 +151,7 @@ async function load() {
     render(await res.json());
   } catch (e) {
     const why = String(e && e.message ? e.message : e);
-    // A failed poll is not a failed page: the document on screen is still the
-    // last thing this relay computed, and the footer already admits its age.
+    // A failed poll is not a failed page: the document on screen is still the last one computed.
     if (renderedAt) {
       // Replaced, not appended: polls keep failing while a relay is down.
       const note = el("p", "err", `Could not refresh: ${why}. The numbers above are from the last successful read.`);
@@ -196,18 +170,12 @@ async function load() {
   }
 }
 
-/**
- * The poll follows the fastest tier the document states, so the counters are
- * live on screen and not only in the JSON; each poll is a conditional request
- * and costs a 304 until the rollup moves. Clamped: never below the floor, so
- * a mistuned interval cannot make every tab a per-second poller, and never
- * above the ceiling, so a charts-only relay keeps its old schedule.
- */
+/** The poll follows the fastest tier the document states, clamped between the floor and the ceiling. */
 const POLL_FLOOR_MS = 30 * 1000;
 const POLL_CEILING_MS = 5 * 60 * 1000;
 let pollEveryMs = POLL_CEILING_MS;
 
-/** The fastest cadence this document says it is on, clamped to something a browser should poll at. */
+/** The fastest cadence this document states, clamped to something a browser should poll at. */
 function settlePoll(doc) {
   const stated = Object.values(doc.tiers || {})
     .map((t) => t.everySeconds)
@@ -217,28 +185,22 @@ function settlePoll(doc) {
 }
 
 /**
- * Which document this is, and so which schema it was written against: the
- * section a document carries names its publisher, and each plane versions its
- * own. An unrecognised document falls back to the relay's, the strictest, so
- * the page reports a mismatch it may not have rather than hiding one it does.
+ * Which schema this document was written against, from the section that names its publisher.
+ * An unrecognised document falls back to the relay's, the strictest.
  */
 const schemaFor = (doc) => (doc.monitor ? schema.monitor : doc.sync && !doc.corpus ? schema.sync : schema.relay);
 
 /**
- * Mount a stats page: lay out its panels, draw the document, and keep it
- * drawn. `panels` is the table of `{name, reads, build}`; `schema` the
- * document version the page was written against; `tiers` the cadences to
- * name in the footer, in reading order; `pendingNote` what to say before the
- * first rollup. What the numbers cover is not an argument: the document says
- * so itself in `counted`. `beforePanels` exists for the relay's activity
- * panel alone.
+ * Mount a stats page: lay out its panels, draw the document, and keep it drawn. `panels` is
+ * the table of `{name, reads, build}`; `schema` the document version the page was written
+ * against; `tiers` the cadences named in the footer, in reading order; `pendingNote` what to
+ * say before the first rollup; `beforePanels` a hook run before the panels.
  */
 export function mountStatsPage({
   panels: panelTable,
   schema: schemaVersion,
   tiers: tierNames = [],
-  // Document-relative, so one page can be served behind a path prefix;
-  // `/stats.json` would be asked of the host root wherever the page sits.
+  // Document-relative, so one page can be served behind a path prefix.
   docUrl: url = "stats.json",
   pendingNote: pending = "",
   beforePanels: hook = () => {},
@@ -253,9 +215,8 @@ export function mountStatsPage({
   titleEl = document.querySelector("h1");
   scopeEl = document.getElementById("scope");
   footEl = document.getElementById("foot");
-  // A chain rather than setInterval: each read waits for the previous one, so
-  // a slow response cannot stack requests, and the delay is re-read every
-  // time, so a newly stated cadence takes effect without a reload.
+  // A chain rather than setInterval, so a slow response cannot stack requests and a newly
+  // stated cadence takes effect without a reload.
   (async function poll() {
     await load();
     setTimeout(poll, pollEveryMs);

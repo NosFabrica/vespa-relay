@@ -1,24 +1,11 @@
-// What the pulse page decides, apart from the DOM that draws it: turning a
-// document of CUMULATIVE counters into the RATES an operator reads, and the
-// handful of judgements ("this is the expensive activity", "this wait is
-// behind that holder") that can be wrong silently.
-//
-// Pure, and tested in node by `pulse.test.mjs`. The page is the only caller.
+// What the pulse page decides, apart from the DOM that draws it: turning a document of
+// cumulative counters into the rates an operator reads, and the judgements that can be wrong
+// silently. Pure; the page is the only caller.
 
-/**
- * How often the page polls. Far faster than the stats page's 30s floor, and
- * it costs the relay nothing comparable: `/pulse.json` is a read of in-process
- * counters, not a rollup of Vespa queries. Two seconds is also what makes the
- * differenced rates readable — a 30s window smooths away the spike an operator
- * opened the page to see.
- */
+/** How often the page polls; `/pulse.json` is a read of in-process counters, so it can be fast. */
 export const POLL_MS = 2000;
 
-/**
- * What each activity IS, in the operator's words rather than the enum's. An
- * activity the store adds and this table does not know still draws, under its
- * own name: the label is a courtesy, never a gate. `pulse.test.mjs` pins that.
- */
+/** What each activity is, in the operator's words. An unknown activity still draws under its own name. */
 export const ACTIVITY_LABELS = {
   Insert: "single inserts",
   BatchInsert: "bulk ingest",
@@ -35,37 +22,26 @@ export const ACTIVITY_LABELS = {
 };
 
 /**
- * The admission outcomes, in the order an operator reads them: what got in
- * first, then the reasons it did not, commonest first. A reason the store adds
- * sorts after these under its own name rather than vanishing.
+ * The admission outcomes in reading order: what got in, then the reasons it did not. An
+ * unknown reason sorts after these under its own name.
  */
 export const OUTCOME_ORDER = ["admitted", "duplicate", "replaced", "deleted", "expired", "vanished", "blocked", "unstorable", "failed"];
 
 /**
- * Past this share of the store's time, one activity is called out rather than
- * merely listed. Strictly past: an even two-way split is exactly 0.5 and has
- * no dominant half, so naming one there would be a sentence the table
- * contradicts.
+ * Past this share of the store's time, one activity is called out rather than merely listed.
+ * Strictly past: an even split has no dominant half.
  */
 export const DOMINANT_SHARE = 0.5;
 
 /**
- * Past this, a port is talking to the engine more than the work justifies —
- * the store's own contract ("never ingest in a loop over insert()") in a
- * number. One call per document is the floor for a read that returns what it
- * asked for; two is a probe plus a write.
+ * Past this many engine calls per document, a port is talking to the engine more than the work
+ * justifies.
  */
 export const CHATTY_CALLS_PER_DOC = 4;
 
 /**
- * The window between two documents, in seconds, or null when there is no
- * usable one.
- *
- * MEASURED ON THE SERVER'S OWN CLOCK (`uptimeSeconds`), not the browser's: a
- * reader whose clock is minutes off would otherwise see every rate scaled by
- * the error. Uptime going backwards means the process restarted, and every
- * counter with it — the baseline is dropped rather than differenced into a
- * huge negative rate.
+ * The window between two documents in seconds, on the server's own clock (`uptimeSeconds`),
+ * or null. Uptime going backwards is a restart, and the baseline is dropped with it.
  */
 export function windowOf(now, prev) {
   if (!prev || !now) return null;
@@ -78,12 +54,8 @@ export function windowOf(now, prev) {
 export const rateOf = (now, prev, secs) => (secs == null || prev == null ? null : Math.max(0, now - prev) / secs);
 
 /**
- * The activity table: one row per activity, with its share of the process's
- * total port time and the rate its calls are arriving at.
- *
- * `share` is of PORT TIME, which is the store's own wall time inside the
- * engine calls — not of the engine's internal time, which is a different
- * quantity published separately. Busiest first.
+ * The activity table, busiest first: each activity's share of the process's port time (the
+ * store's wall time inside engine calls, not the engine's own time) and its call rate.
  */
 export function activityRowsOf(doc, prev) {
   const rows = doc.activities || [];
@@ -118,9 +90,8 @@ export function dominantOf(rows) {
 }
 
 /**
- * The slowest read shape on the page: the highest p99 across every measured
- * port, with the activity it belongs to. Null when nothing has a histogram —
- * which is not the same as nothing being slow, and the page says so.
+ * The slowest read shape on the page: the highest p99 across every measured port. Null when
+ * nothing has a histogram, which is not the same as nothing being slow.
  */
 export function slowestOf(doc) {
   let worst = null;
@@ -134,11 +105,8 @@ export function slowestOf(doc) {
 }
 
 /**
- * Admission, as the share it is. `admitted / offered` is the number that tells
- * an operator to narrow a sync; the reasons under it say which sync.
- *
- * Returns null when nothing has been offered: a fresh process has no admission
- * rate, and drawing 0% would read as a store refusing everything.
+ * Admission as the share it is, or null when nothing has been offered: a fresh process has no
+ * admission rate, and 0% would read as a store refusing everything.
  */
 export function admissionOf(doc, prev) {
   const o = doc.outcomes;
@@ -174,9 +142,8 @@ export function outcomeSplitOf(row) {
 }
 
 /**
- * The engine's own view, per rank profile. `matched` against `served` is the
- * recall-versus-page picture: far more matched than served is a query doing
- * work the client never sees, and it is exactly what the observer gate moves.
+ * The engine's own view, per rank profile. `matched` against `served` is the recall-versus-page
+ * picture.
  */
 export function engineRowsOf(doc, prev) {
   const secs = windowOf(doc, prev);
@@ -187,9 +154,7 @@ export function engineRowsOf(doc, prev) {
       ...e,
       queriesPerSec: rateOf(e.queries, before?.queries, secs),
       meanEngineMs: e.queries > 0 ? e.engineMs / e.queries : null,
-      // How much of what the engine matched ever reached a client. Null rather
-      // than 0 with nothing matched: no queries and a wide-open query that
-      // matched nothing are different facts.
+      // Null rather than 0 with nothing matched: no queries and a query that matched nothing differ.
       servedShare: e.docsMatched > 0 ? e.hitsServed / e.docsMatched : null,
       matchedPerQuery: e.queries > 0 ? e.docsMatched / e.queries : null,
     };
@@ -197,13 +162,8 @@ export function engineRowsOf(doc, prev) {
 }
 
 /**
- * The lock picture, present tense and cumulative. `held` is what holds a store
- * mutex right now; `wait` is where the waiting went, and — the part worth the
- * page — WHO IT WAS BEHIND.
- *
- * First-holder attribution, which the page states rather than implies: over a
- * long wait the lock may change hands several times and all of that wait is
- * charged to whoever held it when the waiter arrived.
+ * The lock picture: `held` is what holds a store mutex now; `wait` is where the waiting went
+ * and who it was behind. A wait is charged to whoever held the lock when the waiter arrived.
  */
 export function locksOf(doc) {
   const locks = doc.locks || {};
@@ -218,10 +178,8 @@ export function locksOf(doc) {
 }
 
 /**
- * The ingest stage split. A stage booked from a duration measured elsewhere —
- * a lock's wait/hold pair — carries no call count, and this keeps `calls`
- * undefined there rather than inventing a mean over a denominator that does
- * not exist.
+ * The ingest stage split. A stage booked from a lock's wait/hold pair carries no call count,
+ * so `calls` stays undefined there rather than a mean over nothing.
  */
 export function stageRowsOf(doc, prev) {
   const secs = windowOf(doc, prev);
@@ -230,17 +188,13 @@ export function stageRowsOf(doc, prev) {
     const msPerSec = rateOf(s.ms, was.get(s.stage)?.ms, secs);
     return {
       ...s,
-      // Seconds of work per second of wall clock: 1.0 is a stage saturating one
-      // thread, and above 1.0 is concurrency, not an error.
+      // Seconds of work per second of wall clock: above 1.0 is concurrency, not an error.
       busy: msPerSec == null ? null : msPerSec / 1000,
     };
   });
 }
 
-/**
- * What each gauge IS, in the operator's words. A gauge the store adds and this
- * table does not know still draws, under its own key.
- */
+/** What each gauge is, in the operator's words. An unknown gauge still draws under its own key. */
 export const GAUGE_LABELS = {
   "feed.inflight": "feed operations in flight",
   "lock.held": "store mutexes held",
@@ -249,36 +203,20 @@ export const GAUGE_LABELS = {
 };
 
 /**
- * The gauges, which a reader must NEVER difference: a queue depth is not a
- * rate, and "total ever queued" answers nothing. Kept as a separate accessor
- * from every counter above so the distinction survives a refactor — and drawn
- * in their own panel for the same reason, never mixed into the rate strip.
+ * The gauges, which a reader must never difference: a queue depth is not a rate. Their own
+ * accessor and their own panel, so the distinction survives a refactor.
  */
 export const gaugesOf = (doc) => (doc.gauges || []).map((g) => ({ ...g, label: GAUGE_LABELS[g.gauge] || g.gauge }));
 
 /**
- * Whether this document carries the sections that describe the relay's users
- * rather than the relay — top observers, top search terms, and a slow-read log
- * that quotes the query.
- *
- * Read from the document's own flag, not from whether the arrays are present:
- * a build that serves no client sections and a relay nobody has searched yet
- * both produce nothing, and only the flag tells them apart.
+ * Whether this document carries the sections that describe the relay's users. Read from the
+ * document's own flag, not from whether the arrays are present: an unsearched relay is empty too.
  */
 export const showsClients = (doc) => doc.clientDerived === true;
 
 /**
- * A slow read's query, with the part that is the same on every row taken off.
- *
- * Every YQL this store emits opens with the identical projection — `select id,
- * pubkey, created_at, kind, tags, content, sig, owner from event where …` — so
- * a column of them truncates to the same forty characters and tells the reader
- * nothing at all. What distinguishes one slow read from another is the
- * predicate, so that is what the column shows; the whole statement stays on
- * the row's tooltip.
- *
- * Falls back to the untouched text when there is no `where` to cut at: a shape
- * this does not recognise must still be readable, not blank.
+ * A slow read's predicate: every YQL opens with the same projection, so the column shows what
+ * follows `where`. Untouched when there is no `where` to cut at.
  */
 export function whereOf(yql) {
   if (!yql) return "";
@@ -286,9 +224,5 @@ export function whereOf(yql) {
   return at < 0 ? yql : yql.slice(at + 7);
 }
 
-/**
- * A sketch row worth doubting. Space-Saving overestimates, and publishes by
- * how much; a row whose error is a large share of its own weight may not
- * belong in the list at all.
- */
+/** A sketch row worth doubting: Space-Saving overestimates, and publishes by how much. */
 export const uncertain = (hit) => hit.weight > 0 && hit.error / hit.weight > 0.5;

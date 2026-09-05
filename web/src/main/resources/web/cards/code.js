@@ -1,10 +1,6 @@
-// The code & git family: snippets, and the whole of NIP-34 — repositories and
-// their state, patches, issues, pull requests, statuses and releases.
-//
-// A patch's `content` is `git format-patch` output, an RFC2822 mail, and is
-// parsed: the subject becomes the title, the commit message prose, and only
-// the diff goes in the code block. Code is clipped by whole lines, never by
-// characters. Every git event leads with the repository it belongs to.
+// The code & git family: snippets and the whole of NIP-34. A patch's `content` is
+// `git format-patch` output and is parsed: subject, message, then only the diff in the
+// code block. Code is clipped by whole lines, and every git event leads with its repository.
 
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
@@ -15,14 +11,12 @@ import {
 
 // ---- what a git event belongs to ------------------------------------------
 
-/** Every value of every tag with this name — `["clone", <url>, <url>]` and repeats alike. */
+/** Every value of every tag with this name; `["clone", <url>, <url>]` and repeats alike. */
 const multiTag = (ev, name) => tagsOf(ev, name).flatMap((t) => t.slice(1)).filter((v) => typeof v === "string" && v);
 
 /**
- * The 30617 address this event belongs to. Matched on the kind prefix, not
- * "the first `a`": a NIP-22 comment on a patch carries the patch's address
- * too. A 30618's `d` is the repo id and a release's `d` is
- * `<repo-id>@<version>`, so those two get the address derived.
+ * The 30617 address this event belongs to. Matched on the kind prefix, not the first `a`:
+ * a comment on a patch carries the patch's address too. 30618 and 30063 derive it from `d`.
  */
 export function repoAddr(ev) {
   const named = tagsOf(ev, "a").map((t) => t[1]).find((v) => /^30617:[0-9a-f]{64}:./.test(String(v || "")));
@@ -34,16 +28,13 @@ export function repoAddr(ev) {
   return null;
 }
 
-/** The repository's name, the identifier out of its address. "" when nothing here names one. */
+/** The identifier out of the repository's address, or "". */
 const repoName = (ev) => {
   const a = repoAddr(ev);
   return a ? clip(shortAddr(a), 60) : "";
 };
 
-/**
- * "in <repo>" — the line every git card leads with. "" when nothing names a
- * repo, or when `opts.within` says the page is already that repository.
- */
+/** "in <repo>", or "" when `opts.within` says the page is already that repository. */
 function repoLine(ev, opts) {
   const a = repoAddr(ev);
   if (!a || (opts && opts.within === a)) return "";
@@ -54,15 +45,11 @@ function repoLine(ev, opts) {
 
 // ---- code blocks -----------------------------------------------------------
 
-/** How many lines of code or diff a preview shows before it says how many it left. */
 const CODE_LINES = 14;
 
 /**
- * Whole lines at either depth, plus a per-line ceiling in preview so one
- * minified line cannot make the block scroll sideways. Not `clip()`, which
- * would trim the indentation. Trailing blank lines are counted back over
- * whole lines rather than matched with `/\s+$/`, which is quadratic on a long
- * run of whitespace inside a line.
+ * Whole lines at either depth, plus a per-line ceiling in preview so one minified line
+ * cannot make the block scroll sideways. Not `clip()`, which would trim the indentation.
  */
 const LINE_CHARS = 200;
 function clipLines(opts, src, n) {
@@ -75,14 +62,12 @@ function clipLines(opts, src, n) {
   return { lines, more: end - lines.length };
 }
 
-/** The `diff --git` preamble lines, which are about the file rather than in it. */
+/** The `diff --git` preamble lines. */
 const DIFF_META = /^(index |new file|deleted file|old mode|new mode|similarity |rename |copy |Binary files )/;
 
 /**
- * A diff read in one pass: its size, and which voice each of its first
- * [upTo] lines speaks in. `inHunk` is what makes `+++`/`---` readable:
- * outside a hunk they are file headers, inside one they are ordinary added
- * and removed lines whose text starts with `--`.
+ * A diff's stat, and a class per line for the first [upTo]. `+++`/`---` are file headers
+ * outside a hunk and ordinary added or removed lines inside one.
  */
 function readDiff(lines, upTo) {
   let files = 0, headers = 0, add = 0, del = 0, inHunk = false;
@@ -92,7 +77,7 @@ function readDiff(lines, upTo) {
     let cls = "";
     if (ln.startsWith("diff --git ")) { files++; inHunk = false; cls = "d-file"; }
     else if (ln.startsWith("@@")) { inHunk = true; cls = "d-hunk"; }
-    // A bare `diff -u` has no `diff --git` to reset us, so the `--- `/`+++ ` pair ends the hunk.
+    // A bare `diff -u` has no `diff --git`, so the `--- `/`+++ ` pair ends the hunk.
     else if (ln.startsWith("--- ") && String(lines[n + 1] || "").startsWith("+++ ")) { inHunk = false; cls = "d-file"; }
     else if (!inHunk) {
       if (ln.startsWith("+++")) { headers++; cls = "d-file"; }
@@ -106,9 +91,8 @@ function readDiff(lines, upTo) {
 }
 
 /**
- * A code block, optionally with the file's name on it and its lines tinted.
- * `classes` tints text colour only, never a filled row: the block scrolls
- * sideways and a background would stop at the fold.
+ * A code block, optionally headed and tinted per line. `classes` tints text only, never a
+ * filled row: the block scrolls sideways and a background would stop at the fold.
  */
 function codeBlock(opts, src, { name = null, lang = null, classes = null } = {}) {
   const { lines, more } = clipLines(opts, src, CODE_LINES);
@@ -128,22 +112,18 @@ function codeBlock(opts, src, { name = null, lang = null, classes = null } = {})
 // ---- the format-patch mail -------------------------------------------------
 
 /**
- * `git format-patch` output, taken apart: `{subject, markers, message,
- * diffLines}`. Survives a bare diff, a subject folded across lines, a `---`
- * inside the commit message, and a header block that is not one. Never
- * throws; cards.test.mjs holds it against real patches.
+ * `git format-patch` output as `{subject, markers, message, diffLines}`. Survives a bare
+ * diff, a folded subject, a `---` inside the message and a header block that is not one. Never throws.
  */
 export function parsePatch(text) {
-  // Split once and stay in lines: `diffLines` is a view of this array, so a
-  // megabyte patch is one copy rather than one per stage.
   const lines = String(text || "").split(/\r?\n/);
   const head = Object.create(null);   // a stranger's header names, so no prototype
   let i = 0;
-  // A mail only if it opens with git's own `From <sha> <date>` line; anything else is a bare diff.
+  // A mail only if it opens with git's own `From <sha> <date>` line.
   if (/^From [0-9a-f]{7,40} /.test(lines[0] || "")) {
     let name = null;
     for (i = 1; i < lines.length; i++) {
-      // The blank line ends the headers, and so does the diff, for a mail that never wrote one.
+      // The blank line ends the headers, and so does the diff for a mail that never wrote one.
       if (lines[i] === "" || isDiffStart(lines, i)) { if (lines[i] === "") i++; break; }
       if (/^[ \t]/.test(lines[i]) && name) { head[name] += " " + lines[i].trim(); continue; }
       const m = /^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$/.exec(lines[i]);
@@ -154,9 +134,8 @@ export function parsePatch(text) {
   }
   let at = lines.length;
   for (let n = i; n < lines.length; n++) if (isDiffStart(lines, n)) { at = n; break; }
-  // The message ends at git's `---` separator, searched backwards from the
-  // diff: a `---` rule inside the commit message is prose. Git's diffstat
-  // after it is dropped; the card's stat is counted from the diff shown.
+  // The message ends at git's `---` separator, searched backwards from the diff: a `---`
+  // rule inside the commit message is prose.
   let end = at;
   for (let n = at - 1; n >= i; n--) if (lines[n] === "---") { end = n; break; }
   const subject = stripMarkers(head.subject || "");
@@ -173,11 +152,7 @@ const isDiffStart = (lines, n) =>
   lines[n].startsWith("diff --git ") ||
   (lines[n].startsWith("--- ") && String(lines[n + 1] || "").startsWith("+++ "));
 
-/**
- * `[PATCH v2 2/3] router: yield ingest` -> `{markers: ["PATCH v2 2/3"], text:
- * "router: yield ingest"}`. Leading brackets are metadata about the patch and
- * become pills. Capped, because the brackets are a stranger's.
- */
+/** Leading `[...]` markers off a subject, capped because the brackets are a stranger's. */
 function stripMarkers(subject) {
   let text = String(subject || "").trim();
   const markers = [];
@@ -193,12 +168,12 @@ const statLine = (st) =>
   `<div class="diffstat">${st.files ? `<span>${st.files} file${st.files === 1 ? "" : "s"}</span>` : ""}` +
   `<span class="d-add">+${st.add}</span><span class="d-del">−${st.del}</span></div>`;
 
-/** A commit id, at the length every git tool shows it at. */
+/** A commit id at seven characters. */
 const shortSha = (v) => (/^[0-9a-f]{7,64}$/.test(String(v || "")) ? `<span class="mono">${esc(String(v).slice(0, 7))}</span>` : null);
 
 // ---- the cards -------------------------------------------------------------
 
-/** A title with the pills that qualify it. The pills survive a card with no title. */
+/** A title with its pills; the pills survive a card with no title. */
 const titleWith = (opts, text, pills = "", n = 140) =>
   text ? `<h2 class="result-title">${esc(clipIf(opts, text, n))}${pills}</h2>`
     : pills ? `<div class="pill-row">${pills}</div>` : "";
@@ -206,7 +181,7 @@ const titleWith = (opts, text, pills = "", n = 140) =>
 const pill = (label, tone = "", title = "") =>
   `<span class="status-pill${tone ? ` ${tone}` : ""}"${title ? ` title="${esc(title)}"` : ""}>${esc(label)}</span>`;
 
-/** 1337 — a code snippet: the file, named, with whatever it says about itself. */
+/** 1337 — a code snippet. */
 function snippetCard(ev, opts) {
   const inner =
     bodyHtml(opts, tagOf(ev, "description"), 300, true) +
@@ -218,21 +193,17 @@ function snippetCard(ev, opts) {
   ]);
 }
 
-/**
- * 1617 — a patch, in a reviewer's order: which repository, the subject, how
- * big, why, then the diff. The `subject` tag is the fallback, not the source.
- */
+/** 1617 — a patch, in a reviewer's order. The `subject` tag is the fallback, not the source. */
 function patchCard(ev, opts) {
   const p = parsePatch(ev.content);
   const subject = p.subject || tagOf(ev, "subject") || "";
-  // NIP-34's `["t", "root"]` says what the mail's `[PATCH 1/3]` says, so it is
-  // the fallback, never a second pill that could contradict the first.
+  // A `["t", "root"]` tag says what the mail's `[PATCH 1/3]` says, so it is the fallback,
+  // never a second pill that could contradict the first.
   const marks = p.markers.length
     ? p.markers
     : tagsOf(ev, "t").map((t) => t[1]).filter((v) => SERIES_MARKS.has(v));
-  // Content the parse recognised nothing in (no mail, no diff) is shown
-  // verbatim. Guarded on the whole parse: a message with no diff is already
-  // rendered as prose above.
+  // Content the parse recognised nothing in is shown verbatim; a message with no diff is
+  // already rendered as prose above.
   const block = p.diffLines.length || p.subject || p.message || p.markers.length
     ? p.diffLines
     : String(ev.content || "").split(/\r?\n/);
@@ -251,14 +222,10 @@ function patchCard(ev, opts) {
   ] : []);
 }
 
-/** NIP-34's structural `t` values: a patch's series position, not a label. A pull request carries them too. */
+/** NIP-34's structural `t` values: a series position, not a label. */
 const SERIES_MARKS = new Set(["root", "root-revision"]);
 
-/**
- * 1621 — an issue: a subject and prose, in a repository, under its labels.
- * A 1622 reply takes the same template and carries no subject, hence the
- * reply line. Labels are `t` tags and link to the hashtag search.
- */
+/** 1621 — an issue; a 1622 reply takes the same template with no subject, hence the reply line. */
 function issueCard(ev, opts) {
   const labels = [...new Set(tagsOf(ev, "t").map((t) => t[1]).filter((v) => v && !SERIES_MARKS.has(v)))];
   const inner =
@@ -270,11 +237,7 @@ function issueCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 1630-1633 — a NIP-34 status. The kind is the status; no tag says which.
- * 1631's pill is short and its full phrase is the hover, since a patch is
- * applied and a pull request is merged.
- */
+/** 1630-1633 — a NIP-34 status. The kind is the status; no tag says which. */
 const GIT_STATUS = {
   1630: { label: "open", tone: "open", full: "open" },
   1631: { label: "merged", tone: "merged", full: "applied or merged" },
@@ -283,7 +246,7 @@ const GIT_STATUS = {
 };
 function gitStatusCard(ev, opts) {
   const s = GIT_STATUS[ev.kind];
-  // The root `e` is what the status is about; the others name revisions and superseded statuses.
+  // The root `e` is what the status is about; the others are revisions and superseded statuses.
   const es = tagsOf(ev, "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
   const t = es.find((x) => x[3] === "root") || es[0];
   const inner =
@@ -301,9 +264,8 @@ function gitStatusCard(ev, opts) {
 }
 
 /**
- * The people a repository declares: the values of one `maintainers` tag,
- * which no scan of `p` tags reaches. Registered as the very function the card
- * draws with. The author is dropped; the byline is already them.
+ * The values of a `maintainers` tag, which no scan of `p` tags reaches, registered as the
+ * function the card draws with. The author is dropped; the byline is already them.
  */
 const MAINTAINERS = { preview: 3, full: 12 };
 const maintainersShown = (ev, opts) =>
@@ -311,7 +273,7 @@ const maintainersShown = (ev, opts) =>
     .slice(0, opts && opts.full ? MAINTAINERS.full : MAINTAINERS.preview);
 registerNamedPeople([30617], maintainersShown);
 
-/** 30617 — a repository announcement: what it is, who keeps it, where to get it. */
+/** 30617 — a repository announcement. */
 function repoCard(ev, opts) {
   const all = uniquePubkeys(multiTag(ev, "maintainers")).filter((pk) => pk !== ev.pubkey);
   const shown = maintainersShown(ev, opts);
@@ -324,27 +286,22 @@ function repoCard(ev, opts) {
       ? `<div class="meta-line">maintained with ${shown.map(personLink).join(", ")}${more > 0 ? ` and ${more} more` : ""}</div>`
       : "") +
     chipRow(topics, opts, hashtagHref);
-  // Every clone url: a mirrored repo's second url is the one that works when the first is down.
+  // Every clone url, since a mirror's second url is the one that works when the first is down.
   const urls = (name) => multiTag(ev, name).slice(0, opts && opts.full ? 8 : 2).map((u) => [name, extLink(u)]);
   return shell(ev, opts, inner, [...urls("web"), ...urls("clone")]);
 }
 
-/** The refs under one prefix — the tag name is the branch, hence tagsWhere. */
+/** The refs under one prefix; the tag name is the branch, hence tagsWhere. */
 const refsUnder = (ev, prefix) => tagsWhere(ev, (n) => n.startsWith(prefix))
   .map((t) => ({ name: t[0].slice(prefix.length), commit: t[1] }))
   .filter((r) => r.name);
 
-/**
- * 30618 — repository state: one tag per ref, `["refs/heads/master", <commit>]`.
- * Branches and tags are two labelled groups, with the default branch marked
- * from `HEAD`'s `ref: refs/heads/<name>`.
- */
+/** 30618 — repository state, one tag per ref, with the default branch marked from `HEAD`. */
 function repoStateCard(ev, opts) {
   const heads = refsUnder(ev, "refs/heads/");
   const tags = refsUnder(ev, "refs/tags/");
   const headRef = /^ref:\s*refs\/heads\/(.+)$/.exec(String(tagOf(ev, "HEAD") || "").trim());
   const head = headRef ? headRef[1] : null;
-  // The counts label the groups rather than sitting on a line of their own.
   const inner =
     repoLine(ev, opts) +
     refSection(plural(heads.length, "branch", "branches"), heads, opts, head) +
@@ -353,7 +310,6 @@ function repoStateCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** How many refs a group shows before it counts the rest. */
 const REF_CHIPS = { preview: 6, full: 60 };
 
 function refSection(label, refs, opts, head) {
@@ -369,13 +325,13 @@ function refSection(label, refs, opts, head) {
     `<div class="chip-row">${shown.map(chip).join("")}${more > 0 ? `<span class="tag-chip more">+${more}</span>` : ""}</div></div>`;
 }
 
-/** What shipped: the `title` tag, else the version half of `<repo-id>@<version>`. */
+/** The `title` tag, else the version half of `<repo-id>@<version>`. */
 const releaseVersion = (ev) => {
   const d = tagOf(ev, "d") || "";
   return titleOf(ev) || (d.includes("@") ? d.slice(d.lastIndexOf("@") + 1) : "");
 };
 
-/** 30063 — a release: what shipped, and the artifacts it points at, as a list of file names. */
+/** 30063 — a release and its artifacts. */
 function releaseCard(ev, opts) {
   const version = releaseVersion(ev);
   const urls = multiTag(ev, "url");
@@ -393,7 +349,7 @@ function releaseCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The last segment of a url, as a name for the thing behind it; the url itself stays in the `href`. */
+/** The last segment of a url, as a name for the thing behind it. */
 function fileName(url) {
   try {
     const p = decodeURIComponent(new URL(url).pathname);
@@ -404,14 +360,14 @@ function fileName(url) {
 
 register([1337], snippetCard);
 register([1617], patchCard);
-// 1618/1619 pull requests are a subject over prose, not a diff, so they take the issue template.
+// 1618/1619 pull requests are a subject over prose, so they take the issue template.
 register([1621, 1618, 1619, 1622], issueCard);
 register([1630, 1631, 1632, 1633], gitStatusCard);
 register([30617], repoCard);
 register([30618], repoStateCard);
 register([30063], releaseCard);
 
-// The rows. The second line is the repository on every kind that names one.
+// The second line is the repository on every kind that names one.
 registerRow([1337], (ev) => ({
   name: tagOf(ev, "name") || tagOf(ev, "description"),
   sub: tagOf(ev, "l", "language") || tagOf(ev, "runtime"),

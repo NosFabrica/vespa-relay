@@ -1,13 +1,7 @@
-// The publishers a reader's kind 10040 delegates, by kind. A NIP-85 assertion
-// or a Tapestry Trusted List is only worth drawing when this reader's Map named
-// its signer for that kind; once the page fetches declarations itself, off an
-// anonymous socket that gates nothing, that rule is re-imposed here as an
-// `authors` filter. Two tag shapes must both be read:
-//
-//     ["30382:rank", <64-hex service>, <relay>]   NIP-85's ServiceProviderTag
-//     ["30392",      <64-hex service>, <relay>]   a bare kind, the Tapestry ADR's
-//
-// No DOM; the parse is pure so providers.test.mjs can hold it.
+// The publishers a reader's kind 10040 delegates, by kind. A NIP-85 assertion or a Tapestry
+// Trusted List is only drawn when this reader's Map named its signer for that kind, and the
+// same rule is re-imposed as an `authors` filter on the anonymous socket. Two tag shapes are
+// read: NIP-85's `["30382:rank", <service>, <relay>]` and the Tapestry ADR's bare `["30392", ...]`.
 
 import { refConn } from "./conn.js";
 
@@ -18,10 +12,8 @@ const HEX64 = /^[0-9a-f]{64}$/;
 export const MAP_KIND = 10040;
 
 /**
- * The delegations a Map states, keyed by the entry as written (`30382:rank`,
- * `30382:followers`, `30392`) and order-preserving. Dimensions are kept apart:
- * a followers service cannot rank, so callers wanting the whole kind use
- * [publishersOf]. A tag whose second element is not a key is dropped.
+ * The delegations a Map states, keyed by the entry as written (`30382:rank`, `30392`) and
+ * order-preserving. Dimensions are kept apart; callers wanting the whole kind use [publishersOf].
  */
 export function delegationsOf(map) {
   const out = new Map();
@@ -35,7 +27,7 @@ export function delegationsOf(map) {
   return out;
 }
 
-/** Every publisher [delegations] names for [kind], across all its dimensions. All of them, never the first. */
+/** Every publisher [delegations] names for [kind], across all its dimensions. */
 export function publishersOf(delegations, kind) {
   const out = [];
   for (const [entry, keys] of delegations || []) {
@@ -45,17 +37,15 @@ export function publishersOf(delegations, kind) {
   return out;
 }
 
-// observer pubkey -> the delegations their Map states. Never written off an
-// incomplete read: see [providersFor].
+// observer pubkey -> the delegations their Map states, written only off a complete read.
 const cache = new Map();
 
-// observer pubkey -> the read that will settle it. Dedupes the read, not just
-// the answer: the provenance lookup and the score chips ask in the same render.
+// observer pubkey -> the read that will settle it, so concurrent askers share one read.
 const inFlight = new Map();
 
 /**
- * The delegations [observer] states, from their Map: one read, cached only
- * when the relay answered completely, down the anonymous reference socket.
+ * The delegations [observer] states, from their Map, read once on the anonymous socket and
+ * cached only when the relay answered completely.
  */
 export async function providersFor(observer) {
   if (!observer || !HEX64.test(observer)) return new Map();
@@ -75,33 +65,27 @@ export async function providersFor(observer) {
     if (answered) cache.set(observer, found);
     return found;
   })();
-  // Cleared whatever happened, so an uncached incomplete read cannot stand in
-  // for the cache entry it was kept out of.
+  // Cleared whatever happened, so an incomplete read cannot stand in for a cache entry.
   inFlight.set(observer, read);
   read.then(() => inFlight.delete(observer), () => inFlight.delete(observer));
   return read;
 }
 
-/**
- * The delegations already in hand for [observer], or null when none are.
- * Synchronous, so a caller deciding mid-render can tell "delegates nobody"
- * from "not known yet".
- */
+/** The delegations already in hand for [observer], or null when not known yet. Synchronous. */
 export function knownProviders(observer) {
   return cache.get(observer) || null;
 }
 
 /**
- * File a Map somebody else already read, so this module never asks for it.
- * [complete] is the caller's `evs.complete`: a null map off a finished read
- * means "delegates nobody", off a timed-out one it is a gap and must not seed.
+ * File a Map somebody else already read. [complete] is the caller's `evs.complete`; a null
+ * map off a timed-out read is a gap and must not seed.
  */
 export function seedProviders(observer, map, complete) {
   if (!observer || !HEX64.test(observer) || complete !== true) return;
   cache.set(observer, delegationsOf(map));
 }
 
-/** Forget every Map read. For tests, and for a sign-out that must not leave one reader's delegations behind. */
+/** Forget every Map read; for tests and for sign-out. */
 export function forgetProviders() {
   cache.clear();
   inFlight.clear();
