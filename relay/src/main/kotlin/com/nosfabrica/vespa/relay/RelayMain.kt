@@ -50,6 +50,8 @@ import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
@@ -60,6 +62,7 @@ import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import kotlinx.coroutines.CoroutineScope
@@ -183,6 +186,12 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
+    // Read before the store is opened: the slow-read ring is a constructor
+    // setting, and it is the one place the store retains a query string.
+    val pulsePort = env["PULSE_PORT"]?.trim()?.toIntOrNull() ?: 0
+    val pulseClientDetail = env["PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    val slowReadMs = pulseSlowReadMs(env, "PULSE_SLOW_READ_MS", pulseClientDetail, "PULSE_CLIENT_DETAIL")
+
     // STORE_WRITERS is a property of this deployment: the sync process writes the same index.
     val store =
         VespaEventStore.open(
@@ -192,6 +201,7 @@ fun main() {
             configUrl = configUrl,
             writers = STORE_WRITERS,
             searchExpansion = searchExpansion,
+            slowQueryThresholdMillis = slowReadMs,
         )
 
     // Everything on this scope runs behind the server and is awaited nowhere;
@@ -304,10 +314,42 @@ fun main() {
             )
         }
 
+    // WHERE THIS PROCESS'S STORE RESOURCES GO, on its own port and off unless
+    // an operator asks for it. Its own port because the document is not
+    // public: `/stats.json` states every field is a fact about stored events
+    // and nothing about clients belongs in it, and with PULSE_CLIENT_DETAIL on
+    // this one carries which observer lenses and which search terms are
+    // driving the load, plus a slow-read log that quotes the query. The port
+    // is the boundary — nothing here authenticates — so bind it on the private
+    // side of the network and do not publish it.
+    val pulseSite =
+        if (pulsePort <= 0) {
+            null
+        } else {
+            val page = resourceText("/pulse.html") ?: error("pulse.html is missing from the :web jar — no pulse page can be served.")
+            servePulseSite(
+                port = pulsePort,
+                page = page,
+                document =
+                    PulseDocument.reader(
+                        store,
+                        title = "Eventstore pulse — relay",
+                        scope = "The serving relay's own store: what reads cost, what the engine did, and what the write path is waiting on.",
+                        clientDerived = pulseClientDetail,
+                    ),
+                icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
+            )
+        }
+    if (pulseSite != null) {
+        println("vespa-relay pulse page on http://localhost:$pulsePort/" + (if (pulseClientDetail) "  [client detail ON — do not publish this port]" else ""))
+    }
+
     Runtime.getRuntime().addShutdownHook(
         Thread {
             // Cancelled and not waited for: an unfinished reconcile costs what it costs anyway.
             maintenanceScope.cancel()
+            // Before the store: the page reads counters the store is about to stop keeping.
+            pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
             store.close()

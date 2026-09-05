@@ -288,6 +288,55 @@ own, on its own port — see below):
   *35% mirrored* on a mirror that was missing nothing, the entire gap being
   kinds — reactions, DMs, gift wraps — that no stream here ever asks for.
 
+### Where the resources go — `/pulse.html`
+
+On its own port (`PULSE_PORT` on the relay, `SYNC_PULSE_PORT` on the mirror),
+**off by default**, and deliberately not next to the two pages above.
+
+The pages above say what this deployment *holds* and what the mirror is
+*doing*. This one says what any of it **costs** — read live from the store's own
+counters, so there is no rollup and nothing to go stale:
+
+- **What the store is doing** — wall time inside the engine calls this process
+  made, grouped by the work that made them (REQ reads, bulk ingest, the trust
+  drain, the sweeps), with **calls per document** beside each. That ratio is the
+  store's own performance contract in a number: a bulk path booking several
+  engine calls per document it writes is the shape "never ingest in a loop over
+  `insert()`" exists to prevent, and the page calls it out.
+- **What the engine did** — Vespa's own timings per rank profile, and
+  **matched against served**. A profile matching 561K documents to serve 53K is
+  doing work no client sees; it is also the clearest picture of what the
+  observer gate buys.
+- **Locks** — what holds a store mutex *at this instant* and what it says it is
+  doing, and cumulative wait split by **what each waiter was queued behind**.
+  That split is the point of the page: `lock.ingest.wait 41s` only raises a
+  question, `38s of it behind "derive 500 subject(s) in 10 chunk(s)"` names a
+  fix.
+- **What became of the events offered** — admitted against duplicate, replaced,
+  deleted, expired. "81% of what this node is offered is already stored" is what
+  tells you to narrow a sync, and no port-level counter can see it: a refused
+  event never reaches the index.
+- **Right now** — the gauges (feed operations in flight, trust backlog, mutexes
+  held), drawn apart from every counter because a queue depth must never be
+  differenced into a rate.
+
+Every total is cumulative since the process started and the page differences two
+consecutive polls to recover a rate, so any number of tabs may watch it and
+nothing is consumed by being read. Each process serves its own — the relay and
+the mirror hold separate stores over one Vespa, so the relay's page has the
+reads and the mirror's has the ingest.
+
+**Do not publish this port.** Nothing on it authenticates; the port is the whole
+boundary. With `PULSE_CLIENT_DETAIL` on it additionally carries the heaviest
+observer lenses and search terms driving the load, and a slow-read log that
+quotes the query — which is exactly what `/stats.json` promises never to
+contain. Bind it on the private side and reach it over an SSH tunnel.
+
+The design record for what is measured, what it costs, and what is deliberately
+left to Vespa's own metrics proxy is
+[`docs/telemetry.md`](https://github.com/NosFabrica/vespa-eventstore/blob/main/docs/telemetry.md)
+in the event store.
+
 And on the mirror's own port (`SYNC_STATUS_PORT`, 7778) when the `sync` profile
 is up:
 

@@ -414,7 +414,64 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-vespaEventStore = "ec2976b679"
+# 1dbf6c6bf3 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
+# telemetry branch (its docs/telemetry.md is the design record).
+#
+# A BRANCH COMMIT, deliberately and temporarily. The store PR is open; this
+# repo's own rule is that `main` must never carry a branch dependency, so this
+# line is re-pinned to the merge sha before the relay PR merges — the same two
+# repos, one order: store PR first, then re-pin, then the relay PR. It is here
+# now because the page below cannot compile against a store that does not yet
+# have `metrics()`.
+#
+# WHY THIS BUMP: `/pulse.html`. The relay could say what it was DOING (the
+# store-call registry, the ingest stage split) but not what any of it COST.
+# `VespaEventStore.metrics()` is the cumulative record behind that page —
+# port calls and engine time per activity, admission outcomes over the
+# denominator that makes them a rate, what the engine matched against what it
+# served, bounded sketches of the observers and terms driving the load, and a
+# ring of the slowest reads. Counters and gauges, never ratios, so the page
+# differences two polls and nothing is consumed by being read.
+#
+# IT ALSO RETIRES A PARSER HERE. `IngestStats.snapshot()` landed at
+# `ec2976b679` and the health loop half-adopted it: stage totals still came
+# from parsing `IngestStats.dump()`'s String while the shape came from the
+# structured read beside it. Two reads of a live counter describe two
+# instants, and `%.2fs` rounded every stage under 5ms to a zero row. Both
+# members now come off one snapshot; `IngestStageReadTest` replaces
+# `IngestStageParseTest`.
+#
+# IT ASKS FOR NO NEW QUARTZ and NO RE-FEED. Nothing here changes what a put
+# derives or what a read matches — the store's own schema is untouched by this
+# range — so `REINDEX_FTS_ON_START` stays off and no deploy step attaches.
+# What it adds is accounting, and the branch measures its own cost rather than
+# asserting it (telemetry.md §5, §6): ~956ns per activity boundary, tens of
+# nanoseconds per booked port call, and a fixed ~50KB of sketches and
+# histograms per process.
+#
+# DIRECTION: ec2976b679 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — the branch carries main's lock audit.
+#
+# LEXICOGRAPHIC: 'd779…' < 'ec29…', so this sorts BELOW the pin it replaces —
+# the unsafe direction, for the first time on this line. It still needs no
+# `force(…)`, for the reason the notes above give: nothing else in the graph
+# names vespa-eventstore, so there is no conflict for ordering to settle. The
+# resolved graph is the proof, and every eventstore line reads 1dbf6c6bf3 with
+# no `->` left anywhere:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# WHAT THE SECOND COMMIT ON THAT BRANCH IS, because building this page is what
+# found it: `topObservers`, `topTerms` and `slowReads` were ALWAYS EMPTY. All
+# three were built, bounded, unit-tested and published in the snapshot, and
+# nothing ever wrote to them — the join between the pieces did not exist, and
+# an empty panel reads as an idle relay, which is the one thing this page is
+# for ruling out. Feeding a real staging capture through a real relay into a
+# real Vespa and reading /pulse.json back is what surfaced it; d7798a2c02 (the
+# pin this line first carried) draws three blank panels.
+#
+# Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
+# PR #104 and #105 (the lock audit) over #103's grouping aggregate.
+vespaEventStore = "1dbf6c6bf3"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

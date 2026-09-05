@@ -36,6 +36,8 @@ import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.SyncProgress
+import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.status.StatusRollup
 import com.nosfabrica.vespa.relay.status.SyncStatus
@@ -44,6 +46,7 @@ import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncManifest
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
@@ -67,13 +70,13 @@ private fun statusInterval(env: Map<String, String>): Long =
     } ?: DEFAULT_STATUS_INTERVAL_SECONDS
 
 /**
- * The status page's markup, off the classpath. One page for all three
+ * A page's markup, off the classpath. `/stats.html` is one page for all three
  * services; each draws whatever document it is pointed at. Missing means a
  * broken build, so it is an error rather than a blank page.
  */
-private fun statusPage(): String =
-    SyncStatus::class.java.getResourceAsStream("/stats.html")?.use { it.readBytes().decodeToString() }
-        ?: error("stats.html is missing from the :web jar — no status page can be served.")
+private fun statusPage(resource: String = "/stats.html"): String =
+    SyncStatus::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
+        ?: error("$resource is missing from the :web jar — no page can be served.")
 
 /**
  * Run the sync engine as its own process against the Vespa the serving relay
@@ -150,7 +153,18 @@ fun main() {
 
     // STORE_WRITERS: the relay's inserts must be checked against the
     // tombstones this process stores, which its own store instance never saw.
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
+    // Read before the store is opened: the slow-read ring is a constructor
+    // setting, and it is the one place the store retains a query string.
+    val pulseClientDetail = env["SYNC_PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    val store =
+        VespaEventStore.open(
+            vespaUrl,
+            relay = relayUrl,
+            autoDeploy = false,
+            configUrl = configUrl,
+            writers = STORE_WRITERS,
+            slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
+        )
 
     val parseAudit = ParseAudit.installFromEnv(env)
 
@@ -241,6 +255,15 @@ fun main() {
         env["MONITOR_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("MONITOR_STATUS_PORT='$it' is not a port number. Set it to 0 to serve no monitor page.")
         } ?: DEFAULT_MONITOR_STATUS_PORT
+    // The pulse page's own port, unset by default. Off rather than one past
+    // the monitor's, because unlike those two this document is not safe to
+    // publish: with SYNC_PULSE_CLIENT_DETAIL on it names the observer lenses
+    // and search terms driving the load and quotes slow queries. The port is
+    // the only boundary — nothing on it authenticates.
+    val pulsePort =
+        env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
+        } ?: 0
 
     val statusSite =
         if (statusPort <= 0) {
@@ -293,10 +316,35 @@ fun main() {
     // With both pages answering, whatever `start()` waits on is visible.
     engine.start()
 
+    // The mirror's own resource picture: this process does the ingesting, so
+    // the write path, the admission outcomes and the trust drain's lock holds
+    // are all here rather than on the relay's page.
+    val pulseSite =
+        if (pulsePort <= 0) {
+            null
+        } else {
+            servePulseSite(
+                port = pulsePort,
+                page = statusPage("/pulse.html"),
+                document =
+                    PulseDocument.reader(
+                        store,
+                        title = "Eventstore pulse — mirror",
+                        scope = "The mirror's own store: what ingest costs, what it admitted, and what the write path is waiting behind.",
+                        clientDerived = pulseClientDetail,
+                    ),
+                icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
+            )
+        }
+    if (pulseSite != null) {
+        println("vespa-sync pulse page on http://localhost:$pulsePort/" + (if (pulseClientDetail) "  [client detail ON — do not publish this port]" else ""))
+    }
+
     Runtime.getRuntime().addShutdownHook(
         Thread {
             // Pages before the engine: they read state the engine is about to
             // stop updating.
+            pulseSite?.stop(0, 0)
             listOfNotNull(statusSite, monitorSite).forEach { (rollup, server) ->
                 rollup.close()
                 server.stop(1_000, 2_000)

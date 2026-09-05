@@ -25,7 +25,8 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
   that serves them. Depends on Ktor and kotlinx.serialization, nothing of ours.
 
 The rule between them: engines produce documents, `:web` renders them, and the
-seam is `/stats.json` (`NoBrowserFilesInEngineModulesTest`). One `stats.html`
+seam is `/stats.json` — and `/pulse.json`, whose builder is in `:common` for
+the same reason (`NoBrowserFilesInEngineModulesTest`). One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.
@@ -111,6 +112,8 @@ form, file by file with the reasoning, is [docs/layout.md](docs/layout.md).
 common/…/relay/
   config/RelayIdentity.kt     RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor; both processes read it
   server/ServingPressure.kt   EWMA of client read latency, served on GET /pressure
+  pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings;
+                              here because both processes open a store, and because :web must not depend on one
   maintenance/, util/         QuartzLogLevel (QUARTZ_LOG_LEVEL), SchemaDeploy, StoreTopology; fmtDuration
 peers/…/relay/
   peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
@@ -214,6 +217,13 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md).
 - `/stats.json` and `/stats.html` on the relay, the mirror (`SYNC_STATUS_PORT`,
   7778) and the monitor; `/observer_stats.html` and `/pressure` on the relay.
   One relay is looked up with `jq` over the document, not on the page.
+- `/pulse.json` and `/pulse.html` (`PULSE_PORT` / `SYNC_PULSE_PORT`, off by
+  default) — WHERE THE STORE'S RESOURCES GO, live off the store's own counters:
+  engine time by the activity that spent it, calls per document, matched
+  against served per rank profile, admission outcomes over their denominator,
+  and lock wait split by WHAT EACH WAITER WAS BEHIND. Not public and not next
+  to `/stats.json`: with `PULSE_CLIENT_DETAIL` it names the observer lenses and
+  search terms driving the load and quotes slow queries.
 - The progress document (`SyncProgress`): each stream's phase and clock,
   `roster`/`tails`, the in-flight legs, every running pass.
 - `store` on `/stats.json` and the `store call SLOW` lines: which store calls
