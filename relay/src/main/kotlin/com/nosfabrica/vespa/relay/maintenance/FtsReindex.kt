@@ -33,13 +33,9 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * Re-put every event so its fed search fields are re-derived, in the
- * background (`REINDEX_FTS_ON_START`). It repairs a fed field only: a column
- * Vespa derives at index time stays empty after this walk and needs a Vespa
- * reindex instead, see docs/migrations.md.
- *
- * The cursor is persisted to [cursorFile] so a failed page costs a retry, not
- * the walk. Never awaited: as a boot barrier it would be an hours-long outage.
+ * Re-put every event so its fed search fields are re-derived, in the background
+ * (`REINDEX_FTS_ON_START`). Repairs fed fields only: a column Vespa derives at index time needs a
+ * Vespa reindex instead, see docs/migrations.md. The cursor is persisted to [cursorFile] per page.
  */
 fun launchFtsReindex(
     scope: CoroutineScope,
@@ -60,21 +56,18 @@ fun launchFtsReindex(
                     ?.ifBlank { null }
             }.getOrNull()
         if (cursor != null) println("fts: resuming from a saved cursor")
-        // On a resumed run `total` counts only the remainder, so no denominator
-        // is honest; an unknown one beats a wrong one.
+        // On a resumed run `total` counts only the remainder, so no denominator is honest.
         val expected = if (cursor != null) null else runCatching { store.count(Filter()) }.getOrNull()?.toLong()
         try {
             do {
-                // A page can fail for reasons unrelated to its contents; retry
-                // the same cursor a few times before giving up.
+                // The same cursor is retried a few times before giving up.
                 var progress: FtsReindexProgress? = null
                 var attempt = 0
                 while (progress == null) {
                     progress =
                         runCatching { store.reindexFullTextSearch(cursor) }
                             .onFailure { e ->
-                                // runCatching catches cancellation too, and a
-                                // shutdown mid-page is not a failed page.
+                                // A shutdown mid-page is not a failed page.
                                 if (e is CancellationException) throw e
                                 if (++attempt > FTS_PAGE_RETRIES) throw e
                                 System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
@@ -82,8 +75,7 @@ fun launchFtsReindex(
                     if (progress == null) delay(attempt * 5_000L)
                 }
                 cursor = progress.cursor
-                // Temp file and move: a cursor truncated mid-kill fails every
-                // resume until someone deletes it by hand.
+                // Temp file and move: a cursor truncated mid-kill fails every resume.
                 runCatching {
                     val f = File(cursorFile)
                     f.absoluteFile.parentFile?.mkdirs()
@@ -109,8 +101,7 @@ fun launchFtsReindex(
                 }
             } while (!progress.done)
             println("fts: reindex complete — $total event(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}")
-            // A leftover cursor would resume a finished walk from its tail on
-            // the next boot with the flag still set.
+            // A leftover cursor would resume a finished walk from its tail on the next boot.
             runCatching { File(cursorFile).delete() }
         } catch (e: CancellationException) {
             // Shutdown mid-walk: the cursor is saved and the next boot resumes.

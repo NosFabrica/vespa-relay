@@ -43,54 +43,27 @@ import java.time.Instant
 import java.time.YearMonth
 
 /**
- * Which cadence a section is computed on: the two halves of `/stats.json`.
- *
- * The split is by cost. Cheap is bounded by something other than the corpus:
- * a `count()` over a match set, a grouping behind a genuinely selective
- * `kind` filter, a grouping over a window of days, a file read. Expensive
- * scales with the corpus or its distinct pubkeys: `group(pubkey)` over the
- * store, `distinctAuthorsBy(bucket)`, a `tag_index` grouping, a full-corpus
- * histogram, and anything behind a populous kind's filter.
- *
- * The tier is the section, not the query, because a section carries one
- * `generatedAt` for everything in its `data`. The tiers share the engine and
- * are not serialised; the per-query `queryMs` each section publishes is how a
- * query that has grown too slow for [COUNTERS] gets caught.
+ * Which cadence a section is computed on, split by cost: cheap is bounded by something other than
+ * the corpus, expensive scales with the corpus or its distinct pubkeys. The tier is the section,
+ * not the query, because a section carries one `generatedAt`; the tiers are not serialised.
  */
 internal enum class StatsTier(
     /** What this tier is called in the document, under `tiers`. */
     val member: String,
-    /**
-     * The top-level members this tier owns. Ownership is total: a member missing
-     * from a pass is removed from the served document, see `StatsSnapshot.publish`.
-     */
+    /** The top-level members this tier owns; a member missing from a pass leaves the served document. */
     val sections: Set<String>,
 ) {
-    /**
-     * Totals, freshness, trust health and the router's manifest. A small set on
-     * purpose: everything here runs fifteen times per charts pass. `sync` is here
-     * because it is three file reads; `zaps` is not, because a `kind` filter over
-     * millions of receipts bounds the group set and not the walk.
-     */
+    /** Totals, freshness, trust health and the router's manifest: what is cheap enough to run every minute. */
     COUNTERS("counters", setOf("corpus", "trust", "sync")),
 
-    /** Everything whose cost scales with the corpus or a populous kind. Nothing here is watched by the minute. */
+    /** Everything whose cost scales with the corpus or a populous kind. */
     CHARTS("charts", setOf("kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
 }
 
 /**
- * The corpus statistics document this relay publishes at `GET /stats.json`,
- * and the background job that recomputes it.
- *
- * [compute] takes a [StatsTier] and returns only that tier's members;
- * `StatsSnapshot` merges them into the served document, so two sections side
- * by side may carry different `generatedAt`s. Every section is computed by its
- * own queries and carries its own status, so one rejected pipeline costs one
- * panel, with the engine's message and the YQL beside it.
- *
- * Every number describes this relay's store, not the network, and the document
- * says so in `scope`. The queries go to the raw engine, anonymously: under an
- * authenticated reader's lens the same pipeline answers a smaller question.
+ * The corpus statistics document at `GET /stats.json` and the job that recomputes it. [compute]
+ * returns one tier's members and `StatsSnapshot` merges them; every section carries its own status.
+ * Every number describes this relay's store, not the network, and the queries go to the engine with no lens.
  */
 internal class StatsRollup(
     private val vespa: StatsQueries,
@@ -98,28 +71,20 @@ internal class StatsRollup(
     /** Wall clock in epoch seconds; injected so the window bounds are assertable. */
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
     private val windowDays: Int = DEFAULT_WINDOW_DAYS,
-    // In weeks, because that is what the page prints.
     private val weekWindowWeeks: Int = DEFAULT_WEEK_WINDOW_WEEKS,
-    /** The first month the monthly series covers: an anchor, not a length. See [DEFAULT_MONTH_SERIES_START]. */
+    /** The first month the monthly series covers: an anchor, not a length. */
     private val monthSeriesStart: YearMonth = DEFAULT_MONTH_SERIES_START,
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
-    /** How far back the counters tier looks for the newest event. See [recentNewest]. */
+    /** How far back the counters tier looks for the newest event. */
     private val newestWindowDays: Int = DEFAULT_NEWEST_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
-    /**
-     * The router's manifest on the shared volume; null in a serve-only
-     * deployment. The one router file this side still reads: it is config, not
-     * state, and must be answerable with the router stopped. See [MirrorReport].
-     */
+    /** The router's manifest on the shared volume; null in a serve-only deployment. */
     private val syncManifestFile: File? = null,
 ) {
     /**
-     * Compute one [tier]'s members. Never throws: a section that fails says so
-     * in the document. [previous] is the served document, read only for
-     * [carriedNewest], so a restart cannot disagree about what the last pass
-     * was. [everySeconds] is published so a reader knows how often each half
-     * moves.
+     * Compute one [tier]'s members. Never throws: a section that fails says so in the document.
+     * [previous] is the served document, read only for [carriedNewest]; [everySeconds] is published.
      */
     suspend fun compute(
         tier: StatsTier,
@@ -132,8 +97,7 @@ internal class StatsRollup(
             StatsTier.COUNTERS -> {
                 sections["corpus"] = corpusSection(previous)
                 sections["trust"] = trustSection()
-                // Absent, not empty, without a router: "0 relays" reads as a
-                // broken mirror rather than no mirror.
+                // Absent, not empty, without a router: "0 relays" reads as a broken mirror.
                 syncSection()?.let { sections["sync"] = it }
             }
 
@@ -150,12 +114,9 @@ internal class StatsRollup(
         }
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
-            // One markup file serves relay, mirror and monitor; the heading
-            // comes from the document.
             put("title", "Relay stats")
             put("relay", relayUrl)
-            // When either tier last touched the document, so a poller can
-            // tell two fetches apart; the honest timestamps are per section.
+            // When either tier last touched the document; the honest timestamps are per section.
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put(
                 "scope",
@@ -169,10 +130,8 @@ internal class StatsRollup(
                 putJsonObject(tier.member) {
                     put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                     put("tookMs", System.currentTimeMillis() - startedMs)
-                    // Omitted rather than zero: "every 0 seconds" is not a cadence.
                     if (everySeconds > 0) put("everySeconds", everySeconds)
-                    // What this pass produced, not what the tier owns: `sync` is
-                    // absent on a serve-only relay.
+                    // What this pass produced, not what the tier owns.
                     putJsonArray("sections") { sections.keys.forEach { add(it) } }
                 }
             }
@@ -181,9 +140,8 @@ internal class StatsRollup(
     }
 
     /**
-     * The kind set this relay mirrors, read off the shared volume: the one
-     * section that queries nothing. An unreadable file is a failed section
-     * beside working ones, the same contract every queried section has.
+     * The kind set this relay mirrors, read off the shared volume: the one section that queries
+     * nothing. An unreadable file is a failed section, the same contract every queried section has.
      */
     private suspend fun syncSection(): JsonObject? {
         if (syncManifestFile == null) return null
@@ -202,9 +160,8 @@ internal class StatsRollup(
     private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
     /**
-     * The newest `created_at` in the store, as the maximum over the per-kind
-     * spans of a [kindsSection]; Vespa answers no bare `max()`, see
-     * [StatsYql.NO_BARE_AGGREGATES]. Bounded to the present like the spans.
+     * The newest `created_at` in the store, as the maximum over the per-kind spans of a
+     * [kindsSection]; Vespa answers no bare `max()`, see [StatsYql.NO_BARE_AGGREGATES].
      */
     private fun newestOf(kinds: JsonObject?): Long? =
         (kinds?.get("data") as? JsonObject)
@@ -214,9 +171,8 @@ internal class StatsRollup(
             ?.maxOrNull()
 
     /**
-     * The newest event, asked over a [newestWindowDays] window rather than the
-     * store, so the counters tier can afford it every minute. Null when nothing
-     * was published in the window; [carriedNewest] answers for that case.
+     * The newest event over a [newestWindowDays] window, which the counters tier can afford every
+     * minute. Null when nothing was published in the window; [carriedNewest] answers for that case.
      */
     private suspend fun recentNewest(now: Long): Long? =
         spansByGroup(StatsYql.spanBy("kind"), StatsYql.window(now - newestWindowDays * DAY_SECONDS, now))
@@ -224,10 +180,8 @@ internal class StatsRollup(
             .maxOfOrNull { (_, last) -> last }
 
     /**
-     * The newest event the last document knew about. A `created_at` carried
-     * forward is exactly as true as when it was taken, which a count would not
-     * be. Read from both `corpus.newestEvent` and the charts tier's per-kind
-     * spans, since either may be absent; the caller takes the maximum.
+     * The newest event the last document knew about, from `corpus.newestEvent` or the charts tier's
+     * per-kind spans, since either may be absent. A timestamp carried forward is still true.
      */
     private fun carriedNewest(previous: JsonObject?): Long? {
         val corpus =
@@ -238,10 +192,7 @@ internal class StatsRollup(
         return listOfNotNull(corpus, newestOf(previous?.get("kinds") as? JsonObject)).maxOrNull()
     }
 
-    /**
-     * The kinds to draw a per-kind series for: the largest few from the
-     * histogram just computed. Empty when that section failed.
-     */
+    /** The kinds to draw a per-kind series for: the largest few from the histogram. Empty when it failed. */
     private fun topKindNumbers(kinds: JsonObject): List<Int> =
         (kinds["data"] as? JsonObject)
             ?.get("all")
@@ -253,33 +204,28 @@ internal class StatsRollup(
     // ---- sections -----------------------------------------------------------
 
     /**
-     * The headline counters, every one cheap because this half runs about once
-     * a minute. `pubkeys` is a full pubkey set over the store and lives in
-     * [authorsSection]; `kinds` is the histogram's own `kinds.total`, and a copy
-     * on another timer would disagree with it.
+     * The headline counters, every one cheap because this half runs every minute. `pubkeys` lives
+     * in [authorsSection]; `kinds` is the histogram's own `kinds.total`.
      */
     private suspend fun corpusSection(previous: JsonObject?): JsonObject =
         section { attempts ->
             val now = nowSeconds()
             val events = attempt(attempts, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
-            // Clock skew and spam. Worth counting: it is why every freshness
-            // number here is bounded.
+            // Clock skew and spam, counted because it is why every freshness number is bounded.
             val future = attempt(attempts, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
             val newest = attempt(attempts, "newestEvent") { recentNewest(now) }
             buildJsonObject {
                 events?.let { put("events", it) }
                 future?.let { put("futureDated", it) }
-                // The maximum of measured and carried, so this only moves
-                // forward: a quiet window or a failed query must not retract it.
+                // The maximum of measured and carried, so a quiet window or a failed query cannot retract it.
                 listOfNotNull(newest, carriedNewest(previous)).maxOrNull()?.let { put("newestEvent", it) }
                 put("asOf", now)
             }
         }
 
     /**
-     * How many distinct pubkeys the store holds events from. A section of its
-     * own because `group(pubkey)` over the corpus materialises every pubkey, and
-     * a section carries one `generatedAt` for all its members.
+     * How many distinct pubkeys the store holds events from. Its own section because `group(pubkey)`
+     * over the corpus materialises every pubkey.
      */
     private suspend fun authorsSection(): JsonObject =
         section(
@@ -293,11 +239,8 @@ internal class StatsRollup(
         }
 
     /**
-     * The trust view's own health, read from a second document type. A
-     * `scoredPubkeys` of zero is the silent failure `TrustReconcile` warns
-     * about, stated as a number. The four counts are a chain (observers name
-     * providers, providers publish scores, scores project onto pubkeys), so
-     * reading them together localises a break.
+     * The trust view's own health. The four counts are a chain (observers name providers, providers
+     * publish scores, scores project onto pubkeys), so reading them together localises a break.
      */
     private suspend fun trustSection(): JsonObject =
         section(
@@ -318,31 +261,20 @@ internal class StatsRollup(
             }
         }
 
-    /**
-     * What a kind is called, from Quartz's protocol-wide registry rather than
-     * the web UI's renderer table, since this table enumerates the store.
-     * Emitted into the document so a reader elsewhere can label an axis.
-     */
+    /** What a kind is called, from Quartz's protocol-wide registry, since this table enumerates the store. */
     private fun kindName(kind: Int): String? = KindNames.nameFor(kind)
 
     /**
-     * The per-kind table: documents and the span of `created_at`, every kind,
-     * sorted by volume.
-     *
-     * No author count: a distinct count over a high-cardinality field is the
-     * group set, and per kind that partitions the whole corpus into pubkey sets.
-     * If the column comes back it needs a different source, not a different
-     * query. Every kind rather than a top-N, because the grouping enumerates
-     * what the store holds and a truncation would hide the long tail this table
-     * exists to reveal.
+     * The per-kind table: documents and the span of `created_at`, every kind, sorted by volume.
+     * No author count: per kind, a distinct count partitions the whole corpus into pubkey sets.
+     * Every kind rather than a top-N, because a truncation would hide the long tail.
      */
     private suspend fun kindsSection(): JsonObject =
         section { attempts ->
             val counts =
                 attempt(attempts, "events") { longsByGroup(StatsYql.countsBy("kind")) }
                     ?: return@section buildJsonObject { }
-            // Bounded to now, or the most optimistically-dated spam in a kind
-            // is its "newest"; the future-dated count lives in `corpus`.
+            // Bounded to now, or the most optimistically dated spam in a kind is its "newest".
             val spans = attempt(attempts, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
             buildJsonObject {
                 put("total", counts.size)
@@ -368,10 +300,9 @@ internal class StatsRollup(
         }
 
     /**
-     * The time series: events and distinct authors per UTC day, week and month,
-     * plus the hour-of-day shape. Three granularities because distinct authors
-     * do not sum from a finer bucket. The monthly series is anchored to a date,
-     * filled to its whole span, and asked a year at a time.
+     * Events and distinct authors per UTC day, week and month, plus the hour-of-day shape. Three
+     * granularities because distinct authors do not sum from a finer bucket. The monthly series is
+     * anchored to a date, filled to its whole span, and asked a year at a time.
      */
     private suspend fun activitySection(): JsonObject =
         section { attempts ->
@@ -395,12 +326,8 @@ internal class StatsRollup(
             buildJsonObject {
                 put("windowDays", windowDays)
                 put("windowWeeks", weekWindowWeeks)
-                // The months the window covers, which exceeds the bar count
-                // when a year's query failed. Derived from the slices so the
-                // two cannot disagree.
+                // Derived from the slices, so the months covered and the bars cannot disagree.
                 put("windowMonths", monthSlices.sumOf { it.months.size })
-                // The anchor itself, so a reader need not count back from
-                // `generatedAt` to find where the series starts.
                 put("monthsSince", monthSeriesStart.toString())
                 put("hourWindowDays", hourWindowDays)
                 days?.let { put("days", it) }
@@ -408,7 +335,6 @@ internal class StatsRollup(
                 months?.let { put("months", it) }
                 hours?.let { byHour ->
                     putJsonArray("hours") {
-                        // Every hour, including the empty ones.
                         (0..23).forEach { hour ->
                             add(
                                 buildJsonObject {
@@ -423,10 +349,8 @@ internal class StatsRollup(
         }
 
     /**
-     * The relay urls this store's NIP-65 lists name, and how many lists name
-     * each. A `tag_index` grouping is affordable here only because a relay list
-     * has few tags whose values repeat. `lists`, not `users`: kind 10002 is
-     * replaceable, but that equality is the store's, not this query's.
+     * The relay urls this store's NIP-65 lists name, and how many lists name each. `lists`, not
+     * `users`: kind 10002 is replaceable, but that equality is the store's, not this query's.
      */
     private suspend fun relaysSection(): JsonObject =
         section(
@@ -438,10 +362,8 @@ internal class StatsRollup(
             val pairs =
                 attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
                     ?: return@section buildJsonObject { }
-            // Keep the `r` values and sum per canonical url: the grouping
-            // returns one row per distinct string, and a trailing slash makes
-            // two strings for one relay. [canonicalRelay] is the normalizer
-            // the router dials with.
+            // Summed per canonical url: the grouping returns one row per distinct string, and a
+            // trailing slash makes two strings for one relay.
             val relays =
                 pairs
                     .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { canonicalRelay(it) to count } }
@@ -467,11 +389,8 @@ internal class StatsRollup(
         }
 
     /**
-     * Zap receipts: how many, from how many wallets, and their shape over time.
-     * On the slow cadence because kind 9735 is populous and `group(pubkey)` over
-     * it walks every receipt. No sats: the amount is in `bolt11` and
-     * `description`, which `tag_index` cannot address. `wallets` is the
-     * receipt's author, the LNURL service, and is not a user count.
+     * Zap receipts: how many, from how many wallets, and their shape over time. No sats: the amount
+     * is in tags `tag_index` cannot address. `wallets` is the receipt's author, the LNURL service.
      */
     private suspend fun zapsSection(): JsonObject =
         section(
@@ -507,11 +426,7 @@ internal class StatsRollup(
             }
         }
 
-    /**
-     * A daily series for each of the largest few kinds, taken from
-     * [kindsSection]'s histogram so the panel follows the corpus. Capped
-     * because nobody reads twenty sparklines.
-     */
+    /** A daily series for each of the largest few kinds, taken from [kindsSection]'s histogram. */
     private suspend fun kindActivitySection(topByEvents: List<Int>): JsonObject =
         section { attempts ->
             val now = nowSeconds()
@@ -554,17 +469,9 @@ internal class StatsRollup(
         }
 
     /**
-     * One bucketed series, events and distinct authors per bucket, as the array
-     * the page charts. [decode] turns the engine's bucket value into the label
-     * the page sorts; no bucket pipeline returns one usable as is.
-     *
-     * One query pair per slice, run sequentially so the slicing's peak bound
-     * holds, and merged as a union of disjoint keys. [Slice.fill] names the
-     * labels emitted at zero when the engine returned no bucket; a grouping only
-     * returns buckets that matched. A slice whose events query fails
-     * contributes nothing, not even its fill: absent bars are a gap, zero bars a
-     * claim. The pubkeys column is all or nothing across slices, because a
-     * point without `pubkeys` charts as a real zero.
+     * One bucketed series, events and distinct authors per bucket; [decode] turns the engine's
+     * bucket value into the page's label. A slice whose events query fails contributes nothing, not
+     * even its [Slice.fill]; the pubkeys column is all or nothing, since a missing point charts as zero.
      */
     private suspend fun series(
         attempts: Attempts,
@@ -578,31 +485,25 @@ internal class StatsRollup(
         var answered = 0
         var authorsWhole = true
         for (slice in slices) {
-            // "months.2024.events" when there are years to tell apart, plain
-            // "days.events" when there are not.
             val key = slice.key?.let { "$name.$it" } ?: name
             val where = StatsYql.window(slice.since, slice.until)
             val counts = attempt(attempts, "$key.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) }
             if (counts == null) {
-                // Both columns lose this slice.
                 authorsWhole = false
                 continue
             }
             answered++
-            // The union: a bucket outside the fill is a disagreement between
-            // window and enumeration, and dropping it would hide that.
+            // The union: a bucket outside the fill is a disagreement between window and enumeration.
             val labels = counts.keys + slice.fill
             labels.forEach { events[it] = counts[it] ?: 0L }
-            // Empty is not zero: [bucketed] drops a group it cannot read, so
-            // an unreadable shape arrives as an empty map, and zero-filling
-            // it would make the page state "No publishing pubkeys".
+            // Empty is not zero: [bucketed] drops a group it cannot read, and zero-filling an
+            // unreadable shape would claim no authors.
             val byLabel =
                 attempt(attempts, "$key.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
                     ?.takeIf { it.isNotEmpty() }
             if (byLabel == null) {
                 authorsWhole = false
             } else {
-                // Zero rather than absent once the column is readable.
                 labels.forEach { authors[it] = byLabel[it] ?: 0L }
             }
         }
@@ -620,11 +521,7 @@ internal class StatsRollup(
         }
     }
 
-    /**
-     * One query's worth of a series: its window, the labels it is responsible
-     * for, and [key] to name it in an error. Null [key] keeps a one-query
-     * series' errors as `days.events`.
-     */
+    /** One query's worth of a series: its window, the labels it fills, and [key] to name it in an error. */
     private data class Slice(
         val since: Long,
         val until: Long,
@@ -635,10 +532,8 @@ internal class StatsRollup(
     // ---- section plumbing ---------------------------------------------------
 
     /**
-     * Run [body], collecting per-query failures, and wrap the result in the
-     * shared envelope: `ok`, `partial` (`data` holds what came back, `errors`
-     * names the rest) or `failed`. [note] is a caveat on a section that
-     * succeeded, what it deliberately leaves out, distinct from `errors`.
+     * Run [body], collecting per-query failures, and wrap the result in the shared envelope: `ok`,
+     * `partial` or `failed`. [note] is a caveat on what a section deliberately leaves out.
      */
     private suspend fun section(
         note: String? = null,
@@ -653,9 +548,7 @@ internal class StatsRollup(
             put("tookMs", System.currentTimeMillis() - startedMs)
             note?.let { put("note", it) }
             put("data", data)
-            // What each query cost, keyed as `errors` is. Published, not
-            // logged: it is what an operator re-tiers a query from. Failures
-            // are timed too.
+            // Published, not logged: it is what an operator re-tiers a query from. Failures are timed too.
             if (attempts.queryMs.isNotEmpty()) {
                 putJsonObject("queryMs") { attempts.queryMs.forEach { (k, v) -> put(k, v) } }
             }
@@ -666,14 +559,13 @@ internal class StatsRollup(
     }
 
     /**
-     * What a section's queries did. The status counts successes rather than
-     * inspecting `data`, which is never empty: every section writes its own
-     * metadata before a query returns.
+     * What a section's queries did. The status counts successes rather than inspecting `data`,
+     * which is never empty.
      */
     private class Attempts {
         val errors = LinkedHashMap<String, String>()
 
-        /** What each attempt took, keyed as its errors would be. See [section]. */
+        /** What each attempt took, keyed as its errors would be. */
         val queryMs = LinkedHashMap<String, Long>()
         var succeeded = 0
             private set
@@ -691,9 +583,8 @@ internal class StatsRollup(
     }
 
     /**
-     * Run one query, recording a failure under [key] instead of propagating it.
-     * `CancellationException` is rethrown: a cancelled rollup must not persist
-     * a document blaming the engine for shutdown.
+     * Run one query, recording a failure under [key] instead of propagating it. Cancellation is
+     * rethrown: a cancelled rollup must not persist a document blaming the engine for shutdown.
      */
     private suspend fun <T> attempt(
         attempts: Attempts,
@@ -709,7 +600,6 @@ internal class StatsRollup(
             attempts.errors[key] = e.message ?: e.toString()
             null
         } finally {
-            // In a finally so a refusal is timed as well as a success.
             attempts.queryMs[key] = System.currentTimeMillis() - startedMs
         }
     }
@@ -730,7 +620,7 @@ internal class StatsRollup(
             }.toMap()
     }
 
-    /** A two-level pipeline: outer value -> inner label -> count. The inner labels go through [decode] like the flat ones. */
+    /** A two-level pipeline: outer value -> inner label -> count. The inner labels go through [decode]. */
     private suspend fun nestedBuckets(
         pipeline: String,
         where: String,
@@ -754,9 +644,8 @@ internal class StatsRollup(
     }
 
     /**
-     * A bucketed pipeline, rekeyed by [decode]; a bucket the decoder rejects is
-     * dropped rather than passed through, so a changed format loses points
-     * visibly instead of scrambling an axis.
+     * A bucketed pipeline, rekeyed by [decode]; a bucket the decoder rejects is dropped, so a
+     * changed format loses points visibly instead of scrambling an axis.
      */
     private suspend fun bucketed(
         pipeline: String,
@@ -790,38 +679,22 @@ internal class StatsRollup(
     }
 
     companion object {
-        /**
-         * Bumped when a released field changes meaning or leaves, not when one is
-         * added. 2: `pubkeys` moved from `corpus` to `authors.pubkeys`, `corpus.kinds`
-         * dropped as a duplicate of `kinds.total`, and `tookMs` moved from the top
-         * level to `tiers.<name>.tookMs`.
-         */
+        /** Bumped when a released field changes meaning or leaves, not when one is added. */
         const val SCHEMA_VERSION = 2
 
         const val DEFAULT_WINDOW_DAYS = 30
 
-        /** The span the reference dashboard's own Weekly toggle covers. */
         const val DEFAULT_WEEK_WINDOW_WEEKS = 26
 
-        /**
-         * The monthly chart's first bucket: a date, not a rolling count, so the
-         * corpus's early years never walk off the left edge. The window grows a
-         * month every month, and [StatsYql.monthSlicesFrom] keeps any one query
-         * at twelve months of pubkey sets however far back this sits.
-         */
+        /** The monthly chart's first bucket: a date, not a rolling count, so the early years stay on the chart. */
         val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
 
         const val DEFAULT_HOUR_WINDOW_DAYS = 7
 
-        /**
-         * How far back [recentNewest] looks, in days. Two so an overnight pause
-         * cannot empty the window; not more, because [carriedNewest] answers
-         * beyond it with a timestamp rather than a guess.
-         */
+        /** How far back [recentNewest] looks; [carriedNewest] answers beyond it. */
         const val DEFAULT_NEWEST_WINDOW_DAYS = 2
         const val DEFAULT_TOP_RELAYS = 50
 
-        /** How many kinds get their own daily series. */
         const val DEFAULT_KIND_SERIES = 8
         private const val DAY_SECONDS = 86_400L
 
@@ -834,13 +707,8 @@ internal class StatsRollup(
 }
 
 /**
- * Recompute one [tier] of the stats document every [everySeconds] into
- * [snapshot]. One call per tier, each on its own coroutine; a tier never
- * launched leaves its sections out of the document. Runs behind the server:
- * the first charts pass on a large corpus is minutes of grouping.
- *
- * [everySeconds] is the gap between passes, not a period, so a slow pass
- * delays the next rather than overlapping it.
+ * Recompute one [tier] of the stats document into [snapshot], one call per tier. [everySeconds] is
+ * the gap between passes, not a period, so a slow pass delays the next rather than overlapping it.
  */
 internal fun launchStatsRollup(
     scope: CoroutineScope,
@@ -852,8 +720,7 @@ internal fun launchStatsRollup(
     scope.launch {
         while (true) {
             val startedMs = System.currentTimeMillis()
-            // The served document, read at the start of every pass so a tier
-            // picks up what the other has published. See StatsRollup.carriedNewest.
+            // Read at the start of every pass so a tier picks up what the other has published.
             val previous = snapshot.served()?.doc
             runCatching { rollup.compute(tier, previous, everySeconds) }
                 .onSuccess { members ->
@@ -867,12 +734,9 @@ internal fun launchStatsRollup(
                     )
                 }.onFailure { e ->
                     if (e is CancellationException) throw e
-                    // compute() catches per query, so this is the assembly itself
-                    // breaking. The previous document stays served.
+                    // compute() catches per query, so this is the assembly itself breaking.
                     System.err.println("stats: ${tier.member} rollup failed (${e.message}) — serving the previous document")
-                    // Marked in the document, and by tier: one cadence can fail for
-                    // hours while the other keeps publishing, and an unattributed
-                    // notice reads as a page-wide outage.
+                    // Marked by tier: one cadence can fail for hours while the other keeps publishing.
                     snapshot.markStale("the last ${tier.member} rollup failed: ${e.message ?: e.javaClass.simpleName}", tier = tier.member)
                 }
             delay(everySeconds * 1000)

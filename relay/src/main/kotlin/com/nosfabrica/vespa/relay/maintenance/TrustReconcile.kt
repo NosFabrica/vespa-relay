@@ -24,10 +24,9 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.delay
 
 /**
- * Reconcile the trust projection, waiting out a cold engine. A failure and a
- * zero-provider answer are both read as "not answering yet" and retried; zero
- * is only accepted once the wait budget is spent. Bounded so a failure that is
- * not warm-up cannot hold the relay off its port.
+ * Reconcile the trust projection, waiting out a cold engine. A failure and a zero-provider answer
+ * are both retried; zero is only accepted once the wait budget is spent, and a failure past it
+ * serves the projection as it is.
  */
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     var waited = 0L
@@ -76,8 +75,7 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
             return
         }
         if (!printedFirstFailure) {
-            // The first failure on any attempt gets the stack: a bug and a cold
-            // engine read the same from one message.
+            // The first failure gets its stack whichever attempt it is on: a bug and a cold engine read alike.
             printedFirstFailure = true
             println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
             cause?.printStackTrace()

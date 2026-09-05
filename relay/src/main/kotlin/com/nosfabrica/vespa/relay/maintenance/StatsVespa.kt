@@ -35,10 +35,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-/**
- * Somewhere to send a [StatsYql] pipeline; the seam [StatsRollup] depends on
- * instead of the engine, so a test can assert which queries a cadence asks.
- */
+/** Somewhere to send a [StatsYql] pipeline; the seam [StatsRollup] depends on instead of the engine. */
 internal interface StatsQueries {
     /** Run [pipeline] over the [source] documents [where] selects and return Vespa's `root`. */
     suspend fun group(
@@ -49,9 +46,8 @@ internal interface StatsQueries {
 }
 
 /**
- * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to
- * `/search/`, refuse a degraded answer, hand back the parsed root. On the
- * JDK's client so the relay module gains no client-side Ktor dependency.
+ * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to `/search/`, refuse a
+ * degraded answer, hand back the parsed root.
  */
 internal class StatsVespa(
     vespaUrl: String,
@@ -64,10 +60,9 @@ internal class StatsVespa(
     private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
 
     /**
-     * Throws on anything that is not a complete answer: a thrown aggregation
-     * shows on the page as a named failure, a swallowed one as a wrong chart.
+     * Throws on anything that is not a complete answer: a thrown aggregation shows on the page as
+     * a named failure, a swallowed one as a wrong chart.
      */
-    // The defaults are on [StatsQueries.group]; an override may not restate them.
     override suspend fun group(
         pipeline: String,
         where: String,
@@ -84,14 +79,12 @@ internal class StatsVespa(
 
         val response =
             withContext(Dispatchers.IO) {
-                // Blocking send: one round trip on a background timer.
                 http.send(
                     HttpRequest
                         .newBuilder(searchUrl)
                         .header("Content-Type", "application/json")
-                        // No read timeout: the query profile puts Vespa's own
-                        // deadline at its maximum so a slow aggregation
-                        // finishes rather than answering by halves.
+                        // No read timeout: Vespa's own deadline is at its maximum so a slow
+                        // aggregation finishes rather than answering by halves.
                         .POST(HttpRequest.BodyPublishers.ofString(body))
                         .build(),
                     HttpResponse.BodyHandlers.ofString(),
@@ -106,9 +99,8 @@ internal class StatsVespa(
     }
 
     /**
-     * Refuse a partial answer by Vespa's own `isDegraded()` test, `coverage` at
-     * 100 with no `degraded` block, not by the `full` flag: the two use
-     * different denominators and disagree at both boundaries.
+     * Refuse a partial answer by Vespa's own `isDegraded()` test, `coverage` at 100 with no
+     * `degraded` block, not by the `full` flag, which uses a different denominator.
      */
     private fun JsonObject.requireUndegraded(yql: String) {
         val coverage = this["coverage"]?.jsonObject ?: return
@@ -120,9 +112,8 @@ internal class StatsVespa(
     }
 
     /**
-     * Log the whole failure, throw a message safe to publish. The message
-     * lands in the public `/stats.json`; Vespa's body names hosts and ports
-     * and stays in the log. The YQL is our own and is the diagnostic.
+     * Log the whole failure, throw a message safe to publish in `/stats.json`: Vespa's body names
+     * hosts and ports and stays in the log.
      */
     private fun failed(
         summary: String,

@@ -29,19 +29,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * How many ranked reads one connection may have running at once; the rest
- * queue in arrival order.
- *
- * A ranked read scores every posting a common word matches, split across all
- * the engine's match threads, so two on one socket share rather than overlap
- * and both finish later. Per connection, not global: a client only ever waits
- * behind itself, and a second socket is a second lane. What queues is the
- * engine work, from the store call to EOSE; a REQ then parks at its live tail
- * without a permit.
- *
- * Ranked is decided by the parser the lens gate and the store use: terms, a
- * phrase, or a `sort:`. Plain recall passes straight through. A lane is
- * created on a connection's first ranked read and dropped on disconnect.
+ * How many ranked reads one connection may have running at once; the rest queue in arrival order.
+ * Per connection, not global: a client only ever waits behind itself. The permit covers the store
+ * call to EOSE, not the REQ's live tail. Plain recall passes straight through.
  */
 class SearchGate(
     /** Ranked reads in flight per connection. 0 turns the gate off. */
@@ -53,9 +43,8 @@ class SearchGate(
     fun gates(filters: List<Filter>): Boolean = permits > 0 && filters.any(Filter::isRankedRead)
 
     /**
-     * Runs [block] under the connection's lane when [filters] rank. The permit
-     * is released at the first of the wrapped [onEose] firing or [block]
-     * leaving, so a read that throws before its EOSE cannot keep the lane.
+     * Runs [block] under the connection's lane when [filters] rank. The permit is released at the
+     * first of the wrapped [onEose] firing or [block] leaving.
      */
     suspend fun <T> through(
         ctx: RequestContext,
@@ -93,7 +82,7 @@ class SearchGate(
     }
 
     companion object {
-        /** One: a page never benefits from two ranked reads on one socket. Raise it for a client that prefers interleaved to queued. */
+        /** A page never benefits from two ranked reads on one socket. */
         const val DEFAULT_PERMITS = 1
     }
 
@@ -109,10 +98,7 @@ class SearchGate(
         }
 }
 
-/**
- * Whether this filter ranks: terms, a phrase, or a `sort:`. These are the
- * shapes the store's `FilterMapping` sends to a relevance profile.
- */
+/** Whether this filter ranks: terms, a phrase, or a `sort:`, the shapes the store ranks by relevance. */
 internal fun Filter.isRankedRead(): Boolean {
     val parsed = SearchQuery.parse(search?.takeIf { it.isNotBlank() } ?: return false)
     return parsed.hasText || parsed.extension("sort") != null
