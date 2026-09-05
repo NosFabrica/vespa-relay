@@ -232,6 +232,41 @@ class PulseSiteTest {
         }
 
     @Test
+    fun `a query string does not change what a token must be signed over`() =
+        testApplication {
+            mount(guard())
+
+            // The expected `u` comes from the ROUTE's path, so a cache-buster or
+            // any other parameter cannot make an administrator's token stop
+            // working — and cannot make a token signed for some other route
+            // start working either.
+            val res =
+                client.get("$PULSE_DOC_PATH?t=1") {
+                    header(HttpHeaders.Authorization, token(PULSE_DOC_PATH, "GET"))
+                }
+
+            assertEquals(HttpStatusCode.OK, res.status)
+        }
+
+    @Test
+    fun `the session cookie is Secure where the deployment is served over TLS`() =
+        testApplication {
+            val tls = PulseGuard(Nip98AdminGate(setOf(admin.pubKey), "https://pulse.example"))
+            mount(tls)
+            val signed =
+                admin
+                    .sign(HTTPAuthorizationEvent.build("https://pulse.example$PULSE_SESSION_PATH", "POST", null, System.currentTimeMillis() / 1000) {})
+                    .toAuthToken()
+
+            val opened = client.post(PULSE_SESSION_PATH) { header(HttpHeaders.Authorization, signed) }
+
+            // Decided from the operator's declared origin, not the request's
+            // scheme: behind a TLS-terminating proxy the request reads `http`,
+            // and that is the deployment where the mark matters most.
+            assertTrue(assertNotNull(opened.headers[HttpHeaders.SetCookie]).contains("Secure", ignoreCase = true))
+        }
+
+    @Test
     fun `a token cannot be spent twice`() =
         testApplication {
             mount(guard())

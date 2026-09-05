@@ -35,8 +35,6 @@ import io.ktor.server.plugins.compression.Compression
 import io.ktor.server.plugins.compression.deflate
 import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.compression.minimumSize
-import io.ktor.server.plugins.origin
-import io.ktor.server.request.uri
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
@@ -122,9 +120,20 @@ fun Application.installPulseDefaults() {
  * every two seconds — and because verifying a token costs a signature check
  * and a lock on the replay set.
  */
-private suspend fun ApplicationCall.admin(guard: PulseGuard): Admitted {
+private suspend fun ApplicationCall.admin(
+    guard: PulseGuard,
+    path: String,
+    method: String,
+): Admitted {
     guard.sessions.holder(request.cookies[PULSE_COOKIE])?.let { return Admitted.Admin(it) }
-    return guard.gate.admit(request.headers[HttpHeaders.Authorization], request.local.method.value, guard.gate.urlFor(request.uri.substringBefore('?')))
+    // Judged against the ROUTE'S path, not the request target. Deriving the
+    // expected `u` from `request.uri` made two things disagree: this, and the
+    // refusal that tells a client what to sign — which uses the route's path.
+    // The route is also the canonical spelling, so a request that reaches this
+    // handler under some other encoding of the same path is judged against the
+    // one url a token could sensibly have been signed over. A query string
+    // never enters it, which is why `/pulse.json?t=1` works.
+    return guard.gate.admit(request.headers[HttpHeaders.Authorization], method, guard.gate.urlFor(path))
 }
 
 /**
@@ -223,7 +232,7 @@ fun Route.pulseDocument(
     path: String = PULSE_DOC_PATH,
 ) {
     get(path) {
-        val who = call.admin(guard)
+        val who = call.admin(guard, path, "GET")
         if (who !is Admitted.Admin) return@get call.refuse(who, guard, path, "GET")
         val doc = document()
         call.response.header(HttpHeaders.CacheControl, "no-store")
@@ -251,11 +260,18 @@ fun Route.pulseDocument(
  * still happens; it happens once.
  *
  * The cookie is `HttpOnly` so no script on the page can read it, `SameSite=Strict`
- * so no other site can cause it to be sent, and `Secure` whenever the request
- * arrived over TLS — conditional rather than always, because the intended
- * deployment is a private port reached through an SSH tunnel, and an
- * unconditional `Secure` there would set a cookie the browser never sends
- * back.
+ * so no other site can cause it to be sent, and `Secure` when this deployment
+ * is reached over TLS. Conditional rather than always, because the intended
+ * deployment is a private port through an SSH tunnel and an unconditional
+ * `Secure` there would set a cookie the browser never sends back.
+ *
+ * DECIDED FROM THE OPERATOR'S OWN `publicUrl`, not from the request. Ktor's
+ * `origin.scheme` is the local socket's unless a forwarded-headers plugin is
+ * installed — which none is here, deliberately, since this site must not trust
+ * headers the caller controls. Behind a TLS-terminating proxy that reads
+ * `http` and the session cookie would go out without `Secure`, which is the
+ * one deployment where it matters most. The configured origin is a fact the
+ * operator stated.
  */
 fun Route.pulseSession(guard: PulseGuard) {
     post(PULSE_SESSION_PATH) {
@@ -279,7 +295,7 @@ fun Route.pulseSession(guard: PulseGuard) {
             value = token,
             maxAge = guard.sessions.ttlMillis / 1000,
             path = "/",
-            secure = call.request.origin.scheme == "https",
+            secure = guard.gate.servesOverTls,
             httpOnly = true,
             extensions = mapOf("SameSite" to "Strict"),
         )
@@ -297,7 +313,7 @@ fun Route.pulseSession(guard: PulseGuard) {
             value = "",
             maxAge = 0,
             path = "/",
-            secure = call.request.origin.scheme == "https",
+            secure = guard.gate.servesOverTls,
             httpOnly = true,
             extensions = mapOf("SameSite" to "Strict"),
         )

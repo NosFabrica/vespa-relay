@@ -192,6 +192,9 @@ fun main() {
             writers = STORE_WRITERS,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
         )
+    // When the counters start; the page states every total as cumulative over
+    // this window. See RelayMain.
+    val storeOpenedAt = System.currentTimeMillis()
 
     val parseAudit = ParseAudit.installFromEnv(env)
 
@@ -352,6 +355,7 @@ fun main() {
                 document =
                     PulseDocument.reader(
                         store,
+                        startedAtMillis = storeOpenedAt,
                         title = "Eventstore pulse — mirror",
                         scope = "The mirror's own store: what ingest costs, what it admitted, and what the write path is waiting behind.",
                         clientDerived = pulseClientDetail,

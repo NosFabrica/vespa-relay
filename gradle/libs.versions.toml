@@ -414,7 +414,7 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 1dbf6c6bf3 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
+# c87880f7a1 = vespa-eventstore `claude/store-resource-stats-j9wjhr`, the
 # telemetry branch (its docs/telemetry.md is the design record).
 #
 # A BRANCH COMMIT, deliberately and temporarily. The store PR is open; this
@@ -456,9 +456,16 @@ quartz = "cecc3287b2"
 # the unsafe direction, for the first time on this line. It still needs no
 # `force(…)`, for the reason the notes above give: nothing else in the graph
 # names vespa-eventstore, so there is no conflict for ordering to settle. The
-# resolved graph is the proof, and every eventstore line reads 1dbf6c6bf3 with
+# resolved graph is the proof, and every eventstore line reads c87880f7a1 with
 # no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# WHAT THE THIRD COMMIT ON THAT BRANCH IS: the load sketch was being handed
+# WHOLE 64-hex observer pubkeys, against `HeavyHitters`' own documented
+# contract and the design doc's §11.2 ("truncate the key to a prefix"). Every
+# row of the live page carried a key that could be lifted out of a screenshot.
+# Truncated to 16 chars at the producer, with the rule now asserted on both
+# sides rather than written in prose.
 #
 # WHAT THE SECOND COMMIT ON THAT BRANCH IS, because building this page is what
 # found it: `topObservers`, `topTerms` and `slowReads` were ALWAYS EMPTY. All
@@ -471,7 +478,7 @@ quartz = "cecc3287b2"
 #
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
 # PR #104 and #105 (the lock audit) over #103's grouping aggregate.
-vespaEventStore = "1dbf6c6bf3"
+vespaEventStore = "c87880f7a1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

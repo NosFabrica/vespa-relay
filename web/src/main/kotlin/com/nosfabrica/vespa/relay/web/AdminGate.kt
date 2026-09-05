@@ -100,6 +100,18 @@ class Nip98AdminGate(
     /** The `u` a token for [path] must carry. Published in the 401 so a signer never has to guess. */
     fun urlFor(path: String): String = publicUrl.trimEnd('/') + path
 
+    /**
+     * Whether this deployment is reached over TLS, and so whether the session
+     * cookie may be marked `Secure`.
+     *
+     * From the operator's declared origin rather than the request, because a
+     * request's scheme here is the local socket's — this site installs no
+     * forwarded-headers plugin, on purpose — so behind a TLS-terminating proxy
+     * the request reads `http` and the cookie would go out unmarked in exactly
+     * the deployment where the mark matters.
+     */
+    val servesOverTls: Boolean = publicUrl.startsWith("https://", ignoreCase = true)
+
     override suspend fun admit(
         authorization: String?,
         method: String,
@@ -165,7 +177,10 @@ class AdminSessions(
     @Synchronized
     fun open(pubkey: String): String {
         sweep()
-        while (live.size >= max) live.remove(live.keys.first())
+        // `isNotEmpty` as well as the bound: a `max` of zero or less would
+        // otherwise spin on an empty map and throw out of a route that is
+        // supposed to be handing somebody a session.
+        while (live.size >= max && live.isNotEmpty()) live.remove(live.keys.first())
         val token = ByteArray(32).also { random.nextBytes(it) }.let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
         live[token] = Session(pubkey, now() + ttlMillis)
         return token

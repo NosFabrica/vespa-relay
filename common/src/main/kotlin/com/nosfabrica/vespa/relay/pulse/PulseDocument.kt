@@ -84,17 +84,21 @@ object PulseDocument {
     ): JsonObject = of(store.metrics(), store.runCatching { feedStatus() }.getOrNull(), title, scope, startedAtMillis, clientDerived, nowMillis)
 
     /**
-     * A reader bound to one store, for the route to call per request. The
-     * process's start is stamped once here rather than read per call, so
-     * `uptimeSeconds` is the window every rate on the page is differenced
-     * over.
+     * A reader bound to one store, for the route to call per request.
+     *
+     * [startedAtMillis] is WHEN THE STORE'S COUNTERS BEGAN, and the caller must
+     * say: the page states every total as cumulative over `uptimeSeconds`, and
+     * defaulting it to the moment this reader was built would name a window
+     * shorter than the one the counters actually cover — by two minutes on a
+     * relay that deployed a schema first. It is stamped once rather than read
+     * per call so the window only ever grows.
      */
     fun reader(
         store: VespaEventStore,
+        startedAtMillis: Long,
         title: String,
         scope: String,
         clientDerived: Boolean = false,
-        startedAtMillis: Long = System.currentTimeMillis(),
     ): () -> JsonObject = { of(store, title, scope, startedAtMillis, clientDerived) }
 
     /** The pure form, so the shape can be asserted without a store. */
@@ -237,8 +241,14 @@ object PulseDocument {
                     buildJsonObject {
                         put("profile", e.profile)
                         put("queries", e.queries)
-                        put("engineMs", e.engineNanos / 1_000_000)
-                        put("summaryMs", e.summaryNanos / 1_000_000)
+                        // Milliseconds as a DECIMAL, not an integer. The page
+                        // divides these by the query count, and a store whose
+                        // engine answers in under a millisecond would otherwise
+                        // publish every profile as a flat zero — the same
+                        // precision the health loop used to lose rounding
+                        // `%.2fs`, one boundary further on.
+                        put("engineMs", e.engineNanos / 1_000_000.0)
+                        put("summaryMs", e.summaryNanos / 1_000_000.0)
                         put("docsMatched", e.docsMatched)
                         put("hitsServed", e.hitsServed)
                         put("degraded", e.degraded)
@@ -349,7 +359,7 @@ object PulseDocument {
                             if (st.calls > 0) {
                                 put("calls", st.calls)
                                 put("meanMs", st.meanNanos / 1_000_000.0)
-                                put("maxMs", st.maxNanos / 1_000_000)
+                                put("maxMs", st.maxNanos / 1_000_000.0)
                             }
                         },
                     )

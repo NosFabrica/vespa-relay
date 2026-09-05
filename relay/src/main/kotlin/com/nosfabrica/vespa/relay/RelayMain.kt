@@ -218,6 +218,12 @@ fun main() {
             searchExpansion = searchExpansion,
             slowQueryThresholdMillis = slowReadMs,
         )
+    // WHEN THE COUNTERS START, which is not when this process started and not
+    // when the pulse site is mounted. The page states every total as cumulative
+    // over this window, and a relay that spent two minutes deploying a schema
+    // before opening the store would otherwise say a window that never held
+    // those counters.
+    val storeOpenedAt = System.currentTimeMillis()
 
     // Everything on this scope runs behind the server and is awaited nowhere;
     // blocking the port on any of it turns a restart into an outage.
@@ -352,6 +358,7 @@ fun main() {
                 document =
                     PulseDocument.reader(
                         store,
+                        startedAtMillis = storeOpenedAt,
                         title = "Eventstore pulse — relay",
                         scope = "The serving relay's own store: what reads cost, what the engine did, and what the write path is waiting on.",
                         clientDerived = pulseClientDetail,

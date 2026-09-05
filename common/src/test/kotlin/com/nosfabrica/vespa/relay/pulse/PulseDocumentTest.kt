@@ -161,7 +161,7 @@ class PulseDocumentTest {
         // The pair is the point: matched alone cannot say how much work the
         // client never saw, which is what the observer gate moves most.
         assertEquals(50L, row["hitsServed"]!!.jsonPrimitive.long)
-        assertEquals(40L, row["engineMs"]!!.jsonPrimitive.long)
+        assertEquals(40.0, row["engineMs"]!!.jsonPrimitive.double, 1e-9)
         assertEquals(3L, row["rungs"]!!.jsonPrimitive.long)
         assertEquals(0L, row["degraded"]!!.jsonPrimitive.long, "nothing degraded is a reading, not the absence of one")
     }
@@ -206,6 +206,7 @@ class PulseDocumentTest {
         val stages = assertNotNull(member(doc, "stages"))
         assertEquals("proj.fetch.derive", stages[0].jsonObject["stage"]!!.jsonPrimitive.content, "busiest first")
         assertEquals(12L, stages[0].jsonObject["calls"]!!.jsonPrimitive.long)
+        assertEquals(20_000.0, stages[0].jsonObject["maxMs"]!!.jsonPrimitive.double, 1e-9)
         assertNull(stages[1].jsonObject["calls"], "a stage booked without calls carries none")
         assertNull(stages[1].jsonObject["meanMs"])
     }
@@ -244,6 +245,24 @@ class PulseDocumentTest {
                 .jsonPrimitive.content,
         )
         assertEquals("search 'bitcoin'", assertNotNull(member(open, "slowReads"))[0].jsonObject["detail"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `slow reads are published newest first`() {
+        val ledger = CostLedger(slowQueryThresholdNanos = 1)
+        ledger.slowRead(Activity.Query, "search", 1_000_000_000, 1, 1, 1, 1, "older")
+        Thread.sleep(3)
+        ledger.slowRead(Activity.Query, "search", 2_000_000_000, 1, 1, 1, 1, "newer")
+
+        val reads = assertNotNull(member(docOf(ledger, clientDerived = true), "slowReads"))
+
+        // The page draws this table in document order under a heading that says
+        // "newest first". It drew it backwards until an audit, which is the
+        // wrong end of a ring somebody opened during an incident.
+        assertEquals(
+            listOf("newer", "older"),
+            reads.map { it.jsonObject["detail"]!!.jsonPrimitive.content },
+        )
     }
 
     @Test

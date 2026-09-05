@@ -437,7 +437,11 @@ function slowPanel(doc) {
     "Slow reads",
     `${fmt(reads.length)} engine calls beat this store's slow threshold, newest first. A slow read here is a slow ENGINE CALL, not a slow query: one REQ fans out into companion queries and admission probes, and which of them was slow is the question a four-second search leaves you with. A ring — the oldest is overwritten, so this is bounded whatever the traffic.`,
   );
-  const body = [...reads].reverse().map((s) => {
+  // NOT reversed. `CostLedger.snapshot` already sorts the ring newest-first and
+  // the document preserves that order, so reversing here drew the oldest read
+  // at the top under a card that says "newest first" — which is the wrong end
+  // of a ring somebody opened during an incident.
+  const body = reads.map((s) => {
     const tr = el("tr");
     const when = el("td", "r", ago(s.at));
     when.title = isoOf(s.at);
@@ -491,7 +495,16 @@ function render(doc) {
     );
     parts.push(c);
   }
+  // The whole body is rebuilt every poll, so anything the reader was doing
+  // inside it is lost unless it is carried across. Scroll is the one that
+  // matters: the slow-read table is a scroll box, and resetting it to the top
+  // twice a second makes it unreadable. Restored by index — the panels are
+  // built in a fixed order, so box N is the same box it was.
+  const scrolled = [...bodyEl.querySelectorAll(".wrap.tall")].map((b) => b.scrollTop);
   bodyEl.replaceChildren(...parts.filter(Boolean));
+  [...bodyEl.querySelectorAll(".wrap.tall")].forEach((b, i) => {
+    if (scrolled[i]) b.scrollTop = scrolled[i];
+  });
   renderFoot(doc);
   shown = doc;
   prev = doc;
@@ -516,7 +529,12 @@ function renderFoot(doc) {
     out.addEventListener("click", async () => {
       await signOut();
       admin = null;
-      signInCard(null, null);
+      authed = false;
+      // `load()`, not a card built here: the refusal it gets back carries the
+      // relay's own `session` block, and a card built with none would sign the
+      // url this browser dialled — which behind a proxy is not the one the
+      // relay checks, so the next sign-in would fail for no visible reason.
+      await load();
     });
     line.appendChild(out);
     footEl.appendChild(line);
