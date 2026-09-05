@@ -78,10 +78,7 @@ class NegentropyPagerTest {
         }
     }
 
-    /**
-     * A relay with a cap, behind the quartz that splits an over-cap window itself
-     * and hands a slice no size can fit to the caller's hook.
-     */
+    /** A relay with a cap, behind a quartz that splits an over-cap window and hands the rest to the hook. */
     private class FakePeer(
         val density: Density,
         val cap: Int = Int.MAX_VALUE,
@@ -155,10 +152,7 @@ class NegentropyPagerTest {
         /** Whether the fallback page is refused: a `CLOSED` with nothing delivered. */
         var refusesPages = false
 
-        /**
-         * Events a refused page still delivered: a kind-chunked page can serve
-         * one chunk and be turned away on the next.
-         */
+        /** Events a refused page still delivered: a chunked page can serve one chunk and lose the next. */
         var refusedPagesStillDeliver = 0
 
         override suspend fun page(
@@ -203,7 +197,6 @@ class NegentropyPagerTest {
     @Test
     fun `a store denser than the target is cut before any round trip`() =
         runBlocking {
-            // 100/s over 1000s = 100_000 local events against a 1000-event target.
             val index = FakeIndex(Density(perSecond = 100))
             val peer = FakePeer(Density(perSecond = 100))
             val out = pager(index, peer).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
@@ -232,8 +225,7 @@ class NegentropyPagerTest {
             peer.reconciled.forEach { assertTrue(peer.density.count(it) <= 5_000) }
         }
 
-    // `: Unit` is load-bearing on the two tests below: `zipWithNext` returns a list,
-    // and JUnit 5 silently does not run a non-void @Test.
+    // `: Unit` is load-bearing below: `zipWithNext` returns a list and JUnit 5 skips a non-void @Test.
     @Test
     fun `windows are walked newest first`(): Unit =
         runBlocking {
@@ -280,7 +272,6 @@ class NegentropyPagerTest {
     @Test
     fun `the count the pager took is not asked for twice`() =
         runBlocking {
-            // Priming the index with the count just taken spares quartz a second store round trip.
             val index = FakeIndex(Density(perSecond = 1))
             val peer =
                 object : WindowSync by FakePeer(Density(perSecond = 1)) {
@@ -428,8 +419,7 @@ class NegentropyPagerTest {
     @Test
     fun `a per-kind slice the peer still refuses falls to paging, never to the floor`() =
         runBlocking {
-            // Our side of the second is thin, so each per-kind reconcile hands the
-            // slice straight back through `onUnreconcilable`.
+            // Our side of the second is thin, so each per-kind reconcile hands the slice straight back.
             val shape = Filter(kinds = listOf(1, 7))
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
             val peer = FakePeer(hot, cap = 5_000)
@@ -458,9 +448,8 @@ class NegentropyPagerTest {
     @Test
     fun `the cursor never reaches past a window that is still pending`() =
         runBlocking {
-            // Checked at every step: the cursor must stay strictly above the window about
-            // to be asked. The escape hatch takes a slice out of the middle of a window,
-            // leaving a piece above it pending.
+            // Checked at every count: the cursor must stay strictly above the window about to be
+            // asked, and the escape hatch leaves a piece of a window pending above the slice it took.
             val state = SweepState(null)
             val shape = notes
             val hot = Density(perSecond = 10, spikes = mapOf(1_500L to 100_000))
@@ -532,9 +521,8 @@ class NegentropyPagerTest {
     @Test
     fun `a window whose fallback page was refused is NOT claimed by the cursor`() =
         runBlocking {
-            // Mid-sweep: the first window reconciles and the second falls to a refused page.
             val state = SweepState(null)
-            // Dense enough to cut the leg into several windows, so there is a second one to drop.
+            // Dense enough to cut the leg into several windows, so the second can fall to a refused page.
             val peer = FakePeer(Density(perSecond = 100), failAt = setOf(1)).apply { refusesPages = true }
             val out = pager(FakeIndex(Density(perSecond = 100)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 

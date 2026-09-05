@@ -56,10 +56,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * A walk the mirror's own full ingest queue stalled is filed as
- * `abortedBackpressured`, not as the relay's refusal; a queue already full at
- * the claim is not dialled into at all. Staged with a pipeline never started
- * and filled to capacity.
+ * A walk stalled by the mirror's own full ingest queue is filed as `abortedBackpressured`, not
+ * as the relay's refusal, and a queue already full at the claim is not dialled into at all.
  */
 class VisitPoolBackpressureTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -69,7 +67,7 @@ class VisitPoolBackpressureTest {
         private val scope: CoroutineScope,
         private val end: PagedFetchResult.End,
         private val handsAnEvent: Boolean,
-        /** What the queue does WHILE the page is out — fills to the brim, or nothing. */
+        /** What the queue does while the page is out: fills to the brim, or nothing. */
         private val meanwhile: suspend () -> Unit,
     ) : RelayReads {
         val pages = AtomicInteger()
@@ -114,16 +112,16 @@ class VisitPoolBackpressureTest {
     private class Harness(
         end: PagedFetchResult.End,
         handsAnEvent: Boolean = true,
-        /** The queue fills DURING the page — room at the dial, none by the time the hook runs. */
+        /** The queue fills during the page: room at the dial, none by the time the hook runs. */
         fillsDuringThePage: Boolean = true,
-        /** …and a producer that is not the pool parks on this relay's events while the page is out. */
+        /** A producer that is not the pool parks on this relay's events while the page is out. */
         parksAForeignProducer: Boolean = false,
     ) {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
         val processors = Processors()
 
-        /** NEVER STARTED: nothing drains it, so filling it parks every submit after. */
+        /** Never started, so nothing drains it and filling it parks every submit after. */
         val ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null)
 
         val relay =

@@ -54,14 +54,14 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Runs the real [VisitPool] over the relays issue 187 names, on both outbox
- * ask shapes at once with a live Vespa behind the ingest, then prints every
- * abort line with its page sample and a census of which relays aborted on
- * which stream. Asserts nothing. Selected by `ABORT_CENSUS_VESPA` (the engine
- * url); `-DabortCensusUrls`, `-DabortCensusMinutes` and `-DabortCensusNsec` tune it.
+ * Runs the real [VisitPool] over the relays in `issue187-relays.txt` on both outbox ask shapes
+ * at once, with a live Vespa behind the ingest, and prints every abort line with its page sample
+ * plus a census of which relays aborted on which stream. Asserts nothing. Selected by
+ * `ABORT_CENSUS_VESPA` (the engine url); `-DabortCensusUrls`, `-DabortCensusMinutes` and
+ * `-DabortCensusNsec` tune it.
  */
 class AbortCensusLiveProbe {
-    /** The 137 relays issue 187 names, as a resource so the list is diffable against the issue. */
+    /** The relays under census: the resource list unless `-DabortCensusUrls` overrides it. */
     private val urls: List<String> =
         System
             .getProperty("abortCensusUrls")
@@ -76,11 +76,9 @@ class AbortCensusLiveProbe {
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
 
     /**
-     * Seeds the store with the kind 10002s naming these relays, pulled off the
-     * deployment's relay, so ingest refuses what production already holds. The
-     * ask shape is unaffected: neither outbox stream binds authors. Answers
-     * NIP-42 with a throwaway key and retries once with `include:spam` when the
-     * ranked answer is empty.
+     * Seeds the store with the kind 10002s naming these relays, pulled off the deployment's
+     * relay, so ingest refuses what production already holds. Answers NIP-42 with a throwaway
+     * key and retries once with `include:spam` when the ranked answer is empty.
      */
     private suspend fun seedRelayLists(
         store: com.vitorpamplona.quartz.nip01Core.store.IEventStore,
@@ -198,7 +196,7 @@ class AbortCensusLiveProbe {
                         .pingInterval(Duration.ofSeconds(120))
                         .build()
                 val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-                // The key relays allowlist is the deployment's; without it a relay's policy reads as its behaviour.
+                // Without the deployment's key a relay's allowlist policy reads as its behaviour.
                 val identity =
                     System
                         .getProperty("abortCensusNsec")
@@ -358,7 +356,7 @@ class AbortCensusLiveProbe {
 
         private const val SEED_WAIT_MS = 30_000L
 
-        /** Far below the deployment's width on purpose: the point is to reach every relay once, beside a Vespa. */
+        /** Far below the deployment's width: the point is to reach every relay once, beside a Vespa. */
         private const val WORKERS = 16
 
         /** A relay decides width on the REQ, not on the events, so a limit masks nothing. */
@@ -377,7 +375,7 @@ class AbortCensusLiveProbe {
                 "abortedBackpressured",
             )
 
-        /** `contentViaOutbox`'s kinds from `router.conf.example`; [WidthRescueLiveProbe] pins the older list issue 185 quoted. */
+        /** `contentViaOutbox`'s kinds from `router.conf.example`. */
         private val CONTENT_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
 
         /** `profileViaOutbox`'s kinds, verbatim from `router.conf.example`. */

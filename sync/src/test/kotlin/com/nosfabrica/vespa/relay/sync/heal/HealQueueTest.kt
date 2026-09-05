@@ -52,7 +52,7 @@ class HealQueueTest {
 
     @Test
     fun `a full queue drops rather than blocking the producer`() {
-        // The inverse of IngestPipeline.submit on purpose: a dropped heal is a retry the next cycle rediscovers.
+        // A dropped heal is a retry the next offer rediscovers; a blocked sweep is not.
         val q = HealQueue(perRelayLimit = 10, totalLimit = 100)
         val accepted = (0 until 50).count { q.offer(a, HealKey.content(0, "pk$it", null), stale(it)) }
         assertEquals(10, accepted, "past the limit, offer returns false instead of waiting")
@@ -106,10 +106,7 @@ class HealQueueTest {
     }
 }
 
-/**
- * The running total is the queue's kill switch: `offer` refuses everything
- * once it reaches the limit, so any drift is the healer switching itself off.
- */
+/** The running total is the queue's kill switch: any drift is the healer switching itself off. */
 class HealQueueAccountingTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
 
@@ -176,7 +173,6 @@ class HealQueueAccountingTest {
 
     @Test
     fun `an overwrite racing a drain never deflates the total`() {
-        // Five hot keys make the overwrite-vs-drain interleaving constant rather than lucky.
         val q = HealQueue()
         val threads =
             (0 until 8).map { t ->

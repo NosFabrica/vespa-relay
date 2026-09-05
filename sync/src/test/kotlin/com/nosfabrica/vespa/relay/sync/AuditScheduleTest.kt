@@ -40,10 +40,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The schedule row: work leaves `waiting` by its clock running out and by
- * nothing else, and the row agrees with the engine's own gate.
- */
+/** The schedule row: work leaves `waiting` only by its clock running out, and the row agrees with the engine's gate. */
 class AuditScheduleTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
     private val b = RelayUrlNormalizer.normalize("wss://b.example")
@@ -67,7 +64,7 @@ class AuditScheduleTest {
         ownedKinds = ownedKinds,
     )
 
-    /** A roster of (url → stream → its asks), the shape the pool hands over. */
+    /** A roster of url -> stream -> asks, the shape the pool hands over. */
     private fun roster(vararg entries: Pair<NormalizedRelayUrl, RosterBuilder.Ask>) =
         entries
             .groupBy({ it.first }, { it.second })
@@ -79,10 +76,7 @@ class AuditScheduleTest {
 
     private fun ask(s: SyncStream) = RosterBuilder.Ask(s, s.filter)
 
-    /**
-     * The retraction plane, for its owned-kind projection only. Never dialled;
-     * the client and the pipeline satisfy the constructor.
-     */
+    /** The retraction plane, for its owned-kind projection only; never dialled. */
     private fun retractionOver(bands: SyncBands): RetractionAudit {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
@@ -97,7 +91,6 @@ class AuditScheduleTest {
 
     @Test
     fun `an ask never audited is due, and counted apart from one whose period elapsed`() {
-        // Never run is counted apart from due, so a fresh deployment's storm reads as a schedule not yet started.
         val bands = SyncBands(null)
         val s = stream("content")
         val schedule = AuditSchedule(listOf(s), bands, retraction = null)
@@ -110,7 +103,7 @@ class AuditScheduleTest {
         assertEquals(0, row.waiting)
         assertEquals(null, row.nextInSec, "nothing is counting down — everything is due now")
 
-        // The engine's own gate agrees, which makes the row a certificate.
+        // The engine's own gate agrees, which is what makes the row a certificate.
         assertTrue(schedule.isDue(ask(s), a, week, now))
     }
 
@@ -119,7 +112,6 @@ class AuditScheduleTest {
         val bands = SyncBands(null)
         val s = stream("content")
         val schedule = AuditSchedule(listOf(s), bands, retraction = null)
-        // Verified half a period ago on `a`, a full period ago on `b`.
         bands.record(s.name, a, s.filter, null, null, paged = false, reconciledThrough = now - week / 2)
         bands.record(s.name, b, s.filter, null, null, paged = false, reconciledThrough = now - week)
 
@@ -139,7 +131,7 @@ class AuditScheduleTest {
         val s = stream("scores", deleteMissing = DeleteMissing.ON, ownedKinds = setOf(30382), kinds = listOf(30382, 10002))
         val schedule = AuditSchedule(listOf(s), bands, retractionOver(bands))
 
-        // Reconciled just now on the owned projection, the only filter the comparison records.
+        // The owned projection is the only filter the comparison records.
         val owned = s.filter.copy(kinds = listOf(30382))
         bands.record(s.name, a, owned, null, null, paged = false, reconciledThrough = now)
 
@@ -153,7 +145,6 @@ class AuditScheduleTest {
 
     @Test
     fun `an ask the stream owns no kind of is scheduled by nothing, not due forever`() {
-        // Compared by nothing, so scheduled by nothing; counted as due it would be a backlog that never drains.
         val bands = SyncBands(null)
         val s = stream("scores", deleteMissing = DeleteMissing.ON, ownedKinds = setOf(30382), kinds = listOf(10002))
         val schedule = AuditSchedule(listOf(s), bands, retractionOver(bands))
@@ -165,7 +156,7 @@ class AuditScheduleTest {
         assertEquals(AuditClock.NOT_SCHEDULED, schedule.clockFor(ask(s), a, week))
         assertFalse(schedule.isDue(ask(s), a, week, now))
 
-        // The same for a router with no retraction plane at all.
+        // Also with no retraction plane at all.
         val blind = AuditSchedule(listOf(s), bands, retraction = null)
         assertEquals(AuditClock.NOT_SCHEDULED, blind.clockFor(ask(s), a, week))
     }
@@ -180,7 +171,7 @@ class AuditScheduleTest {
 
     @Test
     fun `a stream riding nothing still gets its row, at zero`() {
-        // A stream that audits and holds no relays is waiting on the fitness pass; a missing row would say it does not audit.
+        // A missing row would say the stream does not audit.
         val s = stream("content")
         val rows = AuditSchedule(listOf(s), SyncBands(null), retraction = null).rows(emptyMap(), now)
         val row = rows["content"]!!.single()
@@ -193,7 +184,6 @@ class AuditScheduleTest {
 
     @Test
     fun `the three states partition the asks, whatever the mix`() {
-        // `due + neverRun + waiting` is the roster's own count.
         val bands = SyncBands(null)
         val s = stream("content")
         val schedule = AuditSchedule(listOf(s), bands, retraction = null)

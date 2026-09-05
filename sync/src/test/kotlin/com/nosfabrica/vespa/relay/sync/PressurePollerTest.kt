@@ -34,7 +34,7 @@ import kotlin.test.fail
 class PressurePollerTest {
     private fun awaitTrue(
         what: String,
-        // A miss can cost the poller's full 5s request timeout, and three are needed.
+        // A miss can cost the poller's whole request timeout, and three are needed.
         timeoutMs: Long = 30_000,
         condition: () -> Boolean,
     ) {
@@ -83,8 +83,7 @@ class PressurePollerTest {
 
     @Test
     fun `a feed that never yields a sample resets instead of standing on a stale claim`() {
-        // A 503 rather than a closed port: a dead port refuses instantly or stalls depending on
-        // the environment, while a non-200 is a deterministic miss everywhere.
+        // A 503 rather than a closed port: a non-200 is a deterministic miss in every environment.
         val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/pressure") { exchange ->

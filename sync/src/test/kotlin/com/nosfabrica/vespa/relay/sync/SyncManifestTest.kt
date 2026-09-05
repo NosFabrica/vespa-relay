@@ -77,7 +77,7 @@ class SyncManifestTest {
         assertEquals(listOf(0, 1), kindsOf(doc(stream("content", filter = Filter(kinds = listOf(1, 0, 1))))))
     }
 
-    /** No `kinds` member means the stream mirrors whatever its relays serve, not nothing; see `MirrorReport.allKinds`. */
+    /** No `kinds` member means the stream mirrors whatever its relays serve, not nothing. */
     @Test
     fun `a stream with no kinds publishes no kinds member`() {
         assertNull(kindsOf(doc(stream("everything", filter = Filter()))))
@@ -88,7 +88,7 @@ class SyncManifestTest {
         assertNull(kindsOf(doc(stream("everything", filter = Filter(kinds = emptyList())))))
     }
 
-    /** A push stream holds nothing here; it is published because its direction explains why its kind is not mirrored. */
+    /** A push stream is published because its direction explains why its kind is not mirrored. */
     @Test
     fun `an up stream is published with its direction`() {
         val s = streamsOf(doc(stream("push", dir = SyncDirection.UP, filter = Filter(kinds = listOf(62))))).single()
@@ -112,10 +112,7 @@ class SyncManifestTest {
         assertEquals(listOf("content", "assertions", "push"), streamsOf(d).map { it.getValue("name").jsonPrimitive.content })
     }
 
-    /**
-     * The shipped example through the real loader: a stream's configured kinds
-     * arrive whole, because a client computes a denominator from them.
-     */
+    /** The shipped example through the real loader: a stream's configured kinds arrive whole. */
     @Test
     fun `the shipped example config publishes every stream's own kinds`() {
         val example =

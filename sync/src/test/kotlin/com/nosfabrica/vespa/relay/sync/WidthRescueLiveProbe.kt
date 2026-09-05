@@ -54,11 +54,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Stands the real [VisitPool] up on `contentViaOutbox`'s 141-kind filter
- * against two relays known to refuse that width and one control, with a live
- * Vespa behind the ingest, and prints each relay's status row, the abort
- * counts and what landed in the store over several revisits. Asserts nothing.
- * Selected by the `WIDTH_RESCUE_VESPA` environment variable (the engine url).
+ * Stands the real [VisitPool] up on `contentViaOutbox`'s filter against two relays that refuse
+ * its width and one control, with a live Vespa behind the ingest, and prints each relay's status
+ * row, the abort counts and what landed in the store over several revisits. Asserts nothing.
+ * Runs only with `WIDTH_RESCUE_VESPA` set to the engine url.
  */
 class WidthRescueLiveProbe {
     /** Two relays that refuse `contentViaOutbox`'s width, and nos.lol as the control. */
@@ -131,8 +130,7 @@ class WidthRescueLiveProbe {
                 client.connect()
                 try {
                     pool.start()
-                    // A visit pays at most MAX_NARROWINGS halvings and the cap outlives the visit,
-                    // so the convergence is the sequence of caps across revisits, not the last one.
+                    // The cap outlives the visit, so the convergence is the sequence of caps across revisits.
                     val deadline = System.currentTimeMillis() + RUN_MS
                     while (System.currentTimeMillis() < deadline) {
                         delay(POLL_MS)
@@ -376,7 +374,7 @@ class WidthRescueLiveProbe {
 
         const val EVENTS_PER_ASK = 40
 
-        /** Long enough for several untailed revisits (the base is five minutes). */
+        /** Long enough for several untailed revisits. */
         const val RUN_MS = 1_200_000L
         const val POLL_MS = 30_000L
     }

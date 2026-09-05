@@ -31,22 +31,16 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The predicate the router hands quartz to decline an id before the download
- * REQ. Quartz's `NeedGate` returns the batch uncopied only when it is absent.
- */
+/** The predicate the router hands quartz to decline an id before the download REQ. */
 class WantIdGateTest {
     private fun dir() = Files.createTempDirectory("wantid").toFile().also { it.deleteOnExit() }
 
-    /**
-     * Real SHA-256 hex: the filter buckets on the id's leading hex with no
-     * hashing of its own, so sequential ids all collide.
-     */
+    /** Real SHA-256 hex: the filter buckets on the id's leading hex, so sequential ids collide. */
     private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("want-$n".toByteArray()))
 
     private val window = Filter(kinds = listOf(1), since = 1_779_000_000L, until = 1_781_000_000L)
 
-    /** The expression the three call sites use, private there; what is pinned is the shape: null when off. */
+    /** The expression the call sites use, private there; what is pinned is null when off. */
     private fun wantIdFor(
         refused: RefusedIds,
         window: Filter,
@@ -59,7 +53,7 @@ class WantIdGateTest {
 
     @Test
     fun `suppression off hands quartz no predicate at all`() {
-        // Not a lambda returning true: `NeedGate.keep` returns the batch uncopied only when wantId is null.
+        // Not a lambda returning true: `NeedGate.keep` copies the batch unless wantId is null.
         assertNull(wantIdFor(RefusedIds.disabled(), window))
     }
 
@@ -80,7 +74,6 @@ class WantIdGateTest {
 
     @Test
     fun `one refusal is not enough to decline an id`() {
-        // A single sighting must still be downloadable, or one false positive costs an event permanently.
         val refused = RefusedIds(dir(), 86_400L, 10_000)
         val once = id(3)
         refused.record(once, 1_780_000_000L)
@@ -92,7 +85,7 @@ class WantIdGateTest {
 
     @Test
     fun `the predicate is keyed on the window, because an id is all the reconcile gives us`() {
-        // A reconcile names ids with no `created_at`, so a window that does not cover the id's epoch must not decline it.
+        // A reconcile names ids with no `created_at`; a window outside the id's epoch must not decline it.
         val refused = RefusedIds(dir(), 86_400L, 10_000)
         val stale = id(4)
         val at = 1_780_000_000L

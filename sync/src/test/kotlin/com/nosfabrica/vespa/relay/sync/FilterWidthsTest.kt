@@ -28,31 +28,25 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The width learning, against the refusals staging relays sent. Every path
- * either narrows strictly or declines to narrow, so the loop terminates.
- */
+/** Width learning from refusals: every path narrows strictly or declines to narrow, so it terminates. */
 class FilterWidthsTest {
     private val url = RelayUrlNormalizer.normalize("wss://purplerelay.com")
     private val other = RelayUrlNormalizer.normalize("wss://mostro-p2p.tech")
 
     @Test
     fun `a relay that states its limit is taken at its word`() {
-        // The one refusal that can be fitted in a single retry.
         assertEquals(100, FilterWidths.capFrom("invalid: too many kinds (max 100)", kindsAsked = 139))
     }
 
     @Test
     fun `a relay that quotes our own width back is halved, not believed`() {
-        // The number in the sentence is the width we asked; adopted as a cap it would re-send the same REQ forever.
+        // The number quoted is our own width; adopted as a cap it would re-send the same REQ.
         assertEquals(69, FilterWidths.capFrom("ERROR: bad req: filter validation failed: too many kinds in filter: 139", kindsAsked = 139))
-        // No number at all: same answer.
         assertEquals(69, FilterWidths.capFrom("error: too many kinds in filter", kindsAsked = 139))
     }
 
     @Test
     fun `a refusal that is not about width teaches nothing`() {
-        // Chunking for one of these would spend round trips on a relay refusing for good.
         for (said in listOf(
             "auth-required: we only serve authenticated users",
             "restricted: not on this relay's allowlist",
@@ -66,7 +60,6 @@ class FilterWidthsTest {
 
     @Test
     fun `halving bottoms out at one kind and stops`() {
-        // Each step is strictly narrower than the refused ask, and one kind declines to narrow further.
         val widths = FilterWidths()
         val said = "error: too many kinds in filter"
         val steps = mutableListOf<Int>()
@@ -82,7 +75,7 @@ class FilterWidthsTest {
 
     @Test
     fun `a cap already held is not news, and a wider one never replaces it`() {
-        // `learn` returning true re-walks the leg, so a repeat answering true would be the loop.
+        // `learn` returning true re-walks the leg, so a repeat answering true would loop.
         val widths = FilterWidths()
         assertTrue(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 139))
         assertFalse(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 139), "the same cap again is not news")
@@ -93,7 +86,7 @@ class FilterWidthsTest {
 
     @Test
     fun `nothing said is nothing learned`() {
-        // A relay that NOTICEs and never EOSEs leaves no sentence dated to the walk; silence is not a width refusal.
+        // A relay that NOTICEs and never EOSEs leaves no sentence dated to the walk.
         val widths = FilterWidths()
         assertFalse(widths.learn(url, said = null, kindsAsked = 139))
         assertNull(widths.capFor(url))
@@ -103,7 +96,6 @@ class FilterWidthsTest {
     fun `the cap is the relay's, and it splits kinds and nothing else`() {
         val widths = FilterWidths()
         val leg = Filter(kinds = (1..250).toList(), authors = listOf("a".repeat(64)), since = 1_700_000_000)
-        // Untouched until the relay complains: one map read, no allocation.
         assertEquals(listOf(leg), widths.chunk(url, leg))
 
         assertTrue(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 250))
@@ -112,15 +104,13 @@ class FilterWidthsTest {
         assertEquals((1..250).toList(), chunks.flatMap { it.kinds!! }, "every kind asked for, in order, exactly once")
         assertTrue(chunks.all { it.authors == leg.authors && it.since == leg.since }, "the rest of the ask is untouched")
 
-        // Per relay: a limit is the server's.
         assertEquals(listOf(leg), widths.chunk(other, leg))
         assertEquals(1, widths.narrowed)
     }
 
     @Test
     fun `a sweep window is split by kinds and by nothing else`() {
-        // The sweep's fallback REQ carries the same filter, so `ClientWindowSync` chunks through
-        // the same widths. A chunk that moved `since` or `until` would compare different ground.
+        // A chunk that moved `since` or `until` would compare different ground.
         val widths = FilterWidths()
         val window = Filter(kinds = (1..250).toList(), since = 1_600_000_000, until = 1_700_000_000)
         assertEquals(listOf(window), widths.chunk(url, window), "untouched until the relay complains")
@@ -140,7 +130,6 @@ class FilterWidthsTest {
         assertTrue(widths.learn(url, "invalid: too many kinds (max 100)", kindsAsked = 139))
         val fits = Filter(kinds = listOf(0, 3, 10002))
         assertEquals(listOf(fits), widths.chunk(url, fits))
-        // A filter naming no kinds cannot be split by them.
         val unkinded = Filter(authors = listOf("a".repeat(64)))
         assertEquals(listOf(unkinded), widths.chunk(url, unkinded))
     }

@@ -134,8 +134,7 @@ class SyncCoverageReportTest {
         val stream = streams(doc).single().jsonObject
         assertEquals(mirror, stream["name"]!!.jsonPrimitive.contentOrNull, "the router's own name for the group")
         val row = rowsOf(stream).single()
-        // Canonicalised on the way out: the relay table two cards up says
-        // `wss://nos.lol`, and one relay is one string across the document.
+        // Canonicalised on the way out, so one relay is one string across the document.
         assertEquals("wss://nos.lol", row["relay"]!!.jsonPrimitive.contentOrNull)
         assertEquals(1_000L, row["min"]!!.jsonPrimitive.longOrNull)
         assertEquals(500L, row["sweep"]!!.jsonObject["downTo"]!!.jsonPrimitive.longOrNull)
@@ -143,7 +142,7 @@ class SyncCoverageReportTest {
         assertEquals(12_500L, row["target"]!!.jsonPrimitive.longOrNull)
     }
 
-    /** A sweep's filter drops `since`/`until`/`limit` and a band's keeps them; they are one leg either way. */
+    /** A sweep's filter drops the time bounds and a band's keeps them; they are one leg either way. */
     @Test
     fun `a time-bounded band and its cursor are one row`() {
         val doc =
@@ -169,7 +168,6 @@ class SyncCoverageReportTest {
                 null,
                 now,
             )
-        // Two streams walk one relay at their own moments; the card reports what each did.
         assertEquals(2, streams(doc).size)
         assertEquals(listOf("notes", "assertions"), streams(doc).map { it.jsonObject["name"]!!.jsonPrimitive.contentOrNull })
     }
@@ -211,7 +209,7 @@ class SyncCoverageReportTest {
         assertEquals(now, doc["to"]!!.jsonPrimitive.longOrNull)
     }
 
-    /** `SyncBands` records nothing until a leg finishes, so a relay mid-first-sweep has a cursor and no band. */
+    /** A band is recorded only when a leg finishes, so a relay mid-sweep has a cursor and no band. */
     @Test
     fun `a sweep with no band yet still gets a row`() {
         val doc =
@@ -230,10 +228,7 @@ class SyncCoverageReportTest {
         assertEquals(700L, row["sweep"]!!.jsonObject["downTo"]!!.jsonPrimitive.longOrNull)
     }
 
-    /**
-     * `sweeping` counts the cursors this document places, not the ones it holds.
-     * A cursor missing an edge has no span to draw, so its row carries no `sweep`.
-     */
+    /** `sweeping` counts the cursors this document places; a cursor missing an edge has no span to draw. */
     @Test
     fun `a cursor with no readable span is not counted as sweeping`() {
         val filter = """{"kinds":[1]}"""
@@ -255,7 +250,7 @@ class SyncCoverageReportTest {
         assertNull(byRelay["wss://half.example"]!!["sweep"], "an unreadable cursor has no span to place")
     }
 
-    /** One band holds a span per kind and `min`/`max` are the outer edges, so a row drawn from them alone over-claims. */
+    /** A band holds a span per kind, so a row drawn from the outer `min`/`max` alone over-claims. */
     @Test
     fun `per-kind spans narrow the claim when they disagree`() {
         val doc =
@@ -291,7 +286,7 @@ class SyncCoverageReportTest {
         assertTrue(row["complete"]!!.jsonPrimitive.booleanOrNull == true)
     }
 
-    /** Disjoint per-kind spans are a real state and must not come back inverted, a bar of negative width. */
+    /** Disjoint per-kind spans are a real state and must not come back as a bar of negative width. */
     @Test
     fun `an empty intersection falls back rather than inverting`() {
         val doc =
@@ -324,10 +319,7 @@ class SyncCoverageReportTest {
         assertNull(row["everyKindMin"])
     }
 
-    /**
-     * quartz records edges up to about a day ahead of now, so a store of only
-     * future-dated events would put `from` past `to`; readers multiply every bar by `to - from`.
-     */
+    /** quartz records edges up to a day ahead, so future-dated bands alone could put `from` past `to`. */
     @Test
     fun `a future-dated band cannot invert the frame`() {
         val doc =
@@ -341,7 +333,7 @@ class SyncCoverageReportTest {
         assertTrue(from <= to, "the frame must never invert: from=$from to=$to")
     }
 
-    /** 400 relays sharing one ask store it once; the nesting is what keeps a thousand-author filter affordable. */
+    /** Relays sharing one ask store it once; the nesting keeps a many-author filter affordable. */
     @Test
     fun `many relays sharing one large filter group as one stream`() {
         val authors = (0 until 300).joinToString(",") { "\"${"%064x".format(it)}\"" }
@@ -381,7 +373,7 @@ class SyncCoverageReportTest {
         assertEquals(listOf("authors"), stream["narrowedBy"]!!.jsonArray.map { it.jsonPrimitive.contentOrNull })
     }
 
-    /** "Kind 30023 from these authors" and "kind 30023 from everyone" are different asks; the group must not publish the narrower one. */
+    /** A bound ask and an unbound one for the same kind differ; the group must not publish the narrower. */
     @Test
     fun `a member only some legs carry is reported as varying`() {
         val doc =
@@ -398,7 +390,7 @@ class SyncCoverageReportTest {
         assertEquals(listOf("authors"), stream["narrowedBy"]!!.jsonArray.map { it.jsonPrimitive.contentOrNull })
     }
 
-    /** `authorsPerLeg` chops one relay's ask into several, so the same relay arrives several times in one group. */
+    /** One relay's ask can be split into several legs, so it arrives several times in one group. */
     @Test
     fun `several legs against one relay merge into one row`() {
         val doc =
@@ -425,7 +417,7 @@ class SyncCoverageReportTest {
         assertEquals(4_000L, row["everyKindMax"]!!.jsonPrimitive.longOrNull)
     }
 
-    /** `legs` is compared against the band-bearing relays, not the whole group: a relay on its first sweep has no band. */
+    /** `legs` is compared against the band-bearing relays; a relay on its first sweep has no band. */
     @Test
     fun `a relay sweeping its first leg cannot hide a merge`() {
         val doc =
@@ -442,7 +434,7 @@ class SyncCoverageReportTest {
         assertEquals(2, stream["legs"]!!.jsonPrimitive.longOrNull?.toInt(), "two bands on one relay is a merge worth stating")
     }
 
-    /** Windowed reconciliation writes a band per window, so one leg's `since`/`until` are that window's bounds. */
+    /** Windowed reconciliation writes a band per window, whose `since`/`until` are that window's. */
     @Test
     fun `a window's own time bounds are not published as the stream's`() {
         val doc =
@@ -490,7 +482,7 @@ class SyncCoverageReportTest {
 
     private fun flatSweeps(vararg entries: Pair<String, String>) = """{"peers":{},"sweeps":${flat(*entries)}}"""
 
-    /** What is left in a pre-stream file is the pairs no stream has claimed yet; dropped, a walked relay charts as un-walked. */
+    /** A pre-stream file holds pairs no stream has claimed; dropped, a walked relay charts as un-walked. */
     @Test
     fun `pre-stream keys still group, unnamed, by their filter's shape`() {
         val doc =
@@ -523,7 +515,7 @@ class SyncCoverageReportTest {
         assertEquals(2, streams(doc).size, "a different ask is not covered because this one was")
     }
 
-    /** Mid-migration a file carries claimed streams nested beside flat leftovers, told apart by shape: a band has `min`. */
+    /** Mid-migration a file nests claimed streams beside flat leftovers, told apart by a band's `min`. */
     @Test
     fun `a nested stream and a pre-stream leftover coexist in one file`() {
         val claimed = bands(leg("wss://a.example/", """{"kinds":[1]}""", band(1_000, 9_000, true)))

@@ -52,7 +52,6 @@ class VisitQueueTest {
             val scope = CoroutineScope(SupervisorJob())
             val q = VisitQueue<NormalizedRelayUrl>(scope)
             val entered = Channel<Unit>(Channel.UNLIMITED)
-            // Long while tailed, short once not.
             val tailed = AtomicInteger(1)
             val visits = AtomicInteger()
             scope.launch {
@@ -88,9 +87,8 @@ class VisitQueueTest {
         }
 
     /**
-     * `launch` parents a job at creation and LAZY defers only the body, so the
-     * timer that loses `putIfAbsent` must be cancelled, not dropped. The race is
-     * staged by blocking `revisitDelayMs`, which runs inside `armRevisit`.
+     * `launch` parents a job at creation and LAZY defers only the body, so the timer that loses
+     * `putIfAbsent` must be cancelled, not dropped. The race is staged by blocking `revisitDelayMs`.
      */
     @Test
     fun `a revisit timer that loses the slot is cancelled, not left parented forever`() =
@@ -258,7 +256,7 @@ class VisitQueueTest {
             repeat(3) {
                 scope.launch {
                     q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) { key ->
-                        // Count first, then record the peak: `updateAndGet` re-runs its lambda on a lost CAS.
+                        // Count first, then the peak: `updateAndGet` re-runs its lambda on a lost CAS.
                         val now = running.incrementAndGet()
                         peak.updateAndGet { was -> maxOf(was, now) }
                         entered.send(key)
@@ -280,7 +278,6 @@ class VisitQueueTest {
                 }
                 assertEquals(2, running.get())
 
-                // Wanting a running unit again is allowed; the worker that draws it parks it.
                 assertTrue(q.offer(content), "wanting it again is allowed while it runs")
                 repeat(20) { delay(10) }
                 assertEquals(2, running.get(), "still two — the third draw parked")
@@ -299,8 +296,7 @@ class VisitQueueTest {
     @Test
     fun `the queue splits by group, counting what waits and never what runs`() =
         runBlocking {
-            // A unit a worker is on is not waiting for one; counted, it would appear
-            // in `queued` and in the in-flight rows both.
+            // A running unit is not waiting; counted, it would appear both in `queued` and in flight.
             data class Unit2(
                 val url: String,
                 val stream: String,
