@@ -14,6 +14,14 @@
 <!--
   WHERE THE RESOURCES GO, charted from GET /pulse.json.
 
+  ADMINISTRATORS ONLY. That document names the observer lenses and the search
+  terms driving this relay's load and, with the slow-read log on, quotes the
+  queries people typed — so it is served only to a pubkey in the relay's admin
+  list, proven with NIP-98. This markup carries no numbers at all: it asks a
+  NIP-07 extension for one signature, trades it for a short-lived HttpOnly
+  session cookie, and polls with that. An unauthenticated visitor gets the
+  prompt below and nothing else.
+
   Every total in that document is CUMULATIVE since the process started, so this
   page keeps the previous poll and differences the two to recover a rate. That
   is the whole method, and it is why nothing here is consumed by being read:
@@ -43,6 +51,16 @@
      the cap, thirty rows of a query carrying two hundred ids IS the page. */
   td.q.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 26rem; word-break: normal; }
   .note { color: var(--muted); font-size: .78rem; margin: .5rem 0 0; }
+  /* The one action on the page, and the one way back off it. */
+  button.signin {
+    font: inherit; margin-top: .6rem; padding: .5rem .9rem; border-radius: 6px;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--surface); cursor: pointer;
+  }
+  button.signin[disabled] { opacity: .6; cursor: default; }
+  button.linkish {
+    font: inherit; font-size: .74rem; padding: 0; border: 0; background: none;
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+  }
 </style>
 </head>
 <body>
@@ -62,6 +80,7 @@ import {
   POLL_MS, activityRowsOf, admissionOf, dominantOf, engineRowsOf, gaugesOf,
   locksOf, outcomeSplitOf, showsClients, slowestOf, stageRowsOf, uncertain, whereOf,
 } from "./web/shared/pulse.js";
+import { NotAnAdmin, SignInRequired, canSign, fetchGuarded, signIn, signOut } from "./web/shared/pulseauth.js";
 
 /** The document schema this page reads; see PulseDocument.SCHEMA. */
 const SCHEMA = 1;
@@ -487,15 +506,85 @@ function renderFoot(doc) {
   footEl.appendChild(a);
   footEl.append(` (schema ${doc.schema}, read at ${doc.generatedAt}).`);
   if (doc.feed) footEl.appendChild(el("p", "foot", doc.feed));
+  if (authed) {
+    const line = el("p", "foot");
+    // The pubkey only when this page load signed in; a reload that inherited a
+    // live session is authorised without this script knowing as whom, and
+    // guessing would be worse than saying less.
+    line.append(admin ? `Signed in as ${admin.slice(0, 12)}… ` : "Signed in. ");
+    const out = el("button", "linkish", "sign out");
+    out.addEventListener("click", async () => {
+      await signOut();
+      admin = null;
+      signInCard(null, null);
+    });
+    line.appendChild(out);
+    footEl.appendChild(line);
+  }
   if (doc.schema > SCHEMA) {
     footEl.appendChild(el("p", "err", `This page was written for schema ${SCHEMA} — some panels may be missing or misread.`));
   }
 }
 
+/**
+ * Who we are signed in as, when this page load did the signing — never a
+ * credential, since the cookie is HttpOnly and invisible to this script. Null
+ * on a reload that inherited a live session, where the page is authorised and
+ * this page does not know as whom.
+ */
+let admin = null;
+
+/** Whether the last read was admitted. The poll rides this, so a signed-out page stops asking. */
+let authed = false;
+
+/** The sign-in prompt: the only thing an unauthenticated visitor is ever shown. */
+function signInCard(why, session) {
+  bodyEl.replaceChildren();
+  shown = null;
+  prev = null;
+  footEl.replaceChildren();
+  authed = false;
+  const c = el("div", "card");
+  c.appendChild(el("h2", null, "Administrators only"));
+  c.appendChild(
+    el("p", "why",
+      "This page reads what the store is spending its resources on — including, where the operator has turned it on, " +
+      "which observer lenses and search terms are driving the load and the text of slow queries. It is served only to " +
+      "an administrator of this relay."),
+  );
+  if (!canSign()) {
+    // The honest dead end, with the one thing that fixes it.
+    c.appendChild(el("p", "err",
+      "No Nostr extension found in this browser (window.nostr / NIP-07). Signing in needs one, because the proof is a " +
+      "signature by an administrator's key — this page never sees the key itself."));
+  } else {
+    const b = el("button", "signin", "Sign in with your Nostr extension");
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      b.textContent = "Waiting for your extension…";
+      try {
+        admin = await signIn(session);
+        await load();
+      } catch (e) {
+        signInCard(e instanceof NotAnAdmin
+          ? `That key is not an administrator of this relay (${e.pubkey ? e.pubkey.slice(0, 12) + "…" : "unknown"}). ` +
+            "An operator adds it to RELAY_ADMIN_PUBKEYS."
+          : String(e && e.message ? e.message : e), e instanceof SignInRequired ? e.session : session);
+      }
+    });
+    c.appendChild(b);
+  }
+  if (why) c.appendChild(el("p", "foot", why));
+  bodyEl.appendChild(c);
+  scopeEl.textContent = "Not signed in.";
+  document.title = "Eventstore pulse";
+}
+
 async function load() {
   try {
     // `no-store` on the route, so every poll is a real read; that is the point.
-    const res = await fetch(docUrl);
+    const res = await fetchGuarded(docUrl);
+    authed = true;
     if (res.status === 503) {
       scopeEl.textContent = "This process serves no metered store.";
       shown = null;
@@ -507,9 +596,23 @@ async function load() {
       bodyEl.appendChild(c);
       return;
     }
-    if (!res.ok) throw new Error(`GET ${docUrl} — ${res.status} ${res.statusText}`);
     render(await res.json());
   } catch (e) {
+    // A SESSION THAT ENDED IS NOT AN ERROR. Sessions expire on a fixed clock and
+    // die with the process; the page returns to the prompt rather than leaving
+    // stale numbers under a red line that says "could not refresh".
+    if (e instanceof SignInRequired || e instanceof NotAnAdmin) {
+      // "Your session ended" only when there WAS one. On a first visit there is
+      // nothing to have ended, and saying so reads as a bug in the page.
+      const expired = authed;
+      admin = null;
+      authed = false;
+      signInCard(
+        expired && e instanceof SignInRequired ? "Your session ended. One more signature starts another." : null,
+        e instanceof SignInRequired ? e.session : null,
+      );
+      return;
+    }
     const why = String(e && e.message ? e.message : e);
     // A failed poll is not a failed page: what is on screen is still the last
     // thing this process reported, and the footer says when.
@@ -533,8 +636,11 @@ addEventListener("mousemove", moveTip);
 addEventListener("mouseleave", hideTip);
 load();
 // A fixed cadence, not a document-stated one: this document has no rollup to
-// follow, and the rates on screen are only as fresh as the interval.
-setInterval(load, POLL_MS);
+// follow, and the rates on screen are only as fresh as the interval. Gated on
+// being signed in, so a page sitting on the prompt is not knocking on a route
+// that will refuse it every two seconds — and so the prompt is not rebuilt out
+// from under the button while somebody is clicking it.
+setInterval(() => { if (authed) load(); }, POLL_MS);
 </script>
 </body>
 </html>

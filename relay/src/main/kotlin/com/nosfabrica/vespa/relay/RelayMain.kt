@@ -51,6 +51,8 @@ import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.pulseAdmins
+import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
@@ -61,6 +63,8 @@ import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
+import com.nosfabrica.vespa.relay.web.Nip98AdminGate
+import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -191,6 +195,17 @@ fun main() {
     val pulsePort = env["PULSE_PORT"]?.trim()?.toIntOrNull() ?: 0
     val pulseClientDetail = env["PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
     val slowReadMs = pulseSlowReadMs(env, "PULSE_SLOW_READ_MS", pulseClientDetail, "PULSE_CLIENT_DETAIL")
+    // RESOLVED HERE, NOT WHERE THE SITE IS MOUNTED. It throws when a port is
+    // set with no administrator named, and that refusal belongs beside the
+    // other settings checks — a boot that deploys a schema and opens a store
+    // before saying "you forgot RELAY_ADMIN_PUBKEYS" costs two minutes to
+    // deliver one line.
+    val pulseGuard =
+        if (pulsePort <= 0) {
+            null
+        } else {
+            PulseGuard(Nip98AdminGate(pulseAdmins(adminPubkeys, "PULSE_PORT"), pulsePublicUrl(env, "PULSE_PUBLIC_URL", pulsePort)))
+        }
 
     // STORE_WRITERS is a property of this deployment: the sync process writes the same index.
     val store =
@@ -314,22 +329,26 @@ fun main() {
             )
         }
 
-    // WHERE THIS PROCESS'S STORE RESOURCES GO, on its own port and off unless
-    // an operator asks for it. Its own port because the document is not
-    // public: `/stats.json` states every field is a fact about stored events
-    // and nothing about clients belongs in it, and with PULSE_CLIENT_DETAIL on
-    // this one carries which observer lenses and which search terms are
-    // driving the load, plus a slow-read log that quotes the query. The port
-    // is the boundary — nothing here authenticates — so bind it on the private
-    // side of the network and do not publish it.
+    // WHERE THIS PROCESS'S STORE RESOURCES GO — on its own port, off unless an
+    // operator asks for it, and ADMINISTRATORS ONLY when they do.
+    //
+    // Not public, and not optionally public. `/stats.json` is public because
+    // every field in it is a fact about stored events; this document names the
+    // observer lenses and search terms driving the load and, with client
+    // detail on, quotes the queries people typed. Every route that carries a
+    // number is behind NIP-98 against the same RELAY_ADMIN_PUBKEYS the NIP-86
+    // admin RPC uses — one list, one thing to leak. The separate port is the
+    // boundary that survives a mistake in the first one, not a replacement for
+    // it: bind it on the private side of the network anyway.
     val pulseSite =
-        if (pulsePort <= 0) {
+        if (pulseGuard == null) {
             null
         } else {
             val page = resourceText("/pulse.html") ?: error("pulse.html is missing from the :web jar — no pulse page can be served.")
             servePulseSite(
                 port = pulsePort,
                 page = page,
+                guard = pulseGuard,
                 document =
                     PulseDocument.reader(
                         store,
@@ -341,7 +360,10 @@ fun main() {
             )
         }
     if (pulseSite != null) {
-        println("vespa-relay pulse page on http://localhost:$pulsePort/" + (if (pulseClientDetail) "  [client detail ON — do not publish this port]" else ""))
+        println(
+            "vespa-relay pulse page on http://localhost:$pulsePort/  [${adminPubkeys.size} admin key(s)" +
+                (if (pulseClientDetail) ", client detail ON" else "") + "]",
+        )
     }
 
     Runtime.getRuntime().addShutdownHook(

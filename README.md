@@ -291,7 +291,8 @@ own, on its own port — see below):
 ### Where the resources go — `/pulse.html`
 
 On its own port (`PULSE_PORT` on the relay, `SYNC_PULSE_PORT` on the mirror),
-**off by default**, and deliberately not next to the two pages above.
+**off by default**, **administrators only**, and deliberately not next to the
+two pages above.
 
 The pages above say what this deployment *holds* and what the mirror is
 *doing*. This one says what any of it **costs** — read live from the store's own
@@ -326,11 +327,46 @@ nothing is consumed by being read. Each process serves its own — the relay and
 the mirror hold separate stores over one Vespa, so the relay's page has the
 reads and the mirror's has the ingest.
 
-**Do not publish this port.** Nothing on it authenticates; the port is the whole
-boundary. With `PULSE_CLIENT_DETAIL` on it additionally carries the heaviest
-observer lenses and search terms driving the load, and a slow-read log that
-quotes the query — which is exactly what `/stats.json` promises never to
-contain. Bind it on the private side and reach it over an SSH tunnel.
+#### Who may read it
+
+Every page above is public because every field in it is a fact about stored
+events. This one is not that document: with `PULSE_CLIENT_DETAIL` on it names
+the heaviest observer lenses and search terms driving the load and carries a
+slow-read log that **quotes the query**. So `/pulse.json` is served only to an
+administrator.
+
+- **The proof is NIP-98** against the same `RELAY_ADMIN_PUBKEYS` the NIP-86
+  admin RPC uses — one list for the deployment, one thing to leak, and the
+  answer to "who can read this?" is the same as to "who can ban a pubkey?".
+- **A port set with no admin keys stops the boot.** "No administrators" and
+  "everyone is an administrator" are one mistake apart, and an open page is
+  never the right answer to a missing setting.
+- **In a browser**: open the port and press sign in. A NIP-07 extension signs
+  once and the relay returns a 30-minute `HttpOnly`, `SameSite=Strict` session
+  cookie; the page polls with that. NIP-98 tokens are single-use, so without
+  the session a page polling every two seconds would need an extension popup
+  every two seconds.
+- **From a script**: sign a kind-27235 event over the request's url and method
+  and send `Authorization: Nostr <base64>`. Poll through a session rather than
+  signing per request — two identical tokens in one second are one event, and
+  the second is a replay.
+- **The page shell is served unauthenticated on purpose** and carries no
+  numbers. A browser cannot put an `Authorization` header on a navigation, so
+  gating the markup would make the page unreachable rather than more private.
+  Everything with data is behind the guard; an anonymous visitor gets a sign-in
+  prompt.
+- The site installs **no CORS** and refuses to be framed, because it answers
+  with a cookie.
+
+**Still don't publish this port.** The sign-in is the boundary that matters;
+the port is the one that survives a mistake in it. Bind it on the private side
+and reach it over an SSH tunnel. Behind a reverse proxy, set `PULSE_PUBLIC_URL`
+to the origin the browser reaches — the `u` a token is signed over is an
+operator setting, never the `Host` header the caller sent.
+
+`PULSE_CLIENT_DETAIL` stays a separate switch from all of this: sign-in governs
+who can *read* those sections, that switch governs whether the store *retains*
+them at all, which is the stronger guarantee.
 
 The design record for what is measured, what it costs, and what is deliberately
 left to Vespa's own metrics proxy is

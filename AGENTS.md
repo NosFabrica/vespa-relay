@@ -26,7 +26,11 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 
 The rule between them: engines produce documents, `:web` renders them, and the
 seam is `/stats.json` — and `/pulse.json`, whose builder is in `:common` for
-the same reason (`NoBrowserFilesInEngineModulesTest`). One `stats.html`
+the same reason (`NoBrowserFilesInEngineModulesTest`). `:web` also owns the
+admin gate on `/pulse.json` (`AdminGate`, `Nip98AdminGate`, `AdminSessions`),
+which is why it depends on quartz: verifying an `Authorization` header belongs
+beside the routes it protects, and the dependency can only run one way — Ktor
+must never reach `:common`. One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.
@@ -112,8 +116,11 @@ form, file by file with the reasoning, is [docs/layout.md](docs/layout.md).
 common/…/relay/
   config/RelayIdentity.kt     RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor; both processes read it
   server/ServingPressure.kt   EWMA of client read latency, served on GET /pressure
-  pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings;
-                              here because both processes open a store, and because :web must not depend on one
+  pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings
+                              (PULSE_* parsing, the fail-closed admin check); here because both processes
+                              open a store, and because :web must not depend on one
+  config/PubKeys.kt           every pubkey setting (npub only, no bare hex) + adminPubkeysFromEnv;
+                              both processes read RELAY_ADMIN_PUBKEYS now, so one parser
   maintenance/, util/         QuartzLogLevel (QUARTZ_LOG_LEVEL), SchemaDeploy, StoreTopology; fmtDuration
 peers/…/relay/
   peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
@@ -221,9 +228,12 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md).
   default) — WHERE THE STORE'S RESOURCES GO, live off the store's own counters:
   engine time by the activity that spent it, calls per document, matched
   against served per rank profile, admission outcomes over their denominator,
-  and lock wait split by WHAT EACH WAITER WAS BEHIND. Not public and not next
-  to `/stats.json`: with `PULSE_CLIENT_DETAIL` it names the observer lenses and
-  search terms driving the load and quotes slow queries.
+  and lock wait split by WHAT EACH WAITER WAS BEHIND. ADMINISTRATORS ONLY —
+  NIP-98 against `RELAY_ADMIN_PUBKEYS`, a signature traded for a short session
+  cookie, and a port set with no admin keys stops the boot. It is the one
+  non-public page here: with `PULSE_CLIENT_DETAIL` it names the observer lenses
+  and search terms driving the load and quotes slow queries. Read it with a
+  NIP-07 extension in a browser, or sign a kind-27235 token for a script.
 - The progress document (`SyncProgress`): each stream's phase and clock,
   `roster`/`tails`, the in-flight legs, every running pass.
 - `store` on `/stats.json` and the `store call SLOW` lines: which store calls

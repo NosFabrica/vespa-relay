@@ -52,3 +52,44 @@ fun pulseSlowReadMs(
     }
     return set
 }
+
+/**
+ * The origin the pulse page's NIP-98 tokens are signed against, no trailing
+ * slash.
+ *
+ * AN OPERATOR SETTING, NOT A REQUEST HEADER. The `u` tag is what stops a token
+ * spent at this service from being spent at another, and a server that derives
+ * the expected url from the `Host` the caller sent has given that up. The
+ * default is the loopback address the boot line prints, which is exactly right
+ * for the intended deployment — a private port reached through an SSH tunnel,
+ * where the browser and the server agree — and wrong behind a reverse proxy,
+ * which is why the page is told the expected url in every refusal rather than
+ * left to guess it.
+ */
+fun pulsePublicUrl(
+    env: Map<String, String>,
+    key: String,
+    port: Int,
+): String = env[key]?.trim()?.takeIf { it.isNotEmpty() }?.trimEnd('/') ?: "http://localhost:$port"
+
+/**
+ * The administrators who may read the pulse document, or a boot that stops.
+ *
+ * FAILS CLOSED, LOUDLY. "No administrators" and "every reader is an
+ * administrator" are one implementation mistake apart, and only one of them is
+ * survivable for a document that quotes what people searched for. A deployment
+ * that asks for this page without saying who may read it does not get an open
+ * page — it does not get a boot.
+ */
+fun pulseAdmins(
+    admins: Set<String>,
+    portKey: String,
+    adminKey: String = "RELAY_ADMIN_PUBKEYS",
+): Set<String> =
+    admins.ifEmpty {
+        error(
+            "$portKey is set but $adminKey is empty — the pulse document names the observer lenses and search terms " +
+                "driving this relay's load and can quote slow queries, so it is served only to a proven administrator. " +
+                "Set $adminKey, or unset $portKey to serve no pulse page.",
+        )
+    }

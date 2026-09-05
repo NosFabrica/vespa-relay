@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.config.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.config.syncEnv
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
@@ -37,6 +38,8 @@ import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.pulseAdmins
+import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.status.StatusRollup
@@ -45,6 +48,8 @@ import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncManifest
+import com.nosfabrica.vespa.relay.web.Nip98AdminGate
+import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
@@ -156,6 +161,28 @@ fun main() {
     // Read before the store is opened: the slow-read ring is a constructor
     // setting, and it is the one place the store retains a query string.
     val pulseClientDetail = env["SYNC_PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    // The pulse page's own port, unset by default. Off rather than one past
+    // the monitor's, because unlike those two this document is not public:
+    // with SYNC_PULSE_CLIENT_DETAIL on it names the observer lenses and search
+    // terms driving the load and quotes slow queries.
+    val pulsePort =
+        env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
+        } ?: 0
+    // Resolved here, with the other settings: this throws when a port is set
+    // with no administrator named, and that refusal must arrive before the
+    // process has spent a minute standing everything else up.
+    val pulseGuard =
+        if (pulsePort <= 0) {
+            null
+        } else {
+            PulseGuard(
+                Nip98AdminGate(
+                    pulseAdmins(adminPubkeysFromEnv(env), "SYNC_PULSE_PORT"),
+                    pulsePublicUrl(env, "SYNC_PULSE_PUBLIC_URL", pulsePort),
+                ),
+            )
+        }
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -255,16 +282,6 @@ fun main() {
         env["MONITOR_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("MONITOR_STATUS_PORT='$it' is not a port number. Set it to 0 to serve no monitor page.")
         } ?: DEFAULT_MONITOR_STATUS_PORT
-    // The pulse page's own port, unset by default. Off rather than one past
-    // the monitor's, because unlike those two this document is not safe to
-    // publish: with SYNC_PULSE_CLIENT_DETAIL on it names the observer lenses
-    // and search terms driving the load and quotes slow queries. The port is
-    // the only boundary — nothing on it authenticates.
-    val pulsePort =
-        env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
-        } ?: 0
-
     val statusSite =
         if (statusPort <= 0) {
             System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
@@ -319,13 +336,19 @@ fun main() {
     // The mirror's own resource picture: this process does the ingesting, so
     // the write path, the admission outcomes and the trust drain's lock holds
     // are all here rather than on the relay's page.
+    //
+    // ADMINISTRATORS ONLY, against the same RELAY_ADMIN_PUBKEYS the relay's
+    // NIP-86 admin RPC uses — one list for the deployment, read here through
+    // the same parser. A port set with no administrator named stops the boot
+    // rather than opening the page.
     val pulseSite =
-        if (pulsePort <= 0) {
+        if (pulseGuard == null) {
             null
         } else {
             servePulseSite(
                 port = pulsePort,
                 page = statusPage("/pulse.html"),
+                guard = pulseGuard,
                 document =
                     PulseDocument.reader(
                         store,
@@ -337,7 +360,10 @@ fun main() {
             )
         }
     if (pulseSite != null) {
-        println("vespa-sync pulse page on http://localhost:$pulsePort/" + (if (pulseClientDetail) "  [client detail ON — do not publish this port]" else ""))
+        println(
+            "vespa-sync pulse page on http://localhost:$pulsePort/  [${adminPubkeysFromEnv(env).size} admin key(s)" +
+                (if (pulseClientDetail) ", client detail ON" else "") + "]",
+        )
     }
 
     Runtime.getRuntime().addShutdownHook(
