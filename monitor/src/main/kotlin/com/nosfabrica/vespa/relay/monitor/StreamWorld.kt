@@ -36,23 +36,18 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
 
 /**
- * Every url every stream would dial, derived from the store when a pass runs
- * rather than taken from the streams' caches, which may not exist yet on the
- * boot this is for. The corpus is the union of what the relay lists name and
- * what this router already holds records about.
+ * Every url every stream would dial, derived from the store when a pass runs rather than taken
+ * from the streams' caches. The corpus is the union of what the relay lists name and what this
+ * router already holds records about.
  */
 internal class StreamWorld(
     private val store: IEventStore,
     private val streams: List<SyncStream>,
     private val probe: ReachabilityProbe,
     private val ingest: IngestPipeline,
-    /**
-     * Whose `dead` verdicts may hold a url out: this router's signer plus the
-     * monitors the config names. Never unscoped: a hold-out forecloses, where
-     * an admission still has to survive a dial. Empty holds nothing out.
-     */
+    /** Whose `dead` verdicts may hold a url out; never unscoped, because a hold-out forecloses. */
     private val monitorAuthors: List<String>,
-    /** This router's own signing identity; the scope of [ownRecords] and nothing else. */
+    /** This router's own signing identity; the scope of [ownRecords]. */
     private val self: String?,
     private val tor: TorTransport?,
     override val sockets: Sockets,
@@ -71,7 +66,7 @@ internal class StreamWorld(
             )
         }
 
-    /** What the last derivation started from and dropped. Read live through [Processors.Handle.counts]. */
+    /** What the last derivation started from and dropped. */
     @Volatile
     var lastDerivation: Derivation = Derivation()
         private set
@@ -81,7 +76,10 @@ internal class StreamWorld(
     var derived: Boolean = false
         private set
 
-    /** One derivation's arithmetic: `sourced = excluded + heldOutDead + candidates`, with [recordedOnly] beside it. */
+    /**
+     * One derivation's arithmetic: `sourced = excluded + heldOutDead + candidates`, with
+     * [recordedOnly] beside it.
+     */
     data class Derivation(
         /** Every url the relay lists yielded, before anything was dropped. */
         val sourced: Int = 0,
@@ -97,21 +95,17 @@ internal class StreamWorld(
         val candidates: Int = 0,
     )
 
-    /** The author-scoped dead set, read from our own `dead` verdicts, the same tag the roster reads. */
+    /** The author-scoped dead set, read from our own `dead` verdicts; [among] null reads the whole hold-out. */
     private suspend fun ownDead(among: Collection<NormalizedRelayUrl>? = null): Set<NormalizedRelayUrl> =
         RelayDiscovery.undialable(
             store,
             monitorAuthors = monitorAuthors,
             maxAgeSeconds = DEAD_TTL_SECONDS,
             allowOnion = tor != null,
-            // Null from the sweep, which needs the whole hold-out; the fast lane's handful otherwise.
             among = among,
         )
 
-    /**
-     * Every url one of our own records is about, on the verdict TTL: the same
-     * population [RelayVerdictRecord.loadAll] hands the fold.
-     */
+    /** Every url one of our own records is about, on the verdict TTL. */
     private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
         RelayDiscovery.recorded(
             store,
@@ -121,13 +115,12 @@ internal class StreamWorld(
         )
 
     /**
-     * The sweep's candidate set. Urls a signed record calls dead are held out
-     * here rather than declined in [canDial], where the fold would report them
-     * as declined by our own transport.
+     * The sweep's candidate set. Urls a signed record calls dead are held out here rather than
+     * declined in [canDial], where the fold would report them as declined by our own transport.
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = ownDead()
-        // One unit per configured source, timed from after the dead-set read. See [Processors.UNIT_SOURCE].
+        // One unit per configured source, timed from after the dead-set read.
         progress?.measuring(derivations().sumOf { it.second.sources.size }, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
@@ -137,8 +130,6 @@ internal class StreamWorld(
         }
         // `exclude` is per stream: a url one stream excludes and another asks for is a candidate.
         val onlyExcluded = excluded - all
-        // The corpus is the union with our own records, so a short read costs
-        // freshness on the urls it failed to name rather than the whole population.
         val recorded = ownRecords()
         val recordedOnly = recorded.filterNot { it in all || it in onlyExcluded }
         val known = all + recordedOnly
@@ -153,7 +144,8 @@ internal class StreamWorld(
                 sourcedLastRound = lastSourced,
             )
         derived = true
-        // A derivation that collapsed is a fault in the read, not a new baseline. Said once; nothing is retried.
+        // A derivation that collapsed is a fault in the read, not a new baseline. Said once;
+        // nothing is retried.
         val previous = lastSourced
         if (previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE) {
             System.err.println(
@@ -178,7 +170,7 @@ internal class StreamWorld(
         return live
     }
 
-    /** What the last round's relay lists named; null until a round has run, so the first cannot warn about itself. */
+    /** What the last round's relay lists named; null until a round has run. */
     private var lastSourced: Int? = null
 
     /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
@@ -187,9 +179,8 @@ internal class StreamWorld(
             listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
 
     /**
-     * One walk over every derivation, [bound] applied to each config first.
-     * Discovery is asked for the unfiltered set; `kept` applies the exclude
-     * list and the self check here, the one place that can also count them.
+     * One walk over every derivation, [bound] applied to each config first. Discovery is asked
+     * for the unfiltered set; `kept` applies the exclude list and the self check here.
      */
     private suspend fun derive(
         what: String,
@@ -224,8 +215,8 @@ internal class StreamWorld(
     }
 
     /**
-     * The fast lane's derivation: the same sources, bounded to relay-list
-     * events ingested at or after [since].
+     * The fast lane's derivation: the same sources, bounded to relay-list events ingested at or
+     * after [since].
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
@@ -240,10 +231,7 @@ internal class StreamWorld(
 
     override suspend fun canDial(url: NormalizedRelayUrl): Boolean = probe.canDial(url)
 
-    /**
-     * Submitted once, not once per wanting stream: the queue is bounded and
-     * dedup happens after it. Verified unless every wanting stream trusts its source.
-     */
+    /** Submitted once, not once per wanting stream. Verified unless every wanting stream trusts its source. */
     override suspend fun onEvent(event: Event) {
         val wanted = streams.filter { it.filter.match(event) }
         if (wanted.isEmpty()) return
@@ -251,10 +239,9 @@ internal class StreamWorld(
     }
 
     companion object {
-        /** How long a `dead` verdict holds a url out; a hold-out is self-healing only because it lapses. */
         const val DEAD_TTL_SECONDS = 24L * 60 * 60
 
-        /** How far a derivation may fall against the round before it without being called out. */
+        /** How far a derivation may fall against the round before without being called out. */
         const val SHRINK_SHARE = 0.5
 
         /** The size below which the shrink comparison is not made. */

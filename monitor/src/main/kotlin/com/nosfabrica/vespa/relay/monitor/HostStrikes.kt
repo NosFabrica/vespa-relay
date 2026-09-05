@@ -24,13 +24,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Which relays are worth dialling within one dynamic cycle.
- *
- * Failures are counted per authority (`host[:port]`), not per url: the outbox
- * model mints one url per user on a filtering relay, so a per-url counter never
- * reaches a threshold. A subdomain is not folded into its parent. A host that
- * has ever delivered this cycle ([produced]) is never treated as dead. Nothing
- * persists past the cycle.
+ * Which relays are worth dialling within one dynamic cycle. Failures are counted per authority
+ * (`host[:port]`), never per url, and a host that has delivered this cycle is never dead.
+ * Nothing persists past the cycle.
  */
 class HostStrikes(
     private val strikeLimit: Int = DEFAULT_STRIKE_LIMIT,
@@ -50,24 +46,22 @@ class HostStrikes(
     fun isDead(url: NormalizedRelayUrl): Boolean = whyDead(url) != null
 
     /**
-     * Why this relay is being skipped, or null. The two reasons carry different
-     * retry policies: [Skip.KNOWN_DEAD] lasts until our signed `dead` verdict
-     * ages out ([StreamWorld.DEAD_TTL_SECONDS]), [Skip.STRUCK_OUT] only this cycle.
+     * Why this relay is being skipped, or null. [Skip.KNOWN_DEAD] lasts until our signed `dead`
+     * verdict ages out, [Skip.STRUCK_OUT] only this cycle.
      */
     fun whyDead(url: NormalizedRelayUrl): Skip? {
         val authority = authorityOf(url.url)
         // A delivery this cycle outranks both verdicts.
         if (authority in producedHosts) return null
-        // The durable reason first: a url that is both is out either way, and
-        // the reason with the longer reach is the honest one to report.
+        // The durable reason first: it is the one with the longer reach.
         if (url in knownDead) return Skip.KNOWN_DEAD
         if (authority in deadHosts) return Skip.STRUCK_OUT
         return null
     }
 
-    /** Why a url was not dialled; see [whyDead]. */
+    /** Why a url was not dialled. */
     enum class Skip {
-        /** An earlier run's signed NIP-66 record says unreachable, still within its TTL. */
+        /** An earlier run's signed `dead` record, still within its TTL. */
         KNOWN_DEAD,
 
         /** [strikeLimit] sibling urls on this authority went silent during this cycle. */
@@ -75,8 +69,8 @@ class HostStrikes(
     }
 
     /**
-     * This relay connected but delivered nothing. Returns the eviction, for the
-     * caller to publish, only from the strike that took the host down.
+     * This relay connected but delivered nothing. Returns the eviction, for the caller to
+     * publish, only from the strike that took the host down.
      */
     fun strike(url: NormalizedRelayUrl): Evicted? {
         unreachable += url
@@ -84,9 +78,8 @@ class HostStrikes(
         val authority = authorityOf(url.url)
         if (authority in producedHosts || authority in deadHosts) return null
         if (strikes.merge(authority, 1, Int::plus)!! < strikeLimit) return null
-        // Concurrent strikers can cross the threshold together; add() decides
-        // who publishes. Re-check produced after winning, since a delivery that
-        // landed in between outranks a verdict that becomes a signed record.
+        // add() decides which concurrent striker publishes; produced is re-checked after winning
+        // because a delivery in between outranks a verdict that becomes a signed record.
         if (!deadHosts.add(authority)) return null
         if (authority in producedHosts) return null
         return Evicted(authority, strikeLimit)
@@ -98,7 +91,7 @@ class HostStrikes(
         val strikes: Int,
     )
 
-    /** This relay delivered. Its authority is alive, whatever else happened. */
+    /** This relay delivered; its authority is alive. */
     fun produced(url: NormalizedRelayUrl) {
         reachable += url
         unreachable -= url
@@ -112,7 +105,6 @@ class HostStrikes(
             "${deadHosts.size} host(s) struck out, ${knownDead.size} skipped as known-dead of $total"
 
     companion object {
-        /** One timeout is a busy relay; three urls on one host going silent is a server. */
         const val DEFAULT_STRIKE_LIMIT = 3
 
         /** `host[:port]`, everything between the scheme and the first slash. Two ports are two relays. */

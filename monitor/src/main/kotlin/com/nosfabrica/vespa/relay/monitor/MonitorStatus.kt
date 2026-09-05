@@ -32,19 +32,17 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * What the monitor has decided, as its own `/stats.json` publishes it: the
- * pass rows and nothing else, in the same envelope as the relay's and the
- * mirror's documents so all three pages share one renderer. The mirror owns
- * the health gauges; a second reading here would be a second number for one fact.
+ * What the monitor has decided, as its own `/stats.json` publishes it: the pass rows only, in
+ * the same envelope as the relay's and the mirror's documents so all three share one renderer.
  */
 class MonitorStatus(
     private val processors: Processors,
-    /** How often [document] is rebuilt, published so the page polls on what the document states. */
+    /** How often [document] is rebuilt, published so the page polls on it. */
     private val everySeconds: Long,
-    /** The served relay's ws url, which the verdict panel dials; this page is on the monitor's port, so `location` is wrong. */
+    /** The served relay's ws url for the verdict panel to dial; `location` here is the monitor's port. */
     private val relayUrl: String? = null,
 ) {
-    /** The document, pure, so it can be asserted without a server. Never throws. */
+    /** The document, pure so it can be asserted without a server. Never throws. */
     fun document(nowSeconds: Long = System.currentTimeMillis() / 1000): JsonObject {
         val startedMs = System.currentTimeMillis()
         val rows = processors.snapshot()
@@ -95,10 +93,10 @@ class MonitorStatus(
     }
 
     companion object {
-        /** The one tier: the passes' own rows, read from atomics. Nothing here queries or dials. */
+        /** The passes' own rows, read from atomics; nothing here queries or dials. */
         const val TIER = "status"
 
-        /** Bumped when a released member changes meaning or leaves. Versioned independently of the other two documents. */
+        /** Bumped when a released member changes meaning or leaves. */
         const val SCHEMA_VERSION = 1
     }
 }
