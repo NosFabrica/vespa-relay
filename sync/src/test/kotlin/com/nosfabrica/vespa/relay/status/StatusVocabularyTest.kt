@@ -20,18 +20,25 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.progress.InFlight
+import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
-import kotlinx.serialization.json.Json
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.sync.SweepState
+import com.nosfabrica.vespa.relay.sync.SyncBands
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /** The glossary checked against the members the two reports actually emit, in both directions. */
 class StatusVocabularyTest {
+    private val now = 1_769_998_206L
+
     /**
      * Members that carry no number and need no entry: identifiers, timestamps and containers.
      * Every addition is a judgement that something is self-describing.
@@ -76,103 +83,350 @@ class StatusVocabularyTest {
             "reasons",
             "statuses",
             "freshness",
+            // The two halves' containers, as the served document nests them.
+            "progress",
         )
 
-    @Test
-    fun `every number the sync section publishes has a term`() {
-        val coverage =
-            SyncCoverageReport.build(
-                bandsJson =
-                    """
-                    {"content": {"{\"kinds\":[1]}": {"wss://a.example/": {"min": 100, "max": 200, "complete": true}}}}
-                    """.trimIndent(),
-                sweepsJson = null,
-                nowSeconds = 1_000,
-            )!!
-        // Parsed, not re-projected: nothing filters these members on the way to the page.
+    /**
+     * The mirror's whole document, from the builders that publish it. Typed against them on
+     * purpose: a member renamed or dropped on one side breaks this file rather than passing a
+     * hand-written literal that still spells the old name.
+     */
+    private fun document(): JsonObject {
+        val bands = bands()
+        val coverage = SyncCoverageReport.build(bands.snapshot(), sweeps().snapshot(), now)!!
+        val relays = RelayStatusReport.build(bands.snapshot(), primeUnits(), now)!!
         val progress =
-            Json
-                .parseToJsonElement(
-                    """
-                    {"fatals": 0,
-                     "health": {"bottleneck": "wedged", "eventsPerSec": 2350, "arrivingPerSec": 4100, "heapUsedMb": 900, "heapMaxMb": 2048,
-                                "sockets": 412, "socketCeiling": 1024, "socketsRunning": 418, "socketsQueued": 0,
-                                "servingMs": 18, "feed": "feed ok 4211 inflight 32 lat 18ms",
-                                "lockHeldBy": {"stage": "lock.gate.hold", "heldMs": 412000, "doing": "derive 4812 subject(s) in 49 chunk(s), fanout 4"},
-                                "stages": [{"stage": "write", "ms": 33300, "calls": 1200, "meanMs": 27, "maxMs": 900},
-                                           {"stage": "lock.ingest.wait", "ms": 21900}]},
-                     "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
-                     "roster": 412, "liveHeld": 300,
-                     "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
-                                              "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                               "doing": "catching up (paging)", "pool": "catching-up",
-                                               "pagingUntil": 1689857148}],
-                                  "omitted": 118},
-                     "limits": [{"job": "visiting", "streamCap": 96, "inUse": 7, "deferred": 0},
-                                {"job": "negentropy", "streamCap": 4, "inUse": 2, "deferred": 91}],
-                     "schedule": [{"job": "negentropy", "everySec": 604800, "due": 3, "neverRun": 12,
-                                   "waiting": 397, "nextInSec": 41200}]}],
-                     "relays": {"pairs": 44, "omitted": 2, "unwatched": 3,
-                                "statuses": [{"syncStatus": "refused", "pairs": 4}, {"syncStatus": "complete", "pairs": 30}],
-                                "freshness": [{"behind": "current", "pairs": 30}, {"behind": "older", "pairs": 14}],
-                                "rows": [{"relay": "wss://nos.lol/", "stream": "content", "syncStatus": "paging",
-                                          "asks": 40, "bands": 3, "settled": 1, "coveredFrom": 1689857148, "coveredTo": 1769998206,
-                                          "behindSec": 90, "behind": "current", "fault": true,
-                                          "negentropy": true, "kindCap": 100, "unwatched": true,
-                                          "verifiedAgoSec": 41200, "visiting": true, "tailed": true,
-                                          "refusedFor": "the relay closed the subscription",
-                                          "relaySaid": "error: too many kinds in filter", "refusedAgoSec": 900}]},
-                     "live": {"relays": [{"relay": "wss://nos.lol/", "heldForSec": 41400,
-                                          "transferringForSec": 41400, "events": 91002, "quietForSec": 3,
-                                          "doing": "holding a live tail", "pool": "live", "stream": "content"}],
-                              "omitted": 0},
-                     "processors": [
-                       {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
-                        "lastPassAt": 880, "lastPassSec": 300,
-                        "measuring": {"unit": "source", "attempted": 2, "toProbe": 6},
-                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "candidates": 40, "recordedOnly": 6},
-                       {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                        "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
-                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                        "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
-                          "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
-                                                     "examples": ["a.example"]}], "omitted": 0}}]},
-                       {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
-                        "lastPassAt": 880, "lastPassSec": 900,
-                        "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300, "quietForSec": 4},
-                        "inFlight": {"relays": [{"relay": "wss://wedged.example/", "heldForSec": 4454,
-                                                 "stage": "paired walk"}], "omitted": 2},
-                        "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
-                        "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
-                          "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
-                          "undecided": {"reasons": [{"reason": "the connection was refused",
-                                                     "parent": "never answered a REQ", "urls": 22, "hosts": 7,
-                                                     "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
-                       {"name": "ingest", "phase": "running", "phaseForSec": 900,
-                        "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
-                        "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
-                       {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                        "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
-                        "prime": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
-                        "unpageable": 1, "noncompliant": 1, "auth-refused": 1, "restricted": 1},
-                       {"name": "visits", "phase": "rotating", "phaseForSec": 900,
-                        "roster": 30, "rosterVisits": 44, "awaitingVisit": 3, "visiting": 5, "liveHeld": 22,
-                        "visitsRun": 90, "visitsHeldByIngest": 0, "negentropyRunning": 1, "negentropyRuns": 4, "negentropySkipped": 3, "negentropyRefused": 2, "retracted": 2, "liveEvicted": 1, "poolReceived": 4000,
-                        "narrowedRelays": 9, "abortedVisits": 2, "abortedAuthRequired": 1, "abortedClosed": 1, "abortedQuiet": 0,
-                        "abortedUnreachable": 0, "abortedUnpageable": 0, "abortedGaveUp": 0, "abortedFailed": 0,
-                        "abortedBackpressured": 0},
-                       {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}],
-                     "store": {"outstanding": 3, "slowAfterSec": 60, "issued": 918233, "returned": 918230, "failed": 0, "cancelled": 0,
-                               "calls": [{"caller": "ingest.dedup", "op": "existingIds", "asked": "2048 id(s)",
-                                          "issuedAt": 1769998206, "elapsedSec": 794, "outstandingAtIssue": 2}],
-                               "omitted": 0,
-                               "callers": [{"caller": "ingest.dedup", "issued": 41022, "returned": 41020,
-                                            "failed": 0, "cancelled": 0, "outstanding": 2,
-                                            "oldestOutstandingSec": 794}],
-                               "ages": [{"fromSec": 0, "calls": 1}, {"fromSec": 900, "calls": 2}]}}
-                    """.trimIndent(),
-                ).jsonObject
+            SyncProgress.document(
+                streams = streams(),
+                processors = processors(),
+                fatals = 1,
+                health = health(),
+                live = live(),
+                store = storeCalls(),
+                nowSeconds = now,
+            )
+        val data =
+            buildJsonObject {
+                coverage.forEach { (member, value) -> put(member, value) }
+                put("relays", relays)
+                put("progress", JsonObject(progress + ("series" to GaugeSeries.next(null, progress["health"] as? JsonObject, progress, now)!!)))
+            }
+        return JsonObject(data + ("terms" to StatusVocabulary.termsFor(data)))
+    }
 
+    private val busy = RelayUrlNormalizer.normalize("wss://nos.lol")
+
+    private val quiet = RelayUrlNormalizer.normalize("wss://quiet.example")
+
+    /** The ask both relays owe, and the second one that makes `nos.lol` a two-leg group. */
+    private val ask = Filter(kinds = listOf(1))
+
+    private val secondAsk = Filter(kinds = listOf(30023))
+
+    /**
+     * The real band file, written through the real [SyncBands]: a reconciled leg (which carries
+     * `verifiedAt`), a second leg on the same relay (which makes `legs` exceed the folded rows),
+     * and one relay walked but never reconciled.
+     */
+    private fun bands() =
+        SyncBands(null).apply {
+            record(
+                "content",
+                busy,
+                ask,
+                observedMin = 1_689_857_148,
+                observedMax = now,
+                paged = true,
+                reconciledThrough = now - 41_200,
+                drained = true,
+            )
+            record("content", busy, secondAsk, observedMin = 1_689_857_148, observedMax = now, paged = true)
+            record("content", quiet, ask, observedMin = 1_689_857_148, observedMax = now - 4_000_000, paged = true)
+        }
+
+    /** A learned peer cursor, so the coverage report publishes the sweep half of its document. */
+    private fun sweeps() =
+        SweepState(null).apply {
+            setTarget(busy, 100_000)
+        }
+
+    /** Both readings of every optional row member: one pair carrying each, one carrying none. */
+    private fun primeUnits() =
+        listOf(
+            RelayStatusReport.PrimeUnit(
+                relay = busy.url,
+                stream = "content",
+                askKeys = setOf(ask.toJson(), secondAsk.toJson()),
+                visiting = true,
+                live = true,
+                speaksNegentropy = true,
+                watched = false,
+                kindCap = 100,
+                abortReason = "the relay closed the subscription",
+                abortSaid = "error: too many kinds in filter",
+                abortAtSec = now - 900,
+            ),
+            RelayStatusReport.PrimeUnit(quiet.url, "content", setOf(ask.toJson()), visiting = false, live = false),
+        )
+
+    /** One stream carrying every optional block: the caps, the clocks, and who is held right now. */
+    private fun streams() =
+        listOf(
+            StreamPhases.Stream(
+                name = "content",
+                phase = "rotating",
+                phaseForSec = 900,
+                roster = 30,
+                tails = 22,
+                queued = 3,
+                inFlight = held("wss://slow.example/", "paging"),
+                limits = listOf(StreamPhases.Limit(job = "visiting", cap = 128, inUse = 5, deferred = 2)),
+                schedule =
+                    listOf(
+                        StreamPhases.Scheduled(job = "negentropy", everySec = 86_400, due = 4, neverRun = 1, waiting = 25, nextInSec = 3_600),
+                    ),
+            ),
+        )
+
+    private fun held(
+        relay: String,
+        stage: String,
+    ) = InFlight(
+        relays =
+            listOf(
+                InFlight.Relay(
+                    relay = relay,
+                    heldForSec = 41_400,
+                    transferringForSec = 900,
+                    events = 4_000,
+                    quietForSec = 12,
+                    stage = stage,
+                    stream = "content",
+                    pool = "visits",
+                    pagingUntil = now - 3_600,
+                ),
+            ),
+        omitted = 2,
+    )
+
+    /**
+     * One snapshot per processor shape the mirror publishes, built as the type rather than as
+     * JSON: every structural member below comes from `Processors.published`, so one renamed
+     * there stops appearing here. The COUNT NAMES are still a list — they are spelled by the
+     * jobs that raise them ([FitnessPass], [VisitPool], the ingest loop), and listing them is
+     * the same judgement the abort names already carry: a name that moves on one side is noticed.
+     */
+    private fun processors() =
+        listOf(
+            // A pass in flight: the countdown, the position, and who it is holding.
+            Processors.Snapshot(
+                name = "aliasSource",
+                phase = Processors.RUNNING,
+                phaseForSec = 40,
+                passes = 3,
+                lastPassAt = now - 880,
+                lastPassSec = 60,
+                nextInSec = 20_800,
+                measuring = Processors.Measuring(unit = Processors.UNIT_SOURCE, attempted = 2, toProbe = 40, etaSec = 90, quietForSec = 12),
+                inFlight = Processors.Holding(listOf(Processors.Holding.Held("wss://slow.example/", heldForSec = 41_400, stage = "fingerprint")), omitted = 0),
+                work = work(),
+                counts =
+                    counts(
+                        "sourced" to 900,
+                        "excluded" to 12,
+                        "heldOutDead" to 30,
+                        "recordedOnly" to 8,
+                        "candidates" to 850,
+                        "newUrls" to 3,
+                        "foldedAway" to 8,
+                        "hosts" to 40,
+                        "passesRun" to 3,
+                    ),
+            ),
+            // The fitness verdicts: one member per value of the grade it signs.
+            Processors.Snapshot(
+                name = "fitness",
+                phase = Processors.IDLE,
+                phaseForSec = 400,
+                passes = 3,
+                lastPassAt = now - 880,
+                lastPassSec = 60,
+                nextInSec = 20_800,
+                work = emptyList(),
+                counts =
+                    counts(
+                        "prime" to 30,
+                        "dead" to 6,
+                        "silent" to 2,
+                        "alias" to 3,
+                        "inconsistent" to 1,
+                        "unpageable" to 1,
+                        "noncompliant" to 1,
+                        "auth-refused" to 1,
+                        "restricted" to 1,
+                    ),
+            ),
+            // The pool: the roster it walks, and the eight ways a visit ends early.
+            Processors.Snapshot(
+                name = "visits",
+                phase = "rotating",
+                phaseForSec = 900,
+                passes = null,
+                lastPassAt = null,
+                lastPassSec = null,
+                nextInSec = null,
+                work = emptyList(),
+                counts =
+                    counts(
+                        "roster" to 30,
+                        "rosterVisits" to 44,
+                        "awaitingVisit" to 3,
+                        "visiting" to 5,
+                        "liveHeld" to 22,
+                        "visitsRun" to 90,
+                        "visitsHeldByIngest" to 0,
+                        "negentropyRunning" to 1,
+                        "negentropyRuns" to 4,
+                        "negentropySkipped" to 3,
+                        "negentropyRefused" to 2,
+                        "retracted" to 2,
+                        "liveEvicted" to 1,
+                        "poolReceived" to 4_000,
+                        "narrowedRelays" to 9,
+                        "abortedVisits" to 2,
+                        // Listed rather than derived from the enum, so a name that moved is noticed.
+                        "abortedAuthRequired" to 1,
+                        "abortedClosed" to 1,
+                        "abortedQuiet" to 0,
+                        "abortedUnreachable" to 0,
+                        "abortedUnpageable" to 0,
+                        "abortedGaveUp" to 0,
+                        "abortedFailed" to 0,
+                        "abortedBackpressured" to 0,
+                    ),
+            ),
+            // A counter with a breakdown under its total, and the ingest queue's own shape.
+            Processors.Snapshot(
+                name = "ingest",
+                phase = Processors.RUNNING,
+                phaseForSec = 900,
+                passes = null,
+                lastPassAt = null,
+                lastPassSec = null,
+                nextInSec = null,
+                work = emptyList(),
+                counts =
+                    counts(
+                        "queued" to 3,
+                        "capacity" to 4_096,
+                        "accepted" to 91,
+                        "rejected" to 12,
+                        "lostToStore" to 0,
+                        "inBatch" to 500,
+                        "workers" to 2,
+                        "workersRunning" to 2,
+                        "oldestBatchSec" to 4,
+                    ),
+                reasons = listOf(Processors.Breakdown("duplicate: already have this event", 9)),
+            ),
+            Processors.Snapshot(
+                name = "heal",
+                phase = Processors.RUNNING,
+                phaseForSec = 900,
+                passes = null,
+                lastPassAt = null,
+                lastPassSec = null,
+                nextInSec = null,
+                work = emptyList(),
+                counts = counts("queued" to 2, "dropped" to 7, "pushed" to 5),
+            ),
+        )
+
+    private fun counts(vararg pairs: Pair<String, Long>) = pairs.map { (name, value) -> Processors.Count(name, value) }
+
+    /** One idle processor carrying only the counts named, for the per-document selection test. */
+    private fun processor(
+        name: String,
+        vararg pairs: Pair<String, Long>,
+    ) = Processors.Snapshot(
+        name = name,
+        phase = Processors.IDLE,
+        phaseForSec = 1,
+        passes = null,
+        lastPassAt = null,
+        lastPassSec = null,
+        nextInSec = null,
+        work = emptyList(),
+        counts = counts(*pairs),
+    )
+
+    /** The progress half alone, nested as the served document nests it. */
+    private fun progressOf(snapshot: Processors.Snapshot) = buildJsonObject { put("progress", SyncProgress.document(streams = emptyList(), processors = listOf(snapshot), nowSeconds = now)) }
+
+    /** One stream's share of a pass, carrying every optional member and an undecided breakdown. */
+    private fun work() =
+        listOf(
+            Processors.Work(
+                stream = "content",
+                candidates = 850,
+                newUrls = 3,
+                foldedAway = 8,
+                consistent = 700,
+                inconsistent = 12,
+                unmeasured = 130,
+                dialled = 800,
+                decided = 712,
+                undecided =
+                    listOf(
+                        Processors.Undecided(
+                            reason = "no TCP answer",
+                            parent = "unreachable",
+                            hosts = 4,
+                            examples = listOf("wss://gone.example/"),
+                            top = listOf(Processors.HostCount(host = "gone.example", urls = 9)),
+                            urls = 12,
+                        ),
+                    ),
+                undecidedOmitted = 0,
+            ),
+        )
+
+    private fun health() =
+        SyncProgress.Health(
+            bottleneck = "ingest",
+            eventsPerSec = 900,
+            arrivingPerSec = 1_200,
+            stageDetail = listOf(SyncProgress.StageDetail(stage = "write", ms = 41_000, calls = 900, meanMs = 45, maxMs = 4_100)),
+            lockHeld = SyncProgress.LockHeld(stage = "proj.write", heldMs = 1_200, detail = "40 documents"),
+            feed = "feed: 4 connections, 128 streams",
+            heapUsedMb = 8_000,
+            heapMaxMb = 12_000,
+            sockets = 500,
+            socketCeiling = 1_024,
+            socketsRunning = 480,
+            socketsQueued = 20,
+            servingMs = 40,
+        )
+
+    private fun live() = held("wss://nos.lol/", "tailing")
+
+    private fun storeCalls() =
+        StoreCalls.Snapshot(
+            slowAfterSec = 60,
+            outstanding = 3,
+            issued = 918_233,
+            returned = 918_230,
+            failed = 0,
+            cancelled = 0,
+            calls = listOf(StoreCalls.Call(caller = "ingest.dedup", op = "existingIds", asked = "2048 id(s)", issuedAt = now - 794, elapsedSec = 794, outstandingAtIssue = 2)),
+            omitted = 0,
+            callers = listOf(StoreCalls.Caller(caller = "ingest.dedup", issued = 41_022, returned = 41_020, failed = 0, cancelled = 0, outstanding = 2, oldestOutstandingSec = 794)),
+            ages = listOf(StoreCalls.Age(fromSec = 0, calls = 1), StoreCalls.Age(fromSec = 900, calls = 2)),
+        )
+
+    /** Every member the document publishes, at any depth. */
+    private fun publishedMembers(): Set<String> {
         val published = mutableSetOf<String>()
 
         fun walk(o: JsonObject) {
@@ -185,10 +439,14 @@ class StatusVocabularyTest {
                 }
             }
         }
-        walk(coverage)
-        walk(progress)
+        walk(document())
+        return published
+    }
 
-        val undefined = published - selfDescribing - StatusVocabulary.TERMS.keys
+    @Test
+    fun `every number the sync section publishes has a term`() {
+        val undefined = publishedMembers() - selfDescribing - StatusVocabulary.TERMS.keys
+
         assertTrue(
             undefined.isEmpty(),
             "published with no term, so a reader needs the source to read them: $undefined",
@@ -197,202 +455,35 @@ class StatusVocabularyTest {
 
     @Test
     fun `no term describes something the document never publishes`() {
-        val known =
-            selfDescribing +
-                setOf(
-                    // Concepts rather than members: the meanings of "done", and the one not published.
-                    "scope",
-                    "settled",
-                    "open",
-                    "walkEnvelope",
-                    "evidence",
-                    "holdings",
-                    // Synthesised by the page from `sourced` and `recordedOnly`.
-                    "corpus",
-                    "frame",
-                    "unnamed",
-                    "rotating",
-                    "accountedFor",
-                ) +
-                setOf(
-                    "relays",
-                    "hosts",
-                    "legs",
-                    "rows",
-                    "sweeping",
-                    "excluded",
-                    "pending",
-                    "inFlight",
-                    "heldForSec",
-                    "transferringForSec",
-                    "events",
-                    "quietForSec",
-                    "doing",
-                    "pool",
-                    "live",
-                    "limits",
-                    "job",
-                    "schedule",
-                    "everySec",
-                    "due",
-                    "neverRun",
-                    "waiting",
-                    "streamCap",
-                    "inUse",
-                    "deferred",
-                    "stage",
-                    // The stage split's shape beside its total: whether a stage's cost was one call
-                    // or a hundred thousand, and who holds the write lock while the mirror waits.
-                    "calls",
-                    "meanMs",
-                    "maxMs",
-                    "lockHeldBy",
-                    "heldMs",
-                    "pagingUntil",
-                    "omitted",
-                ) +
-                // The processors: the probe passes, the monitor, ingest, the healer, the push.
-                setOf(
-                    "passesRun",
-                    "processors",
-                    "candidates",
-                    "newUrls",
-                    "sourced",
-                    "heldOutDead",
-                    "recordedOnly",
-                    "foldedAway",
-                    "consistent",
-                    "inconsistent",
-                    "unmeasured",
-                    "dialled",
-                    "decided",
-                    "undecided",
-                    "top",
-                    "parent",
-                    "reason",
-                    "lastPassAt",
-                    "lastPassSec",
-                    "nextInSec",
-                    "measuring",
-                    "attempted",
-                    "toProbe",
-                    "unit",
-                    "queued",
-                    "capacity",
-                    "accepted",
-                    "rejected",
-                    "pushed",
-                    "dropped",
-                    // The fitness verdicts, one member per value of the `s` tag it signs.
-                    "prime",
-                    "dead",
-                    "silent",
-                    "alias",
-                    "unpageable",
-                    "noncompliant",
-                    "auth-refused",
-                    "restricted",
-                    "roster",
-                    "rosterVisits",
-                    "awaitingVisit",
-                    "visiting",
-                    "liveHeld",
-                    "visitsRun",
-                    "visitsHeldByIngest",
-                    "negentropyRunning",
-                    "negentropyRuns",
-                    "negentropySkipped",
-                    "retracted",
-                    "abortedVisits",
-                    // Listed rather than derived from the enum, so a name that moved on one side is noticed.
-                    "abortedAuthRequired",
-                    "abortedClosed",
-                    "abortedQuiet",
-                    "abortedUnreachable",
-                    "abortedUnpageable",
-                    "abortedGaveUp",
-                    "abortedFailed",
-                    "abortedBackpressured",
-                    "narrowedRelays",
-                    "negentropyRefused",
-                    "syncStatus",
-                    "pairs",
-                    "behind",
-                    "behindSec",
-                    "fault",
-                    "unwatched",
-                    "negentropy",
-                    "kindCap",
-                    "coveredFrom",
-                    "coveredTo",
-                    "verifiedAgoSec",
-                    "refusedFor",
-                    "relaySaid",
-                    "refusedAgoSec",
-                    "bands",
-                    "asks",
-                    "tailed",
-                    "liveEvicted",
-                    "poolReceived",
-                ) +
-                setOf(
-                    "running",
-                    "transferring",
-                    "fraction",
-                    "etaSec",
-                    "collected",
-                    "collectedTotal",
-                    "slotsFree",
-                    "slotsNeeded",
-                    "retryInSec",
-                    "fatals",
-                    "rejections",
-                    "lostToStore",
-                    "inBatch",
-                    "workers",
-                    "workersRunning",
-                    "oldestBatchSec",
-                    "health",
-                    "bottleneck",
-                    "stages",
-                    "stage",
-                    "ms",
-                    "feed",
-                    "eventsPerSec",
-                    "arrivingPerSec",
-                    "heapUsedMb",
-                    "heapMaxMb",
-                    "sockets",
-                    "socketCeiling",
-                    "socketsRunning",
-                    "socketsQueued",
-                    "servingMs",
-                    "series",
-                    "at",
-                    "heapPct",
-                ) +
-                setOf(
-                    "store",
-                    "calls",
-                    "caller",
-                    "op",
-                    "asked",
-                    "issuedAt",
-                    "elapsedSec",
-                    "outstandingAtIssue",
-                    "callers",
-                    "issued",
-                    "returned",
-                    "failed",
-                    "cancelled",
-                    "outstanding",
-                    "slowAfterSec",
-                    "oldestOutstandingSec",
-                    "ages",
-                    "fromSec",
-                )
+        // Against the real document, not a list kept by hand beside it: a term for a member no
+        // builder writes any more is a glossary entry a reader can never reach, and the list
+        // could only ever say what somebody remembered to delete from it.
+        val concepts =
+            setOf(
+                // The meanings of "done", defined for the page's own prose rather than a member.
+                "scope",
+                "settled",
+                "open",
+                "walkEnvelope",
+                "evidence",
+                "holdings",
+                // Synthesised by the page out of members below it: `pending` is `taken` minus the
+                // terminal outcomes, which is what makes the partition add up mid-cycle.
+                "corpus",
+                "frame",
+                "unnamed",
+                "accountedFor",
+                "pending",
+                // A phase's own word, published as the VALUE of `phase` and never as a member.
+                "rotating",
+            )
+        val orphans = StatusVocabulary.TERMS.keys - publishedMembers() - concepts
 
-        assertEquals(emptySet(), StatusVocabulary.TERMS.keys - known, "a term for nothing")
+        assertTrue(
+            orphans.isEmpty(),
+            "a term for nothing — either the member stopped being published, or the fixture in this " +
+                "file no longer drives the builder that writes it: $orphans",
+        )
     }
 
     @Test
@@ -425,14 +516,10 @@ class StatusVocabularyTest {
     @Test
     fun `each document ships the definitions it needs and not the other plane's`() {
         // The mirror's and the monitor's documents publish disjoint halves of one vocabulary.
-        val mirror =
-            Json
-                .parseToJsonElement("""{"progress": {"processors": [{"name": "ingest", "queued": 3, "capacity": 4096}]}}""")
-                .jsonObject
-        val monitor =
-            Json
-                .parseToJsonElement("""{"progress": {"processors": [{"name": "aliasFold", "foldedAway": 8, "candidates": 40}]}}""")
-                .jsonObject
+        // Both through the real builder: `termsFor` reads members, so a document it never sees
+        // in that shape would prove nothing about what it selects.
+        val mirror = progressOf(processor("ingest", "queued" to 3, "capacity" to 4_096))
+        val monitor = progressOf(processor("aliasFold", "foldedAway" to 8, "candidates" to 40))
 
         val forMirror = StatusVocabulary.termsFor(mirror).keys
         val forMonitor = StatusVocabulary.termsFor(monitor).keys

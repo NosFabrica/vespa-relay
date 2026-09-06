@@ -41,6 +41,24 @@ Reading that as 100% drift put a config warning — naming a specific wrong caus
 set differing from another, so it needs both to exist: `watches` answers true
 while `measured` is empty.
 
+
+**The vocabulary is checked against a built document, not a written one.** The
+glossary test used to walk a JSON literal, so it only ever covered members
+somebody remembered to type into it — and its other half, "no term describes
+something never published", could not use that document at all and was a
+hand-kept list of ~150 names beside the map it was checking. Both now walk one
+document assembled by the real builders (`SyncCoverageReport`,
+`RelayStatusReport`, `SyncProgress.document`) over real inputs: a `SyncBands`
+written through `record`, a `SweepState`, typed `Processors.Snapshot`s. A member
+renamed or dropped in a builder now fails the orphan half; a member added
+without a term fails the other. The list that survives is ten entries, and every
+one is a concept the page synthesises or a phase word rather than a member.
+
+The COUNT names inside a processor row stay a list, passed through
+`Processors.Count` rather than typed as JSON keys. They are spelled by the jobs
+that raise them, and listing them is the judgement the abort names already
+carried: a name that moves on one side should be noticed, not silently followed.
+
 **The mirror serves its own status page.** The mirror used to write three JSON
 files to a shared volume that the serving relay read back, re-parsed against an
 allowlist and re-narrated, about 2,500 lines whose only job was to re-derive
