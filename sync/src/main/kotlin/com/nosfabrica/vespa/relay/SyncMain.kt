@@ -38,6 +38,7 @@ import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
@@ -335,6 +336,11 @@ fun main() {
 
     // With both pages answering, whatever `start()` waits on is visible.
     engine.start()
+
+    // Both processes log this, so the load can be attributed to a ROLE. An
+    // ablation earlier could only ask "is it sync?" by scaling the mirror to
+    // zero; two labelled lines answer it without touching the deployment.
+    StoreMetricsLog.startLogging("sync", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
 
     // The mirror's own resource picture: this process does the ingesting, so
     // the write path, the admission outcomes and the trust drain's lock holds
