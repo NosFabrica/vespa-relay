@@ -414,61 +414,55 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# aca0552c4e = vespa-eventstore main @ 2026-09-06, the merge of PR #112 — the
-# reconcile's projected-check stops sampling the projected end.
+# 27d43f84c1 = vespa-eventstore main @ 2026-09-06, the merge of PR #121 — the
+# service walk falls back to the document-API scan when the engine cuts its
+# sorted read. THE FIX for the projection that stopped at 236 of 342 services.
 #
-# WHY THIS BUMP, and it is the one that repairs ranked search for almost every
-# observer on this deployment. The check that decides whether a service's cards
-# have been walked into cells sampled `limit = RECONCILE_SAMPLES` cards, and
-# `limit` serves NEWEST_FIRST. The live write path projects a card inline as it
-# arrives, so the newest cards carry a cell whether or not the service was ever
-# walked: the check asked a question whose answer was always yes.
+# WHAT WAS HAPPENING. The walk lists a service's card ids through SEARCH with
+# `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
+# truncate — `sorting.degrading` defaults true — and it reports the truncation
+# as `match-phase`. The coverage guard then correctly refuses the partial
+# answer, the walk throws, and the drain dies. Meanwhile visitIdsByScan sits
+# right there: the document API, no ranking, no sorting, no match phase,
+# nothing to truncate.
 #
-# Measured here: a service with 279,594 cards and a cell on ~1% of parents
-# passed that check every pass. Of 200 provider lists sampled, only FOUR named
-# a service carrying cells — so ~98% of observers got an empty ranked page, and
-# the relay's own operator could not find his own profile through his own lens.
-# Nothing reported the projection as incomplete, because nothing measured it.
+# Caught here as: `unranked/kinds,authors match-phase x34 REFUSED, last 54% of
+# 186,754,978`, with the stack naming SearchCoverage.requireComplete.
 #
-# `.any` was not the defect and is unchanged — it is right for the failure the
-# check exists to catch (a service never walked at all), and `.all` would
-# re-walk every service on every startup. Only the sample moved: the OLD end of
-# a service's history, falling back to the newest cards for a service with
-# none that old.
+# LOAD, NOT SHAPE. The same query — same 279,594-card service, same 2064-id
+# page, same profile — comes back 100% complete on an idle cluster. It
+# degraded while the cluster was saturated at 16 cores and 17.5M docs/s. And
+# the failure is self-reinforcing: the drain fails, retries, adds load, makes
+# truncation likelier. That is why a StatefulSet roll appeared to fix it
+# earlier — the roll dropped the load.
 #
-# THE FIX IS ALSO THE REPAIR. Once a service is correctly found unprojected,
-# the reconcile's rebuild phase walks its cards in full — so this bump plus one
-# reconcile repairs every under-projected service, not just the one that
-# surfaced it. The number to watch is that 4-of-200 ratio.
+# WHICH IS WHY THE FALLBACK IS THE FIX AND NOT A WORKAROUND: a walk that must
+# be complete cannot depend on a read the engine may truncate. `sorting.degrading=false`
+# was considered and rejected — unverifiable under the load that triggers this,
+# and forbidding truncation under saturation most likely turns a partial answer
+# into a timeout, which is worse: a timeout carries no signal telling the
+# caller to take another path.
 #
-# It also gives `rebuildAll` a progress hook. It was the only repair in the
-# store with none at all, while being the one documented as "bounded only by
-# the corpus" — reaching for the hammer meant inferring progress from document
-# samples, which is how an afternoon went.
+# Also types the refusal. "The answer was short" and "the query was wrong" were
+# both IllegalArgumentException, which is why a walk holding a perfectly good
+# fallback died instead of using it.
 #
-# DIRECTION: 7a93d45efd is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this is main plus #112.
+# DIRECTION: 52ac77e5ac is a strict ancestor of this — main plus #121.
 #
-# LEXICOGRAPHIC: 'aca0…' > '7a93…' ('a' > '7'), so this sorts ABOVE the pin it
-# replaces — the safe direction. Stated anyway, because roughly half of all
-# shas are not. No `force(…)`: nothing else in the graph names
-# vespa-eventstore. The resolved graph is the proof, every eventstore line
-# reading aca0552c4e with no `->` anywhere:
+# LEXICOGRAPHIC: '27d4…' < '52ac…' ('2' < '5'), the unsafe direction. No
+# `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line reads 27d43f84c1 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: 7a93d45efd = the merge of PR #111 — the keying migration reports
-# progress and resumes across restarts, and stopped being discarded whole by
-# every process restart. It completed here for the first time at 12:53Z on
-# 2026-09-06, removing 22,031,970 stale cells, after a StatefulSet roll cleared
-# the match-phase wedge two OOMKilled content nodes had left on 2026-09-04.
+# Superseded: 52ac77e5ac = PR #120 — a background failure says WHERE it failed.
+# It printed the stack that named this bug on its first failure, after an
+# afternoon of `last: timeout` with no query, stage or frame.
 #
-# Superseded: a93d368091 = #109 (naming the projection ledger's invariants) and
-# #110 (ServiceKey/ObserverKey value classes, byte-identical wire format).
-#
-# Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE rather
-# than per round: 139,524 inherited subjects to a trickle in about three hours,
-# strictly monotonic, where the backlog had not moved in days.
-vespaEventStore = "aca0552c4e"
+# Superseded: 34fb127523 = #119 (a stalled step reads as stalled; the walk's
+# read path is timed). 02b528a85a = #118 (the walk reports a fraction).
+# 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 = #113/#114.
+# aca0552c4e = #112. 53441182f5 = #108.
+vespaEventStore = "27d43f84c1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
