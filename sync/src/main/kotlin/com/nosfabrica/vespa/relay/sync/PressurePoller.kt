@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive

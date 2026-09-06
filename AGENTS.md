@@ -116,19 +116,27 @@ runs the tests. Run `spotlessApply` before committing.
 
 ## Layout
 
-All modules share the `com.nosfabrica.vespa.relay` package root. The long
-form, file by file with the reasoning, is [docs/layout.md](docs/layout.md).
+All modules share the `com.nosfabrica.vespa.relay` package root, and every
+package below it belongs to exactly one module, so a package name says which
+module holds the file. The root package itself holds the two entrypoints and
+nothing else. `ModuleBoundariesTest` (in `:common`, beside the other guards that
+read the checkout rather than run it) fails the build on both, on a dependency
+that points the wrong way along the include order, on one nothing imports, and
+on Ktor or the store crossing the `/stats.json` seam. The long form, file by
+file with the reasoning, is [docs/layout.md](docs/layout.md).
 
 ```
 common/…/relay/
-  config/RelayIdentity.kt     RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor; both processes read it
-  server/ServingPressure.kt   EWMA of client read latency, served on GET /pressure
+  identity/                   RelayIdentity (RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor) and PubKeys,
+                              every pubkey setting (npub only, no bare hex) + adminPubkeysFromEnv;
+                              both processes read RELAY_NSEC and RELAY_ADMIN_PUBKEYS, so one parser each
+  pressure/ServingPressure.kt EWMA of client read latency, served on GET /pressure
   pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings
                               (PULSE_* parsing, the fail-closed admin check); here because both processes
                               open a store, and because :web must not depend on one
-  config/PubKeys.kt           every pubkey setting (npub only, no bare hex) + adminPubkeysFromEnv;
-                              both processes read RELAY_ADMIN_PUBKEYS now, so one parser
-  maintenance/, util/         QuartzLogLevel (QUARTZ_LOG_LEVEL), SchemaDeploy, StoreTopology; fmtDuration
+  store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), fmtDuration
+  (test) arch/                the guards that read the checkout: ModuleBoundariesTest, the browser-file
+                              rule, the probe-switch list. `:common:test` declares the tree as an input
 peers/…/relay/
   peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
@@ -142,17 +150,18 @@ monitor/…/relay/monitor/
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
   ReachabilityProbe, Silence, Unreachability, HostStrikes, RelayDocument   what a quiet socket said, what may be published, NIP-11
 sync/…/relay/
-  SyncMain.kt, SyncEngine.kt  entrypoint; wiring, the health and stats lines; starts both planes
-  sync/                       VisitPool (the mirror), VisitQueue, VisitAborts, RelayComplaints, RelayPages, FilterWidths,
+  SyncMain.kt                 entrypoint; the root package holds this and nothing else
+  sync/                       SyncEngine (wiring, the health and stats lines; starts both planes), VisitPool (the
+                              mirror), VisitQueue, VisitAborts, RelayComplaints, RelayPages, FilterWidths,
                               RosterBuilder, RetractionAudit, NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState,
                               SyncBands (SYNC_STATE_FILE), SyncManifest (SYNC_MANIFEST_FILE), UpstreamPush,
                               PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
-  progress/, status/          StreamPhases, SyncProgress; SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
+  status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
                               StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/
   RelayMain.kt                entrypoint; refuses to boot if SYNC_CONFIG* is set
-  config/                     EnvSettings (`env.intOr(...)`, grep for it), PubKeys (RELAY_ADMIN_PUBKEYS, ALLOW_PUBKEYS),
-                              RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
+  server/config/              EnvSettings (`env.intOr(...)`, grep for it; ALLOW_PUBKEYS and the rest of the
+                              serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, Nip86Route, BanListFile, ConnectionCountListener (LOG_CONNECTIONS)

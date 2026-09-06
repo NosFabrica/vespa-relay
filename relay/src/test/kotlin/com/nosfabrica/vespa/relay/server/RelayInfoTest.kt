@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.nosfabrica.vespa.relay.config.defaultRelayLimits
+import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray

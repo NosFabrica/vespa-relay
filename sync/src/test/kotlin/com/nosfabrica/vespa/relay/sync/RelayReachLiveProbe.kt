@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.config.RelayIdentity
+import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult

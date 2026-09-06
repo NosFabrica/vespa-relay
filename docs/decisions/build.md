@@ -20,4 +20,6 @@ build go green over code it never ran.
 property on the Gradle command line reaches the daemon, not the forked test
 JVM. A probe whose switch is not forwarded prints its own "[skip]" line, which
 reads exactly like a probe nobody asked for; that happened on the first run of
-`RelayListLiveProbe`. `ProbeSwitchesAreForwardedTest` holds the list.
+`RelayListLiveProbe`. `ProbeSwitchesAreForwardedTest` holds the list, in
+`:common` with the other guards that read the checkout rather than run it; the
+module graph and the package map are `docs/decisions/module-boundaries.md`.

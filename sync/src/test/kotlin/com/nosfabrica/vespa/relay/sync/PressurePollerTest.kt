@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import kotlin.test.Test

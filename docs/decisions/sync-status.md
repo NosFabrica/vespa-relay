@@ -1,7 +1,7 @@
 # Sync status decisions
 
-The history behind `sync/.../SyncMain.kt`, `progress/SyncProgress.kt`,
-`progress/StreamPhases.kt`, `status/SyncStatus.kt`, `status/StatusRollup.kt`,
+The history behind `sync/.../SyncMain.kt`, `status/SyncProgress.kt`,
+`status/StreamPhases.kt`, `status/SyncStatus.kt`, `status/StatusRollup.kt`,
 `status/GaugeSeries.kt`, `status/SyncCoverageReport.kt` and
 `status/RelayStatusReport.kt`, moved out of the source so the code reads on its
 own. One paragraph per decision; `git log -L` on the function finds the commit.

@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
-import com.nosfabrica.vespa.relay.config.RelayIdentity
+import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.core.Event

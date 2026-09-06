@@ -4,22 +4,30 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 
 ## Layout
 
-All three modules share the `com.nosfabrica.vespa.relay` package root — files
-moved between modules in the process split without renaming packages, so
-history and imports stayed put.
+All six modules share the `com.nosfabrica.vespa.relay` package root, and every
+package below it belongs to exactly one module: a package name says which
+module holds the file, and the root package holds the two entrypoints and
+nothing else. `ModuleBoundariesTest` fails the build on either rule.
 
 ```
 common/src/main/kotlin/com/nosfabrica/vespa/relay/
-  config/RelayIdentity.kt   RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor;
+  identity/RelayIdentity.kt RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor;
                             both processes read it (same key on purpose)
-  server/ServingPressure.kt EWMA of client read latency. The relay record()s
+  identity/PubKeys.kt       every pubkey setting, npub only, no bare hex
+  pressure/ServingPressure.kt
+                            EWMA of client read latency. The relay record()s
                             into it and serves it on GET /pressure; the sync
                             process adopt()s the polled mean and yields on it
-  maintenance/
-    QuartzLogLevel.kt       QUARTZ_LOG_LEVEL, split from ParseAudit — the one
+  util/QuartzLogLevel.kt    QUARTZ_LOG_LEVEL, split from ParseAudit — the one
                             piece of it both processes read
-    SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
+  store/SchemaDeploy.kt     the every-boot Vespa schema deploy (both processes)
+  store/StoreTopology.kt    STORE_WRITERS, the one writer topology both open
   util/Format.kt            fmtDuration — the one formatter both processes print
+  (test) arch/              the guards that read the checkout instead of
+                            running it: the module graph and package map, the
+                            browser-file rule, the probe-switch list. They are
+                            declared inputs of `:common:test`, or Gradle calls
+                            it up to date after the change they exist to catch
 
 web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
   StatusSite.kt             installPageDefaults (compression + CORS, on the terms
@@ -256,10 +264,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
                               report — lives here because ingest is what feeds it
   util/SyncFormat.kt          fmtCount / nowSeconds, internal again
-  SyncMain.kt           entrypoint; env, store, engine, block
-  SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
-                        which is why it sits above both: it starts them
+  SyncMain.kt           entrypoint; env, store, engine, block. The root
+                        package holds this file and nothing else
   sync/                 THE MIRROR — everything that moves events into the store
+    SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
+                          which is why it starts both
     VisitPool.kt          EVERY down stream's engine: the roster (declared
                           `urls` plus the relays the monitor's 30166 verdicts
                           admit), rotating visits (catch-up, the reconcile of

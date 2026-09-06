@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.typesafe.config)
+    // api: PeerClient.httpFor and TorTransport.clientFor hand out an OkHttpClient.
     api(libs.okhttp)
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.serialization.json)

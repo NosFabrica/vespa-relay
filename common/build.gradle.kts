@@ -25,4 +25,17 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+    // The guards in `arch` read the whole checkout rather than run it: the build files, the
+    // include order, every source tree (`.kt` is not enough: a stray browser file is one of
+    // the things they catch). Undeclared, Gradle calls this task up to date after
+    // exactly the change they exist to catch, and the build goes green over the violation.
+    inputs
+        .files(
+            rootProject.file("settings.gradle.kts"),
+            rootProject.fileTree(rootProject.projectDir) {
+                include("*/build.gradle.kts")
+                include("*/src/**")
+            },
+        ).withPropertyName("checkoutUnderReview")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }

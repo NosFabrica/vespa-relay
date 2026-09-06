@@ -21,9 +21,9 @@
 package com.nosfabrica.vespa.relay.sync.heal
 
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
-import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishAndCollectResults

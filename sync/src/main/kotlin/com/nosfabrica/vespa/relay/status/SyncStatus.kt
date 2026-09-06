@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
-import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.web.StatsSnapshot

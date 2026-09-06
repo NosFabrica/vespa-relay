@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.progress.StreamPhases
+import com.nosfabrica.vespa.relay.status.StreamPhases
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /** When an ask's audit comes due, as one value: not scheduled, never run, or a time. */
