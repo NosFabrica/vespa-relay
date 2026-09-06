@@ -414,86 +414,64 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# b7c32aeb6d = vespa-eventstore main @ 2026-09-05, the merge of PR #107 — the
-# telemetry work (its docs/telemetry.md is the design record).
+# 53441182f5 = vespa-eventstore main @ 2026-09-05, the merge of PR #108 — the
+# dirt ledger retires per slice.
 #
-# BACK ON A MAIN COMMIT, which is the state this line has to land in. While the
-# store PR was open this named a branch sha, deliberately and temporarily: the
-# page below cannot compile against a store without `metrics()`. The two repos
-# land in one order — store PR, then this re-pin, then the relay PR — and this
-# is the step that gets skipped when both merge together.
+# WHY THIS BUMP: the drain looked dead on staging and was not. A round derived
+# its WHOLE snapshot before crediting any of it, so with 139,524 inherited
+# subjects at the ~14.5s-per-500 the note above measures, the backlog gauge sat
+# at its starting value and the marker at full size for over an hour a pass —
+# and a crash anywhere in that hour threw away every subject already derived
+# and acked, because the marker still named all of them. A ledger that takes
+# longer to drain than the process stays up never finishes. That is what held
+# `projection-dirty` at exactly 139,524 across a 2.75h process here while
+# `proj.fetch.derive` logged 665 completed slices.
 #
-# WHY THIS BUMP: `/pulse.html`. The relay could say what it was DOING (the
-# store-call registry, the ingest stage split) but not what any of it COST.
-# `VespaEventStore.metrics()` is the cumulative record behind that page —
-# port calls and engine time per activity, admission outcomes over the
-# denominator that makes them a rate, what the engine matched against what it
-# served, bounded sketches of the observers and terms driving the load, and a
-# ring of the slowest reads. Counters and gauges, never ratios, so the page
-# differences two polls and nothing is consumed by being read.
+# Each slice is now credited when its write is acked, and the marker shrinks by
+# tensor-cell REMOVES of the retired entries rather than a rewrite of the
+# document to one process's whole view. Removes compose; whole-doc writes do
+# not, and the relay and the sync mirror each run a store against this one
+# marker while `pending` is process-local — either one's rewrite erased the
+# other's write-ahead insurance. Slices another drain already retired are also
+# skipped, which is what stops the background loop and `TrustReconciler` from
+# each deriving the entire snapshot; the pulse caught them here as `Drain`
+# (3,477 searches) and `Other` (3,174) doing identical work.
 #
-# IT ALSO RETIRES A PARSER HERE. `IngestStats.snapshot()` landed at
-# `ec2976b679` and the health loop half-adopted it: stage totals still came
-# from parsing `IngestStats.dump()`'s String while the shape came from the
-# structured read beside it. Two reads of a live counter describe two
-# instants, and `%.2fs` rounded every stage under 5ms to a zero row. Both
-# members now come off one snapshot; `IngestStageReadTest` replaces
-# `IngestStageParseTest`.
+# WHAT IT DOES NOT FIX, again: the derive itself. The read is still inside the
+# gate at ~14.5s per 500-subject slice — the note above stands unchanged. What
+# changes is that the work COUNTS as it lands, so a restart resumes instead of
+# starting over, and the backlog gauge means something while a round runs.
 #
-# IT ASKS FOR NO NEW QUARTZ and NO RE-FEED. Nothing here changes what a put
-# derives or what a read matches — the store's own schema is untouched by this
-# range — so `REINDEX_FTS_ON_START` stays off and no deploy step attaches.
-# What it adds is accounting, and the branch measures its own cost rather than
-# asserting it (telemetry.md §5, §6): ~956ns per activity boundary, tens of
-# nanoseconds per booked port call, and a fixed ~50KB of sketches and
-# histograms per process.
+# NO NEW QUARTZ, NO RE-FEED, NO MIGRATION ATTACHES. Nothing here changes what a
+# put derives or what a read matches. The marker document is the only thing
+# written differently, and it is written with the same primitive its
+# write-ahead already used; a process reading a partially retired marker simply
+# sees less work, which is true.
 #
-# IT ALSO CARRIES MAIN THROUGH 1a3f91b (PR #106), the service-keyed trust
-# tensors: the tensors are keyed by the SIGNING SERVICE and the observer's
-# kind-10040 is resolved at query time. That is a store-side change this repo
-# does not name anywhere, and it comes with its own migration
-# (TrustKeyingMigration) and its own docs/service-keyed-trust.md — read that
-# note before deploying this pin, not this one.
+# DIRECTION: b7c32aeb6d is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — this is main plus PR #108, two commits.
 #
-# DIRECTION: 1a3f91b is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this is main including PR #106.
-#
-# LEXICOGRAPHIC: 'b7c3…' < 'ec29…' ('b' < 'e'), so this sorts BELOW the pin it
-# replaces — the unsafe direction, which roughly half of all shas will be, and
-# the reason this file states it every time rather than trusting to luck. It
-# needs no `force(…)`, for the reason the notes above give: nothing else in the
-# graph names vespa-eventstore, so there is no conflict for ordering to settle.
-# The resolved graph is the proof, and every eventstore line reads b7c32aeb6d
-# with no `->` left anywhere:
+# LEXICOGRAPHIC: '5344…' < 'b7c3…' ('5' < 'b'), so this sorts BELOW the pin it
+# replaces — the unsafe direction again, and the reason this file states it
+# every time rather than trusting to luck. It needs no `force(…)`: nothing else
+# in the graph names vespa-eventstore, so there is no conflict for ordering to
+# settle. The resolved graph is the proof, and every eventstore line reads
+# 53441182f5 with no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# WHAT THE LAST COMMIT UNDER #107 IS: `TrustReconciler` was handed the RAW
-# engine index while everything else got the metered decorator, so its corpus
-# walks — the heaviest read the store makes — were booked under no activity at
-# all. Watching /pulse.html during a reconcile showed a store doing nothing
-# while Vespa was busy. One word at the wiring; the meter is a decorator, so
-# anything built with the undecorated index is invisible by construction.
-#
-# AND THE ONE BEFORE IT: the load sketch was being handed
-# WHOLE 64-hex observer pubkeys, against `HeavyHitters`' own documented
-# contract and the design doc's §11.2 ("truncate the key to a prefix"). Every
-# row of the live page carried a key that could be lifted out of a screenshot.
-# Truncated to 16 chars at the producer, with the rule now asserted on both
-# sides rather than written in prose.
-#
-# AND THE ONE THAT PRECEDED BOTH, because building this page is what
-# found it: `topObservers`, `topTerms` and `slowReads` were ALWAYS EMPTY. All
-# three were built, bounded, unit-tested and published in the snapshot, and
-# nothing ever wrote to them — the join between the pieces did not exist, and
-# an empty panel reads as an idle relay, which is the one thing this page is
-# for ruling out. Feeding a real staging capture through a real relay into a
-# real Vespa and reading /pulse.json back is what surfaced it; d7798a2c02 (the
-# pin this line first carried) draws three blank panels.
+# Superseded: b7c32aeb6d = vespa-eventstore main @ 2026-09-05, the merge of PR
+# #107 — the telemetry behind `/pulse.html` (`VespaEventStore.metrics()`, its
+# docs/telemetry.md is the design record), `TrustReconciler` wired to the
+# METERED index rather than the raw one, and the load sketch truncated to a
+# 16-char observer prefix. It also carried main through 1a3f91b (PR #106), the
+# service-keyed trust tensors, which come with their own TrustKeyingMigration
+# and their own docs/service-keyed-trust.md — read that note before deploying,
+# not this one.
 #
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
 # PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
 # reached through 1a3f91b, which is main including it.
-vespaEventStore = "b7c32aeb6d"
+vespaEventStore = "53441182f5"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
