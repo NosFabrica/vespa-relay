@@ -33,10 +33,16 @@ import java.util.concurrent.atomic.AtomicLong
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     var waited = 0L
     var attempt = 0
-    var printedFirstFailure = false
+    // ONE instance for the whole retry sequence. Built inside the loop — as it
+    // was — every attempt got a fresh throttle starting at zero, so a walk that
+    // threw and retried inside the window printed nothing at all, and a
+    // reconcile retrying forever was indistinguishable from one running
+    // cleanly. That is the failure this line was added to prevent.
+    val progress = reconcileProgress()
+    val reportFailure = reconcileFailures()
     while (true) {
         attempt++
-        val result = runCatching { store.reconcileTrust(onProgress = reconcileProgress()) }
+        val result = runCatching { store.reconcileTrust(onProgress = progress) }
         result.onSuccess { r ->
             when {
                 r.services == 0 -> {
@@ -76,13 +82,12 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
             cause?.printStackTrace()
             return
         }
-        if (!printedFirstFailure) {
-            // The first failure on any attempt gets the stack: a bug and a cold
-            // engine read the same from one message.
-            printedFirstFailure = true
-            println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
-            cause?.printStackTrace()
-        }
+        // The first failure gets the stack — a bug and a cold engine read the
+        // same from one message. The REST used to be silent, which is how a
+        // reconcile that retried for half an hour looked like one that was
+        // working: the only line on the log was the optimistic one it printed
+        // before its first attempt.
+        if (reportFailure(attempt, cause)) cause?.printStackTrace()
         delay(TRUST_RECONCILE_RETRY_MS)
         waited += TRUST_RECONCILE_RETRY_MS
     }
@@ -113,14 +118,18 @@ private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
  *
  * Throttled, because the walk calls this per page.
  */
-internal fun reconcileProgress(everyMillis: Long = PROGRESS_EVERY_MS): (Int, Int, Int, Int) -> Unit {
-    val startedAt = System.currentTimeMillis()
+internal fun reconcileProgress(
+    everyMillis: Long = PROGRESS_EVERY_MS,
+    now: () -> Long = System::currentTimeMillis,
+    emit: (String) -> Unit = ::println,
+): (Int, Int, Int, Int) -> Unit {
+    val startedAt = now()
     val lastAt = AtomicLong(startedAt)
     return { inspected, total, rebuilt, applied ->
-        val now = System.currentTimeMillis()
+        val t = now()
         val prev = lastAt.get()
-        if (now - prev >= everyMillis && lastAt.compareAndSet(prev, now)) {
-            println(reconcileProgressLine(inspected, total, rebuilt, applied, now - startedAt))
+        if (t - prev >= everyMillis && lastAt.compareAndSet(prev, t)) {
+            emit(reconcileProgressLine(inspected, total, rebuilt, applied, t - startedAt))
         }
     }
 }
@@ -145,6 +154,39 @@ internal fun reconcileProgressLine(
     val rate = inspected.toDouble() / secs
     val eta = if (rate > 0) "${((total - inspected) / rate).toLong() / 60}m" else "unknown"
     return "trust: reconcile screening $inspected/$total service(s) ($pct%), eta $eta (${secs}s elapsed)"
+}
+
+/**
+ * Retries, said out loud but not per attempt. Returns whether this call was
+ * the FIRST failure, which is the one that earns a stack trace.
+ *
+ * A retry loop that prints only its first failure cannot be told from a loop
+ * that stopped failing. Both go quiet.
+ */
+internal fun reconcileFailures(
+    everyMillis: Long = PROGRESS_EVERY_MS,
+    now: () -> Long = System::currentTimeMillis,
+    emit: (String) -> Unit = ::println,
+): (Int, Throwable?) -> Boolean {
+    val lastAt =
+        java.util.concurrent.atomic
+            .AtomicLong(0)
+    return { attempt, cause ->
+        val t = now()
+        val first = lastAt.get() == 0L
+        val prev = lastAt.get()
+        if (first || t - prev >= everyMillis) {
+            lastAt.set(t)
+            emit(
+                if (first) {
+                    "trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable"
+                } else {
+                    "trust: reconcile still retrying, attempt $attempt (last: ${cause?.message?.take(80)})"
+                },
+            )
+        }
+        first
+    }
 }
 
 /** Between progress lines — the walk calls back per page, and a log is not a metrics feed. */

@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.maintenance
 
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -62,15 +63,55 @@ class TrustReconcileProgressTest {
         assertFalse(line.contains("%"), "no percentage without a denominator: $line")
     }
 
-    /** The throttle exists because the walk calls back per page; the first call must still emit. */
+    /**
+     * THE THROTTLE MUST SPAN THE WHOLE WALK, not one attempt of it. The first
+     * version built a new reporter inside the retry loop, so every attempt
+     * restarted the 30s window; a reconcile that threw and retried inside it
+     * printed NOTHING for half an hour and looked exactly like one running
+     * cleanly. One instance, a clock that moves, lines that appear.
+     */
     @Test
-    fun `progress is throttled but not silent`() {
-        val emitted = mutableListOf<Unit>()
-        val fn = reconcileProgress(everyMillis = 0)
-        repeat(3) {
-            fn(1, 10, 0, 0)
-            emitted += Unit
-        }
-        assertTrue(emitted.size == 3, "the callback stays callable per page")
+    fun `one progress instance emits across the whole walk, not once per attempt`() {
+        val out = mutableListOf<String>()
+        var clock = 0L
+        val fn = reconcileProgress(everyMillis = 30_000, now = { clock }, emit = { out += it })
+
+        fn(1, 100, 0, 0)
+        assertTrue(out.isEmpty(), "nothing at t=0")
+        clock = 29_000
+        fn(2, 100, 0, 0)
+        assertTrue(out.isEmpty(), "still inside the window")
+        clock = 31_000
+        fn(30, 100, 0, 0)
+        assertEquals(1, out.size, "past the window it speaks")
+        clock = 95_000
+        fn(60, 100, 0, 0)
+        assertEquals(2, out.size, "and keeps speaking as the walk goes on")
+        assertContains(out[1], "60/100")
+    }
+
+    /**
+     * A RETRY LOOP THAT PRINTS ONLY ITS FIRST FAILURE CANNOT BE TOLD FROM ONE
+     * THAT STOPPED FAILING. Both go quiet, and the only line left is the
+     * optimistic one printed before the first attempt.
+     */
+    @Test
+    fun `retries stay audible after the first failure`() {
+        val out = mutableListOf<String>()
+        var clock = 1_000L
+        val report = reconcileFailures(everyMillis = 30_000, now = { clock }, emit = { out += it })
+
+        assertTrue(report(1, IllegalStateException("cold engine")), "the first failure earns the stack")
+        assertEquals(1, out.size)
+        assertContains(out[0], "engine not answering yet")
+
+        clock = 10_000
+        assertFalse(report(2, IllegalStateException("cold engine")), "only the first is the first")
+        assertEquals(1, out.size, "throttled inside the window")
+
+        clock = 40_000
+        report(47, IllegalStateException("cold engine"))
+        assertEquals(2, out.size, "a loop still retrying says so")
+        assertContains(out[1], "attempt 47")
     }
 }
