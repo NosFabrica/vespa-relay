@@ -414,61 +414,64 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# aca0552c4e = vespa-eventstore main @ 2026-09-06, the merge of PR #112 — the
-# reconcile's projected-check stops sampling the projected end.
+# a23a6a3a68 = vespa-eventstore main @ 2026-09-06, the merges of PR #113 and
+# PR #114 — the trust view reports its own state, and a degraded read says
+# which degradation it was.
 #
-# WHY THIS BUMP, and it is the one that repairs ranked search for almost every
-# observer on this deployment. The check that decides whether a service's cards
-# have been walked into cells sampled `limit = RECONCILE_SAMPLES` cards, and
-# `limit` serves NEWEST_FIRST. The live write path projects a card inline as it
-# arrives, so the newest cards carry a cell whether or not the service was ever
-# walked: the check asked a question whose answer was always yes.
+# WHY THIS BUMP: to stop diagnosing this deployment through proxies. Nearly
+# every wrong conclusion here has come from inferring state that nothing
+# exposed — a performance theory built on a wedged cluster, an ETA inferred
+# from stale max_rank, a projection judged complete because a queue was empty.
 #
-# Measured here: a service with 279,594 cards and a cell on ~1% of parents
-# passed that check every pass. Of 200 provider lists sampled, only FOUR named
-# a service carrying cells — so ~98% of observers got an empty ranked page, and
-# the relay's own operator could not find his own profile through his own lens.
-# Nothing reported the projection as incomplete, because nothing measured it.
+# #113: TrustProgress reports unconditionally instead of through the optional
+# onProgress every caller dropped; trust.coverage.* answers "how much of the
+# trust view is usable" (the number nobody computed, and whose absence let a
+# 279,594-card service sit unwalked); trust.pending.* becomes trust.queued.*
+# because it is a QUEUE depth and reading it as coverage is what went wrong;
+# and explainTrust(pubkey) answers "why can this observer not find their own
+# profile" in one call, through the library's query path rather than a curl
+# that silently truncates at ten groups.
 #
-# `.any` was not the defect and is unchanged — it is right for the failure the
-# check exists to catch (a service never walked at all), and `.all` would
-# re-walk every service on every startup. Only the sample moved: the OLD end of
-# a service's history, falling back to the newest cards for a service with
-# none that old.
+# #114: every degraded read tallied by profile, the flags Vespa actually SET,
+# and the query's SHAPE — never its terms. `non-ideal-state` is a settling
+# cluster and clears; `match-phase` is the engine cutting the match set and
+# does not. Telling those apart cost hours twice. It also records reads that
+# were SERVED: a match-phase cut on a recency profile is allowed and returned
+# silently, so a cluster degrading every ranked read looks healthy.
 #
-# THE FIX IS ALSO THE REPAIR. Once a service is correctly found unprojected,
-# the reconcile's rebuild phase walks its cards in full — so this bump plus one
-# reconcile repairs every under-projected service, not just the one that
-# surfaced it. The number to watch is that 4-of-200 ratio.
+# THIS DIAGNOSES, IT DOES NOT FIX. The match-phase wedge recurred here within
+# two hours of the StatefulSet roll that cleared it, failing the reconcile at
+# attempt 115. What triggers it is still unknown; this is the instrument for
+# finding out.
 #
-# It also gives `rebuildAll` a progress hook. It was the only repair in the
-# store with none at all, while being the one documented as "bounded only by
-# the corpus" — reaching for the hammer meant inferring progress from document
-# samples, which is how an afternoon went.
+# DASHBOARD NOTE: trust.pending.subjects/services are renamed to
+# trust.queued.*.
 #
-# DIRECTION: 7a93d45efd is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this is main plus #112.
+# DIRECTION: aca0552c4e is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — main plus #113 and #114.
 #
-# LEXICOGRAPHIC: 'aca0…' > '7a93…' ('a' > '7'), so this sorts ABOVE the pin it
-# replaces — the safe direction. Stated anyway, because roughly half of all
-# shas are not. No `force(…)`: nothing else in the graph names
-# vespa-eventstore. The resolved graph is the proof, every eventstore line
-# reading aca0552c4e with no `->` anywhere:
+# LEXICOGRAPHIC: 'a23a…' < 'aca0…' ('2' < 'c'), so this sorts BELOW the pin it
+# replaces — the unsafe direction, which is why this file states it every
+# time. No `force(…)`: nothing else in the graph names vespa-eventstore. The
+# resolved graph is the proof, every eventstore line reading a23a6a3a68 with
+# no `->` anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: 7a93d45efd = the merge of PR #111 — the keying migration reports
-# progress and resumes across restarts, and stopped being discarded whole by
-# every process restart. It completed here for the first time at 12:53Z on
-# 2026-09-06, removing 22,031,970 stale cells, after a StatefulSet roll cleared
-# the match-phase wedge two OOMKilled content nodes had left on 2026-09-04.
+# Superseded: aca0552c4e = PR #112 — the reconcile's projected-check stopped
+# sampling the NEWEST cards, which the live write path projects inline, so a
+# service could pass as projected on evidence that proved nothing about its
+# history. Of 360 provider lists here, 114 named a service carrying no cells.
 #
-# Superseded: a93d368091 = #109 (naming the projection ledger's invariants) and
-# #110 (ServiceKey/ObserverKey value classes, byte-identical wire format).
+# Superseded: 7a93d45efd = PR #111 — the keying migration reports progress and
+# resumes; it completed here for the first time at 12:53Z, removing 22,031,970
+# stale cells, after a StatefulSet roll cleared the match-phase wedge two
+# OOMKilled content nodes left on 2026-09-04.
 #
-# Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE rather
-# than per round: 139,524 inherited subjects to a trickle in about three hours,
-# strictly monotonic, where the backlog had not moved in days.
-vespaEventStore = "aca0552c4e"
+# Superseded: a93d368091 = #109 and #110, both behaviourally inert.
+#
+# Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE: a
+# backlog that had not moved in days went 139,524 to a trickle in three hours.
+vespaEventStore = "a23a6a3a68"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
