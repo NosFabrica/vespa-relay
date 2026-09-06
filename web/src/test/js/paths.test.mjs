@@ -1,10 +1,6 @@
-// Every asset reference a page makes is document-relative and resolves. The
-// status pages are mounted under path prefixes (`/sync/`, `/monitor/`) with a
-// strip rewrite; an absolute `/web/…` reference is answered by the relay at
-// the host root with the wrong service's module, and nothing 404s. A bare
-// `web/shared/page.js` specifier is an import map key, not a relative url,
-// and fails the whole module graph. Anchors are navigation, not assets, and
-// are not covered.
+// Every asset reference a page makes is document-relative and resolves: the status pages are
+// mounted under path prefixes, so an absolute `/web/…` is answered by the wrong service, and a
+// bare `web/…` specifier is an import map key, not a relative url.
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

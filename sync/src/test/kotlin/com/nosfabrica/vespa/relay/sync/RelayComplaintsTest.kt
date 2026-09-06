@@ -29,13 +29,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * When a relay's sentence was said, and whether it has landed yet: quartz
- * dispatches a `CLOSED` to subscription listeners before connection listeners.
+ * Reading a relay's sentence after a walk: quartz dispatches a `CLOSED` to subscription
+ * listeners before connection listeners, so the plain read can be a hop too early.
  */
 class RelayComplaintsTest {
     private val url = RelayUrlNormalizer.normalize("wss://purplerelay.com")
 
-    /** A relay whose sentence lands on the [lateBy]-th read: the dispatch race, made deterministic. */
+    /** A relay whose sentence lands on the [lateBy]-th read. */
     private class LateComplaint(
         private val text: String,
         private val lateBy: Int,
@@ -53,7 +53,7 @@ class RelayComplaintsTest {
         runBlocking {
             val said = "ERROR: bad req: filter validation failed: too many kinds in filter: 69"
             val relay = LateComplaint(said, lateBy = 3)
-            // The plain read answers null here, which `FilterWidths.learn` reads as not a width refusal.
+            // The plain read is null here, which `FilterWidths.learn` would take as no width refusal.
             assertNull(relay.since(url, 0))
             assertEquals(said, relay.awaitSince(url, 0), "the grace has to cover a listener that has not run yet")
         }
@@ -61,7 +61,6 @@ class RelayComplaintsTest {
     @Test
     fun `a relay that genuinely said nothing costs the grace and no more`() =
         runBlocking {
-            // A relay that went quiet must not be waited on forever.
             val relay = LateComplaint("never", lateBy = Int.MAX_VALUE)
             val startedMs = System.currentTimeMillis()
             assertNull(relay.awaitSince(url, 0, graceMs = 100))
@@ -72,7 +71,6 @@ class RelayComplaintsTest {
     @Test
     fun `a sentence already in hand costs nothing`() =
         runBlocking {
-            // The common case must not pay the grace.
             val relay = LateComplaint("said at once", lateBy = 0)
             val startedMs = System.currentTimeMillis()
             assertEquals("said at once", relay.awaitSince(url, 0))
@@ -83,7 +81,6 @@ class RelayComplaintsTest {
     @Test
     fun `the deaf one hears nothing however long it is given`() =
         runBlocking {
-            // Every probe and test that does not care; an abort then names its reason without the relay's words.
             assertNull(RelayComplaints.DEAF.since(url, 0))
             assertNull(RelayComplaints.DEAF.awaitSince(url, 0, graceMs = 20))
         }

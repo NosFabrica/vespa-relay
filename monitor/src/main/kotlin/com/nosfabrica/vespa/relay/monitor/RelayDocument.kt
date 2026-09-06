@@ -37,12 +37,9 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * The relay's NIP-11 document, for the facts nothing can be measured against
- * (`software`, `supported_nips`, the limitation flags). No verdict is read off
- * it, and the measured half of [RelayFacts.requirements] overwrites it where
- * the two disagree. Fetched through the same transport the dial would use, so
- * a `.onion` document stays inside the circuit. A miss is not news: most
- * relays serve no document.
+ * The relay's NIP-11 document, for the facts nothing can be measured against. No verdict is
+ * read off it, and the measured half of [RelayFacts.requirements] overwrites it where they
+ * disagree. Fetched through the transport the dial would use, so a `.onion` stays in the circuit.
  */
 class RelayDocument(
     private val clientFor: (NormalizedRelayUrl) -> OkHttpClient,
@@ -53,20 +50,19 @@ class RelayDocument(
         val software: String? = null,
         val version: String? = null,
         val supportedNips: List<Int> = emptyList(),
-        /** NIP-11 `limitation` keys in NIP-66's spelling. A key the document omits produces no tag, not a negation. */
+        /** NIP-11 `limitation` keys in NIP-66's spelling. An omitted key produces no tag, not a negation. */
         val requirements: List<String> = emptyList(),
     )
 
-    /** What one ask learned. A null [doc] beside a real [openMs] is the ordinary case and still worth publishing. */
+    /** What one ask learned. A null [doc] beside a real [openMs] is the ordinary case. */
     data class Reading(
         val doc: Doc? = null,
         val openMs: Long? = null,
     )
 
     /**
-     * Asks [url] for its document and times the connection that carries the
-     * ask; the document shares the websocket's host, port and TLS, so this
-     * connect is `rtt-open`. A pooled connection reports null, never zero.
+     * Asks [url] for its document and times the connect that carries it, which shares the
+     * websocket's host, port and TLS and so is `rtt-open`. A pooled connection reports null.
      */
     suspend fun read(url: NormalizedRelayUrl): Reading {
         val address = httpAddressOf(url) ?: return Reading()
@@ -88,7 +84,6 @@ class RelayDocument(
                             .get()
                             .build()
                     client.newCall(request).execute().use { response ->
-                        // A homepage or an error page parses to nothing below; the bound keeps a non-relay's body small.
                         if (response.isSuccessful) response.peekBody(MAX_DOCUMENT_BYTES).string() else null
                     }
                 }.getOrNull()
@@ -97,7 +92,7 @@ class RelayDocument(
         return Reading(doc = body?.let { parse(it) }, openMs = timer.openMs)
     }
 
-    /** Brackets the TCP and TLS handshake alone; timing the call would fold in DNS and the body. One instance per call. */
+    /** Brackets the TCP and TLS handshake alone. One instance per call. */
     private class ConnectTimer : okhttp3.EventListener() {
         @Volatile private var startedAt: Long? = null
 
@@ -125,13 +120,12 @@ class RelayDocument(
     companion object {
         const val NIP11_CONTENT_TYPE = "application/nostr+json"
 
-        /** Short, so the document never paces a sweep whose real work is the dial. */
         const val DEFAULT_TIMEOUT_SECONDS = 10L
 
-        /** A NIP-11 document is a few kilobytes; anything larger is a url that answered with something else. */
+        /** Anything larger is a url that answered with something other than a document. */
         const val MAX_DOCUMENT_BYTES = 64L * 1024
 
-        /** The document address: same host, port and path, over the http scheme that pairs with the websocket one. Null without a host. */
+        /** The document address: same host, port and path over the paired http scheme. Null without a host. */
         fun httpAddressOf(url: NormalizedRelayUrl): String? {
             val raw = url.url
             val address =
@@ -143,7 +137,7 @@ class RelayDocument(
             return address.takeIf { runCatching { java.net.URI(it).host }.getOrNull()?.isNotBlank() == true }
         }
 
-        /** Reads a document that may be anything at all; each field is taken independently of the others. */
+        /** Reads a document that may be anything at all; each field is taken independently. */
         fun parse(body: String): Doc? {
             val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
             val doc =
@@ -162,7 +156,10 @@ class RelayDocument(
             }
         }
 
-        /** NIP-11's `limitation` block in NIP-66's vocabulary. `min_pow_difficulty = 0` is `!pow`, not silence. */
+        /**
+         * NIP-11's `limitation` block in NIP-66's vocabulary. `min_pow_difficulty = 0` is `!pow`,
+         * not silence.
+         */
         private fun requirementsOf(root: JsonObject): List<String> {
             val limitation = runCatching { root["limitation"]?.jsonObject }.getOrNull() ?: return emptyList()
             return buildList {

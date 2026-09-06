@@ -68,13 +68,9 @@ data class Nip11Info(
 )
 
 /**
- * The whole relay on [port] over Ktor's Netty engine: the websocket relay
- * and the NIP-11 doc on `/`, the landing page and its modules, the stats
- * pages, `/pressure`, and the NIP-86 RPC on `POST /` when [admin] is set.
- *
- * The NIP-11 doc is held mutably so NIP-86 RPCs update what `GET /` serves.
- * The store is not owned here. With [wait] (the default) this blocks until
- * the server stops.
+ * The whole relay on [port]: the websocket and the NIP-11 doc on `/`, the landing page and its
+ * modules, the stats pages, `/pressure`, and the NIP-86 RPC on `POST /` when [admin] is set.
+ * With [wait] (the default) this blocks until the server stops.
  */
 fun serveRelay(
     relay: NostrRelayServer,
@@ -86,9 +82,9 @@ fun serveRelay(
     landingPage: String? = null,
     observerStatsPage: String? = null,
     statsPage: String? = null,
-    // Null, or never yet published, makes GET /stats.json a 503 rather than a page of zeros.
+    // Null, or never yet published, makes GET /stats.json a 503.
     statsJson: StatsSnapshot? = null,
-    // When set, GET /pressure serves the mean client-read latency the sync process throttles on.
+    // When set, GET /pressure serves the mean read latency the sync process throttles on.
     pressure: ServingPressure? = null,
     // Asked per response: the hidden service can come up after this server did.
     onionLocation: () -> String? = { null },
@@ -100,7 +96,7 @@ fun serveRelay(
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
 
-    // Themed once at boot and re-themed when a NIP-86 rpc changes the icon. See IconedPage.
+    // Re-themed when a NIP-86 rpc changes the icon.
     val landing = landingPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
     val observerStats = observerStatsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
     val stats = statsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
@@ -182,10 +178,8 @@ private const val ONION_LOCATION = "Onion-Location"
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
 
 /**
- * `GET /stats.html` and `GET /stats.json`: the corpus statistics page and the
- * document it charts. Public, and every field is a fact about stored events;
- * nothing about clients belongs in it. Its own function so a test can mount
- * it without a relay.
+ * `GET /stats.html` and `GET /stats.json`: the corpus statistics page and the document it charts.
+ * Public: every field is a fact about stored events, and nothing about clients belongs in it.
  */
 internal fun Route.corpusStats(
     page: IconedPage?,
@@ -200,9 +194,8 @@ internal fun Route.corpusStats(
 }
 
 /**
- * A path segment shaped like a NIP-19 identifier. No length cap (relay hints
- * exceed bech32's 90) and no checksum (the page verifies it). Case-insensitive
- * because bech32 permits all-uppercase.
+ * A path segment shaped like a NIP-19 identifier: no length cap (relay hints exceed bech32's 90),
+ * no checksum (the page verifies it), and case-insensitive because bech32 permits all-uppercase.
  */
 private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]+$", RegexOption.IGNORE_CASE)
 

@@ -53,25 +53,14 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 
 /**
- * The Nostr relay: quartz's protocol engine ([RelayServerBase]) over the
- * Vespa-backed store.
- *
- * The policy stack verifies AUTH inline; EVENT publishes are verified by
- * [IngestQueue] off the hot path. [limits] are enforced by the engine and
- * render the NIP-11 `limitation` block, so the two cannot disagree.
- *
- * Reads declare their lens: [LensRequiredPolicy] refuses an unauthenticated
- * REQ or COUNT that names no observer and does not waive one. NIP-42 runs
- * through [MultiAddressAuthPolicy] so a client that dialled the hidden service
- * authenticates as itself; that policy also carries [onAuthenticated].
- *
- * [close] shuts the connections and the ingest writer, not the store, which
- * the composition root owns.
+ * The Nostr relay: quartz's protocol engine ([RelayServerBase]) over the Vespa-backed store.
+ * [limits] are enforced by the engine and render the NIP-11 `limitation` block. [close] shuts the
+ * connections and the ingest writer, not the store, which the composition root owns.
  */
 class NostrRelayServer(
     store: IEventStore,
     relayUrl: NormalizedRelayUrl,
-    // Asked per connection: Tor mints the hidden service's address on its first start, which can be after ours.
+    // Asked per connection: the hidden service's address can appear after this server started.
     alsoServedAt: () -> Set<NormalizedRelayUrl> = { emptySet() },
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
@@ -79,20 +68,19 @@ class NostrRelayServer(
     negentropySettings: NegentropySettings = NegentropySettings.Default,
     // Shared with the NIP-86 admin endpoint; bans apply before ingest.
     banStore: BanStore? = null,
-    // Deploy-time write authorization. Empty allowlists are permissive; denylists always subtract.
+    // Empty allowlists are permissive; denylists always subtract.
     pubkeyAllow: Set<String> = emptySet(),
     pubkeyDeny: Set<String> = emptySet(),
     kindAllow: Set<Int> = emptySet(),
     kindDeny: Set<Int> = emptySet(),
     rejectFutureSeconds: Int = 0,
-    // See [LensRequiredPolicy]; false answers anonymous reads out of the whole corpus.
+    // False answers anonymous reads out of the whole corpus, see [LensRequiredPolicy].
     requireReadLens: Boolean = true,
     onObserver: ((String) -> Unit)? = null,
     // Fires once per successful NIP-42 AUTH with the connection's send.
     onAuthenticated: AuthNotifier? = null,
-    // Only recorded here; the sync process polls the mean over GET /pressure.
     private val servingPressure: ServingPressure? = null,
-    // Ranked reads one connection may run at once; 0 turns the gate off. See [SearchGate].
+    // Ranked reads one connection may run at once; 0 turns the gate off.
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
     // A default parameter so the gate exists before the super constructor takes it as the listener.
     private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
@@ -121,7 +109,7 @@ class NostrRelayServer(
     override val backend: SessionBackend =
         ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate)
 
-    /** Connections holding a search lane right now. See [SearchGate.lanesOpen]. */
+    /** Connections holding a search lane right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
 
     override fun close() {
@@ -132,29 +120,19 @@ class NostrRelayServer(
 }
 
 /**
- * The session-facing wrapper over [LiveEventStore]. Every read path is
- * delegated, [queryRaw] and [sealedNegentropyStorage] included: the interface
- * defaults would rebuild events and snapshots the engine already optimized away.
- *
- * A read from an authenticated connection runs in a [StoreQueryContext]
- * carrying the caller's pubkey, which the store applies as a web-of-trust
- * filter. An anonymous caller gets no observer and the whole corpus, unranked;
- * [LensRequiredPolicy] decides whether such a read is answered at all, and
- * this class decides only what a read is answered through.
- *
- * The reference expansion lives in the store: it needs a suspending lookup
- * mid-page, which no callback on this interface can make.
+ * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [queryRaw] and
+ * [sealedNegentropyStorage] included, or the interface defaults would rebuild what the engine
+ * optimized away. An authenticated read runs in a [StoreQueryContext] carrying the caller's pubkey.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
     private val onObserver: ((String) -> Unit)? = null,
     /**
-     * Sampled from the start of a read to its EOSE. A REQ parks until the
-     * client closes it, so timing the whole call would record subscription
-     * lifetimes as read latency. Prompt calls (COUNT) are timed whole.
+     * Sampled from the start of a read to its EOSE: a REQ parks until the client closes it, so
+     * timing the whole call would record subscription lifetimes as read latency.
      */
     private val pressure: ServingPressure? = null,
-    /** Taken inside the timed span: a read queued behind a previous search took that long from where the client sits. */
+    /** Taken inside the timed span: a read queued behind a previous search took that long for the client. */
     private val gate: SearchGate = SearchGate(0),
 ) : SessionBackend {
     override suspend fun query(

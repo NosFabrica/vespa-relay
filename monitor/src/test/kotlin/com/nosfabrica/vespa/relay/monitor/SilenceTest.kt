@@ -23,10 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * The cases are the strings the JDK, OkHttp and quartz actually produce;
- * unrecognised text goes to UNKNOWN rather than the nearest bucket.
- */
+/** The cases are the strings the JDK, OkHttp and quartz produce; unrecognised text goes to UNKNOWN. */
 class SilenceTest {
     @Test
     fun `the five causes Unreachability already proves are told apart`() {
@@ -44,7 +41,7 @@ class SilenceTest {
 
     @Test
     fun `the strings a live pass actually produced`() {
-        // Quartz's `WebSocket Failure: <message> (<ExceptionName>)`, as ConsistencyLivePassProbe saw it.
+        // Quartz's `WebSocket Failure: <message> (<ExceptionName>)`.
         assertEquals(
             Silence.REFUSED,
             Silence.of("cannot:WebSocket Failure: Failed to connect to localhost/127.0.0.1:1 (ConnectException)"),

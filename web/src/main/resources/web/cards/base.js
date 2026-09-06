@@ -1,12 +1,7 @@
-// The substrate every renderer stands on: the registry, the byline, badges,
-// props tables, the json toggle, and the two rendering modes. Family modules
-// import from here and call register(); they never import each other, and
-// dispatch lives in cards.js so registration stays cycle-free.
-//
-// Every renderer is (ev, opts) -> HTML string. opts.full is the permalink
-// mode: a search result is a preview (clipped text, clamped lines, relative
-// dates), the entity page is the whole card. One template per kind, two
-// depths, so the two views cannot drift apart.
+// The substrate every renderer stands on: the registry, the byline, badges, props tables, the
+// json toggle, and the two rendering modes. Family modules import from here and call
+// register(); dispatch lives in cards.js so registration stays cycle-free. Every renderer is
+// (ev, opts) -> HTML string; opts.full is the permalink depth, else a clipped preview.
 
 import { esc, clip, fullDate, when } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
@@ -24,22 +19,14 @@ export const renderers = new Map(); // kind -> (ev, opts) -> html
 export function register(kinds, fn) { for (const k of kinds) renderers.set(k, fn); }
 
 /**
- * The type-ahead registry: kind -> (ev) -> `{name, sub, pic, self}`, a card's
- * knowledge at one line. cards.js applies the fallbacks: an empty `name` falls
- * to the author, never to raw content (that fallback printed JSON payloads);
- * an empty `sub` falls to who posted it. `pic` is set only by kinds whose card
- * draws a face of its own, so the circle means "the author" everywhere else.
- * `self` marks an event about its author (a profile), whose second line must
- * not repeat the name. The render test holds this map and `renderers` to the
- * same key set.
+ * The type-ahead registry: kind -> (ev) -> `{name, sub, pic, self}`, a card's knowledge at one
+ * line. cards.js fills an empty `name` with the author and an empty `sub` with who posted it;
+ * `pic` is set only by kinds whose card draws its own face; `self` marks an event about its author.
  */
 export const rows = new Map(); // kind -> (ev) -> {name, sub, pic, self}
 export function registerRow(kinds, fn) { for (const k of kinds) rows.set(k, fn); }
 
-/**
- * A stranger's value as one line of text, or "". Non-strings become "" (a JSON
- * field can be any type), and whitespace collapses before `clip` counts it.
- */
+/** A stranger's value as one line of text, or ""; non-strings become "". */
 export const oneLine = (v) =>
   (typeof v === "string" || typeof v === "number" ? String(v).replace(/\s+/g, " ").trim() : "");
 
@@ -53,8 +40,7 @@ export const satsOf = (msats) => {
 };
 
 // ---- links ----------------------------------------------------------------
-// Internal first: this app renders NIP-19 pages itself, and app.js intercepts
-// the click into a pushState render. njump is the entity page's escape hatch.
+// Internal first: this app renders NIP-19 pages itself; njump is the entity page's escape hatch.
 export const keyHref = (hex) => `/${esc(npub(hex))}`;
 export const noteHref = (hex) => `/${esc(noteId(hex))}`;
 export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
@@ -62,8 +48,8 @@ export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
 export const addrHref = (a) => { const n = naddr(a); return n ? `/${esc(n)}` : null; };
 
 /**
- * An event page. With a relay or author hint this mints an nevent, which is
- * what entity.js falls back to when this relay's index misses the event.
+ * An event page. With a relay or author hint this mints an nevent, which entity.js falls back
+ * to when this relay's index misses the event.
  */
 export const eventHref = (id, hints = {}) => {
   const n = hints.relay || hints.author
@@ -73,15 +59,12 @@ export const eventHref = (id, hints = {}) => {
 };
 
 /**
- * The card's own page: a profile's npub, an addressable event's naddr, else
- * the event id. An id names one revision, so the first two would go stale on
- * the next edit; the naddr is also what a provenance pill opens, and the two
- * must agree. Null when the event carries no usable identifier.
+ * The card's own page: a profile's npub, an addressable event's naddr (an id names one
+ * revision), else the event id. Null when the event carries no usable identifier.
  */
 export const selfHref = (ev) => {
   if (ev && ev.kind === 0 && HEX64.test(ev.pubkey || "")) return keyHref(ev.pubkey);
-  // Addressable is not the same as encodable: a `d` over 255 bytes has no
-  // legal naddr, and such a card still has an id to link to.
+  // Addressable is not the same as encodable: a `d` over 255 bytes has no naddr, but an id remains.
   const addr = addrOf(ev);
   const byAddr = addr ? addrHref(addr) : null;
   if (byAddr) return byAddr;
@@ -91,8 +74,7 @@ export const selfHref = (ev) => {
 const HEX64 = /^[0-9a-f]{64}$/;
 
 // ---- tag access -----------------------------------------------------------
-// `Array.isArray` on every entry: a hint-fetched event is rendered before
-// anything has verified its tags.
+// `Array.isArray` on every entry: a hint-fetched event is rendered before anything has verified its tags.
 export const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === name);
 export const tagOf = (ev, ...names) => {
   for (const name of names) {
@@ -106,10 +88,8 @@ export const tagsWhere = (ev, pred) =>
   ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && pred(String(t[0] ?? ""), t));
 
 /**
- * Every NIP-92/94 imeta on the event, parsed: `["imeta", "url https://…",
- * "dim 1088x1920"]` becomes `{url: "https://…", dim: "1088x1920"}`. One entry
- * per tag, because NIP-68 gives a picture post one imeta per picture.
- * A null-prototype object because the keys are a stranger's; first key wins.
+ * Every NIP-92/94 imeta on the event, parsed to `{url, dim, ...}`, one entry per tag. A
+ * null-prototype object because the keys are a stranger's; first key wins.
  */
 export const imetas = (ev) => tagsOf(ev, "imeta").map((t) => {
   const m = Object.create(null);
@@ -141,11 +121,7 @@ export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 // ---- shared chrome --------------------------------------------------------
 export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
 
-/**
- * The provenance pills, or "" for a card that is here because the search
- * matched it. Most cards draw nothing; the row's presence is itself the
- * signal, so it carries no standing label.
- */
+/** The provenance pills, or "" for a card that is here because the search matched it. */
 export function provHtml(ev, opts) {
   const pills = provenance.get((ev && ev.id) || "");
   if (!pills || !pills.length) return "";
@@ -175,9 +151,8 @@ function pillHtml(p, overflow = false) {
 }
 
 /**
- * A pill's destination: a list or assertion opens its own entity page (the
- * same page its card opens), a label searches for itself, a topic opens that
- * topic's screen.
+ * A pill's destination: a list or assertion opens its entity page, a label searches for itself, a
+ * topic opens its screen.
  */
 function pillHref(p) {
   if (p.to === "addr") return addrHref(p.value);
@@ -195,9 +170,8 @@ function pillTitle(p) {
 }
 
 /**
- * The author's face where it disambiguates: always on an ungated pill (who is
- * speaking is the whole trust question), and on a gated one only when the page
- * holds more than one delegated publisher.
+ * The author's face where it disambiguates: always on an ungated pill, and on a gated one only
+ * when the page holds more than one delegated publisher.
  */
 function facesFor(p) {
   if (p.gated && !attribution.faces) return "";
@@ -212,10 +186,8 @@ export const jsonHtml = (ev) =>
   `<pre class="raw-body" hidden></pre></div>`;
 
 /**
- * The shared author line: avatar, name, date, badge. The date is the card's
- * permalink and a real anchor, which is what lets the whole card be clickable
- * without losing middle-click, right-click or Tab. On the permalink it stays
- * plain text.
+ * The shared author line: avatar, name, date, badge. The date is the card's permalink and a
+ * real anchor, so the whole card can be clickable without losing middle-click or Tab.
  */
 export function bylineHtml(ev, opts) {
   const a = authorOf(ev);
@@ -236,11 +208,8 @@ export function bylineHtml(ev, opts) {
 }
 
 /**
- * The NIP-29 room a chat line was posted to, as a pill beside the badge,
- * linking to that group's search (a group has no event of its own to open).
- * An `h` names no host and this store does not record which relay an event
- * came from, so the name is groupnames.js's "what this id is called where the
- * sources agree", never "which room this is".
+ * The NIP-29 room a chat line was posted to, as a pill linking to that group's search. An `h`
+ * names no host, so the name is groupnames.js's "what this id is called where the sources agree".
  */
 export function groupPillHtml(ev) {
   const id = postedTo(ev);
@@ -257,10 +226,8 @@ export function groupPillHtml(ev) {
 }
 
 /**
- * A props table, skipping rows whose value came up empty. The value goes in
- * as raw HTML so a row can be a link, so every value derived from an event
- * must arrive already escaped; cards.test.mjs renders every kind with a
- * payload in every tag to catch the one that does not.
+ * A props table, skipping empty values. Values go in as raw HTML so a row can be a link, so
+ * every value derived from an event must arrive already escaped.
  */
 export const propsHtml = (props) => {
   const rows = props.filter(([, v]) => v != null && v !== "");
@@ -268,10 +235,8 @@ export const propsHtml = (props) => {
 };
 
 /**
- * The card frame most kinds share: byline, the kind's body, props, json.
- * `data-href` is where the card goes when clicked; an attribute rather than a
- * wrapping `<a>` because a card contains links and anchors cannot nest.
- * Preview depth only: on the permalink the card is the page.
+ * The card frame most kinds share: byline, body, props, json. `data-href` is where the card
+ * goes when clicked, an attribute because anchors cannot nest; preview depth only.
  */
 export function shell(ev, opts, inner, props = []) {
   const href = opts && opts.full ? null : selfHref(ev);
@@ -291,16 +256,18 @@ export const bodyHtml = (opts, text, n = 400, muted = false) => {
   return s ? `<div class="result-body${clampCls(opts)}${muted ? " muted" : ""}">${esc(s)}</div>` : "";
 };
 
-/** A person, linked: their name when the store knows one, else a short npub, the full npub in the hover. Never hex. */
+/**
+ * A person, linked: their name when the store knows one, else a short npub, the full npub in the
+ * hover. Never hex.
+ */
 export const personLink = (pk) => {
   const nm = displayName(profiles.get(pk));
   return `<a${nm ? "" : ' class="mono"'} href="${keyHref(pk)}" title="${esc(npub(pk))}">${esc(nm || shortNpub(pk))}</a>`;
 };
 
 /**
- * "↩ in reply to <person>", or "" when the event is not a reply. The label is
- * the person; the link is the parent event, carrying the `e` tag's relay hint
- * so a parent this relay never mirrored still opens.
+ * "↩ in reply to <person>", or "" when the event is not a reply. The link is the parent event,
+ * carrying the `e` tag's relay hint so a parent this relay never mirrored still opens.
  */
 export function replyLine(ev) {
   const t = replyTarget(ev);
@@ -321,7 +288,10 @@ const replyRow = (href, pk, fallbackLabel, fallbackTitle) => {
   return `<div class="reply-line">↩ in reply to <a${nm ? "" : ' class="mono"'} href="${href}" title="${esc(title)}">${esc(label)}</a></div>`;
 };
 
-/** A heading at either depth. `href` goes in raw: pass keyHref/noteHref/addrHref, never a url off an event. */
+/**
+ * A heading at either depth. `href` goes in raw: pass keyHref/noteHref/addrHref, never a url off an
+ * event.
+ */
 export const titleHtml = (opts, text, n = 140, href = null) => {
   const t = text ? clipIf(opts, text, n) : "";
   if (!t) return "";
@@ -329,10 +299,8 @@ export const titleHtml = (opts, text, n = 140, href = null) => {
 };
 
 /**
- * A url off an event, reduced to one this page will put in an `href`, or null.
- * Absolute http/https only: `esc()` makes a url safe to sit in an attribute
- * and says nothing about `javascript:` or `data:` being followed, and a
- * relative url would resolve against this origin.
+ * A url off an event, reduced to one this page will put in an `href`, or null. Absolute
+ * http/https only: `esc()` says nothing about `javascript:` being followed.
  */
 export const safeUrl = (u) => {
   const s = String(u || "").trim();
@@ -352,29 +320,27 @@ export const extLink = (url, label) => {
     : `<span class="mono">${esc(clip(String(url), 120))}</span>`;
 };
 
-/** A list of relay rows; full mode shows all, preview the first few. Five families carry relay urls. */
+/** A list of relay rows; full mode shows all, preview the first few. */
 export function relayRows(rows, opts) {
   const shown = opts && opts.full ? rows : rows.slice(0, 6);
   const more = rows.length - shown.length;
   return `<ul class="relay-list">${shown.map((r) => `<li><span class="mono">${esc(r.url)}</span>${r.note ? ` <span class="muted-note">${esc(r.note)}</span>` : ""}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
-/** A search this page can run, as a url: the root with `q` set as the search field would have tokenized it. */
+/**
+ * A search this page can run, as a url: the root with `q` set as the search field would have
+ * tokenized it.
+ */
 export const searchHref = (q) => `/?${new URLSearchParams({ q })}`;
 /** A topic, however it was written: `t` tags carry `scotland`, cards show `#scotland`. */
 export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#${t}`);
 /**
- * A NIP-29 group as the search that finds what was posted in it, or null when
- * the id would not read back as itself in the token language (whitespace ends
- * a token, trailing punctuation is stripped). A link that searches for a
- * different group is worse than no link.
+ * A NIP-29 group as the search that finds what was posted in it, or null when the id would not
+ * read back as itself in the token language.
  */
 export const groupHref = (id) => (groupTokenizes(id) ? searchHref(`group:${id}`) : null);
 
-/**
- * Hashtags, words, mime types — short values that read as chips, not rows.
- * `hrefOf` makes them links; values with no search behind them stay spans.
- */
+/** Short values that read as chips, not rows. `hrefOf` makes them links; the rest stay spans. */
 export function chipRow(values, opts, hrefOf = null) {
   const shown = opts && opts.full ? values : values.slice(0, 12);
   const more = values.length - shown.length;
@@ -420,10 +386,8 @@ export function faceStrip(pubkeys, max = 12) {
 }
 
 /**
- * How many cells a people grid gets, per depth. Both numbers must stay
- * divisible by every column count index.html's `.people-grid` uses (6 and 3),
- * or the `+N more` cell ends up alone on a ragged row. cards.js reads these to
- * fetch exactly the profiles the grid draws.
+ * How many cells a people grid gets, per depth. Both must stay divisible by every column count
+ * `.people-grid` uses, or the `+N more` cell ends up alone on a ragged row.
  */
 export const PEOPLE_GRID = { preview: 6, full: 24 };
 
@@ -434,11 +398,7 @@ export const uniquePubkeys = (values) =>
 /** The distinct people a list holds — its `p` tags, deduped, hex only. */
 export const peopleOf = (ev) => uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
 
-/**
- * Who a grid draws and how many it leaves out, the one answer the renderer
- * and the profile loader both read. When the list overruns, the last cell is
- * the count, so one fewer face fits.
- */
+/** Who a grid draws and how many it leaves out; when the list overruns, the last cell is the count. */
 export function gridCells(pubkeys, opts) {
   const cap = opts && opts.full ? PEOPLE_GRID.full : PEOPLE_GRID.preview;
   const shown = pubkeys.length > cap ? pubkeys.slice(0, cap - 1) : pubkeys;
@@ -446,17 +406,14 @@ export function gridCells(pubkeys, opts) {
 }
 
 /**
- * The people a list holds, as a grid of face + name. The stylesheet takes the
- * `full` class to pick the face size and the column count; this function
- * counts cells, never rows. The npub always sits in the title, which is how
- * cards.test.mjs finds every person a card names.
+ * The people a list holds, as a grid of face + name. The npub always sits in the title, which
+ * is how the tests find every person a card names.
  */
 export function peopleGrid(pubkeys, opts) {
   const full = !!(opts && opts.full);
   const { shown, more } = gridCells(uniquePubkeys(pubkeys), opts);
   if (!shown.length) return "";
   const size = full ? "xxl" : "xl";
-  // One map read per cell; the profile entry carries both picture and name.
   const cell = (pk) => {
     const p = profiles.get(pk);
     const nm = displayName(p);
@@ -475,26 +432,19 @@ const compactCount = (n) =>
   n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 
 /**
- * Which kinds draw that grid, declared by the family that registers the
- * renderer. cards.js loads those people's profiles before rendering, so the
- * set must be kept beside the renderer rather than listed a second time.
+ * Which kinds draw that grid, declared by the family that registers the renderer, so cards.js
+ * loads those profiles before rendering.
  */
 export const PEOPLE_GRID_KINDS = new Set();
 export const registerPeopleGrid = (kinds) => { for (const k of kinds) PEOPLE_GRID_KINDS.add(k); };
 
-/**
- * The pubkeys [ev]'s grid draws at this depth. Depth matters: the results
- * list only ever renders previews, and the permalink's cap would fetch
- * profiles no card on the page can show.
- */
+/** The pubkeys [ev]'s grid draws at this depth; the results list only ever renders previews. */
 export const gridPeople = (ev, opts) =>
   PEOPLE_GRID_KINDS.has(ev.kind) ? gridCells(peopleOf(ev), opts).shown : [];
 
 /**
- * The same declaration for a card that names people no scan of `p` tags
- * reaches, such as a repository's `["maintainers", <pk>, <pk>, …]`. A renderer
- * registers the very function it draws with, so the set named and the set
- * declared are one expression.
+ * The same declaration for a card that names people no scan of `p` tags reaches, such as a
+ * repository's maintainers; a renderer registers the very function it draws with.
  */
 export const NAMED_PEOPLE = new Map(); // kind -> (ev, opts) -> pubkeys
 export const registerNamedPeople = (kinds, fn) => { for (const k of kinds) NAMED_PEOPLE.set(k, fn); };

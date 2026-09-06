@@ -23,10 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Prints the live connection count on each connect and disconnect. Installed
- * only under `LOG_CONNECTIONS`; the engine's `activeConnections` is the gauge.
- */
+/** Prints the live connection count on each connect and disconnect; installed only under `LOG_CONNECTIONS`. */
 class ConnectionCountListener : RelayServerListener {
     private val active = AtomicInteger(0)
 

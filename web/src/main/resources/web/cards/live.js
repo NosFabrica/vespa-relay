@@ -1,6 +1,4 @@
-// The time family: live streams and calendar events. A 30311's status tag
-// is surfaced as a pill beside the badge: "live" versus "ended" is the whole
-// question a person clicking one has.
+// The time family: live streams and calendar events. A 30311's status is a pill beside the badge.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
@@ -48,7 +46,10 @@ function calendarCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 31925 — an RSVP: `status` is the answer (accepted/declined/tentative), the `a` tag what is being answered. */
+/**
+ * 31925 — an RSVP: `status` is the answer (accepted/declined/tentative), the `a` tag what is being
+ * answered.
+ */
 function rsvpCard(ev, opts) {
   const status = (tagOf(ev, "status") || "").toLowerCase();
   const target = tagOf(ev, "a");

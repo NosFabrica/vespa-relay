@@ -224,3 +224,15 @@ path too, so a tail's hook merely passing through at the instant a genuinely
 silent relay's walk gave up read as a stall of ours. `trySend` first, then the
 count around `send`, keyed by `origin.url`; `parkedOn` and `isFull` are what
 the pool reads.
+
+**`dropSuperseded` steps aside for a batch carrying a deletion or a vanish,
+and reads before the writer lock.** On the store's replay path an event's
+fate depends on its position among the others in the batch, so deciding a
+winner here for a batch that also carries a kind 5 or kind 62 could leave an
+address empty; the whole batch goes to the store as it is. The check is on
+the kind, not the type, because an Event that skipped quartz's factory is a
+plain Event. The comparison itself is NIP-01's own, the rule the store's
+version stage applies, but it runs before the writer lock: a NIP-09 deletion
+of the newer version landing inside that window drops an event the store
+would have taken, until the next full resync re-offers it. Accepted, because
+the window is one batch wide and the loss is recoverable.

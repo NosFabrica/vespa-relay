@@ -29,15 +29,9 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * The addresses this relay answers at besides `RELAY_URL`: the `.onion` a Tor
- * hidden service publishes in front of the same port.
- *
- * Only NIP-42 needs the whole list (MultiAddressAuthPolicy); everything else
- * is address-agnostic. The hidden-service address is discovered, not declared:
- * Tor derives it from a key it generates on its first start, so [hostnameFile]
- * is watched by mtime and consulted per connection, at most one `stat` per
- * [LOOK_INTERVAL_MS]. Watching the mtime is also what makes a rotated address
- * land without a restart.
+ * The addresses this relay answers at besides `RELAY_URL`: the `.onion` a hidden service publishes
+ * in front of the same port. Tor mints it on its first start, so [hostnameFile] is watched by
+ * mtime, at most once per [LOOK_INTERVAL_MS], and a rotated address lands without a restart.
  */
 class RelayAddresses(
     private val declared: Set<NormalizedRelayUrl> = emptySet(),
@@ -45,16 +39,12 @@ class RelayAddresses(
     private val announce: (String) -> Unit = { System.err.println(it) },
     // Whether the clearnet endpoint may name the hidden service. AUTH is accepted for it either way.
     private val advertise: Boolean = true,
-    // Injected so tests can assert what happens across looks.
     private val nanoTime: () -> Long = System::nanoTime,
 ) {
     @Volatile
     private var addresses: Set<NormalizedRelayUrl> = declared
 
-    /**
-     * The `Onion-Location` value, or null with no hidden service to name.
-     * `http://…onion/`, not `ws://`: readers parse it with an http url parser.
-     */
+    /** The `Onion-Location` value, or null. `http://`, not `ws://`: readers parse it with an http url parser. */
     @Volatile
     private var advertised: String? = onionAmong(declared)
 
@@ -63,9 +53,8 @@ class RelayAddresses(
     private var seenStamp: Long = -1L
 
     /**
-     * When the file may be looked at again. Seeded from the clock so the first
-     * look is due, and compared as a difference because `nanoTime` has no
-     * origin and wraps.
+     * When the file may be looked at again. Seeded from the clock so the first look is due, and
+     * compared as a difference because `nanoTime` has no origin and wraps.
      */
     @Volatile
     private var nextLook: Long = nanoTime()
@@ -74,7 +63,7 @@ class RelayAddresses(
         declared.forEach(::announceAddress)
     }
 
-    /** Whatever we know right now. Called per connection, so a late hidden service needs no restart. */
+    /** Whatever is known right now, asked per connection so a late hidden service needs no restart. */
     fun alternates(): Set<NormalizedRelayUrl> {
         refresh()
         return addresses
@@ -96,11 +85,7 @@ class RelayAddresses(
         if (stamp != seenStamp) adopt(file, stamp)
     }
 
-    /**
-     * Re-reads the published hostname. Synchronized and re-checked because
-     * [refresh] is lock-free. A missing file says nothing; content that is
-     * not an address is announced once per change.
-     */
+    /** Re-reads the published hostname. Synchronized and re-checked because [refresh] is lock-free. */
     @Synchronized
     private fun adopt(
         file: Path,
@@ -108,7 +93,7 @@ class RelayAddresses(
     ) {
         if (stamp == seenStamp) return
         seenStamp = stamp
-        // Gone, or never there. Keep the address we had: a mount blinking does not end a hidden service.
+        // Gone, or never there. Keep the address held: a mount blinking does not end a hidden service.
         if (stamp == 0L) return
 
         val raw =
@@ -143,9 +128,8 @@ class RelayAddresses(
 private const val LOOK_INTERVAL_MS = 1_000L
 
 /**
- * `RELAY_ONION_URL` (a hand-declared second address; malformed is fatal, like
- * `RELAY_URL`), `RELAY_ONION_HOSTNAME_FILE` (where the hidden service's
- * container writes its hostname; absent is normal) and `RELAY_ONION_ADVERTISE`
+ * `RELAY_ONION_URL` (a declared second address; malformed is fatal), `RELAY_ONION_HOSTNAME_FILE`
+ * (where the hidden service writes its hostname; absent is normal) and `RELAY_ONION_ADVERTISE`
  * (whether `Onion-Location` names it; default true).
  */
 fun relayAddressesFromEnv(env: Map<String, String>): RelayAddresses {

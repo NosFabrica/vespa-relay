@@ -30,15 +30,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The glossary checked against the members the two reports actually emit,
- * in both directions.
- */
+/** The glossary checked against the members the two reports actually emit, in both directions. */
 class StatusVocabularyTest {
     /**
-     * Members that carry no number and need no entry: identifiers, timestamps
-     * and containers whose children are what a reader looks up. Every addition
-     * is a judgement that something is self-describing; keep it uncomfortable.
+     * Members that carry no number and need no entry: identifiers, timestamps and containers.
+     * Every addition is a judgement that something is self-describing.
      */
     private val selfDescribing =
         setOf(
@@ -245,12 +241,8 @@ class StatusVocabularyTest {
                     "inUse",
                     "deferred",
                     "stage",
-                    // The stage split's SHAPE, published beside its total for
-                    // the stages the store times as calls, and the write
-                    // lock's present-tense holder. A total says a stage cost
-                    // 24 minutes; only these say whether that was one call or
-                    // a hundred thousand, and who is holding the lock while
-                    // the mirror waits.
+                    // The stage split's shape beside its total: whether a stage's cost was one call
+                    // or a hundred thousand, and who holds the write lock while the mirror waits.
                     "calls",
                     "meanMs",
                     "maxMs",
@@ -378,7 +370,6 @@ class StatusVocabularyTest {
                     "at",
                     "heapPct",
                 ) +
-                // See [StoreCalls].
                 setOf(
                     "store",
                     "calls",

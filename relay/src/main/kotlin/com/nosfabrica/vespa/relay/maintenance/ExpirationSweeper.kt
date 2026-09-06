@@ -31,10 +31,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
-/**
- * Prunes NIP-40 expired events from the [store] every [intervalSeconds]; the
- * store schedules nothing itself. A non-positive interval disables the sweeper.
- */
+/** Prunes NIP-40 expired events from the [store] every [intervalSeconds]; a non-positive interval disables it. */
 class ExpirationSweeper(
     private val store: IEventStore,
     private val intervalSeconds: Long,

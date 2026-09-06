@@ -23,10 +23,9 @@ package com.nosfabrica.vespa.relay.config
 import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 
 /**
- * Parses every pubkey setting: a bech32 public key, converted to lowercase
- * hex. Bare hex is refused because it has no checksum, so a mistyped key is
- * nobody and nothing downstream can notice. A bad value throws rather than
- * being dropped, because a dropped entry looks like the feature not working.
+ * Parses every pubkey setting: a bech32 public key, converted to lowercase hex. Bare hex is
+ * refused because it has no checksum, and a bad value throws rather than being dropped, because
+ * a dropped entry looks like the feature not working.
  */
 object PubKeys {
     /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */
@@ -34,7 +33,7 @@ object PubKeys {
         raw: String,
         varName: String,
     ): String {
-        // BIP-173 allows all-uppercase; folding case first also keeps the nsec check below honest.
+        // BIP-173 allows all-uppercase; the case fold must come before the nsec check.
         val trimmed =
             raw
                 .trim()
@@ -84,7 +83,6 @@ object PubKeys {
             }
 
             value.startsWith("npub1") -> {
-                // The shape is right and the checksum failed; the operator already believes it is an npub.
                 "an npub that would not decode — recopy it"
             }
 
@@ -99,12 +97,7 @@ object PubKeys {
 }
 
 /**
- * The relay's administrators, from `RELAY_ADMIN_PUBKEYS`. Empty disables
- * NIP-86 and refuses to serve the pulse page at all.
- *
- * IN `:common`, WITH THE PARSER, because both processes read it now: the
- * serving relay for the NIP-86 admin RPC and its pulse page, the mirror for
- * its own. One list and one parser — a security setting is the last place two
- * processes should be reading the same variable through different code.
+ * The relay's administrators, from `RELAY_ADMIN_PUBKEYS`. Empty disables NIP-86 and the pulse
+ * page. Both processes read it, through this one parser.
  */
 fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["RELAY_ADMIN_PUBKEYS"], "RELAY_ADMIN_PUBKEYS")

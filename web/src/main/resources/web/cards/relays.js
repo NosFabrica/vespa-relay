@@ -1,9 +1,5 @@
-// NIP-66: relay discovery records and the monitors that publish them. This
-// relay publishes both (RelayIdentity's key signs the announcement), so their
-// cards explain its own output. A discovery record's fields are tags: the url
-// is the `d`, the supported NIPs `N`, the software `s`. The NIP-11 document
-// rides in `content` as JSON and is the only place a human-written name or
-// description lives, so it is read rather than printed.
+// NIP-66: relay discovery records and the monitors that publish them. A record's fields
+// are tags; the NIP-11 document in `content` is the only place a human-written name lives.
 
 import { esc } from "../shared/format.js";
 import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, jsonContent, tagOf, tagsOf } from "./base.js";
@@ -20,10 +16,7 @@ const everyN = (secs) => {
   return `${Math.round(n / 86400)}d`;
 };
 
-/**
- * 30166 — one relay, as this monitor found it. `N` tags are NIP numbers and
- * `T`/`R` the relay's type and requirements, shown as chips.
- */
+/** 30166 — one relay as a monitor found it; `N`, `T` and `R` tags become chips. */
 function relayDiscoveryCard(ev, opts) {
   const url = tagOf(ev, "d") || "";
   const nip11 = jsonContent(ev);
@@ -42,13 +35,13 @@ function relayDiscoveryCard(ev, opts) {
   ]);
 }
 
-/** "monitors relays every 1h"; the frequency is what makes its records mean anything. */
+/** "monitors relays every 1h". */
 const monitorLine = (ev) => {
   const every = everyN(tagOf(ev, "frequency"));
   return `monitors relays${every ? ` every ${every}` : ""}`;
 };
 
-/** 10166 — a monitor announcing itself: how often it checks, how long it waits, and which checks it runs. */
+/** 10166 — a monitor announcing itself. */
 function relayMonitorCard(ev, opts) {
   const checks = tagsOf(ev, "c").map((t) => t[1]).filter(Boolean);
   const kinds = tagsOf(ev, "k").map((t) => t[1]).filter(Boolean);
@@ -64,7 +57,7 @@ function relayMonitorCard(ev, opts) {
 register([30166], relayDiscoveryCard);
 register([10166], relayMonitorCard);
 
-// A discovery record's only human-written words are in its NIP-11 JSON; the host is the fallback.
+// The name is the NIP-11 one; the host is the fallback.
 registerRow([30166], (ev) => {
   const nip11 = jsonContent(ev);
   const url = tagOf(ev, "d") || "";

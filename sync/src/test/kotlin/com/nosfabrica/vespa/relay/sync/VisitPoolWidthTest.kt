@@ -62,9 +62,8 @@ class VisitPoolWidthTest {
     private val kinds = listOf(1, 6, 7, 16, 1111)
 
     /**
-     * A relay that refuses any filter naming more than [cap] kinds with a `CLOSED`
-     * and a sentence. It is its own [RelayComplaints] so the sentence is dated
-     * when the refusal is produced, and a walk never refused reads back nothing.
+     * A relay that refuses any filter naming more than [cap] kinds with a `CLOSED` and a
+     * sentence. Its own [RelayComplaints], so the sentence is dated when the refusal is produced.
      */
     private class WidthCappedRelay(
         private val cap: Int,
@@ -126,7 +125,7 @@ class VisitPoolWidthTest {
         scope: CoroutineScope,
         processors: Processors,
     ): VisitPool {
-        // Never dialled: nothing queues a heal or schedules an audit. It satisfies the constructors.
+        // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
         val bands = SyncBands(null)
         val streams =
@@ -191,7 +190,7 @@ class VisitPoolWidthTest {
                 assertTrue(tail.all { (it.kinds?.size ?: 0) <= 2 }, "the tail is chunked too: ${tail.map { it.kinds }}")
                 assertEquals(kinds, tail.flatMap { it.kinds.orEmpty() })
 
-                // Re-opened at the learned width: the cap comes from a refusal, which changes nothing on the roster.
+                // Re-opened at the learned width: a cap is learned from a refusal, not a roster change.
                 assertEquals(
                     1,
                     relay.tails.size,

@@ -1,7 +1,5 @@
-// The pager: which prefix each page asks for, where the cut falls, how a
-// widened answer folds into the one on screen, and the two ways a list can
-// end. The rules that need a DOM are held against app.js's source, the way
-// filters.test.mjs holds its bijection.
+// The pager: which prefix each page asks for, where the cut falls, how a widened answer folds
+// into the one on screen, and the two ways a list can end.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
@@ -17,8 +15,7 @@ const id = (n) => String(n).padStart(64, "0");
 const ev = (n) => ({ id: id(n), pubkey: "a".repeat(64), kind: 1, created_at: 1_800_000_000 - n, tags: [] });
 const many = (n, from = 0) => Array.from({ length: n }, (_, i) => ev(from + i));
 
-// The page and its preload are one ask: a ranked search costs its match set,
-// not its limit, so two asks for one answer are two full searches.
+// The page and its preload are one ask: a ranked search costs its match set, not its limit.
 assert.strictEqual(firstAsk(0), askLimit(0), "the first ask of a search already covers the preload");
 assert.strictEqual(askLimit(0), PAGE_SIZE * (1 + PRELOAD_PAGES), "…which is the page and three more");
 assert.strictEqual(PRELOAD_PAGES, 3, "three pages ahead is the promise the pager makes");
@@ -45,8 +42,7 @@ assert.deepStrictEqual(pageOf(undefined, 0), [], "…and neither is no buffer at
 assert.strictEqual(pageCount(buf), 3, "95 results are three pages");
 assert.strictEqual(pageCount([]), 0, "and nothing is NO pages — not one empty one");
 
-// Coverage is measured in pages, not events: NIP-01's `limit` is per filter,
-// so a hashtag search's four filters can answer an ask of forty with 160.
+// Coverage is measured in pages, not events: NIP-01's `limit` is per filter.
 assert.ok(covered(many(PAGE_SIZE * 4), 0), "four pages held is three pages ahead of page one");
 assert.ok(!covered(many(PAGE_SIZE * 4), 1), "…and only two ahead of page two");
 assert.ok(covered(many(PAGE_SIZE * 3 + 1), 0), "a part page counts as a page — it is one the reader can turn to");
@@ -67,9 +63,7 @@ assert.strictEqual(
 );
 assert.strictEqual(lastPage([], { exhausted: false, asked: 0 }), 0, "an empty answer is page one and nothing else");
 
-// Pages already held keep their order: a trust-ranked event published while
-// the reader reads can land on page one, and taking the new order wholesale
-// renumbers the page under them.
+// Pages already held keep their order, or a new arrival renumbers the page under the reader.
 const held40 = many(40);
 const widened = [ev(500), ...many(40), ...many(20, 40)];   // one new arrival ranked first
 const grown = mergePages(held40, widened);
@@ -103,16 +97,14 @@ assert.ok(
   "the restore must hand the page to runFull(), or a deep link opens at page one",
 );
 
-// Exhaustion is decided on the relay's count, not on what survived the page's
-// own de-duplication: a relay that does not dedupe across filters would end the pager early.
+// Exhaustion is decided on the relay's count, not on what survived the page's own de-duplication.
 const drainedCalls = [...app.matchAll(/drained\(\{[^}]*\}/gs)];
 assert.strictEqual(drainedCalls.length, 2, "app.js decides exhaustion in two places: the first answer and each widening");
 for (const c of drainedCalls) {
   assert.ok(/got: found\.got/.test(c[0]), `drained() must be given the relay's own count: ${c[0].replace(/\s+/g, " ").slice(0, 90)}`);
 }
 
-// requestId is what every in-flight lookup of the first ask checks itself
-// against; bumping it drops the names and pills out of the page being read.
+// requestId is what every in-flight lookup checks itself against; bumping it drops their answers.
 const preload = app.slice(app.indexOf("async function preload()"));
 assert.ok(
   !/requestId\+\+/.test(preload.slice(0, preload.indexOf("\n}\n"))),

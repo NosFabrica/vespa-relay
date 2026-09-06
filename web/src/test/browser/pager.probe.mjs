@@ -1,9 +1,6 @@
-// The pager in a real Chromium: the wiring paging.test.mjs cannot reach (a
-// preload that must not cancel the answer it extends, a url that survives
-// Back). Needs only Chromium: it serves web/src/main/resources on :7799 and
-// installs a fake WebSocket that answers any NIP-50 REQ out of a numbered
-// corpus. Query words steer it: `big` is a corpus of a thousand, `thin` one of
-// seven, `slow` delays every widened ask by 900ms.
+// The pager in a real Chromium: the wiring paging.test.mjs cannot reach. Serves
+// web/src/main/resources on :7799 with a fake WebSocket that answers any NIP-50 REQ out of a
+// numbered corpus; the query words `big`, `thin` and `slow` pick the corpus and its delay.
 //
 //     npm i -g playwright && npx playwright install chromium
 //     node web/src/test/browser/pager.probe.mjs
@@ -66,8 +63,7 @@ await page.addInitScript(`
 `);
 
 const t = async (name, fn) => { try { await fn(); console.log("  ok  " + name); } catch (e) { console.log("  FAIL " + name + ": " + e.message); process.exitCode = 1; } };
-// Bounded waits and `.catch(() => {})` wherever a page might not render: an
-// unhandled timeout takes the run down with the state it was about to report.
+// Bounded waits and `.catch(() => {})` wherever a page might not render, so a timeout still reports.
 const cards = () => page.$$eval(".result", (els) => els.map((e) => e.querySelector(".result-body")?.textContent.trim() || ""));
 const pager = () => page.$$eval(".pager .pg", (els) => els.map((e) => `${e.textContent.trim()}${e.disabled ? "(off)" : ""}${e.classList.contains("on") ? "*" : ""}`));
 const stats = () => page.$eval(".list-stats", (e) => e.textContent.trim());
@@ -198,8 +194,7 @@ await t("…and fills in when it does", async () => {
 });
 
 await t("…and the buffer goes back to being three pages ahead of where they now are", async () => {
-  // The turn's own preload() stood down behind one in flight, so the answer
-  // that lands must ask again.
+  // The turn's own preload() stood down behind one in flight, so the answer that lands must ask again.
   await page.waitForFunction(
     () => [...document.querySelectorAll(".pager .pg")].some((e) => e.textContent.trim() === "5"),
     null, { timeout: 6000 },
@@ -225,8 +220,7 @@ await t("the url a page turn writes is about the answer, not about the box", asy
   if (c[0] !== "result 40") throw new Error("and the cards are page two of the search that was run: " + c[0]);
 });
 
-// A full re-render rebuilds every card and drops the media it had started
-// loading; the marker rides on the element, so it cannot survive a rewrite.
+// A full re-render drops the media every card had started loading; the marker rides on the element.
 await page.goto("http://localhost:7799/?q=slow");
 await page.waitForSelector(".result");
 await page.evaluate(() => document.querySelectorAll(".result").forEach((el, i) => (el.dataset.mark = "m" + i)));

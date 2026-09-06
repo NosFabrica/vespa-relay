@@ -48,32 +48,22 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The sync plane: a rotating queue of (relay, stream) units worked by a fixed
- * set of workers.
- *
- * The roster (rebuilt from the monitor's kind-30166 verdicts) decides which
- * units exist. A worker takes one, dials the relay, and runs that stream's
- * jobs in order: page forward from the band's edge, audit the past by
- * negentropy when it is due, drain queued heals, then leave a live tail on
- * the open socket. The unit re-enters the queue on a revisit delay and the
- * worker moves on. A wedged relay costs one worker one bounded visit.
- *
- * Every count published from here is broken down by the four `POOL_` words
- * (live, catching-up, re-fetching, negentropy) so a reader can tell which of
- * the jobs a socket is spent on.
+ * The sync plane: a rotating queue of (relay, stream) units worked by a fixed set of workers.
+ * A worker takes a unit, dials the relay, runs that stream's jobs in order (catch-up, audit
+ * where due, heal drain, tail), and the unit re-enters the queue on a revisit delay.
  */
 internal class VisitPool(
-    /** The reads this pool makes of a relay; an interface so scheduling can be tested without a network. */
+    /** The reads this pool makes of a relay. */
     private val reads: RelayReads,
-    /** What a relay said when it refused an ask. [RelayComplaints.DEAF] for callers that do not listen. */
+    /** What a relay said when it refused an ask; [RelayComplaints.DEAF] when nobody listens. */
     private val complaints: RelayComplaints = RelayComplaints.DEAF,
-    /** What the socket carried across a refused ask. [RelayPages.DEAF] for callers that do not listen. */
+    /** What the socket carried across a refused ask; [RelayPages.DEAF] when nobody listens. */
     private val pages: RelayPages = RelayPages.DEAF,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val pager: NegentropyPager,
     private val healer: Healer,
-    /** The deleteMissing comparison, run in the audit slot of a retracting stream. Null for the probes. */
+    /** The deleteMissing comparison, run in a retracting stream's audit slot; null for the probes. */
     private val retraction: RetractionAudit? = null,
     private val sockets: Sockets,
     private val scope: CoroutineScope,
@@ -82,11 +72,11 @@ internal class VisitPool(
     /** The visit-mode streams: every relaySource entry a kind-30166 verdict source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
-    /** The streams' rows in the progress document. Null for callers with no document to keep (the probes). */
+    /** The streams' rows in the progress document; null for the probes. */
     private val phases: StreamPhases? = null,
-    /** Worker count, the sum of the streams' dial widths. See [workersFor]. */
+    /** Worker count, the sum of the streams' dial widths. */
     private val workers: Int = DEFAULT_VISIT_CONCURRENCY,
-    /** Per-stream caps on each of the pool's jobs. See [PoolLimits]. Uncapped by default. */
+    /** Per-stream caps on each of the pool's jobs; uncapped by default. */
     private val limits: PoolLimits = PoolLimits(emptyMap()),
     /**
      * How many kinds each relay accepts in one filter, learned from its refusals.
@@ -94,7 +84,7 @@ internal class VisitPool(
      */
     private val widths: FilterWidths = FilterWidths(),
 ) {
-    /** When each stream's audits and re-fetches come due. See [AuditSchedule]. */
+    /** When each stream's audits and re-fetches come due. */
     private val schedule = AuditSchedule(streams, bands, retraction)
 
     /** The current roster, swapped as one reference so asks and shared authors never mix generations. */
@@ -105,18 +95,15 @@ internal class VisitPool(
     private val roster: Map<NormalizedRelayUrl, Map<String, RosterBuilder.UnitAsks>> get() = currentRoster.asks
 
     /**
-     * The unit of work: one stream's asks against one relay.
-     *
-     * Bands are keyed by (stream, url, filter), so two streams on one relay
-     * touch disjoint state and may run concurrently over one refcounted
-     * socket, while one stream's jobs on a relay are serialised.
+     * The unit of work: one stream's asks against one relay. Two streams on one relay touch
+     * disjoint bands and may run concurrently; one stream's jobs on a relay are serialised.
      */
     internal data class VisitKey(
         val url: NormalizedRelayUrl,
         val stream: String,
     )
 
-    /** Offers, collisions and revisit timers. See [VisitQueue]. */
+    /** Offers, collisions and revisit timers. */
     private val queue = VisitQueue<VisitKey>(scope)
 
     /** One held live subscription and the socket claim that rides with it. */
@@ -139,9 +126,8 @@ internal class VisitPool(
     private val tailSeq = AtomicInteger()
 
     /**
-     * What a relay has delivered lately: a score that halves every
-     * [YIELD_HALF_LIFE_MS]. Decides which relays keep tails when the budget is
-     * short and how soon a relay is revisited. Admission stays the monitor's.
+     * What a relay has delivered lately: a score that halves every [YIELD_HALF_LIFE_MS].
+     * Decides which relays keep tails when the budget is short and how soon a relay is revisited.
      */
     private class Yield {
         val arrived = AtomicLong()
@@ -167,9 +153,8 @@ internal class VisitPool(
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
     /**
-     * Is a producer of ours parked in the full ingest queue on this relay's
-     * events? quartz drains a socket through one consumer that awaits every
-     * listener, so a parked hook silences every subscription on it.
+     * Is a producer of ours parked in the full ingest queue on this relay's events? A parked
+     * hook silences every subscription on that socket.
      */
     private fun heldByUs(url: NormalizedRelayUrl): Boolean = ingest.parkedOn(url) > 0
 
@@ -183,7 +168,7 @@ internal class VisitPool(
         val word: String,
     )
 
-    /** One visit in progress, for the in-flight list. Removed when the visit ends; tails are listed separately. */
+    /** One visit in progress, for the in-flight list; tails are listed separately. */
     private class OngoingVisit(
         val startedMs: Long,
     ) {
@@ -202,7 +187,7 @@ internal class VisitPool(
 
     private val ongoing = ConcurrentHashMap<VisitKey, OngoingVisit>()
 
-    /** Counts one arrived event on the pool, the relay's yield, and whichever of [ongoingVisit] or [tail] delivered it. */
+    /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
     private fun arrived(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit?,
@@ -221,8 +206,8 @@ internal class VisitPool(
     }
 
     /**
-     * The visits currently serving one stream, quietest first. Published whole:
-     * a row is a worker, so the list is bounded by the worker count.
+     * The visits currently serving one stream, quietest first. Published whole: a row is a
+     * worker, so the list is bounded by the worker count.
      */
     private fun inFlightFor(stream: String): InFlight {
         val nowMs = System.currentTimeMillis()
@@ -248,9 +233,8 @@ internal class VisitPool(
     }
 
     /**
-     * Every (relay, stream) unit on the roster, for the status page's
-     * per-relay table. Read off one roster snapshot; a unit may be mid-visit
-     * on a relay the snapshot no longer names, and the row says so.
+     * Every (relay, stream) unit on the roster, for the status page's per-relay table, read
+     * off one roster snapshot.
      */
     internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
         val snapshot = currentRoster
@@ -279,9 +263,8 @@ internal class VisitPool(
     }
 
     /**
-     * Every open tail subscription, quietest first, in the same row shape as
-     * [inFlightFor]. Published whole: the set is bounded by the streams' live
-     * budgets.
+     * Every open tail subscription, quietest first, in the row shape of [inFlightFor].
+     * Published whole: the set is bounded by the streams' live budgets.
      */
     internal fun livePool(): InFlight {
         val nowMs = System.currentTimeMillis()
@@ -324,11 +307,7 @@ internal class VisitPool(
     @Volatile
     private var scheduleCache: ScheduleCache? = null
 
-    /**
-     * When one stream's scheduled re-reads come due. Cached for
-     * [SCHEDULE_CACHE_MS]: the walk covers thousands of asks and the status
-     * tick asks every fifteen seconds about periods measured in days.
-     */
+    /** When one stream's scheduled re-reads come due, cached for [SCHEDULE_CACHE_MS]. */
     private fun scheduleFor(stream: String): List<StreamPhases.Scheduled> {
         val nowMs = System.currentTimeMillis()
         val cached = scheduleCache
@@ -342,7 +321,7 @@ internal class VisitPool(
         phasesDirty.set(true)
     }
 
-    /** Publishes each stream's relay, tail and queue counts. One walk per collection, not one per stream. */
+    /** Publishes each stream's relay, tail and queue counts, one walk per collection. */
     private fun flushPhases() {
         val phases = phases ?: return
         val queuedByStream = queue.waitingBy { it.stream }
@@ -376,10 +355,10 @@ internal class VisitPool(
     /** Audits not attempted because the monitor measured the relay as not answering NEG-OPEN. */
     private val auditsSkipped = AtomicLong()
 
-    /** Why visits end early, counted by reason. See [VisitAborts]. */
+    /** Why visits end early, counted by reason. */
     private val aborts = VisitAborts()
 
-    /** Windows an audit could not read and did not claim. See [SweepOutcome.refusedWindows]. */
+    /** Windows an audit could not read and did not claim. */
     private val auditsRefusedWindows = AtomicLong()
 
     fun start() {
@@ -432,7 +411,7 @@ internal class VisitPool(
             scope.launch {
                 queue.visitLoop(
                     stillWanted = { key -> wantedBy(currentRoster, key) },
-                    // Read, never getOrPut: a roster drop prunes the yield and a finishing visit must not resurrect it.
+                    // Read, never getOrPut: a finishing visit must not resurrect a pruned yield.
                     revisitDelayMs = { key ->
                         revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
                     },
@@ -442,11 +421,7 @@ internal class VisitPool(
         }
     }
 
-    /**
-     * Rebuilds the roster on the tightest `refreshSeconds` any source asks for,
-     * floored at a minute. Each source caches its own read, so a tick that
-     * finds nothing expired is cheap.
-     */
+    /** Rebuilds the roster on the tightest `refreshSeconds` any source asks for, floored at a minute. */
     private suspend fun rosterLoop() {
         val cadence =
             streams
@@ -496,7 +471,7 @@ internal class VisitPool(
         phasesChanged()
     }
 
-    /** One visit with its failure recorded as an abort. The shape [VisitQueue.visitLoop] expects. */
+    /** One visit with its failure recorded as an abort. */
     private suspend fun guardedVisit(key: VisitKey) {
         try {
             visit(key)
@@ -529,9 +504,8 @@ internal class VisitPool(
     ): Boolean = snapshot.asks[key.url]?.containsKey(key.stream) == true
 
     /**
-     * One stream's turn on one relay: catch-up, the audit where due, the heal
-     * drain, then its tail. Other streams may visit the same relay at the same
-     * time over the same socket.
+     * One stream's turn on one relay: catch-up, the audit where due, the heal drain, then its
+     * tail. Other streams may visit the same relay at the same time over the same socket.
      */
     private suspend fun visit(key: VisitKey) {
         val url = key.url
@@ -565,7 +539,7 @@ internal class VisitPool(
                         )?.let(System.err::println)
                     return
                 }
-                // Reset both per ask: an ask with no outstanding legs never reaches the code that would.
+                // Reset per ask: an ask with no outstanding legs never reaches the code that would.
                 ongoingVisit.pagingUntil = null
                 ongoingVisit.stage = ASKING
                 val refusal = catchUp(ask, url, ongoingVisit)
@@ -609,9 +583,9 @@ internal class VisitPool(
         val end: PagedFetchResult.End,
         val filter: Filter,
         val askedAtMs: Long,
-        /** What the socket carried while this ask was out. See [RelayPages]. */
+        /** What the socket carried while this ask was out. */
         val sent: String? = null,
-        /** A hook of ours was parked in the ingest queue when the walk gave up; the relay did nothing. */
+        /** A hook of ours was parked in the ingest queue when the walk gave up. */
         val ours: Boolean = false,
     ) {
         val reason: VisitAborts.Reason
@@ -619,12 +593,9 @@ internal class VisitPool(
     }
 
     /**
-     * Walks the band's outstanding legs. Returns the refusal that ended the
-     * walk with nothing delivered, or null when every leg came back clean.
-     *
-     * A leg refused on width is narrowed and re-walked, at most
-     * [MAX_NARROWINGS] times per leg, because each retry re-walks the chunks
-     * that already succeeded. See [FilterWidths].
+     * Walks the band's outstanding legs. Returns the refusal that ended the walk with nothing
+     * delivered, or null when every leg came back clean. A leg refused on width is narrowed
+     * and re-walked, at most [MAX_NARROWINGS] times per leg.
      */
     private suspend fun catchUp(
         ask: RosterBuilder.Ask,
@@ -672,12 +643,9 @@ internal class VisitPool(
     }
 
     /**
-     * Walks one leg as the REQs the relay will take: itself, or its kinds in
-     * chunks. Returns the first refused chunk, or null.
-     *
-     * Each chunk records its own band. That is safe because bands are per kind
-     * and `record` keeps only the kinds the ask named, which is why chunking
-     * splits on kinds and nothing else.
+     * Walks one leg as the REQs the relay will take: itself, or its kinds in chunks. Returns
+     * the first refused chunk, or null. Each chunk records its own band, which is safe because
+     * bands are per kind and chunking splits on kinds and nothing else.
      */
     private suspend fun walkLeg(
         ask: RosterBuilder.Ask,
@@ -690,7 +658,7 @@ internal class VisitPool(
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-            // Per chunk: the depth only ever decreases, so a stale value would hide a later, shallower walk.
+            // Per chunk: the depth only decreases, so a stale value would hide a shallower walk.
             ongoingVisit.pagingUntil = null
             val onEvent: suspend (Event) -> Unit = { event ->
                 arrived(url, ongoingVisit)
@@ -742,12 +710,9 @@ internal class VisitPool(
     }
 
     /**
-     * Runs the audit this ask is due, if any. A retracting stream's audit is
-     * the deleteMissing comparison; any other stream with
-     * `negentropySyncThePastSeconds` set gets the plain history sweep.
-     *
-     * A relay the monitor measured as not answering NEG-OPEN is skipped: both
-     * audits are negentropy end to end. Unmeasured relays are still tried.
+     * Runs the audit this ask is due, if any: the deleteMissing comparison for a retracting
+     * stream, the plain history sweep otherwise. A relay the monitor measured as not answering
+     * NEG-OPEN is skipped; unmeasured relays are still tried.
      */
     private suspend fun auditIfDue(
         ask: RosterBuilder.Ask,
@@ -777,12 +742,9 @@ internal class VisitPool(
     }
 
     /**
-     * Reconciles the ask's whole past in windows and downloads only the diff.
-     *
-     * The bands schedule this pass but do not bound it: the filter goes to the
-     * pager verbatim, because a relay that back-filled behind a catch-up leaves
-     * the band claiming ground the store is missing, and a sweep narrowed to
-     * what the band does not cover could never find it.
+     * Reconciles the ask's whole past in windows and downloads only the diff. The filter goes
+     * to the pager verbatim: a sweep narrowed to what the band does not cover could never find
+     * what a relay back-filled behind a catch-up.
      */
     private suspend fun sweepAudit(
         ask: RosterBuilder.Ask,
@@ -840,7 +802,7 @@ internal class VisitPool(
         )
     }
 
-    /** The retraction audit for one ask, on the same clock as every other audit. See [RetractionAudit]. */
+    /** The retraction audit for one ask, on the same clock as every other audit. */
     private suspend fun retractionIfDue(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
@@ -862,10 +824,9 @@ internal class VisitPool(
     }
 
     /**
-     * Opens this unit's live tail, `since` [TAIL_OVERLAP_SECONDS] behind now so
-     * the seam with the catch-up cannot drop an event. A sitting tail whose asks
-     * or kind cap have changed is re-opened. The socket claim lives until the
-     * roster drops the unit.
+     * Opens this unit's live tail, `since` [TAIL_OVERLAP_SECONDS] behind now so the seam with
+     * the catch-up cannot drop an event. A sitting tail whose asks or kind cap changed is
+     * re-opened. The socket claim lives until the roster drops the unit.
      */
     private suspend fun openTail(key: VisitKey) {
         val url = key.url
@@ -883,7 +844,7 @@ internal class VisitPool(
         // `trySpare` does not count a deferral: a full live budget is normal, not refused work.
         val hold = limits.trySpare(key.stream, POOL_LIVE) ?: earnTail(key) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
-        // Built before the listener closes over it, so the first burst lands on the published counters.
+        // Built before the listener closes over it, so the first burst lands on the counters.
         val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
 
         // Every way out before the publish hands back exactly what was taken.
@@ -892,12 +853,12 @@ internal class VisitPool(
             sockets.release(url)
             hold.release()
         }
-        // Claim and subscribe before publishing, so a concurrent dropTail only meets a fully formed tail.
+        // Claim and subscribe before publishing, so a concurrent dropTail meets a fully formed tail.
         sockets.claim(url)
         try {
             reads.tail(subId, url, widths.chunkAll(url, tailFilters(urlAsks, nowSeconds() - TAIL_OVERLAP_SECONDS))) { event ->
                 arrived(url, ongoingVisit = null, tail = tail)
-                // Re-check scope per event against the roster as it is now, so a broken relay cannot widen ingest.
+                // Scope is re-checked per event against the live roster, so a relay cannot widen ingest.
                 var any = false
                 var allTrusted = true
                 var healContent = false
@@ -935,15 +896,13 @@ internal class VisitPool(
     }
 
     /**
-     * Earns this unit a live permit by evicting the same stream's weakest tail,
-     * or returns null. The candidate must win on yield, not tie, so a pool of
-     * equals does not churn. Another opener can take the freed permit first;
-     * that costs the loser one revisit delay and is tolerated.
+     * Earns this unit a live permit by evicting the same stream's weakest tail, or returns
+     * null. The candidate must win on yield, not tie, so a pool of equals does not churn.
      */
     private fun earnTail(candidate: VisitKey): PoolLimits.Hold? {
         val nowMs = System.currentTimeMillis()
         val mine = yieldOf(candidate.url).foldedScore(nowMs)
-        // One fold per tail: `foldedScore` drains what arrived, so a second read answers differently.
+        // One fold per tail: `foldedScore` drains what arrived, so a second read differs.
         var weakest: VisitKey? = null
         var weakestScore = Double.MAX_VALUE
         for (key in tails.keys) {
@@ -976,9 +935,8 @@ internal class VisitPool(
         internal fun ridesThePool(stream: SyncStream): Boolean = stream.dir != SyncDirection.UP && (stream.urls.isNotEmpty() || stream.discovery?.sources?.isNotEmpty() == true)
 
         /**
-         * Whether a walk ended in a way that makes the next leg futile: nothing
-         * delivered, and an ending that is the relay declining the conversation
-         * rather than an honest empty page or our own limit.
+         * Whether a walk ended in a way that makes the next leg futile: nothing delivered, and
+         * an ending that is the relay declining rather than an empty page or our own limit.
          */
         internal fun refusedOutright(walked: PagedFetchResult): Boolean =
             walked.downloaded == 0 &&
@@ -992,9 +950,8 @@ internal class VisitPool(
                 }
 
         /**
-         * The endings a socket parked in one of our hooks can manufacture:
-         * silence, and a first page received but never counted as delivered.
-         * Every other ending is a message that came through that consumer.
+         * The endings a socket parked in one of our hooks can manufacture: silence, and a first
+         * page received but never counted as delivered.
          */
         internal fun stalledByUs(end: PagedFetchResult.End): Boolean =
             when (end) {
@@ -1007,10 +964,9 @@ internal class VisitPool(
             }
 
         /**
-         * The tail's filters: the asks merged by shape, single-author asks
-         * folded into one filter naming all their authors. An unbound ask
-         * absorbs the bound ones of its shape. Safe for the tail alone, because
-         * trust and heal are re-derived per event.
+         * The tail's filters: the asks merged by shape, single-author asks folded into one
+         * filter naming all their authors. Safe for the tail alone, because trust and heal are
+         * re-derived per event.
          */
         internal fun tailFilters(
             asks: List<RosterBuilder.Ask>,
@@ -1033,11 +989,7 @@ internal class VisitPool(
 
         const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
 
-        /**
-         * The `doing` sentences. Each names both what the visit is for
-         * (catching up, re-fetching, auditing) and how (paging, negentropy),
-         * because neither implies the other.
-         */
+        /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
         const val STAGE_PAGING = "catching up (paging)"
         const val STAGE_REFETCHING = "re-fetching the past (paging)"
         const val STAGE_NEGENTROPY = "negentropy sync of the past"
@@ -1047,10 +999,7 @@ internal class VisitPool(
         const val STAGE_ASKING = "checking what this ask still owes"
         const val STAGE_FINISHING = "draining queued heals, then the tail"
 
-        /**
-         * The pool's four workloads, as the `pool` word on every published row.
-         * A visit between jobs carries none of them.
-         */
+        /** The pool's four workloads, as the `pool` word on every published row. */
         const val POOL_LIVE = "live"
         const val POOL_CATCHING_UP = "catching-up"
         const val POOL_REFETCHING = "re-fetching"
@@ -1069,13 +1018,9 @@ internal class VisitPool(
         private val TAILING = Stage(POOL_LIVE, STAGE_TAILING)
 
         /**
-         * Whether a leg walks time the band already covers (a re-fetch) rather
-         * than time outside it (a catch-up).
-         *
-         * Judged against the leg's own kinds, because a band holds one span per
-         * kind and the kinds do not cover the same time. Strict on both edges,
-         * because the ordinary legs touch the band exactly at its edges. A leg
-         * naming no kinds is judged against everything the band holds.
+         * Whether a leg walks time the band already covers (a re-fetch) rather than time
+         * outside it (a catch-up). Judged against the leg's own kinds, because a band holds one
+         * span per kind; strict on both edges, because ordinary legs touch the band at its edges.
          */
         internal fun rewalksCovered(
             leg: Filter,
@@ -1094,9 +1039,8 @@ internal class VisitPool(
         internal const val SCHEDULE_CACHE_MS = 60_000L
 
         /**
-         * The sum of the streams' dial widths: the most simultaneous dials
-         * their permits can produce. Fewer workers would leave a configured
-         * share unreachable; more could never get a permit.
+         * The sum of the streams' dial widths: fewer workers would leave a configured share
+         * unreachable, more could never get a permit.
          */
         internal fun workersFor(streams: List<SyncStream>): Int =
             streams
@@ -1104,9 +1048,8 @@ internal class VisitPool(
                 .coerceAtLeast(1)
 
         /**
-         * Warns once at boot when the streams' dials and tails together could
-         * crowd the OkHttp dispatcher. An upper bound: a relay two streams want
-         * is one socket charged to both budgets.
+         * Warns once at boot when the streams' dials and tails together could crowd the OkHttp
+         * dispatcher. An upper bound: a relay two streams want is one socket charged to both.
          */
         internal fun warnOnSocketBudget(streams: List<SyncStream>) {
             val dials = workersFor(streams)
@@ -1129,9 +1072,8 @@ internal class VisitPool(
         internal const val SOCKET_HEADROOM = 900
 
         /**
-         * The revisit delay a relay has earned. A tailed relay's revisit only
-         * serves the audit clock and dropped-tail recovery, so its base is
-         * longer. Recent yield shrinks the wait: fifty decayed events halve it.
+         * The revisit delay a relay has earned. A tailed relay's base is longer, since its
+         * revisit only serves the audit clock; recent yield shrinks the wait.
          */
         internal fun revisitDelayMs(
             yieldScore: Double,

@@ -42,10 +42,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * Dials a busy relay with a live tail open and runs a walk over an empty
- * window beside it, to show the page sampler's connection listener sees the
- * events the walk's `onEvent` never does. Prints its verdict and asserts
- * nothing. Selected by `-DpagesProbe=true`; `-DpagesUrl` picks the relay.
+ * Dials a busy relay with a live tail open and runs a walk over an empty window beside it, to
+ * show the page sampler's connection listener sees the events the walk's `onEvent` never does.
+ * Prints its verdict and asserts nothing. Selected by `-DpagesProbe=true`; `-DpagesUrl` picks the relay.
  */
 class RelayPagesLiveProbe {
     private val url: NormalizedRelayUrl =
@@ -94,8 +93,7 @@ class RelayPagesLiveProbe {
                 )
                 delay(TAIL_WARMUP_MS)
 
-                // Stage one: a walk over a window the relay has events in. A walk that downloads
-                // is a socket carrying events by construction, so a null sample here is the seam being wrong.
+                // Stage one: a downloading walk carries events, so a null sample means the seam is wrong.
                 val busy = Filter(kinds = listOf(1), since = now - BUSY_WINDOW_SECONDS, until = now)
                 val busySampling = pages.arm(url, busy)
                 val busyDownloaded =
@@ -116,12 +114,11 @@ class RelayPagesLiveProbe {
                 )
                 println()
 
-                // Stage two: a walk over an empty window, one second a year ago. It drains at once
-                // with `downloaded == 0`, which is the aborting shape without a misbehaving relay.
+                // Stage two: an empty window drains at once with `downloaded == 0`, the aborting shape
+                // without a misbehaving relay.
                 val asked = Filter(kinds = listOf(1), since = now - EMPTY_WINDOW_AGO, until = now - EMPTY_WINDOW_AGO + 1)
                 val delivered = AtomicInteger()
-                // The sampler is held armed for a production-sized slice before the walk, and the
-                // tail is counted across that slice; an empty walk alone drains in milliseconds.
+                // Armed for a production-sized slice first; an empty walk alone drains in milliseconds.
                 val sampling = pages.arm(url, asked)
                 val before = tailed.get()
                 delay(ARMED_WINDOW_MS)
@@ -173,7 +170,7 @@ class RelayPagesLiveProbe {
         private const val TAIL_SUB = "pages-probe-tail"
         private const val TAIL_WARMUP_MS = 4_000L
 
-        /** How long the sampler is held armed before the walk; enough for a relay serving an event every few seconds. */
+        /** How long the sampler is held armed before the walk. */
         private const val ARMED_WINDOW_MS = 10_000L
 
         /** A window the relay certainly has kind 1 in. */

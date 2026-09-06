@@ -43,10 +43,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * Dials real relays and prints what a fold pass decides about each host group,
- * the containment numbers the verdict rests on, and whether every socket was
- * handed back. Asserts nothing. Selected by `-DliveFoldProbe=true`;
- * `-DliveFoldGroups='wss://a,wss://a/x;wss://b,wss://b/y'` replaces the groups.
+ * Dials real relays and prints what a fold pass decides about each host group, the
+ * containment scores behind it, and whether every socket came back. Asserts nothing.
+ * `-DliveFoldProbe=true` selects it; `-DliveFoldGroups='wss://a,wss://a/x;wss://b'` sets the groups.
  */
 class AliasFoldLiveProbe {
     private val groups: List<List<NormalizedRelayUrl>> =
@@ -108,9 +107,7 @@ class AliasFoldLiveProbe {
                             runCatching { client.getOrCreateRelay(url).disconnect() }
                         }
                     }
-                // The same walk the pass makes, so the numbers printed are the ones
-                // the verdict rests on. The leader is walked twice so its self-score
-                // sits beside the cross-scores.
+                // The same walk the pass makes; the leader is walked twice for its self-score.
                 val probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS }
                 val anchor = AliasProbe.settledAnchor(System.currentTimeMillis() / 1000)
                 val wanted = aliases.toProbe(group)
@@ -129,7 +126,6 @@ class AliasFoldLiveProbe {
                     println("    leader ${leader.url}: ${lead.ids.size} id(s) via $asked")
                     val again = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(leader, anchor, lead.kinds) {} } }
                     println("      vs ITSELF on a second walk: ${containment(lead.ids, again.orEmpty(), lead.kinds)}")
-                    // The scheme twin folds on the pairing, not on the containment printed beside it.
                     val twin = aliases.plainTwinIn(group, leader)
                     for (url in group.filter { it != leader }) {
                         val print = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(url, anchor, lead.kinds) {} } }
@@ -167,21 +163,17 @@ class AliasFoldLiveProbe {
         println("=".repeat(78))
     }
 
-    /**
-     * The smaller window's share of the larger, which is what
-     * [RelayAliases.sameRelay] and [RelayAliases.reproducible] decide on.
-     */
+    /** The smaller window's share of the larger, the score the fold decides on. */
     private fun containment(
         a: Set<String>,
         b: Set<String>,
-        /** The filter the windows came through; it sets the floor, see `RelayAliases.foldBar`. */
+        /** The filter the windows came through, which sets the floor. */
         kinds: List<Int>?,
     ): String {
         val smaller = minOf(a.size, b.size)
         if (smaller == 0) return "nothing came back"
         val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
         val score = shared.toDouble() / smaller
-        // A group list is held to its own floor.
         val floor =
             if (kinds == RelayAliases.GROUP_METADATA_KINDS) {
                 RelayAliases.DEFAULT_GROUP_METADATA_MIN_SAMPLE
@@ -202,7 +194,7 @@ class AliasFoldLiveProbe {
         /** The clearnet window the engine passes for a non-Tor url. */
         private const val IDLE_MS = 20_000L
 
-        /** Per-group ceiling: a relay capping every REQ at ten events must not hang a build. */
+        /** Per-group ceiling, so a relay that caps every REQ cannot hang the build. */
         private const val PER_GROUP_MS = 300_000L
     }
 }

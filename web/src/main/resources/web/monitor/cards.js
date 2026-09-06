@@ -1,6 +1,6 @@
-// The monitor's cards: what this router has decided about each relay url,
-// and the passes that decided it. Reads the `monitor` section's processor
-// rows and, on request, the kind-30166 records off the relay's own websocket.
+// The monitor's cards: what this router has decided about each relay url, and the passes
+// that decided it. Reads the `monitor` section's processor rows and, on request, the
+// kind-30166 records off the relay's own websocket.
 
 import { ago, cardHead, el, fmt, isoOf, short, shownOf } from "../shared/page.js";
 import { backgroundPanel, setTerms } from "../shared/processors.js";
@@ -8,22 +8,18 @@ import { Relay } from "../shared/relay.js";
 import { MONITOR_KIND, PRIME, groupByHost, summarise, walkRecords } from "../shared/verdicts.js";
 
 /**
- * The round-up and the three passes that decide which relays may be
- * dialled, and the corpus they decide over. Drawn only when a router has
- * written processor rows: a serve-only relay runs no monitor, and an empty
- * card there would read as a broken one.
+ * The round-up and the three passes that decide which relays may be dialled. Drawn only
+ * when a router has written processor rows: a serve-only relay runs no monitor.
  */
 function monitorCard(section) {
   const d = (section && section.data) || {};
   const rows = (d.progress && d.progress.processors) || [];
   if (!rows.length) return null;
-  // Set here, not inherited from whichever card drew first: two cards on one
-  // section must not depend on the order `PANELS` builds them in.
+  // Set here, not inherited from whichever card drew first.
   setTerms(d.terms);
   const card = el("div", "card");
   cardHead(card, "Relay monitor", null, section);
-  // On the heading, not a `card-sub`: that slot is a state, and explanations
-  // on this page go on the label.
+  // On the heading, not a `card-sub`: that slot is a state.
   const heading = card.querySelector("h2");
   if (heading) {
     heading.title =
@@ -38,11 +34,9 @@ function monitorCard(section) {
   return card;
 }
 /**
- * What the monitor has decided about each url, read as kind-30166 records
- * over this relay's own websocket, so a verdict unreadable here is unreadable
- * by any client. Not drawn until asked: the page polls itself every minute,
- * and paging thousands of records on that cadence would make a debugging aid
- * a load source. `reads: []` in PANELS keeps the poller from rebuilding it.
+ * What the monitor has decided about each url, read as kind-30166 records over this
+ * relay's own websocket. Not drawn until asked: paging thousands of records on the page's
+ * poll cadence would make a debugging aid a load source, so PANELS gives it `reads: []`.
  */
 function verdictsCard(relayUrl) {
   const card = el("div", "card");
@@ -51,7 +45,7 @@ function verdictsCard(relayUrl) {
     `Reads kind ${MONITOR_KIND} out of this relay over its own websocket — the same ask any client makes. ` +
     "Grouped by host, because a duplicate is never a property of one url: it is a property of a url next to another one."));
 
-  // Not `.grp-head`: that is a sticky heading for the inside of a scroll box.
+  // Not `.grp-head`, which is a sticky heading for the inside of a scroll box.
   const bar = el("div", "vd-bar");
   const load = el("button", "btn", "Read verdicts from this relay");
   const filter = el("input");
@@ -81,8 +75,7 @@ function verdictsCard(relayUrl) {
     const q = filter.value.trim().toLowerCase();
     let live = 0;
     for (const g of groups) {
-      // A host hit keeps the whole group: the comparison between its urls is
-      // what the panel exists to give.
+      // A host hit keeps the whole group; the comparison between its urls is the point.
       const wholeHost = !q || g.host.includes(q);
       let kept = 0;
       for (const r of g.rows) {
@@ -90,8 +83,7 @@ function verdictsCard(relayUrl) {
         r.node.hidden = !hit;
         if (hit) kept++;
       }
-      // Heads go with rows; hiding only rows leaves a heading per host with
-      // nothing beneath it.
+      // Heads go with rows.
       g.box.hidden = !kept;
       if (kept) live++;
     }
@@ -101,8 +93,7 @@ function verdictsCard(relayUrl) {
   };
   filter.addEventListener("input", applyFilter);
 
-  // Without a relay to ask, no button: a websocket to nowhere reads as a
-  // store holding no verdicts.
+  // Without a relay to ask, no button: a websocket to nowhere reads as an empty store.
   if (!relayUrl) {
     load.remove();
     filter.remove();
@@ -122,8 +113,7 @@ function verdictsCard(relayUrl) {
       const byHost = groupByHost(events, nowSec);
       const sum = summarise(byHost, nowSec);
       groups = drawVerdicts(scroll, byHost, nowSec);
-      // `replaceChildren`, not `fill`: that helper carries filter text and
-      // scroll position across a rebuild, and this box holds neither.
+      // `replaceChildren`, not `fill`: this box holds no filter text or scroll position.
       sumBox.replaceChildren(tally([
         ["urls", sum.urls],
         ["hosts", sum.hosts],
@@ -131,14 +121,12 @@ function verdictsCard(relayUrl) {
         ["measured, kept", sum.cleared],
         // Not `not folded`, which the fold's pill wears on graded rows too.
         ["no verdict yet", sum.silent],
-        // The Tor tile is drawn at zero, unlike the three after it: zero there
-        // is the answer an operator running Tor came for.
+        // The Tor tile is drawn at zero: that is the answer an operator running Tor came for.
         ...(sum.graded ? [["graded", sum.graded], ["prime", sum.prime], ["prime on Tor", sum.primeTor]] : []),
         ...(sum.expired ? [["verdict expired", sum.expired]] : []),
         ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
       ]));
-      // Partial first, then whose: every number above is over one monitor's
-      // records, and reads as a census of the store otherwise.
+      // Partial first, then whose: every number above is over one monitor's records.
       const whose = self
         ? (others === null
             ? `this relay's own monitor (${self.slice(0, 8)}…)`
@@ -155,8 +143,7 @@ function verdictsCard(relayUrl) {
       scroll.hidden = false;
       applyFilter();
     } catch (e) {
-      // The relay's own message: "0 records" and "the socket closed" are
-      // different findings.
+      // The relay's own message: "0 records" and "the socket closed" are different findings.
       status.textContent = "";
       none.hidden = false;
       none.textContent = `Could not read verdicts: ${(e && e.message) || e}`;
@@ -180,34 +167,26 @@ function tally(pairs) {
 }
 
 /**
- * Every kind-30166 record out of this relay, newest first, paged on `until`
- * because one REQ is bounded by the relay's own limit. Scoped to the relay's
- * own monitor key when it advertises one: a mirror holds strangers' 30166s by
- * design, and an unscoped count would include relays this router never
- * probed. Without a key the panel says so rather than guessing an author.
+ * Every kind-30166 record out of this relay, newest first, paged on `until`. Scoped to
+ * the relay's own monitor key when it advertises one, since a mirror holds strangers'
+ * 30166s by design; without a key the panel says so rather than guessing an author.
  */
 async function readVerdicts(onProgress, relayUrl) {
-  // `lensless`: a count of what the store holds must not be narrowed by
-  // anybody's web of trust.
+  // A count of what the store holds must not be narrowed by anybody's web of trust.
   const relay = new Relay(relayUrl, { lensless: true });
-  // Asked of the relay itself: this page is served on the monitor's port, so
-  // `location` would be the status site.
+  // Asked of the relay itself; `location` is the monitor's own port.
   const { maxPage, self } = await relayIdentity(relayUrl);
   try {
-    // `self` is the relay's own key, which `RELAY_NSEC` also gives the sync
-    // process so its records speak as the relay it feeds.
     const scope = self ? { authors: [self] } : {};
     const walk = await walkRecords({
-      // Longer than `req`'s default: a timeout here is indistinguishable
-      // from an empty store.
+      // Longer than `req`'s default: a timeout here is indistinguishable from an empty store.
       ask: (limit, until) =>
         relay.req({ kinds: [MONITOR_KIND], limit, ...scope, ...(until == null ? {} : { until }) }, 25000),
       pageSize: Math.min(500, maxPage),
       maxPage,
       onProgress,
     });
-    // What the scope left out, by one COUNT. A relay that will not answer it
-    // leaves this null, rendered as unknown rather than zero.
+    // What the scope left out, by one COUNT; unanswered is null, rendered as unknown, not zero.
     const total = self ? await relay.count({ kinds: [MONITOR_KIND] }) : walk.events.length;
     return { ...walk, self, others: typeof total === "number" ? Math.max(0, total - walk.events.length) : null };
   } finally {
@@ -217,16 +196,11 @@ async function readVerdicts(onProgress, relayUrl) {
 }
 
 /**
- * The relay's NIP-11 document: the biggest single ask it will answer, and
- * its own key. `self` is the relay's key, not `pubkey`, which is the admin
- * contact; scoping to the contact would return nothing. With no stated
- * ceiling the walk cannot grow its page, so a long run of records is
- * reported incomplete rather than stepped over.
+ * The relay's NIP-11 document: its `max_limit` and its own key. `self` is the relay's
+ * key, not `pubkey`, which is the admin contact.
  */
 async function relayIdentity(relayUrl) {
   try {
-    // Same host and port; the NIP-11 document is served under the CORS the
-    // relay already sets.
     const origin = relayUrl.replace(/^ws/, "http").replace(/\/$/, "");
     const doc = await fetch(`${origin}/`, { headers: { Accept: "application/nostr+json" } }).then((r) => r.json());
     const stated = doc && doc.limitation && Number(doc.limitation.max_limit);
@@ -238,11 +212,7 @@ async function relayIdentity(relayUrl) {
     return { maxPage: 500, self: null };
   }
 }
-/**
- * Draw the host groups into [box]; returns the filterable groups. A url is
- * drawn as its path: the host is the box's heading, and these lists are
- * minted paths on one host.
- */
+/** Draw the host groups into [box] and return the filterable groups. A url is drawn as its path under its host. */
 function drawVerdicts(box, groups, nowSec) {
   box.replaceChildren();
   const out = [];
@@ -268,24 +238,21 @@ function drawVerdicts(box, groups, nowSec) {
       const row = el("div", "vd-row");
       const left = el("div", "vd-path");
       const right = el("div", "vd-when");
-      // The bare url is named; a "/" row looks like a rendering failure.
+      // The bare url is named, since a "/" row looks like a rendering failure.
       const path = u.url.replace(/^wss?:\/\/[^/]+/i, "") || "/";
       left.append(el("span", null, path === "/" ? "(no path)" : path));
-      // The fold column says only what the fold decided; the stability
-      // verdict is drawn apart, so a host mid-measurement does not read as
-      // one nothing has looked at.
+      // The fold column says only what the fold decided; the stability verdict is drawn apart.
       let tag;
       if (u.fold) {
         tag = el("span", u.foldCurrent ? "vd-pill fold" : "vd-pill expired", u.foldCurrent ? "fold" : "expired");
         // The survivor heads this box, so the arrow names only its path.
         left.append(el("span", "vd-into", ` → ${u.fold.replace(/^wss?:\/\/[^/]+/i, "") || "/"}`));
       } else if (u.cleared) {
-        // The same currency test the fold row makes: a retired cleared
-        // verdict is back in the queue, not settled.
+        // The same currency test as the fold row: a retired cleared verdict is back in the queue.
         tag = el("span", u.foldCurrent ? "vd-pill keep" : "vd-pill expired", u.foldCurrent ? "keep" : "expired");
         if (u.foldCurrent) row.classList.add("vd-keep");
       } else if (u.synthetic) {
-        // Inferred from the folds, not stated by the monitor, and said so.
+        // Inferred from the folds, not stated by the monitor.
         tag = el("span", "vd-pill keep", "survivor");
         row.classList.add("vd-keep");
         left.append(el("span", "vd-into", " · no record of its own"));
@@ -294,19 +261,15 @@ function drawVerdicts(box, groups, nowSec) {
       }
       right.append(tag);
       if (u.fold || u.cleared) {
-        // `ago` takes the instant and draws a missing one as an em dash;
-        // skipping the span would read as "just measured".
+        // A missing instant draws as an em dash; skipping the span would read as "just measured".
         const at = u.foldMeasuredAt;
         const when = el("span", null, ` ${ago(at)}`);
         when.title = isoOf(at);
-        // `foldCurrent` from the grouping, not `isCurrent` on the TTL alone: a
-        // verdict under superseded rules is inside the TTL and still not acted on.
+        // `foldCurrent`, not the TTL alone: a verdict under superseded rules is inside the TTL.
         if (!u.foldCurrent) when.className = "vd-stale";
         right.append(when);
       }
-      // The grade on the left, beside the url: the right column answers what
-      // the fold decided, and a second pill there would compete with it. A
-      // retired grade is struck, not hidden.
+      // The grade sits beside the url, since the right column is the fold's. Retired is struck, not hidden.
       if (u.grade) {
         const tone = u.gradeCurrent ? (u.grade === PRIME ? "prime" : "refused") : "retired";
         const badge = el("span", `vd-grade ${tone}`, u.grade);
@@ -316,16 +279,14 @@ function drawVerdicts(box, groups, nowSec) {
           (u.gradeCurrent ? "" : "; the router has retired this grade and will re-take it");
         left.append(" ", badge);
       }
-      // Struck, not hidden, when retired: the reader sees what was decided
-      // and that the router no longer acts on it.
+      // Retired is struck, not hidden.
       if (u.stable === false) {
         const badge = el("span", u.stableCurrent ? "badge bad" : "badge retired", "inconsistent");
         if (!u.stableCurrent) badge.title = "the router has retired this refusal and will re-measure";
         left.append(" ", badge);
       }
       row.append(left, right);
-      // One evidence line, named. The fold's wins when both exist; the
-      // stability sentence keeps its own title.
+      // One evidence line; the fold's wins when both exist.
       if (u.foldEvidence) {
         const why = el("div", "vd-why", `fold: ${u.foldEvidence}`);
         why.title = u.foldEvidence;
@@ -337,13 +298,10 @@ function drawVerdicts(box, groups, nowSec) {
         why.title = text;
         row.appendChild(why);
       }
-      // The rest of the record is what the other writers on this address
-      // said; on a shared replaceable event, a row showing `same-as` and
+      // The rest of the record: on a shared replaceable event, a row showing `same-as` and
       // nothing else is a clobbered record.
       const meta = [];
-      // The record's clock is when the router last connected, not when it
-      // measured; labelled apart from the age beside the pill, and the only
-      // date on a pre-stamp verdict.
+      // The record's clock is when the router last connected, not when it measured.
       if (u.recordAt) meta.push(["record", ago(u.recordAt), isoOf(u.recordAt)]);
       if (u.network) meta.push(["", u.network]);
       for (const r of u.requirements) meta.push(["req", r]);
@@ -351,7 +309,6 @@ function drawVerdicts(box, groups, nowSec) {
       if (u.rttRead) meta.push(["read", `${u.rttRead}ms`]);
       if (u.rttWrite) meta.push(["write", `${u.rttWrite}ms`]);
       if (u.software) meta.push(["", u.software.replace(/^git\+https?:\/\//, "")]);
-      // A count: the number says whether it answered at all.
       if (u.supportedNips.length) meta.push(["nips", String(u.supportedNips.length)]);
       if (u.hasDoc) meta.push(["", "nip-11 doc"]);
       // Counted, never dropped: an unknown tag should look different from none.
@@ -360,7 +317,6 @@ function drawVerdicts(box, groups, nowSec) {
         const line = el("div", "vd-meta");
         for (const [k, v, title] of meta) {
           const cell = el("span", k === "req" ? "vd-req" : null);
-          // The instant behind the relative age, as on the pill.
           if (title) cell.title = title;
           if (k && k !== "req") cell.append(el("span", "k", k + " "));
           cell.append(v);
@@ -372,7 +328,6 @@ function drawVerdicts(box, groups, nowSec) {
       rows.push({ node: row, needle: (u.url + " " + (u.fold || "")).toLowerCase() });
     }
     box.appendChild(wrap);
-    // The group is what the filter hides, with its rows.
     out.push({ box: wrap, host: group.host.toLowerCase(), rows });
   }
   return out;

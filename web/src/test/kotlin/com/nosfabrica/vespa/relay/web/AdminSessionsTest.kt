@@ -26,9 +26,8 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
 /**
- * The sessions one signature opens. A bug in any of these hands somebody a
- * document that names what this relay's users searched for, so each case is
- * written in the direction that fails open.
+ * The sessions one signature opens. A bug here hands somebody a document that names what this
+ * relay's users searched for, so each case is written in the direction that fails open.
  */
 class AdminSessionsTest {
     private var clock = 1_000_000L
@@ -46,8 +45,7 @@ class AdminSessionsTest {
 
         assertEquals(admin, s.holder(token))
 
-        // FIXED EXPIRY, NOT SLIDING: reading does not renew. A tab left open
-        // overnight stops being an open door on the hour it was told to.
+        // Fixed expiry, not sliding: reading does not renew.
         clock += 59_000
         assertEquals(admin, s.holder(token))
         clock += 2_000
@@ -59,8 +57,8 @@ class AdminSessionsTest {
         val s = sessions()
         s.open(admin)
 
-        // The failure that matters: anything that is not a token we minted must
-        // resolve to no one, including the shapes a probe would try.
+        // Anything that is not a token we minted must resolve to no one, including the shapes a
+        // probe would try.
         assertNull(s.holder(null))
         assertNull(s.holder(""))
         assertNull(s.holder("not-a-token"))
@@ -71,8 +69,7 @@ class AdminSessionsTest {
     fun `two sessions are two different tokens`() {
         val s = sessions()
 
-        // 256 bits from SecureRandom; a collision here would be a broken source,
-        // and reusing a token across sign-ins would make logout meaningless.
+        // Reusing a token across sign-ins would make logout meaningless.
         assertNotEquals(s.open(admin), s.open(admin))
     }
 
@@ -86,8 +83,7 @@ class AdminSessionsTest {
 
         assertNull(s.holder(first))
         assertEquals(admin, s.holder(second), "one browser signing out must not sign out the others")
-        // A logout for a token that was never live is a no-op, never a crash:
-        // the route answers 204 either way and must not report which it was.
+        // A logout for a token that was never live is a no-op, never a crash.
         s.close("never-existed")
         s.close(null)
     }
@@ -116,8 +112,7 @@ class AdminSessionsTest {
 
         clock += 11_000
 
-        // Otherwise a burst of sign-ins an hour ago would evict the session
-        // somebody is using right now.
+        // Otherwise a burst of sign-ins an hour ago would evict the session somebody is using now.
         assertEquals(0, s.size())
         assertEquals(admin, s.holder(s.open(admin)))
     }

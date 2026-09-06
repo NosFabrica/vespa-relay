@@ -42,11 +42,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * What an honest relay's off-filter share actually is: dials live relays and
- * prints the bare rung, the second page, the verdict [RelayCompliance] would
- * draw, and the mirror's own ask shapes walked two pages each. Asserts nothing.
- * Selected by `-DcomplianceProbe=true`; hosts via `-DcomplianceUrls=a,b`.
- * Run it more than once before moving a bar.
+ * What an honest relay's off-filter share is: prints the bare rung, the second page, the
+ * verdict [RelayCompliance] would draw, and the mirror's own ask shapes walked two pages each.
+ * Asserts nothing. `-DcomplianceProbe=true` selects it; `-DcomplianceUrls=a,b` picks the hosts.
  */
 class RelayComplianceProbe {
     private val urls: List<NormalizedRelayUrl> =
@@ -72,7 +70,7 @@ class RelayComplianceProbe {
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
         val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
-        // The fitness pass's own sizing, so these are the numbers that pass will see.
+        // The fitness pass's own sizing.
         val probe = AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { IDLE_MS }
         val judge = RelayCompliance()
         val anchor = AliasProbe.settledAnchor(System.currentTimeMillis() / 1000)
@@ -102,7 +100,7 @@ class RelayComplianceProbe {
                     println("    bare      ${row(judge, ladder.compliance)}  ${ladderMs}ms")
                 }
 
-                // Page two, below where page one ended: the ask that carries a `kinds` and proves the cursor moved.
+                // Page two, below where page one ended, is the ask that proves the cursor moved.
                 val floor = ladder?.oldestAt
                 val narrowAt = System.currentTimeMillis()
                 val narrow =
@@ -129,7 +127,7 @@ class RelayComplianceProbe {
                 println("    page two  ${row(judge, narrow)}  ${narrowMs}ms")
                 println("    walk      $walks")
 
-                // What the pass would publish is the sum of the two rows, not either one.
+                // The pass publishes the sum of the two rows.
                 val both = (ladder?.compliance ?: AliasProbe.Compliance()) + narrow
                 println("    VERDICT   ${judge.decide(both)} — ${judge.evidence(both)}")
 
@@ -137,14 +135,13 @@ class RelayComplianceProbe {
                 for (shape in SYNC_SHAPES) {
                     println("    ${"%-9s".format(shape.label)} ${runBlocking { syncWalk(client, url, shape) }}")
                 }
-                // The outbox shape binds authors: a kind-0 lookup for named pubkeys is a current-version read
-                // on most relays, with no reason to consult `until`. See docs/proposals/negentropy-replaced-ids.md.
+                // The outbox shape binds authors, a read most relays answer without consulting `until`.
                 println("    ${"%-9s".format("outbox k0")} ${runBlocking { outboxWalk(client, url) }}")
 
-                // The older leg's first ask carries both bounds, the only shape that can reach `VisitPool.refusedOutright`.
+                // The older leg's first ask carries both bounds, the only shape that reaches `VisitPool.refusedOutright`.
                 println("    ${"%-9s".format("older leg")} ${runBlocking { olderLeg(client, url) }}")
 
-                // The ask the mirror actually aborts on, through quartz's own paged walk, so the ending is quartz's verdict.
+                // The ask the mirror aborts on, through quartz's own paged walk.
                 for (stream in STREAM_SHAPES) {
                     println("    ${"%-9s".format(stream.label)} ${runBlocking { realOutboxWalk(client, url, stream) }}")
                 }
@@ -159,10 +156,7 @@ class RelayComplianceProbe {
         println("see the table in RelayConsistency.ANCHOR_LAG_SECONDS for the run that proved it.")
     }
 
-    /**
-     * Two pages in the mirror's own shape, `kinds` and a `since`, built without
-     * [AliasProbe] because the point is to ask what the monitor cannot.
-     */
+    /** Two pages in the mirror's own shape, `kinds` under a `since`, which [AliasProbe] cannot ask. */
     private suspend fun syncWalk(
         client: NostrClient,
         url: NormalizedRelayUrl,
@@ -189,10 +183,7 @@ class RelayComplianceProbe {
             }
     }
 
-    /**
-     * The outbox shape: `kinds=[0]` bound to authors taken from the relay's own
-     * answer, so the walk cannot fail for want of data.
-     */
+    /** The outbox shape: `kinds=[0]` bound to authors taken from the relay's own answer. */
     private suspend fun outboxWalk(
         client: NostrClient,
         url: NormalizedRelayUrl,
@@ -221,10 +212,7 @@ class RelayComplianceProbe {
             }
     }
 
-    /**
-     * One ask carrying both bounds on the first page, as the mirror's older leg
-     * sends it; only a first-page failure can reach `VisitPool.refusedOutright`.
-     */
+    /** One ask carrying both bounds on the first page, as the mirror's older leg sends it. */
     private suspend fun olderLeg(
         client: NostrClient,
         url: NormalizedRelayUrl,
@@ -246,20 +234,15 @@ class RelayComplianceProbe {
             }
     }
 
-    /**
-     * `contentViaOutbox`'s real ask, walked by quartz's own `fetchAllPages` so
-     * the ending is `PagedFetchResult.End` as the mirror sees it. The mirror
-     * aborts only on `downloaded == 0` plus a refusal ending, so both are printed.
-     */
+    /** `contentViaOutbox`'s real ask, walked by quartz's own `fetchAllPages` so the ending is the mirror's. */
     private suspend fun realOutboxWalk(
         client: NostrClient,
         url: NormalizedRelayUrl,
         stream: StreamShape,
     ): String {
-        // No `limit`, because the mirror's leg has none; the window is an hour so the walk still terminates.
+        // No `limit`, because the mirror's leg has none; the short window is what ends the walk.
         val since = (System.currentTimeMillis() / 1000) - OUTBOX_WINDOW_SECONDS
-        // One author, as `RosterBuilder.asksOf` sends it. Taken from the relay's own recent events, with a
-        // stranger as fallback: a relay that refuses a 141-kind ask refuses it for any pubkey.
+        // One author, as `RosterBuilder.asksOf` sends it; a relay refusing the kinds refuses them for any pubkey.
         val seed = ask(client, url, Filter(kinds = listOf(1), since = since, limit = PAGE))
         val known = seed?.firstOrNull()?.pubKey
         val author = known ?: STRANGER
@@ -287,16 +270,13 @@ class RelayComplianceProbe {
             if (spoke) result.events.map { it.second } else null
         }
 
-    /**
-     * One visit stream's ask. Both are walked because a fault that follows the
-     * stream is a fault of the filter, and one that follows the relay is the relay's.
-     */
+    /** One visit stream's ask; a fault that follows the stream is the filter's, one that follows the relay is the relay's. */
     private class StreamShape(
         val label: String,
         val kinds: List<Int>,
     )
 
-    /** One shape of ask the mirror actually makes. See [syncWalk]. */
+    /** One shape of ask the mirror makes. */
     private class SyncShape(
         val label: String,
         val kinds: List<Int>,
@@ -320,10 +300,10 @@ class RelayComplianceProbe {
         private const val IDLE_MS = 12_000L
         private const val PER_ASK_MS = 45_000L
 
-        /** The mirror's page size for this diagnostic; it is the `limit` being tested. */
+        /** The mirror's page size, the `limit` being tested. */
         private const val PAGE = 20
 
-        /** A pubkey on every relay that holds anything, bound when the relay holds nothing recent to take one from. */
+        /** A pubkey on every relay that holds anything, for when the relay has nothing recent to take one from. */
         private const val STRANGER = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
 
         private const val AUTHORS = 3
@@ -341,7 +321,7 @@ class RelayComplianceProbe {
         /** `contentViaOutbox`'s kinds, verbatim from `router.conf.example`. */
         private val OUTBOX_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
 
-        /** The mirror's asks as #187 recorded them; both carry a `since`. */
+        /** The mirror's asks; both carry a `since`. */
         private val SYNC_SHAPES =
             listOf(
                 SyncShape("sync k0", listOf(0), 365L * 24 * 60 * 60),

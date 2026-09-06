@@ -35,10 +35,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * One real reader's trust chain end to end: a production kind-10040, the Trusted Lists it delegates by
- * bare kind, and the profiles those lists name, loaded into a live Vespa and read back over the wire.
- * Asserts the delegated lists unpack for that reader and for nobody else. Selected by `-DitVespa=<url>`
- * and `-DitCorpus=<dir>`, a corpus written by `relay/tools/fetch-observer-corpus.mjs`.
+ * One real reader's trust chain, loaded into a live Vespa and read back over the wire: the
+ * delegated lists unpack for that reader and for nobody else. Selected by `-DitVespa=<url>` and
+ * `-DitCorpus=<dir>`, a corpus written by `relay/tools/fetch-observer-corpus.mjs`.
  */
 class ObserverTrustListIT {
     private val vespa = System.getProperty("itVespa")
@@ -114,7 +113,6 @@ class ObserverTrustListIT {
     fun `the corpus is a real chain and the Map delegates its lists by bare kind`() {
         skip()?.let { return println(it) }
 
-        // Every entry, both shapes, exactly as the relay's own gate splits them.
         val entries = map.tags.filter { it.size > 1 && it[1].length == 64 }.map { it[0] }
         val bareList = entries.filter { !it.contains(':') && it.toIntOrNull() in 30392..30395 }
         println("OBSERVER-IT observer ${observer.take(12)}… map ${map.id.take(12)}… entries $entries")
@@ -123,11 +121,11 @@ class ObserverTrustListIT {
         assertTrue(bareList.isNotEmpty(), "this file is about the bare-kind shape; the Map carries none: $entries")
         assertTrue(lists.isNotEmpty(), "the delegated publisher signed no 30392 the corpus could fetch")
 
-        // Nothing here may be ours, or every assertion below stops meaning anything.
+        // A list signed by the reader would pass the gate without any delegation.
         assertTrue(lists.all { it.pubKey != observer }, "a list signed by the reader would pass the gate without any delegation")
 
-        // The relay reads a member's key, never its score, so a spliced member's position means its rank
-        // only because the publisher sorted the tags; a score outside quartz's 0..100 reads back as unscored.
+        // The relay reads a member's key, never its score, so a spliced member's position means
+        // its rank only because the publisher sorted the tags.
         for (list in lists) {
             val scores =
                 list.tags
@@ -165,7 +163,7 @@ class ObserverTrustListIT {
     fun `a reader who delegated nobody gets the list and none of its members`() {
         withRelay { relay ->
             val title = titleOf(subject)
-            // A pubkey with no 10040 in this corpus: the same search, the same list, nothing behind it.
+            // A pubkey with no 10040 in this corpus.
             val stranger = "b7".repeat(32)
             val page = page(relay, "stranger", """{"kinds":[0,30392],"search":"$title include:spam observer:$stranger"}""")
             val listIds = lists.map { it.id }.toSet()
@@ -182,7 +180,7 @@ class ObserverTrustListIT {
     @Test
     fun `a plain recall of the same list splices nothing`() {
         withRelay { relay ->
-            // No search text on the filter, so no expansion: same reader, same delegation, different question.
+            // No search text on the filter, so no expansion for the same reader and delegation.
             val page = page(relay, "plain", """{"kinds":[30392],"authors":["${subject.pubKey}"],"search":"include:spam"}""")
             assertTrue(subject.id in page, "the plain recall must still serve the list: $page")
             assertEquals(

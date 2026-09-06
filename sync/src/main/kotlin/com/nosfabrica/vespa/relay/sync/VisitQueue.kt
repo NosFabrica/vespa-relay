@@ -29,17 +29,9 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The pool's rotation bookkeeping: offers, collisions and revisit timers,
- * generic in its unit of work.
- *
- * - [offer] dedups against the queue, never against a running visit.
- * - A unit drawn while its visit is still running is parked, and the visit's
- *   own worker re-offers it the moment it finishes.
- * - A finished visit that consumed no parked requeue arms exactly one revisit
- *   timer, however many out-of-band offers landed meanwhile.
- *
- * [visitLoop]'s three callbacks are the whole contract; the queue knows
- * nothing about relays, rosters or tails.
+ * The pool's rotation bookkeeping, generic in its unit of work. [offer] dedups against the
+ * queue, never against a running visit; a unit drawn mid-visit is parked and re-offered as the
+ * visit finishes; a visit that consumed no parked requeue arms exactly one revisit timer.
  */
 internal class VisitQueue<K : Any>(
     private val scope: CoroutineScope,
@@ -49,20 +41,17 @@ internal class VisitQueue<K : Any>(
     private val inFlight = ConcurrentHashMap.newKeySet<K>()
     private val parked = ConcurrentHashMap.newKeySet<K>()
 
-    /** The pending revisit per unit, as a cancellable job; see [disarm]. */
+    /** The pending revisit per unit, as a cancellable job. */
     private val armed = ConcurrentHashMap<K, Job>()
 
-    /** Guards the two compound reads that decide a park; see [visitLoop]. */
+    /** Guards the two compound reads that decide a park. */
     private val handoff = Any()
 
     val waiting: Int get() = queued.size
 
     val visiting: Int get() = inFlight.size
 
-    /**
-     * [waiting] split by [of], in one walk. A snapshot of a set the workers
-     * are mutating, so the counts are read at one tick and not one instant.
-     */
+    /** [waiting] split by [of], in one walk over a set the workers are mutating. */
     fun <G : Any> waitingBy(of: (K) -> G): Map<G, Int> {
         val out = HashMap<G, Int>()
         for (key in queued) out.merge(of(key), 1, Int::plus)
@@ -77,10 +66,9 @@ internal class VisitQueue<K : Any>(
     }
 
     /**
-     * One worker's loop: draws units and runs [visit] on each, keeping the
-     * invariants above. [revisitDelayMs] is read as the visit finishes, and
-     * [stillWanted] gates both the visit and every requeue. A throw escaping
-     * [visit] ends the worker.
+     * One worker's loop: draws units and runs [visit] on each. [revisitDelayMs] is read as the
+     * visit finishes, [stillWanted] gates both the visit and every requeue, and a throw
+     * escaping [visit] ends the worker.
      */
     suspend fun visitLoop(
         stillWanted: (K) -> Boolean,
@@ -116,9 +104,8 @@ internal class VisitQueue<K : Any>(
     }
 
     /**
-     * Drops a pending revisit so the next completion arms a fresh one. The
-     * delay is read when the timer is armed, so without this a tail's cadence
-     * would outlive the tail. A unit with nothing armed is a no-op.
+     * Drops a pending revisit so the next completion arms a fresh one. The delay is read when
+     * the timer is armed, so without this a tail's cadence would outlive the tail.
      */
     fun disarm(key: K) {
         armed.remove(key)?.cancel()

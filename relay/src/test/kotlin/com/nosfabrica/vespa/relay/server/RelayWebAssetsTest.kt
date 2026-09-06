@@ -81,9 +81,9 @@ class RelayWebAssetsTest {
 
     @Test
     fun `every module the landing page preloads is actually servable`() {
-        // tools/webtest/preload.test.mjs checks the hints against the import graph; this checks them against the route.
+        // The web tests check the hints against the import graph; this checks them against the route.
         val html = assertNotNull(javaClass.getResource("/index.html")?.readText())
-        // Document-relative hints, so a page survives a path-prefix mount; the route itself stays absolute.
+        // Document-relative hints, so a page survives a path-prefix mount.
         val hrefs = Regex("""<link rel="modulepreload" href="\./web/([^"]+)"""").findAll(html).map { it.groupValues[1] }.toList()
         assertTrue(hrefs.isNotEmpty(), "the landing page still carries preload hints")
         for (href in hrefs) assertNotNull(WebAssets.get(href), "./web/$href is hinted but not servable")

@@ -1,5 +1,4 @@
-// What a git permalink shows under its card: the ask and the shape, both
-// pure functions in web/related.js with one `conn.req` between them.
+// What a git permalink shows under its card: the ask and the shape.
 import assert from 'assert';
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
@@ -18,8 +17,7 @@ const ev = (kind, tags = [], content = "", eid = id("0"), who = pk, ago = 0) =>
 const REPO = ev(30617, [["d", "vespa-relay"], ["name", "vespa-relay"]]);
 const ADDR = `30617:${pk}:vespa-relay`;
 
-// The state is addressed by `d` and carries no `a`, so an `#a` ask alone
-// would never reach it; hence two filters in one req.
+// The state is addressed by `d` and carries no `a`, so an `#a` ask alone would never reach it.
 const repoAsk = relatedAsk(REPO);
 assert.strictEqual(repoAsk.length, 2, "a repository asks its items and its state");
 assert.deepStrictEqual(repoAsk[0]["#a"], [ADDR], "items are tagged with the repo's address");

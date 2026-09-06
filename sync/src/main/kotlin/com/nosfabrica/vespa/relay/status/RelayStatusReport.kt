@@ -30,23 +30,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * Where each prime (relay, stream) unit stands: one row per unit the roster
- * admits, worst first, cut at [MAX_ROWS].
- *
- * A row carries two independent readings. `syncStatus` is the past (how far
- * the backfill has got: `notStarted`, `paging`, `complete`, `refused`) and
- * `behindSec` is the present (the age of the newest event held). A tail is a
- * third fact belonging to neither: a tailed pair's present arrives live, so
- * the fault rule is stale and not tailed. The unit is the pool's pair rather
- * than the relay because one relay can be complete for one stream and never
- * started for another.
- *
- * The join is on the unit's owed asks, keyed by the filter JSON the band
- * snapshot is keyed under, and `complete` needs every owed ask settled. Urls
- * join verbatim: both sides write the pool's own normalized string.
- *
- * The table's job is what is wrong on this mirror; one named relay is a
- * question for the document (`jq '.sync.data.relays.rows[] | select(.relay == ...)'`).
+ * Where each prime (relay, stream) unit stands: one row per unit the roster admits, worst
+ * first, cut at [MAX_ROWS]. `syncStatus` is the past and `behindSec` the present; the fault
+ * rule is stale and not tailed, since a tailed pair's present arrives live.
  */
 object RelayStatusReport {
     /** One prime unit as the pool knows it, built by `VisitPool.primeUnits`. */
@@ -54,15 +40,15 @@ object RelayStatusReport {
         /** The relay's normalized url, verbatim. */
         val relay: String,
         val stream: String,
-        /** Every ask this unit owes, as the filter JSON the band snapshot keys by (`RosterBuilder.UnitAsks.identity`). */
+        /** Every ask this unit owes, as the filter JSON the band snapshot is keyed by. */
         val askKeys: Set<String>,
         /** A worker is inside this unit's visit right now. */
         val visiting: Boolean,
         /** The worker is holding a live subscription. */
         val live: Boolean,
-        /** The monitor's NIP-77 verdict: true speaks negentropy, false refused a NEG-OPEN, null unmeasured. */
+        /** The monitor's NIP-77 verdict; null when unmeasured. */
         val speaksNegentropy: Boolean? = null,
-        /** The filter width learned from this relay's own refusal ([FilterWidths]); null when it never complained. */
+        /** The filter width learned from this relay's own refusal; null when it never complained. */
         val kindCap: Int? = null,
         val abortReason: String? = null,
         val abortSaid: String? = null,
@@ -70,9 +56,8 @@ object RelayStatusReport {
     )
 
     /**
-     * Fold [units] against [bandsDoc] (`SyncBands.snapshot()`, stream → filter
-     * → relay → band). Null when there are no units, so a router with no visit
-     * streams publishes no section.
+     * Fold [units] against the band snapshot. Null when there are no units, so a router with
+     * no visit streams publishes no section.
      */
     fun build(
         bandsDoc: JsonObject?,
@@ -84,8 +69,7 @@ object RelayStatusReport {
         val rows = units.mapIndexed { at, unit -> row(unit, folded[at], nowSeconds) }
         val counts = rows.groupingBy { it.status }.eachCount()
         val fresh = rows.groupingBy { it.freshness }.eachCount()
-        // Faults first across both axes, then coldest, then status, then the
-        // url so two polls of an unchanged router produce the same document.
+        // Faults first, then coldest, then status, then url, so an unchanged router repeats itself.
         val ordered =
             rows.sortedWith(
                 compareByDescending<Row> { it.fault }
@@ -96,9 +80,8 @@ object RelayStatusReport {
             )
         return buildJsonObject {
             put("pairs", rows.size)
-            // Both partitions as rows rather than members, so `complete` and
-            // `counted` keep their one meaning each. Counted over every row,
-            // not the cut list.
+            // Rows, not members, so `complete` and `counted` keep one meaning each. Counted
+            // over every row, not the cut list.
             putJsonArray("statuses") {
                 for (status in STATUS_ORDER) {
                     add(
@@ -230,9 +213,8 @@ object RelayStatusReport {
     }
 
     /**
-     * One walk of the snapshot, accumulating straight into the units by index.
-     * Best-effort like [SyncCoverageReport]: an entry this build does not
-     * understand costs a thinner table, not the document.
+     * One walk of the snapshot into the units by index. Best-effort: an entry this build does
+     * not understand costs a thinner table, not the document.
      */
     private fun fold(
         doc: JsonObject?,
@@ -240,8 +222,7 @@ object RelayStatusReport {
     ): List<Folded> {
         val out = List(units.size) { Folded() }
         if (doc == null) return out
-        // Nested stream → relay → index, so streams the roster no longer names
-        // are skipped whole rather than walked per band.
+        // Nested stream → relay → index, so streams the roster no longer names are skipped whole.
         val at = HashMap<String, HashMap<String, Int>>()
         units.forEachIndexed { i, u -> at.getOrPut(u.stream) { HashMap() }[u.relay] = i }
         for ((stream, byFilter) in doc) {
@@ -252,12 +233,11 @@ object RelayStatusReport {
                 for ((relay, entry) in relays) {
                     val band = entry as? JsonObject ?: continue
                     val i = inStream[relay] ?: continue
-                    // A band for a filter this unit no longer asks is another
-                    // unit's history.
+                    // A band for a filter this unit no longer asks is another unit's history.
                     if (filter !in units[i].askKeys) continue
                     val f = out[i]
                     f.bands++
-                    // An absent `complete` reads as not settled: the claim that costs a re-walk, not the one that skips history.
+                    // An absent `complete` reads as not settled: the claim that costs a re-walk.
                     if (band["complete"]?.jsonPrimitive?.booleanOrNull == true) f.settled++
                     band["min"]
                         ?.jsonPrimitive
@@ -269,8 +249,7 @@ object RelayStatusReport {
                         ?.longOrNull
                         ?.takeIf { it > 0 }
                         ?.let { m -> f.max = maxOf(f.max ?: m, m) }
-                    // The newest reconcile: asks are audited on independent
-                    // clocks, so the oldest says nothing about the relay.
+                    // The newest reconcile: asks are audited on independent clocks.
                     band["verifiedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 }?.let { v ->
                         f.verifiedAt = maxOf(f.verifiedAt ?: v, v)
                     }
@@ -305,7 +284,7 @@ object RelayStatusReport {
     /** Nothing held, so no age to state. */
     const val NOTHING = "nothing"
 
-    /** Four ages on a log-ish scale and an absence; a linear scale would put every healthy pair in one bucket. */
+    /** Four ages on a log-ish scale and an absence. */
     internal fun freshnessOf(behindSec: Long?): String =
         when {
             behindSec == null -> NOTHING
@@ -315,7 +294,7 @@ object RelayStatusReport {
             else -> OLDER
         }
 
-    /** Well past every revisit and audit cadence the pool runs; both the bucket edge and the fault bound. */
+    /** Well past every revisit and audit cadence; both the bucket edge and the fault bound. */
     const val STALE_SEC = 7 * 86_400L
 
     /** Freshest first, unlike [STATUS_ORDER]. */
@@ -324,6 +303,6 @@ object RelayStatusReport {
     /** Worst first; both the published member order and the row sort. */
     val STATUS_ORDER = listOf(REFUSED, NOT_STARTED, PAGING, COMPLETE)
 
-    /** The counts above the rows are complete whatever this is, and the sort puts every fault before the cut. */
+    /** The sort puts every fault before the cut, and the counts are over every row. */
     const val MAX_ROWS = 1_000
 }

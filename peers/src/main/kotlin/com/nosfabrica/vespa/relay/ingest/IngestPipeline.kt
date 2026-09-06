@@ -56,38 +56,23 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
 /**
- * The download-to-store pipeline every mirrored event funnels through: a
- * bounded channel and a pool of workers draining it in batches through
- * [IEventStore.batchInsert], with duplicates and superseded replaceables
- * dropped before the signature check.
- *
- * The channel is bounded so a fast download cannot outrun ingest and pile
- * events onto the heap: when it fills, [submit] suspends the producer and
- * the upstream throttles to the ingest rate.
+ * The download-to-store pipeline every mirrored event funnels through: a bounded channel and
+ * a pool of workers draining it in batches through [IEventStore.batchInsert], with duplicates
+ * and superseded replaceables dropped before the signature check. A full channel suspends [submit].
  */
 class IngestPipeline(
     private val store: IEventStore,
     tuning: IngestTuning,
-    // Runs every mirrored event through quartz's search-indexing parse when set.
     private val audit: ParseAudit?,
     // Clients first: ingest yields when their reads slow down.
     private val servingPressure: ServingPressure?,
     private val scope: CoroutineScope,
-    /**
-     * Which of these ids the store already holds. Null disables the probe,
-     * which is only slower, never wrong. See [dropDuplicates].
-     */
+    /** Which of these ids the store already holds. Null disables the probe, which is only slower, never wrong. */
     private val knownIds: (suspend (List<String>) -> Set<String>)? = null,
-    /**
-     * The newest stored version of each `(kind, author)` address in a chunk.
-     * Null leaves supersession to the store. See [dropSuperseded].
-     */
+    /** The newest stored version of each `(kind, author)` address. Null leaves supersession to the store. */
     private val newestVersions: (suspend (Int, List<String>) -> Map<String, AddressVersion>)? = null,
     private val refusals: RefusalSink = RefusalSink.None,
-    /**
-     * How long a batch pass runs before the pipeline reads as wedged rather
-     * than backpressured. A parameter only so a test can reach the state.
-     */
+    /** How long a batch pass runs before the pipeline reads as wedged rather than backpressured. */
     private val wedgeAfterMs: Long = WEDGE_AFTER_MS,
 ) : AutoCloseable {
     private data class Inbound(
@@ -99,46 +84,25 @@ class IngestPipeline(
     private val workers = tuning.concurrency
     private val configuredBatch = tuning.batch
 
-    /**
-     * How many downloaded events may wait for ingest. Bounded at both ends:
-     * batch size and queue depth are separate concerns.
-     */
+    /** How many downloaded events may wait for ingest. */
     val capacity = (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
 
-    /**
-     * How many events one worker takes per pass, capped to its fair share of
-     * the channel. The cap bounds a mirror's throughput: commits serialise on
-     * the store's one writer mutex, so survivors per lock hold is what counts,
-     * and a mirror's batches are mostly duplicates. Widening is an operator
-     * lever, left to the operator because every other writer waits on that mutex.
-     */
+    /** How many events one worker takes per pass, capped to its fair share of the channel. */
     private val batchSize = tuning.batch.coerceAtMost((capacity / workers).coerceAtLeast(1))
 
     private val inbound = Channel<Inbound>(capacity)
 
-    /**
-     * Threads the ingest workers own outright, so batch work stays off the
-     * shared pool. On its own this does not prevent the deadlock [submit]
-     * describes: the store reaches for `Dispatchers.IO` regardless.
-     */
+    /** Threads the ingest workers own outright, so batch work stays off the shared pool. */
     private val pool =
         Executors
             .newFixedThreadPool(workers) { r ->
                 Thread(r, "vespa-relay-ingest").apply { isDaemon = true }
             }.asCoroutineDispatcher()
 
-    /**
-     * How full [inbound] is. Channel does not expose its depth, and this
-     * number decides whether the pipeline is starved or backpressured.
-     */
+    /** How full [inbound] is; Channel does not expose its depth. */
     val queued = AtomicInteger()
 
-    /**
-     * Producers suspended in a full queue, per relay. quartz drains a socket
-     * through one consumer that awaits every listener, so a parked producer
-     * silences every subscription on that relay; counted here so every
-     * producer is covered, and only while the send actually suspends.
-     */
+    /** Producers suspended in a full queue, per relay, counted only while the send actually suspends. */
     private val parked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
 
     /** How many producers are suspended in a full queue on this relay's events right now. */
@@ -150,58 +114,37 @@ class IngestPipeline(
     val accepted = AtomicLong()
     val rejected = AtomicLong()
 
-    /**
-     * Events handed to the queue since boot, the arrival side of [accepted]
-     * + [rejected]. Counted once the send has returned so this and [queued]
-     * agree; a [suppressed] event never reaches the channel and is not here.
-     */
+    /** Events handed to the queue since boot, the arrival side of [accepted] + [rejected]. */
     val submitted = AtomicLong()
 
-    /**
-     * Good events the store refused for structural reasons, which nothing
-     * will re-offer. Distinct from [rejected], most of which is the protocol working.
-     */
+    /** Good events the store refused for structural reasons, which nothing will re-offer. */
     val lostToStore = AtomicLong()
 
-    // Separated because duplicates dwarf accepts on a wide fan-out, while a
-    // bad signature means an upstream serves junk.
     private val badSignatures = AtomicLong()
 
     /** Rejections by reason. Only ever written through [noteRejection], which bounds it. */
     private val rejectReasons = ConcurrentHashMap<String, Long>()
 
-    /**
-     * Events dropped before the store because a filter says we have twice
-     * refused them. Its own line, never folded into accepted or rejected.
-     */
+    /** Events dropped before the store because a filter says we have twice refused them. */
     val suppressed = AtomicLong()
 
-    /** `REPLACED` refusals on their own: they are the loop the refused-id filter exists for. */
+    /** `REPLACED` refusals on their own: the loop the refused-id filter exists for. */
     val replacedRejects = AtomicLong()
 
-    // Store failures already reported in full, so the raw-event dump stays
-    // one per distinct defect.
+    /** Store failures already reported in full. */
     private val poisonSeen = ConcurrentHashMap.newKeySet<String>()
 
-    /** Break-even for the id probe, measured by `IngestCostBench`. */
     private val idGate = ProbeGate(minHitRate = 0.35)
 
-    /** Break-even for the version probe, measured the same way. */
     private val versionGate = ProbeGate(minHitRate = 0.20)
 
-    /**
-     * When each worker entered its current batch pass, or 0 while it waits
-     * on the channel. A suspended worker has no frame in a thread dump, so
-     * this is the only record that it is inside a store round trip.
-     */
+    /** When each worker entered its current batch pass, or 0 while it waits on the channel. */
     private val busySince = AtomicLongArray(workers)
 
-    /** Worker loops still running. Anything below [workers] means one exited and nothing drains its share. */
+    /** Worker loops still running. Below [workers] means one exited and nothing drains its share. */
     private val loopsRunning = AtomicInteger()
 
     fun start() {
-        // Announced when the batch is capped, so an operator who set
-        // SYNC_INGEST_BATCH knows the knob did not connect.
         if (batchSize < configuredBatch) {
             System.err.println(
                 "router: SYNC_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
@@ -211,8 +154,6 @@ class IngestPipeline(
                     "(measured 9x) — at the cost of a longer lock hold for every other writer",
             )
         }
-        // Below the probe's width every copy of an event is signature-checked
-        // before the store drops it.
         if (knownIds != null && batchSize < PROBE_MIN_VERIFIABLE) {
             System.err.println(
                 "router: ingest batch $batchSize is under the $PROBE_MIN_VERIFIABLE-event width the dedup " +
@@ -223,23 +164,20 @@ class IngestPipeline(
     }
 
     /**
-     * Hand an event to the pool, suspending the caller if the buffer is full.
-     * Suspending rather than blocking matters: producers and the store share
-     * the coroutine pool, so a parked producer holds a thread the drain needs.
+     * Hand an event to the pool, suspending the caller if the buffer is full. Never blocks:
+     * producers and the store share the coroutine pool.
      */
     suspend fun submit(
         event: Event,
         skipVerify: Boolean,
         origin: IngestOrigin = IngestOrigin.Local,
     ) {
-        // Checked here, not in the callers' onEvent: by now the caller has run
-        // SyncCoverage.observe, so the leg keeps its per-kind evidence.
+        // Checked after the caller's SyncCoverage.observe, so the leg keeps its per-kind evidence.
         if (refusals.isSuppressed(event)) {
             suppressed.incrementAndGet()
             return
         }
-        // Counted before the send and taken back if it fails: a worker can
-        // take the event and decrement before a post-send increment runs.
+        // Counted before the send and taken back if it fails, or a fast worker decrements first.
         queued.incrementAndGet()
         var handedOff = false
         try {
@@ -259,17 +197,16 @@ class IngestPipeline(
             }
             submitted.incrementAndGet()
         } catch (_: ClosedSendChannelException) {
-            // Shutdown (closeIntake) raced this event in. Not an error.
+            // Shutdown raced this event in.
         } finally {
-            // A finally, because `send` also throws CancellationException on shutdown.
+            // `send` also throws CancellationException on shutdown.
             if (!handedOff) queued.decrementAndGet()
         }
     }
 
     /**
-     * One worker: take a batch off the channel, run it through the store,
-     * and repeat while the scope lives. The exit is reported: the scope's
-     * SupervisorJob lets one worker die while the others keep running.
+     * One worker: take a batch off the channel, run it through the store, repeat. The exit is
+     * reported because the scope's SupervisorJob lets one worker die while the others run on.
      */
     private suspend fun loop(worker: Int) {
         loopsRunning.incrementAndGet()
@@ -291,8 +228,6 @@ class IngestPipeline(
     private suspend fun drain(worker: Int) {
         val batch = ArrayList<Inbound>(batchSize)
         while (scope.isActive) {
-            // Clients first: the batch's probes land in the same engine a REQ
-            // does. Zero while reads are healthy.
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
             val first = inbound.receiveCatching().getOrNull() ?: break
             queued.decrementAndGet()
@@ -303,25 +238,19 @@ class IngestPipeline(
                 queued.decrementAndGet()
                 batch.add(next)
             }
-            // Around the whole pass and cleared in a finally: the only record
-            // that a worker is inside a store round trip.
+            // Around the whole pass: the only record that a worker is inside a store round trip.
             busySince.set(worker, System.currentTimeMillis())
             try {
-                // Before verify; see [dropDuplicates] and [dropSuperseded].
                 val fresh = dropSuperseded(dropDuplicates(batch))
                 if (fresh.isEmpty()) continue
                 val valid = ArrayList<Event>(fresh.size)
-                // Only built when the sink will read it.
                 val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
                 var verifyRejected = 0
-                // Booked as a stage so it lands on the `router: ingest stages`
-                // line beside the store's own.
                 IngestStats.timed("verify") {
                     for (msg in fresh) {
                         if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
                             valid.add(msg.event)
-                            // A bad signature never reaches the sink: the same
-                            // id can arrive correctly signed from another relay.
+                            // A bad signature never reaches the sink: the same id can arrive signed elsewhere.
                             origins?.put(msg.event.id, msg.origin)
                         } else {
                             verifyRejected++
@@ -333,8 +262,7 @@ class IngestPipeline(
                     badSignatures.addAndGet(verifyRejected.toLong())
                 }
                 if (valid.isEmpty()) continue
-                // Before the batch write: the store feeds Vespa in parallel, so
-                // a report raised inside batchInsert has no single event.
+                // Before the batch write, where a report raised in parallel has no single event.
                 audit?.let { for (event in valid) it.inspect(event) }
                 insertIsolating(valid, origins ?: emptyMap())
             } finally {
@@ -344,16 +272,9 @@ class IngestPipeline(
     }
 
     /**
-     * The batch minus everything we already hold, dropped before the
-     * signature check so a mirror does not verify a popular event once per
-     * relay carrying it. Two passes, cheapest first: in batch by id
-     * (ephemeral kinds exempt, since the store counts a repeat of one as
-     * accepted-not-stored), then in the store via [knownIds], gated on
-     * [PROBE_MIN_VERIFIABLE] because the round trip only pays at width.
-     *
-     * Safe because a dropped event is never stored: the claimed id is
-     * unverified, but a forgery naming an id we hold is dropped either way,
-     * and everything that survives is verified in full before the store.
+     * The batch minus everything we already hold, dropped before the signature check: in batch
+     * by id (ephemeral kinds exempt), then in the store via [knownIds] when the batch is wide
+     * enough to pay for the round trip. Safe on an unverified id: a dropped event is never stored.
      */
     private suspend fun dropDuplicates(batch: List<Inbound>): List<Inbound> {
         val ids = HashSet<String>(batch.size)
@@ -364,7 +285,7 @@ class IngestPipeline(
         }
 
         val probe = knownIds
-        // The round trip saves verifications, and trusted events skip those already.
+        // Trusted events skip verification, so they earn the probe nothing.
         val verifiable = once.count { !it.skipVerify }
         val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
         val stored =
@@ -372,8 +293,7 @@ class IngestPipeline(
                 emptySet()
             } else {
                 try {
-                    // Booked as one store call round the whole probe: the worker
-                    // is suspended in the fan-out, not in one chunk. See [StoreCalls].
+                    // One store call round the whole probe: the worker is suspended in the fan-out.
                     storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(once.size)) {
                         IngestStats.timed("dedup.pre") {
                             once
@@ -384,46 +304,36 @@ class IngestPipeline(
                         }
                     }
                 } catch (e: CancellationException) {
-                    // Not runCatching: shutdown reaches the probe as a cancellation,
-                    // and swallowed it would write into a closing store.
+                    // Swallowed, a shutdown cancellation would write into a closing store.
                     throw e
                 } catch (_: Throwable) {
-                    // A failed probe costs time, never correctness; the store's
-                    // stage B decides.
+                    // A failed probe costs time, never correctness.
                     emptySet()
                 }
             }
 
         val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
-        // Recorded whenever the probe ran, including when it found nothing;
-        // the in-batch pass is free and teaches the gate nothing.
+        // Only the probe teaches the gate; the in-batch pass is free.
         if (probed) idGate.record(once.size, once.size - fresh.size)
         dropped += once.size - fresh.size
         if (dropped > 0) {
             rejected.addAndGet(dropped.toLong())
-            // The store's own word, so a duplicate dropped here and there tally on one line.
+            // The store's own word, so duplicates dropped here and there tally on one line.
             noteRejection(RejectionReason.DUPLICATE.take(48), dropped.toLong())
         }
         return fresh
     }
 
-    /**
-     * Write a batch through the store's bulk path; if it throws, bisect so
-     * one bad event does not cost the batch. See [insertBisecting].
-     */
+    /** Write a batch through the store's bulk path; if it throws, bisect so one bad event does not cost the batch. */
     private suspend fun insertIsolating(
         events: List<Event>,
         origins: Map<String, IngestOrigin>,
     ) = insertBisecting(
         events = events,
-        // Booked apart from the probes: this waits on the writer mutex, they
-        // wait on the query path. Per bisection attempt, so an isolation pass
-        // reports the batch it is actually writing.
+        // Booked apart from the probes: this waits on the writer mutex, they wait on the query path.
         write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { store.batchInsert(batch) } },
         onOutcomes = { written, outcomes ->
-            // Positional alignment is the store's contract, and a misattributed
-            // rejection would suppress a wanted id; so it is checked, and only
-            // attribution is withheld when it fails.
+            // A misattributed rejection would suppress a wanted id, so only attribution is withheld.
             val aligned = outcomes.size == written.size
             if (!aligned) reportMisalignment(written.size, outcomes.size)
             for ((i, outcome) in outcomes.withIndex()) {
@@ -435,8 +345,7 @@ class IngestPipeline(
                     is IEventStore.InsertOutcome.Rejected -> {
                         rejected.incrementAndGet()
                         noteRejection(outcome.reason.take(48), 1L)
-                        // Only the Rejected branch reports: a Failed outcome is
-                        // the store's fault and the event is good.
+                        // Only the Rejected branch reports: a Failed outcome is the store's fault.
                         if (aligned) {
                             written.getOrNull(i)?.let { event ->
                                 reportRefusal(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
@@ -445,7 +354,6 @@ class IngestPipeline(
                     }
 
                     is IEventStore.InsertOutcome.Failed -> {
-                        // The event was good and is lost; lostToStore keeps it loud.
                         rejected.incrementAndGet()
                         noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
                         lostToStore.incrementAndGet()
@@ -459,20 +367,14 @@ class IngestPipeline(
             reportPoison(event, e)
         },
         onGaveUp = { batch, e ->
-            // Out of budget: tallied apart from the isolated ones, since "we
-            // could not say which" differs from "this event is bad".
+            // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
             rejected.addAndGet(batch.size.toLong())
             noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
-            // Lost, not merely rejected: nothing re-offers them.
             lostToStore.addAndGet(batch.size.toLong())
         },
     )
 
-    /**
-     * One permanent refusal, reported to the filter and the healer. Called
-     * from [dropSuperseded] as well as from the store's verdict: the fast
-     * path drops a superseded replaceable before the store can say `replaced`.
-     */
+    /** One permanent refusal, reported to the filter and the healer, from the store's verdict or [dropSuperseded]. */
     private fun reportRefusal(
         event: Event,
         origin: IngestOrigin,
@@ -483,24 +385,13 @@ class IngestPipeline(
     }
 
     /**
-     * The batch minus every replaceable a newer version already beats,
-     * dropped before verification like a duplicate. The id probe cannot see
-     * this arrival, since a newer generation is a different id. Two passes:
-     * in batch by address, then in the store via [newestVersions], gated by
-     * [versionGate].
-     *
-     * Plain replaceable kinds only: an addressable's version query is an
-     * (authors x d-tags) cross product, and a truncated answer here is a
-     * dropped event. The comparison is NIP-01's own, the rule the store's
-     * stage D applies, but read before the writer lock: a NIP-09 deletion of
-     * the newer version inside that window drops an event the store would
-     * have taken, until the next full resync re-offers it.
+     * The batch minus every plain replaceable a newer version already beats, dropped before
+     * verification like a duplicate: in batch by address, then in the store via [newestVersions].
+     * Addressables stay the store's business. Read before the writer lock, so not exact.
      */
     private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
-        // Not for a batch carrying a deletion or a vanish: on the store's
-        // replay path an event's fate depends on its position among the
-        // others, and choosing here could leave an address empty. Keyed on the
-        // kind, not the type: an Event that skipped quartz's factory is a plain Event.
+        // A batch carrying a deletion or a vanish goes to the store whole: an event's fate there
+        // depends on its position among the others. Keyed on the kind, not the type.
         if (batch.any { it.event.kind == DeletionEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
 
         // Winner per address, by first appearance so the batch keeps its order.
@@ -511,7 +402,6 @@ class IngestPipeline(
             val e = msg.event
             if (!e.kind.isReplaceable() || e.kind.isAddressable()) return@forEachIndexed
             candidates++
-            // Held for the second pass: one Pair per candidate.
             val key = e.kind to e.pubKey
             keys[i] = key
             val held = winners[key]
@@ -529,7 +419,7 @@ class IngestPipeline(
             var beaten = 0
             for ((key, i) in winners) {
                 val held = stored[key] ?: continue
-                // Strictly beaten only: an equal stamp is the same event.
+                // Strictly beaten only: an equal stamp and id is the same event.
                 if (held.createdAt > batch[i].event.createdAt ||
                     (held.createdAt == batch[i].event.createdAt && held.id < batch[i].event.id)
                 ) {
@@ -544,12 +434,8 @@ class IngestPipeline(
         if (dropped == 0) return batch
         noteRejection(RejectionReason.REPLACED.take(48), dropped.toLong())
         rejected.addAndGet(dropped.toLong())
-        // The store never sees these, so the `replaced:` verdict is reported
-        // from here, or the filter and the healer go quiet in proportion to
-        // how well this path works. `verifyId` binds the id to the content
-        // that earned the verdict: nothing here is verified yet, so an
-        // unchecked id would be attacker-chosen. The signature is not needed
-        // because supersession is decided inside the hashed content.
+        // The store never sees these, so the `replaced:` verdict is reported from here. `verifyId`
+        // binds the id to the content that earned it; an unchecked id would be attacker-chosen.
         for (i in batch.indices) {
             if (!drop[i]) continue
             val msg = batch[i]
@@ -558,7 +444,7 @@ class IngestPipeline(
         return batch.filterIndexed { i, _ -> !drop[i] }
     }
 
-    /** NIP-01 newest-wins, tie to the lower id: the rule the store's stage D resolves by. */
+    /** NIP-01 newest-wins, tie to the lower id. */
     private fun beats(
         candidate: Event,
         incumbent: Event,
@@ -566,13 +452,12 @@ class IngestPipeline(
         candidate.createdAt > incumbent.createdAt ||
             (candidate.createdAt == incumbent.createdAt && candidate.id < incumbent.id)
 
-    /** One query per kind per chunk of authors, same width and fan-out the store's version stage uses. */
+    /** One query per kind per chunk of authors. */
     private suspend fun readNewestVersions(
         probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
         addresses: Set<Pair<Int, String>>,
     ): Map<Pair<Int, String>, AddressVersion> =
         try {
-            // One call round the whole fan-out, for [dropDuplicates]'s reason.
             storeCall(
                 StoreCalls.CALLER_INGEST_VERSIONS,
                 StoreCalls.OP_NEWEST_VERSIONS,
@@ -589,20 +474,17 @@ class IngestPipeline(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {
-            // A failed probe costs time, not correctness.
             emptyMap()
         }
 
     /**
-     * Tally [count] rejections under [reason], keeping at most [REASON_LIMIT]
-     * distinct reasons. The store's throws embed per-event content, so a
-     * store failing on every event would otherwise mint a key per event.
+     * Tally [count] rejections under [reason], keeping at most [REASON_LIMIT] distinct reasons:
+     * the store's throws embed per-event content, so a failing store would mint a key per event.
      */
     private fun noteRejection(
         reason: String,
         count: Long,
     ) {
-        // Racy by a worker or two at the boundary; the point is a bound.
         if (rejectReasons.size >= REASON_LIMIT && !rejectReasons.containsKey(reason)) {
             rejectReasons.merge(OVERFLOW_REASON, count, Long::plus)
         } else {
@@ -610,16 +492,12 @@ class IngestPipeline(
         }
     }
 
-    /**
-     * Log an event the store threw on, once per distinct failure, with the
-     * raw JSON so the defect can be reproduced.
-     */
+    /** Log an event the store threw on, once per distinct failure, with the raw JSON. */
     private fun reportPoison(
         event: Event,
         error: Throwable,
     ) {
-        // Size checked before add: messages embed event content, so the set
-        // must stop growing past the print limit.
+        // Size checked before add: messages embed event content, so the set must stop growing.
         if (poisonSeen.size >= POISON_SAMPLE_LIMIT) return
         val signature = "${error.javaClass.name}: ${error.message}"
         if (!poisonSeen.add(signature)) return
@@ -630,10 +508,7 @@ class IngestPipeline(
         )
     }
 
-    /**
-     * The store returned a different number of outcomes than it was handed.
-     * Reported once; refusals stop being recorded until it is fixed.
-     */
+    /** The store returned a different number of outcomes than it was handed. Reported once. */
     private fun reportMisalignment(
         sent: Int,
         got: Int,
@@ -657,10 +532,7 @@ class IngestPipeline(
             " [replaced x${replacedRejects.get()}; suppressed x${suppressed.get()}]"
         }
 
-    /**
-     * What each drop-probe is currently doing, for the stats line; a gated-off
-     * probe is otherwise invisible. Empty until a gate has judged anything.
-     */
+    /** What each drop-probe is currently doing, for the stats line. Empty until a gate has judged anything. */
     fun probeStatus(): String {
         val parts =
             listOfNotNull(
@@ -681,10 +553,7 @@ class IngestPipeline(
         return "$name ${"%.0f".format(rate * 100)}% dropped${if (gate.paying()) "" else ", sampling only"}"
     }
 
-    /**
-     * Workers inside a batch pass right now, and how long the oldest has been
-     * there: the pair that tells a backpressured pipeline from a wedged one.
-     */
+    /** Workers inside a batch pass right now; with [oldestBatchMs], what tells backpressure from a wedge. */
     fun inBatch(): Int = (0 until workers).count { busySince.get(it) != 0L }
 
     fun oldestBatchMs(): Long {
@@ -696,22 +565,17 @@ class IngestPipeline(
         return oldest
     }
 
-    /** How many workers were configured, so [inBatch] has a denominator outside this class. */
     val workerCount: Int get() = workers
 
-    /** How many workers are still looping. Below [workerCount] means a worker exited; see [loop]. */
+    /** How many workers are still looping. Below [workerCount] means a worker exited. */
     fun workersRunning(): Int = loopsRunning.get()
 
     /**
-     * Whether ingest has stopped: no worker is waiting on the channel, and
-     * none has started a batch within [wedgeAfterMs]. Says nothing about the
-     * queue depth, since a wedge behind a slow upstream holds every worker
-     * with the queue only part full. Reports the wedge and never ends it:
-     * cutting a pass discards a batch of good events nothing re-offers.
+     * Whether ingest has stopped: no worker is waiting on the channel, and none has started a
+     * batch within [wedgeAfterMs]. Defined by the workers, not the queue depth. Reports, never ends.
      */
     fun wedged(): Boolean {
-        // An empty pool must not read as wedged: the loop below is vacuously
-        // true over no workers.
+        // The loop below is vacuously true over no workers.
         if (workers == 0) return false
         val now = System.currentTimeMillis()
         for (i in 0 until workers) {
@@ -721,10 +585,7 @@ class IngestPipeline(
         return true
     }
 
-    /**
-     * Why events were rejected, as counts. Biggest first, bounded, and the
-     * overflow bucket is one of the reasons it can return.
-     */
+    /** Why events were rejected, as counts, biggest first. The overflow bucket is one of the reasons. */
     fun rejectionReasons(limit: Int = REJECTION_ROWS): List<Pair<String, Long>> =
         (
             rejectReasons.entries.map { it.key to it.value } +
@@ -732,9 +593,7 @@ class IngestPipeline(
         ).sortedByDescending { it.second }
             .take(limit)
 
-    /**
-     * The top rejection reasons for the stats line.
-     */
+    /** The top rejection reasons for the stats line. */
     fun rejectionBreakdown(): String {
         if (rejected.get() == 0L) return ""
         val why =
@@ -752,57 +611,35 @@ class IngestPipeline(
         inbound.close()
     }
 
-    /** After the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. */
+    /** Called after the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. */
     override fun close() {
         runCatching { pool.close() }
     }
 
     companion object {
-        /** How many rejection reasons the report publishes. */
         const val REJECTION_ROWS = 4
 
-        /**
-         * Ceiling on queued-but-not-yet-ingested events, independent of batch
-         * size. It also caps [batchSize], which is derived from [capacity].
-         */
         private const val MAX_INBOUND_QUEUE = 16_384
 
-        /**
-         * Events a batch must expect to verify before the dedup probe is worth
-         * its round trip: the per-id price falls with width while a verify is flat.
-         */
+        /** Events a batch must expect to verify before the dedup probe is worth its round trip. */
         private const val PROBE_MIN_VERIFIABLE = 128
 
-        /**
-         * Authors per version query. Not [DEDUP_CHUNK]: `VESPA_DEDUP_CHUNK`
-         * widens the id check alone.
-         */
+        /** Authors per version query. */
         private const val CHECK_CHUNK = 500
 
-        /**
-         * Ids per probe query, read from the store's own knob so a widened
-         * stage B is matched here.
-         */
+        /** Ids per probe query, read from the store's own knob so a widened stage B is matched here. */
         private val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
 
         /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
         private const val REASON_LIMIT = 64
 
-        /** Where reasons past [REASON_LIMIT] land. */
         private const val OVERFLOW_REASON = "other store failures"
 
-        // Distinct store failures to dump a raw event for; past a handful it is a stuck loop.
         private const val POISON_SAMPLE_LIMIT = 20
 
-        // Enough of the event to reproduce it, even with a long kind-0 content.
         private const val POISON_JSON_CHARS = 4_000
 
-        /**
-         * How long a batch pass runs before it is reported as wedged. Sized
-         * against the throughput floor observed on a production-scale store,
-         * not the bench; a false `wedged` is worse than a late one. Nothing
-         * here stops the pass: the store's query client has no read timeout.
-         */
+        /** A false `wedged` is worse than a late one. Nothing here stops the pass. */
         const val WEDGE_AFTER_MS = 600_000L
     }
 }
@@ -813,10 +650,7 @@ data class AddressVersion(
     val id: String,
 )
 
-/**
- * How much of the store's throughput ingest may use: `ingestConcurrency`
- * and `ingestBatch` from `router.conf`. A type so a caller cannot swap them.
- */
+/** `ingestConcurrency` and `ingestBatch` from `router.conf`. A type so a caller cannot swap them. */
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,

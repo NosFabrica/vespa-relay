@@ -65,7 +65,7 @@ class StatsPageTest {
             val first = client.get("/stats.json")
             assertEquals(HttpStatusCode.OK, first.status)
             assertEquals("application/json", first.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim())
-            // Revalidate rather than guess a max-age: the rollup interval is an operator setting this route cannot see.
+            // Revalidate rather than guess a max-age: the rollup interval is a setting this route cannot see.
             assertEquals("no-cache", first.headers[HttpHeaders.CacheControl])
             val etag = assertNotNull(first.headers[HttpHeaders.ETag])
 
@@ -98,8 +98,8 @@ class StatsPageTest {
             // Without the scope line a reader compares a mirror's total against a network-wide dashboard's.
             assertTrue(body.contains("id=\"scope\""), "the page has somewhere to print the document's scope")
 
-            // Imports are document-relative (`./web/`) so the page survives a path-prefix mount, and
-            // matched as that literal: an absolute `/web/` is answered by whatever sits at the host root.
+            // Imports are document-relative so the page survives a path-prefix mount, and matched as
+            // that literal: an absolute `/web/` is answered by whatever sits at the host root.
             for (spec in Regex("""from "(\./web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
                 assertNotNull(WebAssets.get(spec.removePrefix("./web/")), "$spec is imported but not servable")
             }

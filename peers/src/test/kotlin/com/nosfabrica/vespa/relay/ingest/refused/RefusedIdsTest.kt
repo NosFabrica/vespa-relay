@@ -83,8 +83,7 @@ class RefusedIdsTest {
 
     @Test
     fun `a lookup window spanning an epoch boundary consults both epochs`() {
-        // Insertion keys on the exact created_at, a sweep lookup on its window,
-        // and windows do not respect epoch edges.
+        // Insertion keys on the exact created_at, lookup on a window, and windows ignore epoch edges.
         refused().use { r ->
             val at = 2_500L // epoch 2
             r.record(id(3), at)
@@ -174,10 +173,7 @@ class RefusedIdsTest {
 class RefusedIdsWindowTest {
     private fun dir() = Files.createTempDirectory("window").toFile().also { it.deleteOnExit() }
 
-    /**
-     * Real hashes: the filter slices its bucket and fingerprint straight out of the
-     * id, and `"%064x"` counters all land in one bucket with one fingerprint.
-     */
+    /** Real hashes: `"%064x"` counters all land in one bucket with one fingerprint. */
     private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("window-$n".toByteArray()))
 
     private fun twiceRefuse(
@@ -209,8 +205,7 @@ class RefusedIdsWindowTest {
 
     @Test
     fun `an id is found from either side of its own epoch boundary`() {
-        // Insertion keys on the exact created_at, lookup on a window, and
-        // windows do not respect epoch edges.
+        // Insertion keys on the exact created_at, lookup on a window, and windows ignore epoch edges.
         val epoch = 86_400L
         val r = RefusedIds(dir(), epoch, 10_000)
         val at = 1_780_000_000L

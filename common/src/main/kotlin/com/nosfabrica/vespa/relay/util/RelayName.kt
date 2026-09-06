@@ -23,11 +23,9 @@ package com.nosfabrica.vespa.relay.util
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
 /**
- * One relay, spelled one way, through the same [RelayUrlNormalizer] the
- * router dials with. A url the normalizer rejects is kept as its trimmed self
- * rather than dropped: junk in the corpus is a finding, not something to hide.
- * The trailing slash comes off after normalising, never instead of it, so the
- * trim can tidy a group but never split one.
+ * One relay, spelled one way, through the same [RelayUrlNormalizer] the router dials with. A url
+ * the normalizer rejects is kept as its trimmed self rather than dropped: junk in the corpus is a
+ * finding. The trailing slash comes off after normalising, so the trim can never split a group.
  */
 fun canonicalRelay(raw: String): String {
     val trimmed = raw.trim()

@@ -31,29 +31,23 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The fingerprint walk: it pages `until` backwards so each relay's own cap is
- * the page size, driven here against a [Fake] that caps every REQ.
- */
+/** The fingerprint walk, driven against a [Fake] that caps every REQ. */
 class AliasProbeTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
     private val signer = NostrSignerSync()
 
-    /**
-     * A relay with [total] events one second apart, never returning more than
-     * [cap] per REQ and honouring `until` inclusively, which makes the boundary re-read real.
-     */
+    /** A relay with [total] events one second apart, at most [cap] per REQ, honouring `until` inclusively. */
     private inner class Fake(
         val total: Int,
         val cap: Int = Int.MAX_VALUE,
         val refuseOver: Int? = null,
-        // Refuses a bare filter with `CLOSED blocked: can't handle empty filters`.
+        // Refuses a bare filter with a CLOSED.
         val demandsKinds: Boolean = false,
-        // Turns our credentials down on every ask; it answers, and no filter changes that.
+        // Turns our credentials down on every ask.
         val refusesCredentials: Boolean = false,
         // Serves a partial window with the refusal flagged on the same page.
         val servesThenRefuses: Boolean = false,
-        // The same relay [newerBy] events later, a firehose seen on a later dial.
+        // The same relay [newerBy] events later.
         val newerBy: Int = 0,
     ) {
         val asks = mutableListOf<Pair<Int, Long?>>()
@@ -78,7 +72,6 @@ class AliasProbeTest {
                 )
             }
             if (demandsKinds && kinds == null) return AliasProbe.Page(emptyList())
-            // A relay that enforces its cap answers an over-large ask with nothing at all.
             if (refuseOver != null && want > refuseOver) return AliasProbe.Page(emptyList())
             return AliasProbe.Page(
                 events
@@ -87,7 +80,7 @@ class AliasProbeTest {
             )
         }
 
-        /** The ids this relay holds above [ts], which an anchor is there to exclude. */
+        /** The ids this relay holds above [ts]. */
         fun idsNewerThan(ts: Long): Set<String> = events.filter { it.createdAt > ts }.mapTo(HashSet()) { it.id }
     }
 
@@ -97,12 +90,10 @@ class AliasProbeTest {
         page: Int = 500,
     ) = AliasProbe(fetch = fake::fetch, target = target, page = page, fallbackPage = 100)
 
-    // `: Unit` is load-bearing: `assertNotNull` returns its value, and JUnit 5
-    // silently skips a non-void @Test.
+    // `: Unit` is load-bearing: `assertNotNull` returns a value, and JUnit 5 silently skips a non-void @Test.
     @Test
     fun `the read latency is the FIRST page, not the walk it took to reach the target`(): Unit =
         runBlocking {
-            // `rtt-read` is a round trip; timing the walk billed a relay's cap as its latency.
             val capped = Fake(total = 5_000, cap = 10)
             val walked = probe(capped, target = 40).window(url, null, null) {}
             assertTrue(capped.asks.size > 1, "the fixture has to actually page, or it tests nothing")
@@ -151,7 +142,6 @@ class AliasProbeTest {
     @Test
     fun `a relay capping below the page still reaches the same depth`() =
         runBlocking {
-            // A low cap becomes the page size, not the depth.
             val fake = Fake(total = 50_000, cap = 100, refuseOver = 100)
             val probe = AliasProbe(fetch = fake::fetch)
 
@@ -176,14 +166,12 @@ class AliasProbeTest {
         runBlocking {
             val fake = Fake(total = 137, cap = 500)
 
-            // The target is a ceiling on effort, not a requirement.
             assertEquals(137, probe(fake, target = 1_000).fingerprint(url) {}?.size)
         }
 
     @Test
     fun `an ask over the relay's cap is retried at the smaller page`() =
         runBlocking {
-            // Target over the page size, so the first ask is a full page rather than a trimmed one.
             val fake = Fake(total = 1_000, cap = 100, refuseOver = 100)
 
             val print = probe(fake, target = 1_000).fingerprint(url) {}
@@ -211,7 +199,7 @@ class AliasProbeTest {
         runBlocking {
             val probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }, target = 1_000)
 
-            // Null is what stops [RelayAliases] folding it; empty would claim the relay holds nothing.
+            // Empty would claim the relay holds nothing.
             assertNull(probe.fingerprint(url) {})
         }
 
@@ -254,7 +242,6 @@ class AliasProbeTest {
     @Test
     fun `a shared anchor makes two walks of a busy relay comparable`() =
         runBlocking {
-            // The second walk of one relay happens after 400 new events have landed.
             val first = Fake(total = 5_000, cap = 500)
             val later = Fake(total = 5_000, cap = 500, newerBy = 400)
 
@@ -268,8 +255,7 @@ class AliasProbeTest {
     @Test
     fun `an anchor a minute back settles a relay still taking writes`() =
         runBlocking {
-            // Same anchor, but the first walk runs before the relay has indexed its last
-            // few seconds; modelled as the second dial holding events the first did not.
+            // The second dial holds events the first had not indexed yet.
             val now = BASE
             val settling = Fake(total = 5_000, cap = 500)
             val settled = Fake(total = 5_000, cap = 500, newerBy = 30)
@@ -286,7 +272,7 @@ class AliasProbeTest {
     fun `nothing newer than the anchor reaches the fingerprint`() =
         runBlocking {
             val fake = Fake(total = 1_000, cap = 500, newerBy = 200)
-            val anchor = BASE // the 200 `newerBy` events are all above this
+            val anchor = BASE // every `newerBy` event is above this
 
             val print = probe(fake, target = 1_000).fingerprint(url, anchor) {}!!
             val above = fake.idsNewerThan(anchor)
@@ -304,7 +290,6 @@ class AliasProbeTest {
             val a = probe(first, target = 1_000).fingerprint(url) {}!!
             val b = probe(later, target = 1_000).fingerprint(url) {}!!
 
-            // 400 of each window is the other's, so containment lands at 0.6.
             val shared = a.count { it in b }
             assertTrue(shared < a.size, "unanchored walks of a moving relay must NOT be identical")
             assertEquals(600, shared, "400 new events shift the window by exactly that many")
@@ -334,11 +319,7 @@ class AliasProbeTest {
             assertTrue(fake.kindsAsked.all { it == null }, "nothing narrows a filter the relay never objected to")
         }
 
-    /**
-     * khatru in NIP-29 groups mode: refuses any query not scoped to a group and
-     * serves its group list to everyone. A refusal is an answer, so it reaches
-     * the walk as an empty page and not as silence.
-     */
+    /** A NIP-29 groups relay: refuses any query not scoped to a group and serves its group list to everyone. */
     private inner class Groups(
         groups: Int,
     ) {
@@ -377,7 +358,7 @@ class AliasProbeTest {
     @Test
     fun `a refused credential stops the ladder at the first ask`() =
         runBlocking {
-            // A refused credential is not a complaint about the filter, so the ladder has nothing left to find.
+            // A refused credential is not a complaint about the filter.
             val fake = Fake(total = 5_000, refusesCredentials = true)
 
             val attempt = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
@@ -390,7 +371,7 @@ class AliasProbeTest {
     @Test
     fun `a refused credential also ends the WALK, not just the ladder`() =
         runBlocking {
-            // [AliasFolding] dials members through `fingerprint`, never `leaderPrint`, so the stop belongs in the walk.
+            // Members are dialled through `fingerprint`, never `leaderPrint`.
             val fake = Fake(total = 5_000, refusesCredentials = true)
 
             val print = AliasProbe(fetch = fake::fetch).fingerprint(url, BASE, AliasProbe.FALLBACK_KINDS) {}
@@ -403,7 +384,6 @@ class AliasProbeTest {
     @Test
     fun `a page carrying both a window and a refusal keeps the window`() =
         runBlocking {
-            // A partial window is still a fingerprint; the refusal ends the walk only when nothing came with it.
             val fake = Fake(total = 5_000, cap = 60, servesThenRefuses = true)
 
             val attempt = AliasProbe(fetch = fake::fetch, target = 1_000).leaderPrint(url, BASE) {}
@@ -416,8 +396,7 @@ class AliasProbeTest {
     @Test
     fun `a url that never spoke is not asked for group metadata`() =
         runBlocking {
-            // Null is our transport giving up. The attempts are sequential and
-            // AliasFolding.YARDSTICK_ATTEMPTS multiplies them, so a third ask is dear on a Tor window.
+            // Null is our transport giving up, and a third ask is dear on a Tor window.
             val asked = mutableListOf<List<Int>?>()
             val probe =
                 AliasProbe(fetch = { _, _, _, kinds ->
@@ -457,7 +436,6 @@ class AliasProbeTest {
 
             val print = probe(fake, target = 1_000).fingerprint(url) { seen += it.id }
 
-            // The probe is a sync that also identifies.
             assertEquals(700, print?.size)
             assertEquals(700, seen.toSet().size)
         }

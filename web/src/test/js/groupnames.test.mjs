@@ -1,7 +1,5 @@
-// What the `group:<id>` pill may draw over an id. A group is the pair (id,
-// host relay) while the pill, the `#h` filter and the url carry the bare id,
-// so a name is drawn only where the sources agree on one; and an absence is
-// cached only when the relay finished answering.
+// What the `group:<id>` pill may draw over an id: a name only where the sources agree on one,
+// and an absence cached only when the relay finished answering.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
@@ -52,16 +50,14 @@ assert.strictEqual(seedGroupEvents([meta("agreed", HOST_B, "Bitcoin")]), 0,
   "a second host CONFIRMING the name changes no drawing, and must not cost a repaint");
 assert.strictEqual(groupName("agreed"), "Bitcoin", "…where they agree there is one honest name to draw");
 
-// A 10009 tag names its host as a url and a 39000 as a signing key, so your
-// row and the corpus's row are always two hosts; your list wins outright.
+// A 10009 names its host as a url and a 39000 as a signing key, so the two rows never join; your list wins.
 seedGroupNames([
   { id: "chachi", name: "Chachi", relayUrl: "wss://relay.groups.nip29.com/", mine: true },
   { id: "chachi", name: "chachi (public)", host: HOST_A },
 ]);
 assert.strictEqual(groupName("chachi"), "Chachi", "the name in your own list is the name you know it by");
 
-// A name that arrived NIP-44-encrypted came from the reader's unlocked list
-// and must not outlive a sign-out.
+// A name that arrived NIP-44-encrypted must not outlive a sign-out.
 seedGroupNames([
   { id: "hidden", name: "Family", relayUrl: "wss://groups.example", mine: true, secret: true },
   { id: "shared-with-public", name: "Book Club", relayUrl: "wss://groups.example", mine: true, secret: true },
@@ -109,8 +105,7 @@ answer = (msg, ws) => { if (msg[0] === "REQ") ws.close(); };
 await enrichGroupNames(["dropped"]);
 assert.strictEqual(knowsGroup("dropped"), false, "a dropped connection states nothing");
 
-// Forgetting has a drawn half: both repaint call sites in app.js fire only
-// when a lookup learned something, so the sign-out path must repaint itself.
+// Both repaint call sites in app.js fire only when a lookup learned something, so sign-out repaints itself.
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 const forgetAt = app.indexOf("forgetPrivateGroupNames();");
 assert(forgetAt > 0, "app.js forgets the private group names when the reader signs out");
@@ -122,9 +117,8 @@ const rerunSrc = app.slice(rerunAt, rerunAt + 1200);
 assert(/entitySeg\(\)/.test(rerunSrc) && /openEntity\(/.test(rerunSrc),
   "…including the ENTITY view, the one view with no query to re-run — so a permalink's card is redrawn too");
 
-// The picker asks about the reader on the authenticated socket (groups.test.mjs);
-// a group's name is a fact about a subject, and the store applies the
-// observer as a filter on that socket, so this asks on the anonymous one.
+// A group's name is a fact about a subject, and the store applies the observer as a filter on
+// the authenticated socket, so this asks on the anonymous one.
 const src = readFileSync(new URL("../../main/resources/web/shared/groupnames.js", import.meta.url), "utf8");
 assert(/await refConn\(\)/.test(src),
   "the name lookup asks on the ANONYMOUS reference connection, like every other fact about a subject");

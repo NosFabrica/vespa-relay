@@ -33,23 +33,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The ingest-stage split the health loop publishes, pinned end to end: the
- * store's structured read, and the rows the page draws from it.
- *
- * THIS TEST USED TO PIN A PARSER. The health loop read the stage totals out of
- * `IngestStats.dump()`'s String — a format the store never promised — so a
- * store bump that reworded it had to fail here by name rather than as an empty
- * panel that reads like an idle router. `IngestStats.snapshot()` is the
- * structured read that parser was standing in for, and the two things it fixes
- * are what the first two cases now assert: exact nanosecond totals rather than
- * a `%.2fs` round trip, and one read where there were two.
+ * The ingest-stage split the health loop publishes, pinned end to end: the store's
+ * structured read, and the rows the page draws from it.
  */
 class IngestStageReadTest {
-    /**
-     * The health loop's read, mirrored here because `SyncEngine.stageSplit` is
-     * private to the loop that owns the tick. What must not drift is the
-     * library call it makes.
-     */
+    /** Mirrors the private `SyncEngine.stageSplit`; the library call it makes is what must not drift. */
     private fun stageSplit(): List<SyncProgress.StageDetail> =
         IngestStats
             .snapshot()
@@ -72,15 +60,13 @@ class IngestStageReadTest {
         val row = assertNotNull(stageSplit().firstOrNull { it.stage == stage }, "the read did not find a stage the library was just given")
 
         assertEquals(2_500L, row.ms, "2.5 seconds must read back as 2500ms")
-        // `add` books a duration measured elsewhere — a lock's wait/hold pair —
-        // so there is no call count and a mean would be a fiction.
+        // `add` books a duration measured elsewhere, so there is no call count to average over.
         assertEquals(0L, row.calls, "a stage added to but never timed reports no calls")
     }
 
     @Test
     fun `a sub-millisecond stage survives the read the parser rounded away`() {
-        // THE PRECISION THE PARSER LOST. `dump()` formats `%.2fs`, so anything
-        // under 5ms printed as `0.00s` and reached the page as a zero row.
+        // `dump()` formats `%.2fs`, so a sub-millisecond total survives only through `snapshot()`.
         val stage = "readtest.tiny.${System.nanoTime()}"
         IngestStats.add(stage, 400_000L) // 0.4ms
 
@@ -117,8 +103,7 @@ class IngestStageReadTest {
                 stageDetail =
                     listOf(
                         SyncProgress.StageDetail("proj.fetch.derive", ms = 41_000, calls = 12, meanMs = 3_416, maxMs = 20_100),
-                        // A lock's wait/hold pair: booked from a duration measured
-                        // elsewhere, so it carries no denominator.
+                        // Booked from a duration measured elsewhere, so it carries no denominator.
                         SyncProgress.StageDetail("lock.ingest.wait", ms = 38_000, calls = 0, meanMs = 0, maxMs = 0),
                     ),
             )

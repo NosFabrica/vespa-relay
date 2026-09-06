@@ -1,8 +1,5 @@
-// The floor: the card every indexed kind gets before anyone writes a bespoke
-// renderer. Byline, the title-ish tag, the summary-ish tag (else the
-// content), an image when the tags carry one: the fields the search
-// extractors index, so what matched is what shows. Not registered; cards.js
-// falls back to it for any kind the registry does not name.
+// The floor: the card every indexed kind gets before anyone writes a bespoke renderer, built
+// from the fields the search extractors index. Not registered; cards.js falls back to it.
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shell, bodyHtml, clipIf, noteHref } from "./base.js";
@@ -25,11 +22,7 @@ export function genericCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * The floor's type-ahead row: the card's fields, in order, minus the markup.
- * The content fallback is honest here, on both lines: an unknown kind's
- * content is all anybody knows about it.
- */
+/** The floor's type-ahead row: the card's fields, in order; the content fallback is on both lines. */
 export const genericRow = (ev) => {
   const title = titleOf(ev);
   return { name: title || ev.content, sub: summaryOf(ev) || (title ? ev.content : "") };

@@ -1,8 +1,7 @@
 import assert from 'assert';
 const { Relay } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
 
-// req()'s retry wiring through a stubbed reqOnce: CLOSED auth-required ->
-// onAuthRequired -> resend once.
+// req()'s retry wiring through a stubbed reqOnce: CLOSED auth-required -> onAuthRequired -> resend once.
 function stubbed(failures, reason) {
   const r = new Relay("ws://unused/");
   let calls = 0, hookCalls = 0;
@@ -39,8 +38,8 @@ t.r.authed = true;
 await assert.rejects(() => t.r.req({}), /auth-required/);
 assert.strictEqual(t.calls, 1);
 
-// An abort ends a REQ the way its timeout does: CLOSE to the relay, what
-// arrived resolved, `complete` false.
+// An abort ends a REQ the way its timeout does: CLOSE to the relay, what arrived resolved,
+// `complete` false.
 {
   const r = new Relay("ws://unused/");
   r.connect = async () => {};
@@ -103,8 +102,7 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(partial.complete, false, "timeout -> partial");
 }
 
-// NIP-01 ORs the filters of one subscription; sent as a nested array they
-// would be one malformed filter.
+// NIP-01 ORs the filters of one subscription; nested, they would be one malformed filter.
 {
   const r = new Relay("ws://unused/");
   r.connect = async () => {};
@@ -124,8 +122,7 @@ assert.strictEqual(t.calls, 1);
   );
 }
 
-// waitForChallenge(): the NIP-42 challenge wakes the waiter in the turn it
-// arrives, never on a poll.
+// waitForChallenge(): the NIP-42 challenge wakes the waiter in the turn it arrives, never on a poll.
 {
   const r = new Relay("ws://unused/");
   let resolved = false;
@@ -148,9 +145,8 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(await dead, null, "close wakes waiters with the absence");
 }
 
-// count(): every way a COUNT can end must settle the promise. A relay without
-// NIP-45 declines with CLOSED or with a NOTICE, which carries no subscription
-// id; a dead socket is the third non-answer.
+// count(): every way a COUNT can end must settle the promise, a NOTICE without a subscription
+// id and a dead socket included.
 {
   const { REFUSED, TIMED_OUT } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
   const armed = () => {

@@ -37,11 +37,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Walks one `.onion` host's urls through a real Tor SOCKS proxy at the clearnet
- * window and at the [probeIdleMs] window, so a group that will not fold can be
- * told apart: too short a window, a relay refusing every fingerprint, or paths
- * that are distinct relays. Asserts nothing. Selected by `-DonionFoldProbe=true`
- * with `-DonionFoldSocks=host:port`; `-DonionFoldUrls=a,b` picks the urls.
+ * Walks one `.onion` host's urls through a real Tor SOCKS proxy at the clearnet window and
+ * at the [probeIdleMs] window, to tell why a group will not fold. Asserts nothing.
+ * `-DonionFoldProbe=true` selects it; `-DonionFoldSocks=host:port` and `-DonionFoldUrls=a,b`.
  */
 class AliasFoldOnionProbe {
     private val urls: List<NormalizedRelayUrl> =
@@ -61,7 +59,6 @@ class AliasFoldOnionProbe {
             println("[skip] AliasFoldOnionProbe — set -DonionFoldProbe=true to dial a hidden service")
             return
         }
-        // `-DonionFoldUrls` is free text; a value normalising to nothing must not reach `urls.first()`.
         if (urls.size < 2) {
             println("[skip] AliasFoldOnionProbe — need at least two urls to compare, got ${urls.size}")
             return
@@ -72,7 +69,6 @@ class AliasFoldOnionProbe {
             println("[skip] AliasFoldOnionProbe — no SOCKS proxy given")
             return
         }
-        // The Tor client is derived from the clearnet one the way the engine derives it.
         val okhttp =
             OkHttpClient
                 .Builder()
@@ -86,7 +82,7 @@ class AliasFoldOnionProbe {
         println("=".repeat(78))
         println("Can the fold measure these ${urls.size} url(s)? (through ${settings.socksAddress})")
         println("=".repeat(78))
-        // With the proxy down every dial fails the way a gone relay does, so ask about the proxy first.
+        // With the proxy down every dial fails the way a gone relay does.
         if (!tor.socksAnswers()) {
             println("  the SOCKS proxy at ${settings.socksAddress} is NOT answering — nothing below would mean anything")
             scope.cancel()
@@ -114,10 +110,7 @@ class AliasFoldOnionProbe {
         println("=".repeat(78))
     }
 
-    /**
-     * One fingerprint pass at one window, run the way [AliasFolding.measure] runs
-     * it: one anchor for the group, the leader first, then every member against it.
-     */
+    /** One fingerprint pass at one window, the way [AliasFolding.measure] runs it. */
     private fun walk(
         client: NostrClient,
         idleMs: Long,
@@ -143,7 +136,6 @@ class AliasFoldOnionProbe {
             return
         }
         println("    leader ${short(leader)}: ${lead.ids.size} id(s) in ${leadMs}ms, via $asked")
-        // Held to the floor for the filter the leader answered, as the real pass does.
         if (!aliases.usableWindow(lead.ids, lead.kinds)) {
             println("    → under the floor for $asked; a window this thin proves nothing either way")
             return
@@ -159,7 +151,6 @@ class AliasFoldOnionProbe {
                 continue
             }
             prints[url] = print
-            // The smaller window's share of the larger, which is what the fold decides on.
             val shared = print.count { it in lead.ids }
             val smaller = minOf(print.size, lead.ids.size)
             val containment = if (smaller == 0) 0.0 else shared.toDouble() / smaller
@@ -174,11 +165,10 @@ class AliasFoldOnionProbe {
         for (url in undecided) println("      NO VERDICT ${short(url)} — dialled again next cycle, and the one this probe is about")
     }
 
-    /** The path, the only part that differs across one host's urls. */
     private fun short(url: NormalizedRelayUrl): String = "/" + RelayAliases.pathOf(url.url)
 
     companion object {
-        /** `router.conf`'s default connect timeout, kept as the control window. */
+        /** The default connect timeout, used as the control window. */
         private const val CLEARNET_TIMEOUT_SEC = 20L
     }
 }

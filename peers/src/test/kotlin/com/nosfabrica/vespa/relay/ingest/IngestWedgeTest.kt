@@ -72,8 +72,7 @@ class IngestWedgeTest {
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
-            // Ten events on a queue that holds thousands: behind a slow upstream
-            // every worker can be held with the queue nearly empty.
+            // Behind a slow upstream every worker can be held with the queue nearly empty.
             (0 until 10).map { note(it) }.forEach { pipeline.submit(it, skipVerify = true) }
             pipeline.start()
             settle("the worker to enter the wedged pass") { pipeline.inBatch() == 1 }
@@ -98,8 +97,7 @@ class IngestWedgeTest {
                     scope = scope,
                     wedgeAfterMs = 50,
                 )
-            // One event for two workers: the first never returns, the second
-            // sits on the channel. Half capacity is not stopped.
+            // One event for two workers: one is held, the other sits on the channel.
             pipeline.submit(note(0), skipVerify = true)
             pipeline.start()
             settle("one worker to enter the wedged pass") { pipeline.inBatch() == 1 }

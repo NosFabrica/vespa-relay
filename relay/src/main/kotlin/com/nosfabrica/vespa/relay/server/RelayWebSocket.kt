@@ -40,8 +40,8 @@ private const val CLOSE_GRACE_MS = 5_000L
 /** The relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
-        // One writer drains a bounded ordered queue; the engine's send is non-suspend.
-        // A full queue disconnects the client rather than dropping frames, which would break NIP-01.
+        // One writer drains a bounded queue; a full queue disconnects the client rather than dropping
+        // frames, which would break NIP-01.
         val outCh = Channel<String>(MAX_OUTGOING_BUFFER)
         val writer = launch { for (text in outCh) outgoing.send(Frame.Text(text)) }
         try {
@@ -51,8 +51,8 @@ fun Route.nostrRelay(server: NostrRelayServer) {
                     if (result.isFailure && !result.isClosed) {
                         outCh.close()
                         launch {
-                            // The close frame queues behind the congestion that tripped this, so it may
-                            // never leave; cancelling the session closes the socket regardless.
+                            // The close frame queues behind the congestion that tripped this; cancelling the
+                            // session closes the socket regardless.
                             runCatching {
                                 withTimeoutOrNull(CLOSE_GRACE_MS) {
                                     close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: over $MAX_OUTGOING_BUFFER buffered frames"))

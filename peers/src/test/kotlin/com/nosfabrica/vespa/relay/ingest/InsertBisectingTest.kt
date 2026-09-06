@@ -29,10 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * A bulk write fails as a unit, so without isolation one event the store cannot
- * take costs its whole batch. These pin the isolation that stops that.
- */
+/** One event the store cannot take costs itself, not the whole batch it arrived in. */
 class InsertBisectingTest {
     private fun event(n: Int) =
         Event(
@@ -164,8 +161,7 @@ class InsertBisectingTest {
 
     @Test
     fun `cancellation propagates instead of being mistaken for a poison event`() {
-        // Shutdown cancels the ingest scope mid-write; reading that as a bad
-        // event would drop good ones and keep bisecting while the relay stops.
+        // Read as a bad event, a shutdown cancellation drops good events and keeps bisecting.
         val events = (1..16).map(::event)
         assertFailsWith<CancellationException> {
             runBlocking {

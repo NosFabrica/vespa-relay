@@ -30,16 +30,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * How the relay learns its hidden service's address. Tor mints it on the
- * service's first start, so it can appear long after this process began serving.
+ * How the relay learns its hidden service's address, which Tor can mint long after this
+ * process began serving.
  */
 class RelayAddressesTest {
     private val hostname = "${"q".repeat(56)}.onion"
 
-    /**
-     * The file is looked at once a second at most, so a later look moves the
-     * clock. Starts negative on purpose: `System.nanoTime()` has no origin.
-     */
+    /** Starts negative on purpose: `System.nanoTime()` has no origin. */
     private class MovableClock(
         var nanos: Long = -5_000_000_000L,
     ) : () -> Long {
@@ -61,7 +58,7 @@ class RelayAddressesTest {
         assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
     }
 
-    /** Fatal, like a malformed `RELAY_URL`: an address typed and then ignored loses its clients their ranking lens. */
+    /** Fatal, like a malformed `RELAY_URL`: an address typed and ignored loses its clients their lens. */
     @Test
     fun `a malformed onion url stops the boot`() {
         assertFailsWith<IllegalArgumentException> {
@@ -91,7 +88,7 @@ class RelayAddressesTest {
         assertEquals(1, said.size, "announced once, not once per connection: $said")
     }
 
-    /** `docker compose down -v` on the key volume mints a new service; a cached first address would reject every AUTH from the second. */
+    /** Recreating the key volume mints a new service; a cached first address would reject its AUTH. */
     @Test
     fun `a rotated address replaces the one it replaced`() {
         val dir = createTempDirectory("onion")
@@ -144,7 +141,7 @@ class RelayAddressesTest {
         assertEquals(1, said.size, "…and not again for the same content: $said")
     }
 
-    /** A `Long.MIN_VALUE` seed makes `now - last` overflow for a positive reading and skip the first look. */
+    /** A `Long.MIN_VALUE` seed makes `now - last` overflow and skip the first look. */
     @Test
     fun `an address published before the relay started is seen on the first ask`() {
         val dir = createTempDirectory("onion")

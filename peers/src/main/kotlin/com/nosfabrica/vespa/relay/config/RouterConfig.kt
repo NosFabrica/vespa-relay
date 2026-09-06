@@ -24,55 +24,36 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * The router config: strfry's `streams { }` model parsed from HOCON, so an
- * existing strfry `routerConfigOverride` drops in unchanged:
- *
- *     connectionTimeout = 20
- *     streams {
- *       popular {
- *         dir    = "down"
- *         filter = { "kinds": [0,3,10002] }
- *         urls   = [ "wss://relay.primal.net", "wss://relay.damus.io" ]
- *       }
- *     }
- *
- * Beyond strfry's schema a stream may set `trusted`, `deleteMissing`
- * ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]); `sync` is
- * refused. How far back a stream reaches is its filter's own `since`/`until`,
- * read as NIP-01 reads them: absent is unbounded.
+ * The router config: strfry's `streams { }` model parsed from HOCON, so an existing strfry
+ * `routerConfigOverride` drops in unchanged. Beyond strfry's schema a stream may set `trusted`,
+ * `deleteMissing` and `relaySource`; `sync` is refused. A filter's `since`/`until` are NIP-01's.
  */
 data class RouterConfig(
     val connectionTimeoutSec: Long,
     val streams: List<SyncStream>,
     // Seconds between an `up`/`both` stream's re-reconciles. SYNC_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
-    // The store serializes writes through one mutex, so ingest throughput comes
-    // from the batch size, not the worker count.
+    // The store serializes writes, so ingest throughput comes from the batch size, not the workers.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
     /**
-     * Negentropy paging: the events one reconcile window aims to hold, the floor
-     * and ceiling the learned per-peer size moves between, and how far below
-     * `now` a sweep stops. A [negPageTarget] of `0` turns paging off.
+     * Negentropy paging: the events one reconcile window aims to hold, the floor and ceiling
+     * the learned per-peer size moves between, and how far below `now` a sweep stops.
      */
     val negPageTarget: Int = 100_000,
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
-    /** Null runs the probe passes on candidates derived from the streams' own sources, on the default clock. */
+    /** Null runs the probe passes on candidates derived from the streams' own sources. */
     val monitor: MonitorConfig? = null,
 ) {
     companion object {
-        /** Sized like the monitor's dial width: simultaneous TLS handshakes against one connect timeout. */
         const val DEFAULT_VISIT_CONCURRENCY = 128
 
-        /** What a stream with no `visitConcurrency` contributes to the pool's worker count, the sum over streams. */
+        /** What a stream with no `visitConcurrency` contributes to the pool's worker count. */
         const val UNCAPPED_STREAM_VISITS = DEFAULT_VISIT_CONCURRENCY
 
-        /**
-         * What a stream with no `maxLiveConcurrency` contributes to the sockets
-         * the pool may hold open. See `VisitPool.warnOnSocketBudget`.
-         */
+        /** What a stream with no `maxLiveConcurrency` contributes to the sockets the pool may hold open. */
         const val DEFAULT_MAX_LIVE_CONCURRENCY = 600
     }
 
@@ -92,11 +73,8 @@ data class RouterConfig(
 }
 
 /**
- * The `monitor { }` block: where candidate urls come from, and the clocks the
- * probe passes run on. Its [sources] use the same select syntax a stream's
- * `relaySource` does, but feed the probe passes, whose verdicts land on
- * kind-30166 records. Candidates derived here union with what the streams'
- * own sources yield.
+ * The `monitor { }` block: where candidate urls come from, and the clocks the probe passes
+ * run on. Candidates derived here union with what the streams' own sources yield.
  */
 data class MonitorConfig(
     /** Where candidate urls come from; the same shape as a stream's `relaySource`. */
@@ -105,26 +83,21 @@ data class MonitorConfig(
     /** How often every candidate is re-verdicted. */
     val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
     /**
-     * How often the monitor verdicts urls that have never been measured, which
-     * bounds a new relay's wait for its first `prime`. The derivation is
-     * `since`-bounded to relay lists ingested after the last look. Null turns
-     * the lane off.
+     * How often the monitor verdicts urls that have never been measured, bounding a new relay's
+     * wait for its first `prime`. Null turns the lane off.
      */
     val fastLaneSeconds: Long? = DEFAULT_FAST_LANE_SECONDS,
     /**
-     * Relays a probe pass dials at once. The three dialling passes run
-     * serialized, so this is also the most sockets the monitor plane holds;
-     * size it against the dispatcher ceiling minus the visit pool's budget.
+     * Relays a probe pass dials at once. The dialling passes run serialized, so this is also
+     * the most sockets the monitor plane holds.
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
 ) {
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 
-        /** Two minutes: a new relay is graded prime before its author refreshes the page. */
         const val DEFAULT_FAST_LANE_SECONDS = 120L
 
-        /** A mostly-dead corpus costs timeouts, not bandwidth, so the width is the sweep's wall clock. */
         const val DEFAULT_DIAL_CONCURRENCY = 128
     }
 }
@@ -150,66 +123,57 @@ data class SyncStream(
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
     /**
-     * Push our newer replaceable/addressable version at a relay that served a
-     * stale one. Opt-in: unlike [healRetractions], the author never asked.
+     * Push our newer replaceable/addressable version at a relay that served a stale one.
+     * Opt-in: unlike [healRetractions], the author never asked.
      */
     val healContent: Boolean = false,
     /** Push the kind 5, or the `ALL_RELAYS` kind 62, at a relay still serving what our stored tombstone retracts. */
     val healRetractions: Boolean = false,
     /**
-     * How stale a relay's verified history may get before its next visit runs
-     * a windowed negentropy audit over the whole covered range. Only relays the
-     * monitor measured as answering NEG-OPEN are asked; the rest are re-checked
-     * by [refetchThePastSeconds]. Null audits nothing.
+     * How stale a relay's verified history may get before its next visit runs a windowed
+     * negentropy audit. Only relays measured as answering NEG-OPEN are asked; the rest fall to
+     * [refetchThePastSeconds]. Null audits nothing.
      */
     val negentropySyncThePastSeconds: Long? = null,
     /**
-     * This stream's share of the pool's jobs: how many visits may run that job
-     * for this stream at once. Null is uncapped, leaving the job bounded by
-     * [visitConcurrency] alone. There is no router-wide ceiling above these.
+     * This stream's share of the pool's jobs. Null is uncapped, leaving the job bounded by
+     * [visitConcurrency] alone; there is no router-wide ceiling above these.
      */
     val refetchConcurrency: Int? = null,
     val negentropyConcurrency: Int? = null,
     /**
-     * Live subscriptions this stream may hold open between visits. Null is not
-     * uncapped: it resolves to [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY], and
-     * readers take it through [liveBudget]. Past the budget a tail is earned by
-     * evicting the tail that has delivered least.
+     * Live subscriptions this stream may hold open between visits. Null is not uncapped: it
+     * resolves to [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY], read through [liveBudget].
      */
     val maxLiveConcurrency: Int? = null,
     /**
-     * Relays visited for this stream at once: the dial width. Admission on the
-     * shared pool, not a pool of its own; a visit that gets no permit for any
-     * stream never dials. The pool's worker count is the sum of these.
+     * Relays visited for this stream at once, as admission on the shared pool. The pool's
+     * worker count is the sum of these.
      */
     val visitConcurrency: Int? = null,
     /**
-     * How often this stream's bands expire, putting its whole filter back on
-     * the walk. The only full re-check a stream without
-     * [negentropySyncThePastSeconds] has, and the expensive twin of the audit
-     * where one runs, so set it well above the audit period. Null never expires.
+     * How often this stream's bands expire, putting its whole filter back on the walk. The only
+     * full re-check a stream without [negentropySyncThePastSeconds] has; where an audit runs,
+     * set it well above the audit period. Null never expires.
      */
     val refetchThePastSeconds: Long? = null,
     /**
-     * The kinds this stream's upstreams are the source of truth for: the only
-     * kinds [deleteMissing] may delete on absence. Required whenever deletion
-     * is on, and checked against [filter].
+     * The kinds this stream's upstreams are the source of truth for: the only kinds
+     * [deleteMissing] may delete on absence. Required whenever deletion is on.
      */
     val ownedKinds: Set<Int> = emptySet(),
 ) {
-    /** The live budget resolved. The one expression the gate and the boot warning both read. */
+    /** The live budget resolved; the one expression the gate and the boot warning both read. */
     val liveBudget: Int get() = maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY
 }
 
 /**
- * What to do with records we hold that the upstream no longer serves. Only
- * meaningful when the upstream is the source of truth for its records, such
- * as a NIP-85 provider's own relay. Absence has innocent causes (a retention
- * window, AUTH-gated reads, an outage), so [DRY_RUN] and the router's
- * guardrails are the safety net.
+ * What to do with records we hold that the upstream no longer serves. Only meaningful when the
+ * upstream is the source of truth for its records; absence has innocent causes, so [DRY_RUN]
+ * and the router's guardrails are the safety net.
  */
 enum class DeleteMissing {
-    /** Never delete. The default, and correct for every ordinary mirror stream. */
+    /** Never delete. The default. */
     OFF,
 
     /** Report what would be deleted, delete nothing. */

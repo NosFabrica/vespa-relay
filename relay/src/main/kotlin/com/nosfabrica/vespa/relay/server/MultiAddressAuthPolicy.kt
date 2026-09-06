@@ -33,36 +33,20 @@ import com.vitorpamplona.quartz.utils.TimeUtils
 import kotlinx.coroutines.CancellationException
 
 /**
- * NIP-42 for a relay that answers at more than one address: the clearnet url
- * and a `.onion` in front of the same port.
- *
- * A client signs the address it dialled. Quartz's [OptionalAuthPolicy] binds
- * one url, and on this relay a failed AUTH is not a locked door but a lost
- * ranking lens, so the hidden service would look fine and rank nothing. The
- * check is restated rather than delegated because the challenge is minted
- * per policy instance; the other conditions are quartz's, in quartz's order,
- * with quartz's messages, pinned by `RelayOnionAuthTest`.
- *
- * Three widenings: any of the addresses satisfies the relay tag; every
- * `relay` tag is considered, safe because [challenge] is per connection; and
- * a scheme's default port folds on both sides, since a hidden service is
- * published on port 80. It is also where a verified AUTH becomes
- * [onAuthenticated].
+ * NIP-42 for a relay that answers at more than one address. Quartz's [OptionalAuthPolicy] binds
+ * one url, so its check is restated: any address satisfies the relay tag, every `relay` tag is
+ * considered, and a scheme's default port folds. The other conditions are quartz's, pinned by test.
  */
 class MultiAddressAuthPolicy(
     primary: NormalizedRelayUrl,
     alsoAt: Set<NormalizedRelayUrl> = emptySet(),
-    /** Told who just signed in and how to reach them. See [TrustNotice]. */
+    /** Told who just signed in and how to reach them. */
     private val onAuthenticated: AuthNotifier? = null,
 ) : OptionalAuthPolicy(primary) {
     /** Never empty: [primary] is always in it. */
     private val addresses = (alsoAt + primary).mapTo(HashSet(), NormalizedRelayUrl::withoutDefaultPort)
 
-    /**
-     * This connection's channel to the client. A policy is built per
-     * connection; `@Volatile` because the AUTH can land on a different
-     * coroutine than the connect.
-     */
+    /** This connection's channel to the client; `@Volatile` because the AUTH can land on another coroutine. */
     @Volatile
     private var send: ((Message) -> Unit)? = null
 
@@ -76,16 +60,14 @@ class MultiAddressAuthPolicy(
     }
 
     /**
-     * Identities already told. An AUTH frame stays valid for its whole
-     * freshness window, so a client may resend it any number of times; the
-     * answer is a property of the identity, paid once per connection.
+     * Identities already told: a client may resend a still-valid AUTH any number of times, and the
+     * notice is paid once per identity per connection.
      */
     private val told = HashSet<String>()
 
     /**
-     * Quartz's post-verification hook, before the `OK` goes out. It must not
-     * block, since the client waits on the `OK`, and must not throw, since
-     * quartz reads a throw as a failed login.
+     * Quartz's post-verification hook, before the `OK` goes out. Must not block (the client waits
+     * on the `OK`) and must not throw (quartz reads a throw as a failed login).
      */
     override suspend fun authorize(event: RelayAuthEvent) {
         val notify = onAuthenticated ?: return
@@ -124,10 +106,8 @@ class MultiAddressAuthPolicy(
 }
 
 /**
- * `ws://host:80/` and `ws://host/` name one endpoint, likewise `wss` and 443.
- * Quartz's normalizer keeps an explicit default port, so the spellings
- * compare unequal. The port only ever follows a bracketed IPv6 host's
- * closing bracket, so `[::1]` survives.
+ * `ws://host:80/` and `ws://host/` name one endpoint, likewise `wss` and 443, but quartz's
+ * normalizer keeps an explicit default port. A bracketed IPv6 host survives.
  */
 private fun NormalizedRelayUrl.withoutDefaultPort(): NormalizedRelayUrl {
     val port =

@@ -1,17 +1,12 @@
-// The long-form family: articles, drafts, wikis, curations. NIP-23 markdown
-// renders as escaped pre-wrap text: a hand-rolled markdown renderer is where
-// an escaping mistake becomes an XSS in a page that renders strangers'
-// events. The preview's summary line goes through format.js's mdExcerpt,
-// which reduces markdown to text, never to HTML.
+// The long-form family: articles, drafts, wikis, curations. Markdown renders as escaped
+// pre-wrap text, never as HTML; the summary line goes through format.js's mdExcerpt.
 
 import { esc, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/format.js";
 import { register, registerRow, shell, titleHtml, bodyHtml, refRows, noteHref, tagOf, tagsOf, clipIf, fmtTs, plural } from "./base.js";
 
 /**
- * An article: cover, title, summary in preview, the whole body on the
- * permalink. The summary line is one slot in one voice whether it came from
- * the `summary` tag or the body. `published_at` is a permalink-only row; the
- * byline already dates the preview.
+ * An article: cover, title, summary in preview, the whole body on the permalink.
+ * `published_at` is a permalink-only row; the byline already dates the preview.
  */
 function articleCard(ev, opts) {
   const title = titleOf(ev);
@@ -49,10 +44,7 @@ function curationCard(ev, opts) {
 /** A publication's ordered sections: its `a` tags, each naming a 30041. */
 const sectionAddrs = (ev) => tagsOf(ev, "a").map((t) => t[1]).filter(Boolean);
 
-/**
- * 30040 — a curated publication index: a table of contents whose `a` tags
- * are ordered sections. The prose lives in the sections, not here.
- */
+/** 30040 — a curated publication index: a table of contents whose `a` tags are ordered sections. */
 function publicationCard(ev, opts) {
   const sections = sectionAddrs(ev);
   const inner =

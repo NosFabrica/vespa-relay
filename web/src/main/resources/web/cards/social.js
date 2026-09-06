@@ -1,7 +1,5 @@
-// The reactive kinds: reactions, reposts, zaps, comments, approvals, reports,
-// labels and deletions. Their own content is a fragment ("+", "", a bolt11
-// invoice) and the meaning is in what they point at, so every card here leads
-// with the relation and links the target.
+// The reactive kinds: reactions, reposts, zaps, comments, approvals, reports, labels and
+// deletions. Their content is a fragment, so every card leads with the relation and links the target.
 
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
@@ -20,11 +18,7 @@ function targetLink(ev) {
   return href ? `<a href="${href}">${esc(shortAddr(a))}</a>` : esc(shortAddr(a));
 }
 
-/**
- * The same target as a noun for a row, in targetLink's precedence. An `a` is
- * "an entry", not "a note": it is as often an article or a stream. No target,
- * no noun.
- */
+/** The target as a noun for a row, in targetLink's precedence. An `a` is "an entry", never "a note". */
 const targetNoun = (ev) => {
   if (tagsOf(ev, "e").some((t) => /^[0-9a-f]{64}$/.test(t[1]))) return " a note";
   return tagOf(ev, "a") ? " an entry" : "";
@@ -38,11 +32,7 @@ const reactionVerb = (c) => (c === "+" || c === "" ? "liked" : c === "-" ? "disl
 /** Whether the reaction is a glyph rather than a bare vote. */
 const isGlyph = (c) => !!c && c !== "+" && c !== "-";
 
-/**
- * 7 / 17 — a reaction. "+" is a like, "-" a dislike, anything else is the
- * reaction itself: a literal emoji, or a `:shortcode:` whose image rides in
- * an `emoji` tag. All three are shown as what they are.
- */
+/** 7 / 17 — a reaction: a like, a dislike, or a glyph whose image may ride in an `emoji` tag. */
 function reactionCard(ev, opts) {
   const c = (ev.content || "").trim();
   const shortcode = /^:([^:]+):$/.exec(c);
@@ -57,13 +47,13 @@ function reactionCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The text of the event carried inside this one's content: a NIP-18 repost, a NIP-72 approved post. */
+/** The text of the event carried inside this one's content. */
 function quotedText(ev) {
   const inner = jsonContent(ev);
   return inner && typeof inner.content === "string" ? inner.content : "";
 }
 
-/** 6 / 16 — a repost: the reposted text when the content carries it, the link otherwise. */
+/** 6 / 16 — a repost. */
 function repostCard(ev, opts) {
   const quoted = quotedText(ev);
   const target = targetLink(ev);
@@ -80,10 +70,7 @@ function zapRequest(ev) {
 const zapSats = (ev, req) =>
   satsOf(tagOf(ev, "amount") || ((req.tags || []).find((t) => Array.isArray(t) && t[0] === "amount") || [])[1]);
 
-/**
- * 9735 — a zap receipt. The amount, the zapper and the comment are in the
- * nested zap request, not in this event's own fields.
- */
+/** 9735 — a zap receipt. The zapper and the comment are in the nested request, not this event. */
 function zapCard(ev, opts) {
   const req = zapRequest(ev);
   const sats = zapSats(ev, req);
@@ -98,7 +85,7 @@ function zapCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 9734 — the zap request itself: the comment, and what it asks to pay for. */
+/** 9734 — the zap request itself. */
 function zapRequestCard(ev, opts) {
   const sats = satsOf(tagOf(ev, "amount"));
   const to = tagOf(ev, "p");
@@ -109,11 +96,7 @@ function zapRequestCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/**
- * 1111 — a NIP-22 comment. Uppercase tags name the root, lowercase the
- * parent. The parent leads as a person via replyLine; the root is a row only
- * when it differs from the parent.
- */
+/** 1111 — a NIP-22 comment. The parent leads as a person; the root is a row only when it differs. */
 function commentCard(ev, opts) {
   const ref = (id, addr) => {
     if (id && /^[0-9a-f]{64}$/.test(id)) return `<a class="mono" href="${noteHref(id)}">${esc(shortNote(id))}</a>`;
@@ -132,10 +115,10 @@ function commentCard(ev, opts) {
   ]);
 }
 
-/** A poll's choices: `["option", <id>, <label>]`, so the label is element 2. */
+/** A poll's choices; the label is element 2 of `["option", <id>, <label>]`. */
 const pollOptions = (ev) => tagsOf(ev, "option").map((t) => t[2]).filter(Boolean);
 
-/** 1068 — a poll: the question is the content, the choices are `option` tags. */
+/** 1068 — a poll. */
 function pollCard(ev, opts) {
   const options = pollOptions(ev);
   const ends = tagOf(ev, "endsAt");
@@ -148,7 +131,7 @@ function pollCard(ev, opts) {
   ]);
 }
 
-/** 1018 — a poll response: which choices, on which poll. */
+/** 1018 — a poll response. */
 function pollResponseCard(ev, opts) {
   const picks = tagsOf(ev, "response").map((t) => t[1]).filter(Boolean);
   const inner = relationLine("voted on", targetLink(ev)) +
@@ -156,12 +139,12 @@ function pollResponseCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The p/e tag that names the reported thing, and therefore carries the category. */
+/** The p/e tag that names the reported thing; its third element is the category. */
 const flaggedTag = (ev) => tagsWhere(ev, (name, t) => (name === "p" || name === "e") && t[2])[0];
-/** "spam", "nudity", … — from a `report` tag when no p/e carried one. */
+/** "spam", "nudity"; from a `report` tag when no p/e carried one. */
 const reportCategory = (ev) => (flaggedTag(ev) || [])[2] || tagOf(ev, "report");
 
-/** 1984 — a report. The category is the third element of the p/e tag naming the reported thing. */
+/** 1984 — a report. */
 function reportCard(ev, opts) {
   const flagged = flaggedTag(ev);
   const category = reportCategory(ev);
@@ -174,10 +157,10 @@ function reportCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The labels a 1985 puts on something: `l` values, the `L` being their namespace. */
+/** The `l` values; `L` is their namespace. */
 const labelsOf = (ev) => tagsOf(ev, "l").map((t) => t[1]).filter(Boolean);
 
-/** 1985 — a NIP-32 label: the namespace, the labels, and what they were put on. */
+/** 1985 — a NIP-32 label. */
 function labelCard(ev, opts) {
   const ns = tagsOf(ev, "L").map((t) => t[1]).filter(Boolean);
   const labels = labelsOf(ev);
@@ -188,13 +171,10 @@ function labelCard(ev, opts) {
   return shell(ev, opts, inner, [["namespace", ns.length ? esc(ns.join(", ")) : null]]);
 }
 
-/** How many events a deletion request names, by id and by address alike. */
+/** How many events a deletion request names, by id or by address. */
 const deletionCount = (ev) => tagsOf(ev, "e").length + tagsOf(ev, "a").length;
 
-/**
- * 5 — a deletion request. The card says "asks to delete": whether the events
- * are gone is this relay's business, not the event's claim.
- */
+/** 5 — a deletion request. "Asks to delete": whether the events are gone is the relay's business. */
 function deletionCard(ev, opts) {
   const kinds = [...new Set(tagsOf(ev, "k").map((t) => t[1]).filter(Boolean))];
   const inner =
@@ -203,10 +183,10 @@ function deletionCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** Who a badge was awarded to: the `p` tags that are keys. */
+/** The `p` tags that are keys. */
 const winnersOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
 
-/** 8 — a badge award: which badge, to whom. */
+/** 8 — a badge award. */
 function badgeAwardCard(ev, opts) {
   const badge = tagOf(ev, "a");
   const href = badge ? addrHref(badge) : null;
@@ -228,10 +208,10 @@ function approvalCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 34550 — a NIP-72 community. The `d` is its name and there is usually no `title`, so titleOf's `d` fallback is the title. */
+/** 34550 — a NIP-72 community; its `d` is the name, so titleOf's `d` fallback is the title. */
 function communityCard(ev, opts) {
   const img = imageOf(ev);
-  // Every `p` on a 34550 is a moderator; the role's position in the tag varies by client.
+  // Every `p` on a 34550 is a moderator.
   const mods = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
   const full = opts && opts.full;
   const inner =
@@ -242,7 +222,7 @@ function communityCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 30315 — a NIP-38 status. The `d` says which status ("general", "music"); a music status is often only an `r` link. */
+/** 30315 — a NIP-38 status; a music status is often only an `r` link. */
 function statusCard(ev, opts) {
   const kindOfStatus = tagOf(ev, "d");
   const link = tagOf(ev, "r");
@@ -273,7 +253,7 @@ register([30315], statusCard);
 // The rows lead with the relation, as the cards do, minus the link.
 registerRow([7, 17], (ev) => {
   const c = (ev.content || "").trim();
-  // A `:shortcode:` image cannot ride in a line of text, so the row shows the code itself.
+  // A `:shortcode:` image cannot ride in a line of text.
   return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)}${targetNoun(ev)}` };
 });
 registerRow([6, 16], (ev) => ({ name: quotedText(ev) || `reposted${targetNoun(ev)}` }));
@@ -301,5 +281,5 @@ registerRow([5], (ev) => ({ name: `asks to delete ${plural(deletionCount(ev), "e
 registerRow([8], (ev) => ({ name: `awards a badge to ${plural(winnersOf(ev).length, "recipient")}` }));
 registerRow([4550], (ev) => ({ name: "approved a post", sub: quotedText(ev) }));
 registerRow([34550], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || ev.content }));
-// A status with no text is a status cleared, which is a fact worth a row.
+// A status with no text is a status cleared.
 registerRow([30315], (ev) => ({ name: ev.content || "cleared" }));

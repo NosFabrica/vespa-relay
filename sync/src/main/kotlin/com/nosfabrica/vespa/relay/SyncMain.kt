@@ -56,7 +56,7 @@ import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
-// Enough attempts to outlast the relay's own boot deploy; see main.
+// Enough attempts to outlast the relay's own boot deploy.
 private const val DEPLOY_ATTEMPTS = 5
 private const val DEPLOY_RETRY_SECONDS = 5L
 
@@ -65,7 +65,7 @@ private const val DEFAULT_STATUS_PORT = 7778
 
 private const val DEFAULT_MONITOR_STATUS_PORT = 7779
 
-/** Matched to the mirror's own progress tick; the document is a fold over maps already in memory. */
+/** Matched to the mirror's own progress tick. */
 private const val DEFAULT_STATUS_INTERVAL_SECONDS = 30L
 
 /** `SYNC_STATUS_INTERVAL_SECONDS`, refused rather than defaulted when it is not a number. */
@@ -76,23 +76,17 @@ private fun statusInterval(env: Map<String, String>): Long =
     } ?: DEFAULT_STATUS_INTERVAL_SECONDS
 
 /**
- * A page's markup, off the classpath. `/stats.html` is one page for all three
- * services; each draws whatever document it is pointed at. Missing means a
- * broken build, so it is an error rather than a blank page.
+ * A page's markup, off the classpath; `/stats.html` serves all three services. Missing means
+ * a broken build, so it is an error rather than a blank page.
  */
 private fun statusPage(resource: String = "/stats.html"): String =
     SyncStatus::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
         ?: error("$resource is missing from the :web jar — no page can be served.")
 
 /**
- * Run the sync engine as its own process against the Vespa the serving relay
- * also uses, so the mirror can be restarted, retuned or lost to an OOM without
- * the relay dropping a client.
- *
- * Configuration is entirely from the environment; `docs/configuration.md`
- * documents every variable. `RELAY_URL` and `SYNC_CONFIG`/`SYNC_CONFIG_FILE`
- * are required. Without `SYNC_PRESSURE_URL` ingest never yields to client
- * reads; without `SYNC_TOR_SOCKS` no `.onion` upstream can be reached.
+ * Run the sync engine as its own process against the Vespa the serving relay uses, so the
+ * mirror can be restarted or lost to an OOM without the relay dropping a client. Configured
+ * entirely from the environment; `docs/configuration.md` documents every variable.
  */
 fun main() {
     val env = System.getenv()
@@ -103,13 +97,12 @@ fun main() {
         RelayUrlNormalizer.normalizeOrNull(relayUrlRaw)
             ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
 
-    // A sync process with nothing to sync is a misconfiguration, not a mode.
     val config =
         RouterConfigLoader.fromEnv(env)
             ?: error("SYNC_CONFIG or SYNC_CONFIG_FILE is required — this process only mirrors; without streams it has no job.")
 
-    // Read before anything slow: a `.onion` upstream with no transport would
-    // time out every cycle and look like a stream that mirrors nothing.
+    // Checked before anything slow: a `.onion` upstream with no transport looks like a
+    // stream that mirrors nothing.
     val torSettings = TorSettings.fromEnv(env)
     val onion = onionUpstreams(config.streams)
     if (torSettings == null && onion.isNotEmpty()) {
@@ -123,22 +116,18 @@ fun main() {
     if (identity != null) {
         System.err.println("sync identity: ${identity.pubKey.take(12)}… (NIP-42 auth, NIP-66 monitor)")
     } else {
-        // Said out loud: an auth-gated upstream served without a signer looks
-        // exactly like an empty relay.
         System.err.println(
             "sync identity: none (RELAY_NSEC unset) — upstream NIP-42 challenges go unanswered, so relays that " +
                 "gate reads behind AUTH will serve nothing and read as empty",
         )
     }
 
-    // This is the process whose writes a drifted schema silently discards, so
-    // it deploys on boot too. A no-change deploy is a cheap no-op.
+    // This is the process whose writes a drifted schema silently discards, so it deploys too.
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
     if (env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() != false) {
         System.err.println("schema: deploying the bundled application package to $configUrl")
-        // Compose starts both processes together, so two deploys can race the
-        // same config server session; on a fresh Vespa the loser has nothing
-        // to fall back to. The race is transient, so it is retried here.
+        // Compose starts both processes together, so two deploys can race one config server
+        // session; the loser retries.
         var attempt = 1
         while (true) {
             try {
@@ -157,22 +146,18 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    // STORE_WRITERS: the relay's inserts must be checked against the
-    // tombstones this process stores, which its own store instance never saw.
-    // Read before the store is opened: the slow-read ring is a constructor
-    // setting, and it is the one place the store retains a query string.
+    // STORE_WRITERS: the relay's inserts are checked against tombstones this process stores.
+    // The pulse detail flag is read before the store opens: the slow-read ring is a
+    // constructor setting.
     val pulseClientDetail = env["SYNC_PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
-    // The pulse page's own port, unset by default. Off rather than one past
-    // the monitor's, because unlike those two this document is not public:
-    // with SYNC_PULSE_CLIENT_DETAIL on it names the observer lenses and search
-    // terms driving the load and quotes slow queries.
+    // Off by default, unlike the two status pages: with SYNC_PULSE_CLIENT_DETAIL on this
+    // document quotes slow queries and is not public.
     val pulsePort =
         env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
         } ?: 0
-    // Resolved here, with the other settings: this throws when a port is set
-    // with no administrator named, and that refusal must arrive before the
-    // process has spent a minute standing everything else up.
+    // Resolved here so a port set with no administrator named refuses before boot has spent
+    // a minute standing everything else up.
     val pulseGuard =
         if (pulsePort <= 0) {
             null
@@ -193,18 +178,15 @@ fun main() {
             writers = STORE_WRITERS,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
         )
-    // When the counters start; the page states every total as cumulative over
-    // this window. See RelayMain.
+    // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
     val parseAudit = ParseAudit.installFromEnv(env)
 
-    // Built from the parsed streams, not the environment alone: a stream may
-    // set its own `refetchThePastSeconds`.
+    // From the parsed streams too: a stream may set its own `refetchThePastSeconds`.
     val bands = SyncBands.fromEnv(env, config.streams)
 
-    // Written once, after the config is loaded and before anything dials: a
-    // `router.conf` edit is a restart, so boot is the only moment it changes.
+    // Written once at boot: a `router.conf` edit is a restart.
     val manifest = SyncManifest.fromEnv(env)
     // Only the unset case is announced; a failed write has already said so.
     if (manifest.publishes) {
@@ -219,14 +201,12 @@ fun main() {
     SyncProgress.refuseRemovedEnv(env)
     val progress = SyncProgress()
 
-    // The registry is always on; the environment only decides the log threshold.
     val storeCalls = StoreCalls.fromEnv(env)
 
     val sweepState = SweepState.fromEnv(env)
     val refusedIds = RefusedIds.fromEnv(env)
 
-    // Opt-in: a sync running without a relay has no readers to yield to, and
-    // the boot log says when it is off.
+    // Opt-in: a sync running without a relay has no readers to yield to.
     val pressureUrl = env.syncEnv("SYNC_PRESSURE_URL", "ROUTER_PRESSURE_URL")?.trim()?.takeIf { it.isNotEmpty() }
     val servingPressure =
         pressureUrl?.let {
@@ -255,12 +235,9 @@ fun main() {
             torSettings = torSettings,
             progress = progress,
             storeCalls = storeCalls,
-            // The raw engine index: a pure membership read, which is what
-            // ingest needs to skip verifying an event it cannot write.
+            // A pure membership read, which is all ingest needs to skip verifying a duplicate.
             knownIds = store.eventIndex::existingIds,
-            // Built here so the store's query types stay at the one seam that
-            // knows them. The winner rule is stage D's: newest created_at,
-            // ties to the lower id.
+            // The winner rule is stage D's: newest created_at, ties to the lower id.
             newestVersions = { kind, authors ->
                 store.eventIndex
                     .search(EventQuery(kinds = listOf(kind), authors = authors))
@@ -270,18 +247,14 @@ fun main() {
                     }
             },
         )
-    // Not started yet: both status sites bind first. Everything they read
-    // exists once the engine is constructed, and a boot that stalls in
-    // `start()` is exactly the state they exist to show.
+    // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
+    // exactly the state they exist to show.
 
-    // Unset disables the page; a fill-only box should not bind a port.
     val statusPort =
         env["SYNC_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("SYNC_STATUS_PORT='$it' is not a port number. Unset it to serve no status page.")
         } ?: DEFAULT_STATUS_PORT
-    // The monitor's page has its own port: it answers a different question on
-    // a different clock, and the port survives the plane moving to its own
-    // container.
+    // The monitor's page has its own port: a different question on a different clock.
     val monitorPort =
         env["MONITOR_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("MONITOR_STATUS_PORT='$it' is not a port number. Set it to 0 to serve no monitor page.")
@@ -293,11 +266,9 @@ fun main() {
         } else {
             val statusSnapshot = StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
             val everySeconds = statusInterval(env)
-            // `engine::primeUnits`, not a copy: the pool rebuilds the roster on
-            // the discovery clock.
+            // `engine::primeUnits`, not a copy: the pool rebuilds the roster on the discovery clock.
             val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds, engine::primeUnits)
-            // Once before the server binds, so the first request answers with
-            // a document rather than a 503.
+            // Once before the server binds, so the first request gets a document, not a 503.
             status.publish()
             StatusRollup("sync", everySeconds, status::publish).start() to
                 serveStatusSite(
@@ -334,22 +305,13 @@ fun main() {
         println("vespa-sync monitor page on http://localhost:$monitorPort/")
     }
 
-    // With both pages answering, whatever `start()` waits on is visible.
     engine.start()
 
-    // Both processes log this, so the load can be attributed to a ROLE. An
-    // ablation earlier could only ask "is it sync?" by scaling the mirror to
-    // zero; two labelled lines answer it without touching the deployment.
+    // Both processes log this, so load can be attributed to a role without scaling one to zero.
     StoreMetricsLog.startLogging("sync", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
 
-    // The mirror's own resource picture: this process does the ingesting, so
-    // the write path, the admission outcomes and the trust drain's lock holds
-    // are all here rather than on the relay's page.
-    //
-    // ADMINISTRATORS ONLY, against the same RELAY_ADMIN_PUBKEYS the relay's
-    // NIP-86 admin RPC uses — one list for the deployment, read here through
-    // the same parser. A port set with no administrator named stops the boot
-    // rather than opening the page.
+    // Administrators only, against the same RELAY_ADMIN_PUBKEYS the relay's NIP-86 RPC
+    // uses; a port set with no administrator named stops the boot.
     val pulseSite =
         if (pulseGuard == null) {
             null
@@ -378,15 +340,14 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
-            // Pages before the engine: they read state the engine is about to
-            // stop updating.
+            // Pages before the engine: they read state the engine is about to stop updating.
             pulseSite?.stop(0, 0)
             listOfNotNull(statusSite, monitorSite).forEach { (rollup, server) ->
                 rollup.close()
                 server.stop(1_000, 2_000)
             }
-            // Engine before the store it writes to; the audit after the
-            // engine, so its final report includes the last batch.
+            // Engine before the store it writes to; the audit after the engine, so its final
+            // report includes the last batch.
             engine.close()
             parseAudit?.close()
             refusedIds.close()

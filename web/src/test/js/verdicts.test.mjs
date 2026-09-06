@@ -1,6 +1,4 @@
-// What a signed kind-30166 record claims: the tag semantics behind the
-// monitor-verdicts panel. Each case is asserted in the direction the Kotlin
-// reader first got it wrong.
+// What a signed kind-30166 record claims: the tag semantics behind the monitor-verdicts panel.
 import assert from "node:assert/strict";
 import {
   MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
@@ -38,8 +36,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- fold vs cleared, told apart after normalising -------------------------
 {
-  // The cleared form points at the record's own url; compared by string, a
-  // trailing slash would read as a fold onto itself.
+  // The cleared form points at the record's own url, compared after normalising.
   const r = readRecord(rec("wss://nos.lol/", [sameAs("wss://nos.lol", "500 newest events, best 4 shared", NOW)]));
   assert.equal(r.cleared, true, "a trailing slash must not turn a cleared verdict into a fold");
   assert.equal(r.fold, null);
@@ -80,8 +77,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the verdict's clock, which is not the record's ------------------------
 {
-  // quartz's monitor rewrites the record on every connect, so created_at is
-  // when we last talked to the relay; the tag carries when it was measured.
+  // created_at is rewritten on every connect; the tag carries when the verdict was measured.
   const stale = NOW - TTL_SECONDS - 1;
   const r = readRecord(rec("wss://busy.example/a", [sameAs("wss://busy.example/", "e", stale)], NOW));
   assert.equal(r.foldMeasuredAt, stale, "the record was rewritten a second ago; the measurement was not");
@@ -101,8 +97,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the rules a verdict was measured under --------------------------------
 {
-  // A verdict measured under superseded rules is inside the TTL and still not
-  // acted on, so the panel has to agree with the router.
+  // A verdict measured under superseded rules is inside the TTL and still not acted on.
   const old = readRecord(rec("wss://x.example/a", [sameAs("wss://x.example/", "e", NOW, "1")]));
   assert.equal(old.fold, "wss://x.example/", "the record still SAYS this — being superseded is not being unreadable");
   assert.equal(old.foldEpoch, "1");
@@ -198,8 +193,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the survivor, which usually has no record of its own ------------------
 {
-  // `RelayAliases.learn` clears only a leader nothing folded onto, so the url a
-  // group collapses to usually has no record of its own.
+  // The url a group collapses to usually has no record of its own.
   const events = [
     rec("wss://a.example/alpha", [sameAs("wss://a.example/lantern", "e", NOW)]),
     rec("wss://a.example/beta", [sameAs("wss://a.example/lantern", "e", NOW)]),
@@ -289,8 +283,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- prime, split by the transport it was measured over --------------------
 {
-  // A narrowing of `prime` and nothing else: same TTL, same epoch, same grade,
-  // or the header would say more relays are prime over Tor than are prime at all.
+  // A narrowing of `prime` and nothing else: same TTL, same epoch, same grade.
   const onion = `wss://${"v".repeat(56)}.onion/`;
   const sum = summarise(groupByHost([
     rec(onion, [grade(PRIME, "e", NOW), ["n", NETWORK_TOR]]),
@@ -308,8 +301,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 }
 
 {
-  // An onion address has no other transport, and records signed before the
-  // fitness pass wrote facts carry no `n`.
+  // An onion address has no other transport, and older records carry no `n`.
   const bare = `wss://${"w".repeat(56)}.onion/`;
   const sum = summarise(groupByHost([rec(bare, [grade(PRIME, "e", NOW)])], NOW), NOW);
   assert.equal(sum.primeTor, 1);
@@ -320,8 +312,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 }
 
 {
-  // `silent` must look past the fold and the stability tag: most urls are
-  // measured by the fitness pass alone.
+  // `silent` must look past the fold and the stability tag: most urls are graded alone.
   const graded = summarise(groupByHost([rec("wss://a.example/", [grade("dead", "no TCP answer", NOW)])], NOW), NOW);
   assert.equal(graded.silent, 0, "the monitor looked at this url and wrote down what it found");
   assert.equal(graded.graded, 1);
@@ -332,9 +323,8 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the rest of the record, which several writers share -------------------
 {
-  // quartz's passive monitor writes `n`, `rtt-*` and `R` onto the same record
-  // our fold writes `same-as` onto; the panel draws them so a writer that
-  // rebuilds the record and drops them is visible in production.
+  // Other writers put `n`, `rtt-*` and `R` on the same record; the panel draws them so a writer
+  // that rebuilds the record and drops them is visible.
   const r = readRecord({
     created_at: NOW,
     pubkey: "a".repeat(64),
@@ -374,8 +364,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 }
 
 {
-  // A synthesised survivor must carry every field a read record does; the
-  // renderer iterates the collection fields on every row.
+  // A synthesised survivor must carry every field a read record does.
   const [group] = groupByHost([rec("wss://s.example/a", [sameAs("wss://s.example/b", "e", NOW)])], NOW);
   const survivor = group.urls.find((u) => u.synthetic);
   const real = readRecord(rec("wss://s.example/a", [sameAs("wss://s.example/b", "e", NOW)]));
@@ -388,9 +377,8 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the walk, and a run of records longer than a page --------------------
 {
-  // Holds `total` records, hands back the newest `limit` at or below `until`,
-  // and stamps `run` of them with one created_at, as quartz's monitor does
-  // when it flushes a batch.
+  // Holds `total` records, hands back the newest `limit` at or below `until`, and stamps `run`
+  // of them with one created_at, as a flushed batch is.
   const relay = (total, run, at = 1000) => {
     const all = [];
     for (let i = 0; i < total; i++) all.push({ id: "e" + i, created_at: i < run ? at : at - 1 - i });
@@ -405,8 +393,7 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
     };
   };
 
-  // 900 records of which 600 share one second, read 500 at a time: a fixed
-  // page returns the same 500 and the cursor cannot move.
+  // A run longer than the page: a fixed page returns the same records and the cursor cannot move.
   const stuck = relay(900, 600);
   const fixed = await walkRecords({ ask: stuck.ask, pageSize: 500, maxPage: 500 });
   assert.ok(fixed.events.length < 900, "the fixture does not reproduce the run this exists for");
@@ -445,9 +432,8 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 }
 
 {
-  // `Relay.reqOnce` marks a page the timeout cut with `complete: false`: a
-  // cut-empty page is not an exhausted store, and the cursor must not step
-  // below a cut page.
+  // A page the timeout cut (`complete: false`) is not an exhausted store, and the cursor must
+  // not step below it.
   const cut = (arr) => { arr.complete = false; return arr; };
 
   const timedOut = await walkRecords({ ask: async () => cut([]) });

@@ -23,9 +23,7 @@ package com.nosfabrica.vespa.relay.maintenance
 import com.nosfabrica.vespa.eventstore.WriterTopology
 
 /**
- * What this deployment tells the store about its writers at every
- * `VespaEventStore.open()`. The relay and the sync process both write the same
- * authors, so a cached guard-owner view in either can admit an event the
- * other's tombstone covers; strict is the only exact answer.
+ * What this deployment tells the store about its writers at every `VespaEventStore.open()`.
+ * Strict is the only exact answer when the relay and the sync process write the same authors.
  */
 val STORE_WRITERS: WriterTopology = WriterTopology.SHARED_STRICT

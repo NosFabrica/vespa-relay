@@ -39,17 +39,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The relay's own kind 0 and kind 10002, signed with `RELAY_NSEC` and inserted
- * straight into the store, so a reader who meets the relay's pubkey anywhere
- * but on this host still finds a name and a way back.
- *
- * The NIP-11 document is the source: its name, description, icon and banner
- * are the profile's, and this writer owns those fields outright, clearing what
- * the doc no longer says. Everything else an operator published for this key
- * (a `nip05`, other relays in the list) is carried forward untouched. Both
- * kinds are compared against what the store holds and skipped when they
- * match, so a restart loop cannot walk `created_at` forward. [publish] takes
- * the doc as an argument because NIP-86 RPCs rewrite it at runtime.
+ * The relay's own kind 0 and kind 10002, signed with `RELAY_NSEC` and inserted into the store.
+ * The NIP-11 doc owns name, description, icon and banner outright; every other field is carried
+ * forward. [publish] takes the doc as an argument because NIP-86 RPCs rewrite it at runtime.
  */
 class RelayProfile(
     private val store: IEventStore,
@@ -81,9 +73,8 @@ class RelayProfile(
     }
 
     /**
-     * Bring both events up to date against [info]. Throws whatever the store
-     * throws: a failed read must never be taken as "nothing stored", which is
-     * the one way this could replace a richer profile.
+     * Bring both events up to date against [info], skipping what the store already says. Throws
+     * whatever the store throws: a failed read must never be taken as "nothing stored".
      */
     suspend fun publish(info: Nip11Info): Report =
         writing.withLock {
@@ -93,8 +84,7 @@ class RelayProfile(
     private suspend fun publishMetadata(info: Nip11Info): Outcome {
         val held = newest(MetadataEvent.KIND)?.let { it as? MetadataEvent ?: MetadataEvent(it.id, it.pubKey, it.createdAt, it.tags, it.content, it.sig) }
         val at = nextCreatedAt(held)
-        // Empty rather than null for the owned fields: quartz reads null as
-        // "leave it" and blank as "delete it".
+        // Empty rather than null for the owned fields: quartz reads null as "leave it" and blank as "delete it".
         val template =
             if (held == null) {
                 MetadataEvent.createNew(
@@ -114,8 +104,7 @@ class RelayProfile(
                     banner = info.banner.orEmpty(),
                     about = info.description.orEmpty(),
                     createdAt = at,
-                    // updateFromPast re-parses the `i` tags lossily; the
-                    // initializer runs last, so the originals win.
+                    // updateFromPast re-parses the `i` tags lossily; the initializer runs last, so the originals win.
                     initializer = {
                         remove(IdentityClaimTag.TAG_NAME)
                         held.tags.filter { it.firstOrNull() == IdentityClaimTag.TAG_NAME }.forEach { add(it) }
@@ -136,23 +125,20 @@ class RelayProfile(
         // Our url is the only entry checked; the rest are somebody else's statements.
         if (listed.any { it.relayUrl == relayUrl && it.type == AdvertisedRelayType.BOTH }) return Outcome.UNCHANGED
 
-        // Ours last, so an entry that named us read-only is upgraded in place
-        // rather than doubled.
+        // Ours last, so an entry that named us read-only is upgraded rather than doubled.
         val next = listed.filterNot { it.relayUrl == relayUrl } + AdvertisedRelayInfo(relayUrl, AdvertisedRelayType.BOTH)
         val at = nextCreatedAt(held)
         val event =
             if (held == null) {
                 AdvertisedRelayListEvent.create(next, signer, at)
             } else {
-                // Keeps every non-`r` tag; an `r` tag whose url will not
-                // normalize is dropped by [AdvertisedRelayListEvent.relays].
                 AdvertisedRelayListEvent.replaceRelayListWith(held, next, signer, at)
             }
         store.insert(event)
         return Outcome.PUBLISHED
     }
 
-    /** The newest event of [kind] signed by this relay. Not asserted to be the only one: a store mid-supersede is read past. */
+    /** The newest event of [kind] signed by this relay; a store mid-supersede may hold two. */
     private suspend fun newest(kind: Int): Event? =
         store
             .query<Event>(Filter(kinds = listOf(kind), authors = listOf(signer.pubKey)))
@@ -163,11 +149,9 @@ class RelayProfile(
 }
 
 /**
- * Publish the relay's own kind 0 and kind 10002 in the background, waiting out
- * a cold engine. Both kinds are replaceable and decided from what the store
- * holds, so a failed read is retried rather than read as an empty store.
- * Bounded so a failure that is not warm-up cannot retry for the life of the
- * process. Called at boot and again when a NIP-86 RPC rewrites the document.
+ * Publish the relay's own kind 0 and kind 10002 in the background, waiting out a cold engine. A
+ * failed read is retried rather than read as an empty store, within a bounded wait. Called at
+ * boot and again when a NIP-86 RPC rewrites the document.
  */
 fun launchRelayProfile(
     scope: CoroutineScope,

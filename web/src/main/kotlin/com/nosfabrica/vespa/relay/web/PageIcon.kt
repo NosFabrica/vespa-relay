@@ -21,10 +21,9 @@
 package com.nosfabrica.vespa.relay.web
 
 /**
- * Every `<link rel="icon">` in a page, replaced by one pointing at [icon].
- * Replaced rather than appended: browsers prefer the SVG the pages hint
- * first. Null leaves the markup byte-identical. The value is escaped because
- * `changerelayicon` is a network rpc and this puts its argument in an attribute.
+ * Every `<link rel="icon">` in a page replaced by one pointing at [icon], since browsers prefer
+ * the SVG the pages hint first. Null leaves the markup byte-identical. The value is escaped
+ * because `changerelayicon` is a network rpc.
  */
 fun pageWithIcon(
     html: String,

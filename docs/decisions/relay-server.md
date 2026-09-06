@@ -186,3 +186,26 @@ until the OS gives up, which can be never.
 and printed in this repo's own history, and the answer moved rather than went
 away: the Kinds table on `/stats.html` covers every kind where the old page
 counted only the ones it knew to name.
+
+**The pulse guard is resolved before the schema deploy, and its window opens
+with the store.** `PulseGuard` throws when `PULSE_PORT` is set with no
+administrator named, and that refusal belongs beside the other settings checks:
+a boot that deploys a schema and opens a store before saying "you forgot
+`RELAY_ADMIN_PUBKEYS`" costs two minutes to deliver one line. `storeOpenedAt`
+is taken right after `VespaEventStore.open`, not at process start or where the
+site is mounted, because the page states every total as cumulative over that
+window and a relay that spent two minutes deploying before opening the store
+would otherwise claim a window that never held those counters.
+
+**Every setting `.env.example` documents has to reach a container.** Compose
+injects only what a service maps, and a documented variable that no service maps
+does not fail: it is ignored, and the operator gets a relay that quietly does not
+do the thing they configured. It happened twice before `ComposePassesEnvTest`
+existed: the NIP-86 ban list was read by the relay and never passed through, so
+a `.env` ban was silently unenforced, and the pulse page's port was documented
+before it was mapped, so the page never appeared. The test is loose about how a
+name reaches compose (an `environment:` mapping, a `ports:` entry, a
+`mem_limit`, a volume path) and strict about it appearing at all; its `exempt`
+map is short on purpose, because every entry is a claim that setting the
+variable under compose should do nothing, and an exemption for a deleted setting
+is checked for the same reason.

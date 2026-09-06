@@ -44,10 +44,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The relay's own kind 0 and kind 10002, driven against the real in-memory
- * store so the replaceable semantics are the store's own.
- */
+/** The relay's own kind 0 and kind 10002, against a real store so replaceable semantics are its own. */
 class RelayProfileTest {
     private val relayUrl = RelayUrlNormalizer.normalize("wss://relay.example")
     private val signer = NostrSignerInternal(KeyPair())
@@ -213,7 +210,7 @@ class RelayProfileTest {
     @Test
     fun `a store that cannot answer publishes nothing`() =
         runBlocking {
-            // A cold engine that throws must not read as "no profile stored", the one way to overwrite a richer one.
+            // A throwing read must not read as "no profile stored", which would overwrite a richer one.
             val inner = newStore()
             val store =
                 object : IEventStore by inner {

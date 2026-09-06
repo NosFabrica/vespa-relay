@@ -32,10 +32,8 @@ private const val SOFTWARE = "https://github.com/NosFabrica/vespa-relay"
 val BASE_SUPPORTED_NIPS = listOf(1, 9, 11, 40, 42, 45, 50, 62, 77)
 
 /**
- * The NIP-50 `nip50` list, in the `"<class> <token>"` spelling. `observer`
- * and `include:spam` are how an unauthenticated client gets an answer at
- * all, and this doc is where it learns that before being refused. Only
- * tokens the store parses belong here.
+ * The NIP-50 `nip50` list, in the `"<class> <token>"` spelling. Only tokens the store parses
+ * belong here; `observer` and `include:spam` are how an unauthenticated client gets an answer.
  */
 val NIP50_FEATURES =
     listOf(
@@ -58,10 +56,7 @@ val BUILD_VERSION: String by lazy {
         }?.takeIf { it.isNotBlank() } ?: "dev"
 }
 
-/**
- * The NIP-11 document. The `limitation` block is derived from the [RelayLimits]
- * the engine enforces. Returned as an object so NIP-86 RPCs can update it.
- */
+/** The NIP-11 document; its `limitation` block is derived from the [RelayLimits] the engine enforces. */
 fun buildRelayInfo(
     info: Nip11Info,
     limits: RelayLimits,

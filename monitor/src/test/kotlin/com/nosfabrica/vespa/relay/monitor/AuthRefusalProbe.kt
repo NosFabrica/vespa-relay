@@ -39,11 +39,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Where a url's time goes at a relay that refuses our credentials: times the
- * ladder's asks one by one on one socket, and ranks what one `leaderPrint`
- * costs across a corpus. Asserts nothing. Selected by `-DauthRefusalProbe=true`
- * (per-rung timing) or `-DauthRefusalCensus=true` (the ranking); hosts via
- * `-DauthRefusalUrls=a,b`.
+ * Where a url's time goes at a relay that refuses our credentials. Asserts nothing.
+ * `-DauthRefusalProbe=true` times the ladder rung by rung on one socket; `-DauthRefusalCensus=true`
+ * ranks what one `leaderPrint` costs per url; `-DauthRefusalUrls=a,b` picks the hosts.
  */
 class AuthRefusalProbe {
     private val urls =
@@ -54,11 +52,7 @@ class AuthRefusalProbe {
         ).split(",")
             .mapNotNull { RelayUrlNormalizer.normalizeOrNull(it.trim()) }
 
-    /**
-     * Concurrent behind a small gate, as [AliasFolding] runs it. A census from
-     * one IP against hosts already probed measures your own rate limit, so read
-     * the shapes and not the totals unless the run is cold.
-     */
+    /** Concurrent behind a small gate, as [AliasFolding] runs it; a warm run measures your own rate limit. */
     @Test
     fun rankWhatEachUrlCostsToFingerprint() {
         if (System.getProperty("authRefusalCensus") != "true") {
@@ -92,7 +86,6 @@ class AuthRefusalProbe {
                                 val startedMs = System.currentTimeMillis()
                                 val attempt = runCatching { probe.leaderPrint(url, anchor) {} }.getOrNull()
                                 val tookMs = System.currentTimeMillis() - startedMs
-                                // The three outcomes a pass distinguishes are also the three cost classes.
                                 val shape =
                                     when {
                                         attempt == null -> "threw"
@@ -152,7 +145,7 @@ class AuthRefusalProbe {
             for (url in urls) {
                 println("-".repeat(78))
                 println("  ${url.url}")
-                // Six asks on one connection, in the pass's order: only the first meets a socket that has never been refused.
+                // All asks on one connection, in the pass's order.
                 for ((n, kinds) in LADDER.withIndex()) {
                     for (size in listOf(500, RelayAliases.FALLBACK_PROBE_PAGE)) {
                         val startedMs = System.currentTimeMillis()
@@ -192,7 +185,6 @@ class AuthRefusalProbe {
     }
 
     private companion object {
-        /** The live pass's own window. */
         const val IDLE_MS = 20_000L
 
         /** The rungs [AliasProbe.leaderPrint] walks, in order. */

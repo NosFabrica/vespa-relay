@@ -26,10 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Which `OK` answers mean a relay will never take a repair, and how much
- * silence it takes to conclude the same.
- */
+/** Which `OK` answers close a relay for repairs, and how much silence concludes the same. */
 class OkClassifierTest {
     private fun classify(
         accepted: Boolean,
@@ -78,7 +75,7 @@ class OkClassifierTest {
 
     @Test
     fun `OK true earns no tombstone on its own`() {
-        // Accepted means taken, not that the stale copy was dropped; an archival relay does only the first.
+        // Accepted means taken, not that the stale copy was dropped.
         assertEquals(PushVerdict.ACCEPTED, classify(true, ""))
     }
 

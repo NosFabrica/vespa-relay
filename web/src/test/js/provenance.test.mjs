@@ -1,6 +1,4 @@
-// The provenance rules: which pills a page produces, collapsed, ordered and
-// attributed. Pure, which is why they live in web/provenance.js rather than
-// in the renderer.
+// The provenance rules: which pills a page produces, collapsed, ordered and attributed.
 import assert from 'assert';
 
 const P = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
@@ -10,8 +8,7 @@ const hex = (c) => String(c).repeat(64).slice(0, 64);
 const READER = hex("a"), LISTER = hex("b"), SCORER = hex("c"), BOT = hex("d"), BOT2 = hex("e");
 const ev = (id, pubkey, kind, tags = []) => ({ id: hex(id), pubkey, kind, created_at: 1, tags, content: "" });
 const profile = (id, pubkey) => ({ ...ev(id, pubkey, 0), content: "{}" });
-// The fixture's reader delegated every declaration kind to the two publishers
-// these cases sign with; the gate has its own section at the end.
+// The reader delegated every declaration kind to the two publishers these cases sign with.
 const DECLARED = [30000, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 39089];
 const trusting = (...signers) => new Map(DECLARED.map((k) => [k, new Set(signers)]));
 const TRUSTED = trusting(LISTER, SCORER);
@@ -20,8 +17,8 @@ const texts = (pills) => pills.map((p) => p.text);
 
 // ---- the collapse ---------------------------------------------------------
 //
-// The publisher computes one list per observer, so two lists titled
-// "Verified Human" naming one person are the ordinary shape.
+// The publisher computes one list per observer, so two lists with one title naming one person
+// are the ordinary shape.
 {
   const page = [
     profile("1", READER),
@@ -33,7 +30,7 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.strictEqual(pills[0].count, 2, "and the count is where the duplicate goes");
   assert.strictEqual(pills[0].text, "Verified Human");
 }
-// The label side's worst real shape: 68 events, 2 authors, one word.
+// The label side's worst shape: many events, few authors, one word.
 {
   const page = [profile("1", READER)];
   for (let i = 0; i < 68; i++) {
@@ -45,8 +42,7 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(pills[0].authors.sort(), [BOT, BOT2].sort(), "and it carries both authors");
 }
 
-// One pointer naming one target twice is still one: lists in the wild repeat
-// entries, and the count must not read 2 off a single list.
+// One pointer naming one target twice is still one: lists repeat entries.
 {
   const one = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER], ["p", READER]])];
   assert.strictEqual(pillsOn(one, "1")[0].count, 1, "a list that repeats a member is still one list");
@@ -132,8 +128,7 @@ const texts = (pills) => pills.map((p) => p.text);
 
 // ---- an assertion speaks only through its topics ---------------------------
 //
-// A rank out of its scale says nothing a reader can act on, and the score
-// chip on the face already carries it with its lens.
+// A rank out of its scale says nothing a reader can act on; the score chip already carries it.
 {
   const scoreOnly = [profile("1", READER), ev("3", SCORER, 30382, [["d", READER], ["rank", "92"]])];
   assert.strictEqual(provenanceOf(scoreOnly, TRUSTED).size, 0, "a ranked assertion with no topic draws nothing at all");
@@ -175,9 +170,8 @@ const texts = (pills) => pills.map((p) => p.text);
 
 // ---- position is not attribution ------------------------------------------
 //
-// The store places a spliced member by the confidence its list expressed, so
-// a member no longer arrives behind its pointer; the pills must be identical
-// however the page is ordered.
+// A spliced member need not arrive behind its pointer; the pills must be identical however the
+// page is ordered.
 {
   const list = ev("2", LISTER, 30392, [["d", "x"], ["title", "Verified Human"], ["p", READER], ["p", BOT]]);
   const label = ev("3", SCORER, 1985, [["L", "ugc"], ["l", "medical", "ugc"], ["e", hex("6")]]);
@@ -205,8 +199,7 @@ const texts = (pills) => pills.map((p) => p.text);
 
 // ---- the reader's own curation speaks --------------------------------------
 //
-// A NIP-51 people list (30000) and a follow pack (39089) splice their members
-// like a Trusted List does, so the row has to be able to name them.
+// A NIP-51 people list (30000) and a follow pack (39089) splice their members like a Trusted List.
 {
   // Gated on their signer like every other declaration, and here the signer is the reader.
   const mine = trusting(READER);
@@ -225,11 +218,10 @@ const texts = (pills) => pills.map((p) => p.text);
     "gated: the relay would not have unpacked this list for anyone but its own reader");
 }
 
-// The words a list is findable by: a people list indexes `titleOrName()`, a
-// Trusted List the title alone, so `name` is a pill only where it was indexed.
+// A people list indexes `titleOrName()`, a Trusted List the title alone, so `name` is a pill
+// only where it was indexed.
 {
-  // Signed by LISTER throughout, so one gate covers all three and each case is
-  // only about which tag the pill reads.
+  // Signed by LISTER throughout, so each case is only about which tag the pill reads.
   const named = [profile("1", READER), ev("2", LISTER, 30000, [["d", "x"], ["name", "Soil Nerds"], ["p", READER]])];
   assert.deepStrictEqual(texts(pillsOn(named, "1")), ["Soil Nerds"], "a 30000's `name` is indexed, so it is a pill");
 
@@ -245,8 +237,7 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(texts(pillsOn(both, "1")), ["Titled"]);
 }
 
-// A storage key is not a reason: `d` is never indexed, so it is never a word
-// anybody searched, and on untitled 30000s it is most of the corpus.
+// A storage key is not a reason: `d` is never indexed, so it is never a word anybody searched.
 {
   const junk = ["intent-bloom-r0s63o3y-isPlaying", "chats/null/lastOpened", "nextblock.city/neighborhood", "communities", "dm-contacts"];
   for (const d of junk) {
@@ -260,8 +251,7 @@ const texts = (pills) => pills.map((p) => p.text);
     "…and the same list titled says its title");
 }
 
-// A mute list is the opposite of a vouch. The relay splices it like any other
-// people list, and some carry the title `Mute`, which the title rule would draw.
+// A mute list is the opposite of a vouch, and the relay splices it like any other people list.
 {
   for (const d of ["mute", "block", "Blocked", "mutelists"]) {
     const bare = [profile("1", READER), ev("2", READER, 30000, [["d", d], ["p", READER]])];
@@ -277,8 +267,7 @@ const texts = (pills) => pills.map((p) => p.text);
     "a `d` that merely contains the word is a different list");
 }
 
-// A stranger's list is the whole safety argument: nobody else's list unpacks
-// unless the reader delegated the kind.
+// Nobody else's list unpacks unless the reader delegated the kind.
 {
   const STRANGER = hex("9");
   const page = [
@@ -292,8 +281,7 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.deepStrictEqual(pills[0].authors, [READER]);
 }
 
-// Only the public half: NIP-51's private members are NIP-44 encrypted, so the
-// blob in `content` draws nothing.
+// Only the public half: the NIP-44 blob in `content` draws nothing.
 {
   const secret = { ...ev("2", READER, 30000, [["d", "x"], ["title", "Private"], ["p", READER]]), content: "AAAA?iv=BBBB" };
   const page = [profile("1", READER), profile("4", LISTER), secret];
@@ -318,8 +306,8 @@ const texts = (pills) => pills.map((p) => p.text);
     ev("3", SCORER, 30382, [["d", READER], ["t", "soil"]]),
   ], TRUSTED);
   assert.strictEqual(facesNeeded(two), true, "two publishers on one page: now the face says something");
-  // An ungated pill is attributed always, so a page of nothing but labels must
-  // not switch the gated ones on.
+  // An ungated pill is attributed always, so a page of nothing but labels must not switch the
+  // gated ones on.
   const labelsOnly = provenanceOf([profile("1", READER),
     ev("2", BOT, 1985, [["L", "ugc"], ["l", "a", "ugc"], ["p", READER]]),
     ev("3", BOT2, 1985, [["L", "ugc"], ["l", "b", "ugc"], ["p", READER]])], TRUSTED);
@@ -352,9 +340,8 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
 
 // ---- whose word, not just which kind ---------------------------------------
 //
-// Plain recall is not gated, so a stranger's list whose title matches the
-// search lands beside the delegated publisher's; drawn, it collapsed into the
-// delegated pill and took the count to 2.
+// Plain recall is not gated, so a stranger's list whose title matches the search lands beside
+// the delegated publisher's and must not collapse into its pill.
 {
   const STRANGER = hex("9");
   const page = [
@@ -373,17 +360,15 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(alone.size, 0, "an undelegated list contributes nothing at all");
 }
 
-// The store fetches declarations from their enrolled signers plus the reader,
-// so a reader's own Trusted List unpacks and the row has to say so.
+// The store fetches declarations from their enrolled signers plus the reader.
 {
   const mine = provenanceOf([profile("1", READER),
     ev("2", READER, 30392, [["d", "x"], ["title", "Mine"], ["p", READER]])], trusting(LISTER, READER));
   assert.deepStrictEqual(texts(mine.get(hex("1"))), ["Mine"], "a reader's own list speaks for itself");
 }
 
-// No declaration kind has an ungated path, walked rather than argued: the gate
-// is one line in `contributionsOf`, and a kind added past it would be a silent
-// hole. The stranger must also never ride in as an author of a delegated pill.
+// No declaration kind has an ungated path, walked rather than argued. The stranger must also
+// never ride in as an author of a delegated pill.
 {
   const { DECLARATION_KINDS } = P;
   const STRANGER = hex("9");
@@ -395,8 +380,7 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.ok(DECLARATION_KINDS.size >= 10, "the walk is over the real set, not a stale copy of it");
   for (const kind of DECLARATION_KINDS) {
     const member = MEMBER_TAGS[kind];
-    // Every shape at once: a member tag, an assertion's `d` subject and a topic,
-    // so no kind escapes for want of the tag it reads.
+    // Every shape at once, so no kind escapes for want of the tag it reads.
     const tags = [
       ["d", kind >= 30382 && kind <= 30385 ? (kind === 30383 ? hex("1") : kind === 30384 ? addr : SUBJ) : "x"],
       ["title", "Verified Human"], ["name", "Verified Human"], ["t", "vh"],
@@ -446,8 +430,7 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
   assert.strictEqual(attribution.faces, false, "and the attribution flag goes with it, not just the pills");
 }
 
-// A trending feed is not provenance: Ditto's NIP-32 value is `#p` and one
-// event names forty people.
+// A trending feed is not provenance: one `#p` label naming a crowd is not a vouch for each.
 {
   const trend = ev("7", BOT, 1985, [
     ["L", "pub.ditto.trends"], ["l", "#p", "pub.ditto.trends"],
@@ -458,8 +441,7 @@ assert.strictEqual(provenanceOf([{ kind: 1 }, null, { id: "nope", kind: 1985, ta
     "the trend label is furniture; the one beside it that says something is not");
 }
 
-// Every write moves the epoch, a clear included: a late second pass that only
-// watched for re-seeds would write the row back after entity.js cleared it.
+// Every write moves the epoch, a clear included, so a late second pass cannot write the row back.
 {
   const { seedProvenance, forgetProvenance, provenanceEpoch } = P;
   const page = [profile("1", READER), ev("2", LISTER, 30392, [["d", "x"], ["title", "VH"], ["p", READER]])];

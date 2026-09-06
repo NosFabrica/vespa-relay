@@ -1,18 +1,12 @@
-// The marketplace family. Two payload styles meet here: NIP-99 listings keep
-// everything in tags (price is ["price", amount, currency, period?]) while
-// NIP-15 stalls/products keep a JSON content. Nothing is invented for a
-// missing field.
+// The marketplace family: NIP-99 listings keep everything in tags, NIP-15 stalls and
+// products keep a JSON content. Nothing is invented for a missing field.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { register, registerRow, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf, oneLine, satsOf } from "./base.js";
 
-/**
- * "250 USD", "9 EUR / month" — the price as words, so the row can carry it
- * too. Every part goes through oneLine: `{"price": {}}` is a legal document.
- */
+/** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
 const priceText = (amount, currency, period) => {
   const a = oneLine(amount);
-  // Tested after oneLine, so a period that is not text does not render as "250 USD / ".
   const per = oneLine(period);
   return a ? `${a} ${oneLine(currency)}${per ? ` / ${per}` : ""}`.trim() : "";
 };
@@ -81,15 +75,14 @@ function badgeCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-// 30403 is the draft of a 30402 with identical tags; 30020 is a product at
-// auction, whose JSON content is a product's plus a starting bid.
+// 30403 and 30020 are drafts carrying their published twin's shape.
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
 
-// The price is on every row that has one; it is not in the title.
+// The price rides in the sub line, never the title.
 registerRow([30402, 30403], (ev) => {
   const price = tagsOf(ev, "price")[0] || [];
   return {

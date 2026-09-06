@@ -87,8 +87,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `a cleared url reads back as cleared, not as a fold onto itself`() =
         runBlocking {
-            // The self-form, `same-as` pointing at the record's own url, must never
-            // come back in `aliases`: the fan-out would resolve the url to itself.
+            // A self-fold in `aliases` would have the fan-out resolve the url to itself.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
 
@@ -102,8 +101,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `the two forms are told apart after normalisation, not by string`() =
         runBlocking {
-            // `wss://nos.lol` and `wss://nos.lol/` are one url. Compared as strings a
-            // cleared verdict reads as a fold onto itself, which `RelayAliases.adopt` drops.
+            // Compared as strings, `wss://nos.lol` cleared reads as a fold onto `wss://nos.lol/`.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val unslashed = RelayUrlNormalizer.normalize("wss://nos.lol")
@@ -116,8 +114,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `clearing a url replaces an earlier fold on the same address`() =
         runBlocking {
-            // A host that split one endpoint into two real relays: one owned tag
-            // name means the newer verdict replaces the older rather than contradicting it.
+            // One owned tag name, so the newer verdict replaces the older rather than contradicting it.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
 
@@ -214,8 +211,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `the fitness writer owns its own label namespace and nobody else's`() =
         runBlocking {
-            // `l` is shared ground (nostr.watch labels country, ISP and ASN on it), so
-            // ownership is a predicate over the namespace, not the tag name.
+            // `l` is shared ground, so ownership is a predicate over the namespace, not the tag name.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             store.insert(
@@ -252,8 +248,6 @@ class RelayVerdictRecordTest {
     @Test
     fun `the NIP-77 measurement reads back, and an unmeasured relay is not a no`(): Unit =
         runBlocking {
-            // A url nobody measured must not read as a refusal, or the router gives
-            // up NIP-77 for every relay the monitor has not reached yet.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
@@ -293,8 +287,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `the measured facts are replaced on every pass, not accumulated`() =
         runBlocking {
-            // Carried forward by every edit, a stale `rtt-open` draws on the stats
-            // panel as a current reading of a socket nobody has opened in months.
+            // Carried forward, a stale `rtt-open` draws as a current reading of a socket nobody has opened.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(
@@ -344,8 +337,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict still reads as CURRENT after the other writers have edited the record`() =
         runBlocking {
-            // Other writers carry the tag forward by copying it, so this asserts what
-            // `load` decides, not what the tags are called.
+            // Other writers copy the tag forward, so this asserts what `load` decides, not what tags exist.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
@@ -367,8 +359,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict measured under superseded rules is no verdict at all`() =
         runBlocking {
-            // A record from before a rules change is a reading of a different rule, and
-            // the TTL cannot make it agree. Fresh measured-at, so only the epoch can make it stale.
+            // Fresh measured-at, so only the epoch can make it stale.
             val store = newStore()
             store.insert(
                 signer.sign(
@@ -396,8 +387,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `a verdict written before the epoch existed is re-measured, not trusted forever`() =
         runBlocking {
-            // Pre-epoch records carry no measured-at either. Falling back to the event's
-            // clock, which the monitor rewrites on every connect, made them never age out.
+            // The event's clock is rewritten on every connect, so a fallback to it would never age out.
             val store = newStore()
             store.insert(
                 signer.sign(
@@ -414,8 +404,7 @@ class RelayVerdictRecordTest {
     @Test
     fun `what this build publishes reads back as current`() =
         runBlocking {
-            // The epoch check must reject the past and nothing else: a constant bumped on
-            // the writer's side only would re-probe the whole fan-out every pass and never converge.
+            // A constant bumped on the writer's side only would re-probe the whole fan-out every pass.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publish(alias, canonical, sampled = 500, shared = 498)

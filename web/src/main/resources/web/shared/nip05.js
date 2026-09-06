@@ -1,7 +1,5 @@
-// NIP-05 verification. A nip05 in a profile is a claim that is only worth
-// anything once the domain agrees, so it is checked when the profile scrolls
-// into view, once per identity per session. Three outcomes, not two: a domain
-// that cannot be reached is not a failed claim.
+// NIP-05 verification, run when the profile scrolls into view, once per identity per
+// session. Three outcomes, not two: a domain that cannot be reached is not a failed claim.
 const nip05Cache = new Map();   // "name@domain|pubkey" -> "ok" | "bad" | "unknown"
 
 async function checkNip05(addr, pubkey) {
@@ -19,8 +17,7 @@ async function checkNip05(addr, pubkey) {
       if (r.ok) {
         const j = await r.json();
         const claimed = j && j.names && j.names[local];
-        // Absent or mismatched are both a failed claim; only a reachable
-        // domain can produce one.
+        // Absent or mismatched are both a failed claim; only a reachable domain can produce one.
         verdict = claimed && claimed.toLowerCase() === pubkey.toLowerCase() ? "ok" : "bad";
       }
     } catch (e) { verdict = "unknown"; }
@@ -31,7 +28,7 @@ async function checkNip05(addr, pubkey) {
 
 const NIP05_MARK = { ok: ["✓", "verified by the domain"], bad: ["✗", "the domain does not claim this pubkey"], unknown: ["?", "could not reach the domain to check"] };
 
-// One observer for the page: elements register themselves by existing.
+// One observer for the page.
 const nip05Watcher = new IntersectionObserver((entries) => {
   for (const en of entries) {
     if (!en.isIntersecting) continue;
@@ -50,10 +47,8 @@ const nip05Watcher = new IntersectionObserver((entries) => {
 }, { rootMargin: "120px" });
 
 /**
- * Hand the currently rendered nip05 elements to the watcher. Disconnect first:
- * every caller has just replaced a container's innerHTML, and an observer
- * holds its targets strongly until they are unobserved. Re-observing is free
- * because a verdict is cached per identity.
+ * Hand the rendered nip05 elements to the watcher. Disconnects first: an observer holds
+ * its targets strongly, and every caller has just replaced a container's innerHTML.
  */
 export function watchNip05() {
   nip05Watcher.disconnect();

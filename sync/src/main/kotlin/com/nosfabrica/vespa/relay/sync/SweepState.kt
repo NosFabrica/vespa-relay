@@ -40,27 +40,13 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * What [NegentropyPager] must not forget between calls: how big a window a
- * peer will reconcile (learned from its refusal; NIP-11 does not advertise
- * it) and how far down the timeline the current sweep got (written per
- * finished window, so a crash costs one window). Working state a completed
- * sweep throws away, separate from the long-lived bands.
- *
- * ```json
- * {
- *   "peers":  { "wss://relay/": { "target": 12500, "cap": 500000 } },
- *   "sweeps": { "<stream>": { "<filter>": { "wss://relay/": { "downTo": …, "upTo": …, "at": … } } } }
- * }
- * ```
- *
- * `peers` stays flat because a cap is a property of the peer alone.
+ * What [NegentropyPager] must not forget between calls: how big a window a peer will reconcile,
+ * learned from its refusal, and how far down the timeline the current sweep got, written per
+ * finished window. Working state a completed sweep throws away, separate from the bands.
  */
 class SweepState(
     private val file: File?,
-    /**
-     * Past this age an interrupted sweep restarts instead of resuming. Not a
-     * stream's `refetchThePastSeconds`: this schedules nothing, so it keeps a default.
-     */
+    /** Past this age an interrupted sweep restarts instead of resuming. Schedules nothing, so it has a default. */
     private val staleAfterSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
 ) : AutoCloseable {
     /** What one peer will reconcile: the window size we use, and its cap if it told us. */
@@ -77,10 +63,8 @@ class SweepState(
     )
 
     /**
-     * A cursor's identity. [filter] is the serialised shape, taken once per
-     * sweep by [keyFor]. [stream] is part of the identity: two streams asking
-     * one relay the same filter are two sweeps, and one may not inherit the
-     * other's claim.
+     * A cursor's identity, built by [keyFor]. [stream] is part of it: two streams asking one
+     * relay the same filter are two sweeps, and one may not inherit the other's claim.
      */
     data class Cursor(
         val stream: String,
@@ -92,10 +76,8 @@ class SweepState(
     private val sweeps = ConcurrentHashMap<Cursor, Reconciled>()
 
     /**
-     * Migration shim: cursors from a file written before the format nested,
-     * keyed by (filter, relay). Claimed by the first stream to ask and
-     * re-written flat until then. Delete with [claim] and the flat branches
-     * in [load] and [snapshot] together.
+     * Migration shim: cursors from a file written before the format nested, claimed by the
+     * first stream to ask. Delete with [claim] and the flat branches in [load] and [snapshot].
      */
     private val preStream = ConcurrentHashMap<Pair<String, String>, Reconciled>()
 
@@ -128,7 +110,7 @@ class SweepState(
         dirty = true
     }
 
-    /** The peer's own `max_sync_events`, from its rejection. A property of their config, so kept. */
+    /** The peer's own `max_sync_events`, from its rejection. */
     fun learnCap(
         url: NormalizedRelayUrl,
         cap: Int,
@@ -156,9 +138,8 @@ class SweepState(
     ) {
         // Before the compute(), so a pre-stream cursor is widened rather than overwritten.
         claim(key)
-        // Merged only when the window touches the claim: the claim is one range
-        // and must stay compared throughout. A disjoint window keeps the
-        // standing claim and only moves the liveness stamp.
+        // Merged only when the window touches the claim, which must stay one compared range;
+        // a disjoint window only moves the liveness stamp.
         sweeps.compute(key) { _, before ->
             if (before == null || (downTo <= before.upTo + 1 && upTo >= before.downTo - 1)) {
                 Reconciled(
@@ -303,7 +284,6 @@ class SweepState(
             put(
                 "sweeps",
                 buildJsonObject {
-                    // Grouped here rather than held grouped: one flat map needs no lock.
                     val byStream = LinkedHashMap<String, LinkedHashMap<String, LinkedHashMap<String, Reconciled>>>()
                     sweeps.forEach { (k, r) ->
                         byStream
@@ -351,9 +331,8 @@ class SweepState(
 
     companion object {
         /**
-         * The cursor's identity: the stream, the filter with its time bounds
-         * removed (time is what the sweep varies), and the peer. Taken once
-         * per sweep because it serialises the filter.
+         * The cursor's identity: the stream, the filter with its time bounds removed, and the
+         * peer. Taken once per sweep because it serialises the filter.
          */
         fun keyFor(
             stream: String,
@@ -361,15 +340,14 @@ class SweepState(
             shape: Filter,
         ): Cursor = Cursor(stream, shape.copy(since = null, until = null, limit = null).toJson(), url.url)
 
-        // Pretty-printed: read by a human asking why a peer gets the window size it does.
+        // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
 
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
         /**
-         * `SYNC_SWEEP_STATE_FILE`, unset for in-memory (a restart re-learns
-         * every cap). `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS` is how old a
-         * resume cursor may be and still be resumed from.
+         * `SYNC_SWEEP_STATE_FILE`, unset for in-memory; `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS`
+         * is how old a resume cursor may be and still be resumed from.
          */
         fun fromEnv(env: Map<String, String>): SweepState =
             SweepState(

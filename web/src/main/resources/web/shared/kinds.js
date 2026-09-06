@@ -1,11 +1,7 @@
 // What each kind is called and which family tints its badge, shared by every
 // renderer so a mixed list stays scannable.
 
-// Badge names for the kinds the index carries; anything else says "kind N".
-// Every kind with a renderer is named here: the badge is the only part of a
-// card that says what it is looking at. This relay's own working kinds
-// (10002, 10040, 30382, and 10166/30166 as a NIP-66 monitor) especially must
-// not read "kind 30382" on a permalink.
+// Badge names; anything else reads "kind N". Every kind with a renderer is named here.
 const KIND_LABELS = {
   0: "profile", 1: "note", 3: "follows", 5: "deletion", 6: "repost", 7: "reaction",
   8: "badge award", 9: "chat", 11: "thread", 16: "repost", 17: "reaction",
@@ -36,14 +32,11 @@ const KIND_LABELS = {
   30166: "relay", 30267: "app set", 30311: "live", 30312: "room",
   30313: "conference", 30315: "status", 30382: "score", 30383: "event score",
   30384: "entry score", 30402: "listing", 30403: "draft listing",
-  // The Tapestry Trusted Lists, named by what they hold: the four kinds
-  // differ only in their member type.
+  // The Tapestry Trusted Lists, named by what they hold.
   30392: "trusted people", 30393: "trusted events", 30394: "trusted articles",
   30395: "trusted identifiers",
   30617: "repository", 30618: "repo state", 30818: "wiki", 31890: "feed",
-  // The NIP-29 group itself, signed by its host relay's key. Its siblings
-  // (39001-39005) have no renderer, so naming them here would promise a card
-  // the search cannot show.
+  // The NIP-29 group itself; its siblings (39001-39005) have no renderer, so no name here.
   39000: "group",
   31922: "date", 31923: "event", 31924: "calendar", 31925: "rsvp",
   31989: "app", 31990: "app", 32267: "app", 34235: "video", 34236: "short video",
@@ -52,16 +45,10 @@ const KIND_LABELS = {
 };
 export const kindLabel = (k) => KIND_LABELS[k] || `kind ${k}`;
 
-/**
- * Every kind this relay's UI knows how to render, ascending: the one
- * enumerable answer to "which kinds do we support", which kind_stats.html
- * reads so a kind gaining a card gains a row there on the same commit.
- */
+/** Every kind the UI can render, ascending; kind_stats.html reads it so a new card gains a row there. */
 export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a - b);
 
-// A badge tint per family. The tone follows the renderer, not the kind
-// number: 39089 is a follow set under another name and tints like one, and
-// the NIP-51 lists tint by what they hold.
+// A badge tint per family, following the renderer rather than the kind number.
 const KIND_TONES = {
   people: [0, 3, 10002, 10040, 10166, 30000, 30002, 30166, 30382, 30383, 30384, 30392, 30393, 30394, 30395, 39089, 39092],
   note: [1, 9, 11, 40, 41, 42, 1111, 1311, 9802, 34550, 39000],

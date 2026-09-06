@@ -178,6 +178,37 @@ understates `total`.
 package across modules compile to the same `FormatKt` facade class and
 collide on the classpath.
 
+**The pulse document publishes counters and gauges, never rates.** Every total is cumulative
+since the process started, so the page differences two consecutive polls to recover a rate and
+any number of readers may poll without consuming anything; `gauges` (a queue depth, calls in
+flight) are instantaneous and named apart precisely so a reader cannot difference them into
+nonsense. There is no rollup thread and no `stale` member because nothing here can go stale.
+It is per process, not per cluster: the relay and the mirror hold separate stores over one
+Vespa, so each has its own ledger and page. Vespa's own resource use (memory, disk, transaction
+log) is deliberately absent: its metrics proxy already reports it, and a second, worse source of
+truth would be the wrong thing to build.
+
+**`startedAtMillis` is the store's start, stamped once.** Defaulting it to the moment the
+reader was built named a window shorter than the one the counters covered, by two minutes on a
+relay that deployed a schema first; stamped once rather than read per call so the window only
+ever grows.
+
+**Engine milliseconds are decimal.** The page divides them by the query count, and a store whose
+engine answers in under a millisecond published every profile as a flat zero, the same
+precision the health loop once lost rounding `%.2fs`, one boundary further on. Slow reads are
+published newest first because the page draws the table in document order under a "newest
+first" heading; it drew it backwards until an audit, the wrong end of a ring for somebody who
+opened the page during an incident.
+
+**The slow-read threshold is honoured only where the page will show it.** The slow-read ring is
+the one place the store retains a query string, and a query string is what somebody typed; an
+operator who set `PULSE_SLOW_READ_MS` but left the client sections off would be keeping that log
+for nobody to read, so `pulseSlowReadMs` says so on stderr and keeps nothing. A value that does
+not parse stops the boot: silently keeping no log is exactly what the operator was trying to
+change.
+
+**The pulse's operational numbers also go to the log, and nothing sensitive does.** The page is gated because it quotes search terms, which made the ordinary questions (which activity spends the engine's time, what holds the write gate, is a background walk moving) unanswerable from a terminal; diagnosing a store matching tens of millions of documents a second while retiring almost no work took hours at Vespa's own metrics endpoint because of it. `StoreMetricsLog` prints activity and port counters, stage timings, lock holders and gauges, never `topTerms`, `topObservers` or `slowReads`, since a log line is read by anything that reads container logs. Counters, not rates, so two lines subtract to an interval. On by default, on a daemon thread, because a diagnostic nobody enables is the reason it was missing.
+
 ## Web
 
 **Pages carry content-derived ETags.** A jar entry's mtime is the build's, so

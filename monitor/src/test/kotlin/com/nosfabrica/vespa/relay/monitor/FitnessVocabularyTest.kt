@@ -27,10 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The grade vocabulary and its tag are a wire contract: streams filter on them
- * and records live for weeks, so a rename needs a [RelayVerdictRecord.FITNESS_EPOCH] bump.
- */
+/** The grade vocabulary and its tag are a wire contract; a rename needs a [RelayVerdictRecord.FITNESS_EPOCH] bump. */
 class FitnessVocabularyTest {
     @Test
     fun `prime is the only admitting value, spelled exactly as streams filter for it`() {
@@ -44,7 +41,7 @@ class FitnessVocabularyTest {
 
     @Test
     fun `the grade does not squat a tag the rest of the network has already spent`() {
-        // `s` is the relay's software to every other NIP-66 monitor; the grade is a NIP-32 label.
+        // `s` is the relay's software to every other NIP-66 monitor.
         assertEquals("l", RelayVerdictRecord.LABEL_TAG)
         assertEquals("L", RelayVerdictRecord.LABEL_NAMESPACE_TAG)
         assertEquals(RelayFacts.SOFTWARE_TAG, RelayVerdictRecord.LEGACY_STATUS_TAG, "`s` means software now, which is why the writer must own it")
@@ -72,7 +69,7 @@ class FitnessVocabularyTest {
 
     @Test
     fun `six of the refusals describe relays that are alive`() {
-        // The argument for the name "fitness" over "live"; if this list shrinks the glossary prose changes too.
+        // The argument for the name "fitness" over "live".
         val aliveButRefused =
             setOf(
                 Verdict.SILENT,

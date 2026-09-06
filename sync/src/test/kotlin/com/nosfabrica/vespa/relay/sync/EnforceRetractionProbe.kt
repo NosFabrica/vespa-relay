@@ -36,11 +36,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Stages the enforce-mode retraction scenario on a live stack: two real 30382
- * scores on a NIP-77 relay (`-DenforceProviderRelay`), a 10040 naming that
- * pairing and one phantom score on the local relay only. The running router's
- * first retraction audit should delete exactly the phantom; the probe prints
- * the ids and asserts nothing. Selected by `-DenforceProbe=true`.
+ * Stages the enforce-mode retraction scenario on a live stack: two real 30382 scores on a NIP-77
+ * relay (`-DenforceProviderRelay`), a 10040 naming that pairing, and one phantom score on the
+ * local relay only (`-DenforceLocalRelay`). The running router's first retraction audit should
+ * delete exactly the phantom. Prints the ids and asserts nothing. Selected by `-DenforceProbe=true`.
  */
 class EnforceRetractionProbe {
     @Test

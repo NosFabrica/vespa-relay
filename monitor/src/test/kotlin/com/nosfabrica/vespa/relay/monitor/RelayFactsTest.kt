@@ -28,10 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The descriptive half of the record: the NIP-66 tags a stranger's crawler
- * reads without knowing this router exists.
- */
+/** The descriptive half of the record: the NIP-66 tags a stranger's crawler reads. */
 class RelayFactsTest {
     @Test
     fun `an absent fact writes no tag rather than a zero`() {
@@ -62,7 +59,7 @@ class RelayFactsTest {
 
     @Test
     fun `the version rides the software tag rather than minting a letter for itself`() {
-        // No monitor in the wild writes a `v` tag; the third element is where a reader of `["s", <software>]` never looks.
+        // No monitor in the wild writes a `v` tag.
         val withVersion = RelayFacts(software = "strfry", version = "1.0.3").tags().single { it[0] == "s" }
         assertEquals(listOf("s", "strfry", "1.0.3"), withVersion.toList())
         val without = RelayFacts(software = "strfry").tags().single { it[0] == "s" }
@@ -90,7 +87,7 @@ class RelayFactsTest {
 
     @Test
     fun `every tag the writer publishes is one it also owns`() {
-        // A tag written but not in OWNED is carried forward by `edit` forever, outliving the dial that took it.
+        // A tag written but not in OWNED is carried forward by `edit` forever.
         val everything =
             RelayFacts(
                 network = "clearnet",

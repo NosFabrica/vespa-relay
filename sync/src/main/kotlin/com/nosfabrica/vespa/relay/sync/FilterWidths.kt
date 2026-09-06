@@ -25,15 +25,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * How many kinds each relay accepts in one filter, learned from the relay's
- * own refusal.
- *
- * A relay that caps filter width rejects the whole REQ, so a visit that
- * re-asks the same width can never complete. A refusal naming a number below
- * the ask is adopted as the cap; one naming no such number halves the ask.
- * Both only ever narrow, which is what makes the loop terminate. Caps die
- * with the process: one refused ask re-learns them, and NIP-11 has no field
- * to read them from ahead of time.
+ * How many kinds each relay accepts in one filter, learned from the relay's own refusal. A
+ * refusal naming a number below the ask is adopted as the cap; one naming none halves the
+ * ask. Both only ever narrow, which is what makes the loop terminate.
  */
 internal class FilterWidths {
     private val caps = ConcurrentHashMap<NormalizedRelayUrl, Int>()
@@ -45,9 +39,8 @@ internal class FilterWidths {
     fun capFor(url: NormalizedRelayUrl): Int? = caps[url]
 
     /**
-     * Reads a refusal. True only when a new, strictly narrower cap was learned,
-     * which is the caller's signal to re-walk the same leg. A repeat of a cap
-     * already held is a refusal for some other reason, and re-walking would loop.
+     * Reads a refusal. True only when a new, strictly narrower cap was learned, the caller's
+     * signal to re-walk the leg; a repeat of a cap already held is a refusal for another reason.
      */
     fun learn(
         url: NormalizedRelayUrl,
@@ -55,7 +48,6 @@ internal class FilterWidths {
         kindsAsked: Int,
     ): Boolean {
         val cap = said?.let { capFrom(it, kindsAsked) } ?: return false
-        // Strictly narrower than the refused ask, or the next walk sends the same REQ.
         if (cap >= kindsAsked) return false
         val was = caps[url]
         if (was != null && was <= cap) return false
@@ -64,9 +56,8 @@ internal class FilterWidths {
     }
 
     /**
-     * [filter] as the REQs this relay will take: itself when it fits, else one
-     * filter per chunk of kinds. Split by kinds and nothing else: the band is
-     * per kind, so the chunks of one leg widen one band between them.
+     * [filter] as the REQs this relay will take: itself when it fits, else one filter per chunk
+     * of kinds. Split by kinds only, so the chunks of one leg widen one band between them.
      */
     fun chunk(
         url: NormalizedRelayUrl,
@@ -86,11 +77,9 @@ internal class FilterWidths {
 
     companion object {
         /**
-         * The cap this refusal asks for, or null when it is not about filter
-         * width. A number below what we asked is the relay's stated limit;
-         * anything else, including our own width quoted back, halves. The
-         * phrase gate is narrow on purpose: a wider match would let a rate
-         * limit or an allowlist refusal chunk an ask that was never too wide.
+         * The cap this refusal asks for, or null when it is not about filter width. A number
+         * below the ask is the relay's stated limit; anything else, our own width quoted back
+         * included, halves. The phrase gate is narrow so a rate-limit refusal cannot chunk an ask.
          */
         internal fun capFrom(
             said: String,

@@ -1,8 +1,5 @@
-// Which NIP-29 group the picker offers for a half-typed `group:`. A group's
-// identity is the pair (id, host relay), held here in two spellings nothing
-// joins: a 10009 tag names the host as a url, a 39000 as the signing key.
-// So the assertions are mostly about what does not happen: no merge, no
-// invented url, no collapse of two relays' groups into one row.
+// Which NIP-29 group the picker offers for a half-typed `group:`. A 10009 names the host as a
+// url and a 39000 as the signing key, and nothing joins the two: no merge, no invented url.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
@@ -42,9 +39,8 @@ assert(own.every((g) => g.mine), "everything here is the reader's own");
 assert.deepStrictEqual(ownGroups(null), [], "no event is no groups");
 assert.deepStrictEqual(ownGroups({ tags: [] }), [], "…and neither is an empty one");
 
-// A 10009's private items sit encrypted in `.content`; opening it costs a
-// permission prompt, so the scheme must be told apart by shape first.
-// NIP-04 appends `?iv=` plus 24 base64 characters, so the marker sits 28 from the end.
+// Opening a 10009's private items costs a permission prompt, so the scheme is told apart by
+// shape first: NIP-04 appends `?iv=` plus 24 base64 characters.
 const IV = "?iv=" + "a".repeat(24);
 assert.strictEqual(isNip04("ciphertextbase64" + IV), true, "the `?iv=` tail is NIP-04");
 assert.strictEqual(isNip04("AglkjhasdlkjhasdlkjhasdlkjhasdIkjh"), false, "a bare base64 blob is NIP-44");
@@ -107,9 +103,7 @@ assert.deepStrictEqual(rows.map((r) => r.mine), [true, false, false], "and each 
 rows = rank("chachi", { own: [], meta: [...found].reverse() });
 assert.deepStrictEqual(rows.map((r) => r.id), ["zz", "chat-abc"], "the relay's ranking survives");
 
-// The relay matches `name` and `about` through a real index with a fuzzy
-// tier; a substring re-test here would discard hits it makes. The fixtures
-// above cannot see that because "chachi" is a literal substring of "Chachi Fans".
+// The relay matches through a fuzzy index; a substring re-test here would discard hits it makes.
 const byAbout = metaGroup(meta("g-about", HOST_A, "Nostr Talk", "all about bitcoin"));
 assert.deepStrictEqual(
   rank("bitcoin", { own: [], meta: [byAbout] }).map((r) => r.id), ["g-about"],
@@ -179,10 +173,8 @@ assert.strictEqual(postedTo({ tags: [["h"]] }), "", "an `h` with no value names 
 assert.strictEqual(postedTo({}), "", "…and an event with no tags at all is not an exception");
 assert.strictEqual(postedTo({ tags: [null, ["h", "ok"]] }), "ok", "a malformed tag is stepped over, not thrown on");
 
-// The store applies the observer as a filter, so an unmirrored reader reads
-// back nothing on the authenticated socket, their own 10009 included. That
-// is intended: moving the read to the anonymous socket would make the picker
-// the one place showing content the relay cannot rank for them.
+// The store applies the observer as a filter, so an unmirrored reader reads back nothing on
+// the authenticated socket, their own 10009 included, and the read must stay there.
 const appSrc = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 const ownRead = /(\w+)\.req\(\{ kinds: \[10009\]/.exec(appSrc);
 assert(ownRead, "app.js must read the reader's own kind 10009 somewhere");

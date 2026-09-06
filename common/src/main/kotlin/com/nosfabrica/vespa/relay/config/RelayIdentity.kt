@@ -26,17 +26,16 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePrivateKeyAsHexOrNull
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * The relay's own keypair (`RELAY_NSEC`), one key for every role it acts in
- * as itself: the NIP-11 `self`, the NIP-42 challenges, the NIP-66 records.
- * No generated fallback, since an ephemeral key is a stranger every restart;
- * unset, the relay acts anonymously.
+ * The relay's own keypair (`RELAY_NSEC`), one key for every role it acts in as itself: the
+ * NIP-11 `self`, the NIP-42 challenges, the NIP-66 records. No generated fallback, since an
+ * ephemeral key is a stranger every restart; unset, the relay acts anonymously.
  */
 object RelayIdentity {
     const val ENV_VAR = "RELAY_NSEC"
 
     /**
-     * The signer built from [ENV_VAR], or null when it is unset or blank.
-     * Anything else that does not decode throws rather than starting anonymous.
+     * The signer built from [ENV_VAR], or null when it is unset or blank. Anything else that does
+     * not decode throws rather than starting anonymous.
      */
     fun fromEnv(env: (String) -> String? = System::getenv): NostrSignerInternal? {
         val raw = env(ENV_VAR)?.trim()?.ifEmpty { null } ?: return null

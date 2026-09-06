@@ -43,32 +43,23 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
- * The monitor plane: what is out there, and how much of it can be used.
- *
- * Three passes over one candidate set, on their own clock. The fold decides
- * which urls are one server wearing several addresses; the consistency pass
- * decides which cannot answer the same question twice; the fitness pass
- * grades what survives and signs a NIP-66 kind-30166 record for each. Those
- * records outlive this process and are what the mirror's roster selects on.
- *
- * The mirror reads verdicts from the store, a plain NIP-01 read. What it
- * writes here is [ingest] (a probe dial's events feed the fast lane's relay
- * lists), [sockets] (one refcount over both planes) and [pinnedUrls]; cut
- * those three and this is a separate process.
+ * The monitor plane: three passes over one candidate set, on their own clock. The fold decides
+ * which urls are one server, consistency which cannot answer twice, and fitness grades what
+ * survives and signs the NIP-66 record per url that the mirror's roster selects on.
  */
 class MonitorEngine(
     private val store: IEventStore,
     private val config: RouterConfig,
     private val peers: PeerClient,
-    /** The identity every verdict is signed under. Null is a deployment with no monitor: every pass is absent and its row says `off`. */
+    /** The identity every verdict is signed under. Null is a deployment with no monitor. */
     private val signer: NostrSigner?,
-    /** This plane's own report; a row belongs to the object that registered it. */
+    /** This plane's own report. */
     private val processors: Processors = Processors(),
-    /** The socket refcount shared with the mirror, so a pass releasing a url never closes a socket a stream is on. */
+    /** The socket refcount shared with the mirror, so a pass never closes a socket a stream is on. */
     private val sockets: RelaySockets,
     /** Where an event a probe dial happened to see goes. */
     private val ingest: IngestPipeline,
-    /** The relays the mirror holds a live subscription on; never dialled twice, never closed by a pass. */
+    /** The relays the mirror holds live; never dialled twice, never closed by a pass. */
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
@@ -76,24 +67,21 @@ class MonitorEngine(
     private val tor = peers.tor
     private val discoveryStreams = config.discoveryStreams()
 
-    /** Decided once for the start gate and the `off` rows, so they cannot disagree. See [hasMonitorSources]. */
+    /** Decided once for the start gate and the `off` rows, so they cannot disagree. */
     private val hasSources = hasMonitorSources(config)
 
     private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
-    /** How often the fast lane looks, or null for a lane that is off. See [fastLaneSecondsFor]. */
+    /** How often the fast lane looks, or null for a lane that is off. */
     private val fastLaneSeconds = fastLaneSecondsFor(config)
 
     /**
-     * The derivation's row. Declared above the passes it feeds: [Processors.of]
-     * registers in call order and the document draws in that order.
+     * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
+     * call order and the document draws in that order.
      */
     private val sourceProgress = signer?.let { processors.of(SOURCE_PROCESSOR) }
 
-    /**
-     * The duplicate-url fold. One instance for the reader and the prober:
-     * [RelayAliases] is the cache of what has been decided this boot.
-     */
+    /** The duplicate-url fold. One instance for the reader and the prober. */
     private val folding =
         signer?.let {
             AliasFolding(
@@ -103,15 +91,12 @@ class MonitorEngine(
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(FOLD_PROCESSOR),
-                // Hidden services gate on Tor's own socket budget, not the clearnet permits. See [DialGate].
+                // Hidden services gate on Tor's own socket budget, not the clearnet permits.
                 tor = tor,
             )
         }
 
-    /**
-     * The stability gate: does a relay answer one filter the same way twice?
-     * Its probe is separate from the fold's; they walk to different depths.
-     */
+    /** The stability gate. Its probe is separate from the fold's; they walk to different depths. */
     private val consistency = RelayConsistency()
     private val consistencyPass =
         signer?.let {
@@ -133,17 +118,15 @@ class MonitorEngine(
 
     private val probe = ReachabilityProbe(tor)
 
-    /** What the passes measure. Built here, not reached through discovery, which takes this engine as an argument. */
+    /** What the passes measure. */
     private val world =
         StreamWorld(
             store,
             discoveryStreams,
             probe,
             ingest,
-            // Whose `dead` verdicts may hold a candidate out: our signer plus
-            // every monitor the config's verdict sources and gates name. A
-            // source with no `authors` contributes nothing; an unscoped `dead`
-            // would starve a relay out for good. See ForeignMonitorTest.
+            // Our signer plus every monitor the verdict sources and gates name. A source with no
+            // `authors` contributes nothing: an unscoped `dead` would starve a relay out for good.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
@@ -159,9 +142,8 @@ class MonitorEngine(
         )
 
     /**
-     * The grade the sync plane selects on (`"#l": ["prime"]`) plus the facts a
-     * visit reads back. Third in pass order: it turns the fold's and the
-     * consistency pass's standing verdicts into refusals without re-dialling.
+     * The grade the sync plane selects on plus the facts a visit reads back. Third in pass order:
+     * it turns the fold's and the consistency pass's standing verdicts into refusals without re-dialling.
      */
     private val fitness =
         signer?.let { s ->
@@ -169,12 +151,11 @@ class MonitorEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
-                // `aliases` only: this pass signs `l=alias` for every entry it is
-                // handed, and a stand-in was never measured. See [AliasFolding.Collapsed.standIns].
+                // `aliases` only: this pass signs `l=alias` for every entry, and a stand-in was never measured.
                 foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                 inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
-                // The per-url transport the dial uses: a `.onion` document is fetched inside the circuit. See [TorTransport].
+                // The per-url transport, so a `.onion` document is fetched inside the circuit.
                 document = RelayDocument(peers::httpFor),
                 tor = tor,
                 concurrency = monitorConcurrency,
@@ -186,7 +167,6 @@ class MonitorEngine(
         handle: Processors.Handle?,
         run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int,
     ) = object : AliasMonitor.Pass {
-        // The handle the pass writes into, so the monitor's clock lands on the row the pass fills.
         override val progress = handle
 
         override suspend fun measure(
@@ -213,18 +193,16 @@ class MonitorEngine(
                     scope,
                     intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
                     source = world,
-                    // The fast lane runs stability then fitness: a first `prime`
-                    // waits on the stability answer. The fold rides the sweep;
-                    // it needs a host's whole group. See [AliasMonitor.fastLanePasses].
+                    // Stability then fitness, so a first `prime` waits on the stability answer; the fold
+                    // needs a host's whole group and rides the sweep.
                     fastLaneEveryMs = fastLaneSeconds?.times(1000L),
                     fastLanePasses = listOfNotNull(stabilityEntry, fitnessEntry),
                 )
             }
-            // Where the candidate set came from, on every row that shares the
-            // derivation. Suppliers rather than copies, for the reason [Processors] gives.
+            // The derivation's numbers on every row that shares it, as suppliers rather than copies.
             ?.also {
                 sourceProgress?.counts {
-                    // Nothing until a walk has run: zeros would read as a measurement. See [StreamWorld.derived].
+                    // Nothing until a walk has run: zeros would read as a measurement.
                     if (!world.derived) {
                         emptyList()
                     } else {
@@ -243,7 +221,6 @@ class MonitorEngine(
                             Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
                             Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
                             Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
-                            // Urls we hold records about that no relay list named this round.
                             Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
                         )
                     }
@@ -251,9 +228,8 @@ class MonitorEngine(
             }
 
     /**
-     * Which urls this router has folded away, and onto what; the roster asks so
-     * it never builds a leg for a url that is another url's relay. Stand-ins
-     * are included: this caller only decides which socket to open and publishes nothing.
+     * Which urls this router has folded away, and onto what, so the roster never builds a leg
+     * for another url's relay. Stand-ins are included: this caller only decides which socket to open.
      */
     suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls)?.let { it.aliases + it.standIns } ?: emptyMap()
 
@@ -262,8 +238,7 @@ class MonitorEngine(
 
     /** Runs the passes if there is anything for them to work on; returns whether they were started. */
     fun start(): Boolean {
-        // Runs regardless of the gate: verdicts already signed are still selected on.
-        // Off the boot path; the passes wait for it and the mirror does not.
+        // Runs regardless of the gate, off the boot path: the passes wait for it and the mirror does not.
         val retired = scope.async { retireOwnStaleVerdicts() }
         if (!hasSources) {
             // Every row, fitness included: one left at `starting` reads as a pass about to run.
@@ -273,7 +248,6 @@ class MonitorEngine(
             fitness?.progress?.phase(Processors.OFF)
             return false
         }
-        // The clearnet number; the Tor half is capped by the Tor dispatcher's width. See [DialGate].
         System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
         // The passes sign on what they read, so they start after the retraction.
         scope.launch {
@@ -284,10 +258,8 @@ class MonitorEngine(
     }
 
     /**
-     * Retires the verdicts this router signed that it would no longer sign: the
-     * stale epochs and the grades in the legacy `s` tag. A paged walk of the
-     * whole graded corpus, so it runs as a coroutine on [scope]; [start]
-     * orders the passes after it and the mirror's first roster rebuild is not held.
+     * Retires the verdicts this router signed that it would no longer sign: stale epochs and
+     * legacy `s` grades. A paged walk of the whole graded corpus, so it runs off the boot path.
      */
     private suspend fun retireOwnStaleVerdicts() {
         signer?.let { s ->
@@ -300,38 +272,31 @@ class MonitorEngine(
         }
     }
 
-    /**
-     * The [StoreCalls] element of [scope], for the two retractions; only the
-     * element, since the scope's `Job` and dispatcher decide other things.
-     */
+    /** The [StoreCalls] element of [scope] alone; its `Job` and dispatcher decide other things. */
     private val booked: CoroutineContext
         get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
         /**
-         * Is there anything for the monitor to work on: a stream's own
-         * `relaySource`, or the `monitor { sources }` block? A function over
-         * the config so a test can hand it the pure-monitor deployment.
+         * Is there anything for the monitor to work on: a stream's own `relaySource`, or the
+         * `monitor { sources }` block?
          */
         internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
 
         /**
-         * How often the fast lane looks, or null for a lane that is off. The two
-         * nulls mean opposite things: no `monitor` block takes the default,
-         * while `fastLaneSeconds = 0` inside a block is the off switch and survives.
+         * How often the fast lane looks, or null for a lane that is off. No `monitor` block takes
+         * the default; `fastLaneSeconds = 0` inside a block is the off switch and survives.
          */
         internal fun fastLaneSecondsFor(config: RouterConfig): Long? = config.monitor?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { config.monitor == null }
 
-        /** The names the progress document calls the monitor's jobs. Published; a rename changes a chart. */
+        /** The published names of the monitor's jobs; a rename changes a chart. */
         const val FOLD_PROCESSOR = "aliasFold"
 
-        /** The candidate derivation, named for the log line ("router: alias source derived ...") rather than the class. */
         const val SOURCE_PROCESSOR = "aliasSource"
 
         // `consistency`, the word the class, the state and the published tag share.
         const val STABILITY_PROCESSOR = "consistency"
 
-        /** Its counts are the verdicts themselves, not the candidate funnel the fold and consistency rows carry. */
         const val FITNESS_PROCESSOR = "fitness"
     }
 

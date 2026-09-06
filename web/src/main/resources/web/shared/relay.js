@@ -1,15 +1,12 @@
-// A minimal Nostr relay client (REQ/EOSE/CLOSE + NIP-42 AUTH) on the browser's
-// WebSocket, with no third-party code.
+// A minimal Nostr relay client (REQ/EOSE/CLOSE + NIP-42 AUTH) on the browser's WebSocket.
 
 import { withoutLensAll } from "./lens.js";
 
 const REQ_TIMEOUT_MS = 10000;
 
 /**
- * How long a COUNT may stay silent before we give up on it: an idle window
- * reset by any message on the connection, not a deadline. A relay answers
- * serially, so a cheap COUNT queued behind an expensive one would expire on a
- * deadline while the socket is busy with somebody else's answer.
+ * How long a COUNT may stay silent: an idle window reset by any message on the connection,
+ * not a deadline, since a relay answers serially and a cheap COUNT queues behind an expensive one.
  */
 const COUNT_IDLE_MS = 20000;
 
@@ -21,11 +18,9 @@ export const TIMED_OUT = { unanswered: "timeout" };
 
 export class Relay {
   /**
-   * `lensless` marks a connection that will never authenticate; every filter
-   * it sends is stamped `include:spam` (shared/lens.js) because the relay
-   * refuses an unauthenticated read that names no lens. The authenticated
-   * socket leaves it off so a read before its NIP-42 fails loudly with
-   * `auth-required:` and retries, rather than answering out of the unranked corpus.
+   * `lensless` marks a connection that will never authenticate; every filter it sends is
+   * stamped `include:spam`. The authenticated socket leaves it off so a read before its
+   * NIP-42 fails with `auth-required:` and retries, rather than answering unranked.
    */
   constructor(url, { lensless = false } = {}) {
     this.url = url;
@@ -51,8 +46,7 @@ export class Relay {
       let settled = false;
       const ws = new WebSocket(this.url);
       this.ws = ws;
-      // A new socket carries neither the previous challenge nor its auth.
-      // Cleared here rather than by the old socket's close event, which is late.
+      // Cleared here rather than by the old socket's close event, which lands late.
       this.challenge = null;
       this.authed = false;
       const settle = (fn) => { if (settled) return; settled = true; clearTimeout(timer); this.opening = null; fn(); };
@@ -62,19 +56,15 @@ export class Relay {
       ws.onerror = () => fail(new Error("relay connection failed"));
       ws.onclose = () => {
         fail(new Error("relay connection closed"));
-        // A close event lands after close() returns, and sign-out builds the
-        // replacement immediately; a dead socket must not tear down the live one.
+        // A dead socket must not tear down its replacement; sign-out builds one before this lands.
         if (this.ws !== ws) return;
         this.ws = null;
         this.challenge = null;
         this.authed = false;
         for (const s of this.subs.values()) s.finish(new Error("connection closed"));
         this.subs.clear();
-        // A count outstanding on a socket that is gone is refused, not timed
-        // out: nobody is waiting any more.
+        // A count outstanding on a socket that is gone is refused, not timed out.
         this.failCounts(REFUSED);
-        // A challenge that will now never arrive: wake the waiters rather than
-        // let them spend their budget on a socket that is gone.
         this.wakeChallengeWaiters();
         this.onclose && this.onclose();
       };
@@ -85,8 +75,7 @@ export class Relay {
   }
 
   handle(msg) {
-    // Traffic of any kind, including for somebody else's ask, is proof the
-    // relay is still working through its queue. See COUNT_IDLE_MS.
+    // Traffic of any kind is proof the relay is still working through its queue.
     this.bumpCountIdle();
     switch (msg[0]) {
       case "EVENT": { const s = this.subs.get(msg[1]); if (s) s.onEvent(msg[2]); break; }
@@ -94,8 +83,7 @@ export class Relay {
       case "CLOSED": {
         const s = this.subs.get(msg[1]);
         if (s) { s.finish(new Error(msg[2] || "subscription closed")); break; }
-        // A relay without NIP-45 commonly answers a COUNT by closing its
-        // subscription. That is an answer, not our impatience.
+        // A relay without NIP-45 commonly answers a COUNT by closing its subscription.
         const c = this.counts.get(msg[1]);
         if (c) c(REFUSED);
         break;
@@ -106,11 +94,8 @@ export class Relay {
         if (c) c(typeof msg[2]?.count === "number" ? msg[2].count : REFUSED);
         break;
       }
-      // A NOTICE carries no subscription id, and answering an unsupported COUNT
-      // with one is what relays without NIP-45 do. Counts are the only ask this
-      // client has outstanding on a probe connection, so it is attributed to
-      // all of them. Wrong in the safe direction: a false "no COUNT" costs a
-      // denominator, a false count would be a number no relay stated.
+      // A NOTICE carries no subscription id and is how relays without NIP-45 answer a COUNT,
+      // so it is attributed to every outstanding count. Wrong in the safe direction.
       case "NOTICE": this.failCounts(REFUSED); break;
       case "AUTH": this.challenge = msg[1]; this.wakeChallengeWaiters(); break;
       case "OK": { const w = this.okWaiters.get(msg[1]); if (w) { this.okWaiters.delete(msg[1]); w(msg); } break; }
@@ -124,11 +109,7 @@ export class Relay {
     this.countIdle = setTimeout(() => this.failCounts(TIMED_OUT), COUNT_IDLE_MS);
   }
 
-  /**
-   * Hand every outstanding count the same non-answer. Iterates a snapshot and
-   * does not clear the map first: each `finish` deletes its own entry and
-   * returns early when it is already gone.
-   */
+  /** Hand every outstanding count the same non-answer. Each `finish` deletes its own entry. */
   failCounts(reason) {
     if (!this.counts.size) return;
     for (const finish of [...this.counts.values()]) finish(reason);
@@ -142,7 +123,7 @@ export class Relay {
     for (const w of waiters) w(this.challenge);
   }
 
-  /** The connection's NIP-42 challenge, or null if none arrives within [timeoutMs]. Awaited, not polled. */
+  /** The connection's NIP-42 challenge, or null if none arrives within [timeoutMs]. */
   waitForChallenge(timeoutMs) {
     if (this.challenge) return Promise.resolve(this.challenge);
     return new Promise((resolve) => {
@@ -156,18 +137,12 @@ export class Relay {
     });
   }
 
-  /**
-   * One REQ, collected until EOSE (or timeout: resolve with what arrived).
-   * `filter` is one filter or an array of them; NIP-01 ORs the filters within
-   * a subscription, the only way to ask a union question in one round trip.
-   */
+  /** One REQ, collected until EOSE or timeout. `filter` is one filter or an array NIP-01 ORs. */
   async req(filter, timeoutMs = REQ_TIMEOUT_MS, { signal } = {}) {
     try {
       return await this.reqOnce(filter, timeoutMs, signal);
     } catch (e) {
-      // A relay answers an unauthenticated REQ with CLOSED "auth-required:" and
-      // the AUTH that follows does not revive it; the client must ask again.
-      // One retry only. The anonymous reference connection installs no hook.
+      // The AUTH that follows a CLOSED "auth-required:" does not revive the REQ; ask again, once.
       if (this.onAuthRequired && !this.authed &&
           String((e && e.message) || "").startsWith("auth-required")) {
         await this.onAuthRequired();
@@ -178,9 +153,8 @@ export class Relay {
   }
 
   /**
-   * The single send-and-collect attempt behind [req]. The resolved array
-   * carries `complete`: true on EOSE, false when the timeout or [signal] ended
-   * it first. A caller must not cache an absence off an incomplete read.
+   * The single attempt behind [req]. The resolved array carries `complete`, false when the
+   * timeout or [signal] ended it first; never cache an absence off an incomplete read.
    */
   async reqOnce(filter, timeoutMs, signal) {
     await this.connect();
@@ -206,17 +180,14 @@ export class Relay {
     });
   }
 
-  /**
-   * NIP-45 COUNT: the number, or [REFUSED] / [TIMED_OUT], never a throw. The
-   * two non-answers are values because the caller renders each differently.
-   */
+  /** NIP-45 COUNT: the number, or [REFUSED] / [TIMED_OUT], never a throw. */
   async count(filter) {
     await this.connect();
     const id = "cnt" + this.nextId++;
     return await new Promise((resolve) => {
       const finish = (v) => {
         if (!this.counts.delete(id)) return;
-        // Closed however we leave: relays cap concurrent subscriptions.
+        // Closed however we leave, since relays cap concurrent subscriptions.
         try { this.ws && this.ws.send(JSON.stringify(["CLOSE", id])); } catch (e) {}
         this.bumpCountIdle();
         resolve(v);

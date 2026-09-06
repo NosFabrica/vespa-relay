@@ -271,7 +271,7 @@ class SyncBandsTest {
         val quiet = SyncBands.fromEnv(emptyMap(), emptyList())
         quiet.use { assertEquals(SyncBands.NEVER, it.refetchThePastSecondsFor(mirror)) }
 
-        // An old spelling is an error, not a no-op: ignored, it would silently drop a running schedule on upgrade.
+        // An old spelling is an error, not a no-op; ignored, it would drop a running schedule on upgrade.
         for (name in listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")) {
             assertFailsWith<IllegalArgumentException>("$name must be refused, not ignored") {
                 SyncBands.fromEnv(mapOf(name to "604800"), emptyList())
@@ -346,8 +346,7 @@ class SyncBandsTest {
 
     @Test
     fun `a group where nobody needs anything is asked about before a snapshot is built`() {
-        // coveringWindow answers the whole filter when nobody needs anything; `anyOutstanding`
-        // is how the caller avoids building the id set for that.
+        // `anyOutstanding` is how the caller avoids building an id set nobody needs.
         val capped = Filter(kinds = listOf(0), until = 1_700_005_000L)
         val c = SyncBands(null)
         c.record(mirror, relay, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
@@ -594,11 +593,7 @@ class SyncBandsTest {
 
     // ---- the flat keys a file written before the format nested carries -------
 
-    /**
-     * One band under the flat key the pre-stream version wrote. Built through
-     * the json builder, since the key itself contains json, and by hand rather
-     * than by the code under test.
-     */
+    /** One band under the flat key the pre-stream version wrote, built by hand rather than by the code under test. */
     private fun writeFlat(
         f: File,
         vararg keys: String,
@@ -895,7 +890,6 @@ class SyncBandsTest {
         assertTrue(drainSettlesThePast(drainedWalk, older, bounded))
 
         // Known limit: `SyncCoverage.windows` re-opens a bounded older leg even when complete.
-        // Closing it needs upstream's `complete` to carry the floor it was earned at.
         val drained = SyncBands(null)
         drained.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
         assertEquals(2, drained.legs(mirror, relay, bounded).size, "bounded: the older leg comes back anyway")

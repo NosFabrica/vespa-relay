@@ -33,10 +33,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Builds the coverage card from the `before.json` and `after.json` that
- * `SyncBandsProdScaleProbe` writes, and asserts the prune removed the unnamed
- * groups and moved no named stream by a single row. Selected by
- * `-DprodScaleProbe=true` with the same `-DprodScaleDir`; run the :sync probe first.
+ * Builds the coverage card from the `before.json` and `after.json` that `SyncBandsProdScaleProbe`
+ * writes, and asserts the prune removed the unnamed groups and moved no named stream by a row.
+ * Selected by `-DprodScaleProbe=true` with the same `-DprodScaleDir`; run the :sync probe first.
  */
 class SyncCoverageReportProdScaleProbe {
     companion object {
@@ -92,7 +91,6 @@ class SyncCoverageReportProdScaleProbe {
         val beforeText = before.readText()
         val afterText = after.readText()
 
-        // Interleaved warm rounds: a single cold call measures the JIT, not the parser.
         var cardBefore = SyncCoverageReport.build(beforeText, null, now)!!
         var cardAfter = SyncCoverageReport.build(afterText, null, now)!!
         var msBefore = Long.MAX_VALUE
@@ -139,8 +137,7 @@ class SyncCoverageReportProdScaleProbe {
         println("  document relays      ${total(cardBefore, "relays")} -> ${total(cardAfter, "relays")}")
         assertEquals(unnamedBefore.sumOf { it.relays }, lostRows, "the rows lost are exactly the unnamed ones")
 
-        // The frame is the one thing the prune may move: `from` is the deepest floor in the data,
-        // so removing a stale flat band can raise it once.
+        // The frame is the one thing the prune may move: dropping a stale band can raise `from` once.
         val frameBefore = total(cardBefore, "from")
         val frameAfter = total(cardAfter, "from")
         println("  frame `from`         $frameBefore -> $frameAfter  (${if (frameBefore == frameAfter) "unmoved" else "+${frameAfter - frameBefore}s, a one-time shift"})")

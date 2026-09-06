@@ -39,11 +39,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Whether quartz's derived `pendingOnAuthRequired` default equals the value
- * this router used to pass by hand: fetches the same filter from one relay
- * three ways (explicit true, explicit false, derived) with `hasAuthResponder()`
- * printed beside them. Asserts nothing. Selected by `-DauthGatedProbe=true`;
- * relay via `-DauthGatedUrl=wss://...`.
+ * Fetches one filter from one relay with `pendingOnAuthRequired` explicit true, explicit
+ * false and derived, printing `hasAuthResponder()` beside them. Asserts nothing.
+ * `-DauthGatedProbe=true` selects it; `-DauthGatedUrl=wss://...` picks the relay.
  */
 class AuthGatedFetchProbe {
     private val url: NormalizedRelayUrl =
@@ -59,7 +57,7 @@ class AuthGatedFetchProbe {
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
-        // The router's own wiring, and what makes the derived default come out true.
+        // The router's own wiring, which is what makes the derived default true.
         val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
 
         println("=".repeat(78))

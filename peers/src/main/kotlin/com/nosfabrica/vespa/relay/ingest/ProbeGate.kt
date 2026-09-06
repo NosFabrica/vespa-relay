@@ -23,12 +23,9 @@ package com.nosfabrica.vespa.relay.ingest
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Whether a probe is still earning its round trip, learned from what it has
- * been dropping rather than declared by the stream's phase.
- *
- * Never latches off: past the threshold it still samples one batch in
- * [RESAMPLE_EVERY], and the counters halve above [DECAY_ABOVE] so the rate
- * tracks the present rather than a finished backfill.
+ * Whether a probe is still earning its round trip, learned from its own drop rate. Never
+ * latches off: past the threshold it still samples one batch in [RESAMPLE_EVERY], and the
+ * counters halve above [DECAY_ABOVE] so the rate tracks the present.
  */
 internal class ProbeGate(
     /** Drop rate below which the round trip stops paying. */
@@ -50,8 +47,7 @@ internal class ProbeGate(
         droppedNow: Int,
     ) {
         dropped.addAndGet(droppedNow.toLong())
-        // Halving both keeps the rate and forgets the age. Racy at the
-        // boundary by a batch or two, which a heuristic can afford.
+        // Halving both keeps the rate and forgets the age; racy by a batch or two, which is fine.
         if (judged.addAndGet(judgedNow.toLong()) > DECAY_ABOVE) {
             judged.set(judged.get() / 2)
             dropped.set(dropped.get() / 2)
@@ -61,13 +57,10 @@ internal class ProbeGate(
     /** Drop rate so far, for the stats line. */
     fun hitRate(): Double = judged.get().takeIf { it > 0 }?.let { dropped.get().toDouble() / it } ?: 0.0
 
-    /** Whether there is any evidence yet, so a status line can stay quiet rather than print 0%. */
+    /** Whether there is any evidence yet. */
     fun hasJudged(): Boolean = judged.get() > 0
 
-    /**
-     * [worthIt] without the side effect. Reporting must never call [worthIt]:
-     * it advances the resample counter and would change which batches get probed.
-     */
+    /** [worthIt] without the side effect; reporting must not advance the resample counter. */
     fun paying(): Boolean {
         val seen = judged.get()
         return seen < LEARN_EVENTS || dropped.get().toDouble() / seen >= minHitRate

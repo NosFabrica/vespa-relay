@@ -1,7 +1,6 @@
-// The search box's language: `from:`/`to:`, `since:`/`until:`, `#hashtag`,
-// the NIP-73 scopes and `group:`. The field renderer and the query builder
-// both call shared/query.js, and what is asserted here is that they agree
-// about where every token starts and ends, not any arrangement of the DOM.
+// The search box's language: `from:`/`to:`, `since:`/`until:`, `#hashtag`, the NIP-73 scopes
+// and `group:`. The field renderer and the query builder must agree about where every token
+// starts and ends.
 import assert from "assert";
 
 const { tokenize, parseQuery, mentionAt, dateAt, groupAt, groupTokenizes, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
@@ -26,8 +25,7 @@ assert.deepStrictEqual(
   "text and keys interleave, and the text between two adjacent tokens survives",
 );
 
-// `raw` must be the token exactly as typed: the renderer measures the caret
-// in characters of it.
+// `raw` must be the token exactly as typed: the renderer measures the caret in characters of it.
 const raw = tokenize(`hi from:${A}!`).find((s) => s.type === "key");
 assert.strictEqual(raw.raw, `from:${A}`, "raw is the token verbatim");
 assert.strictEqual(tokenize(`hi from:${A}!`).at(-1).text, "!", "punctuation after an npub is punctuation");
@@ -63,8 +61,7 @@ assert.strictEqual(q.terms, "from:alice cats", "an unresolvable from: is left al
 
 // ---- parseQuery: hashtags -------------------------------------------------
 //
-// A hashtag is a tag question, not a text one: a note tagged `t: nostr` need
-// not contain the word.
+// A hashtag is a tag question, not a text one: a note tagged `t: nostr` need not contain the word.
 
 q = parseQuery("#nostr");
 assert.deepStrictEqual(q.hashtags, ["nostr"], "a hashtag leaves the search string and becomes a tag filter");
@@ -89,14 +86,12 @@ assert.deepStrictEqual(parseQuery("# spaced").hashtags, [], "a lone # is not a h
 q = parseQuery(`cats from:${A} #nostr`);
 assert.deepStrictEqual([q.terms, q.authors, q.hashtags], ["cats", [HEX_A], ["nostr"]], "person and topic narrow the same search");
 
-// A hyphen left outside the tag becomes a NIP-50 exclusion: `#covid-19`
-// would filter out everything containing "19".
+// A hyphen left outside the tag becomes a NIP-50 exclusion of everything containing the rest.
 assert.deepStrictEqual(parseQuery("#covid-19").hashtags, ["covid-19"], "a hyphen is part of the tag");
 assert.strictEqual(parseQuery("#covid-19").terms, "", "…so nothing is left behind to become `-19`");
 assert.deepStrictEqual(parseQuery("#nostr- x").hashtags, ["nostr"], "a trailing hyphen is punctuation, not tag");
 
-// Stranded punctuation must not survive as a term: a non-empty `terms` is
-// what decides whether `search` is sent at all.
+// Stranded punctuation must not survive as a term: a non-empty `terms` decides whether `search` is sent.
 assert.strictEqual(parseQuery("#bitcoin.").terms, "", "a stranded full stop is dropped");
 assert.strictEqual(parseQuery("#nostr, cats").terms, "cats", "…and so is a stranded comma");
 assert.strictEqual(parseQuery("cats -dogs").terms, "cats -dogs", "but NIP-50's own operators survive");
@@ -111,9 +106,8 @@ assert.strictEqual(parseQuery("🔥 alone").terms, "🔥 alone", "…while a bar
 
 // ---- since:/until: a day, in the reader's own timezone ---------------------
 //
-// `since:2026-08-06` is a unix second that depends on where the reader is and
-// on which prefix carried it, so everything below is asserted against local
-// Date arithmetic rather than a fixed epoch.
+// A day is a unix second that depends on where the reader is and on which prefix carried it,
+// so everything below is asserted against local Date arithmetic rather than a fixed epoch.
 
 const secs = (y, m, d) => Math.floor(new Date(y, m - 1, d).getTime() / 1000);
 
@@ -122,8 +116,7 @@ assert.strictEqual(dayBound("2026-08-06", "until"), secs(2026, 8, 7) - 1, "until
 // NIP-01's until is inclusive: an until at midnight would exclude the day it names.
 assert(dayBound("2026-08-06", "until") > dayBound("2026-08-06", "since"), "a day to itself is a day, not an instant");
 
-// A whole year, because a local day is 23 or 25 hours long twice a year and
-// start plus 86,400 lands inside the neighbour on those days.
+// A whole year, because a local day is 23 or 25 hours long twice a year.
 for (let d = new Date(2026, 0, 1); d.getFullYear() === 2026; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
   const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
   assert.strictEqual(dayBound(ymd(d), "until") + 1, dayBound(ymd(next), "since"), `${ymd(d)} ends where ${ymd(next)} begins`);
@@ -132,8 +125,7 @@ for (let d = new Date(2026, 0, 1); d.getFullYear() === 2026; d = new Date(d.getF
 assert.strictEqual(ymd(new Date(2026, 7, 6)), "2026-08-06", "a Date writes as the token this language uses");
 assert.strictEqual(ymd(new Date(2026, 0, 2)), "2026-01-02", "…zero-padded, both halves");
 
-// The Date constructor rolls an impossible day over rather than failing, so
-// the round-trip check is what rejects these.
+// The Date constructor rolls an impossible day over rather than failing; the round-trip rejects it.
 assert.strictEqual(dayBound("2026-02-31", "since"), null, "31 February is not a day");
 assert.strictEqual(dayBound("2026-13-01", "since"), null, "…nor is the thirteenth month");
 assert.strictEqual(dayBound("0026-01-01", "since"), null, "…nor is a year the two-digit rule would move to 1926");
@@ -173,8 +165,7 @@ assert.strictEqual(parseQuery("since:2026-01-01 since:2026-06-01").since, secs(2
 assert.strictEqual(parseQuery("since:2026-06-01 since:2026-01-01").since, secs(2026, 6, 1), "…in either order");
 assert.strictEqual(parseQuery("until:2026-06-01 until:2026-01-01").until, secs(2026, 1, 2) - 1, "the earlier until wins");
 
-// A crossed window is legal: the empty results page reads both bounds back
-// to say the window is empty rather than suggest a different term.
+// A crossed window is legal: the empty results page reads both bounds back.
 q = parseQuery("since:2026-08-06 until:2026-01-01");
 assert(q.since > q.until, "a crossed window survives the parse, so the page can tell that apart from no matches");
 
@@ -187,8 +178,7 @@ assert.deepStrictEqual(
 
 // ---- scopes: the other NIP-73 subjects ------------------------------------
 //
-// These narrow a search to the kind-1111 comments written on an external id,
-// the same door the hashtag's comment half uses.
+// A scope narrows a search to the kind-1111 comments written on an external id.
 
 let sc = tokenize("site:https://example.com/article").find((s) => s.type === "scope");
 assert.deepStrictEqual(
@@ -211,8 +201,7 @@ assert.strictEqual(tokenize(`doi:${SICI}`)[0].value, SICI, "brackets and mid-val
 assert.deepStrictEqual(tokenize("site:").map((s) => s.type), ["text"], "a bare prefix is not a token — there is nothing to ask for");
 assert.deepStrictEqual(tokenize("site:.").map((s) => s.type), ["text"], "…and neither is a value that is all punctuation");
 
-// A value that strips to nothing must not become a token: the pill would
-// claim a filter buildFilters never sent.
+// A value that strips to nothing must not become a token: the pill would claim a filter never sent.
 assert.deepStrictEqual(parseQuery("site:#top").scopes, [], "a site: value that strips to nothing asks nothing, so it is not a token");
 assert.deepStrictEqual(tokenize("site:#top").map((s) => s.type), ["text", "tag"], "…no pill forms, and the # reads as the hashtag it is");
 const fragOnly = buildFilters("site:#top", { limit: 40, searchString: (t) => t });
@@ -244,9 +233,8 @@ assert.deepStrictEqual(
 
 // ---- scopeIds: the id spellings the filter carries ------------------------
 //
-// NIP-73 fixes a canonical form per family and commenters do not reliably
-// write it, so the ask is the canonical spelling first with the typed one
-// beside it.
+// NIP-73 fixes a canonical form per family and commenters do not reliably write it, so the ask
+// carries the canonical spelling first and the typed one beside it.
 
 assert.deepStrictEqual(
   scopeIds("isbn", "978-0765382030"),
@@ -305,10 +293,8 @@ assert.deepStrictEqual(
 
 // ---- drawable: which tokens the field may pill ----------------------------
 //
-// A hashtag is a token one character in, so a field that pilled every tag
-// would re-render on every keystroke, fighting the browser over the caret,
-// the undo stack and IME composition. The tag under the caret stays text
-// until the caret leaves.
+// A hashtag is a token one character in, so pilling it on sight would re-render on every
+// keystroke. The tag under the caret stays text until the caret leaves.
 
 const drawn = (t, at) => drawable(t, at).map((s) => (s.type === "text" ? s.text : `[${s.raw}]`)).join("");
 
@@ -322,12 +308,10 @@ assert.strictEqual(drawn("#a #b", 2), "#a [#b]", "only the tag under the caret i
 assert.strictEqual(drawn("#a #b", 5), "[#a] #b", "…so moving to the second one pills the first");
 assert.strictEqual(drawn("#a #b", 3), "[#a] [#b]", "a caret between them is inside neither");
 
-// A key is never held back: an npub is unreadable, and cannot be typed into
-// existence one character at a time.
+// A key is never held back: an npub cannot be typed into existence one character at a time.
 assert.strictEqual(drawable(`from:${A}`, 5).filter((s) => s.type === "key").length, 1, "a person chip draws under the caret too");
 
-// A date is a token at `since:2026-08-06` and text again at
-// `since:2026-08-061`, so pilling on sight would flicker.
+// A date is a token at `since:2026-08-06` and text again at `since:2026-08-061`.
 const DATED = "since:2026-08-06";
 assert.strictEqual(drawn(DATED, DATED.length), DATED, "the date under the caret is still being typed");
 assert.strictEqual(drawn(DATED, 3), DATED, "…anywhere inside it, prefix included");
@@ -343,8 +327,7 @@ assert.strictEqual(drawn(SCOPED, 0), `[${SCOPED}]`, "the caret before it is not 
 assert.strictEqual(drawn(SCOPED, null), `[${SCOPED}]`, "a paste, a restore or a blur pills it");
 assert.strictEqual(drawn(`${SCOPED} cats`, 18), `[${SCOPED}] cats`, "…as does typing on past it");
 
-// The caret invariant: the raw text of the segments is the value, character
-// for character, because every offset the field passes around indexes it.
+// The raw text of the segments is the value, character for character: every offset indexes it.
 for (const typed of [
   "cats #nostr dogs", `#a from:${A} #b!`, "#covid-19, x", "(#nostr)", "#🔥 fire", `hi from:${A}`,
   "since:2026-08-06 until:2026-09-01", `#a since:2026-08-06 to:${B} x`, "since:2026-02-31 nope",
@@ -358,8 +341,7 @@ for (const typed of [
 
 // ---- tagValues: the ask has to cover what was written ---------------------
 //
-// The store matches tag values cased and NIP-24 only says tags should be
-// lowercase, so the lowercase ask alone cannot see `t: Bitcoin`.
+// The store matches tag values cased, so the lowercase ask alone cannot see `t: Bitcoin`.
 assert.deepStrictEqual(tagValues("nostr"), ["nostr", "Nostr", "NOSTR"], "every spelling worth asking, lowercase first");
 assert.deepStrictEqual(tagValues("NOSTR"), ["NOSTR", "nostr", "Nostr"], "as given comes first, whatever it was");
 assert.deepStrictEqual(tagValues("x"), ["x", "X"], "no duplicates for a one-letter tag");
@@ -367,8 +349,8 @@ assert.deepStrictEqual(tagValues(""), [], "nothing to ask for an empty tag");
 
 // ---- buildFilters: the REQ itself -----------------------------------------
 //
-// The page's own state is the argument: kinds from the tab, limit from the
-// view, the NIP-50 extension string from the sort/spam/lens controls.
+// The page's own state is the argument: kinds from the tab, limit from the view, the NIP-50
+// extension string from the sort/spam/lens controls.
 
 const sortRank = (t) => (t ? t + " sort:rank" : " sort:rank");
 const plain = (t) => t;
@@ -399,8 +381,7 @@ assert.deepStrictEqual(f[2].kinds, [1111], "the comment filters name their own k
 f = build(`from:${A} #nostr`);
 assert(f.every((x) => x.authors && x.authors[0] === HEX_A), "every filter of the union carries the author");
 
-// `since:… #nostr` narrowed on the `t` half alone would rank this week's
-// comments beside last year's notes.
+// A date narrows both halves of a hashtag ask.
 f = build("cats since:2026-08-06 until:2026-08-31");
 assert.deepStrictEqual(
   f,
@@ -413,13 +394,11 @@ assert(f.every((x) => !("until" in x)), "…and an unset bound is absent, not nu
 f = build("cats");
 assert(!("since" in f[0]) && !("until" in f[0]), "an unbounded search says nothing about time");
 
-// `limit` is per filter, so a union multiplies it: the tag filter keeps the
-// full limit and the rest ride at a quarter.
+// `limit` is per filter, so a union multiplies it: the tag filter keeps the full limit, the rest a quarter.
 assert.deepStrictEqual(build("#nostr", { limit: 8 }).map((x) => x.limit), [8, 4, 4, 4], "a small limit floors at 4");
 assert.deepStrictEqual(build("#nostr", { limit: 40 }).map((x) => x.limit), [40, 10, 10, 10], "…and a page limit divides");
 
-// A query of nothing but extensions is unconstrained, not match-nothing, so
-// the sort/spam/lens string has to reach a hashtag-only query.
+// The sort/spam/lens string has to reach a hashtag-only query.
 f = buildFilters("#nostr", { limit: 40, searchString: sortRank });
 assert(f.every((x) => x.search === " sort:rank"), "the extensions reach every filter of the union");
 f = buildFilters("#nostr", { limit: 40, searchString: plain });
@@ -429,9 +408,8 @@ assert.deepStrictEqual(f, [{ search: " sort:rank", authors: [HEX_A], limit: 40 }
 
 // ---- buildFilters: scopes -------------------------------------------------
 //
-// A scope is the comment question alone: nothing tags a book from the outside
-// the way notes tag topics. `#I` carries the full limit; `#i` rides at the
-// side for the event whose parent is the scope while its root is not.
+// A scope is the comment question alone. `#I` carries the full limit; `#i` rides at the side for
+// the event whose parent is the scope while its root is not.
 
 const SITE_IDS = ["https://example.com/a", "https://example.com/a/"];
 f = build("site:https://example.com/a");
@@ -440,8 +418,7 @@ assert.deepStrictEqual(f[0], { kinds: [1111], "#I": SITE_IDS, limit: 40 }, "the 
 assert.deepStrictEqual(f[1], { kinds: [1111], "#i": SITE_IDS, limit: 10 }, "the parent scope, at a side limit");
 assert(f.every((x) => !("#i" in x && "#I" in x)), "the two scope tags never share a filter — one filter would AND them");
 
-// Ungated on the tab: a gate would leave nothing standing for the token, and
-// the base filter would answer as if it had never been typed.
+// Ungated on the tab, or the base filter would answer as if the token had never been typed.
 f = build("isbn:9780765382030", { kinds: [1] });
 assert.deepStrictEqual(f.map((x) => x.kinds), [[1111], [1111]], "a scope keeps its own kind whatever the tab says");
 
@@ -462,22 +439,19 @@ assert.deepStrictEqual(f[0]["#I"], ["isbn:9780765382030", "doi:10.1000/182"], "�
 
 // ---- buildFilters: NIP-29 groups ------------------------------------------
 //
-// Two questions, and neither is a hashtag's: the posts carry the group in `h`,
-// and the group itself is a kind-39000 addressed by its `d`.
+// Two questions: the posts carry the group in `h`, and the group itself is a 39000 addressed by its `d`.
 
 f = build("group:chachi");
 assert.strictEqual(f.length, 2, "a group is two filters");
 assert.deepStrictEqual(f[0], { "#h": ["chachi"], limit: 40 }, "the posts, at the full limit");
 assert.deepStrictEqual(f[1], { kinds: [39000], "#d": ["chachi"], limit: 10 }, "the group's own metadata, at a side limit");
 
-// A group id is an opaque string its host relay minted, so `General` and
-// `general` are two groups.
+// A group id is an opaque string its host relay minted, so `General` and `general` are two groups.
 f = build("group:General");
 assert.deepStrictEqual(f[0]["#h"], ["General"], "a group id is asked exactly as typed");
 assert.deepStrictEqual(tagValues("General"), ["General", "general", "GENERAL"], "…unlike a hashtag, which is not");
 
-// A group post is an ordinary event carrying an `h`, so the tab narrows it;
-// 39000 is on no tab, so the metadata filter names its own kind.
+// A group post is an ordinary event carrying an `h`, so the tab narrows it; 39000 is on no tab.
 f = build("group:chachi", { kinds: [1, 9, 11, 1111] });
 assert.deepStrictEqual(f[0].kinds, [1, 9, 11, 1111], "the tab narrows the posts");
 assert.deepStrictEqual(f[1].kinds, [39000], "…and never the metadata");
@@ -509,8 +483,7 @@ assert.strictEqual(tokenize("group:a1b2-c3").find((s) => s.type === "group").id,
 
 // ---- groupAt: the token the group picker offers over -----------------------
 //
-// A group id has no finished shape, so this token is never complete and only
-// a space ends it.
+// A group id has no finished shape, so this token is never complete and only a space ends it.
 
 let g = groupAt("group:", 6);
 assert.deepStrictEqual([g.field, g.partial, g.start, g.end], ["group", "", 0, 6], "the picker opens on the colon");
@@ -546,16 +519,14 @@ assert.strictEqual(mentionAt("from:alice", 7), null, "a caret mid-word must not 
 m = mentionAt(`from:${A}`, `from:${A}`.length);
 assert.strictEqual(m.complete, true, "a decoded npub finishes the token");
 
-// Whatever mentionAt reports as complete is exactly what tokenize chips and
-// parseQuery lifts; a disagreement is a caret that jumps.
+// Whatever mentionAt reports as complete is exactly what tokenize chips and parseQuery lifts.
 for (const typed of [`from:${A}`, `to:${B}`, `cats from:${A}`]) {
   const m = mentionAt(typed, typed.length);
   const keys = tokenize(typed).filter((s) => s.type === "key");
   assert.strictEqual(m.complete, keys.length === 1, `complete agrees with tokenize for ${typed}`);
 }
 
-// pubkeyParam also takes bare hex, but the field speaks npub: hex is
-// deliberately unfinished so the picker resolves it and writes the npub back.
+// The field speaks npub: hex is deliberately unfinished so the picker resolves it and writes the npub back.
 assert.strictEqual(isKey(A), true, "an npub is a finished key");
 assert.strictEqual(isKey(HEX_A), false, "bare hex is not — the field speaks npub");
 assert.strictEqual(mentionAt(`from:${HEX_A}`, 5 + 64).complete, false, "…so the picker stays up for it");
@@ -565,8 +536,7 @@ assert.strictEqual(isKey(A + "q"), false, "one character too many is not an npub
 
 // ---- dateAt: the token the calendar opens on -------------------------------
 //
-// The two pickers share one box and one set of arrow keys, so whichever is up
-// has to say exactly which characters a pick will replace.
+// Whichever picker is up has to say exactly which characters a pick will replace.
 
 let dt = dateAt("since:", 6);
 assert.deepStrictEqual([dt.field, dt.partial, dt.start, dt.end], ["since", "", 0, 6], "the calendar opens on the colon");
@@ -581,8 +551,7 @@ assert.strictEqual(mentionAt("since:2026", 10), null, "…which is mutual: one c
 assert.strictEqual(dateAt("since:2026-08-06 cats", 21), null, "a finished token is behind the caret, not under it");
 assert.strictEqual(dateAt("since:2026-08 x", 9), null, "a caret mid-word must not pop a calendar over the sentence");
 
-// A day that does not exist is not complete, and tokenize agrees by refusing
-// to chip it.
+// A day that does not exist is not complete, and tokenize agrees by refusing to chip it.
 assert.strictEqual(dateAt("since:2026-08-06", 16).complete, true, "a real day finishes the token");
 assert.strictEqual(dateAt("since:2026-08-0", 15).complete, false, "…and a partial one does not");
 assert.strictEqual(dateAt("since:2026-02-31", 16).complete, false, "…nor does an impossible one");
@@ -594,15 +563,13 @@ for (const typed of ["since:2026-08-06", "until:2026-02-28", "since:2026-02-31",
 
 // ---- effectiveSort: the order the store will apply -------------------------
 //
-// A `sort:` typed into the box survives parseQuery and the store honours it,
-// so anything that reasons about the order has to ask the string. Each
-// expectation is what the pinned quartz `SearchQuery.parse` does with that input.
+// A `sort:` typed into the box survives parseQuery and the store honours it. Each expectation
+// is what the pinned quartz `SearchQuery.parse` does with that input.
 assert.strictEqual(effectiveSort("ali sort:recent"), "recent", "the plain case");
 assert.strictEqual(effectiveSort("ali"), "", "no sort is the empty string, not undefined");
 assert.strictEqual(effectiveSort(""), "", "…and so is nothing at all");
 
-// Last one wins, which is what lets the menu beat a typed token: app.js
-// appends the menu's to the end.
+// Last one wins, which is what lets the menu beat a typed token.
 assert.strictEqual(effectiveSort("ali sort:rank sort:recent"), "recent", "the later token wins");
 assert.strictEqual(effectiveSort("ali sort:recent sort:rank"), "rank", "…in both directions");
 
@@ -624,10 +591,8 @@ for (const v of ["recent", "rank", "rank:asc", "followers", "text"]) {
 
 // ---- can an id be written as the token that finds it? ----------------------
 //
-// Whatever [groupTokenizes] accepts must read back as itself, and a card may
-// only mint a `group:` link for those. Whitespace ends a token, so `my group`
-// would link to the group `my`; a trailing stop is punctuation, so `hello.`
-// would link to `hello`.
+// Whatever groupTokenizes accepts must read back as itself, and a card may only mint a
+// `group:` link for those.
 for (const id of ["chachi", "0fe5c432fe61", "nos-engineers", "a", "a,b", "10.1000/182", "Ünï_çode"]) {
   assert.strictEqual(groupTokenizes(id), true, `\`${id}\` is an id the search language can carry`);
   assert.deepStrictEqual(parseQuery(`group:${id}`).groups, [id], `…and it reads back as itself`);

@@ -48,82 +48,53 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The fitness certificate: one measured verdict per url, written where a
- * stream can select on it.
- *
- * A stream's relay list is one filter over kind-30166 records, `"#l": ["prime"]`,
- * so `prime` is a composite: reachable, answering, canonical, consistent,
- * pageable, answering the filter asked, and readable by us. Slow, empty and a
- * small message cap are facts, not refusals. The grade is a NIP-32 label under
- * [RelayVerdictRecord.FITNESS_NAMESPACE] and names the relay, not our use of it.
- *
- * Every verdict comes from what the relay did: the ask ladder, a second page
- * below the first, one NEG-OPEN, quartz's NIP-42 flow. NIP-11 never decides
- * anything; its descriptive half is published beside the verdict through
- * [RelayFacts], and [factsOf] is the one place a measurement overrides a claim.
- *
- * Verdicts are earned on the monitor's clock and only applied on the stream's.
- * This pass writes its own namespace, `pageable`, `nip77`, `compliant` and
- * [RelayFacts.OWNED], nothing else; the fold's and the consistency pass's
- * standing verdicts are read into `alias` and `inconsistent` at no dial.
+ * The fitness certificate: one measured verdict per url, written as a NIP-32 label a stream can
+ * select on. `prime` is a composite: reachable, answering, canonical, consistent, pageable,
+ * compliant and readable by us. NIP-11 never decides anything; it is published beside the verdict.
  */
 class FitnessPass(
     private val record: RelayVerdictRecord,
-    /** The small-target ladder; [FITNESS_TARGET] events say "answers and pages" as well as five hundred would. */
+    /** The small-target ladder; [FITNESS_TARGET] events say "answers and pages" well enough. */
     private val probe: AliasProbe,
     private val client: INostrClient,
     /** The fold's standing verdicts over these candidates; read, never earned here. */
     private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl>,
     /** The consistency pass's standing refusals; same bargain. */
     private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
-    /** The bars a relay's answer is held to. A parameter so the probe that measures them can sweep them. */
+    /** The bars a relay's answer is held to. */
     private val compliance: RelayCompliance = RelayCompliance(),
     val progress: Processors.Handle,
-    /** The relay's NIP-11 document, for the descriptive fields. Null publishes the same verdicts with fewer facts. */
+    /** The relay's NIP-11 document. Null publishes the same verdicts with fewer facts. */
     private val document: RelayDocument? = null,
-    /**
-     * The proxy, where there is one. The transport itself, not a predicate off
-     * it: the `n` tag must name what carried the measurement, and the gate is
-     * sized from the dispatcher it dials on.
-     */
+    /** The proxy, where there is one; the `n` tag must name what carried the measurement. */
     private val tor: TorTransport? = null,
     private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
-    /** The wall clock on one verdict write. A parameter so a test can shrink it. */
+    /** The wall clock on one verdict write. */
     private val publishDeadlineMs: Long = PUBLISH_DEADLINE_MS,
-    /** The wall clock on the NEG-OPEN; see [NIP77_DEADLINE_MS]. */
+    /** The wall clock on the NEG-OPEN. */
     private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
-    /** How much wall time one batch may lose to a store that is not answering; see [PUBLISH_WEDGE_BUDGET_MS]. */
+    /** How much wall time one batch may lose to a store that is not answering. */
     private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
-    /** The NEG-OPEN, the only thing this pass asks [client] for. A seam so a test can make one not come back. */
+    /** The NEG-OPEN, the only thing this pass asks [client] for. */
     private val reconcile: suspend (NormalizedRelayUrl, Filter) -> Unit = { url, sliver ->
         client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
     },
 ) {
-    /** One gate for every pass this component runs; see [DialGate]. */
+    /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
 
     /**
-     * The url each batch's write loop stopped on, or no entry when it wrote
-     * everything; see the rotation in [measure]. Keyed by label because the
-     * sweep and the fast lane share this object, and a lane tick that writes
-     * its whole batch would otherwise clear the sweep's resume point.
-     * Passes never overlap, so the map is for visibility, not arbitration.
+     * The url each batch's write loop stopped on, or no entry when it wrote everything. Keyed by
+     * label because the sweep and the fast lane share this object.
      */
     private val writeCursors = ConcurrentHashMap<String, String>()
 
-    /**
-     * What the NEG-OPEN came back with, boxed so `withTimeoutOrNull` can tell
-     * "the block returned null" from "the clock fired".
-     */
+    /** The NEG-OPEN's answer, boxed so `withTimeoutOrNull` can tell null from the clock firing. */
     private class Reconciled(
         val fact: Pair<Boolean, String>?,
     )
 
-    /**
-     * The `compliant` fact for one reading, or nothing where the bars do not
-     * support one. Every path asks [RelayCompliance] here rather than asserting,
-     * since a refusal is where stating the fact instead of measuring it is tempting.
-     */
+    /** The `compliant` fact for one reading, or null where the bars do not support one. */
     private fun factOf(reading: AliasProbe.Compliance): Pair<Boolean, String>? =
         when (compliance.decide(reading)) {
             RelayCompliance.Verdict.UNMEASURABLE -> null
@@ -136,40 +107,28 @@ class FitnessPass(
         val window: AliasProbe.Compliance?,
     )
 
-    /**
-     * One url's outcome, carrying the measured facts that ride the same record
-     * edit. Fields rather than side maps keyed by url, so a dial that throws
-     * after learning a fact cannot strand an entry.
-     */
+    /** One url's outcome, carrying the measured facts that ride the same record edit. */
     private class Outcome(
         val verdict: Verdict,
         val evidence: String,
         val pageable: Pair<Boolean, String>? = null,
         val nip77: Pair<Boolean, String>? = null,
-        /** Did the events match the filter that asked for them; see [RelayCompliance]. */
+        /** Did the events match the filter that asked for them. */
         val compliant: Pair<Boolean, String>? = null,
-        /**
-         * NIP-66's `rtt-read`: the first page of the rung that answered, never
-         * the ladder as a whole or the walk. See [AliasProbe.Window.firstPageMs].
-         */
+        /** NIP-66's `rtt-read`: the first page of the rung that answered, never the whole walk. */
         val rttReadMs: Long? = null,
-        /**
-         * The relay demanded NIP-42 and would not take our key; a measured
-         * requirement that outranks the document. Only ever true: quartz reports
-         * `authRefused` and nothing else, so a clean read is not evidence of `!auth`.
-         */
+        /** The relay refused our NIP-42 key. Only ever true: a clean read is no evidence of `!auth`. */
         val authRequired: Boolean? = null,
         /**
-         * Did this pass dial for this outcome. False only for the two free
-         * refusals, which the write loop must not re-stamp; see [RelayVerdictRecord.fitnessGrades].
+         * Did this pass dial for this outcome. False for the two free refusals, which must not be
+         * re-stamped.
          */
         val tested: Boolean = true,
     )
 
     /**
-     * Measure [candidates] and write a verdict for each. Returns how many
-     * events the dials delivered to [onEvent]; a fitness walk is a sync that
-     * also decides.
+     * Measure [candidates] and write a verdict for each. Returns how many events the dials
+     * delivered to [onEvent].
      */
     suspend fun measure(
         label: String,
@@ -196,8 +155,7 @@ class FitnessPass(
         val secondPageCut = AtomicInteger()
         // Urls that end with no `pageable` claim at all.
         val pageUnproven = AtomicInteger()
-        // Urls this pass asked and got no answer of any kind about. Never
-        // published; see the null branch in [dialVerdict].
+        // Urls this pass asked and got no answer of any kind about. Never published.
         val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
         try {
             // The free refusals first: standing verdicts other passes paid dials for.
@@ -212,8 +170,7 @@ class FitnessPass(
             }
 
             val toDial = remaining.filter { it !in shaky }
-            // The free refusals are outside this count: they cost no socket and
-            // would open every pass at a position it did not earn.
+            // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
@@ -221,9 +178,8 @@ class FitnessPass(
                 for (url in toDial) {
                     launch {
                         gate.withPermit(url) {
-                            // The deadline sits inside the permit, bounding the
-                            // steps this job owns; around the launch it would time
-                            // the wait for a permit. See [AliasProbe.deadlineMs].
+                            // The deadline sits inside the permit; around the launch it would time
+                            // the wait for a permit.
                             val ran =
                                 withTimeoutOrNull(probe.deadlineMs(url)) {
                                     try {
@@ -247,13 +203,11 @@ class FitnessPass(
                                 }
                             if (ran == null) {
                                 if (outcomes.containsKey(url)) {
-                                    // Cut late, and the verdict stands: a relay that
-                                    // answered the ladder has told us what it is, and
-                                    // our clock firing one step later does not un-tell us.
+                                    // Cut late, and the verdict stands: our clock firing one step
+                                    // later does not un-tell it.
                                     cutLate.incrementAndGet()
                                 } else {
-                                    // No verdict is written: our timeout is not a fact
-                                    // about the relay. It arrives at the next pass as it did at this one.
+                                    // No verdict is written: our timeout is not a fact about the relay.
                                     if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
                                     abandonedCount.incrementAndGet()
                                 }
@@ -264,10 +218,8 @@ class FitnessPass(
                 }
             }
 
-            // The batch guard. Every rule above is per url; when our own
-            // dialling breaks it breaks for all of them, and a network does not
-            // go dark in one pass. Nothing is published, the clean-looking
-            // verdicts included, since the same socket layer produced those.
+            // The batch guard: when our own dialling breaks it breaks for every url at once, so
+            // nothing is published, the clean-looking verdicts included.
             val dialled = toDial.size
             val blind = unmeasured.size + abandonedCount.get()
             if (dialled >= GUARD_FLOOR && blind > dialled * GUARD_SHARE) {
@@ -294,27 +246,17 @@ class FitnessPass(
                 return downloaded.get()
             }
 
-            // The writes, serial and after the dials: the record edit is a
-            // read-modify-write with no CAS, and passes never overlap.
-            //
-            // Each write under its own wall clock. The store's HTTP client
-            // carries no read deadline, so a response that never comes would
-            // suspend this loop for the life of the process and stop every
-            // later pass behind the monitor's gate. A cut write is not retried:
-            // the old record stands and the next sweep re-earns the verdict.
+            // The writes, serial and after the dials, each under its own wall clock: the store's
+            // client carries no read deadline, and a cut write is not retried.
             var published = 0
             var declined = 0
             var skipped = 0
             var wedgedRun = 0
             var wedgedTotal = 0
-            // Measured wall time, not a count times the deadline; see [PUBLISH_WEDGE_BUDGET_MS].
             var wedgedMs = 0L
-            // Which limit ended the batch, for the report.
             var stoppedBy: String? = null
-            // An inherited verdict is written only when it would change
-            // something: `measured-at` is how a verdict ages, so re-stamping
-            // what this pass did not test would make it immortal. A failed
-            // read falls back to writing everything.
+            // An inherited verdict is written only when it would change something: re-stamping
+            // `measured-at` on what this pass did not test would make it immortal.
             val untested = outcomes.entries.filterNot { it.value.tested }.map { it.key }
             val standing =
                 try {
@@ -328,29 +270,26 @@ class FitnessPass(
                     )
                     emptyMap()
                 }
-            // Ordered by url and resumed where the last batch stopped. The
-            // wedge limits below end the loop and drop the tail, and hash
-            // order is stable across passes, so an unrotated loop dropped the
-            // same tail every time. In memory on purpose: a restart starts at
-            // the top, which is the same guarantee from a different offset.
+            // Ordered by url and resumed where the last batch stopped, so the wedge limits below do
+            // not drop the same tail every pass.
             val order = outcomes.keys.sortedBy { it.url }
             val resumeFrom = writeCursors[label]?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
             // -1 is a cursor sorting past everything this batch holds; it wraps to the top as index 0 does.
             val rotated = if (resumeFrom <= 0) order else order.subList(resumeFrom, order.size) + order.subList(0, resumeFrom)
-            // Cleared up front so a throw before the loop's end cannot leave
-            // the next batch resuming at a url this one never reached.
+            // Cleared up front, so a throw mid-loop cannot leave the next batch resuming at a url
+            // never reached.
             writeCursors.remove(label)
             for (url in rotated) {
                 val outcome = outcomes[url] ?: continue
-                // The evidence has to match too: a url re-folded onto a
-                // different canonical is `alias` both times and not the same statement.
+                // The evidence has to match too: re-folded onto a different canonical is not the
+                // same statement.
                 if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {
                     skipped++
                     continue
                 }
                 progress.holding(url.url, STAGE_PUBLISH)
-                // Three-valued: `true` stored, `false` the store answering and
-                // the write still failing, `null` the deadline.
+                // Three-valued: `true` stored, `false` the store answering and the write still
+                // failing, `null` the deadline.
                 val writeStartedMs = System.currentTimeMillis()
                 val wrote =
                     try {
@@ -371,23 +310,20 @@ class FitnessPass(
                 when (wrote) {
                     true -> {
                         published++
-                        // A write going through is proof the wall is not there; see [PUBLISH_WEDGE_LIMIT].
                         wedgedRun = 0
                     }
 
-                    // The store spoke and the write still failed. No reason to
-                    // stop: a prompt failure costs nothing per verdict.
+                    // The store spoke and the write still failed; a prompt failure costs nothing per verdict.
                     false -> {
                         declined++
-                        // A decline is the store answering, so it ends a run
-                        // too; [PUBLISH_WEDGE_BUDGET_MS] bounds the alternating case.
+                        // A decline is the store answering, so it ends a run too; the budget bounds
+                        // the alternating case.
                         wedgedRun = 0
                     }
 
                     null -> {
-                        // Each timed-out write costs the full deadline, so a
-                        // store that has stopped answering ends the batch,
-                        // loudly, rather than being paid a minute per verdict.
+                        // Each timed-out write costs the full deadline, so a wedged store ends the
+                        // batch loudly.
                         wedgedTotal++
                         wedgedRun++
                         wedgedMs += System.currentTimeMillis() - writeStartedMs
@@ -433,9 +369,8 @@ class FitnessPass(
     }
 
     /**
-     * One url's whole job: the pre-probe, then the document, then the dial.
-     * Only the dial claims a socket; the NIP-11 ask is plain HTTP. [Processors.Handle.holding]
-     * is called at each boundary because a suspended coroutine has no stack frame to name its step.
+     * One url's whole job: the pre-probe, then the document, then the dial. Only the dial claims
+     * a socket. [Processors.Handle.holding] is called at each boundary to name the step.
      */
     private suspend fun measureOne(
         url: NormalizedRelayUrl,
@@ -491,9 +426,8 @@ class FitnessPass(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // A throw on our side is our instrument giving up, unless the
-            // ladder already settled a verdict: a url in both `outcomes` and
-            // `unmeasured` would feed the batch guard's blind share on a dial that answered.
+            // Our instrument giving up, unless the ladder already settled a verdict: a url in both
+            // maps would feed the batch guard's blind share on a dial that answered.
             if (!outcomes.containsKey(url)) {
                 unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
             }
@@ -503,23 +437,20 @@ class FitnessPass(
     }
 
     /**
-     * The dial itself: the ask ladder for "answers", the anchored events for
-     * "honours `until`", one NEG-OPEN for "reconciles". The ladder follows
-     * [AliasProbe.leaderPrint] but keeps each rung's transport reason, because
-     * a verdict has to say why.
+     * The dial itself: the ask ladder for "answers", the anchored events for "honours `until`",
+     * one NEG-OPEN for "reconciles". Each rung's transport reason is kept so the verdict can say why.
      */
     private suspend fun dialVerdict(
         url: NormalizedRelayUrl,
         anchor: Long,
         /**
-         * The verdict, handed over the moment the ladder has earned it and
-         * before any step with no wall clock of its own, so the per-url deadline
-         * cannot cost it. A later return replaces it. Only the `prime` path calls this.
+         * The verdict, handed over the moment the ladder has earned it and before any step without
+         * its own wall clock, so the per-url deadline cannot cost it. A later return replaces it.
          */
         settled: (Outcome) -> Unit,
-        /** Bumped when the NEG-OPEN's own wall clock fires; see [NIP77_DEADLINE_MS]. */
+        /** Bumped when the NEG-OPEN's own wall clock fires. */
         negOpenCut: AtomicInteger,
-        /** Bumped when the second page's does; that url is graded on one page. See [COMPLIANCE_BUDGET_DIVISOR]. */
+        /** Bumped when the second page's does; that url is graded on one page. */
         secondPageCut: AtomicInteger,
         /** Bumped for urls that end with no `pageable` claim at all. Not a fault. */
         pageUnproven: AtomicInteger,
@@ -545,7 +476,7 @@ class FitnessPass(
                 break
             }
             lastReason = window.reason ?: lastReason
-            // Two silent rungs in a row is a url that is not there; the same exit [AliasProbe.leaderPrint] makes.
+            // Two silent rungs in a row is a url that is not there.
             if (rung == AliasProbe.FALLBACK_KINDS && lastReason != null) break
         }
 
@@ -554,17 +485,11 @@ class FitnessPass(
             return when (val cause = Silence.of(lastReason)) {
                 Silence.TIMEOUT, Silence.RATE_LIMITED, Silence.UNKNOWN -> {
                     if (lastReason == null) {
-                        // Nothing came back at all: no EOSE, no CLOSED, no
-                        // transport word. That is what our own socket layer
-                        // produces when it is the broken thing, so nothing is
-                        // published and the url is measured again next pass.
-                        // [Verdict.RESTRICTED] has no path here: an empty
-                        // window is read as a drain, and telling it from a
-                        // refusal needs a signal `AliasProbe.Page` does not carry.
+                        // Nothing came back at all, which is what our own socket layer produces when it
+                        // is the broken thing: nothing is published and the url is measured again next pass.
                         null
                     } else {
-                        // Only a transport word reaches here: anything the relay
-                        // itself said made it "speak".
+                        // Only a transport word reaches here: anything the relay itself said made it "speak".
                         Outcome(Verdict.SILENT, cause.reason)
                     }
                 }
@@ -575,14 +500,10 @@ class FitnessPass(
             }
         }
 
-        // From the rung that answered, which is every event this dial saw;
-        // checked against each page's own cursor. See [AliasProbe.Compliance].
         val walked = answered.compliance
         val seen = walked.seen
 
-        // The anchor itself ignored: every event above the `until` asked for,
-        // so there is nothing to walk from. All-or-nothing, since a relay that
-        // puts some events above the cursor still advances it.
+        // All-or-nothing: a relay that puts only some events above the cursor still advances it.
         if (walked.offWindow > 0 && walked.offWindow == seen) {
             return Outcome(
                 Verdict.UNPAGEABLE,
@@ -595,14 +516,11 @@ class FitnessPass(
         }
         val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
 
-        // Handed over before any further dial: the per-url deadline firing in
-        // the second page must not leave the url with no verdict and feed the
-        // batch guard's blind share.
+        // Handed over before any further dial, so the per-url deadline cannot leave the url with no verdict.
         settled(Outcome(Verdict.PRIME, evidence, rttReadMs = readMs))
 
-        // The second page, through the rung that answered: page two of a
-        // different shape is not page two of page one. Its own clock; a cut
-        // publishes no `pageable` claim and no refusal.
+        // The second page, through the rung that answered, under its own clock: a cut publishes
+        // no `pageable` claim and no refusal.
         val floor = answered.oldestAt
         val asked =
             if (floor == null) {
@@ -617,9 +535,7 @@ class FitnessPass(
         if (floor != null && asked == null) secondPageCut.incrementAndGet()
         val second = asked?.window
 
-        // A claim we could not earn is not published: an empty first page
-        // proves the relay answers and cannot prove it can be walked. It does
-        // not cost the relay its grade.
+        // An empty first page proves the relay answers, not that it can be walked; no claim is published.
         if (second == null) pageUnproven.incrementAndGet()
 
         val pageable =
@@ -628,8 +544,8 @@ class FitnessPass(
                     null
                 }
 
-                // A drain is the strongest answer: a relay ignoring the cursor
-                // would have served its newest events again.
+                // A drain is the strongest answer: a relay ignoring the cursor would have served
+                // its newest again.
                 second.seen == 0 -> {
                     true to "page two below $floor drained — the walk terminates"
                 }
@@ -664,13 +580,11 @@ class FitnessPass(
         }
         val compliantFact = factOf(checked)
 
-        // Re-handed with the facts the two steps above earned, so a NEG-OPEN
-        // that outlives the url's clock leaves the fuller verdict down.
+        // Re-handed with the facts earned so far, in case the NEG-OPEN outlives the url's clock.
         settled(Outcome(Verdict.PRIME, evidence, pageable = pageable, compliant = compliantFact, rttReadMs = readMs))
 
-        // One NEG-OPEN against a sliver of the window. A normal return is the
-        // relay speaking NIP-77; the dedicated exception is it declining.
-        // Anything else writes nothing, so a flaky moment cannot demote a reconciling relay.
+        // One NEG-OPEN against a sliver of the window: a normal return is NIP-77 spoken, the
+        // dedicated exception is it declined, and anything else writes nothing.
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
         progress.holding(url.url, STAGE_NIP77)
         val reconciled =
@@ -689,7 +603,6 @@ class FitnessPass(
                     },
                 )
             }
-        // A budget that fires says so; every other budget in this pass is named in the report.
         if (reconciled == null) negOpenCut.incrementAndGet()
         val nip77 = reconciled?.fact
 
@@ -704,11 +617,8 @@ class FitnessPass(
     }
 
     /**
-     * The NIP-66 payload for one url: what the dial measured, over what the
-     * document claimed. Measured beats advertised tag by tag, which NIP-66
-     * names as the expected case. Only `auth` is measured, and only in the
-     * positive direction; see [Outcome.authRequired]. The two free refusals
-     * dialled nothing, so they carry only [network] and the rest is cleared.
+     * The NIP-66 payload for one url: what the dial measured, over what the document claimed.
+     * Measured beats advertised tag by tag; only `auth` is measured, and only in the positive direction.
      */
     private fun factsOf(
         url: NormalizedRelayUrl,
@@ -729,7 +639,7 @@ class FitnessPass(
         )
     }
 
-    /** NIP-66's `n`, from the same predicate the dial uses, so a record never says `clearnet` about a Tor url. */
+    /** NIP-66's `n`, from the same predicate the dial uses. */
     private fun network(url: NormalizedRelayUrl): String = if (tor?.routes(url) == true) NETWORK_TOR else NETWORK_CLEARNET
 
     private fun report(
@@ -739,9 +649,9 @@ class FitnessPass(
         startedMs: Long,
         abandonedCount: Int,
         abandoned: Set<String>,
-        /** Urls this pass asked and learned nothing from. They carry no verdict, so they are absent from the counts. */
+        /** Urls this pass asked and learned nothing from; absent from the counts. */
         unmeasuredCount: Int,
-        /** Events the dials handed to ingest; the monitor plane's largest effect on the store. */
+        /** Events the dials handed to ingest. */
         downloadedCount: Int,
         /** Earned verdicts that never reached the store. Zero on the guard's refuse-to-publish path. */
         unwrittenCount: Int = 0,
@@ -769,9 +679,7 @@ class FitnessPass(
             "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts" +
                 "; $downloadedCount event(s) downloaded",
         )
-        // Own lines, only when there were any: these urls are absent from the
-        // counts above, and a pass that lost a hundred would otherwise read as
-        // a clean partition over the ones it reached.
+        // Own lines, only when there were any: these urls are absent from the counts above.
         if (unmeasuredCount > 0) {
             System.err.println(
                 "router: fitness [$label] — $unmeasuredCount url(s) answered nothing at all, no verdict written: " +
@@ -825,8 +733,8 @@ class FitnessPass(
                     if (wedgedWrites > 0) add("$wedgedWrites write(s) hit the per-write store deadline")
                     if (declinedWrites > 0) add("$declinedWrites write(s) failed outright with the store answering")
                     if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each")
-                    // Never nested under `dropped`, which can come out zero or
-                    // negative when a batch stops on its last few urls.
+                    // Never nested under `dropped`, which can be zero or negative when a batch
+                    // stops on its last urls.
                     if (stoppedBy != null) add("the batch stopped because $stoppedBy")
                 }
             System.err.println(
@@ -842,19 +750,15 @@ class FitnessPass(
 
     companion object {
         /**
-         * Take back every verdict signed under an older [RelayVerdictRecord.FITNESS_EPOCH]:
-         * a reading of a different rule that no amount of waiting reconciles.
-         * Runs at boot, the only moment the epoch can have changed, as a store
-         * walk with no dials. Candidates re-earn their verdict on the next sweep.
+         * Take back every verdict signed under an older [RelayVerdictRecord.FITNESS_EPOCH]. Runs at
+         * boot, the only moment the epoch can have changed, as a store walk with no dials.
          */
         suspend fun retireStaleEpochs(
             store: IEventStore,
             record: RelayVerdictRecord,
             author: String,
         ): Int {
-            // Paged, because the tag index answers on the label's value and
-            // the epoch lives further along the same tag, so this returns every
-            // graded record and the epoch is decided here.
+            // The index answers on the label's value alone, so this walks every graded record and decides here.
             val stale = mutableListOf<NormalizedRelayUrl>()
             RelayDiscovery.scan(
                 store,
@@ -864,12 +768,11 @@ class FitnessPass(
                     tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
                 ),
                 SCAN_PAGE,
-                // The monitor's own records, not the url round-up's sources; see [StoreCalls].
                 caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             ) { event ->
                 val record = event as? RelayDiscoveryEvent ?: return@scan
-                // The index answers on the value alone, so somebody else's label
-                // carrying one of our words can come back; a null here is not a stale grade.
+                // Somebody else's label carrying one of our words can come back; a null here is not
+                // a stale grade.
                 val grade = ourGrade(record) ?: return@scan
                 if (grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH) {
                     record.relay()?.let(stale::add)
@@ -886,11 +789,8 @@ class FitnessPass(
         }
 
         /**
-         * Take back every grade still written on `s`, the software tag
-         * ([RelayVerdictRecord.LEGACY_STATUS_TAG]), where `["s", "dead"]` reads
-         * as a relay running software called `dead`. Runs at boot beside
-         * [retireStaleEpochs]; once the store holds no such record it costs one
-         * empty indexed query per boot.
+         * Take back every grade still written on `s`, the software tag, where `["s", "dead"]` reads
+         * as a relay running software called `dead`. Runs at boot beside [retireStaleEpochs].
          */
         suspend fun retireLegacyGrades(
             store: IEventStore,
@@ -903,7 +803,6 @@ class FitnessPass(
                 Filter(
                     kinds = listOf(RelayDiscoveryEvent.KIND),
                     authors = listOf(author),
-                    // The old build's vocabulary, not this one's; see [LEGACY_GRADES].
                     tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
                 ),
                 SCAN_PAGE,
@@ -920,10 +819,8 @@ class FitnessPass(
         }
 
         /**
-         * Withdraw a verdict from each of [urls], several at a time. Every url
-         * is a distinct addressable record, so this keeps the single-writer
-         * rule; what must not happen is running beside the fitness pass, which
-         * is why both callers stay on the boot path.
+         * Withdraw a verdict from each of [urls], several at a time. Every url is a distinct
+         * addressable record, so this keeps the single-writer rule as long as no pass runs beside it.
          */
         private suspend fun retire(
             record: RelayVerdictRecord,
@@ -936,13 +833,9 @@ class FitnessPass(
             }
         }
 
-        /** Retractions in flight at once: a store round trip and a signature, on a store shared with a serving relay. */
         private const val RETIRE_CONCURRENCY = 16
 
-        /**
-         * This monitor's grade on a record, told apart by namespace: `l` is
-         * shared vocabulary, and a foreign label's third element is not our epoch.
-         */
+        /** This monitor's grade on a record, told apart by namespace: `l` is shared vocabulary. */
         private fun ourGrade(event: RelayDiscoveryEvent): Array<String>? =
             event.tags.firstOrNull {
                 it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
@@ -950,46 +843,36 @@ class FitnessPass(
                     it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
             }
 
-        /**
-         * What the old build could have written on `s`. Frozen in source
-         * because it describes history: it may only grow, and must not follow
-         * a rename made after the records were signed.
-         */
+        /** What the old build could have written on `s`. May only grow; must not follow a later rename. */
         val LEGACY_GRADES = Verdict.entries.map { it.value } + "syncable"
 
-        /** NIP-66's network values this router can honestly write; `i2p` and `loki` have no transport here. */
+        /** NIP-66's network values this router can honestly write. */
         const val NETWORK_CLEARNET = "clearnet"
 
         const val NETWORK_TOR = "tor"
 
-        /** Events per fitness ask; this pass dials the whole corpus, so the target is the pass's cost. */
+        /** Events per fitness ask; the pass dials the whole corpus, so the target is its cost. */
         const val FITNESS_TARGET = 20
 
-        /**
-         * What share of a url's whole budget the second page may spend. A
-         * divisor rather than a duration so the bound scales with the transport
-         * the way [AliasProbe.deadlineMs] does.
-         */
+        /** The share of a url's budget the second page may spend, scaling with the transport. */
         const val COMPLIANCE_BUDGET_DIVISOR = 4
 
-        /** The NEG-OPEN sliver: one hour is enough to prove the verb. */
+        /** The NEG-OPEN sliver; enough to prove the verb. */
         const val NIP77_WINDOW_SECONDS = 3600L
 
-        /** The NEG-OPEN's idle window, shorter than a transfer's: a yes/no about the protocol. */
+        /** The NEG-OPEN's idle window, shorter than a transfer's. */
         const val NIP77_IDLE_MS = 10_000L
 
         /**
-         * The wall clock over the NEG-OPEN. A reconciliation is rounds, and the
-         * idle window is re-armed by each, so a relay that keeps answering
-         * slowly never trips [NIP77_IDLE_MS]; this is the one step able to
-         * spend the whole per-url budget.
+         * The wall clock over the NEG-OPEN. Each round re-arms the idle window, so a relay that
+         * keeps answering slowly never trips [NIP77_IDLE_MS].
          */
         const val NIP77_DEADLINE_MS = 3 * NIP77_IDLE_MS
 
-        /** Records per page when the boot retractions walk our own corpus; neither can ask its question in a filter. */
+        /** Records per page when the boot retractions walk our own corpus. */
         const val SCAN_PAGE = 2_000
 
-        /** A held leg's `stage`, in the pass's own words; see [Processors.Holding.Held.stage]. */
+        /** A held leg's `stage`, in the pass's own words. */
         const val STAGE_REACHABILITY = "pre-probe"
 
         const val STAGE_DOCUMENT = "nip-11 document"
@@ -1004,39 +887,21 @@ class FitnessPass(
         /** The one stage that is not a dial: the record edit that puts a verdict down. */
         const val STAGE_PUBLISH = "verdict write"
 
-        /**
-         * The wall clock on one verdict write. Sized against the store's worst
-         * honest case (a write queued behind the mirror's bulk commits), since
-         * the fault it bounds is not slowness but forever.
-         */
+        /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
         const val PUBLISH_DEADLINE_MS = 60_000L
 
-        /**
-         * How many writes in a row may hit [PUBLISH_DEADLINE_MS] before the
-         * pass stops publishing the batch. Consecutive, resetting on every
-         * write the store answers: a wedged store fails every write the same
-         * way, while ordinary load lets a few straggle with thousands succeeding between.
-         */
+        /** Consecutive deadline hits before the batch stops; reset by every write the store answers. */
         const val PUBLISH_WEDGE_LIMIT = 3
 
-        /**
-         * How much wall time one batch may lose to writes that never came back.
-         * The consecutive limit does not bound a store that alternates, and a
-         * duration means the same thing on a 500-url lane tick and a 20,000-url sweep.
-         */
+        /** Wall time a batch may lose to unanswered writes; the run limit alone misses an alternating store. */
         const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
 
-        /** How many abandoned urls a pass names in its log line. The count beside them is always whole. */
         const val MAX_ABANDONED_NAMED = 32
 
-        /**
-         * The share of a batch's dials that may come back with no answer before
-         * the whole pass is refused. A dead url answers, with a refusal or an
-         * NXDOMAIN; nothing at all is our socket layer.
-         */
+        /** The share of a batch's dials that may come back with nothing before the whole pass is refused. */
         const val GUARD_SHARE = 0.25
 
-        /** The batch size below which the guard does not apply; it is a statement about a population. */
+        /** The batch size below which the guard does not apply. */
         const val GUARD_FLOOR = 50
     }
 }

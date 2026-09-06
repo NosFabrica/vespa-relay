@@ -21,20 +21,9 @@
 package com.nosfabrica.vespa.relay.monitor
 
 /**
- * Does the relay answer the question it was asked.
- *
- * [RelayConsistency] compares two answers to one filter against each other and
- * never opens an event, so a relay that serves the same wrong slice every time
- * (its newest firehose, whatever the `kinds`, `until` or `limit`) scores a
- * perfect containment. This pass is the complement: consistency asks "is this
- * the same relay twice", this asks "is this an answer". A failure excludes
- * rather than downgrades, and the verdict expires so a relay that starts
- * answering properly comes back on its own.
- *
- * Both bars must be crossed. A share alone would refuse a relay that got one of
- * three wrong; a count alone would refuse a firehose that got three of five
- * hundred wrong. The bars are provisional; see `docs/decisions/fitness.md`.
- * [AliasProbe.Compliance.overLimit] is published as a fact and never graded on.
+ * Does the relay answer the question it was asked: the complement of [RelayConsistency], which
+ * compares two answers and never opens an event. A failure excludes rather than downgrades,
+ * and both bars must be crossed. [AliasProbe.Compliance.overLimit] is published, never graded on.
  */
 class RelayCompliance(
     /** How much of an answer must be off-filter before it is not an answer. */
@@ -50,10 +39,7 @@ class RelayCompliance(
         /** Enough of it did not match that the relay is not answering the filter. */
         NONCOMPLIANT,
 
-        /**
-         * Nothing was proved: an empty answer, or one that never happened. Its own
-         * value because `compliant true` off a drain would be a claim no event supports.
-         */
+        /** Nothing was proved: an empty answer, or one that never happened. */
         UNMEASURABLE,
     }
 
@@ -67,10 +53,7 @@ class RelayCompliance(
             else -> Verdict.COMPLIANT
         }
 
-    /**
-     * The sentence published beside the verdict. A stray that did not reach the
-     * bar is still named: the corpus of these records is how the bars get re-taken.
-     */
+    /** The sentence published beside the verdict. A stray below the bar is still named. */
     fun evidence(reading: AliasProbe.Compliance): String {
         if (reading.seen == 0) return "nothing came back to check"
         val faults =
