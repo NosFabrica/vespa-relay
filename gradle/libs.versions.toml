@@ -414,64 +414,45 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# a23a6a3a68 = vespa-eventstore main @ 2026-09-06, the merges of PR #113 and
-# PR #114 — the trust view reports its own state, and a degraded read says
-# which degradation it was.
+# 2fa2b67141 = vespa-eventstore main @ 2026-09-06, the merge of PR #116 — the
+# trust view's health as a public surface.
 #
-# WHY THIS BUMP: to stop diagnosing this deployment through proxies. Nearly
-# every wrong conclusion here has come from inferring state that nothing
-# exposed — a performance theory built on a wedged cluster, an ETA inferred
-# from stale max_rank, a projection judged complete because a queue was empty.
+# WHY THIS BUMP: /trust.html below cannot compile without it. TrustCoverage and
+# TrustProgress are internal to the store, so the numbers that answer "is
+# ranked search working" could only be read as a status STRING; TrustHealth
+# carries them structured, with `measured` distinguishing "never measured"
+# from "measured at zero" — two facts that look identical drawn as 0%.
 #
-# #113: TrustProgress reports unconditionally instead of through the optional
-# onProgress every caller dropped; trust.coverage.* answers "how much of the
-# trust view is usable" (the number nobody computed, and whose absence let a
-# 279,594-card service sit unwalked); trust.pending.* becomes trust.queued.*
-# because it is a QUEUE depth and reading it as coverage is what went wrong;
-# and explainTrust(pubkey) answers "why can this observer not find their own
-# profile" in one call, through the library's query path rather than a curl
-# that silently truncates at ten groups.
+# DELIBERATELY PUBLISHABLE. The pulse is gated because it quotes what people
+# searched for. Coverage is counts and progress is phases, and DegradedReads
+# already records query SHAPES rather than terms. These numbers being reachable
+# only from inside the process is why an incomplete projection stayed invisible
+# for days here.
 #
-# #114: every degraded read tallied by profile, the flags Vespa actually SET,
-# and the query's SHAPE — never its terms. `non-ideal-state` is a settling
-# cluster and clears; `match-phase` is the engine cutting the match set and
-# does not. Telling those apart cost hours twice. It also records reads that
-# were SERVED: a match-phase cut on a recency profile is allowed and returned
-# silently, so a cluster degrading every ranked read looks healthy.
+# DIRECTION: a23a6a3a68 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — main plus #116.
 #
-# THIS DIAGNOSES, IT DOES NOT FIX. The match-phase wedge recurred here within
-# two hours of the StatefulSet roll that cleared it, failing the reconcile at
-# attempt 115. What triggers it is still unknown; this is the instrument for
-# finding out.
-#
-# DASHBOARD NOTE: trust.pending.subjects/services are renamed to
-# trust.queued.*.
-#
-# DIRECTION: aca0552c4e is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — main plus #113 and #114.
-#
-# LEXICOGRAPHIC: 'a23a…' < 'aca0…' ('2' < 'c'), so this sorts BELOW the pin it
-# replaces — the unsafe direction, which is why this file states it every
-# time. No `force(…)`: nothing else in the graph names vespa-eventstore. The
-# resolved graph is the proof, every eventstore line reading a23a6a3a68 with
-# no `->` anywhere:
+# LEXICOGRAPHIC: '2fa2…' < 'a23a…' ('2' < 'a'), so this sorts BELOW the pin it
+# replaces — the unsafe direction. No `force(…)`: nothing else in the graph
+# names vespa-eventstore. The resolved graph is the proof, every eventstore
+# line reading 2fa2b67141 with no `->` anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
+# Superseded: a23a6a3a68 = #113 (the trust view reports its own state:
+# unconditional progress, coverage gauges, trust.queued.* for what is a queue
+# depth, explainTrust) and #114 (a degraded read says WHICH degradation, on
+# which query shape, recording the ones that were served as well as refused).
+#
 # Superseded: aca0552c4e = PR #112 — the reconcile's projected-check stopped
-# sampling the NEWEST cards, which the live write path projects inline, so a
-# service could pass as projected on evidence that proved nothing about its
-# history. Of 360 provider lists here, 114 named a service carrying no cells.
+# sampling the newest cards, which the live write path projects inline.
 #
 # Superseded: 7a93d45efd = PR #111 — the keying migration reports progress and
-# resumes; it completed here for the first time at 12:53Z, removing 22,031,970
-# stale cells, after a StatefulSet roll cleared the match-phase wedge two
-# OOMKilled content nodes left on 2026-09-04.
-#
-# Superseded: a93d368091 = #109 and #110, both behaviourally inert.
+# resumes; it completed here for the first time at 12:53Z after a StatefulSet
+# roll cleared the match-phase wedge two OOMKilled content nodes left behind.
 #
 # Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE: a
 # backlog that had not moved in days went 139,524 to a trickle in three hours.
-vespaEventStore = "a23a6a3a68"
+vespaEventStore = "2fa2b67141"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

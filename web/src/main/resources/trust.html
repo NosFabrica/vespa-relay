@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="Whether ranked search is working on this relay, and if not, which part of the trust projection is incomplete." />
+<title>Trust health</title>
+<link rel="icon" href="./web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="./web/favicon.ico" sizes="16x16 32x32 48x48" />
+<!--
+  IS RANKED SEARCH WORKING, AND IF NOT WHY — charted from GET /trust.json.
+
+  Separate from /pulse.html on purpose. The pulse answers "where did the store's
+  time go" and is admin-gated because it quotes what people searched for.
+  Nothing here is: coverage is counts, progress is phases, and a degraded read
+  is recorded by query SHAPE and never its terms. Keeping these numbers behind
+  that gate is what let an incomplete projection stay invisible for days while
+  every other signal read clean.
+
+  A number that has never been measured says so. It is not drawn as zero:
+  "no reconcile has run" and "nothing is projected" are different facts and
+  look identical as 0%.
+-->
+<link rel="stylesheet" href="./web/shared/stats.css" />
+</head>
+<body>
+<main>
+  <h1>Trust health</h1>
+  <p class="sub" id="scope">Loading…</p>
+  <div id="body"></div>
+  <footer id="foot"></footer>
+</main>
+<div class="tip" id="tip"></div>
+
+<script type="module">
+import { ago, cardHead, el, fmt, isoOf } from "./web/shared/page.js";
+
+const body = document.getElementById("body");
+const scope = document.getElementById("scope");
+const foot = document.getElementById("foot");
+
+const pct = (n, d) => (d > 0 ? Math.round((n * 100) / d) : null);
+
+function card(title, sub) {
+  const c = el("section", "card");
+  cardHead(c, title, sub, null);
+  body.appendChild(c);
+  return c;
+}
+
+/** The headline: can people search, and how sure are we. */
+function coverage(d) {
+  const c = card("Can people search?", d.measured ? `measured ${ago(d.measuredAtMs)}` : "never measured");
+  if (!d.measured) {
+    // Said, not drawn: an unmeasured coverage rendered as 0% reads as an
+    // outage, and a reconcile that has not run yet is not an outage.
+    c.appendChild(el("p", "why", "No reconcile has completed since this process started, so coverage is unknown — which is not the same as zero."));
+    return;
+  }
+  const lp = pct(d.lensesResolvable, d.lensesTotal);
+  const sp = pct(d.servicesProjected, d.servicesNamed);
+  const line = el("p", lp !== null && lp < 90 ? "err" : "ok");
+  line.textContent = `${fmt(d.lensesResolvable)} of ${fmt(d.lensesTotal)} provider lists (${lp}%) resolve to a service that carries cells.`;
+  c.appendChild(line);
+  c.appendChild(el("p", "why", `${fmt(d.servicesProjected)} of ${fmt(d.servicesNamed)} named services projected (${sp}%).`));
+  if (lp !== null && lp < 100) {
+    c.appendChild(el("p", "why", "An observer whose lens resolves to an unprojected service gets an EMPTY ranked page. The gate failing closed is correct; the projection is what is incomplete. A reconcile walks those services' cards into cells."));
+  }
+}
+
+/** What is being repaired, with a fraction only where a denominator exists. */
+function repairs(d) {
+  const running = (d.steps || []).filter((s) => !s.finished);
+  const c = card("What is being repaired", running.length ? `${running.length} running` : "nothing running");
+  if (!running.length) {
+    c.appendChild(el("p", "why", "No trust repair is in flight."));
+    return;
+  }
+  for (const s of running) {
+    const row = el("p");
+    if (s.total > 0 && s.done > 0) {
+      const p = pct(s.done, s.total);
+      const rate = s.done / Math.max(1, s.elapsedSec);
+      const eta = rate > 0 ? Math.round((s.total - s.done) / rate) : null;
+      row.textContent = `${s.op} — ${s.phase}: ${fmt(s.done)}/${fmt(s.total)} (${p}%)${eta !== null ? `, eta ${eta}s` : ""}`;
+    } else {
+      // No denominator is stated rather than turned into a percentage.
+      row.textContent = `${s.op} — ${s.phase}: ${fmt(s.done)} done, total not known (${s.elapsedSec}s elapsed)`;
+    }
+    c.appendChild(row);
+  }
+}
+
+/** Why reads come back short — and which kind of short. */
+function degraded(d) {
+  const rows = d.degradedReads || [];
+  const c = card("Why reads come back short", rows.length ? `${rows.length} condition(s)` : "no degraded reads");
+  if (!rows.length) {
+    c.appendChild(el("p", "ok", "Every read has come back complete since this process started."));
+    return;
+  }
+  c.appendChild(el("p", "why", "match-phase means the ENGINE cut the match set — it does not clear itself. non-ideal-state is a cluster still settling and does. A read that was SERVED rather than refused is the dangerous one: nothing throws, and ranked pages quietly get shorter."));
+  const t = el("table");
+  const head = el("tr");
+  for (const h of ["profile", "query shape", "degradation", "reads", "outcome", "last coverage"]) head.appendChild(el("th", null, h));
+  t.appendChild(head);
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, r.profile));
+    tr.appendChild(el("td", null, r.shape));
+    tr.appendChild(el("td", null, r.flags));
+    tr.appendChild(el("td", null, fmt(r.count)));
+    tr.appendChild(el("td", r.refused ? "why" : "err", r.refused ? "refused" : "SERVED"));
+    tr.appendChild(el("td", null, `${r.lastCoverage}% of ${fmt(r.lastDocuments)}`));
+    t.appendChild(tr);
+  }
+  c.appendChild(t);
+}
+
+/** One pubkey, every fact behind its ranked read. */
+function explain() {
+  const c = card("Explain one pubkey", "why this observer sees what it sees");
+  const input = el("input");
+  input.placeholder = "64-hex pubkey";
+  input.size = 68;
+  const out = el("p", "why", "");
+  const go = el("button", null, "Explain");
+  const ask = async () => {
+    const key = input.value.trim();
+    if (!/^[0-9a-f]{64}$/i.test(key)) {
+      out.className = "err";
+      out.textContent = "That is not a 64-hex pubkey.";
+      return;
+    }
+    out.className = "why";
+    out.textContent = "Asking…";
+    try {
+      const r = await fetch(`./trust/explain/${key}`);
+      const j = await r.json();
+      out.className = j.ok ? "ok" : "err";
+      out.textContent = j.line || j.error || "no answer";
+    } catch (e) {
+      out.className = "err";
+      out.textContent = `Could not ask: ${e.message}`;
+    }
+  };
+  go.addEventListener("click", ask);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+  c.appendChild(input);
+  c.appendChild(go);
+  c.appendChild(out);
+}
+
+async function render() {
+  let d;
+  try {
+    d = await (await fetch("./trust.json")).json();
+  } catch (e) {
+    scope.className = "err";
+    scope.textContent = `Could not read /trust.json: ${e.message}`;
+    return;
+  }
+  body.textContent = "";
+  scope.textContent = d.scope || "";
+  coverage(d);
+  repairs(d);
+  degraded(d);
+  explain();
+  foot.textContent = `generated ${isoOf(d.generatedAt) || d.generatedAt || "?"}`;
+}
+
+render();
+setInterval(render, 15000);
+</script>
+</body>
+</html>
