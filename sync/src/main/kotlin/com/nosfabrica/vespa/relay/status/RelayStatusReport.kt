@@ -78,8 +78,10 @@ object RelayStatusReport {
         val ordered =
             rows.sortedWith(
                 compareByDescending<Row> { it.fault }
-                    .thenByDescending { it.unwatched }
                     .thenByDescending { it.behindSec ?: Long.MAX_VALUE }
+                    // Below coldness: a cold relay is this pair's problem, an unwatched one is the
+                    // config's, and the whole count above the table already carries that.
+                    .thenByDescending { it.unwatched }
                     .thenBy { STATUS_ORDER.indexOf(it.status) }
                     .thenBy { it.relay }
                     .thenBy { it.stream },

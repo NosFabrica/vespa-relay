@@ -51,15 +51,15 @@ fun Map<String, String>.syncEnv(
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
-        val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
-        val raw = inline ?: fromFile ?: return null
+        val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
+        val raw = inline ?: syncFile?.readText() ?: return null
         // The monitor's own file, if the deployment keeps the two planes apart.
         val monitorInline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
-        val monitorFromFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
-        require(monitorInline == null || monitorFromFile == null) {
+        val monitorFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
+        require(monitorInline == null || monitorFile == null) {
             "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
         }
-        val monitorRaw = monitorInline ?: monitorFromFile
+        val monitorRaw = monitorInline ?: monitorFile?.readText()
         val upInterval =
             env
                 .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
@@ -118,22 +118,31 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, monitorRaw)
-            .copy(
-                negPageTarget = pageTarget,
-                negPageMin = pageMin,
-                negPageMax = pageMax.coerceAtLeast(pageMin),
-                negPageSlackSec = pageSlack,
-            ).let {
-                if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
-            }
+        return parse(
+            raw,
+            upInterval,
+            ingestConcurrency,
+            ingestBatch,
+            relaySourceDefaults,
+            monitorRaw,
+            // Only where the text came from a file: an `include` resolves against the including
+            // document's own directory, and a string-parsed one has no directory to resolve against.
+            syncOrigin = syncFile.takeIf { inline == null },
+            monitorOrigin = monitorFile.takeIf { monitorInline == null },
+        ).copy(
+            negPageTarget = pageTarget,
+            negPageMin = pageMin,
+            negPageMax = pageMax.coerceAtLeast(pageMin),
+            negPageSlackSec = pageSlack,
+        ).let {
+            if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
+        }
     }
 
     /**
-     * A deployment whose streams discover their relays but which declares no monitor at all used
-     * to measure every one of those streams' sources. It would now measure nothing, so the
-     * boot asks the config to say which it meant. Called at boot, not at parse: a config is well
-     * formed either way, and this is about the process that would run silently inert.
+     * Refuses a deployment whose streams discover their relays and which declares no monitor: it
+     * would measure nothing, and the config never said that was the intent. At boot, not at parse,
+     * because such a config is well formed — it is the process that would run inert.
      */
     fun refuseUndeclaredMonitor(config: RouterConfig) {
         if (config.monitor != null) return
@@ -184,8 +193,10 @@ object RouterConfigLoader {
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
         monitorHocon: String? = null,
+        syncOrigin: File? = null,
+        monitorOrigin: File? = null,
     ): RouterConfig {
-        val cfg = ConfigFactory.parseString(hocon)
+        val cfg = document(hocon, syncOrigin)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
         require(cfg.hasPath("streams")) { "router: config has no `streams { }` block" }
         val streamsCfg = cfg.getConfig("streams")
@@ -314,7 +325,7 @@ object RouterConfigLoader {
             }
         }
         refuseRouterWidePoolWidths(cfg)
-        val monitor = parseMonitor(cfg, monitorHocon)
+        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
         return RouterConfig(
             connTimeout,
             streams,
@@ -353,6 +364,7 @@ object RouterConfigLoader {
     private fun parseMonitor(
         cfg: Config,
         monitorHocon: String?,
+        monitorOrigin: File?,
     ): MonitorConfig? {
         val m =
             when {
@@ -364,7 +376,7 @@ object RouterConfigLoader {
                             "(MONITOR_CONFIG / MONITOR_CONFIG_FILE). Keep one: move the block's contents into the " +
                             "monitor file and delete it here, or unset the variable"
                     }
-                    monitorDocument(monitorHocon)
+                    monitorDocument(monitorHocon, monitorOrigin)
                 }
 
                 cfg.hasPath("monitor") -> {
@@ -438,14 +450,27 @@ object RouterConfigLoader {
      * A pasted-in wrapper would parse to a monitor with no sources — measuring nothing, quietly —
      * so it is refused rather than read past.
      */
-    private fun monitorDocument(hocon: String): Config {
-        val parsed = ConfigFactory.parseString(hocon)
+    private fun monitorDocument(
+        hocon: String,
+        origin: File?,
+    ): Config {
+        val parsed = document(hocon, origin)
         require(!parsed.hasPath("monitor")) {
             "router: the monitor config has a `monitor { }` block wrapped around it. The file IS the block — " +
                 "unwrap it, so `sources`, `exclude` and the clocks sit at the top level"
         }
         return parsed
     }
+
+    /**
+     * One config document. Parsed from [origin] where the text came from a file, so an `include`
+     * resolves against that file's own directory; `parseString` resolves it against the process's
+     * working directory instead and skips one it cannot find, without saying so.
+     */
+    private fun document(
+        hocon: String,
+        origin: File?,
+    ): Config = if (origin != null) ConfigFactory.parseFile(origin) else ConfigFactory.parseString(hocon)
 
     private fun normalizeUrls(
         stream: String,

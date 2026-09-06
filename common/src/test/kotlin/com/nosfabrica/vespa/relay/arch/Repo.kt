@@ -57,6 +57,17 @@ object Repo {
             ?.filter { it.isFile && it.extension == "kt" }
             ?: emptySequence()
 
+    /** Every file under a module's `src`, whatever its extension; empty when it has none. */
+    fun files(module: String): Sequence<File> =
+        File(dir(module), "src")
+            .takeIf { it.isDirectory }
+            ?.walkTopDown()
+            ?.filter { it.isFile }
+            ?: emptySequence()
+
+    /** A tracked file at the checkout root, or null. Tests run from a module dir, so this resolves it. */
+    fun file(name: String): File? = File(root, name).takeIf { it.isFile }
+
     /** The packages a module declares in one source set. */
     fun packages(
         module: String,

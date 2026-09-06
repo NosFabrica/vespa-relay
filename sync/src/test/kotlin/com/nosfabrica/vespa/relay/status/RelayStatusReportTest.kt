@@ -420,11 +420,14 @@ class RelayStatusReportTest {
     }
 
     @Test
-    fun `an unwatched pair sorts above a watched one, so drift survives the cut`() {
+    fun `an unwatched pair outranks a watched one of the same freshness, and never a colder one`() {
+        // Drift ranks below coldness: a cold relay is that pair's problem and an unwatched one is
+        // the config's, which the whole count above the table already carries. Ranking it higher
+        // pushed genuinely stale pairs past the row cut.
         val doc =
             RelayStatusReport.build(
                 bands("{}"),
-                // Named so the url tiebreak would put the watched one first if nothing else ranked them.
+                // Named so the url tiebreak would order them the other way if nothing else ranked them.
                 listOf(
                     unit("wss://a-watched.example", "content", plain),
                     unit("wss://z-unwatched.example", "content", plain, watched = false),
@@ -435,6 +438,7 @@ class RelayStatusReportTest {
         assertEquals(
             "wss://z-unwatched.example",
             rowsOf(doc).first()["relay"]!!.jsonPrimitive.content,
+            "at equal freshness the unwatched pair is the one worth looking at",
         )
     }
 

@@ -16,6 +16,13 @@ wrong denominators once shipped behind a single card. It fails rather than
 skips when node is absent, because a suite that stands down silently lets the
 build go green over code it never ran.
 
+**The checkout-reading guards have their own task.** `ModuleBoundariesTest` and
+the two beside it declare every build file and every source tree as inputs, or
+Gradle calls them up to date after exactly the change they exist to catch.
+Attached to `:common:test`, that made this module's whole suite re-run whenever
+any module's browser code changed. `archTest` carries the inputs; `test`
+excludes the package and turns on this module's own sources alone.
+
 **Probe switches are forwarded by hand and the list is tested.** A system
 property on the Gradle command line reaches the daemon, not the forked test
 JVM. A probe whose switch is not forwarded prints its own "[skip]" line, which

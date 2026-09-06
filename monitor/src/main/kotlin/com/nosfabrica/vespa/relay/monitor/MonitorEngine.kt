@@ -130,13 +130,13 @@ class MonitorEngine(
             store,
             sources,
             probe,
-            // Our signer plus every monitor the verdict sources and gates name. A source with no
-            // `authors` contributes nothing: an unscoped `dead` would starve a relay out for good.
+            // Our signer plus every monitor our own sources name: a peer we read verdicts from is
+            // a peer whose `dead` we honour. A source with no `authors` contributes nothing —
+            // an unscoped `dead` would starve a relay out for good.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
-                        (sources?.let { it.sources + it.gatedBy }.orEmpty())
-                            .flatMap { it.filter.authors.orEmpty() }
+                        sources?.sources.orEmpty().flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
             self = signer?.pubKey,
             tor = tor,

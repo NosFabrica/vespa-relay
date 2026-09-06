@@ -182,12 +182,13 @@ class SyncEngine(
             peers = peers,
             signer = signer,
             sockets = sockets,
-            // Submitted once, not once per wanting stream. Verified unless every wanting stream
-            // trusts its source. Every stream, not the discovering ones: which streams the monitor
-            // derives from is no longer a relationship, so who wanted an event is asked of them all.
+            // Submitted once, not once per wanting stream. ALWAYS VERIFIED, whatever a matching
+            // stream's `trusted` says: that flag vouches for one declared upstream, and this event
+            // came off whichever relay a probe pass happened to dial. Asked of every stream, not
+            // the discovering ones — which streams the monitor derives from is no longer a
+            // relationship, so who wanted an event is asked of them all.
             onProbeEvent = { event ->
-                val wanted = config.streams.filter { it.filter.match(event) }
-                if (wanted.isNotEmpty()) ingest.submit(event, wanted.all { it.trusted })
+                if (config.streams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
             },
             pinnedUrls = pinnedUrls,
             scope = scope,

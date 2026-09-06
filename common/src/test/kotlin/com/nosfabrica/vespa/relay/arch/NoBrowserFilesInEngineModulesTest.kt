@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.arch
 
-import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -28,17 +27,13 @@ import kotlin.test.assertTrue
 class NoBrowserFilesInEngineModulesTest {
     @Test
     fun `no module but web ships a browser file`() {
-        val root = File(".").absoluteFile.parentFile.let { if (File(it, "settings.gradle.kts").isFile) it else it.parentFile }
         val offenders =
-            listOf("common", "peers", "monitor", "sync", "relay")
-                .map { File(root, it) }
-                .filter { it.isDirectory }
-                .flatMap { module ->
-                    File(module, "src")
-                        .walkTopDown()
-                        .filter { it.isFile && it.extension.lowercase() in BROWSER }
-                        .map { "${module.name}: ${it.relativeTo(module)}" }
-                }
+            (Repo.modules - "web").flatMap { module ->
+                Repo
+                    .files(module)
+                    .filter { it.extension.lowercase() in BROWSER }
+                    .map { "$module: ${it.relativeTo(Repo.dir(module))}" }
+            }
 
         assertTrue(
             offenders.isEmpty(),

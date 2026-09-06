@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.arch
 
-import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -31,23 +30,18 @@ import kotlin.test.assertTrue
 class ProbeSwitchesAreForwardedTest {
     @Test
     fun `every property a module's probes read is forwarded by that module's test task`() {
-        val root = File(".").absoluteFile.parentFile.let { if (File(it, "settings.gradle.kts").isFile) it else it.parentFile }
-        val modules = listOf("common", "peers", "monitor", "sync", "relay", "web")
         val missing = mutableListOf<String>()
 
-        for (module in modules) {
-            val dir = File(root, module)
-            val tests = File(dir, "src/test")
-            if (!tests.isDirectory) continue
+        for (module in Repo.modules) {
             val read =
-                tests
-                    .walkTopDown()
+                Repo
+                    .sources(module, "test")
                     // This file spells the pattern it scans for and is not a probe.
-                    .filter { it.extension == "kt" && it.name != "ProbeSwitchesAreForwardedTest.kt" }
+                    .filter { it.name != "ProbeSwitchesAreForwardedTest.kt" }
                     .flatMap { PROPERTY.findAll(it.readText()).map { m -> m.groupValues[1] } }
                     .toSortedSet()
             if (read.isEmpty()) continue
-            val build = File(dir, "build.gradle.kts").takeIf { it.isFile }?.readText().orEmpty()
+            val build = Repo.buildFile(module)
             // Matched on the `systemProperty("name"` half only, so the read half may be spelled any way.
             read.filterNot { build.contains("""systemProperty("$it"""") }.forEach {
                 missing += ":$module reads -D$it in a test and never forwards it"

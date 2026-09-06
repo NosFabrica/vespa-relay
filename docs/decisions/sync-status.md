@@ -33,6 +33,14 @@ monitorDerivations().namesAnySource()`), and `Roster.watches` is the join:
 `!watching || url in measured`. `unwatched` is zero throughout a deployment that
 measures nothing, and the card draws nothing at all.
 
+**No verdicts at all is a third absence, and also not drift.** A cold start
+before the first sweep (six hours, in the shipped example) and a rebuild whose
+verdict read threw both arrive as an empty `measured` on a watching router.
+Reading that as 100% drift put a config warning — naming a specific wrong cause
+— on every row of a correct deployment's first minutes. Drift is one declared
+set differing from another, so it needs both to exist: `watches` answers true
+while `measured` is empty.
+
 **The mirror serves its own status page.** The mirror used to write three JSON
 files to a shared volume that the serving relay read back, re-parsed against an
 allowlist and re-narrated, about 2,500 lines whose only job was to re-derive

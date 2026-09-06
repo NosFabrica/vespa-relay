@@ -324,7 +324,12 @@ services:
       # relay, so editing the streams above must never change it. A deployment
       # whose streams discover their relays and which declares no monitor at
       # all is refused at boot rather than quietly measuring nothing.
-      MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-/etc/vespa-relay/monitor.conf}
+      # `:+` and not `:-`: EMPTY unless the operator pointed MONITOR_CONFIG_LOCAL at a file of
+      # their own. The mount below always has something at the path, and defaulting to it would
+      # start signing public claims about strangers' relays for a deployment that never asked —
+      # the opposite of what declaring the corpus is for. Unset, a config whose streams discover
+      # their relays refuses to boot and says how to opt in.
+      MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-${MONITOR_CONFIG_LOCAL:+/etc/vespa-relay/monitor.conf}}
       # Clients first, across the process boundary: the relay serves its mean
       # read latency on GET /pressure and this process throttles ingest on it.
       # Unset it to mirror at full speed regardless of readers.

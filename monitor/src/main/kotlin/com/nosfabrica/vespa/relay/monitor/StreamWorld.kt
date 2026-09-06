@@ -174,30 +174,28 @@ internal class StreamWorld(
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
         val discovery = sources ?: return
-        run {
-            // Topped up after a throw: a source we could not read is still behind us.
-            var ticked = 0
-            val found =
-                try {
-                    RelayDiscovery.discover(
-                        store,
-                        bound(discovery).copy(exclude = RelayExcludes.NONE),
-                        skip = emptySet(),
-                        allowOnion = tor != null,
-                        onSource = {
-                            ticked++
-                            onSource()
-                        },
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
-                    emptyList()
-                }
-            repeat(discovery.sources.size - ticked) { onSource() }
-            found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
-        }
+        // Topped up after a throw: a source we could not read is still behind us.
+        var ticked = 0
+        val found =
+            try {
+                RelayDiscovery.discover(
+                    store,
+                    bound(discovery).copy(exclude = RelayExcludes.NONE),
+                    skip = emptySet(),
+                    allowOnion = tor != null,
+                    onSource = {
+                        ticked++
+                        onSource()
+                    },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
+                emptyList()
+            }
+        repeat(discovery.sources.size - ticked) { onSource() }
+        found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
     }
 
     /**

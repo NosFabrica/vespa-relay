@@ -39,6 +39,9 @@ class MonitorScopeTest {
     private val ours = NostrSignerInternal(KeyPair())
     private val stranger = NostrSignerInternal(KeyPair())
 
+    /** A third identity, so "our monitor has graded nothing" can be staged against a full store. */
+    private val stranger2 = NostrSignerInternal(KeyPair())
+
     private val ourRelay = RelayUrlNormalizer.normalize("wss://ours.example")
     private val theirRelay = RelayUrlNormalizer.normalize("wss://theirs.example")
 
@@ -99,6 +102,20 @@ class MonitorScopeTest {
             assertEquals(emptySet(), roster.measured)
             assertTrue(roster.watches(ourRelay))
             assertTrue(roster.watches(theirRelay), "a deployment with no monitor is not one whose every relay is ungraded")
+        }
+
+    @Test
+    fun `a monitor that has graded nothing yet reports no drift`() =
+        runBlocking {
+            // A cold start before the first sweep, and a rebuild whose verdict read threw, both
+            // arrive here as an empty `measured` on a watching router. Calling that 100% drift
+            // would put a config warning on every row of a correct deployment's first minutes.
+            val store = storeWithBothMonitors()
+            val roster = rosterOf(store, watching = true, verdicts = RelayVerdictRecord(store, stranger2)).rebuild()
+
+            assertEquals(emptySet(), roster.measured, "the fixture has to hold no verdict of OURS for this to mean anything")
+            assertTrue(roster.watches(ourRelay))
+            assertTrue(roster.watches(theirRelay), "drift is one set differing from another, and needs both to exist")
         }
 
     @Test

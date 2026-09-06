@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The shipped examples must parse to the same streams as the operator's gitignored `sync.conf`,
@@ -90,17 +91,19 @@ class ExampleMatchesLiveConfTest {
         assumeTrue(liveFile != null, "no monitor.conf here — it is gitignored, so this check is local only")
         val exampleFile = checkNotNull(find("monitor.conf.example")) { "monitor.conf.example is tracked and must exist" }
 
-        val live = checkNotNull(loadMonitor(liveFile!!)) { "the local monitor.conf declares no sources" }
-        val example = checkNotNull(loadMonitor(exampleFile)) { "monitor.conf.example declares no sources" }
+        // Both parse to a MonitorConfig whatever they hold, so the emptiness check is on `sources`.
+        val live = loadMonitor(liveFile!!)
+        val example = loadMonitor(exampleFile)
+        assertTrue(example.sources.isNotEmpty(), "monitor.conf.example is the template and must name what it measures")
 
         assertEquals(monitorShape(example), monitorShape(live), "monitor.conf and monitor.conf.example measure different sets")
     }
 
     /** A monitor file is the block's contents, so it needs a stream config to be parsed beside. */
-    private fun loadMonitor(file: File): MonitorConfig? =
+    private fun loadMonitor(file: File): MonitorConfig =
         RouterConfigLoader
             .parse(
                 """streams { none { dir = "down", filter = { "kinds": [1] }, urls = [] } }""",
                 monitorHocon = file.readText(),
-            ).monitor
+            ).monitor!!
 }

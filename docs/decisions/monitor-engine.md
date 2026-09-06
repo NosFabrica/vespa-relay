@@ -59,6 +59,15 @@ over. `SyncStream`, `RouterConfig` and `IngestPipeline` are gone from `:monitor`
 entirely; what crosses the seam is the `monitor { }` block, labelled
 derivations, a timeout and that sink.
 
+**A probe dial is not an upstream, so its events are always verified.** The sink
+used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
+one declared upstream's events; an event here came off whichever relay a pass
+happened to dial, and any relay it probes can serve anything. Widening the sink
+from the discovery streams to all of them turned that into a hole a static
+`trusted` stream opened for the whole probed corpus — a forged event matching
+its filter would have been stored without a signature check. The events are a
+handful per relay, so verifying them all costs nothing worth having.
+
 **The probe-event sink asks every stream, where it used to ask the discovering
 ones.** `StreamWorld` was handed `discoveryStreams` for both jobs, so an event a
 probe dial happened to see was attributed against those streams alone — which

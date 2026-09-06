@@ -91,10 +91,12 @@ internal class RosterBuilder(
         val watching: Boolean = false,
     ) {
         /**
-         * Whether a verdict of ours stands behind [url] — or nothing here was ever going to, which
-         * is not the same absence: a router running no monitor has no drift to report.
+         * Whether a verdict of ours stands behind [url]. Two absences are not drift and answer
+         * true: a router that measures nothing on purpose, and one holding no verdict about
+         * ANYTHING — a cold start before the first pass, or a rebuild whose verdict read threw.
+         * Drift is one set differing from another, which needs both to exist.
          */
-        fun watches(url: NormalizedRelayUrl): Boolean = !watching || url in measured
+        fun watches(url: NormalizedRelayUrl): Boolean = !watching || measured.isEmpty() || url in measured
     }
 
     /** One source's discovery, held for its own `refreshSeconds`. */
