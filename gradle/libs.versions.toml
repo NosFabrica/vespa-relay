@@ -414,50 +414,71 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 53441182f5 = vespa-eventstore main @ 2026-09-05, the merge of PR #108 — the
-# dirt ledger retires per slice.
+# a93d368091 = vespa-eventstore main @ 2026-09-06, the merges of PR #109 and
+# PR #110 — naming and typing. NO BEHAVIOUR CHANGE.
 #
-# WHY THIS BUMP: the drain looked dead on staging and was not. A round derived
-# its WHOLE snapshot before crediting any of it, so with 139,524 inherited
-# subjects at the ~14.5s-per-500 the note above measures, the backlog gauge sat
-# at its starting value and the marker at full size for over an hour a pass —
-# and a crash anywhere in that hour threw away every subject already derived
-# and acked, because the marker still named all of them. A ledger that takes
-# longer to drain than the process stays up never finishes. That is what held
-# `projection-dirty` at exactly 139,524 across a 2.75h process here while
-# `proj.fetch.derive` logged 665 completed slices.
+# WHY THIS BUMP, plainly: nothing observable. It carries no fix, and the
+# deployment it lands on will not behave differently in any way. It is here so
+# `main` does not sit several commits behind the store for a fortnight and then
+# bump across a range nobody can review. The functional pin this replaces is
+# #108, and that one is described below.
 #
-# Each slice is now credited when its write is acked, and the marker shrinks by
-# tensor-cell REMOVES of the retired entries rather than a rewrite of the
-# document to one process's whole view. Removes compose; whole-doc writes do
-# not, and the relay and the sync mirror each run a store against this one
-# marker while `pending` is process-local — either one's rewrite erased the
-# other's write-ahead insurance. Slices another drain already retired are also
-# skipped, which is what stops the background loop and `TrustReconciler` from
-# each deriving the entire snapshot; the pulse caught them here as `Drain`
-# (3,477 searches) and `Other` (3,174) doing identical work.
+# #109 NAMES THE PROJECTION LEDGER'S INVARIANTS instead of documenting them.
+# `DirtLedger` was 57% comment, which is a name shortfall paid off in prose on
+# every read. `load()` — which reads the persisted marker ONCE PER PROCESS and
+# returns early forever after — is now `adoptStoredMarkerOnce()`; that one
+# misreading produced a confidently wrong root cause during #108. `persist` and
+# `persistDelta`, one letter apart and opposite under concurrency, are now
+# `rewriteWholeMarker` / `addMarkerCells` / `clearMarkerCells`. `Dirt` is
+# `ProjectionWork`, `guarded` is `insuring`, and the eight copies of
+# `suspend (suspend () -> Unit) -> Unit` are one `WriteGate`.
 #
-# WHAT IT DOES NOT FIX, again: the derive itself. The read is still inside the
-# gate at ~14.5s per 500-subject slice — the note above stands unchanged. What
-# changes is that the work COUNTS as it lands, so a restart resumes instead of
-# starting over, and the backlog gauge means something while a round runs.
+# #110 MAKES "KEYED BY SERVICE, NOT OBSERVER" A COMPILE ERROR. Reputation cells
+# key by the service that signed the 30382; observers resolve to one at query
+# time. Both were `HexKey`, which is `typealias HexKey = String`. `ServiceKey`
+# and `ObserverKey` are `@JvmInline value class`, so the wire format is
+# byte-identical — `service.hex` emits the string the bare `String` did. The
+# compiler immediately caught two survivors of the #106 migration:
+# `ReputationDoc.indexFields()` destructuring its own cells as
+# `(observer, rank)`, and a test passing `val observer` as a cell key.
 #
-# NO NEW QUARTZ, NO RE-FEED, NO MIGRATION ATTACHES. Nothing here changes what a
-# put derives or what a read matches. The marker document is the only thing
-# written differently, and it is written with the same primitive its
-# write-ahead already used; a process reading a partially retired marker simply
-# sees less work, which is true.
+# NOTHING IN THIS REPO NAMES THE TYPES #110 CHANGED. `ReputationDoc`,
+# `ReputationCells`, `CellRemoval`, `influenceScores`, `followerCounts` and
+# `TrustProviders` appear nowhere in vespa-relay — checked before bumping,
+# because #110 retypes a PUBLIC engine API and would otherwise break the build
+# here rather than in the store.
 #
-# DIRECTION: b7c32aeb6d is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this is main plus PR #108, two commits.
+# NO RE-FEED, NO MIGRATION, NO NEW QUARTZ. Nothing changes what a put derives or
+# what a read matches.
 #
-# LEXICOGRAPHIC: '5344…' < 'b7c3…' ('5' < 'b'), so this sorts BELOW the pin it
-# replaces — the unsafe direction again, and the reason this file states it
-# every time rather than trusting to luck. It needs no `force(…)`: nothing else
-# in the graph names vespa-eventstore, so there is no conflict for ordering to
-# settle. The resolved graph is the proof, and every eventstore line reads
-# 53441182f5 with no `->` left anywhere:
+# DIRECTION: 53441182f5 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — this is main plus #109 and #110, four commits.
+#
+# LEXICOGRAPHIC: 'a93d…' > '5344…' ('a' > '5'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, for once, and stated anyway because the reason
+# this file states it every time is that roughly half of all shas are not. It
+# needs no `force(…)`: nothing else in the graph names vespa-eventstore. The
+# resolved graph is the proof, and every eventstore line reads a93d368091 with
+# no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# Superseded: 53441182f5 = vespa-eventstore main @ 2026-09-05, the merge of PR
+# #108 — the dirt ledger retiring per SLICE rather than per round. That is the
+# functional pin, and the one staging has been running since 2026-09-06 01:15Z.
+# Before it, a round derived its whole snapshot before crediting any of it, so
+# the 139,524 subjects this deployment inherited sat at exactly that number with
+# the marker at full size for over an hour a pass, and every restart inside that
+# window threw the round away and began again — the backlog had not moved in
+# days. After it: 139,524 -> ~35,000 in under three hours, strictly monotonic,
+# across a single uninterrupted relay process.
+#
+# WHAT #108 DID NOT FIX, measured since: the derive still reads inside the gate,
+# and BOTH processes drain. `deferTrustProjection` defaults on and this repo
+# never sets it, so the relay and the sync mirror each run a background drainer
+# over their own process-local ledger, neither able to see the other's
+# retirements (the ledger is read-once). Pausing sync doubled the drain here,
+# 500 -> ~1,060 subjects/min. The fix is cross-process, not a flag: turning off
+# sync's drainer would strand the work sync itself queues.
 #
 # Superseded: b7c32aeb6d = vespa-eventstore main @ 2026-09-05, the merge of PR
 # #107 — the telemetry behind `/pulse.html` (`VespaEventStore.metrics()`, its
@@ -471,7 +492,7 @@ quartz = "cecc3287b2"
 # Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
 # PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
 # reached through 1a3f91b, which is main including it.
-vespaEventStore = "53441182f5"
+vespaEventStore = "a93d368091"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
