@@ -414,45 +414,45 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 2fa2b67141 = vespa-eventstore main @ 2026-09-06, the merge of PR #116 — the
-# trust view's health as a public surface.
+# 8f353d8d05 = vespa-eventstore main @ 2026-09-06, the merge of PR #117 — the
+# long phases report themselves.
 #
-# WHY THIS BUMP: /trust.html below cannot compile without it. TrustCoverage and
-# TrustProgress are internal to the store, so the numbers that answer "is
-# ranked search working" could only be read as a status STRING; TrustHealth
-# carries them structured, with `measured` distinguishing "never measured"
-# from "measured at zero" — two facts that look identical drawn as 0%.
+# WHY THIS BUMP: /trust.html shipped with a "what is being repaired" panel that
+# was EMPTY while a repair ran. The progress registry was wired to the phases
+# after the drain, and the drain is where a reconcile spends nearly all its
+# time on an inherited ledger — so the panel was blank for exactly as long as
+# anyone would be watching it.
 #
-# DELIBERATELY PUBLISHABLE. The pulse is gated because it quotes what people
-# searched for. Coverage is counts and progress is phases, and DegradedReads
-# already records query SHAPES rather than terms. These numbers being reachable
-# only from inside the process is why an incomplete projection stayed invisible
-# for days here.
+# The drain now names itself with a denominator, advances on RETIRED subjects
+# rather than attempted ones (a fraction has to mean work that landed, or it
+# runs ahead of the writes it reports), and names the service whose cards it is
+# walking: one service's walk is the longest single thing this store does, and
+# "walking 7d7ffd72's cards" is a different answer from "still draining". The
+# keying migration reports into the same registry, so every repair reads off
+# one list.
 #
-# DIRECTION: a23a6a3a68 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — main plus #116.
+# DIRECTION: 2fa2b67141 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — main plus #117.
 #
-# LEXICOGRAPHIC: '2fa2…' < 'a23a…' ('2' < 'a'), so this sorts BELOW the pin it
-# replaces — the unsafe direction. No `force(…)`: nothing else in the graph
-# names vespa-eventstore. The resolved graph is the proof, every eventstore
-# line reading 2fa2b67141 with no `->` anywhere:
+# LEXICOGRAPHIC: '8f35…' > '2fa2…' ('8' > '2'), so this sorts ABOVE the pin it
+# replaces — the safe direction. Stated anyway, because half of all shas are
+# not. No `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line reads 8f353d8d05 with no `->` anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: a23a6a3a68 = #113 (the trust view reports its own state:
-# unconditional progress, coverage gauges, trust.queued.* for what is a queue
-# depth, explainTrust) and #114 (a degraded read says WHICH degradation, on
-# which query shape, recording the ones that were served as well as refused).
+# Superseded: 2fa2b67141 = PR #116 — TrustHealth, the trust view's health as a
+# public surface, which /trust.html needs to compile.
+#
+# Superseded: a23a6a3a68 = #113 (unconditional progress, coverage gauges,
+# trust.queued.*, explainTrust) and #114 (a degraded read says WHICH
+# degradation, on which query shape, recording served as well as refused).
 #
 # Superseded: aca0552c4e = PR #112 — the reconcile's projected-check stopped
 # sampling the newest cards, which the live write path projects inline.
 #
-# Superseded: 7a93d45efd = PR #111 — the keying migration reports progress and
-# resumes; it completed here for the first time at 12:53Z after a StatefulSet
-# roll cleared the match-phase wedge two OOMKilled content nodes left behind.
-#
 # Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE: a
 # backlog that had not moved in days went 139,524 to a trickle in three hours.
-vespaEventStore = "2fa2b67141"
+vespaEventStore = "8f353d8d05"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
