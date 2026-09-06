@@ -414,45 +414,54 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 8f353d8d05 = vespa-eventstore main @ 2026-09-06, the merge of PR #117 — the
-# long phases report themselves.
+# 02b528a85a = vespa-eventstore main @ 2026-09-06, the merge of PR #118 — the
+# per-service card walk reports a fraction.
 #
-# WHY THIS BUMP: /trust.html shipped with a "what is being repaired" panel that
-# was EMPTY while a repair ran. The progress registry was wired to the phases
-# after the drain, and the drain is where a reconcile spends nearly all its
-# time on an inherited ledger — so the panel was blank for exactly as long as
-# anyone would be watching it.
+# WHY THIS BUMP, and it is a measurement this deployment needs right now: one
+# service walk here has been running for over an hour without retiring, on a
+# HEALTHY cluster (no degraded reads). The service holds 10,305 cards, which at
+# PROJECT_PAGE=250 is about 42 page fetches; `proj.fetch.page` has been
+# advancing at ~19 pages a minute the whole time. The drain's service count has
+# not moved off 5.
 #
-# The drain now names itself with a denominator, advances on RETIRED subjects
-# rather than attempted ones (a fraction has to mean work that landed, or it
-# runs ahead of the writes it reports), and names the service whose cards it is
-# walking: one service's walk is the longest single thing this store does, and
-# "walking 7d7ffd72's cards" is a different answer from "still draining". The
-# keying migration reports into the same registry, so every repair reads off
-# one list.
+# TWO EXPLANATIONS, AND READING THE CODE REFUTES BOTH SO FAR. A re-delivered
+# 10040 does not re-queue: `freshServicesOf` returns only services the current
+# provider map does not already map. And `visitIds` handles a wide same-second
+# group deliberately — it fetches the whole [T,T] window unbounded rather than
+# truncating, then advances `until = boundary - 1`, strictly past it.
 #
-# DIRECTION: 2fa2b67141 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — main plus #117.
+# So this pin is the instrument that separates them, in one line:
+#   walk reaches 10,305/10,305 and starts again -> it is being re-queued
+#   walk sails past 10,305                      -> the walk itself repeats
+#   walk sits at N/10,305                       -> it is blocked, not looping
 #
-# LEXICOGRAPHIC: '8f35…' > '2fa2…' ('8' > '2'), so this sorts ABOVE the pin it
-# replaces — the safe direction. Stated anyway, because half of all shas are
-# not. No `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line reads 8f353d8d05 with no `->` anywhere:
+# It also closes the third instance of the same mistake: `projectServices` has
+# always taken an `onCards`, TrustReconciler passes one, ProjectionLedger.drain
+# does not — so under a drain the longest operation in the store was silent.
+# The walk now reports itself from inside, as #113 argued every operation
+# should.
+#
+# DIRECTION: 8f353d8d05 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — main plus #118.
+#
+# LEXICOGRAPHIC: '02b5…' < '8f35…' ('0' < '8'), so this sorts BELOW the pin it
+# replaces — the unsafe direction. No `force(…)`: nothing else in the graph
+# names vespa-eventstore. Every eventstore line reads 02b528a85a with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: 2fa2b67141 = PR #116 — TrustHealth, the trust view's health as a
-# public surface, which /trust.html needs to compile.
+# Superseded: 8f353d8d05 = PR #117 — the drain reports itself with a
+# denominator, and the keying migration reports into the same registry.
+#
+# Superseded: 2fa2b67141 = PR #116 — TrustHealth, which /trust.html needs.
 #
 # Superseded: a23a6a3a68 = #113 (unconditional progress, coverage gauges,
-# trust.queued.*, explainTrust) and #114 (a degraded read says WHICH
-# degradation, on which query shape, recording served as well as refused).
+# trust.queued.*, explainTrust) and #114 (which degradation, on which shape).
 #
-# Superseded: aca0552c4e = PR #112 — the reconcile's projected-check stopped
-# sampling the newest cards, which the live write path projects inline.
+# Superseded: aca0552c4e = PR #112 — the projected-check stopped sampling the
+# newest cards, which the live write path projects inline.
 #
-# Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE: a
-# backlog that had not moved in days went 139,524 to a trickle in three hours.
-vespaEventStore = "8f353d8d05"
+# Superseded: 53441182f5 = PR #108 — the dirt ledger retiring per SLICE.
+vespaEventStore = "02b528a85a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
