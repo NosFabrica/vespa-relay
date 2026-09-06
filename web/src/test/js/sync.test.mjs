@@ -1159,4 +1159,23 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(relayStatusOf(null), null);
   assert.equal(relayStatusOf({ pairs: 0 }), null);
   ok("no prime relays draws no table at all");
+
+  // Drift between `monitor { }` and the streams: the count is the document's, whole over pairs
+  // the row list is cut short of, and the per-row mark is a flag rather than a tri-state.
+  const drifted = relayStatusOf({
+    pairs: 900,
+    unwatched: 140,
+    statuses: [],
+    rows: [
+      { relay: "wss://graded.example/", stream: "content", syncStatus: "complete", behind: "current" },
+      { relay: "wss://nobody.example/", stream: "content", syncStatus: "paging", behind: "current", unwatched: true },
+    ],
+  });
+  assert.equal(drifted.unwatched, 140, "off the document's own count, not counted from the rows it cut");
+  assert.deepEqual(drifted.rows.map((r) => r.unwatched), [false, true]);
+  ok("the unwatched count and its row marks are the document's, so the page cannot invent coverage");
+
+  // Absent is not "watched by somebody else": the router publishes the flag only where it holds.
+  assert.equal(relayStatusOf({ pairs: 1, statuses: [], rows: [] }).unwatched, 0);
+  ok("a document with no drift reports none, and the card draws nothing for it");
 }

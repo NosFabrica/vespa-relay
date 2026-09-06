@@ -320,6 +320,7 @@ class StatusVocabularyTest {
                     "behind",
                     "behindSec",
                     "fault",
+                    "unwatched",
                     "negentropy",
                     "kindCap",
                     "coveredFrom",

@@ -662,6 +662,9 @@ export function relayStatusOf(relays) {
     pairs: relays.pairs,
     current,
     currentShare: relays.pairs ? current / relays.pairs : 0,
+    // Pairs our own monitor grades nothing about: the monitor's sources and the streams have
+    // drifted. Off the document's own count, which is whole where `rows` is cut.
+    unwatched: relays.unwatched || 0,
     chips: SYNC_STATUSES.map(([key, label, tone]) => ({ key, label, tone, pairs: counted.get(key) || 0 })),
     freshness: FRESHNESS.map(([key, label, tone]) => ({ key, label, tone, pairs: fresh.get(key) || 0 })),
     rows: (relays.rows || []).map((r) => ({
@@ -674,6 +677,7 @@ export function relayStatusOf(relays) {
       progress: r.syncStatus !== "complete" && r.asks > 1 ? `${r.settled || 0}/${r.asks}` : null,
       // The router's own verdict, never re-derived from `syncStatus`.
       hot: !!r.fault,
+      unwatched: !!r.unwatched,
       behindSec: Number.isFinite(r.behindSec) ? r.behindSec : null,
       behind: r.behind || null,
       behindLabel: FRESHNESS.find(([k]) => k === r.behind)?.[1] || null,

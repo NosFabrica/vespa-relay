@@ -6,6 +6,33 @@ The history behind `sync/.../SyncMain.kt`, `status/SyncProgress.kt`,
 `status/RelayStatusReport.kt`, moved out of the source so the code reads on its
 own. One paragraph per decision; `git log -L` on the function finds the commit.
 
+
+**`unwatched` is the guardrail for a declared monitor corpus.** Once the monitor
+measures what `monitor { }` names rather than what the streams happen to
+discover, the failure mode flips: the old risk was publishing claims about
+relays nobody chose, the new one is the mirror syncing relays nothing grades.
+That is quiet — `negentropy` and the fold read as unmeasured, which is a legal
+third state, and a stream whose `relaySource` is a verdict query would simply
+stop finding them. So the roster carries which of its urls our own monitor holds
+a current verdict about, and the prime-relays report counts the pairs it does
+not. It is counted over every pair rather than the cut row list, and an
+unwatched pair sorts above a watched one so the drift survives the cut. It comes
+from `RelayVerdictRecord.Verdicts.measured`, which records a url whenever a
+CURRENT verdict of ours stands behind it — the fold answer, the stability one,
+the NIP-77 one, or the fitness grade, which carries neither of the first two and
+is the one the roster actually selects on. A record whose every tag has aged out
+is not in it: it says what we measured once, not what we measure now.
+
+**"Nobody graded this" and "nothing here grades anything" are different
+absences.** A router with no signer, or one whose `monitor { }` block declares
+no source on purpose, has an empty `measured` set for the honest reason, and
+counting every pair as drift there would put a warning on a correct deployment
+— the loudest possible false alarm, on the page an operator reads first. So the
+roster carries whether anything was supposed to be watching (`signer != null &&
+monitorDerivations().namesAnySource()`), and `Roster.watches` is the join:
+`!watching || url in measured`. `unwatched` is zero throughout a deployment that
+measures nothing, and the card draws nothing at all.
+
 **The mirror serves its own status page.** The mirror used to write three JSON
 files to a shared volume that the serving relay read back, re-parsed against an
 allowlist and re-narrated, about 2,500 lines whose only job was to re-derive

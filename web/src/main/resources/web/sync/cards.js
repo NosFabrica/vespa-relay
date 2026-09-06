@@ -442,6 +442,18 @@ function relayPanel(d) {
   for (const c of r.chips) past.appendChild(chip(`${fmt(c.pairs)} ${c.label}`, c.pairs ? c.tone : null, term("syncStatus")));
   box.appendChild(past);
 
+  // Said only when it is not zero: a permanent "0 unwatched" would read as a gauge rather than
+  // the config question it is. This one is not about a relay — it is the two blocks disagreeing.
+  if (r.unwatched) {
+    const drift = el("div", "sy-pool-head");
+    drift.appendChild(el("span", "sy-pool-name", "what the monitor is not watching"));
+    drift.appendChild(chip(`${fmt(r.unwatched)} of ${fmt(r.pairs)} pair(s) unwatched`, "warn", term("unwatched")));
+    box.appendChild(drift);
+    box.appendChild(el("p", "sy-sub",
+      "the mirror syncs these and no current verdict of ours grades them — `monitor { sources }` and " +
+      "`monitor { inheritStreams }` name a different set from the streams"));
+  }
+
   const nowSec = Date.now() / 1000;
   const { scroll, table } = headedTable(
     [["relay", null, false], ["stream", null, false],
@@ -491,6 +503,8 @@ function relayPanel(d) {
     if (row.negentropy === true) terms.appendChild(chip("neg", "live", term("negentropy")));
     if (row.negentropy === false) terms.appendChild(chip("no neg", "warn", term("negentropy")));
     if (row.kindCap != null) terms.appendChild(chip(`≤${row.kindCap} kinds`, "busy", term("kindCap")));
+    // Not a term the relay serves us on but the reason two of them are absent: nothing measured it.
+    if (row.unwatched) terms.appendChild(chip("unwatched", "warn", term("unwatched")));
     // The relay's own sentence last, after the measured terms.
     if (row.why) {
       const said = el("span", null, row.why);
@@ -504,7 +518,7 @@ function relayPanel(d) {
   box.appendChild(scroll);
   if (r.omitted) {
     box.appendChild(el("p", "sy-sub",
-      `${fmt(r.omitted)} more pair(s) not listed — the counts above are complete, and every row naming a fault is above the cut`));
+      `${fmt(r.omitted)} more pair(s) not listed — the counts above are complete, and every row naming a fault or an unwatched relay is above the cut`));
   }
   return box;
 }

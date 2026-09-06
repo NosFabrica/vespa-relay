@@ -105,6 +105,17 @@ Reach for it first.
   against a `false` relay a `paging` row can never settle by itself, which is a
   configuration question rather than a puzzle) and the filter width its own
   refusal taught us (`kindCap`), beside the relay's own sentence.
+- **`unwatched`, on that same table** — the pairs this mirror syncs that our own
+  monitor holds no current verdict about. Not a relay reading at all: it is the
+  `monitor { }` block and the streams describing different sets of relays, which
+  they can, because `monitor { sources }` and `monitor { inheritStreams }` are a
+  separate declaration from a stream's `relaySource` — every url the monitor
+  derives becomes a signed public claim, so nothing is inherited implicitly. Zero
+  is healthy. Anything else is quiet damage: `negentropy` and the fold read as
+  unmeasured for those relays (a legal third state, so nothing else complains),
+  and a stream whose `relaySource` is a verdict query loses them at the next
+  rebuild. The card names it only when it is non-zero, and the rows carrying it
+  sort above the cut beside the faults.
 - **…and the same table's per-relay reading** — WHERE EACH RELAY STANDS,
   which everything else the mirror publishes is an aggregate over. `roster`
   counts them, the coverage card charts their bands folded per stream, and the

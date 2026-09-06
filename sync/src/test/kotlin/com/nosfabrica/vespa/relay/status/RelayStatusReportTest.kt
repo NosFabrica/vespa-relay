@@ -58,6 +58,7 @@ class RelayStatusReportTest {
         abortAtSec: Long = 0,
         speaksNegentropy: Boolean? = null,
         kindCap: Int? = null,
+        watched: Boolean = true,
     ) = RelayStatusReport.PrimeUnit(
         relay = relay,
         stream = stream,
@@ -65,6 +66,7 @@ class RelayStatusReportTest {
         visiting = visiting,
         live = live,
         speaksNegentropy = speaksNegentropy,
+        watched = watched,
         kindCap = kindCap,
         abortReason = abort,
         abortSaid = said,
@@ -379,6 +381,61 @@ class RelayStatusReportTest {
         // Unmeasured is a third reading, so the member is absent rather than false.
         assertFalse(rows.getValue("wss://plain.example/").containsKey("negentropy"))
         assertFalse(rows.getValue("wss://plain.example/").containsKey("kindCap"))
+    }
+
+    @Test
+    fun `a relay the mirror syncs and our monitor does not grade is counted, not merely sorted`() {
+        // The failure this names: `monitor { sources }` and the streams describe different sets,
+        // so the mirror walks relays no verdict of ours covers and nothing says so.
+        val doc =
+            RelayStatusReport.build(
+                bands("{}"),
+                listOf(
+                    unit("wss://a.example", "content", plain),
+                    unit("wss://b.example", "content", plain, watched = false),
+                    unit("wss://c.example", "content", plain, watched = false),
+                ),
+                1_700_000_000,
+            )!!
+
+        assertEquals(3, doc["pairs"]!!.jsonPrimitive.int)
+        assertEquals(2, doc["unwatched"]!!.jsonPrimitive.int, "both unwatched pairs count, not the relays behind them")
+        assertEquals(
+            setOf("wss://b.example", "wss://c.example"),
+            rowsOf(doc).filter { it["unwatched"] != null }.map { it["relay"]!!.jsonPrimitive.content }.toSet(),
+        )
+        assertNull(
+            rowsOf(doc).single { it["relay"]!!.jsonPrimitive.content == "wss://a.example" }["unwatched"],
+            "absent on a watched pair, so the member reads as a flag and never as a false",
+        )
+    }
+
+    @Test
+    fun `the unwatched count is whole even when the rows are cut`() {
+        val many = (1..RelayStatusReport.MAX_ROWS + 40).map { unit("wss://r$it.example", "content", plain, watched = false) }
+        val doc = RelayStatusReport.build(bands("{}"), many, 1_700_000_000)!!
+
+        assertEquals(many.size, doc["unwatched"]!!.jsonPrimitive.int, "counted over every pair, like the statuses beside it")
+        assertTrue(rowsOf(doc).size < many.size, "the fixture has to be cut for the assertion above to mean anything")
+    }
+
+    @Test
+    fun `an unwatched pair sorts above a watched one, so drift survives the cut`() {
+        val doc =
+            RelayStatusReport.build(
+                bands("{}"),
+                // Named so the url tiebreak would put the watched one first if nothing else ranked them.
+                listOf(
+                    unit("wss://a-watched.example", "content", plain),
+                    unit("wss://z-unwatched.example", "content", plain, watched = false),
+                ),
+                1_700_000_000,
+            )!!
+
+        assertEquals(
+            "wss://z-unwatched.example",
+            rowsOf(doc).first()["relay"]!!.jsonPrimitive.content,
+        )
     }
 
     @Test

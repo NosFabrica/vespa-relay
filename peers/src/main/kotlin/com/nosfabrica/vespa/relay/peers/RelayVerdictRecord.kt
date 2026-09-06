@@ -55,6 +55,12 @@ class RelayVerdictRecord(
         val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
         /** Whether a url answered a NEG-OPEN when the fitness pass asked. Absent is unmeasured, not "no". */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
+        /**
+         * Urls this monitor stands behind any current verdict about — the fold answer, the
+         * stability one, the NIP-77 one, or the fitness grade. A record whose every tag has aged
+         * out is not in here: it says what we measured once, not what we measure now.
+         */
+        val measured: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /** One chunked record read, booked as the monitor's. */
@@ -140,8 +146,9 @@ class RelayVerdictRecord(
         val consistent = HashSet<NormalizedRelayUrl>()
         val inconsistent = HashSet<NormalizedRelayUrl>()
         val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
+        val measured = HashSet<NormalizedRelayUrl>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured)
     }
 
     /** A page of records, folded into the sets. */
@@ -162,6 +169,7 @@ class RelayVerdictRecord(
         event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
             RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
                 if (from == to) distinct += from else aliases[from] = to
+                measured += from
             }
         }
         event.tags
@@ -170,23 +178,47 @@ class RelayVerdictRecord(
             ?.get(1)
             ?.let { answer ->
                 when (answer) {
-                    CONSISTENT_YES -> consistent += from
+                    CONSISTENT_YES -> {
+                        consistent += from
+                        measured += from
+                    }
 
-                    CONSISTENT_NO -> inconsistent += from
+                    CONSISTENT_NO -> {
+                        inconsistent += from
+                        measured += from
+                    }
 
                     // An unreadable answer is no verdict, not "unstable".
-                    else -> Unit
+                    else -> {
+                        Unit
+                    }
                 }
             }
+        // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
+        // and it carries neither a fold answer nor a NIP-77 one.
+        event.tags
+            .firstOrNull { it.size > LABEL_NAMESPACE_INDEX && it[0] == LABEL_TAG && it[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE }
+            ?.takeIf { it.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH && (it.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor }
+            ?.let { measured += from }
         event.tags
             .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
             ?.takeIf { current(it, FITNESS_EPOCH, floor) }
             ?.get(1)
             ?.let { answer ->
                 when (answer) {
-                    "true" -> speaksNegentropy[from] = true
-                    "false" -> speaksNegentropy[from] = false
-                    else -> Unit
+                    "true" -> {
+                        speaksNegentropy[from] = true
+                        measured += from
+                    }
+
+                    "false" -> {
+                        speaksNegentropy[from] = false
+                        measured += from
+                    }
+
+                    else -> {
+                        Unit
+                    }
                 }
             }
     }

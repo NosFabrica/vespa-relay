@@ -105,6 +105,9 @@ fun main() {
     // Checked before anything slow: a `.onion` upstream with no transport looks like a
     // stream that mirrors nothing.
     val torSettings = TorSettings.fromEnv(env)
+    // Before anything is dialled: a monitor that measures nothing must say so, not read as one that is failing.
+    RouterConfigLoader.refuseUndeclaredMonitor(config)
+
     val onion = onionUpstreams(config.streams)
     if (torSettings == null && onion.isNotEmpty()) {
         error(

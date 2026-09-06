@@ -30,6 +30,8 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /** An absent `authors` on a verdict source is an unscoped read; the router never substitutes its own signer. */
 class MonitorScopeTest {
@@ -53,8 +55,12 @@ class MonitorScopeTest {
     private fun rosterOf(
         store: NostrSemanticsStore,
         authors: String = "",
+        watching: Boolean = false,
+        verdicts: RelayVerdictRecord? = null,
     ) = RosterBuilder(
         store = store,
+        watching = watching,
+        verdicts = { urls -> verdicts?.load(urls) ?: RelayVerdictRecord.Verdicts() },
         streams =
             RouterConfigLoader
                 .parse(
@@ -67,6 +73,33 @@ class MonitorScopeTest {
                 ).streams,
         bands = SyncBands(null),
     )
+
+    @Test
+    fun `a relay on the roster that our own monitor has not graded is named`() =
+        runBlocking {
+            // Both relays are on the roster; only one carries a verdict of ours. The other is
+            // exactly the drift `unwatched` exists for: mirrored by us, graded by nobody here.
+            val store = storeWithBothMonitors()
+            val roster = rosterOf(store, watching = true, verdicts = RelayVerdictRecord(store, ours)).rebuild()
+
+            assertEquals(setOf(ourRelay, theirRelay), roster.asks.keys, "the fixture has to hold both for this to mean anything")
+            assertEquals(setOf(ourRelay), roster.measured, "a stranger's verdict is not ours, and grades nothing for us")
+            assertTrue(roster.watches(ourRelay))
+            assertFalse(roster.watches(theirRelay))
+        }
+
+    @Test
+    fun `a router that measures nothing reports no relay as unwatched`() =
+        runBlocking {
+            // Not the same absence: nothing here was ever going to grade these, so there is no
+            // drift to report, and a mark on every row would be noise rather than a finding.
+            val store = storeWithBothMonitors()
+            val roster = rosterOf(store).rebuild()
+
+            assertEquals(emptySet(), roster.measured)
+            assertTrue(roster.watches(ourRelay))
+            assertTrue(roster.watches(theirRelay), "a deployment with no monitor is not one whose every relay is ungraded")
+        }
 
     @Test
     fun `a source naming no authors admits every monitor in the store`() =

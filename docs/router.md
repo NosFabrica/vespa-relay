@@ -596,6 +596,62 @@ NIP-42, and the identity this router signs with is not a member of anybody's
 group; the failure is membership, not reachability, so no amount of config
 reaches them.
 
+## The monitor block: what this deployment measures
+
+`monitor { }` is the whole of what the probe passes walk. Every url derived
+there becomes a signed, public kind-30166 record — a claim about somebody
+else's relay, published under `RELAY_NSEC` — so the set is a declaration, not a
+side effect of how the mirror happens to be configured:
+
+```hocon
+monitor {
+  # None (the default), every discovery stream, or the ones named.
+  inheritStreams = false
+  # inheritStreams = true
+  # inheritStreams = ["assertions", "indexers"]
+
+  sources        = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+  exclude        = []
+  sweepSeconds   = 21600
+  fastLaneSeconds = 120
+  dialConcurrency = 128
+}
+```
+
+A stream's `relaySource` lends the monitor nothing unless `inheritStreams`
+names it. That used to be implicit — every discovery stream was a monitor
+source by existing — which meant adding a `relaySource` to a stream silently
+widened the set of servers this deployment made public statements about. The
+same rule the router already holds for negative verdicts (`Unreachability`
+stays quiet on a failure it cannot attribute) applies to the corpus itself.
+
+`inheritStreams` naming a stream that has no `relaySource` is a hard error at
+parse time, so a typo is refused rather than answered with silence. A config
+with discovery streams and **no** `monitor { }` block at all is refused at
+boot, with the `inheritStreams` line that restores what it used to do — the
+boot refuses rather than defaulting, because both readings are legitimate and
+only the operator knows which was meant. `monitor { inheritStreams = false }`
+is how you say "mirror these streams and measure nothing".
+
+Two shapes make inheriting pointless, and both are common:
+
+- A stream whose `relaySource` is a **verdict query** (`kinds: [30166]`) reads
+  the monitor's own output. Inheriting it feeds the monitor urls it has already
+  graded, which the corpus covers anyway — every url this router holds a record
+  about is walked regardless (`recordedOnly` on the source row).
+- A stream whose scan duplicates one of `monitor { sources }`. The shipped
+  `router.conf.example` has both shapes, which is why it ships
+  `inheritStreams = false`.
+
+Inheriting is what you want where a stream scans relay lists the monitor block
+does not. The number that tells you which case you are in is `unwatched` on the
+mirror's `/stats.json` and the prime-relays card: (relay, stream) pairs the
+mirror syncs that no current verdict of ours grades. Zero is the healthy
+reading. Anything else means the two declarations have drifted, and it matters
+beyond tidiness — `negentropy` and the fold are unknown for those relays, and a
+stream whose `relaySource` is a verdict query would drop them at the next
+rebuild.
+
 ## Mirroring the deletions themselves
 
 Kinds **5** (NIP-09 deletion request) and **62** (NIP-62 request to vanish) are

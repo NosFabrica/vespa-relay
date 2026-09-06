@@ -122,6 +122,26 @@ object RouterConfigLoader {
             }
     }
 
+    /**
+     * A deployment whose streams discover their relays but which declares no `monitor { }` block
+     * used to measure every one of those streams' sources. It would now measure nothing, so the
+     * boot asks the config to say which it meant. Called at boot, not at parse: a config is well
+     * formed either way, and this is about the process that would run silently inert.
+     */
+    fun refuseUndeclaredMonitor(config: RouterConfig) {
+        if (config.monitor != null) return
+        val discovering = config.discoveryStreams().map { it.name }
+        require(discovering.isEmpty()) {
+            "router: ${discovering.joinToString()} discover their relays, and there is no `monitor { }` block. " +
+                "The monitor no longer measures a stream's sources unless the block says so, because every url it " +
+                "derives becomes a signed public claim about somebody else's relay. Add " +
+                "`monitor { inheritStreams = [${discovering.joinToString { "\"$it\"" }}] }` for what this config " +
+                "used to do, `monitor { inheritStreams = true }` for every discovery stream including later ones, " +
+                "or `monitor { sources = [ ... ] }` to measure a set of your own. " +
+                "`monitor { inheritStreams = false }` is the deployment that mirrors these streams and measures nothing"
+        }
+    }
+
     /** Run only the streams `SYNC_STREAMS` names. A name that matches nothing is a hard error. */
     fun narrowToStreams(
         streams: List<SyncStream>,
@@ -283,13 +303,16 @@ object RouterConfigLoader {
             }
         }
         refuseRouterWidePoolWidths(cfg)
+        val monitor = parseMonitor(cfg)
+        // Before narrowing: SYNC_STREAMS runs one stream, and must not turn an inherited name into an error.
+        checkInheritedStreams(monitor, streams)
         return RouterConfig(
             connTimeout,
             streams,
             upIntervalSec,
             ingestConcurrency,
             ingestBatch,
-            monitor = parseMonitor(cfg),
+            monitor = monitor,
         )
     }
 
@@ -325,6 +348,7 @@ object RouterConfigLoader {
             }
         return MonitorConfig(
             sources = sources,
+            inheritStreams = parseInheritStreams(m),
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
             sweepSeconds =
                 (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
@@ -373,6 +397,44 @@ object RouterConfigLoader {
                     }
                 },
         )
+    }
+
+    /**
+     * `inheritStreams`: `true` for every discovery stream, a list of names for those, absent for
+     * none. Absent is the default because inheriting widens what this deployment signs.
+     */
+    private fun parseInheritStreams(m: Config): InheritStreams {
+        if (!m.hasPath("inheritStreams")) return InheritStreams.None
+        // A boolean and a list are both legal here, so the raw value decides which.
+        val raw = m.getValue("inheritStreams").unwrapped()
+        return when {
+            raw is Boolean -> {
+                if (raw) InheritStreams.All else InheritStreams.None
+            }
+
+            raw is List<*> -> {
+                val names = raw.mapNotNull { it?.toString()?.trim()?.takeIf { n -> n.isNotEmpty() } }.toSet()
+                if (names.isEmpty()) InheritStreams.None else InheritStreams.Named(names)
+            }
+
+            else -> {
+                error("router: monitor `inheritStreams` is $raw — expected true, false, or a list of stream names")
+            }
+        }
+    }
+
+    /** A name that inherits from nothing is a typo the monitor would answer with silence. */
+    private fun checkInheritedStreams(
+        monitor: MonitorConfig?,
+        streams: List<SyncStream>,
+    ) {
+        val named = (monitor?.inheritStreams as? InheritStreams.Named)?.names ?: return
+        val withSources = streams.filter { it.discovery != null }.map { it.name }.toSet()
+        val unknown = named - withSources
+        require(unknown.isEmpty()) {
+            "router: monitor inheritStreams names ${unknown.joinToString()}, which is not a stream with a " +
+                "`relaySource` (has: ${withSources.joinToString().ifEmpty { "no such stream" }})"
+        }
     }
 
     private fun normalizeUrls(

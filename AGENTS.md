@@ -12,8 +12,9 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
   (`router.conf`, the `router:` log prefix).
 - `:monitor` — the measuring plane: the alias fold, the consistency gate and
   the fitness grades, signed onto kind-30166 records the mirror's roster selects
-  on. It may not depend on `:sync`; what it still takes from the mirror arrives
-  through `MonitorEngine`'s constructor.
+  on. It may not depend on `:sync`, and knows no mirror type: what it takes from
+  the mirror arrives through `MonitorEngine`'s constructor as the `monitor { }`
+  block, a list of labelled derivations, and a sink for an event a probe saw.
 - `:common` — only what the serving relay also reads (`RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, `ServingPressure`). Never
   quartz's relay client, never Ktor.
@@ -214,7 +215,14 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   keeps the relay's sentence, `FilterWidths` narrows an ask refused for width.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
-- **The monitor.** `AliasMonitor` runs three passes in order over
+- **The monitor.** What it measures is `monitor { }` and nothing else: its own
+  `sources`, plus the `relaySource` of each stream `inheritStreams` names
+  (`RouterConfig.monitorDerivations`). A stream never lends its sources
+  implicitly — every derived url becomes a signed public claim — so a config
+  with discovery streams and no `monitor { }` block is refused at boot
+  (`RouterConfigLoader.refuseUndeclaredMonitor`), and `unwatched` on the mirror's
+  `/stats.json` counts the pairs the two declarations have drifted apart on.
+  `AliasMonitor` runs three passes in order over
   `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
   (`self-consistent`), then `FitnessPass`, which grades what survives with a
   NIP-32 label `["l","prime","relay.fitness",…]` (or `dead`) beside `pageable`,
@@ -260,7 +268,9 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md).
   beside it. Read `abortedBackpressured` and `visitsHeldByIngest` first: they
   are about this mirror's ingest queue, not about any relay.
 - The `prime relays` table: `syncStatus` is the past, `behind` the present,
-  `kindCap` and `negentropy` the terms the relay serves us on.
+  `kindCap` and `negentropy` the terms the relay serves us on, and `unwatched`
+  the pairs this mirror syncs that our own monitor grades nothing about — a
+  config question (the `monitor { }` block against the streams), never a relay one.
 - `ingest stages`: per-stage timing (`dedup`, `write`, `proj.fetch`,
   `proj.write`, `versions`, `verify`, `dedup.pre`).
 - Log prefixes: `router:`, `store call SLOW`, `visit … aborted`,

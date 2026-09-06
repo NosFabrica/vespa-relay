@@ -1294,6 +1294,15 @@ object StatusVocabulary {
                     "is listening, so what is old is the relay's content and not our copy of it.",
             )
             put(
+                "unwatched",
+                "Pairs whose relay our OWN monitor holds no current verdict about — the mirror syncs it and nothing " +
+                    "grades it. The monitor measures what `monitor { sources }` and `monitor { inheritStreams }` " +
+                    "name, which is a separate declaration from the streams, so this is the number that says the " +
+                    "two have drifted apart. Not harmless: `negentropy` and the fold are unknown for these relays, " +
+                    "and a stream whose `relaySource` is a verdict query would lose them outright at the next " +
+                    "rebuild. Zero is the healthy reading; anything else is a config question, not a relay one.",
+            )
+            put(
                 "negentropy",
                 "Whether the monitor measured this relay as answering a NEG-OPEN — its signed NIP-77 verdict on the " +
                     "same 30166 record the roster admits it by. A TERM, not a status: against a `false` relay both " +

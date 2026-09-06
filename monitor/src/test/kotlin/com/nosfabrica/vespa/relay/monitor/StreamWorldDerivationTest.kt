@@ -23,8 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.ingest.IngestPipeline
-import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -33,8 +31,6 @@ import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -55,7 +51,7 @@ class StreamWorldDerivationTest {
     ): Event = NostrSignerSync().sign(1_700_000_000L, kind, arrayOf(*tags), "")
 
     /** Compiled through the real loader, whose decision it is whether an exclude entry is a regex. */
-    private fun monitorConfig(exclude: List<String>) =
+    private fun derivations(exclude: List<String>) =
         RouterConfigLoader
             .parse(
                 """
@@ -72,10 +68,10 @@ class StreamWorldDerivationTest {
                     exclude = [ ${exclude.joinToString(", ") { "\"$it\"" }} ]
                 }
                 """.trimIndent(),
-            ).monitor
+            ).monitorDerivations()
 
     /** One [RelayDiscoveryConfig] holding two sources, the shape the position is counted for. */
-    private fun twoSourceMonitorConfig() =
+    private fun twoSourceDerivations() =
         RouterConfigLoader
             .parse(
                 """
@@ -93,11 +89,11 @@ class StreamWorldDerivationTest {
                     ]
                 }
                 """.trimIndent(),
-            ).monitor
+            ).monitorDerivations()
 
     /**
-     * Nothing here dials, so the probe, ingest and sockets are never reached; they
-     * are passed real so a constructor that starts doing work is noticed.
+     * Nothing here dials, so the probe and sockets are never reached; they are passed real so a
+     * constructor that starts doing work is noticed. Nothing here submits, so the sink throws.
      */
     private fun world(
         store: NostrSemanticsStore,
@@ -105,28 +101,18 @@ class StreamWorldDerivationTest {
         monitorAuthors: List<String> = emptyList(),
         self: String? = null,
         progress: Processors.Handle? = null,
-    ): StreamWorld {
-        val scope = CoroutineScope(Job())
-        return StreamWorld(
+    ): StreamWorld =
+        StreamWorld(
             store = store,
-            streams = emptyList(),
+            derivations = derivations(exclude),
             probe = ReachabilityProbe(null),
-            ingest =
-                IngestPipeline(
-                    store,
-                    IngestTuning(concurrency = 1, batch = 8),
-                    null,
-                    null,
-                    scope,
-                ),
             monitorAuthors = monitorAuthors,
             self = self,
             tor = null,
             sockets = Sockets.NONE,
-            monitorConfig = monitorConfig(exclude),
+            onProbeEvent = { error("no dial runs here, so nothing can have seen an event") },
             progress = progress,
         )
-    }
 
     /** One 10002 naming every per-npub url, one naming a relay nothing excludes. */
     private suspend fun storeWithPerNpubUrls(): NostrSemanticsStore {
@@ -207,21 +193,13 @@ class StreamWorldDerivationTest {
             val world =
                 StreamWorld(
                     store = store,
-                    streams = emptyList(),
+                    derivations = twoSourceDerivations(),
                     probe = ReachabilityProbe(null),
-                    ingest =
-                        IngestPipeline(
-                            store,
-                            IngestTuning(concurrency = 1, batch = 8),
-                            null,
-                            null,
-                            CoroutineScope(Job()),
-                        ),
                     monitorAuthors = emptyList(),
                     self = null,
                     tor = null,
                     sockets = Sockets.NONE,
-                    monitorConfig = twoSourceMonitorConfig(),
+                    onProbeEvent = { error("no dial runs here, so nothing can have seen an event") },
                     progress = processors.of("aliasSource"),
                 )
 

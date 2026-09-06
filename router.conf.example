@@ -103,7 +103,33 @@ connectionTimeout = 20
 
 # THE MONITOR PLANE. Owns every question about a relay's health and shape, on
 # its own clock, so no stream ever waits on a probe.
+#
+# THIS BLOCK IS THE WHOLE OF WHAT THIS DEPLOYMENT MEASURES. Every url derived
+# here becomes a signed, public kind-30166 claim about somebody else's relay,
+# so the set is written down rather than inherited: a stream's `relaySource`
+# lends nothing unless `inheritStreams` names it. A config with discovery
+# streams and no `monitor { }` block at all is refused at boot rather than
+# quietly measuring nothing.
 monitor {
+    # WHICH STREAMS LEND THEIR OWN `relaySource` TO THE SET ABOVE. `true` is
+    # every discovery stream including ones added later, a list names them,
+    # `false` (the default) is none.
+    #
+    # False here, and it is worth saying why rather than defaulting into it.
+    # Two of this file's three discovery streams source from a VERDICT QUERY
+    # (`kinds: [30166], #l: [prime]`), so inheriting them would feed the
+    # monitor its own output — every url in them is one it already graded. The
+    # third, `assertions`, scans the same 38 delegation tags the 10040 source
+    # below already names; it names them again only to bind `authors`, which
+    # the stream needs and the monitor does not. So the sources here are
+    # already the whole corpus, and inheriting would add a walk and no url.
+    #
+    # A deployment whose streams scan relay lists the monitor block does not
+    # will want `inheritStreams = true`, or the stream names. The mirror's
+    # `unwatched` count on /stats.json is what says you got this wrong: pairs
+    # it syncs that no current verdict of ours grades.
+    inheritStreams = false
+
     # Where candidate urls come from — the same select syntax streams use.
     # NIP-65 write relays, and NIP-29 group hosts (their tag carries the url at
     # element 2, the one relay list in the protocol that does not put it at 1).

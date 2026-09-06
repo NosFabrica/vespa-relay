@@ -90,11 +90,15 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
   MonitorEngine.kt        the plane: the three passes, the derivation, the boot
                           retirement of verdicts this router would no longer
                           sign. Its CONSTRUCTOR is the account of what the
-                          monitor still takes from the mirror
+                          monitor still takes from the mirror, and it names no
+                          mirror type: the `monitor { }` block, the labelled
+                          derivations the config resolved, a dial budget, and a
+                          sink for an event a probe happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
-  StreamWorld.kt          the candidate set all three measure over
+  StreamWorld.kt          the candidate set all three measure over — declared,
+                          never inherited from the streams
   AliasMonitor.kt         their clock, and the fast lane — which runs the
                           stability gate then fitness over urls named since its
                           last look, and never the fold (per-host work)
@@ -357,9 +361,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           dial can measure — and the connect that carries it,
                           which IS the `rtt-open` we publish. Pure `parse`,
                           because it is somebody else's json
-    StreamWorld.kt        the url universe the monitor measures: every stream's
-                          sources, plus the monitor's own. Reports as the
-                          `aliasSource` processor
+    StreamWorld.kt        the url universe the monitor measures: the
+                          `monitor { }` block's own sources, plus the
+                          `relaySource` of each stream `inheritStreams` names.
+                          Reports as the `aliasSource` processor
   shared/               WHAT BOTH PLANES TOUCH, and the whole of it — the split
                         was derived from the imports, not guessed
     RelayDiscovery.kt     pulling relay urls out of stored events: the mirror

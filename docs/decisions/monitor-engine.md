@@ -15,6 +15,47 @@ one document and the page split them back apart by name (`splitProcessors`
 in the JS). What the monitor still takes from the mirror is `ingest`,
 `sockets` and `pinnedUrls`; cut those and it is a separate process.
 
+**The corpus is declared, never inherited from the streams.** Every discovery
+stream used to be a monitor source by existing, so adding a `relaySource` to a
+stream silently widened the set of servers this deployment signs public
+kind-30166 claims about. The rule the router already held for negative verdicts
+— `Unreachability.proves()` stays quiet on a failure it cannot attribute, because
+being wrong costs a false statement about somebody else's server — applies to
+the corpus itself. `monitor { inheritStreams }` names which streams lend their
+sources: absent is none, `true` is every discovery stream, a list is those. It
+also turned out that two of the shipped example's three discovery streams source
+from a verdict query, so inheriting them fed the monitor its own output; writing
+the set down is what made that visible.
+
+**The boot refuses the ambiguous config rather than picking a reading.** A
+deployment with discovery streams and no `monitor { }` block used to measure all
+of them and now measures nothing, and both are legitimate deployments. The
+refusal names the streams and the `inheritStreams` line that restores the old
+behaviour, per the rule that a configured component must never be silently
+inert. It sits at boot (`RouterConfigLoader.refuseUndeclaredMonitor`) rather
+than in `parse`, because a config with no monitor is well formed — it is the
+process that would run doing nothing.
+
+**The plane knows no mirror type.** `MonitorEngine` took the whole
+`RouterConfig` and read four things out of it, and `StreamWorld` took
+`List<SyncStream>` for two unrelated jobs: deriving candidates, and attributing
+an event a probe dial happened to see. With the derivation declared, the
+attribution is the only stream reader left, and it belongs to the mirror — it
+has to agree with the mirror's own ingest — so it is a sink `SyncEngine` closes
+over. `SyncStream`, `RouterConfig` and `IngestPipeline` are gone from `:monitor`
+entirely; what crosses the seam is the `monitor { }` block, labelled
+derivations, a timeout and that sink.
+
+**The probe-event sink asks every stream, where it used to ask the discovering
+ones.** `StreamWorld` was handed `discoveryStreams` for both jobs, so an event a
+probe dial happened to see was attributed against those streams alone — which
+meant a pure-monitor deployment (static `urls`, candidates through
+`monitor { sources }`) had no streams there at all and dropped every one. That
+was a proxy for "the streams the monitor is about", and there is no such
+relationship any more. The sink asks the mirror, and the mirror's answer is any
+stream whose filter matches. The volume is bounded by what the passes fetch,
+which is a handful of events per relay.
+
 **The start gate is `hasMonitorSources`, not `discoveryStreams.isNotEmpty()`.**
 A pure-monitor deployment (streams on static `urls`, every url entering
 through `monitor { sources }`) has no discovery streams, so `aliasMonitor

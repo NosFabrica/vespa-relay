@@ -48,6 +48,11 @@ object RelayStatusReport {
         val live: Boolean,
         /** The monitor's NIP-77 verdict; null when unmeasured. */
         val speaksNegentropy: Boolean? = null,
+        /**
+         * False only where this deployment runs a monitor and it holds no current verdict about
+         * this relay. True where one stands, and true throughout a deployment that measures nothing.
+         */
+        val watched: Boolean = true,
         /** The filter width learned from this relay's own refusal; null when it never complained. */
         val kindCap: Int? = null,
         val abortReason: String? = null,
@@ -73,13 +78,19 @@ object RelayStatusReport {
         val ordered =
             rows.sortedWith(
                 compareByDescending<Row> { it.fault }
+                    .thenByDescending { it.unwatched }
                     .thenByDescending { it.behindSec ?: Long.MAX_VALUE }
                     .thenBy { STATUS_ORDER.indexOf(it.status) }
                     .thenBy { it.relay }
                     .thenBy { it.stream },
             )
+        // Counted over every row, not the cut list: the drift this names is usually in the tail.
+        val unwatched = rows.count { it.unwatched }
         return buildJsonObject {
             put("pairs", rows.size)
+            // The mirror syncs these and our monitor grades none of them: `monitor { sources }`
+            // and the streams have drifted apart, and a verdict-gated stream would go dark next.
+            put("unwatched", unwatched)
             // Rows, not members, so `complete` and `counted` keep one meaning each. Counted
             // over every row, not the cut list.
             putJsonArray("statuses") {
@@ -119,6 +130,7 @@ object RelayStatusReport {
                             r.behindSec?.let { put("behindSec", it) }
                             put("behind", r.freshness)
                             if (r.fault) put("fault", true)
+                            if (r.unwatched) put("unwatched", true)
                             r.speaksNegentropy?.let { put("negentropy", it) }
                             r.kindCap?.let { put("kindCap", it) }
                             r.verifiedAt?.let { put("verifiedAgoSec", (nowSeconds - it).coerceAtLeast(0)) }
@@ -144,6 +156,7 @@ object RelayStatusReport {
         val freshness: String,
         val fault: Boolean,
         val speaksNegentropy: Boolean?,
+        val unwatched: Boolean,
         val kindCap: Int?,
         val asks: Int,
         val bands: Int,
@@ -185,6 +198,7 @@ object RelayStatusReport {
             // A tailed pair is never stale whatever its age: its present arrives live.
             fault = status == REFUSED || status == NOT_STARTED || (behind != null && behind >= STALE_SEC && !unit.live),
             speaksNegentropy = unit.speaksNegentropy,
+            unwatched = !unit.watched,
             kindCap = unit.kindCap,
             asks = unit.askKeys.size,
             bands = band.bands,

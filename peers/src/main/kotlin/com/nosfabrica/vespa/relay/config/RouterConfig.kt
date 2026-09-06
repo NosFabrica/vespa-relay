@@ -44,7 +44,7 @@ data class RouterConfig(
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
-    /** Null runs the probe passes on candidates derived from the streams' own sources. */
+    /** Null is a deployment with no monitor: nothing is measured and no verdict is signed. */
     val monitor: MonitorConfig? = null,
 ) {
     companion object {
@@ -55,6 +55,9 @@ data class RouterConfig(
 
         /** What a stream with no `maxLiveConcurrency` contributes to the sockets the pool may hold open. */
         const val DEFAULT_MAX_LIVE_CONCURRENCY = 600
+
+        /** The label the `monitor { sources }` derivation reports under; it names a row on the page. */
+        const val MONITOR_SOURCES_LABEL = "monitor sources"
     }
 
     /** Every (stream, url) pair whose direction pulls events down into our store. */
@@ -66,6 +69,24 @@ data class RouterConfig(
     /** The streams whose relay list is discovered from the store, not configured. */
     fun discoveryStreams(): List<SyncStream> = streams.filter { it.discovery != null }
 
+    /**
+     * Every derivation the monitor runs, labelled: the `relaySource` of each stream
+     * [MonitorConfig.inheritStreams] names, then the `monitor { sources }` block's own. A stream
+     * never lends its sources implicitly — the monitor signs a public claim about every url it
+     * derives, so the set it measures is declared.
+     */
+    fun monitorDerivations(): List<Pair<String, RelayDiscoveryConfig>> {
+        val block = monitor ?: return emptyList()
+        val inherited =
+            when (val which = block.inheritStreams) {
+                InheritStreams.None -> emptyList()
+                InheritStreams.All -> discoveryStreams()
+                is InheritStreams.Named -> discoveryStreams().filter { it.name in which.names }
+            }
+        return inherited.mapNotNull { s -> s.discovery?.let { "stream ${s.name}" to it } } +
+            listOfNotNull(block.asDiscovery()?.let { MONITOR_SOURCES_LABEL to it })
+    }
+
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
@@ -73,12 +94,15 @@ data class RouterConfig(
 }
 
 /**
- * The `monitor { }` block: where candidate urls come from, and the clocks the probe passes
- * run on. Candidates derived here union with what the streams' own sources yield.
+ * The `monitor { }` block: where candidate urls come from, and the clocks the probe passes run
+ * on. This block is the whole of what the monitor measures; a stream contributes only where
+ * [inheritStreams] names it.
  */
 data class MonitorConfig(
     /** Where candidate urls come from; the same shape as a stream's `relaySource`. */
     val sources: List<RelaySource>,
+    /** Which streams lend this block their `relaySource`. Absent is none. */
+    val inheritStreams: InheritStreams = InheritStreams.None,
     val exclude: RelayExcludes = RelayExcludes.NONE,
     /** How often every candidate is re-verdicted. */
     val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
@@ -93,6 +117,12 @@ data class MonitorConfig(
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
 ) {
+    /** This block's own sources as a discovery config; the cadence fields carry the sweep. */
+    fun asDiscovery(): RelayDiscoveryConfig? =
+        sources
+            .takeIf { it.isNotEmpty() }
+            ?.let { RelayDiscoveryConfig(sources = it, refreshSeconds = sweepSeconds, exclude = exclude) }
+
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 
@@ -100,6 +130,30 @@ data class MonitorConfig(
 
         const val DEFAULT_DIAL_CONCURRENCY = 128
     }
+}
+
+/**
+ * Whether a resolved derivation list has anything to walk. One definition, because the plane
+ * gates its passes on it and the mirror gates the `unwatched` count on it.
+ */
+fun List<Pair<String, RelayDiscoveryConfig>>.namesAnySource(): Boolean = any { it.second.sources.isNotEmpty() }
+
+/**
+ * Which of the router's own streams lend the monitor their `relaySource`. The monitor publishes
+ * signed claims about every url it derives, so widening that set is a thing an operator writes
+ * down: editing a stream never changes what this deployment says about somebody else's server.
+ */
+sealed interface InheritStreams {
+    /** The monitor measures its own `sources` and nothing else. The default. */
+    data object None : InheritStreams
+
+    /** Every stream that has a `relaySource`, including ones added later. */
+    data object All : InheritStreams
+
+    /** Only these streams. A name matching no stream is a hard config error. */
+    data class Named(
+        val names: Set<String>,
+    ) : InheritStreams
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */

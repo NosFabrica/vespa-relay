@@ -252,6 +252,7 @@ internal class VisitPool(
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
                         speaksNegentropy = snapshot.speaksNegentropy[url],
+                        watched = snapshot.watches(url),
                         kindCap = widths.capFor(url),
                         abortReason = abort?.reason?.says,
                         abortSaid = abort?.said,

@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
+import com.nosfabrica.vespa.relay.config.namesAnySource
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
@@ -174,11 +175,21 @@ class SyncEngine(
     private val monitor =
         MonitorEngine(
             store = store,
-            config = config,
+            settings = config.monitor,
+            // Resolved here: which streams lend their sources is the config's word, and the plane
+            // that signs the claims is handed the set rather than deriving it from the mirror's.
+            derivations = config.monitorDerivations(),
+            connectionTimeoutMs = config.connectionTimeoutSec * 1000L,
             peers = peers,
             signer = signer,
             sockets = sockets,
-            ingest = ingest,
+            // Submitted once, not once per wanting stream. Verified unless every wanting stream
+            // trusts its source. Every stream, not the discovering ones: which streams the monitor
+            // derives from is no longer a relationship, so who wanted an event is asked of them all.
+            onProbeEvent = { event ->
+                val wanted = config.streams.filter { it.filter.match(event) }
+                if (wanted.isNotEmpty()) ingest.submit(event, wanted.all { it.trusted })
+            },
             pinnedUrls = pinnedUrls,
             scope = scope,
         )
@@ -210,7 +221,9 @@ class SyncEngine(
                     foldedAway = monitor::foldedAway,
                     keepBands = pinnedUrls,
                     tor = tor,
-                    speaksNegentropy = { urls -> verdicts?.load(urls)?.speaksNegentropy ?: emptyMap() },
+                    verdicts = { urls -> verdicts?.load(urls) ?: RelayVerdictRecord.Verdicts() },
+                    // Nothing signs without an identity, and nothing is measured without a source.
+                    watching = signer != null && config.monitorDerivations().namesAnySource(),
                 ),
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
