@@ -38,6 +38,7 @@ import com.nosfabrica.vespa.relay.peers.onionUpstreams
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
@@ -305,6 +306,9 @@ fun main() {
     }
 
     engine.start()
+
+    // Both processes log this, so load can be attributed to a role without scaling one to zero.
+    StoreMetricsLog.startLogging("sync", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
 
     // Administrators only, against the same RELAY_ADMIN_PUBKEYS the relay's NIP-86 RPC
     // uses; a port set with no administrator named stops the boot.

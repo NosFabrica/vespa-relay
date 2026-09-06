@@ -414,64 +414,56 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 53441182f5 = vespa-eventstore main @ 2026-09-05, the merge of PR #108 — the
-# dirt ledger retires per slice.
+# 7a93d45efd = vespa-eventstore main @ 2026-09-06, the merge of PR #111 — the
+# keying migration reports progress and resumes.
 #
-# WHY THIS BUMP: the drain looked dead on staging and was not. A round derived
-# its WHOLE snapshot before crediting any of it, so with 139,524 inherited
-# subjects at the ~14.5s-per-500 the note above measures, the backlog gauge sat
-# at its starting value and the marker at full size for over an hour a pass —
-# and a crash anywhere in that hour threw away every subject already derived
-# and acked, because the marker still named all of them. A ledger that takes
-# longer to drain than the process stays up never finishes. That is what held
-# `projection-dirty` at exactly 139,524 across a 2.75h process here while
-# `proj.fetch.derive` logged 665 completed slices.
+# WHY THIS BUMP: the migration on this deployment has never finished, and
+# until now could not say why. It ran in its own scope from store open,
+# reported nothing (every layer took an `onProgress`; the store passed none,
+# and `run` dropped the one it had before the reconcile — the longest phase),
+# and persisted a BOOLEAN marker written only after all three steps. Any
+# restart discarded the whole attempt and began again at a corpus-scale
+# reconcile. Measured here: one of nine service walks completed in ~85
+# minutes and none in the six hours after, on a relay with 9h48m uptime and
+# no restarts. It is not slow, it is Sisyphean.
 #
-# Each slice is now credited when its write is acked, and the marker shrinks by
-# tensor-cell REMOVES of the retired entries rather than a rewrite of the
-# document to one process's whole view. Removes compose; whole-doc writes do
-# not, and the relay and the sync mirror each run a store against this one
-# marker while `pending` is process-local — either one's rewrite erased the
-# other's write-ahead insurance. Slices another drain already retired are also
-# skipped, which is what stops the background loop and `TrustReconciler` from
-# each deriving the entire snapshot; the pulse caught them here as `Drain`
-# (3,477 searches) and `Other` (3,174) doing identical work.
+# Phases now live in `reputation-keying-progress`, so a restart resumes at the
+# sweep. `reputation-keyed-by-service` still means FINISHED and nothing else —
+# every operator check of this migration asks whether that document exists,
+# and a half-written marker answering 200 would tell all of them it was done.
 #
-# WHAT IT DOES NOT FIX, again: the derive itself. The read is still inside the
-# gate at ~14.5s per 500-subject slice — the note above stands unchanged. What
-# changes is that the work COUNTS as it lands, so a restart resumes instead of
-# starting over, and the backlog gauge means something while a round runs.
+# IT DOES NOT MAKE THE MIGRATION FASTER. The store matches ~20M documents a
+# second while retiring almost no work — roughly 445,000 documents matched per
+# card actually processed — and that ratio is unexplained. This bump is what
+# makes it measurable; the fix, when it is found, will be a different one.
 #
-# NO NEW QUARTZ, NO RE-FEED, NO MIGRATION ATTACHES. Nothing here changes what a
-# put derives or what a read matches. The marker document is the only thing
-# written differently, and it is written with the same primitive its
-# write-ahead already used; a process reading a partially retired marker simply
-# sees less work, which is true.
+# DIRECTION: a93d368091 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — this is main plus #111.
 #
-# DIRECTION: b7c32aeb6d is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — this is main plus PR #108, two commits.
-#
-# LEXICOGRAPHIC: '5344…' < 'b7c3…' ('5' < 'b'), so this sorts BELOW the pin it
-# replaces — the unsafe direction again, and the reason this file states it
-# every time rather than trusting to luck. It needs no `force(…)`: nothing else
-# in the graph names vespa-eventstore, so there is no conflict for ordering to
-# settle. The resolved graph is the proof, and every eventstore line reads
-# 53441182f5 with no `->` left anywhere:
+# LEXICOGRAPHIC: '7a93…' < 'a93d…' ('7' < 'a'), so this sorts BELOW the pin it
+# replaces — the unsafe direction, which is why this file states it every
+# time. It needs no `force(…)`: nothing else in the graph names
+# vespa-eventstore. The resolved graph is the proof, and every eventstore line
+# reads 7a93d45efd with no `->` left anywhere:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: b7c32aeb6d = vespa-eventstore main @ 2026-09-05, the merge of PR
-# #107 — the telemetry behind `/pulse.html` (`VespaEventStore.metrics()`, its
-# docs/telemetry.md is the design record), `TrustReconciler` wired to the
-# METERED index rather than the raw one, and the load sketch truncated to a
-# 16-char observer prefix. It also carried main through 1a3f91b (PR #106), the
-# service-keyed trust tensors, which come with their own TrustKeyingMigration
-# and their own docs/service-keyed-trust.md — read that note before deploying,
-# not this one.
+# Superseded: a93d368091 = the merges of #109 (naming the projection ledger's
+# invariants) and #110 (ServiceKey/ObserverKey as value classes, byte-identical
+# wire format). Both behaviourally inert.
 #
-# Superseded: ec2976b679 = vespa-eventstore main @ 2026-09-04, the merges of
-# PR #104 and #105 (the lock audit) over #103's grouping aggregate — now
-# reached through 1a3f91b, which is main including it.
-vespaEventStore = "53441182f5"
+# Superseded: 53441182f5 = the merge of PR #108 — the dirt ledger retiring per
+# SLICE rather than per round. The functional pin, running on staging since
+# 2026-09-06 01:15Z: 139,524 inherited subjects to a live-ingest trickle in
+# about three hours, strictly monotonic, across one uninterrupted process.
+# Before it the backlog had not moved in days. What it did NOT fix: both the
+# relay and the sync mirror run a drainer over their own process-local ledger,
+# neither seeing the other's retirements, and pausing sync doubled the drain
+# here (500 -> ~1,060 subjects/min).
+#
+# Superseded: b7c32aeb6d = the merge of PR #107 — the telemetry behind
+# `/pulse.html`, and main through 1a3f91b (PR #106), the service-keyed trust
+# tensors, whose own migration is the one #111 is about.
+vespaEventStore = "7a93d45efd"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
