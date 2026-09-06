@@ -422,57 +422,65 @@ quartz = "cecc3287b2"
 # `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
 # truncate — `sorting.degrading` defaults true — and it reports the truncation
 # as `match-phase`. The coverage guard then correctly refuses the partial
-# ONE FAILING UNIT MUST NOT STOP THE DRAIN (#123), over the two guards it
-# used to die on (#121, #122).
+# THE WALK BATCHES ACROSS PAGES (#124) — the fix for 14 cards/s.
 #
-# The drain walks queued services one at a time in a `forEach`. Any throw left
-# that loop, so the first service whose read failed took every service behind
-# it down with it: 342 queued, one sick, none of the other 341 walked. That is
-# the 236/342 plateau — not a slow projection, a dead round retried forever.
-# The queue looked busy the whole time, which is why this survived a day of
-# fixing the individual throws.
+# The walk chunked ids WITHIN a visit page, which looks batched at
+# PROJECT_PAGE=250 and is not. A page is whatever the visit delivered, and on
+# the document-API path `streamedSlice` certifies per BUCKET (concurrency=1);
+# with a selection as narrow as one author a bucket holds about one of that
+# service's cards. Chunking inside a page can only split what already arrived,
+# never gather. So the walk took the gate, issued a by-id fetch, wrote a cell
+# and read max_rank ONCE PER CARD.
 #
-# #121 and #122 each removed one reason to throw — a sorted read the engine may
-# truncate, and a `complete = true` on a fetch whose own contract expects
-# documents to be missing. Both correct, both instances. This is the class: the
-# NEXT unrecoverable read costs one unit, not the round.
+# Measured here, on the pod running 1211420526:
+#   proj.write(ms=828450 calls=29300 mean=28ms)      <- 29,300 writes / 29,300 cards
+#   proj.fetch.maxrank(ms=225926 calls=29282 mean=7ms)
+#   held: lock.gate.hold 3ms "cell update over 1 card(s)"
 #
-# Each unit now fails alone — skipped for the rest of the call (it would throw
-# again next turn, and the ledger keeps failed work queued: without the skip
-# that is a hot loop on one bad service), left queued for the next call, and
-# raised together at the end as ProjectionLedger.DrainIncomplete.
+# It hid all day because the FIRST service walked 150,666 cards with 19 writes
+# — its cells were already right, so the write path was skipped and it ran at
+# 105 cards/s. The cost only appears when a service has real work, which is
+# exactly when it matters.
 #
-# STILL A THROW, ON PURPOSE. startDrainer reads a clean return as "nothing is
-# stuck": it clears the failure counter and schedules no retry. Swallowing
-# would have shown a green health page over stuck units and left them waiting
-# for an unrelated write. Throwing AFTER every other unit has had its turn
-# keeps the caller's backoff contract and still buys the isolation.
+# Buffering to PROJECT_PAGE turns 250 round trips into one, cannot change WHICH
+# cells are written (keyed by (subject, service); newest card at an address
+# wins, so the batch a card lands in is not observable), and holds the gate
+# LESS: one hold per 250 cards instead of 250. A test drives one-id pages the
+# way production does — 601 by-id fetches for 600 cards before, 3 after, every
+# cell landing including the remainder.
 #
-# What this looks like when it works: `trust.drain N fail` may well continue —
-# some services genuinely fail — while coverage moves anyway. Failures and
-# progress at the same time is the SIGNATURE, not a contradiction.
+# Also lands: STALLED means the PIPELINE stopped. A drain cannot retire a
+# service until its walk returns, so a frozen drain beside an advancing walk is
+# correct, not stuck — it was reporting `STALLED 1446s` next to a walk visibly
+# finishing 150,666 cards.
 #
-# DIRECTION: 27d43f84c1 is a strict ancestor of this — main plus #122 and #123.
-#   git merge-base --is-ancestor 27d43f84c1 1211420526   # verified
+# WHAT TO WATCH: walk rate on a write-heavy service. 14 cards/s was the round
+# trips, not the DB. If it does not move well past that, the next suspect is
+# `proj.write` mean (28ms for a single-cell update) rather than the batching.
 #
-# LEXICOGRAPHIC: '1211…' < '27d4…' ('1' < '2'), the unsafe direction. No
-# `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line must read 1211420526 with no `->`:
+# DIRECTION: 1211420526 is a strict ancestor of this — main plus #124.
+#   git merge-base --is-ancestor 1211420526 cba205940b   # verified
+#
+# LEXICOGRAPHIC: 'cba2…' > '1211…' ('c' > '1'), the SAFE direction for once.
+# No `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line must read cba205940b with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# Superseded: 1211420526 = #122 + #123 — a failing unit costs only itself, and
+# the page fetch stopped demanding a completeness the engine cannot give while
+# feeding. Took staging from 93 consecutive drain failures to zero, and made
+# the first service walk in a day run start to finish (150,666 cards, retired,
+# queue 6 -> 5).
 #
 # Superseded: 27d43f84c1 = #121 — the walk falls back to the document-API scan
 # when the engine truncates its sorted read. It made the walk advance for the
 # first time in a day, which is how #122 became visible.
 #
 # Superseded: 52ac77e5ac = PR #120 — a background failure says WHERE it failed.
-# It printed the stack that named the #121 bug on its first failure, after an
-# afternoon of `last: timeout` with no query, stage or frame.
-#
-# Superseded: 34fb127523 = #119 (a stalled step reads as stalled; the walk's
-# read path is timed). 02b528a85a = #118 (the walk reports a fraction).
-# 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 = #113/#114.
-# aca0552c4e = #112. 53441182f5 = #108.
-vespaEventStore = "1211420526"
+# 34fb127523 = #119 (a stalled step reads as stalled). 02b528a85a = #118 (the
+# walk reports a fraction). 8f353d8d05 = #117. 2fa2b67141 = #116.
+# a23a6a3a68 = #113/#114. aca0552c4e = #112. 53441182f5 = #108.
+vespaEventStore = "cba205940b"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
