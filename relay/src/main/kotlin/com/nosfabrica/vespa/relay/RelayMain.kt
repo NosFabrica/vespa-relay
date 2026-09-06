@@ -52,6 +52,7 @@ import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
+import com.nosfabrica.vespa.relay.pulse.TrustDocument
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
@@ -378,6 +379,11 @@ fun main() {
         landingPage = resourceText("/index.html"),
         observerStatsPage = resourceText("/observer_stats.html"),
         statsPage = resourceText("/stats.html"),
+        // Public on purpose — see Route.trustHealth. The gate on /pulse.html is
+        // for what people searched for; none of this is that.
+        trustPage = resourceText("/trust.html"),
+        trustJson = TrustDocument.reader(store, "This relay's trust projection"),
+        trustExplain = { key -> TrustDocument.explain(store, key) },
         statsJson = statsSnapshot,
         selfIconUrl = ownIconUrl,
     )

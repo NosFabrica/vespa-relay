@@ -82,6 +82,9 @@ fun serveRelay(
     landingPage: String? = null,
     observerStatsPage: String? = null,
     statsPage: String? = null,
+    trustPage: String? = null,
+    trustJson: (() -> kotlinx.serialization.json.JsonObject)? = null,
+    trustExplain: (suspend (String) -> kotlinx.serialization.json.JsonObject)? = null,
     // Null, or never yet published, makes GET /stats.json a 503.
     statsJson: StatsSnapshot? = null,
     // When set, GET /pressure serves the mean read latency the sync process throttles on.
@@ -100,6 +103,7 @@ fun serveRelay(
     val landing = landingPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
     val observerStats = observerStatsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
     val stats = statsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
+    val trust = trustPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
     val pages = listOfNotNull(landing, observerStats, stats)
 
     // After the pages, so the change hook can repaint the markup that links the icon.
@@ -167,6 +171,7 @@ fun serveRelay(
                 get("/observer_stats.html") { call.respondPage(page.page) }
             }
             corpusStats(stats, statsJson)
+            trustHealth(trust, trustJson, trustExplain)
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)
@@ -191,6 +196,38 @@ internal fun Route.corpusStats(
         get("/kind_stats.html") { call.respondRedirect("/stats.html", permanent = true) }
     }
     statsDocument(snapshot)
+}
+
+/**
+ * `GET /trust.html`, `/trust.json` and `/trust/explain/{pubkey}`: whether ranked
+ * search is working on this deployment, and if not which part of the trust
+ * projection is incomplete.
+ *
+ * PUBLIC, unlike `/pulse.html`. The pulse is gated because it quotes what
+ * people searched for; every field here is a count, a phase or a query SHAPE.
+ * Keeping these numbers behind that gate is what let an incomplete projection
+ * stay invisible for days while every other signal read clean.
+ *
+ * `explain` answers for one pubkey. A pubkey is public and this relay already
+ * serves what it holds about one over NIP-01, so naming it here reveals
+ * nothing the protocol does not — the answer is about the PROJECTION, not
+ * about the person.
+ */
+internal fun Route.trustHealth(
+    page: IconedPage?,
+    document: (() -> kotlinx.serialization.json.JsonObject)?,
+    explain: (suspend (String) -> kotlinx.serialization.json.JsonObject)?,
+) {
+    page?.let { get("/trust.html") { call.respondPage(it.page) } }
+    document?.let { doc ->
+        get("/trust.json") { call.respondText(doc().toString(), ContentType.Application.Json) }
+    }
+    explain?.let { ask ->
+        get("/trust/explain/{pubkey}") {
+            val key = call.parameters["pubkey"].orEmpty()
+            call.respondText(ask(key).toString(), ContentType.Application.Json)
+        }
+    }
 }
 
 /**
