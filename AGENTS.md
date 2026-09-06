@@ -9,7 +9,7 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 - `:sync` — the mirror, and the process that hosts the monitor beside it, so
   the pair restarts without the relay or Vespa noticing. `SyncMain` builds both
   engines over one `PeerClient`. Operators know the subsystem as the router
-  (`router.conf`, the `router:` log prefix).
+  (`sync.conf` + `monitor.conf`, the `router:` log prefix).
 - `:monitor` — the measuring plane: the alias fold, the consistency gate and
   the fitness grades, signed onto kind-30166 records the mirror's roster selects
   on. It may not depend on `:sync`, and knows no mirror type: what it takes from
@@ -97,7 +97,7 @@ docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa        
 docker compose up -d --build relay            # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # with the mirror
 docker compose --profile onion up -d          # with the relay's own .onion
-docker compose --profile sync restart sync    # new router.conf, relay untouched
+docker compose --profile sync restart sync    # new sync.conf / monitor.conf, relay untouched
 docker compose logs relay --since 5m
 docker compose logs sync --since 5m
 ```
@@ -181,15 +181,16 @@ tor/                          both torrcs, publish-onion.sh, onion.extra.conf.ex
 ```
 
 `docs/configuration.md` documents every environment variable (`.env.example`
-is the copyable start), `docs/router.md` the router config format,
+is the copyable start), `docs/router.md` the two config files' format,
 `docs/migrations.md` the schema changes a store bump can need on a cluster that
 already holds data, and `docs/search-latency.md` what a search costs.
 
 ## How the router works
 
 `SyncEngine` mirrors upstream events into the store. Its env vars are `SYNC_*`
-(the `ROUTER_*` spellings still work and warn on boot); it is its own process,
-so a `router.conf` change is `restart sync`, never a relay outage. The long form
+(the `ROUTER_*` spellings still work and warn on boot), and the monitor beside
+it reads `MONITOR_CONFIG_FILE`; it is its own process,
+so a `sync.conf` / `monitor.conf` change is `restart sync`, never a relay outage. The long form
 is [docs/router-internals.md](docs/router-internals.md); the config format is
 [docs/router.md](docs/router.md).
 
@@ -215,13 +216,15 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   keeps the relay's sentence, `FilterWidths` narrows an ask refused for width.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
-- **The monitor.** What it measures is `monitor { }` and nothing else: its own
-  `sources`, plus the `relaySource` of each stream `inheritStreams` names
-  (`RouterConfig.monitorDerivations`). A stream never lends its sources
-  implicitly — every derived url becomes a signed public claim — so a config
-  with discovery streams and no `monitor { }` block is refused at boot
-  (`RouterConfigLoader.refuseUndeclaredMonitor`), and `unwatched` on the mirror's
-  `/stats.json` counts the pairs the two declarations have drifted apart on.
+- **The monitor.** Its own config file (`MONITOR_CONFIG_FILE`, `monitor.conf`;
+  a `monitor { }` block in the sync config still works, and declaring both is
+  refused). It names the relay lists it scans and nothing else — no stream lends
+  it anything, and nothing in it names a stream — because every derived url
+  becomes a signed public claim. `RouterConfig.monitorSources()` is the whole
+  of it. A deployment with discovery streams and no monitor declaration is
+  refused at boot (`RouterConfigLoader.refuseUndeclaredMonitor`); `sources = []`
+  is how you measure nothing on purpose. `unwatched` on the mirror's
+  `/stats.json` counts the pairs the two files have drifted apart on.
   `AliasMonitor` runs three passes in order over
   `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
   (`self-consistent`), then `FitnessPass`, which grades what survives with a
@@ -270,7 +273,7 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md).
 - The `prime relays` table: `syncStatus` is the past, `behind` the present,
   `kindCap` and `negentropy` the terms the relay serves us on, and `unwatched`
   the pairs this mirror syncs that our own monitor grades nothing about — a
-  config question (the `monitor { }` block against the streams), never a relay one.
+  config question (monitor.conf against sync.conf), never a relay one.
 - `ingest stages`: per-stage timing (`dedup`, `write`, `proj.fetch`,
   `proj.write`, `versions`, `verify`, `dedup.pre`).
 - Log prefixes: `router:`, `store call SLOW`, `visit … aborted`,

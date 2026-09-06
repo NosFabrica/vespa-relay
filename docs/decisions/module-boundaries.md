@@ -20,7 +20,7 @@ answering "which module holds this file", which is the question you ask before
 every other one. `:common`'s share became `identity`, `pressure` and `store`,
 `:relay`'s became `server.config`, and `:sync`'s two progress files joined the
 `status` package that already held the reports they feed. `:peers` kept `config`
-because `router.conf` is the config this repo means.
+because `sync.conf` and `monitor.conf` are the configs this repo means.
 
 **The root package holds one entrypoint per process and nothing else.**
 `SyncEngine.kt` sat beside `RelayMain.kt` in `com.nosfabrica.vespa.relay`, which

@@ -34,13 +34,13 @@ import kotlinx.coroutines.CancellationException
 
 /**
  * Every url the monitor measures, derived from the store when a pass runs rather than taken from
- * a cache. The corpus is the union of what [derivations] name and what this router already holds
- * records about; which derivations exist is the operator's declaration, never a stream's.
+ * a cache. The corpus is the union of what [sources] name and what this router already holds
+ * records about; [sources] is the monitor's own declaration, never a stream's.
  */
 internal class StreamWorld(
     private val store: IEventStore,
-    /** The labelled relay-list derivations to walk, from `RouterConfig.monitorDerivations`. */
-    private val derivations: List<Pair<String, RelayDiscoveryConfig>>,
+    /** The relay lists to scan, from `RouterConfig.monitorSources`. Null measures nothing. */
+    private val sources: RelayDiscoveryConfig?,
     private val probe: ReachabilityProbe,
     /** Whose `dead` verdicts may hold a url out; never unscoped, because a hold-out forecloses. */
     private val monitorAuthors: List<String>,
@@ -111,7 +111,7 @@ internal class StreamWorld(
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = ownDead()
         // One unit per configured source, timed from after the dead-set read.
-        progress?.measuring(derivations.sumOf { it.second.sources.size }, Processors.UNIT_SOURCE)
+        progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
         // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
@@ -147,7 +147,7 @@ internal class StreamWorld(
         }
         lastSourced = all.size
         System.err.println(
-            "router: alias source derived ${live.size} url(s) across ${derivations.size} declared source group(s)" +
+            "router: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
                 "; ${all.size} named by a relay list this round" +
                 (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
                 (
@@ -173,7 +173,8 @@ internal class StreamWorld(
         onSource: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
-        for ((label, discovery) in derivations) {
+        val discovery = sources ?: return
+        run {
             // Topped up after a throw: a source we could not read is still behind us.
             var ticked = 0
             val found =
@@ -191,7 +192,7 @@ internal class StreamWorld(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    System.err.println("router: $what could not derive $label: ${e.message}")
+                    System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
                     emptyList()
                 }
             repeat(discovery.sources.size - ticked) { onSource() }

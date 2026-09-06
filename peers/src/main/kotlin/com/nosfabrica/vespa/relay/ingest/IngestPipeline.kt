@@ -650,7 +650,7 @@ data class AddressVersion(
     val id: String,
 )
 
-/** `ingestConcurrency` and `ingestBatch` from `router.conf`. A type so a caller cannot swap them. */
+/** `ingestConcurrency` and `ingestBatch` from `sync.conf`. A type so a caller cannot swap them. */
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,

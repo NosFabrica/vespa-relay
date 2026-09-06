@@ -21,20 +21,33 @@ stream silently widened the set of servers this deployment signs public
 kind-30166 claims about. The rule the router already held for negative verdicts
 — `Unreachability.proves()` stays quiet on a failure it cannot attribute, because
 being wrong costs a false statement about somebody else's server — applies to
-the corpus itself. `monitor { inheritStreams }` names which streams lend their
-sources: absent is none, `true` is every discovery stream, a list is those. It
-also turned out that two of the shipped example's three discovery streams source
-from a verdict query, so inheriting them fed the monitor its own output; writing
-the set down is what made that visible.
+the corpus itself. The monitor names the relay lists it scans, in its own terms.
+Writing the set down is also what showed that two of the shipped example's three
+discovery streams source from a verdict query, so inheriting them had been
+feeding the monitor its own output.
 
 **The boot refuses the ambiguous config rather than picking a reading.** A
-deployment with discovery streams and no `monitor { }` block used to measure all
-of them and now measures nothing, and both are legitimate deployments. The
-refusal names the streams and the `inheritStreams` line that restores the old
-behaviour, per the rule that a configured component must never be silently
-inert. It sits at boot (`RouterConfigLoader.refuseUndeclaredMonitor`) rather
-than in `parse`, because a config with no monitor is well formed — it is the
-process that would run doing nothing.
+deployment with discovery streams and no monitor declaration used to measure all
+of their sources and now measures nothing, and both are legitimate deployments.
+The refusal names the streams and where the declaration goes, per the rule that
+a configured component must never be silently inert; `sources = []` is how an
+operator says "measure nothing" as a declaration rather than an omission. It
+sits at boot (`RouterConfigLoader.refuseUndeclaredMonitor`) rather than in
+`parse`, because a config with no monitor is well formed — it is the process
+that would run doing nothing.
+
+**Two files, and neither names anything in the other.** The monitor's config is
+`monitor.conf` (`MONITOR_CONFIG_FILE`), read into the same `RouterConfig`. A
+`monitor { }` block in the sync config still works and declaring both is
+refused, because two declarations cannot both be the truth and picking one
+silently is the failure this whole rule exists for. The first cut of the split
+kept an `inheritStreams` key naming streams from the other file, which was the
+one thing still coupling them: a cross-file name reference is the same coupling
+with more steps, and it made the parse-time check need both documents. Where a
+stream scans a list the monitor should measure too, the `select` block goes in
+both files, or an `include` they share — the source list, not a pointer to one.
+`monitor.conf` is the block's contents with no wrapper, and a pasted-in wrapper
+is refused: read past, it parses to a monitor with no sources.
 
 **The plane knows no mirror type.** `MonitorEngine` took the whole
 `RouterConfig` and read four things out of it, and `StreamWorld` took

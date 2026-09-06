@@ -450,8 +450,8 @@ function relayPanel(d) {
     drift.appendChild(chip(`${fmt(r.unwatched)} of ${fmt(r.pairs)} pair(s) unwatched`, "warn", term("unwatched")));
     box.appendChild(drift);
     box.appendChild(el("p", "sy-sub",
-      "the mirror syncs these and no current verdict of ours grades them — `monitor { sources }` and " +
-      "`monitor { inheritStreams }` name a different set from the streams"));
+      "the mirror syncs these and no current verdict of ours grades them — monitor.conf names a " +
+      "different set of relays from the streams in sync.conf"));
   }
 
   const nowSec = Date.now() / 1000;

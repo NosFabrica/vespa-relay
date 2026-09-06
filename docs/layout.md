@@ -91,14 +91,14 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
                           retirement of verdicts this router would no longer
                           sign. Its CONSTRUCTOR is the account of what the
                           monitor still takes from the mirror, and it names no
-                          mirror type: the `monitor { }` block, the labelled
-                          derivations the config resolved, a dial budget, and a
-                          sink for an event a probe happened to see
+                          mirror type: the monitor's own config, the relay
+                          lists it scans, a dial budget, and a sink for an
+                          event a probe happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
-  StreamWorld.kt          the candidate set all three measure over — declared,
-                          never inherited from the streams
+  StreamWorld.kt          the candidate set all three measure over — monitor.conf's
+                          own declaration, never inherited from the streams
   AliasMonitor.kt         their clock, and the fast lane — which runs the
                           stability gate then fitness over urls named since its
                           last look, and never the fold (per-host work)
@@ -320,7 +320,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
                           streams and their kinds — written once at boot so the
                           relay can publish it. The kind list exists in
-                          router.conf and nowhere else, and a count taken
+                          sync.conf and nowhere else, and a count taken
                           against this relay is wrong without it
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
     RouterTuning.kt       the constants the mirror is paced by
@@ -361,10 +361,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           dial can measure — and the connect that carries it,
                           which IS the `rtt-open` we publish. Pure `parse`,
                           because it is somebody else's json
-    StreamWorld.kt        the url universe the monitor measures: the
-                          `monitor { }` block's own sources, plus the
-                          `relaySource` of each stream `inheritStreams` names.
-                          Reports as the `aliasSource` processor
+    StreamWorld.kt        the url universe the monitor measures: the relay
+                          lists monitor.conf names, and nothing else — no
+                          stream contributes. Reports as the `aliasSource`
+                          processor
   shared/               WHAT BOTH PLANES TOUCH, and the whole of it — the split
                         was derived from the imports, not guessed
     RelayDiscovery.kt     pulling relay urls out of stored events: the mirror
@@ -742,7 +742,7 @@ relay/src/main/resources/
                         Its quietest number is the one that needed a whole
                         mechanism: "your own posts, N% mirrored" compares OUR
                         count for you against your write relay's, and ours is
-                        narrowed by router.conf while theirs is not — 35% on a
+                        narrowed by sync.conf while theirs is not — 35% on a
                         mirror missing nothing. shared/mirrors.js reads the
                         kinds this relay actually asks for off `sync.mirrors` on
                         GET /stats.json and puts them on BOTH counts (and both

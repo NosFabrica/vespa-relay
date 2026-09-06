@@ -44,16 +44,15 @@ job off says so by not configuring the work. The monitor's `dialConcurrency`
 and `fastLaneSeconds` follow the same rule, except that `fastLaneSeconds = 0`
 is the documented off switch for the lane.
 
-**`inheritStreams` accepts a boolean or a list, and defaults to neither.** A
-stream lending its `relaySource` to the monitor is a widening of what this
-deployment signs, so the config says it: absent is none, `true` is every
-discovery stream including ones added later, a list names them. The boolean
-exists because "every discovery stream, whatever I add next" is a real intent
-and a list would silently stop covering a new stream; the list exists because
-"these two, not the verdict-query ones" is the more common one. A name that
-matches no stream with a `relaySource` is refused at parse time, checked before
-`SYNC_STREAMS` narrows the run so debugging one stream never turns an inherited
-name into an error.
+**The monitor's config is its own file, and holds no reference to the sync
+one.** `monitor.conf` (`MONITOR_CONFIG_FILE`) declares the relay lists the
+monitor scans; `sync.conf` declares what is mirrored. An intermediate design
+kept them in one file with an `inheritStreams` key naming which streams lent
+their `relaySource`, which was strictly worse than either end: the two planes
+still shared a document, and the monitor's corpus was written as a pointer at
+somebody else's declaration rather than as itself. Sharing a source list across
+the two is HOCON's `include`, or the same `select` block twice — an actual list
+either way, which cannot go stale against a stream rename.
 
 **The monitor's dial width is 128, up from 16.** The 16 came with a note calling
 the probe work "a side quest" that must stay below the fan-out's concurrency,

@@ -53,6 +53,13 @@ object RouterConfigLoader {
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
         val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
         val raw = inline ?: fromFile ?: return null
+        // The monitor's own file, if the deployment keeps the two planes apart.
+        val monitorInline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
+        val monitorFromFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
+        require(monitorInline == null || monitorFromFile == null) {
+            "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
+        }
+        val monitorRaw = monitorInline ?: monitorFromFile
         val upInterval =
             env
                 .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
@@ -111,7 +118,7 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults)
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, monitorRaw)
             .copy(
                 negPageTarget = pageTarget,
                 negPageMin = pageMin,
@@ -123,8 +130,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * A deployment whose streams discover their relays but which declares no `monitor { }` block
-     * used to measure every one of those streams' sources. It would now measure nothing, so the
+     * A deployment whose streams discover their relays but which declares no monitor at all used
+     * to measure every one of those streams' sources. It would now measure nothing, so the
      * boot asks the config to say which it meant. Called at boot, not at parse: a config is well
      * formed either way, and this is about the process that would run silently inert.
      */
@@ -132,13 +139,12 @@ object RouterConfigLoader {
         if (config.monitor != null) return
         val discovering = config.discoveryStreams().map { it.name }
         require(discovering.isEmpty()) {
-            "router: ${discovering.joinToString()} discover their relays, and there is no `monitor { }` block. " +
-                "The monitor no longer measures a stream's sources unless the block says so, because every url it " +
-                "derives becomes a signed public claim about somebody else's relay. Add " +
-                "`monitor { inheritStreams = [${discovering.joinToString { "\"$it\"" }}] }` for what this config " +
-                "used to do, `monitor { inheritStreams = true }` for every discovery stream including later ones, " +
-                "or `monitor { sources = [ ... ] }` to measure a set of your own. " +
-                "`monitor { inheritStreams = false }` is the deployment that mirrors these streams and measures nothing"
+            "router: ${discovering.joinToString()} discover their relays, and this deployment declares no monitor. " +
+                "The monitor measures what its own config names and nothing else — every url it derives becomes a " +
+                "signed public claim about somebody else's relay, so it is never inferred from a stream. Point " +
+                "MONITOR_CONFIG_FILE at a monitor.conf naming the relay lists to scan (start from " +
+                "monitor.conf.example), or keep a `monitor { }` block in the sync config. A deployment that mirrors " +
+                "these streams and deliberately measures nothing declares an empty monitor: `monitor { sources = [] }`"
         }
     }
 
@@ -167,12 +173,17 @@ object RouterConfigLoader {
         return on
     }
 
+    /**
+     * The two planes' configs into one model. [monitorHocon] is `monitor.conf` — the `monitor { }`
+     * block's contents at the top level, no wrapper — or null where the block lives in [hocon].
+     */
     fun parse(
         hocon: String,
         upIntervalSec: Long = 300L,
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
+        monitorHocon: String? = null,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -303,9 +314,7 @@ object RouterConfigLoader {
             }
         }
         refuseRouterWidePoolWidths(cfg)
-        val monitor = parseMonitor(cfg)
-        // Before narrowing: SYNC_STREAMS runs one stream, and must not turn an inherited name into an error.
-        checkInheritedStreams(monitor, streams)
+        val monitor = parseMonitor(cfg, monitorHocon)
         return RouterConfig(
             connTimeout,
             streams,
@@ -336,10 +345,36 @@ object RouterConfigLoader {
         path: String,
     ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
 
-    /** The `monitor { }` block. A monitor source is a relay source, so it reuses the stream-side parsers. */
-    private fun parseMonitor(cfg: Config): MonitorConfig? {
-        if (!cfg.hasPath("monitor")) return null
-        val m = cfg.getConfig("monitor")
+    /**
+     * The monitor's declaration, from its own file when there is one and from the sync config's
+     * `monitor { }` block otherwise. A monitor source is a relay source, so it reuses the
+     * stream-side parsers.
+     */
+    private fun parseMonitor(
+        cfg: Config,
+        monitorHocon: String?,
+    ): MonitorConfig? {
+        val m =
+            when {
+                monitorHocon != null -> {
+                    // Two declarations cannot both be the truth, and picking one silently is how a
+                    // deployment measures a set nobody is looking at.
+                    require(!cfg.hasPath("monitor")) {
+                        "router: the sync config has a `monitor { }` block AND a separate monitor config is set " +
+                            "(MONITOR_CONFIG / MONITOR_CONFIG_FILE). Keep one: move the block's contents into the " +
+                            "monitor file and delete it here, or unset the variable"
+                    }
+                    monitorDocument(monitorHocon)
+                }
+
+                cfg.hasPath("monitor") -> {
+                    cfg.getConfig("monitor")
+                }
+
+                else -> {
+                    return null
+                }
+            }
         val sources =
             if (m.hasPath("sources")) {
                 m.getConfigList("sources").map { parseRelaySource("monitor", it) }
@@ -348,7 +383,6 @@ object RouterConfigLoader {
             }
         return MonitorConfig(
             sources = sources,
-            inheritStreams = parseInheritStreams(m),
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
             sweepSeconds =
                 (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
@@ -400,41 +434,17 @@ object RouterConfigLoader {
     }
 
     /**
-     * `inheritStreams`: `true` for every discovery stream, a list of names for those, absent for
-     * none. Absent is the default because inheriting widens what this deployment signs.
+     * `monitor.conf` is the block's CONTENTS, not the block: the file is already named for it.
+     * A pasted-in wrapper would parse to a monitor with no sources — measuring nothing, quietly —
+     * so it is refused rather than read past.
      */
-    private fun parseInheritStreams(m: Config): InheritStreams {
-        if (!m.hasPath("inheritStreams")) return InheritStreams.None
-        // A boolean and a list are both legal here, so the raw value decides which.
-        val raw = m.getValue("inheritStreams").unwrapped()
-        return when {
-            raw is Boolean -> {
-                if (raw) InheritStreams.All else InheritStreams.None
-            }
-
-            raw is List<*> -> {
-                val names = raw.mapNotNull { it?.toString()?.trim()?.takeIf { n -> n.isNotEmpty() } }.toSet()
-                if (names.isEmpty()) InheritStreams.None else InheritStreams.Named(names)
-            }
-
-            else -> {
-                error("router: monitor `inheritStreams` is $raw — expected true, false, or a list of stream names")
-            }
+    private fun monitorDocument(hocon: String): Config {
+        val parsed = ConfigFactory.parseString(hocon)
+        require(!parsed.hasPath("monitor")) {
+            "router: the monitor config has a `monitor { }` block wrapped around it. The file IS the block — " +
+                "unwrap it, so `sources`, `exclude` and the clocks sit at the top level"
         }
-    }
-
-    /** A name that inherits from nothing is a typo the monitor would answer with silence. */
-    private fun checkInheritedStreams(
-        monitor: MonitorConfig?,
-        streams: List<SyncStream>,
-    ) {
-        val named = (monitor?.inheritStreams as? InheritStreams.Named)?.names ?: return
-        val withSources = streams.filter { it.discovery != null }.map { it.name }.toSet()
-        val unknown = named - withSources
-        require(unknown.isEmpty()) {
-            "router: monitor inheritStreams names ${unknown.joinToString()}, which is not a stream with a " +
-                "`relaySource` (has: ${withSources.joinToString().ifEmpty { "no such stream" }})"
-        }
+        return parsed
     }
 
     private fun normalizeUrls(

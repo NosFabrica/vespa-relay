@@ -51,7 +51,7 @@ class StreamWorldDerivationTest {
     ): Event = NostrSignerSync().sign(1_700_000_000L, kind, arrayOf(*tags), "")
 
     /** Compiled through the real loader, whose decision it is whether an exclude entry is a regex. */
-    private fun derivations(exclude: List<String>) =
+    private fun sourcesWithExcludes(exclude: List<String>) =
         RouterConfigLoader
             .parse(
                 """
@@ -68,10 +68,10 @@ class StreamWorldDerivationTest {
                     exclude = [ ${exclude.joinToString(", ") { "\"$it\"" }} ]
                 }
                 """.trimIndent(),
-            ).monitorDerivations()
+            ).monitorSources()
 
     /** One [RelayDiscoveryConfig] holding two sources, the shape the position is counted for. */
-    private fun twoSourceDerivations() =
+    private fun twoSources() =
         RouterConfigLoader
             .parse(
                 """
@@ -89,7 +89,7 @@ class StreamWorldDerivationTest {
                     ]
                 }
                 """.trimIndent(),
-            ).monitorDerivations()
+            ).monitorSources()
 
     /**
      * Nothing here dials, so the probe and sockets are never reached; they are passed real so a
@@ -104,7 +104,7 @@ class StreamWorldDerivationTest {
     ): StreamWorld =
         StreamWorld(
             store = store,
-            derivations = derivations(exclude),
+            sources = sourcesWithExcludes(exclude),
             probe = ReachabilityProbe(null),
             monitorAuthors = monitorAuthors,
             self = self,
@@ -193,7 +193,7 @@ class StreamWorldDerivationTest {
             val world =
                 StreamWorld(
                     store = store,
-                    derivations = twoSourceDerivations(),
+                    sources = twoSources(),
                     probe = ReachabilityProbe(null),
                     monitorAuthors = emptyList(),
                     self = null,

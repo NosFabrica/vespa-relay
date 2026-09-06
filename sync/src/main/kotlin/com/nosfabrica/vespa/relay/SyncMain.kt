@@ -190,7 +190,7 @@ fun main() {
     // From the parsed streams too: a stream may set its own `refetchThePastSeconds`.
     val bands = SyncBands.fromEnv(env, config.streams)
 
-    // Written once at boot: a `router.conf` edit is a restart.
+    // Written once at boot: a `sync.conf` edit is a restart.
     val manifest = SyncManifest.fromEnv(env)
     // Only the unset case is announced; a failed write has already said so.
     if (manifest.publishes) {

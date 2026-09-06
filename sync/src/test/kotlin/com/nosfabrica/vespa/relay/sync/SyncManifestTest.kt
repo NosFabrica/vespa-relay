@@ -117,8 +117,8 @@ class SyncManifestTest {
     fun `the shipped example config publishes every stream's own kinds`() {
         val example =
             RouterConfigLoader.parse(
-                requireNotNull(listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile }) {
-                    "missing router.conf.example"
+                requireNotNull(listOf(File("../sync.conf.example"), File("sync.conf.example")).firstOrNull { it.isFile }) {
+                    "missing sync.conf.example"
                 }.readText(),
             )
         val published = streamsOf(SyncManifest.document(example.streams, now))

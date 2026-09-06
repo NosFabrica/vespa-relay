@@ -39,12 +39,14 @@ class RouterConfExamplesTest {
     /** NIP-85 assertions and Tapestry Trusted Lists: one family, because a search expands all eight. */
     private val trustedKinds = listOf(30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395)
 
-    /** Tests run from the module dir; the example sits at the repo root. */
+    /** Tests run from the module dir; the examples sit at the repo root. */
+    private fun at(name: String): File = requireNotNull(listOf(File("../$name"), File(name)).firstOrNull { it.isFile }) { "missing $name" }
+
+    /** Both shipped files, parsed together the way a deployment reads them. */
     private val example: RouterConfig =
         RouterConfigLoader.parse(
-            requireNotNull(
-                listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile },
-            ) { "missing router.conf.example" }.readText(),
+            at("sync.conf.example").readText(),
+            monitorHocon = at("monitor.conf.example").readText(),
         )
 
     @Test

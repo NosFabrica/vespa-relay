@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
-import com.nosfabrica.vespa.relay.config.namesAnySource
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
@@ -176,9 +175,9 @@ class SyncEngine(
         MonitorEngine(
             store = store,
             settings = config.monitor,
-            // Resolved here: which streams lend their sources is the config's word, and the plane
-            // that signs the claims is handed the set rather than deriving it from the mirror's.
-            derivations = config.monitorDerivations(),
+            // The monitor's own declaration, handed over whole. Nothing here derives it from the
+            // mirror's streams: the two planes name their relays independently.
+            sources = config.monitorSources(),
             connectionTimeoutMs = config.connectionTimeoutSec * 1000L,
             peers = peers,
             signer = signer,
@@ -223,7 +222,7 @@ class SyncEngine(
                     tor = tor,
                     verdicts = { urls -> verdicts?.load(urls) ?: RelayVerdictRecord.Verdicts() },
                     // Nothing signs without an identity, and nothing is measured without a source.
-                    watching = signer != null && config.monitorDerivations().namesAnySource(),
+                    watching = signer != null && config.monitorSources() != null,
                 ),
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),

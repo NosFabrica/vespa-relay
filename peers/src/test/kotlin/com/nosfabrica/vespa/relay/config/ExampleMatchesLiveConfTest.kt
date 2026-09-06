@@ -26,8 +26,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * `router.conf.example` must parse to the same streams as the operator's
- * gitignored `router.conf`. Skipped, never passed, where there is no local one.
+ * The shipped examples must parse to the same streams as the operator's gitignored `sync.conf`,
+ * and to the same monitor sources as their `monitor.conf`. Skipped, never passed, where there is
+ * no local pair.
  */
 class ExampleMatchesLiveConfTest {
     /** The fields that decide what a stream syncs, as text: `Filter` has no `equals`, so its json stands in. */
@@ -53,16 +54,53 @@ class ExampleMatchesLiveConfTest {
 
     @Test
     fun `the shipped example parses to the same streams a live config runs`() {
-        val liveFile = find("router.conf")
-        assumeTrue(liveFile != null, "no router.conf here — it is gitignored, so this check is local only")
-        val exampleFile = checkNotNull(find("router.conf.example")) { "router.conf.example is tracked and must exist" }
+        val liveFile = find("sync.conf")
+        assumeTrue(liveFile != null, "no sync.conf here — it is gitignored, so this check is local only")
+        val exampleFile = checkNotNull(find("sync.conf.example")) { "sync.conf.example is tracked and must exist" }
 
         val live = load(liveFile!!).streams
         val example = load(exampleFile).streams
 
         assertEquals(live.map { it.name }, example.map { it.name }, "the two configs define different streams")
         for ((l, e) in live.zip(example)) {
-            assertEquals(shape(l), shape(e), "stream '${l.name}' differs between router.conf and router.conf.example")
+            assertEquals(shape(l), shape(e), "stream '${l.name}' differs between sync.conf and sync.conf.example")
         }
     }
+
+    /** What the monitor measures and on which clocks, as text, for the same reason [shape] is text. */
+    private fun monitorShape(m: MonitorConfig) =
+        listOf(
+            m.sources.map { src -> src.filter.toJson() to src.selects },
+            m.exclude.urls
+                .map { it.url }
+                .sorted() +
+                m.exclude.patterns
+                    .map { it.pattern }
+                    .sorted(),
+            m.sweepSeconds,
+            m.fastLaneSeconds,
+            m.dialConcurrency,
+        ).joinToString("\n")
+
+    @Test
+    fun `the shipped monitor example parses to the same sources a live monitor runs`() {
+        // Its own check, because the two files drift apart independently now — that is the
+        // point of splitting them, and it is also the way a monitor quietly stops measuring.
+        val liveFile = find("monitor.conf")
+        assumeTrue(liveFile != null, "no monitor.conf here — it is gitignored, so this check is local only")
+        val exampleFile = checkNotNull(find("monitor.conf.example")) { "monitor.conf.example is tracked and must exist" }
+
+        val live = checkNotNull(loadMonitor(liveFile!!)) { "the local monitor.conf declares no sources" }
+        val example = checkNotNull(loadMonitor(exampleFile)) { "monitor.conf.example declares no sources" }
+
+        assertEquals(monitorShape(example), monitorShape(live), "monitor.conf and monitor.conf.example measure different sets")
+    }
+
+    /** A monitor file is the block's contents, so it needs a stream config to be parsed beside. */
+    private fun loadMonitor(file: File): MonitorConfig? =
+        RouterConfigLoader
+            .parse(
+                """streams { none { dir = "down", filter = { "kinds": [1] }, urls = [] } }""",
+                monitorHocon = file.readText(),
+            ).monitor
 }

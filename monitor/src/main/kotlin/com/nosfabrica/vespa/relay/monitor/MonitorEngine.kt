@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
-import com.nosfabrica.vespa.relay.config.namesAnySource
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
@@ -52,10 +51,10 @@ class MonitorEngine(
     /** The `monitor { }` block. Null is a deployment with no monitor. */
     private val settings: MonitorConfig?,
     /**
-     * What this plane measures, labelled, as the mirror resolved it out of the config. The set is
-     * declared: a stream lends its sources only where `monitor { inheritStreams }` names it.
+     * The relay lists this plane scans, from the monitor's own config. Every url they name becomes
+     * a signed public claim, so the set is declared here and never inferred from a stream.
      */
-    private val derivations: List<Pair<String, RelayDiscoveryConfig>>,
+    private val sources: RelayDiscoveryConfig?,
     /** The dial budget a probe starts with, before Tor's own slack. */
     private val connectionTimeoutMs: Long,
     private val peers: PeerClient,
@@ -75,7 +74,7 @@ class MonitorEngine(
     private val tor = peers.tor
 
     /** Decided once for the start gate and the `off` rows, so they cannot disagree. */
-    private val hasSources = hasMonitorSources(derivations)
+    private val hasSources = sources != null
 
     private val monitorConcurrency = settings?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
@@ -129,15 +128,14 @@ class MonitorEngine(
     private val world =
         StreamWorld(
             store,
-            derivations,
+            sources,
             probe,
             // Our signer plus every monitor the verdict sources and gates name. A source with no
             // `authors` contributes nothing: an unscoped `dead` would starve a relay out for good.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
-                        derivations
-                            .flatMap { (_, d) -> d.sources + d.gatedBy }
+                        (sources?.let { it.sources + it.gatedBy }.orEmpty())
                             .flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
             self = signer?.pubKey,
@@ -283,9 +281,6 @@ class MonitorEngine(
         get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
-        /** Is there anything for the monitor to work on: does any declared derivation name a source? */
-        internal fun hasMonitorSources(derivations: List<Pair<String, RelayDiscoveryConfig>>): Boolean = derivations.namesAnySource()
-
         /**
          * How often the fast lane looks, or null for a lane that is off. No `monitor` block takes
          * the default; `fastLaneSeconds = 0` inside a block is the off switch and survives.

@@ -44,7 +44,7 @@ import kotlin.test.Test
 
 /**
  * Pulls live kind-10040 declarations into a real Vespa, runs [RelayDiscovery.discover]
- * over `router.conf.example`'s monitor sources, and re-answers through the tags projection
+ * over `monitor.conf.example`'s sources, and re-answers through the tags projection
  * so the two can be compared. Asserts nothing. Selected by `-DliveListProbe=true`;
  * `-DliveListRelay`, `-DliveListVespa` and `-DliveListKind` override the defaults.
  */
@@ -70,13 +70,13 @@ class RelayListLiveProbe {
                 }
                 println("LIVE-LIST fed $fed of ${pulled.size}; store holds ${store.count(Filter(kinds = listOf(kind)))}")
 
+                fun at(name: String) = requireNotNull(listOf(File("../$name"), File(name)).firstOrNull { it.isFile }) { "missing $name" }
                 val conf =
                     RouterConfigLoader.parse(
-                        requireNotNull(
-                            listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile },
-                        ) { "missing router.conf.example" }.readText(),
+                        at("sync.conf.example").readText(),
+                        monitorHocon = at("monitor.conf.example").readText(),
                     )
-                val monitor = requireNotNull(conf.monitor) { "the example has no monitor block" }
+                val monitor = requireNotNull(conf.monitor) { "the example has no monitor config" }
                 val sources = monitor.sources.filter { it.filter.kinds?.contains(kind) == true }
                 val selects = sources.flatMap { it.selects }
                 println("LIVE-LIST config: ${sources.size} source(s) for kind $kind, ${selects.size} select(s)")

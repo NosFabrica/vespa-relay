@@ -1296,11 +1296,11 @@ object StatusVocabulary {
             put(
                 "unwatched",
                 "Pairs whose relay our OWN monitor holds no current verdict about — the mirror syncs it and nothing " +
-                    "grades it. The monitor measures what `monitor { sources }` and `monitor { inheritStreams }` " +
-                    "name, which is a separate declaration from the streams, so this is the number that says the " +
-                    "two have drifted apart. Not harmless: `negentropy` and the fold are unknown for these relays, " +
-                    "and a stream whose `relaySource` is a verdict query would lose them outright at the next " +
-                    "rebuild. Zero is the healthy reading; anything else is a config question, not a relay one.",
+                    "grades it. The monitor measures what its own config names (monitor.conf), which is a separate " +
+                    "declaration from the streams (sync.conf) and never derived from them, so this is the number " +
+                    "that says the two have drifted apart. Not harmless: `negentropy` and the fold are unknown for " +
+                    "these relays, and a stream whose `relaySource` is a verdict query would lose them outright at " +
+                    "the next rebuild. Zero is the healthy reading; anything else is a config question, not a relay one.",
             )
             put(
                 "negentropy",

@@ -107,10 +107,10 @@ Reach for it first.
   refusal taught us (`kindCap`), beside the relay's own sentence.
 - **`unwatched`, on that same table** — the pairs this mirror syncs that our own
   monitor holds no current verdict about. Not a relay reading at all: it is the
-  `monitor { }` block and the streams describing different sets of relays, which
-  they can, because `monitor { sources }` and `monitor { inheritStreams }` are a
-  separate declaration from a stream's `relaySource` — every url the monitor
-  derives becomes a signed public claim, so nothing is inherited implicitly. Zero
+  monitor's config and the streams describing different sets of relays, which
+  they can, because `monitor.conf` is a separate declaration from `sync.conf` and
+  neither names anything in the other — every url the monitor derives becomes a
+  signed public claim, so nothing is inherited. Zero
   is healthy. Anything else is quiet damage: `negentropy` and the fold read as
   unmeasured for those relays (a legal third state, so nothing else complains),
   and a stream whose `relaySource` is a verdict query loses them at the next

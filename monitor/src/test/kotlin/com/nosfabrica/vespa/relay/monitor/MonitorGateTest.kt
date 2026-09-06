@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -33,7 +34,24 @@ class MonitorGateTest {
     private fun config(text: String) = RouterConfigLoader.parse(text.trimIndent())
 
     /** What the mirror would hand the plane for this config. */
-    private fun derivationsOf(text: String) = config(text).monitorDerivations()
+    private fun sourcesOf(text: String) = config(text).monitorSources()
+
+    /** The same, with the monitor declared in its own file — `monitor.conf`, contents at top level. */
+    private fun withMonitorFile(
+        streams: String,
+        monitor: String,
+    ) = RouterConfigLoader.parse(streams.trimIndent(), monitorHocon = monitor.trimIndent())
+
+    /** The monitor block's contents, bare, as its own file carries them. */
+    private val bareMonitorFile =
+        """
+        sources = [
+            {
+                select = [ { kind = 10002, tag = "r", marker = "write" } ]
+                filter = { "kinds": [10002] }
+            }
+        ]
+        """
 
     /** Streams on static urls, every candidate arriving through `monitor { sources }`. */
     private val pureMonitor =
@@ -88,72 +106,86 @@ class MonitorGateTest {
     fun `a monitor block is a source, even when no stream carries one`() {
         val cfg = config(pureMonitor)
         assertTrue(cfg.discoveryStreams().isEmpty(), "the shape: nothing here is a discovery stream")
-        assertTrue(cfg.monitor?.sources?.isNotEmpty() == true, "and yet urls enter through the monitor block")
-        assertTrue(
-            MonitorEngine.hasMonitorSources(cfg.monitorDerivations()),
-            "the passes have a corpus to work on, so the monitor has to run",
-        )
+        assertNotNull(cfg.monitorSources(), "urls enter through the monitor's own declaration, so the passes run")
     }
 
     @Test
     fun `a static config still runs no monitor`() {
-        assertEquals(false, MonitorEngine.hasMonitorSources(derivationsOf(staticOnly)))
+        assertNull(sourcesOf(staticOnly))
     }
 
     @Test
-    fun `a stream that parses relay lists lends the monitor nothing on its own`() {
-        // The url set the monitor signs claims about is declared; editing a stream never widens it.
-        assertEquals(
-            emptyList(),
-            derivationsOf(streamDiscovers),
+    fun `a stream that parses relay lists lends the monitor nothing`() {
+        // The url set this deployment signs claims about is its own declaration. A stream never
+        // contributes to it, so editing one cannot widen what we say about somebody else's relay.
+        assertNull(
+            sourcesOf(streamDiscovers),
             "a discovery stream used to be a monitor source by existing, which made an unrelated edit publish",
         )
-        assertEquals(false, MonitorEngine.hasMonitorSources(derivationsOf(streamDiscovers)))
     }
 
     @Test
-    fun `inheritStreams names the streams the monitor measures`() {
-        val named = derivationsOf(streamDiscovers.trimEnd() + "\nmonitor { inheritStreams = [\"content\"] }")
-        assertEquals(listOf("stream content"), named.map { it.first })
-        assertTrue(MonitorEngine.hasMonitorSources(named))
-    }
-
-    @Test
-    fun `inheritStreams true takes every discovery stream, and false takes none`() {
+    fun `the monitor declares its relay lists in its own file`() {
+        val cfg = withMonitorFile(streamDiscovers, bareMonitorFile)
+        val sources = assertNotNull(cfg.monitorSources(), "monitor.conf is the whole declaration; nothing else is needed")
+        assertEquals(1, sources.sources.size)
         assertEquals(
-            listOf("stream content"),
-            derivationsOf(streamDiscovers.trimEnd() + "\nmonitor { inheritStreams = true }").map { it.first },
-        )
-        assertEquals(
-            emptyList(),
-            derivationsOf(streamDiscovers.trimEnd() + "\nmonitor { inheritStreams = false }"),
-            "the deployment that mirrors these streams and deliberately measures nothing",
+            listOf(10002),
+            sources.sources
+                .single()
+                .filter.kinds,
+            "and it names the relay lists to scan itself",
         )
     }
 
     @Test
-    fun `an inherited stream and the block's own sources are both derivations`() {
-        val both =
-            derivationsOf(
-                streamDiscovers.trimEnd() +
-                    """
-
-                    monitor {
-                        inheritStreams = true
-                        sources = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
-                    }
-                    """,
+    fun `the monitor file carries its own clocks and excludes`() {
+        val cfg =
+            withMonitorFile(
+                staticOnly,
+                """
+                sweepSeconds = 900
+                fastLaneSeconds = 60
+                dialConcurrency = 4
+                exclude = [ "wss://noisy.example" ]
+                sources = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+                """,
             )
-        assertEquals(listOf("stream content", "monitor sources"), both.map { it.first })
+        val monitor = assertNotNull(cfg.monitor)
+        assertEquals(900L, monitor.sweepSeconds)
+        assertEquals(60L, monitor.fastLaneSeconds)
+        assertEquals(4, monitor.dialConcurrency)
+        assertEquals(900L, cfg.monitorSources()!!.refreshSeconds, "the sweep is what re-reads the lists")
     }
 
     @Test
-    fun `inheritStreams naming a stream that does not discover is refused`() {
+    fun `declaring the monitor twice is refused rather than resolved`() {
+        // Two declarations cannot both be the truth, and picking one silently is how a deployment
+        // measures a set nobody is looking at.
         val e =
             assertFailsWith<IllegalArgumentException> {
-                config(streamDiscovers.trimEnd() + "\nmonitor { inheritStreams = [\"typo\"] }")
+                withMonitorFile(pureMonitor, bareMonitorFile)
             }
-        assertTrue(e.message!!.contains("typo"), "the message names what was not found: ${e.message}")
+        assertTrue(e.message!!.contains("Keep one"), "the message says which to delete: ${e.message}")
+    }
+
+    @Test
+    fun `a monitor file wrapped in its own block name is refused`() {
+        // The copy-paste out of a one-file config. Read past, it would parse to a monitor with no
+        // sources — measuring nothing, quietly, which is the failure this whole rule exists for.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                withMonitorFile(staticOnly, "monitor {\n${bareMonitorFile.trimIndent()}\n}")
+            }
+        assertTrue(e.message!!.contains("unwrap"), "the message says what to do: ${e.message}")
+    }
+
+    @Test
+    fun `an empty sources list is the deployment that measures nothing on purpose`() {
+        val cfg = withMonitorFile(streamDiscovers, "sources = []")
+        assertNotNull(cfg.monitor, "the declaration exists, so the boot has its answer")
+        assertNull(cfg.monitorSources(), "and the answer is that nothing is measured")
+        RouterConfigLoader.refuseUndeclaredMonitor(cfg)
     }
 
     @Test
@@ -161,7 +193,7 @@ class MonitorGateTest {
         // Parsing is fine — the config is well formed; it is the process that would run inert.
         val cfg = config(streamDiscovers)
         val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseUndeclaredMonitor(cfg) }
-        assertTrue(e.message!!.contains("inheritStreams"), "the message says how to keep the old behaviour: ${e.message}")
+        assertTrue(e.message!!.contains("MONITOR_CONFIG_FILE"), "the message says where the declaration goes: ${e.message}")
         RouterConfigLoader.refuseUndeclaredMonitor(config(staticOnly))
         RouterConfigLoader.refuseUndeclaredMonitor(config(pureMonitor))
     }

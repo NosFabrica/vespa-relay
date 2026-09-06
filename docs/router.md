@@ -596,61 +596,56 @@ NIP-42, and the identity this router signs with is not a member of anybody's
 group; the failure is membership, not reachability, so no amount of config
 reaches them.
 
-## The monitor block: what this deployment measures
+## monitor.conf: what this deployment measures
 
-`monitor { }` is the whole of what the probe passes walk. Every url derived
-there becomes a signed, public kind-30166 record — a claim about somebody
-else's relay, published under `RELAY_NSEC` — so the set is a declaration, not a
-side effect of how the mirror happens to be configured:
+The monitor's config is its own file. `MONITOR_CONFIG_FILE` points at it,
+`MONITOR_CONFIG` carries it inline, and the file is the declaration's
+**contents** — no wrapper, because the file is already named for it:
 
 ```hocon
-monitor {
-  # None (the default), every discovery stream, or the ones named.
-  inheritStreams = false
-  # inheritStreams = true
-  # inheritStreams = ["assertions", "indexers"]
-
-  sources        = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
-  exclude        = []
-  sweepSeconds   = 21600
-  fastLaneSeconds = 120
-  dialConcurrency = 128
-}
+# monitor.conf
+sources         = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+exclude         = []
+sweepSeconds    = 21600
+fastLaneSeconds = 120
+dialConcurrency = 128
 ```
 
-A stream's `relaySource` lends the monitor nothing unless `inheritStreams`
-names it. That used to be implicit — every discovery stream was a monitor
-source by existing — which meant adding a `relaySource` to a stream silently
-widened the set of servers this deployment made public statements about. The
-same rule the router already holds for negative verdicts (`Unreachability`
-stays quiet on a failure it cannot attribute) applies to the corpus itself.
+Every url derived here becomes a signed, public kind-30166 record — a claim
+about somebody else's relay, published under `RELAY_NSEC`. That is why it is a
+file of its own: **nothing in `sync.conf` widens it, and nothing here names a
+stream.** The two files are read independently and neither refers to the other,
+so editing the streams cannot change what this deployment says about anyone.
 
-`inheritStreams` naming a stream that has no `relaySource` is a hard error at
-parse time, so a typo is refused rather than answered with silence. A config
-with discovery streams and **no** `monitor { }` block at all is refused at
-boot, with the `inheritStreams` line that restores what it used to do — the
-boot refuses rather than defaulting, because both readings are legitimate and
-only the operator knows which was meant. `monitor { inheritStreams = false }`
-is how you say "mirror these streams and measure nothing".
+Where a stream scans a relay list the monitor should measure too, say so in both
+— the same `select` block in each file, or an `include` both files share. A
+pointer from one to the other would put the two planes back in one config with
+extra steps.
 
-Two shapes make inheriting pointless, and both are common:
+Three things are refused rather than resolved:
 
-- A stream whose `relaySource` is a **verdict query** (`kinds: [30166]`) reads
-  the monitor's own output. Inheriting it feeds the monitor urls it has already
-  graded, which the corpus covers anyway — every url this router holds a record
-  about is walked regardless (`recordedOnly` on the source row).
-- A stream whose scan duplicates one of `monitor { sources }`. The shipped
-  `router.conf.example` has both shapes, which is why it ships
-  `inheritStreams = false`.
+- **A `monitor { }` wrapper inside `monitor.conf`.** It is the copy-paste out of
+  a one-file config, and read past it would parse to a monitor with no sources —
+  measuring nothing, quietly.
+- **Declaring the monitor twice**, in `monitor.conf` and in a `monitor { }`
+  block of the sync config. Two declarations cannot both be the truth, and
+  picking one silently is how a deployment measures a set nobody is looking at.
+  (One file with a `monitor { }` block is still a supported shape; it is only
+  having *both* that is refused.)
+- **No monitor declaration at all, while streams discover their relays.** That
+  configuration used to measure every one of those streams' sources and now
+  measures nothing, and both are legitimate deployments. `sources = []` is how
+  you say "mirror these streams and measure nothing" — a declaration, so it
+  boots.
 
-Inheriting is what you want where a stream scans relay lists the monitor block
-does not. The number that tells you which case you are in is `unwatched` on the
-mirror's `/stats.json` and the prime-relays card: (relay, stream) pairs the
+The number that says the two files have drifted apart is `unwatched`, on the
+mirror's `/stats.json` and its prime-relays card: (relay, stream) pairs the
 mirror syncs that no current verdict of ours grades. Zero is the healthy
-reading. Anything else means the two declarations have drifted, and it matters
-beyond tidiness — `negentropy` and the fold are unknown for those relays, and a
-stream whose `relaySource` is a verdict query would drop them at the next
-rebuild.
+reading. Anything else matters beyond tidiness — `negentropy` and the fold are
+unknown for those relays, and a stream whose `relaySource` is a verdict query
+would drop them at the next rebuild. It stays at zero on a deployment that
+measures nothing on purpose: "nobody graded this" and "nothing here grades
+anything" are different absences.
 
 ## Mirroring the deletions themselves
 
@@ -926,7 +921,7 @@ The relay reads it off the shared volume and publishes the union of the `down`
 kinds as `sync.mirrors.kinds` on `/stats.json`. A client scopes its remote
 `COUNT` to that list, and the percentage becomes one that can reach 100%.
 
-Once at boot is the whole lifecycle: a `router.conf` edit is a `restart sync`, so
+Once at boot is the whole lifecycle: a `sync.conf` edit is a `restart sync`, so
 there is no other moment this can change, and `writtenAt` is how a reader tells a
 live declaration from one left behind by a router that was switched off. What is
 written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
@@ -1067,11 +1062,13 @@ The router is the `sync` service, behind the `sync` profile — the profile is
 the on-switch. Copy the bundled example, then start with the mirror on:
 
 ```bash
-cp router.conf.example router.conf   # then edit the relay list / filters
-SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
+cp sync.conf.example sync.conf         # what to mirror: the relay list / filters
+cp monitor.conf.example monitor.conf   # what to measure: the relay lists to scan
+SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
+  docker compose --profile sync up -d --build
 ```
 
-Plain `docker compose up` serves without mirroring. Edited `router.conf`?
+Plain `docker compose up` serves without mirroring. Edited either file?
 Restart only the mirror — the relay keeps serving, and the sync cursors make
 the re-run cost a diff, not a corpus:
 

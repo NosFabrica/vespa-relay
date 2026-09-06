@@ -85,14 +85,15 @@ import java.io.File
 fun main() {
     val env = System.getenv()
 
-    // A sync config aimed at this process is a configured component that would run nothing.
-    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE")
+    // A sync or monitor config aimed at this process is a configured component that would run
+    // nothing. The monitor rides the sync process, so its config is refused for the same reason.
+    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE", "MONITOR_CONFIG", "MONITOR_CONFIG_FILE")
         .firstOrNull { !env[it].isNullOrBlank() }
         ?.let {
             error(
-                "$it is set, but the relay no longer runs the sync engine — it moved to its own process " +
-                    "(the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
-                    "`docker compose --profile sync up`). Move the SYNC_* settings there, or unset $it " +
+                "$it is set, but the relay no longer runs the sync engine or the monitor — they moved to their own " +
+                    "process (the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
+                    "`docker compose --profile sync up`). Move the SYNC_* and MONITOR_* settings there, or unset $it " +
                     "to serve without mirroring.",
             )
         }
