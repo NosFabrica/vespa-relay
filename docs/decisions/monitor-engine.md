@@ -12,8 +12,9 @@ finds the commit.
 inside `SyncEngine`, and one class started two planes that ask different
 questions on different clocks in different units. Both planes' rows landed in
 one document and the page split them back apart by name (`splitProcessors`
-in the JS). What the monitor still takes from the mirror is `ingest`,
-`sockets` and `pinnedUrls`; cut those and it is a separate process.
+in the JS). What the monitor still takes from the mirror is
+`sockets`, `pinnedUrls` and a sink for a probe-seen event; cut those and it is a
+separate process.
 
 **The corpus is declared, never inherited from the streams.** Every discovery
 stream used to be a monitor source by existing, so adding a `relaySource` to a
@@ -25,6 +26,14 @@ the corpus itself. The monitor names the relay lists it scans, in its own terms.
 Writing the set down is also what showed that two of the shipped example's three
 discovery streams source from a verdict query, so inheriting them had been
 feeding the monitor its own output.
+
+**The declaration is `sources`, not the block.** The first cut of the refusal
+tested `config.monitor != null`, which a block holding only `fastLaneSeconds = 60`
+satisfies — so a config that tuned a clock and never said what to measure walked
+straight through the guard written for exactly that, ran every monitor row at
+`off`, and signed nothing. `sources` is now nullable in the model so absent and
+`[]` cannot be confused: absent never answered and is refused, `[]` answered
+"nothing" and boots.
 
 **The boot refuses the ambiguous config rather than picking a reading.** A
 deployment with discovery streams and no monitor declaration used to measure all
@@ -67,6 +76,12 @@ from the discovery streams to all of them turned that into a hole a static
 `trusted` stream opened for the whole probed corpus — a forged event matching
 its filter would have been stored without a signature check. The events are a
 handful per relay, so verifying them all costs nothing worth having.
+
+**The probe-event sink asks the streams that pull.** It first asked
+`config.streams`, which includes `dir = "up"`: an up stream's filter describes
+what this router PUBLISHES, so a deployment pushing its own notes would have
+stored any matching event a probe happened to see on any of twenty thousand
+relays. `VisitPool.ridesThePool` is the set that pulls, and the sink asks that.
 
 **The probe-event sink asks every stream, where it used to ask the discovering
 ones.** `StreamWorld` was handed `discoveryStreams` for both jobs, so an event a

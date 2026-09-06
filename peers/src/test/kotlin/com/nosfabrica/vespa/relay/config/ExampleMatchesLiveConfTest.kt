@@ -71,7 +71,7 @@ class ExampleMatchesLiveConfTest {
     /** What the monitor measures and on which clocks, as text, for the same reason [shape] is text. */
     private fun monitorShape(m: MonitorConfig) =
         listOf(
-            m.sources.map { src -> src.filter.toJson() to src.selects },
+            m.sources.orEmpty().map { src -> src.filter.toJson() to src.selects },
             m.exclude.urls
                 .map { it.url }
                 .sorted() +
@@ -94,7 +94,10 @@ class ExampleMatchesLiveConfTest {
         // Both parse to a MonitorConfig whatever they hold, so the emptiness check is on `sources`.
         val live = loadMonitor(liveFile!!)
         val example = loadMonitor(exampleFile)
-        assertTrue(example.sources.isNotEmpty(), "monitor.conf.example is the template and must name what it measures")
+        assertTrue(
+            !example.sources.isNullOrEmpty(),
+            "monitor.conf.example is the template and must name what it measures",
+        )
 
         assertEquals(monitorShape(example), monitorShape(live), "monitor.conf and monitor.conf.example measure different sets")
     }

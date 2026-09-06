@@ -105,13 +105,8 @@ class RelayVerdictRecord(
                 val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
                 val url = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
                 if (event.createdAt < (newestAt[url] ?: Long.MIN_VALUE)) continue
-                val label =
-                    event.tags.firstOrNull {
-                        it.size > LABEL_NAMESPACE_INDEX && it[0] == LABEL_TAG && it[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
-                    } ?: continue
-                if (label.getOrNull(LABEL_EPOCH_INDEX) != FITNESS_EPOCH) continue
-                val measuredAt = label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: continue
-                if (measuredAt < floor) continue
+                val label = event.tags.firstOrNull(::isFitnessLabel) ?: continue
+                if (!currentLabel(label, floor)) continue
                 newestAt[url] = event.createdAt
                 grades[url] = StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX))
             }
@@ -197,8 +192,8 @@ class RelayVerdictRecord(
         // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
         // and it carries neither a fold answer nor a NIP-77 one.
         event.tags
-            .firstOrNull { it.size > LABEL_NAMESPACE_INDEX && it[0] == LABEL_TAG && it[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE }
-            ?.takeIf { it.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH && (it.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor }
+            .firstOrNull(::isFitnessLabel)
+            ?.takeIf { currentLabel(it, floor) }
             ?.let { measured += from }
         event.tags
             .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
@@ -410,6 +405,20 @@ class RelayVerdictRecord(
 
     /** [edit]'s ordinary ownership: these tag names, whole. Wrong for the shared `l`/`L`. */
     private fun owning(vararg names: String): (Array<String>) -> Boolean = { it.firstOrNull() in names }
+
+    /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
+    private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+
+    /**
+     * [current] for the fitness label, whose epoch and stamp sit at their own offsets. One
+     * definition, because a bumped [FITNESS_EPOCH] read in two places is a stale grade kept alive.
+     */
+    private fun currentLabel(
+        tag: Array<String>,
+        floor: Long,
+    ): Boolean =
+        tag.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH &&
+            (tag.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor
 
     /**
      * Is this verdict one we would still act on: under the current rules and within its TTL?

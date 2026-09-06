@@ -518,7 +518,7 @@ function relayPanel(d) {
   box.appendChild(scroll);
   if (r.omitted) {
     box.appendChild(el("p", "sy-sub",
-      `${fmt(r.omitted)} more pair(s) not listed — the counts above are complete, and every row naming a fault or an unwatched relay is above the cut`));
+      `${fmt(r.omitted)} more pair(s) not listed — the counts above are complete, and every row naming a fault is above the cut`));
   }
   return box;
 }

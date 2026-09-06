@@ -89,14 +89,20 @@ internal class RosterBuilder(
         val measured: Set<NormalizedRelayUrl> = emptySet(),
         /** Whether [measured] means anything; false on a deployment that measures nothing on purpose. */
         val watching: Boolean = false,
+        /**
+         * Urls a stream names in its own `urls`. They are on the roster because an operator put
+         * them there, not because a verdict admitted them, so no verdict is owed for one.
+         */
+        val declared: Set<NormalizedRelayUrl> = emptySet(),
     ) {
         /**
-         * Whether a verdict of ours stands behind [url]. Two absences are not drift and answer
-         * true: a router that measures nothing on purpose, and one holding no verdict about
-         * ANYTHING — a cold start before the first pass, or a rebuild whose verdict read threw.
-         * Drift is one set differing from another, which needs both to exist.
+         * Whether a verdict of ours stands behind [url], or none was ever owed. Three absences are
+         * not drift: a router that measures nothing on purpose, one holding no verdict about
+         * ANYTHING (a cold start, or a rebuild whose verdict read threw), and a url a stream pins
+         * by hand — that one bypasses the verdicts by design and monitor.conf has no syntax to
+         * name it, so counting it would be a fault with no available fix.
          */
-        fun watches(url: NormalizedRelayUrl): Boolean = !watching || measured.isEmpty() || url in measured
+        fun watches(url: NormalizedRelayUrl): Boolean = !watching || measured.isEmpty() || url in declared || url in measured
     }
 
     /** One source's discovery, held for its own `refreshSeconds`. */
@@ -163,6 +169,7 @@ internal class RosterBuilder(
             speaksNegentropy = standing.speaksNegentropy,
             measured = standing.measured,
             watching = watching,
+            declared = streams.flatMapTo(HashSet()) { it.urls },
         )
     }
 

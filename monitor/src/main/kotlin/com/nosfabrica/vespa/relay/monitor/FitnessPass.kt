@@ -285,11 +285,8 @@ class FitnessPass(
             // write, with `quietForSec` climbing on a pass writing thousands of verdicts.
             progress.measuring(rotated.size, Processors.UNIT_VERDICT)
             for (url in rotated) {
-                val outcome = outcomes[url]
-                if (outcome == null) {
-                    progress.attempted()
-                    continue
-                }
+                // `rotated` is `outcomes`' own key set, so every url here has one.
+                val outcome = outcomes.getValue(url)
                 // The evidence has to match too: re-folded onto a different canonical is not the
                 // same statement.
                 if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {

@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ServiceType
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -48,6 +49,19 @@ class RouterConfExamplesTest {
             at("sync.conf.example").readText(),
             monitorHocon = at("monitor.conf.example").readText(),
         )
+
+    /** The shipped monitor names what it measures; a template that did not would be the bug. */
+    private fun monitorSources() = checkNotNull(example.monitor?.sources) { "monitor.conf.example must declare `sources`" }
+
+    @Test
+    fun `the shipped pair boots`() {
+        // The quickstart in sync.conf.example's own header copies BOTH files. Parsed together they
+        // have to survive the boot refusal too — an example that crash-loops is a broken feature,
+        // and the streams here all discover their relays.
+        RouterConfigLoader.refuseUndeclaredMonitor(example)
+        assertTrue(example.discoveryStreams().isNotEmpty(), "the shape: without a discovery stream the refusal cannot fire")
+        assertNotNull(example.monitorSources(), "…so the monitor half has to declare what it measures")
+    }
 
     @Test
     fun `a static stream seeds the store the discovery scans read from`() {
@@ -99,7 +113,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the monitor fans out over NIP-65 write relays`() {
-        val sources = example.monitor!!.sources.filter { it.filter.kinds == listOf(10002) }
+        val sources = monitorSources().filter { it.filter.kinds == listOf(10002) }
         assertTrue(sources.isNotEmpty(), "the monitor does not read NIP-65 lists")
 
         for (source in sources) {
@@ -122,8 +136,7 @@ class RouterConfExamplesTest {
     @Test
     fun `the monitor also fans out over NIP-29 group hosts`() {
         val hosts =
-            example.monitor!!
-                .sources
+            monitorSources()
                 .filter { it.filter.kinds == listOf(10009) }
                 .map { "monitor" to it }
         assertTrue(hosts.isNotEmpty(), "the monitor does not read NIP-29 group lists")
@@ -220,7 +233,7 @@ class RouterConfExamplesTest {
             "the assertions stream dials only relays a verdict vouches for",
         )
         // Which only works if those urls earn verdicts: the monitor must read the same 10040 tags.
-        val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }
+        val monitor10040 = monitorSources().filter { it.filter.kinds == listOf(10040) }
         assertTrue(monitor10040.isNotEmpty(), "the assertions scan is gated on verdicts no monitor source would ever take")
         assertEquals(
             example
@@ -249,8 +262,7 @@ class RouterConfExamplesTest {
     private fun scans10040() =
         mapOf(
             "monitor" to
-                example.monitor!!
-                    .sources
+                monitorSources()
                     .filter { it.filter.kinds == listOf(10040) }
                     .flatMap { it.selects },
             "assertions" to

@@ -84,8 +84,12 @@ data class RouterConfig(
  * deployment measures, written in its own terms; no stream contributes to it.
  */
 data class MonitorConfig(
-    /** Where candidate urls come from; the same shape as a stream's `relaySource`. */
-    val sources: List<RelaySource>,
+    /**
+     * Where candidate urls come from; the same shape as a stream's `relaySource`. Null is a block
+     * that never said — a config that tunes the clocks and leaves the corpus unanswered, which the
+     * boot refuses. An empty list is the answer "measure nothing", and boots.
+     */
+    val sources: List<RelaySource>?,
     val exclude: RelayExcludes = RelayExcludes.NONE,
     /** How often every candidate is re-verdicted. */
     val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
@@ -103,7 +107,7 @@ data class MonitorConfig(
     /** This block's own sources as a discovery config; the cadence fields carry the sweep. */
     fun asDiscovery(): RelayDiscoveryConfig? =
         sources
-            .takeIf { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() }
             ?.let { RelayDiscoveryConfig(sources = it, refreshSeconds = sweepSeconds, exclude = exclude) }
 
     companion object {

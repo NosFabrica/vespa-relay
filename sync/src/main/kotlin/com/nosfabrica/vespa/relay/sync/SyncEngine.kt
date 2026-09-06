@@ -184,11 +184,11 @@ class SyncEngine(
             sockets = sockets,
             // Submitted once, not once per wanting stream. ALWAYS VERIFIED, whatever a matching
             // stream's `trusted` says: that flag vouches for one declared upstream, and this event
-            // came off whichever relay a probe pass happened to dial. Asked of every stream, not
-            // the discovering ones — which streams the monitor derives from is no longer a
-            // relationship, so who wanted an event is asked of them all.
+            // came off whichever relay a probe pass happened to dial. Asked of the streams that
+            // PULL — an `up` stream's filter describes what this router publishes, and nothing
+            // there ever asked to mirror what a probe saw.
             onProbeEvent = { event ->
-                if (config.streams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
+                if (visitStreams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
             },
             pinnedUrls = pinnedUrls,
             scope = scope,

@@ -65,9 +65,6 @@ object Repo {
             ?.filter { it.isFile }
             ?: emptySequence()
 
-    /** A tracked file at the checkout root, or null. Tests run from a module dir, so this resolves it. */
-    fun file(name: String): File? = File(root, name).takeIf { it.isFile }
-
     /** The packages a module declares in one source set. */
     fun packages(
         module: String,

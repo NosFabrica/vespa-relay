@@ -119,6 +119,43 @@ class MonitorScopeTest {
         }
 
     @Test
+    fun `a relay a stream pins by hand is never counted as drift`() =
+        runBlocking {
+            // It is on the roster because an operator put it in `urls`, bypassing the verdicts by
+            // design, and monitor.conf has no syntax that could name a literal url. Counting it
+            // would be a fault with no available fix, and "zero is healthy" unreachable.
+            // A graded relay beside the pinned one, so `measured` is NOT empty: without that this
+            // would pass on the cold-start rule and prove nothing about the pinned url.
+            val store = storeWithBothMonitors()
+            val pinned = RelayUrlNormalizer.normalize("wss://pinned.example")
+            val roster =
+                RosterBuilder(
+                    store = store,
+                    watching = true,
+                    verdicts = { urls -> RelayVerdictRecord(store, ours).load(urls) },
+                    streams =
+                        RouterConfigLoader
+                            .parse(
+                                """
+                                streams {
+                                    pinned { dir = "down", filter = { "kinds": [1] }, urls = [ "wss://pinned.example" ] }
+                                    graded { dir = "down", filter = { "kinds": [1] }
+                                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
+                                }
+                                """.trimIndent(),
+                            ).streams,
+                    bands = SyncBands(null),
+                ).rebuild()
+
+            assertTrue(pinned in roster.asks.keys, "the fixture has to put the pinned url on the roster")
+            assertTrue(ourRelay in roster.asks.keys, "…and the graded one beside it")
+            assertEquals(setOf(ourRelay), roster.measured, "so the cold-start rule is not what answers below")
+            assertEquals(setOf(pinned), roster.declared)
+            assertTrue(roster.watches(pinned), "no verdict is owed for a url the operator pinned")
+            assertTrue(roster.watches(ourRelay))
+        }
+
+    @Test
     fun `a source naming no authors admits every monitor in the store`() =
         runBlocking {
             val roster = rosterOf(storeWithBothMonitors()).rebuild()

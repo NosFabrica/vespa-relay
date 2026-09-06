@@ -13,8 +13,9 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 - `:monitor` — the measuring plane: the alias fold, the consistency gate and
   the fitness grades, signed onto kind-30166 records the mirror's roster selects
   on. It may not depend on `:sync`, and knows no mirror type: what it takes from
-  the mirror arrives through `MonitorEngine`'s constructor as the `monitor { }`
-  block, a list of labelled derivations, and a sink for an event a probe saw.
+  the mirror arrives through `MonitorEngine`'s constructor as the monitor's own
+  config, the relay lists it scans, a dial budget, and a sink for an event a
+  probe happened to see.
 - `:common` — only what the serving relay also reads (`RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, `ServingPressure`). Never
   quartz's relay client, never Ktor.
@@ -95,7 +96,9 @@ docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa        
 ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i                        # real 10040s off a live relay through a real Vespa; -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
 
 docker compose up -d --build relay            # the usual dev loop (serving only)
-docker compose --profile sync up -d --build   # with the mirror
+cp sync.conf.example sync.conf && cp monitor.conf.example monitor.conf
+SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
+  docker compose --profile sync up -d --build                 # with the mirror and the monitor
 docker compose --profile onion up -d          # with the relay's own .onion
 docker compose --profile sync restart sync    # new sync.conf / monitor.conf, relay untouched
 docker compose logs relay --since 5m

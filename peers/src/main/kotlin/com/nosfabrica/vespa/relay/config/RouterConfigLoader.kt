@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.config
 
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigParseOptions
+import com.typesafe.config.ConfigSyntax
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -50,16 +52,23 @@ fun Map<String, String>.syncEnv(
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
-        val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
-        val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
-        val raw = inline ?: syncFile?.readText() ?: return null
-        // The monitor's own file, if the deployment keeps the two planes apart.
+        // The monitor's own file, if the deployment keeps the two planes apart. Read BEFORE the
+        // sync config decides there is nothing to do, so a monitor declaration is never dropped
+        // without a word and the one-declaration rule holds on every path.
         val monitorInline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
         val monitorFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
         require(monitorInline == null || monitorFile == null) {
             "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
         }
         val monitorRaw = monitorInline ?: monitorFile?.readText()
+
+        val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
+        val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
+        require(monitorRaw == null || inline != null || syncFile != null) {
+            "router: a monitor config is set and no sync config is — this process mirrors and measures in one, " +
+                "and there is nothing here to mirror. Set SYNC_CONFIG_FILE too, or unset the monitor variable"
+        }
+        val raw = inline ?: syncFile?.readText() ?: return null
         val upInterval =
             env
                 .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
@@ -145,7 +154,9 @@ object RouterConfigLoader {
      * because such a config is well formed — it is the process that would run inert.
      */
     fun refuseUndeclaredMonitor(config: RouterConfig) {
-        if (config.monitor != null) return
+        // The block existing is not the declaration — `sources` is. One that only tunes the clocks
+        // never said what to measure, and would run the plane over nothing without a word.
+        if (config.monitor?.sources != null) return
         val discovering = config.discoveryStreams().map { it.name }
         require(discovering.isEmpty()) {
             "router: ${discovering.joinToString()} discover their relays, and this deployment declares no monitor. " +
@@ -387,12 +398,9 @@ object RouterConfigLoader {
                     return null
                 }
             }
-        val sources =
-            if (m.hasPath("sources")) {
-                m.getConfigList("sources").map { parseRelaySource("monitor", it) }
-            } else {
-                emptyList()
-            }
+        // Absent and empty are different answers: one never said what to measure, the other said
+        // "nothing". Only the first is refused at boot.
+        val sources = if (m.hasPath("sources")) m.getConfigList("sources").map { parseRelaySource("monitor", it) } else null
         return MonitorConfig(
             sources = sources,
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
@@ -470,7 +478,14 @@ object RouterConfigLoader {
     private fun document(
         hocon: String,
         origin: File?,
-    ): Config = if (origin != null) ConfigFactory.parseFile(origin) else ConfigFactory.parseString(hocon)
+    ): Config =
+        if (origin != null) {
+            // Syntax forced: `parseFile` would otherwise take it from the extension, and a config
+            // an operator named `.json` holding HOCON would stop parsing on its first comment.
+            ConfigFactory.parseFile(origin, ConfigParseOptions.defaults().setSyntax(ConfigSyntax.CONF))
+        } else {
+            ConfigFactory.parseString(hocon)
+        }
 
     private fun normalizeUrls(
         stream: String,

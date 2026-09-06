@@ -77,7 +77,7 @@ class RelayListLiveProbe {
                         monitorHocon = at("monitor.conf.example").readText(),
                     )
                 val monitor = requireNotNull(conf.monitor) { "the example has no monitor config" }
-                val sources = monitor.sources.filter { it.filter.kinds?.contains(kind) == true }
+                val sources = monitor.sources.orEmpty().filter { it.filter.kinds?.contains(kind) == true }
                 val selects = sources.flatMap { it.selects }
                 println("LIVE-LIST config: ${sources.size} source(s) for kind $kind, ${selects.size} select(s)")
 

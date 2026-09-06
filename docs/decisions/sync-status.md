@@ -15,8 +15,12 @@ That is quiet — `negentropy` and the fold read as unmeasured, which is a legal
 third state, and a stream whose `relaySource` is a verdict query would simply
 stop finding them. So the roster carries which of its urls our own monitor holds
 a current verdict about, and the prime-relays report counts the pairs it does
-not. It is counted over every pair rather than the cut row list, and an
-unwatched pair sorts above a watched one so the drift survives the cut. It comes
+not. It is counted over every pair rather than the cut row list; the COUNT is what
+survives, since an unwatched row ranks below `behindSec` — which is near-unique
+per row, so the tiebreak rarely fires and a current unwatched pair can fall past
+`MAX_ROWS`. That is the right ranking: a cold relay is that pair's problem and
+an unwatched one is the config's, and the answer is in monitor.conf, not in the
+row. It comes
 from `RelayVerdictRecord.Verdicts.measured`, which records a url whenever a
 CURRENT verdict of ours stands behind it — the fold answer, the stability one,
 the NIP-77 one, or the fitness grade, which carries neither of the first two and
@@ -29,8 +33,8 @@ no source on purpose, has an empty `measured` set for the honest reason, and
 counting every pair as drift there would put a warning on a correct deployment
 — the loudest possible false alarm, on the page an operator reads first. So the
 roster carries whether anything was supposed to be watching (`signer != null &&
-monitorDerivations().namesAnySource()`), and `Roster.watches` is the join:
-`!watching || url in measured`. `unwatched` is zero throughout a deployment that
+config.monitorSources() != null`), and `Roster.watches` is the join — see the
+paragraphs below for the three absences it also answers true for. `unwatched` is zero throughout a deployment that
 measures nothing, and the card draws nothing at all.
 
 **No verdicts at all is a third absence, and also not drift.** A cold start
@@ -41,6 +45,16 @@ Reading that as 100% drift put a config warning — naming a specific wrong caus
 set differing from another, so it needs both to exist: `watches` answers true
 while `measured` is empty.
 
+
+
+**A pinned url is not drift either.** A relay a stream names in its own `urls`
+is on the roster because an operator put it there, bypassing the verdicts by
+design — the shipped example says so beside the `indexers` stream — and
+`MonitorConfig`'s sources are relay-list selects with no literal-url form, so
+nothing could ever put it in `measured`. Counting it made `unwatched` sit at a
+floor no configuration could clear, with the card diagnosing a drift that had no
+fix. Seen on a live run: two of five, both static upstreams. The roster carries
+the declared set and `watches` answers true for it.
 
 **The vocabulary is checked against a built document, not a written one.** The
 glossary test used to walk a JSON literal, so it only ever covered members

@@ -114,8 +114,13 @@ Reach for it first.
   is healthy. Anything else is quiet damage: `negentropy` and the fold read as
   unmeasured for those relays (a legal third state, so nothing else complains),
   and a stream whose `relaySource` is a verdict query loses them at the next
-  rebuild. The card names it only when it is non-zero, and the rows carrying it
-  sort above the cut beside the faults.
+  rebuild. The card names it only when it is non-zero. READ THE COUNT, not the
+  rows: it is taken over every pair, while an unwatched row ranks below
+  `behindSec` and a current one can fall past the row cut — a cold relay is that
+  pair's problem, an unwatched one is the config's, and the fix is in
+  monitor.conf rather than in any row. A url a stream pins in its own `urls`
+  never counts: it bypasses the verdicts by an operator's decision, and
+  monitor.conf has no syntax that could name it.
 - **…and the same table's per-relay reading** — WHERE EACH RELAY STANDS,
   which everything else the mirror publishes is an aggregate over. `roster`
   counts them, the coverage card charts their bands folded per stream, and the

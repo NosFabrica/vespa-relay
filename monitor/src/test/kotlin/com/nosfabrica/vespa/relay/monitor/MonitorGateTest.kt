@@ -181,6 +181,18 @@ class MonitorGateTest {
     }
 
     @Test
+    fun `a block that tunes the clocks and names no sources is not a declaration`() {
+        // The hole the guard was written for, wearing a monitor block: `sources` is what says
+        // what to measure, and one that only sets a clock never said. It would have run the
+        // plane over nothing, with every row `off` and not a word on the way past.
+        val cfg = withMonitorFile(streamDiscovers, "fastLaneSeconds = 60")
+        assertNotNull(cfg.monitor, "the block parses — it is the declaration that is missing")
+        assertNull(cfg.monitorSources())
+        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseUndeclaredMonitor(cfg) }
+        assertTrue(e.message!!.contains("MONITOR_CONFIG_FILE"), "and the boot says where the declaration goes: ${e.message}")
+    }
+
+    @Test
     fun `an empty sources list is the deployment that measures nothing on purpose`() {
         val cfg = withMonitorFile(streamDiscovers, "sources = []")
         assertNotNull(cfg.monitor, "the declaration exists, so the boot has its answer")

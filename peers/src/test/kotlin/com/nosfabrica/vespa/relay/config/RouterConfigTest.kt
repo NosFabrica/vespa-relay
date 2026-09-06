@@ -1223,7 +1223,7 @@ class RouterConfigTest {
                 """.trimIndent(),
             )
         val m = cfg.monitor!!
-        assertEquals(1, m.sources.size)
+        assertEquals(1, m.sources!!.size)
         assertEquals(3600L, m.sweepSeconds)
         assertEquals(60L, m.fastLaneSeconds)
         assertEquals(32, m.dialConcurrency)
