@@ -78,6 +78,19 @@ relationship any more. The sink asks the mirror, and the mirror's answer is any
 stream whose filter matches. The volume is bounded by what the passes fetch,
 which is a handful of events per relay.
 
+**The fitness pass re-arms its position for the writes.** It dials one set and
+writes a bigger one — a url folded onto another, or already failed by the
+stability gate, is graded without a socket — and the position was armed for the
+dials alone. So once the last dial landed the row sat at `n of n` with
+`quietForSec` climbing for as long as the writes took, which on a live stack
+under a saturated ingest queue was minutes: the page's own "nothing finished
+for 5m" warning firing on a pass writing thousands of verdicts. Watched on a
+real run: 2016 of 2016 for six minutes while `monitor.publish` went from 2138
+to 2445 store calls. The write loop now declares its own set in a `verdict`
+unit and ticks each url through, skips included; the batch guard's `break`
+deliberately does not tick, so a stopped batch reads as stopped rather than
+full.
+
 **The start gate is `hasMonitorSources`, not `discoveryStreams.isNotEmpty()`.**
 A pure-monitor deployment (streams on static `urls`, every url entering
 through `monitor { sources }`) has no discovery streams, so `aliasMonitor

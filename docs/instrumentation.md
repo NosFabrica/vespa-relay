@@ -149,6 +149,16 @@ Reach for it first.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
+- **a probe pass's position** (`measuring`) — `attempted of toProbe unit(s)`,
+  with `quietForSec` beside it once nothing has ended for a while, which the
+  page draws as "nothing finished for …". READ THE UNIT: the stability gate and
+  the fitness pass count a `url`, the fold a `host`, the alias source a
+  `source`, and the fitness pass's WRITE phase a `verdict` — it re-arms when it
+  stops dialling and starts writing, because it writes more than it dialled (a
+  folded or already-inconsistent url is graded without a socket). One position
+  for both sat full at the dial count for the whole write with `quietForSec`
+  climbing: measured on a live stack at 2016 of 2016 for six minutes while the
+  writes went on, which is the shape of a wedge and was a healthy pass.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said

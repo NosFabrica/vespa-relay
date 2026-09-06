@@ -279,12 +279,22 @@ class FitnessPass(
             // Cleared up front, so a throw mid-loop cannot leave the next batch resuming at a url
             // never reached.
             writeCursors.remove(label)
+            // The position moves to the writes. There are more of them than there were dials — a
+            // url folded onto another, or already failed by the stability gate, is graded without a
+            // socket — so leaving the dial position up would sit full at `toDial` for the whole
+            // write, with `quietForSec` climbing on a pass writing thousands of verdicts.
+            progress.measuring(rotated.size, Processors.UNIT_VERDICT)
             for (url in rotated) {
-                val outcome = outcomes[url] ?: continue
+                val outcome = outcomes[url]
+                if (outcome == null) {
+                    progress.attempted()
+                    continue
+                }
                 // The evidence has to match too: re-folded onto a different canonical is not the
                 // same statement.
                 if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {
                     skipped++
+                    progress.attempted()
                     continue
                 }
                 progress.holding(url.url, STAGE_PUBLISH)
@@ -334,12 +344,14 @@ class FitnessPass(
                                 else -> null
                             }
                         if (stoppedBy != null) {
-                            // At this url, not after it: the write that tripped the limit did not land.
+                            // At this url, not after it: the write that tripped the limit did not
+                            // land, and the position stops where the batch did rather than filling.
                             writeCursors[label] = url.url
                             break
                         }
                     }
                 }
+                progress.attempted()
             }
 
             report(

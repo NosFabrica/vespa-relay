@@ -605,7 +605,11 @@ object StatusVocabulary {
                     "and dials every url of one to do it. A fold position counted in urls would jump by 55 for one " +
                     "verdict and by 1 for the next. The alias source counts neither — its unit is a `source`, one " +
                     "configured relay-list block at a time, since how many urls the walk yields is the thing it is " +
-                    "finding out and cannot be a denominator until it has.",
+                    "finding out and cannot be a denominator until it has. THE FITNESS PASS SHOWS TWO IN TURN: `url` " +
+                    "while it dials, then `verdict` while it writes. It writes more than it dialled — a url folded " +
+                    "onto another, or already failed by the stability gate, is graded without a socket — so one " +
+                    "position for both would sit full at the dial count for the whole write, with `quietForSec` " +
+                    "climbing on a pass doing thousands of writes.",
             )
             put(
                 "rotating",
