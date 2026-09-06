@@ -35,19 +35,15 @@ import com.vitorpamplona.quartz.nip01Core.store.owner
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 
 /**
- * One store refusal in, a repair and at most one filter row out.
- *
- * The enqueue happens before the recording: a suppressed id is never
- * downloaded again, so the repair must be queued before the id can reach the
- * filter. The only way into the heal queue is a refusal of an event a relay
- * actually served, which is what keeps the push from ever introducing an
- * author to a new relay.
+ * One store refusal in, a repair and at most one filter row out. The enqueue happens before
+ * the recording: a suppressed id is never downloaded again, so the repair must be queued
+ * before the id can reach the filter.
  */
 class RouterRefusalSink(
     private val refused: RefusedIds,
     private val queue: HealQueue,
     private val suppressionEnabled: Boolean,
-    /** Whether any configured stream may heal; with every heal switch off the pipeline need not carry origins. */
+    /** Whether any configured stream may heal; if none, the pipeline need not carry origins. */
     healingPossible: Boolean = true,
 ) : RefusalSink {
     override val tracksOrigins: Boolean = healingPossible
@@ -73,10 +69,8 @@ class RouterRefusalSink(
     }
 
     /**
-     * The repair this refusal asks for, or null when the stream's switches
-     * forbid it. Content and retractions are switched separately: a kind 5 or
-     * an `ALL_RELAYS` kind 62 is an instruction the author addressed to every
-     * relay, while a newer profile is a version update.
+     * The repair this refusal asks for, or null when the stream's switches forbid it. Content
+     * and retractions are switched separately.
      */
     private fun healKeyFor(
         event: Event,

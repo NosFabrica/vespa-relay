@@ -34,8 +34,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The tab icon is a hand-kept copy of the header mark. Only `favicon.svg` is
- * compared to the mark; an edit to the mark also needs the .ico redrawn, which nothing here checks.
+ * The tab icon is a hand-kept copy of the header mark. Only `favicon.svg` is compared to the
+ * mark; an edit to the mark also needs the .ico redrawn, which nothing here checks.
  */
 class RelayFaviconTest {
     private val index = assertNotNull(javaClass.getResource("/index.html")?.readText())

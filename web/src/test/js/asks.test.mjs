@@ -1,6 +1,5 @@
-// The ask cache: Enter after a type-ahead is one ranked search, not two. The
-// two app.js rules the reuse depends on (one type-ahead in flight, the latest
-// text runs next) are held against app.js's source.
+// The ask cache: Enter after a type-ahead is one ranked search, not two. The two app.js rules
+// the reuse depends on are held against app.js's source.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 

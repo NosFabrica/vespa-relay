@@ -42,27 +42,13 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The router's sync bands: file persistence around quartz's [SyncCoverage],
- * one coverage per stream so two streams asking one relay the same filter
- * never resume from each other's claim.
- *
- * The file nests stream, filter, relay:
- *
- * ```json
- * { "<stream>": { "<filter>": { "wss://relay/": {
- *     "min": …, "max": …, "complete": …, "fullAt": …, "verifiedAt": …,
- *     "spans": { "<kind>": { "min": …, "max": …, "complete": … } }
- * } } } }
- * ```
- *
- * `complete` is written at both levels and read from the inner one; a span
- * without its own inherits the band's. Flat pre-stream keys are pruned on
- * load. Persistence is the caller's in quartz (`export`/`restore`, with
- * `onChange` to mark dirty); a null [file] is the in-memory mode.
+ * The router's sync bands: file persistence around quartz's [SyncCoverage], one coverage per
+ * stream so two streams asking one relay the same filter never resume from each other's claim.
+ * The file nests stream, filter, relay; a null [file] is the in-memory mode.
  */
 class SyncBands(
     private val file: File?,
-    /** The re-fetch period for streams that name none. Production passes nothing; a seam for tests. */
+    /** The re-fetch period for streams that name none; a seam for tests. */
     internal val refetchThePastSeconds: Long = NEVER,
     /** Per-stream re-fetch periods. Fixed at construction: a coverage carries its period for the process's life. */
     private val perStream: Map<String, Long> = emptyMap(),
@@ -74,17 +60,14 @@ class SyncBands(
     private val coverageByStream = ConcurrentHashMap<String, SyncCoverage>()
 
     /**
-     * stream -> the relays it currently folds away, left out of the file but
-     * kept in memory so an expired verdict resumes where it was. The value is
-     * replaced whole, never mutated, for the flusher on its own thread.
+     * stream -> the relays it currently folds away, left out of the file but kept in memory so
+     * an expired verdict resumes where it was. Replaced whole, never mutated, for the flusher.
      */
     private val folded = ConcurrentHashMap<String, Set<String>>()
 
     /**
-     * The audit's own clock. quartz's `fullAt` is when the last from-nothing
-     * pass finished and is kept across merges; this stamp advances on every
-     * `reconciledThrough` record. Callers fall back to `fullAt` before the
-     * first one.
+     * The audit's own clock, advanced on every `reconciledThrough` record; quartz's `fullAt`
+     * is kept across merges and only serves before the first one.
      */
     private data class VerifiedKey(
         val stream: String,
@@ -94,13 +77,12 @@ class SyncBands(
 
     private val verified = ConcurrentHashMap<VerifiedKey, Long>()
 
-    /** When each ask's audit was last claimed, complete or not. In memory: a restart retrying once is fine. */
+    /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
 
     /**
-     * The audit gate: due by [auditDueAt] and outside the attempt spacing.
-     * True claims the attempt, so an audit that cannot complete (refused,
-     * interrupted) is not retried on every visit.
+     * The audit gate: due by [auditDueAt] and outside the attempt spacing. True claims the
+     * attempt, so an audit that cannot complete is not retried on every visit.
      */
     fun claimAudit(
         stream: String,
@@ -111,7 +93,6 @@ class SyncBands(
     ): Boolean {
         val dueAt = auditDueAt(stream, url, filter, negentropySyncThePastSeconds)
         if (dueAt != null && now < dueAt) return false
-        // Past the dueness gate only: the key costs a `filter.toJson()`.
         val key = VerifiedKey(stream, filter.toJson(), url.url)
         if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(negentropySyncThePastSeconds)) return false
         attempts[key] = now
@@ -119,9 +100,8 @@ class SyncBands(
     }
 
     /**
-     * When this ask's audit comes due; the one arithmetic [claimAudit] gates
-     * on and the status page certifies by. Null is never audited, which is
-     * always due. Read-only: it stamps nothing.
+     * When this ask's audit comes due, the one arithmetic [claimAudit] gates on and the status
+     * page certifies by. Null is never audited, which is always due. Stamps nothing.
      */
     fun auditDueAt(
         stream: String,
@@ -168,9 +148,8 @@ class SyncBands(
     internal fun refetchThePastSecondsFor(stream: String): Long = perStream[stream] ?: refetchThePastSeconds
 
     /**
-     * Names the streams with neither a negentropy audit nor a re-fetch period
-     * at boot. A forward-only mirror is legitimate; being in one by accident
-     * is not.
+     * Names the streams with neither a negentropy audit nor a re-fetch period at boot. A
+     * forward-only mirror is legitimate; being in one by accident is not.
      */
     private fun announceUncheckedPasts(streams: List<SyncStream>) {
         val blind = streams.filter { it.negentropySyncThePastSeconds == null && refetchThePastSecondsFor(it.name) == NEVER }
@@ -232,10 +211,9 @@ class SyncBands(
     fun size(): Int = coverageByStream.values.sumOf { it.size() }
 
     /**
-     * Hides the bands of urls the alias fold proved are another relay's from
-     * the file. [urls] replaces the stream's folded set, since a verdict
-     * expires; [keep] protects configured upstreams the same stream name
-     * cannot. Returns how many held bands this call hid.
+     * Hides the bands of urls the alias fold proved are another relay's from the file. [urls]
+     * replaces the stream's folded set, since a verdict expires; [keep] protects configured
+     * upstreams. Returns how many held bands this call hid.
      */
     fun dropFolded(
         stream: String,
@@ -250,7 +228,6 @@ class SyncBands(
         val hidden = now.filterTo(HashSet()) { it !in before }
         val shown = before.filterTo(HashSet()) { it !in now }
         if (hidden.isEmpty() && shown.isEmpty()) return 0
-        // `export()` copies the map, so it is asked only past that gate.
         val held =
             coverageByStream[stream]
                 ?.export()
@@ -302,9 +279,8 @@ class SyncBands(
     }
 
     /**
-     * Reads the file and prunes the flat pre-stream keys, returning how many
-     * were dropped. A flat key names no stream, so nothing can ever claim it;
-     * [dropFolded] keeps folded bands out of the file, so none is written again.
+     * Reads the file and prunes the flat pre-stream keys, returning how many were dropped. A
+     * flat key names no stream, so nothing can ever claim it.
      */
     private fun load(): Int {
         val f = file ?: return 0
@@ -333,7 +309,7 @@ class SyncBands(
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
-            // A count from a parse that stopped is not a fact about the file, and boot must not rewrite a damaged one.
+            // A count from a parse that stopped is not a fact about the file.
             pruned = 0
         }
         if (pruned > 0) {
@@ -381,9 +357,8 @@ class SyncBands(
     }
 
     /**
-     * The per-kind spans. A band written before spans existed is read as one
-     * span over [SyncCoverage.ALL_KINDS], and a span without `complete`
-     * inherits the band's, which is what the flag meant before it was per kind.
+     * The per-kind spans. A band written before spans existed is read as one span over
+     * [SyncCoverage.ALL_KINDS], and a span without `complete` inherits the band's.
      */
     private fun spansOf(o: JsonObject): Map<Int, SyncCoverage.Span> {
         val bandComplete = o["complete"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -461,10 +436,10 @@ class SyncBands(
     }
 
     companion object {
-        // Pretty-printed: read by a human debugging why a relay re-synced.
+        // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
 
-        /** The dueness rule as a predicate, for tests. A clock of zero has never had a verified pass and is always due. */
+        /** The dueness rule as a predicate, for tests. A clock of zero is always due. */
         internal fun auditDue(
             fullAt: Long,
             now: Long,
@@ -472,9 +447,8 @@ class SyncBands(
         ): Boolean = fullAt <= 0L || now - fullAt >= negentropySyncThePastSeconds
 
         /**
-         * How long after an audit ran before the same ask may try again,
-         * whatever the outcome. Floored above the revisit floor, capped so a
-         * weekly audit still retries within a shift.
+         * How long after an audit ran before the same ask may try again, whatever the outcome.
+         * Floored above the revisit floor, capped so a weekly audit still retries within a shift.
          */
         internal fun attemptSpacingSeconds(negentropySyncThePastSeconds: Long): Long = (negentropySyncThePastSeconds / 4).coerceIn(900L, 21_600L)
 
@@ -483,10 +457,7 @@ class SyncBands(
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE
 
-        /**
-         * `SYNC_STATE_FILE`, unset for in-memory. [streams] are the only
-         * source of a re-fetch period: there is no env or built-in default.
-         */
+        /** `SYNC_STATE_FILE`, unset for in-memory. [streams] are the only source of a re-fetch period. */
         fun fromEnv(
             env: Map<String, String>,
             streams: List<SyncStream> = emptyList(),
@@ -502,7 +473,7 @@ class SyncBands(
                 ).also { it.announceUncheckedPasts(streams) }.startPeriodicFlush()
             }
 
-        /** The env names that used to carry a re-walk period, refused by name so an upgrade cannot silently drop a schedule. */
+        /** Retired env names, refused by name so an upgrade cannot silently drop a schedule. */
         private fun refuseRemovedEnv(env: Map<String, String>) {
             val set =
                 listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
@@ -519,22 +490,16 @@ class SyncBands(
 }
 
 /**
- * The leg as it goes on the wire, floored at [SyncCoverage.PLAUSIBLE_FLOOR]
- * when it carries no `since`. Apply to every filter handed to `fetchAllPages`
- * and only those: on a negentropy leg it would narrow the remote set while the
- * local snapshot stayed wide, which on the `deleteMissing` path is a retraction.
- * A filter with its own `since` passes through untouched, `since = 0` included.
+ * The leg as it goes on the wire, floored at [SyncCoverage.PLAUSIBLE_FLOOR] when it carries no
+ * `since`. Apply to every filter handed to `fetchAllPages` and only those: on a negentropy leg
+ * it would narrow the remote set while the local snapshot stayed wide.
  */
 internal fun Filter.flooredForPaging(): Filter = if (since != null) this else copy(since = SyncCoverage.PLAUSIBLE_FLOOR)
 
 /**
- * Whether a drained leg says anything about history: the guard between
- * [PagedFetchResult] and [SyncBands.record]. Only the older leg, which
- * reaches the filter's own floor, settles the past; the newer leg starts at
- * the band's ceiling and drains trivially. Compared as floors, not for
- * equality, because the sweep fallback materialises a null `since` as
- * [SyncCoverage.PLAUSIBLE_FLOOR]. A bounded filter's leg is still re-opened
- * by `SyncCoverage.windows` after this returns true; no stream here is bounded.
+ * Whether a drained leg says anything about history: the guard between [PagedFetchResult] and
+ * [SyncBands.record]. Only the older leg, which reaches the filter's own floor, settles the past.
+ * Compared as floors, not for equality: the sweep fallback materialises a null `since`.
  */
 internal fun drainSettlesThePast(
     walk: PagedFetchResult?,

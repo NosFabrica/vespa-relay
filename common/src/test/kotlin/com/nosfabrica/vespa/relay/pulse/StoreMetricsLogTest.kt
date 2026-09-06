@@ -28,11 +28,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The log line carries the pulse's OPERATIONAL numbers and none of the
- * material the pulse is gated for. A log is not gated: anything that can read
- * container logs would read whatever this prints.
- */
+/** The log line carries the pulse's numbers and none of the material the pulse is gated for. */
 class StoreMetricsLogTest {
     private fun snapshotWithSecrets(): CostLedger.Snapshot =
         CostLedger.Snapshot(
@@ -45,12 +41,7 @@ class StoreMetricsLogTest {
             slowReads = emptyList(),
         )
 
-    /**
-     * THE REASON THE PAGE IS GATED. `topTerms` quotes what people searched
-     * for and `topObservers` names who searched; a line that spliced either
-     * into stdout would publish them to every log reader, which is a wider
-     * audience than the admin gate ever allowed.
-     */
+    /** A log reaches a wider audience than the admin gate ever allowed. */
     @Test
     fun `the line never carries search terms or observer keys`() {
         val line = StoreMetricsLog.line("relay", snapshotWithSecrets(), stages = emptyMap(), held = emptyList())
@@ -58,7 +49,6 @@ class StoreMetricsLogTest {
         assertFalse(line.contains("cafebabecafebabe"), "an observer key reached the log: $line")
     }
 
-    /** And it does carry the numbers it exists for, or it is not worth logging. */
     @Test
     fun `the line carries gauges, stages and what holds the lock`() {
         val line =

@@ -62,7 +62,7 @@ class RelayConfigTest {
     @Test
     fun `an unreadable expansion cap keeps the default rather than disabling the splice`() {
         val d = SearchExpansionLimits.Default
-        // A negative is unparseable in spirit: coerced to zero it reads like a corpus with no trust records.
+        // A negative coerced to zero reads like a corpus with no trust records.
         for (bad in listOf("-1", "-1000", "many", "", "  ")) {
             val got = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to bad, "SEARCH_EXPAND_MAX_TOTAL" to bad))
             assertEquals(d.maxPerEvent, got.maxPerEvent, "SEARCH_EXPAND_MAX_PER_EVENT=$bad")
@@ -73,7 +73,7 @@ class RelayConfigTest {
 
     @Test
     fun `zero is honoured as zero, and off is its own switch`() {
-        // Zero is a real cap; off is `SEARCH_EXPAND_REFERENCES`, and the two must not be spelled the same way.
+        // Zero is a real cap; off is `SEARCH_EXPAND_REFERENCES`, spelled differently.
         val zero = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to "0"))
         assertEquals(0, zero.maxPerEvent)
         assertTrue(zero.enabled)
@@ -117,7 +117,7 @@ class RelayConfigTest {
 
     @Test
     fun `a key that cannot be read stops the relay instead of being dropped`() {
-        // A dropped admin only finds out when a NIP-86 call is refused, and a dropped ban looks like one never configured.
+        // A dropped admin or ban looks exactly like one never configured.
         val good = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
         listOf("not-hex", "b".repeat(63), "b".repeat(64), "npub1nope").forEach { junk ->
             assertFailsWith<IllegalArgumentException>("'$junk' must not be silently dropped") {
@@ -128,8 +128,8 @@ class RelayConfigTest {
 
     @Test
     fun `bare hex is refused without echoing the value back`() {
-        // Hex has no checksum, so one typo is a different valid key. The error must not
-        // carry the value in any form: 64 hex characters may be a secret pasted into the wrong slot.
+        // Hex has no checksum, and the error must not carry the value in any form: 64 hex
+        // characters may be a secret pasted into the wrong slot.
         val hex = "0000000000000000000000000000000000000000000000000000000000000001"
         val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
         val e =
@@ -215,8 +215,7 @@ class RelayConfigTest {
         for (off in listOf("false", "0", "no", "off", "FALSE", " no ")) {
             assertFalse(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to off)), "\"$off\" turns it off")
         }
-        // Anything else is on, typos meant as off included: a typo that opens the
-        // corpus to anonymous reads is the one nothing outside the process notices.
+        // Anything else is on, typos included: a typo that opened the corpus would go unnoticed.
         for (on in listOf("true", "1", "yes", "treu", "", "  ")) {
             assertTrue(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to on)), "\"$on\" leaves it on")
         }

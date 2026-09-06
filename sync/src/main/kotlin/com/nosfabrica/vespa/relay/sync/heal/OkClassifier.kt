@@ -25,7 +25,7 @@ enum class PushVerdict {
     /** Took it. Whether it also dropped the stale copy is next cycle's question. */
     ACCEPTED,
 
-    /** Refused on policy. The next repair meets the same answer, so the relay is closed for writes and the stale id suppressed now. */
+    /** Refused on policy: the relay is closed for writes and the stale id suppressed now. */
     CLOSED,
 
     /** Refused transiently. Suppresses nothing and closes nothing. */
@@ -34,15 +34,14 @@ enum class PushVerdict {
     /** Answered, but the answer says nothing about the relay's willingness. */
     IGNORE,
 
-    /** Never answered. Earns a strike, never a suppression; see [WriteCapability]. */
+    /** Never answered. Earns a strike, never a suppression. */
     SILENT,
 }
 
 /**
- * Reads NIP-01's machine-readable `OK` prefix for one question: has this relay
- * said it will not take our repairs? A transient refusal read as policy would
- * suppress ids the relay was about to accept, so `rate-limited:` and `error:`
- * are [PushVerdict.RETRY] and an unknown prefix is [PushVerdict.IGNORE].
+ * Reads NIP-01's `OK` prefix for one question: has this relay said it will not take our
+ * repairs? A transient refusal read as policy would suppress ids the relay was about to
+ * accept, so `rate-limited:` and `error:` are [PushVerdict.RETRY] and an unknown prefix is ignored.
  */
 object OkClassifier {
     fun classify(

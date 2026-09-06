@@ -73,8 +73,7 @@ class CuckooFilterTest {
 
     @Test
     fun `every inserted id is still present after the table has been churned`() {
-        // Relocation moves other fingerprints on every insert; a bug there
-        // shows only as a false negative, which would quietly turn suppression off.
+        // A relocation bug shows only as a false negative, which quietly turns suppression off.
         CuckooFilter.open(null, 60_000).use { f ->
             val added = (0 until 50_000).filter { f.add(id(it)) == AddResult.ADDED }
             val missing = added.count { !f.contains(id(it)) }
@@ -84,8 +83,7 @@ class CuckooFilterTest {
 
     @Test
     fun `a filter at capacity fails the insert rather than continuing to answer`() {
-        // The reason this is cuckoo and not Bloom: a Bloom filter past its
-        // design point keeps answering and logs nothing.
+        // A Bloom filter past its design point keeps answering and logs nothing.
         val f = CuckooFilter.open(null, 1_000)
         var full = false
         var inserted = 0
@@ -183,8 +181,7 @@ class CuckooGeometryTest {
 
     @Test
     fun `the real ceiling is reported, not the requested one`() {
-        // Rounding buckets up to a power of two leaves the true ceiling above
-        // the request, and the seal warning quotes the true one.
+        // The seal warning quotes the true ceiling, which rounding to a power of two puts above the request.
         val buckets = CuckooFilter.bucketsFor(8_000_000)
         val real = CuckooFilter.capacityOf(buckets)
         assertTrue(

@@ -1,7 +1,5 @@
-// What the sync card decides: the half that can be wrong silently. The only
-// other pins are string greps for member names, which cannot catch a bar
-// against the wrong denominator. Each assertion is written in the direction
-// its bug failed.
+// What the sync card decides: the half that can be wrong silently. Each assertion is written in
+// the direction its bug fails.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -22,9 +20,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── the words this page and the router have to agree on ─────────────────────
 {
-  // `VisitPoolTest` binds the pool words to the document's glossary, and
-  // nothing bound them to this file: a rename in Kotlin emptied a panel with
-  // no failure in either language. The `const val` literals are the contract.
+  // The `const val` literals in VisitPool.kt are the contract, so a renamed pool word fails here.
   const pool = readFileSync(new URL("../../../../sync/src/main/kotlin/com/nosfabrica/vespa/relay/sync/VisitPool.kt", import.meta.url), "utf8");
   const declared = Object.fromEntries(
     [...pool.matchAll(/const val (POOL_[A-Z_]+|JOB_[A-Z_]+) = "([^"]+)"/g)].map((m) => [m[1], m[2]]),
@@ -51,8 +47,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(busy.open, 1010);
   assert.equal(busy.ceiling, 1024);
 
-  // A queue is: OkHttp holds admissible calls because the budget is full,
-  // which a slow store cannot produce.
+  // A queue is OkHttp holding admissible calls because the budget is full, which a slow store
+  // cannot produce.
   const starved = socketsOf({ sockets: 1024, socketCeiling: 1024, socketsRunning: 1024, socketsQueued: 37 });
   assert.equal(starved.starved, true);
   assert.equal(starved.queued, 37);
@@ -75,8 +71,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── the constraint ──────────────────────────────────────────────────────────
 {
-  // The relay rebuilds `health` against an allowlist, so an older router
-  // publishes `{}`; guarded on the object, the card drew an empty chip.
+  // The relay rebuilds `health` against an allowlist, so an older router publishes `{}`, not an absence.
   assert.equal(constraintOf({}), null, "an empty health object names no constraint");
   assert.equal(constraintOf(null), null);
   assert.equal(constraintOf({ eventsPerSec: 900 }), null, "gauges are not a verdict");
@@ -94,9 +89,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── the legs ────────────────────────────────────────────────────────────────
 {
-  // The bar is a proportion of the threshold. Scaled by the worst row
-  // published, an outlier flattened every bar; scaled by the worst row shown,
-  // five healthy legs all rendered full.
+  // The bar is a proportion of the threshold, not of the worst row published or shown.
   const healthy = legsOf({ relays: [1, 2, 3, 4, 5].map((n) => leg(n, 30)), omitted: 0 });
   assert.deepEqual(healthy.rows.map((r) => r.quietShare), [0.05, 0.05, 0.05, 0.05, 0.05],
     "five healthy legs read as five healthy legs, not as five full bars");
@@ -111,8 +104,7 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // The page no longer cuts the list: the router's cap is the only one, and
-  // `IN_FLIGHT_SHOWN` defers to the document.
+  // The router's cap is the only cut; `IN_FLIGHT_SHOWN` defers to the document.
   const many = legsOf({ relays: Array.from({ length: 8 }, (_, i) => leg(i, 30)), omitted: 12 });
   assert.equal(many.rows.length, 8, "every leg the document names is drawn");
   assert.equal(many.more, 12, "what the ROUTER left out is still disclosed");
@@ -137,8 +129,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── how far a probe pass got ────────────────────────────────────────────────
 {
-  // The document publishes `unmeasured`, and this returns its complement;
-  // backwards, a fold that decided nothing reads as nearly finished.
+  // The document publishes `unmeasured`, and this returns its complement.
   const fold = (over = {}) => ({
     name: "aliasFold", phase: "idle", lastPassSec: 6354,
     streams: [{ name: "all streams", candidates: 11693, unmeasured: 7546 }], ...over,
@@ -158,8 +149,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 0 }] })).checked, 40);
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 40 }] })).checked, 0);
 
-  // `SyncProgressReport` defaults `unmeasured` to `candidates` on an unreadable
-  // row, so a bad read lands on zero checked and must never land below it.
+  // `SyncProgressReport` defaults `unmeasured` to `candidates` on an unreadable row: zero checked,
+  // never below.
   assert.equal(probeProgress(fold({ streams: [{ candidates: 10, unmeasured: 99 }] })).checked, 0);
 
   // Summed, not `streams[0]`.
@@ -173,8 +164,7 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // Where the row says what arrived undecided, that is the denominator:
-  // month-old verdicts nothing will re-ask cannot move the position.
+  // What arrived undecided is the denominator: old verdicts nothing will re-ask cannot move the position.
   const fresh = probeProgress({
     name: "aliasFold", phase: "idle", lastPassSec: 660,
     streams: [{ name: "all streams", candidates: 11693, newUrls: 1754, unmeasured: 1611 }],
@@ -183,9 +173,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(fresh.checked, 143, "…and the numerator is how many of THOSE left with one");
   assert.equal(fresh.newOnly, true, "the page has a word to add");
 
-  // Presence, not truthiness: a fold that has caught up publishes zero, and
-  // falling back to `candidates` would put the whole corpus back exactly when
-  // the pass is done. The card branches on this pair too (`PROBE_NONE`).
+  // Presence, not truthiness: a fold that has caught up publishes zero. The card branches on
+  // this pair too (`PROBE_NONE`).
   const caught = probeProgress({
     name: "aliasFold", phase: "idle",
     streams: [{ candidates: 11693, newUrls: 0, unmeasured: 0 }],
@@ -224,8 +213,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── where the pass running right now has got to ──────────────────────────────
 {
-  // `probeProgress` reads the row the last pass left, which stands still for
-  // the hours the next one takes.
+  // `probeProgress` reads the row the last pass left, which stands still while the next one runs.
   const gate = (over) => ({ name: "consistency", phase: MEASURING, measuring: over });
 
   const run = measuringOf(gate({ unit: "url", attempted: 604, toProbe: 4728, etaSec: 2724 }));
@@ -239,8 +227,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(measuringOf({ name: "ingest", queued: 12, capacity: 20000 }), null, "the counter-shaped rows fall past it");
   assert.equal(measuringOf(null), null);
 
-  // The estimate is withheld until a unit has landed and once the last one
-  // has; a zero would claim the pass is finished.
+  // The estimate is withheld until a unit has landed and once the last one has.
   assert.equal(measuringOf(gate({ unit: "url", attempted: 0, toProbe: 4728 })).etaSec, null);
   assert.equal(measuringOf(gate({ unit: "url", attempted: 4728, toProbe: 4728 })).etaSec, null);
   assert.equal(measuringOf(gate({ unit: "url", attempted: 12, toProbe: 4728, etaSec: 0 })).etaSec, 0,
@@ -258,7 +245,6 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── a pass that has stopped, and the url that stopped it ────────────────────
 {
-  // A pass wedged on one url agrees with itself on every number;
   // `quietForSec` is what separates stalled from about to finish.
   const stalled = measuringOf({
     name: "fitness", phase: MEASURING,
@@ -295,8 +281,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── what a rotating stream is riding ────────────────────────────────────────
 {
-  // A visit stream has no pass, fraction or cycle, so without this the row
-  // read the same riding four hundred relays or none.
+  // A visit stream has no pass, fraction or cycle; its roster is the reading.
   const riding = rotationOf({ name: "visits", phase: ROTATING, roster: 412, liveHeld: 300 });
   assert.equal(riding.roster, 412);
   assert.equal(riding.tails, 300);
@@ -319,8 +304,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(legsOf({ relays: [leg(1, 30)] }).rows[0].pagingUntil, null, "no walk running is no cursor");
   assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 1689857148 })] }).rows[0].pagingUntil, 1689857148);
 
-  // `created_at = 0` is a real second and the deepest a walk can reach;
-  // falsy-coalescing it erases the position that proves a walk got there.
+  // `created_at = 0` is a real second and the deepest a walk can reach, not an absence.
   assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 0 })] }).rows[0].pagingUntil, 0,
     "the epoch is a position, not a missing cursor");
   ok("a paged cursor is carried per leg, and second zero is a position rather than an absence");
@@ -328,8 +312,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── names off the wire are not property lookups ─────────────────────────────
 {
-  // `bottleneck` is free text; reaching Object.prototype hands back a function
-  // and destructuring one throws the render away.
+  // `bottleneck` is free text and must not reach Object.prototype.
   for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
     const c = constraintOf({ bottleneck: hostile });
     assert.equal(c.text, hostile, `${hostile} is an unknown word, not a prototype member`);
@@ -340,8 +323,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── the candidate set, as a tree ────────────────────────────────────────────
 {
-  // A live-shaped document, holding the identities
-  // `sourced = excluded + heldOutDead + candidates` and
+  // A live-shaped document, holding `sourced = excluded + heldOutDead + candidates` and
   // `candidates = foldedAway + consistent + inconsistent + unmeasured`.
   const gate = (over = {}, row = {}) => ({
     name: "consistency", phase: "idle", lastPassSec: 9720,
@@ -378,8 +360,7 @@ const leg = (n, quiet, over = {}) => ({
 
   // A reason is a leaf: one row per host would be one row per server on a corpus of thousands.
   assert.equal(f.rows.some((r) => r.key === "dead.example"), false, "no row per host");
-  // What that list was for survives as two numbers: the same urls at 61 per
-  // host and at 3,000 per host are different findings.
+  // Two numbers stand in for the list: the same urls at a few per host and at thousands differ.
   assert.equal(at("never answered a REQ").hosts, 2201);
   assert.equal(at("never answered a REQ").largest, 61, "the widest host's share, not a list of them");
   assert.deepEqual(at("never answered a REQ").examples, ["dead.example", "gone.example"],
@@ -391,8 +372,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("candidates").share, 16752 / 17584);
   assert.equal(at("never answered a REQ").share, 3902 / 17584);
 
-  // A `│` is drawn at every ancestor that still has a sibling below it, which
-  // computing from depth alone loses.
+  // A `│` is drawn at every ancestor that still has a sibling below it.
   assert.equal(at("dropped").prefix, "├─ ");
   assert.equal(at("excluded").prefix, "│  ├─ ", "inside a branch that is not the last");
   assert.equal(at("heldOutDead").prefix, "│  └─ ");
@@ -410,20 +390,12 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // A url leaves the relay lists and every measurement of it stays in the
-  // store, so rooted at `sourced` alone the tree lost most of its corpus.
-  //
-  // BUT `recordedOnly` IS INSIDE `candidates`, NOT BESIDE IT, and this fixture
-  // used to say otherwise: sourced 1,754 and recordedOnly 15,830 against
-  // candidates 1,700, a combination the router cannot produce. It derives
-  // `known = sourced + recordedOnly` then `candidates = known - dead`, so
-  // candidates here must be ~17,530. Modelling it wrong is how the double
-  // count shipped: staging drew 40,285 where the router knew 20,152.
+  // `recordedOnly` is inside `candidates`, not beside it: the router derives
+  // `known = sourced + recordedOnly` and `candidates = known - dead`, and a fixture shaped
+  // any other way is one the router cannot produce.
   const shrunk = (over = {}) => funnelOf({
     name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50, recordedOnly: 15830,
-    // The outcome split sums to `candidates`, as the router's does: 6,000 +
-    // 1,000 + 30 + 10,500 = 17,530. A fixture whose children fall short would
-    // draw an `unattributed` row and hide whatever the assertions meant to say.
+    // The outcome split sums to `candidates`, or an `unattributed` row would hide the assertions.
     streams: [{ candidates: 17530, foldedAway: 6000, consistent: 1000, inconsistent: 30, unmeasured: 10500 }],
     ...over,
   });
@@ -432,18 +404,11 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(f.total, 17584, "the mouth is what was named PLUS what only our records know");
   assert.equal(at("candidates").value, 17530, "the candidate set already holds what only our records know");
   assert.equal(at("recordedOnly"), undefined, "NOT a sibling: a node beside `candidates` counts it twice");
-  // The children still divide the root exactly once — which is the property
-  // the old shape could not have, and which nothing caught because
-  // `unattributed` only fires when children fall SHORT of their parent.
+  // The children divide the root exactly once; `unattributed` only fires when they fall short.
   assert.equal(at("dropped").value + at("candidates").value, f.total);
   assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
 
-  // The number itself is not lost: the summary line reports it outside the
-  // derivation, where a figure that is not one of the funnel's slices belongs.
-
-  // A router older than this member must not be shown a zero row claiming it
-  // measured that corpus — and its candidate set is the sourced one alone, so
-  // this fixture drops the 15,830 from `candidates` too.
+  // A router older than this member gets no zero row, and its candidate set is the sourced one alone.
   const old = funnelOf({
     name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50,
     streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
@@ -469,8 +434,7 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // A pass that publishes none of the three verdict members measures no
-  // verdicts; read as zeroes, every url with a verdict lands in the fault row.
+  // A pass that publishes none of the three verdict members measures no verdicts, not zero of them.
   assert.equal(funnelOf({
     name: "aliasFold", phase: "idle", sourced: 17584, heldOutDead: 832,
     streams: [{ name: "all streams", candidates: 16752, unmeasured: 4021, dialled: 2000, decided: 118 }],
@@ -516,8 +480,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── a reason that refines another reason ────────────────────────────────────
 {
-  // The router publishes refinements as a flat list naming their parent, so
-  // the rows still sum to `unmeasured` whatever the shape.
+  // Refinements arrive as a flat list naming their parent, and the rows still sum to `unmeasured`.
   const f = funnelOf({
     name: "consistency", sourced: 1000,
     streams: [{
@@ -535,8 +498,7 @@ const leg = (n, quiet, over = {}) => ({
   });
   const at = (key) => f.rows.find((r) => r.key === key);
 
-  // The parent is synthesised: every url it covers is already in a child, and
-  // a published row beside them would double-count.
+  // The parent is synthesised: every url it covers is already in a child.
   assert.equal(at("never answered a REQ").value, 700, "the sum of its children, not a published number");
   assert.equal(at("never answered a REQ").depth, 3);
   assert.equal(at("the name does not resolve").depth, 4, "a refinement sits under what it refines");
@@ -570,8 +532,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── does the document still add up ──────────────────────────────────────────
 {
-  // `unattributed` can only report children that fall short; rows that
-  // overshoot leave no slice, so the relay's own check rides along.
+  // `unattributed` can only report children that fall short, so the relay's own check rides along.
   const doc = (over) => ({
     name: "consistency", sourced: 100,
     streams: [{ candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
@@ -632,8 +593,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // The pool's word is lifted into its heading when every row agrees, and
-  // kept as a column where they do not.
+  // The pool's word is lifted into its heading when every row agrees, and kept as a column otherwise.
   const one = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
     held("wss://a.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
     held("wss://b.example/", { doing: "catching up (paging)", pool: POOL_CATCHING_UP }),
@@ -676,8 +636,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // A word off the wire is not a heading, and `__proto__` cannot reach
-  // Object.prototype through the label map.
+  // A word off the wire is not a heading, and cannot reach Object.prototype through the label map.
   const odd = poolsOf({ streams: [{ name: "content", inFlight: { relays: [
     held("wss://a.example/", { pool: "quantum-sync" }),
     held("wss://b.example/", { pool: "__proto__" }),
@@ -693,8 +652,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // One pool shared by every visit-mode stream, so its size comes off the
-  // pool's own row; summing the streams' rosters would double-count.
+  // One pool shared by every visit-mode stream, so its size comes off the pool's own row, never a sum.
   const doc = {
     processors: [
       { name: "ingest", queued: 3 },
@@ -711,8 +669,7 @@ const leg = (n, quiet, over = {}) => ({
   };
   const { totals } = poolsOf(doc);
   assert.equal(totals.relays, 412, "the pool's whole world, from the pool's own row");
-  // The unit of work is a (relay, stream) pair, so a relay three streams want
-  // is three units; subtracting pair counts from a relay count is nonsense.
+  // The unit of work is a (relay, stream) pair, so a relay three streams want is three units.
   assert.equal(totals.units, 431);
   assert.equal(totals.working, 3, "counted off the ROWS, so the summary cannot disagree with the tables under it");
   assert.equal(totals.queued, 7);
@@ -737,8 +694,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(silent.working, 1, "what the rows say is still said");
   assert.equal(silent.tailed, 0);
 
-  // The three counts are read at one tick but not one instant, so a roster
-  // that shrank between them can leave the subtraction short.
+  // The three counts are read at one tick but not one instant, so the subtraction can come up short.
   const raced = poolsOf({
     processors: [{ name: "visits", roster: 1, rosterVisits: 1, awaitingVisit: 4 }],
     streams: [{ name: "content", inFlight: { relays: [held("wss://a.example/", { pool: POOL_CATCHING_UP })], omitted: 0 } }],
@@ -752,8 +708,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // Four independent walks of `progress.streams` named one stream four
-  // times; this is the join, done once.
+  // The join of everything the document says about one stream, done once.
   const doc = {
     processors: [{ name: "visits", roster: 3, rosterVisits: 4, awaitingVisit: 9 }],
     streams: [
@@ -774,8 +729,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.deepEqual(cut.map((c) => c.stream), ["content", "indexers"], "one section per stream, in the document's order");
   const rowsIn = (c, key) => c.groups.find((g) => g.key === key).rows.map((r) => r.relay);
 
-  // The unit of work is a (relay, stream) pair, so one url is legitimately
-  // catching up for one stream and re-fetching for another.
+  // One url is legitimately catching up for one stream and re-fetching for another.
   assert.deepEqual(rowsIn(cut[0], POOL_CATCHING_UP), ["wss://a.example/"]);
   assert.deepEqual(rowsIn(cut[1], POOL_REFETCHING), ["wss://a.example/"]);
   assert.deepEqual(rowsIn(cut[0], POOL_NEGENTROPY), ["wss://b.example/"]);
@@ -810,8 +764,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // The pool-wide totals cannot be divided into a stream's share, so the
-  // stream row publishes its own; inside one stream a relay is one unit.
+  // The stream row publishes its own counts; inside one stream a relay is one unit.
   const [content] = streamSections({
     streams: [{ name: "content", phase: ROTATING, roster: 100, awaitingVisit: 6, inFlight: { relays: [
       held("wss://a.example/", { pool: POOL_CATCHING_UP }),
@@ -843,8 +796,7 @@ const leg = (n, quiet, over = {}) => ({
   const held = (relay, over = {}) => ({
     relay, heldForSec: 60, transferringForSec: 60, events: 10, quietForSec: 5, ...over,
   });
-  // Every configured stream gets a section: one in `router.conf` that never
-  // came up is the one an operator goes looking for.
+  // Every configured stream gets a section: the one that never came up is the one an operator wants.
   const cut = streamSections({
     streams: [
       { name: "content", phase: ROTATING, roster: 100, awaitingVisit: 100 },
@@ -863,8 +815,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(silent.phase, STARTING);
   assert.equal(silent.phaseForSec, null, "…and no clock is invented to go with it");
 
-  // A row no configured stream claims gets a section of its own: a tail
-  // naming a retired stream is worth seeing.
+  // A row no configured stream claims gets a section of its own.
   const orphan = streamSections({
     streams: [{ name: "content", phase: ROTATING, roster: 1, awaitingVisit: 0 }],
     live: { relays: [held("wss://f.example/", { pool: POOL_LIVE, stream: "retired" })], omitted: 0 },
@@ -883,9 +834,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── the two config lists, joined on the job they share ──────────────────────
 {
-  // The caps and the clocks were two tables keyed by (stream, job), and the
-  // reading that matters spans them: a cap at its ceiling with work backing
-  // up behind it.
+  // The caps and the clocks are joined on (stream, job): the reading that matters spans them.
   const rows = jobsOf(
     limitsOf({ streams: [{ name: "content", limits: [
       { job: POOL_NEGENTROPY, streamCap: 4, inUse: 4, deferred: 91 },
@@ -965,8 +914,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── when the past is re-read ────────────────────────────────────────────────
 {
-  // Only `waiting` draining at the period says work happened because it was
-  // due, so the whole distribution is published.
+  // Only `waiting` draining at the period says work happened because it was due.
   const doc = {
     streams: [
       { name: "content", schedule: [
@@ -1000,9 +948,8 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // The document serves totals, so the subtraction is the page's job. Shares,
-  // not durations: the poll window varies, so two readings of "write 45s"
-  // are not comparable.
+  // The document serves totals, so the subtraction is the page's job. Shares, not durations,
+  // because the poll window varies.
   const before = [{ stage: "write", ms: 10_000 }, { stage: "dedup", ms: 4_000 }];
   const now = [{ stage: "write", ms: 22_000 }, { stage: "dedup", ms: 4_500 }, { stage: "verify", ms: 300 }];
   const rows = stageDeltas(now, before);
@@ -1010,8 +957,7 @@ const leg = (n, quiet, over = {}) => ({
     "busiest first, and a stage with no previous total is not a delta");
   assert.equal(Math.round(rows[0].share * 100), 96, "share is of the interval, not of the row");
 
-  // Falling back to the cumulative totals on a first load would put an hour
-  // of history under "since the last refresh".
+  // A first load has no previous reading, and the cumulative totals are not one.
   assert.deepEqual(stageDeltas(now, null), []);
   assert.deepEqual(stageDeltas(null, before), []);
 
@@ -1022,8 +968,7 @@ const leg = (n, quiet, over = {}) => ({
   // Junk rows are skipped rather than drawn as NaN.
   assert.deepEqual(stageDeltas([{ stage: "w", ms: "x" }, null], [{ stage: "w", ms: 0 }]), []);
 
-  // A lock wait never appears alone: its `hold` and `write` are pulled past
-  // the cut whenever the wait is shown.
+  // A lock wait never appears alone: its `hold` and `write` are pulled past the cut with it.
   const zeros = (names) => names.map((stage) => ({ stage, ms: 0 }));
   const names = ["lock.ingest.wait", "a", "b", "c", "d", "lock.ingest.hold", "write"];
   const busy = [900, 800, 700, 600, 500, 400, 300].map((ms, i) => ({ stage: names[i], ms }));
@@ -1043,9 +988,7 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── which store calls are out, and whose ────────────────────────────────────
 {
-  // A batch pass makes three different store calls and the pipeline row
-  // reports them as one number. `hot` is a colour off a threshold, `more`
-  // closes a truncation, and the bands are a partition.
+  // `hot` is a colour off a threshold, `more` closes a truncation, and the bands are a partition.
   const call = (over = {}) => ({
     caller: "ingest.dedup", op: "existingIds", asked: "2048 id(s)",
     issuedAt: 1_769_998_206, elapsedSec: 794, outstandingAtIssue: 2, ...over,
@@ -1069,15 +1012,13 @@ const leg = (n, quiet, over = {}) => ({
   // Only calls past the bound the log warns at are coloured.
   assert.deepEqual(s.rows.map((r) => r.hot), [true, false, false]);
 
-  // The router's own bound marks the row: `SYNC_STORE_SLOW_SEC` is an
-  // operator's to change, and the log and the colour must mean one thing.
+  // The router's own bound marks the row, so the log and the colour mean one thing.
   const tuned = { outstanding: 1, slowAfterSec: 300, calls: [call({ elapsedSec: 120 })], ages: [{ fromSec: 60, calls: 1 }] };
   assert.equal(storeOf(tuned).rows[0].hot, false, "120s is ordinary under a 300s bound");
   assert.equal(storeOf(tuned).ages[0].hot, false, "…and so is the band it falls in");
   assert.equal(storeOf(tuned).stuckSec, 300);
   assert.equal(storeOf({ ...tuned, slowAfterSec: 60 }).rows[0].hot, true, "…and marked once the bound is back under it");
-  // A router too old to publish the bound, and one whose operator set it to
-  // 0 (which turns the log off), both fall back to the default.
+  // No bound published, or a bound of 0 (the log turned off), both fall back to the default.
   assert.equal(storeOf({ calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
   assert.equal(storeOf({ slowAfterSec: 0, calls: [call({ elapsedSec: 61 })] }).rows[0].hot, true);
   assert.equal(STUCK_CALL_SEC, 60, "the fallback is the router's own default");
@@ -1117,9 +1058,6 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 // ── the per-relay table: which relays are being synced at all ────────────────
-//
-// Everything else the mirror publishes is an aggregate, and the two states
-// that matter most (never reached, refused on every visit) have no band.
 {
   const relays = {
     pairs: 2712,
@@ -1161,8 +1099,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.deepEqual(empty.chips.map((c) => c.key), ["refused", "notStarted", "paging", "complete"]);
   ok("a status nothing is in is drawn as zero, in the document's own order");
 
-  // The router's own verdict, not re-derived: it spans both axes, and
-  // `syncStatus` alone would leave a stale `complete` uncoloured.
+  // The router's own verdict, not re-derived: `syncStatus` alone would leave a stale `complete` uncoloured.
   assert.deepEqual(t.rows.map((r) => r.hot), [true, true, false, false]);
   ok("the fault mark is the document's, so the page cannot disagree about which rows matter");
 

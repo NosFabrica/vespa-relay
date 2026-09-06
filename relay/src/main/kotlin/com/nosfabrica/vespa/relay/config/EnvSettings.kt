@@ -25,10 +25,7 @@ import com.nosfabrica.vespa.relay.server.SearchGate
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
-/**
- * What a single connection may ask for. The engine enforces these and the
- * NIP-11 `limitation` block is rendered from the same object.
- */
+/** What one connection may ask for. The engine enforces these and NIP-11 `limitation` is rendered from them. */
 fun defaultRelayLimits(): RelayLimits =
     RelayLimits(
         maxMessageLength = 262_144,
@@ -90,10 +87,9 @@ fun allowKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["ALL
 fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY_KINDS"], "DENY_KINDS")
 
 /**
- * `REQUIRE_READ_LENS`: whether an unauthenticated read must declare its lens.
- * See [com.nosfabrica.vespa.relay.server.LensRequiredPolicy]. Off is a real
- * deployment (readers that are all mirrors, or no trust data to gate on).
- * Unparseable is on: a typo that opened the corpus could not be noticed.
+ * `REQUIRE_READ_LENS`: whether an unauthenticated read must declare its lens, see
+ * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy]. Unparseable is on: a typo that opened
+ * the corpus could not be noticed.
  */
 fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
     when (env["REQUIRE_READ_LENS"]?.trim()?.lowercase()) {
@@ -102,10 +98,9 @@ fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
     }
 
 /**
- * Whether a search also answers with the records its hits point at, and how
- * much of the feed that splice may be: `SEARCH_EXPAND_REFERENCES`,
- * `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`. A cap of 0 is
- * honoured as 0; negative and unparseable keep the default.
+ * Whether a search also answers with the records its hits point at, and how much of the feed that
+ * may be: `SEARCH_EXPAND_REFERENCES`, `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`.
+ * A cap of 0 is honoured as 0; negative and unparseable keep the default.
  */
 fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
     val d = SearchExpansionLimits.Default
@@ -121,9 +116,8 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
 }
 
 /**
- * `SEARCH_CONCURRENCY_PER_CONNECTION`: ranked reads one connection may run at
- * once; 0 turns the gate off. See `SearchGate`. Unparseable is the default,
- * not off.
+ * `SEARCH_CONCURRENCY_PER_CONNECTION`: ranked reads one connection may run at once, see
+ * `SearchGate`. 0 turns the gate off; unparseable is the default, not off.
  */
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
 

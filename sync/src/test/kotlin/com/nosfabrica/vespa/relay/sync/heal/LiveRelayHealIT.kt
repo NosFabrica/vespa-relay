@@ -46,10 +46,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Dials real relays and runs the refusal gate and suppression over what they
- * serve, three passes on one filter; asserts the loop reproduces and the gate
- * holds. Nothing is published. Selected by the `SYNC_LIVE_RELAYS` environment
- * variable (a comma-separated list of urls).
+ * Runs the refusal gate and suppression over what live relays serve, three passes on one
+ * filter, and asserts the gate holds. Publishes nothing. Runs only with `SYNC_LIVE_RELAYS`
+ * set to a comma-separated list of urls.
  */
 class LiveRelayHealIT {
     private val relays =
@@ -92,7 +91,7 @@ class LiveRelayHealIT {
             val store = store()
             client.connect()
 
-            // Replaceable kinds: each relay serves its own current version and only one can win in our store.
+            // Replaceable kinds, so relays serving different versions refuse each other in our store.
             val ask = Filter(kinds = listOf(0, 3, 10002), limit = 500)
 
             val replacedPerPass = mutableListOf<Int>()
@@ -113,7 +112,7 @@ class LiveRelayHealIT {
                     downloaded += batch.size
 
                     for (event in batch) {
-                        // Same place IngestPipeline checks it: after band bookkeeping, before the store.
+                        // Checked where IngestPipeline checks it: before the store.
                         if (h.sink.isSuppressed(event)) {
                             suppressed++
                             continue
@@ -166,7 +165,6 @@ class LiveRelayHealIT {
                 println("LiveRelayHealIT skipped — set SYNC_LIVE_RELAYS to run it")
                 return@runBlocking
             }
-            // A compliant relay serves its current version per address, not the edit history; the sizing rests on it.
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             val client = client(scope)
             client.connect()

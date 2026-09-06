@@ -27,8 +27,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Rows for the work that is not a stream. A row says only what its processor can
- * answer: a counter job has no pass clock, and a pass job's clock moves even when the pass achieves nothing.
+ * Rows for the work that is not a stream. A row says only what its processor can answer:
+ * a counter job has no pass clock, and a pass job's clock moves even on an empty pass.
  */
 class ProcessorsTest {
     @Test
@@ -92,7 +92,7 @@ class ProcessorsTest {
 
     @Test
     fun `a pass in flight publishes where it has got to, and what that rate implies`() {
-        // `measuring` is the only member that moves during a pass; every other number on the row describes the pass before it.
+        // `measuring` is the only member that moves during a pass; the rest describe the pass before it.
         val p = Processors()
         val gate = p.of("consistency")
         gate.begin(nowMs = 1_000)
@@ -144,7 +144,7 @@ class ProcessorsTest {
         fitness.holding("wss://quick.example/", "pre-probe", nowMs = 3_000)
 
         val held = p.snapshot(nowMs = 5_000).single().inFlight!!
-        // Longest-held first, the reverse of a stream's legs: every leg here has a deadline, so a long one is the anomaly.
+        // Longest-held first: every leg here has a deadline, so a long one is the anomaly.
         assertEquals(listOf("wss://slow.example/", "wss://quick.example/"), held.relays.map { it.relay })
         assertEquals(4L, held.relays[0].heldForSec)
         assertEquals("ask ladder", held.relays[0].stage)
@@ -196,8 +196,7 @@ class ProcessorsTest {
 
     @Test
     fun `a position belongs to the pass that had it`() {
-        // A stale position under `idle` reads as a pass stopped halfway; the last
-        // pass's `10 of 10` under a fresh `measuring` reads as one that finished instantly.
+        // A stale position reads as a pass stopped halfway, or as one that finished instantly.
         val p = Processors()
         val fold = p.of("aliasFold")
         fold.begin(nowMs = 1_000)
@@ -216,8 +215,7 @@ class ProcessorsTest {
 
     @Test
     fun `a pass that brackets itself inside another bracket is one pass, not two`() {
-        // The fitness pass brackets its own `measure`, because the fast lane calls
-        // it outside the monitor's loop, and the sweep brackets every pass it runs.
+        // The fast lane calls `measure` outside the monitor's loop, so the pass brackets itself too.
         val p = Processors()
         val fitness = p.of("fitness")
         fitness.begin(nowMs = 1_000) // the monitor's bracket

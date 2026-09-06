@@ -1,7 +1,5 @@
-// Every source file the page ships is text. One NUL byte in the first 8000
-// makes git treat a module as binary: no diffs, no grep hits, and the state
-// switches on and off as the bytes above it grow or shrink. Write the
-// character as the escape `\u0000`.
+// Every source file the page ships is text: one NUL byte in the first 8000 makes git treat a
+// module as binary, with no diffs and no grep hits. Write the character as the escape `\u0000`.
 
 import assert from "assert";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -12,8 +10,7 @@ const root = new URL("../../main/resources/", import.meta.url);
 function sources(dir, out = []) {
   for (const name of readdirSync(dir)) {
     const at = new URL(name, dir);
-    // The trailing slash goes on only once the entry is known to be a
-    // directory: statSync on `some-file.html/` is ENOTDIR, not a false.
+    // The trailing slash goes on only once the entry is known to be a directory.
     if (statSync(at).isDirectory()) { sources(new URL(name + "/", dir), out); continue; }
     if (/\.(js|mjs|html|css)$/.test(name)) out.push(at);
   }

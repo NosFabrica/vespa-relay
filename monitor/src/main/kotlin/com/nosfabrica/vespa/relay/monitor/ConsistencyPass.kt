@@ -40,22 +40,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Ask every relay the same question twice and drop the ones that answer
- * differently.
- *
- * Unlike [AliasFolding], which compares two urls on one host, this compares a
- * url to itself and looks at every url there is. The pair is asked concurrently
- * over one connection, through the same filter, at an anchor a week old
- * ([RelayConsistency.ANCHOR_LAG_SECONDS]), so neither elapsed time nor a filter
- * change can explain a difference. The bare filter is tried first and only a
- * host that refuses it pays a second pair through `kinds=[1]`.
- *
- * One `self-consistent` tag per measured url goes on its 30166 record, good
- * for [RelayVerdictRecord.DEFAULT_TTL_SECONDS]; nothing is written for a url
- * that proved nothing. Everything downloaded goes to the caller's ingest, so
- * the pass is a sync that also decides. Every url it could not decide lands in
- * exactly one [Unmeasured] row, and [report] publishes the rows as a partition
- * of the candidate set.
+ * Ask every relay the same question twice and drop the ones that answer differently. The pair
+ * is asked concurrently over one connection at a week-old anchor, so neither elapsed time nor a
+ * filter change can explain a difference. Every undecided url lands in exactly one [Unmeasured] row.
  */
 class ConsistencyPass(
     private val consistency: RelayConsistency,
@@ -64,10 +51,10 @@ class ConsistencyPass(
     private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
     /** Where each pass reports how far it got. Null for every caller but the router. */
     val progress: Processors.Handle? = null,
-    /** The proxy, for the gate alone; see [DialGate]. */
+    /** The proxy, for the gate alone. */
     tor: TorTransport? = null,
 ) {
-    /** One gate for every pass this component runs; see [DialGate]. */
+    /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
 
     /** Urls the last [adopt] saw a fold verdict for; never worth measuring. */
@@ -75,14 +62,8 @@ class ConsistencyPass(
     private var folded: Set<NormalizedRelayUrl> = emptySet()
 
     /**
-     * Every way a url survives a pass with nothing written down. One is assigned
-     * to every url attempted and not decided, so the counts sum to `unmeasured`.
-     *
-     * [TRANSPORT], [FAILED] and [ABANDONED] are about us. [SILENT],
-     * [AUTH_REFUSED] and [FILTER_REFUSED] are the far end refusing, three ways
-     * that want three responses. [ONE_SIDED] and [TOO_THIN] are the far end
-     * answering, not enough to judge on. The wording is the log line's, and the
-     * fold's where both passes can reach the same finding.
+     * Every way a url survives a pass with nothing written down. Exactly one is assigned to every
+     * url attempted and not decided, so the counts sum to `unmeasured`.
      */
     enum class Unmeasured(
         val reason: String,
@@ -93,10 +74,7 @@ class ConsistencyPass(
         /** Dialled, and nothing came back through any filter. */
         SILENT("never answered a REQ"),
 
-        /**
-         * One of the concurrent pair answered and the other did not. Its own
-         * bucket because it is itself a finding: a capacity or rate-limit story.
-         */
+        /** One of the concurrent pair answered and the other did not; itself a finding. */
         ONE_SIDED("answered one of the two asks, not both"),
 
         /** NIP-42 came back rejected, or the relay went on demanding auth we cannot satisfy. */
@@ -111,28 +89,24 @@ class ConsistencyPass(
         /** The probe threw. Ours to fix, never a claim about the relay. */
         FAILED("the probe failed mid-walk"),
 
-        /** The job ran out its wall clock ([AliasProbe.deadlineMs]) before any answer. */
+        /** The job ran out its wall clock before any answer. */
         ABANDONED("gave up at the per-url deadline"),
     }
 
-    /**
-     * One url's outcome: the reason and, where the reason has one, the cause
-     * underneath it. Only [Unmeasured.SILENT] carries a [Silence].
-     */
+    /** One url's outcome: the reason and, for [Unmeasured.SILENT] only, the cause underneath it. */
     private data class Finding(
         val reason: Unmeasured,
         val cause: Silence? = null,
     ) {
-        /** What the row is called, and what it refines; see [report]. */
+        /** What the row is called, and what it refines. */
         val label: String get() = cause?.reason ?: reason.reason
 
         val parent: String? get() = cause?.let { reason.reason }
     }
 
     /**
-     * Read back what is already known about these urls without dialling, and
-     * return the urls to refuse. A failed read leaves the previous answer
-     * standing: losing a verdict here would cost a relay, not a duplicate dial.
+     * Read back what is already known about these urls without dialling, and return the urls to
+     * refuse. A failed read leaves the previous answer standing.
      */
     suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
         if (candidates.isEmpty()) return emptyList()
@@ -141,10 +115,8 @@ class ConsistencyPass(
     }
 
     /**
-     * Measure the urls nothing is known about yet, and publish what that proves.
-     * Signature-compatible with [AliasMonitor.Pass] so the monitor runs it in the
-     * fold's sequence, which keeps two writers off one 30166 record.
-     * Returns how many new verdicts were reached.
+     * Measure the urls nothing is known about yet and publish what that proves. Returns how many
+     * new verdicts were reached. Run in the monitor's sequence so two writers never share a record.
      */
     suspend fun measure(
         label: String,
@@ -164,14 +136,13 @@ class ConsistencyPass(
             return 0
         }
 
-        // `wanted`, not `candidates`: everything already carrying a verdict was dropped above.
         progress?.measuring(wanted.size, Processors.UNIT_URL)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
         // Urls a socket was opened for; a url [canDial] held back is not one.
         val walked = AtomicInteger()
         val silent = ConcurrentHashMap<NormalizedRelayUrl, Finding>()
-        // Terminal text [Silence] could not place, sampled to stderr so the table grows from real strings.
+        // Terminal text Silence could not place, sampled so the table grows from real strings.
         val unplaced = ConcurrentHashMap.newKeySet<String>()
         // One anchor for the whole pass.
         val anchor = RelayConsistency.settledAnchor(nowSeconds())
@@ -180,7 +151,8 @@ class ConsistencyPass(
             for (url in wanted) {
                 launch {
                     gate.withPermit(url) {
-                        // The deadline sits inside the permit; around the launch it would time the wait for a permit.
+                        // The deadline sits inside the permit; around the launch it would time the
+                        // wait for a permit.
                         val ran =
                             withTimeoutOrNull(probe.deadlineMs(url)) {
                                 try {
@@ -226,14 +198,9 @@ class ConsistencyPass(
             ).map { it.key to it.value }
 
     /**
-     * What this pass reached, where it outlives the log line.
-     *
-     * The members partition the candidate set: `candidates = foldedAway +
-     * consistent + inconsistent + unmeasured`, and `unmeasured` is the sum of
-     * the [Unmeasured] rows. Fold first, then a verdict, then nothing, matching
-     * what the pass does. `unmeasured` is re-derived after the walk rather than
-     * taken as `wanted.size - decided`, so a silent relay still counts as
-     * outstanding and the number reaches zero once every url has a verdict.
+     * What this pass reached, where it outlives the log line. The members partition the candidate
+     * set: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and `unmeasured` is
+     * re-derived after the walk so a silent relay still counts as outstanding.
      */
     private fun report(
         label: String,
@@ -243,7 +210,6 @@ class ConsistencyPass(
         unmeasurable: Map<NormalizedRelayUrl, Finding>,
     ) {
         val handle = progress ?: return
-        // One pass over the candidates for the partition, one over the undecided urls for every row.
         var foldedAway = 0
         var consistent = 0
         var inconsistent = 0
@@ -269,7 +235,6 @@ class ConsistencyPass(
                     reason = finding.label,
                     parent = finding.parent,
                     urls = count,
-                    // The url count closes the partition; the host count says how many servers those are.
                     hosts = byHost.size,
                     // Ranked by host name within a count, so an unchanged network publishes the same document.
                     top =
@@ -295,11 +260,7 @@ class ConsistencyPass(
         )
     }
 
-    /**
-     * One url's pair of answers through one filter. A pair, because
-     * [RelayConsistency.decide] compares them and [depth] ranks one attempt
-     * against another when neither could decide.
-     */
+    /** One url's pair of answers through one filter. */
     private data class Answers(
         val first: AliasProbe.Window,
         val second: AliasProbe.Window,
@@ -307,9 +268,8 @@ class ConsistencyPass(
         val authRefused: Boolean get() = first.authRefused || second.authRefused
 
         /**
-         * How much this attempt proved. More evidence ranks higher: total
-         * silence, then one side answering, then the thinner window. Without
-         * the two negative rungs the reason reported would depend on argument order.
+         * How much this attempt proved, more ranking higher: total silence, then one side
+         * answering, then the thinner window.
          */
         val depth: Int get() =
             when {
@@ -327,14 +287,17 @@ class ConsistencyPass(
         /** The attempt that got furthest. */
         val best: Answers get() = if (fallback != null && fallback.depth > bare.depth) fallback else bare
 
-        /** What the transport said when it gave up. First non-null wins: either rung's message describes the same socket. */
+        /** What the transport said when it gave up; either rung's message describes the same socket. */
         fun saidWhat(): String? =
             bare.first.reason
                 ?: bare.second.reason
                 ?: fallback?.first?.reason
                 ?: fallback?.second?.reason
 
-        /** Why this url ended undecided. Auth first and across both rungs: a refusal explains every thin window under it. */
+        /**
+         * Why this url ended undecided. Auth first and across both rungs: a refusal explains every
+         * thin window under it.
+         */
         fun why(): Unmeasured =
             when {
                 bare.authRefused || fallback?.authRefused == true -> Unmeasured.AUTH_REFUSED
@@ -345,7 +308,7 @@ class ConsistencyPass(
             }
     }
 
-    /** One url's paired walk, so the deadline has something to wrap and each step can name itself. */
+    /** One url's paired walk, so the deadline has something to wrap. */
     private suspend fun measureOne(
         url: NormalizedRelayUrl,
         anchor: Long,
@@ -359,8 +322,7 @@ class ConsistencyPass(
         unplaced: MutableSet<String>,
     ) {
         progress?.holding(url.url, STAGE_REACHABILITY)
-        // Not `runCatching`: it swallows CancellationException, and a pass
-        // cancelled at shutdown would file every remaining url as a probe failure.
+        // Not runCatching: it swallows CancellationException and would file a shutdown as probe failures.
         val reachable =
             try {
                 canDial(url)
@@ -408,10 +370,8 @@ class ConsistencyPass(
         consistency.learn(url, answer)
         decided.incrementAndGet()
         if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
-        // Written per url so a restart mid-pass keeps what was proved. Guarded,
-        // but not with `runCatching`: this runs inside the per-url deadline, and
-        // a swallowed cancellation would file the url as ABANDONED after
-        // `decided` already counted it.
+        // Written per url so a restart mid-pass keeps what was proved. Not runCatching: a swallowed
+        // cancellation would file the url as ABANDONED after `decided` already counted it.
         try {
             record.publishConsistency(
                 url,
@@ -429,9 +389,8 @@ class ConsistencyPass(
     }
 
     /**
-     * The bare filter, then the kinds fallback, each as a concurrent pair and
-     * the second only when the first proved nothing. An auth refusal ends the
-     * ladder: every ask after one on that connection waits out the idle window.
+     * The bare filter, then the kinds fallback only when the first proved nothing. An auth
+     * refusal ends the ladder: every later ask on that connection waits out the idle window.
      */
     private suspend fun ladder(
         url: NormalizedRelayUrl,
@@ -445,10 +404,8 @@ class ConsistencyPass(
     }
 
     /**
-     * Two walks of [url] through the same filter, in flight at the same time.
-     * Neither may throw out of here: `async` reports a failure by cancelling
-     * its parent, which would take every other url's measurement down with it.
-     * A failed walk is a window that never spoke.
+     * Two walks of [url] through the same filter, in flight at the same time. Neither may throw:
+     * `async` reports a failure by cancelling its parent, taking every other url down with it.
      */
     private suspend fun walkPair(
         url: NormalizedRelayUrl,
@@ -468,8 +425,8 @@ class ConsistencyPass(
         }
 
     /**
-     * Pull the stored verdicts into memory. A url whose verdict has aged out
-     * comes back with none, which is "dial it"; that is how a fixed relay rejoins.
+     * Pull the stored verdicts into memory. A url whose verdict has aged out comes back with
+     * none, which is "dial it".
      */
     private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
         val held =
@@ -482,19 +439,17 @@ class ConsistencyPass(
                 return
             }
         consistency.replace(candidates, held.consistent, held.inconsistent)
-        // A folded url is never dialled, so measuring it is budget spent on a
-        // question nobody asks. The monitor hands both passes the raw pre-fold list.
+        // A folded url is never dialled; the monitor hands both passes the raw pre-fold list.
         folded = held.aliases.keys
     }
 
     companion object {
-        /** Matches the fold's; see [AliasFolding.DEFAULT_DIAL_CONCURRENCY]. */
         const val DEFAULT_DIAL_CONCURRENCY = AliasFolding.DEFAULT_DIAL_CONCURRENCY
 
-        /** Distinct unclassified terminal reasons sampled per pass. The count under them is published in full. */
+        /** Distinct unclassified terminal reasons sampled per pass; the count is published in full. */
         const val MAX_UNPLACED_SAMPLES = 3
 
-        /** A held leg's `stage`, in the pass's own words; see [Processors.Holding.Held.stage]. */
+        /** A held leg's `stage`, in the pass's own words. */
         const val STAGE_REACHABILITY = "pre-probe"
 
         const val STAGE_LADDER = "paired walk"

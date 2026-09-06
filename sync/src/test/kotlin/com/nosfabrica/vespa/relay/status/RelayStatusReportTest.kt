@@ -39,8 +39,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The four answers, against the band file that produces each. The fixture is
- * the file as written to disk, the contract between two classes, as in [SyncCoverageReportTest].
+ * The four answers, against the band file that produces each. The fixture is the file as
+ * written to disk, the contract between two classes.
  */
 class RelayStatusReportTest {
     /**
@@ -85,8 +85,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `a settled band is complete, an unsettled one is still paging`() {
-        // quartz's `complete` on a span means a paged leg drained or a reconcile
-        // finished; anything else is a walk still working backwards.
+        // quartz's `complete` means a paged leg drained or a reconcile finished.
         val doc =
             bands(
                 """
@@ -115,8 +114,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `no band is two different findings, and the abort is what tells them apart`() {
-        // A relay never reached and one refused on every visit have the same
-        // absence in the band file.
+        // A relay never reached and one refused on every visit look the same in the band file.
         val out =
             RelayStatusReport.build(
                 bands("{}"),
@@ -145,8 +143,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `coverage AND a refusal is both, and the band decides the status`() {
-        // Synced and since refusing is neither `refused` nor merely `complete`;
-        // reporting one of the two loses a relay that has stopped being maintained.
+        // Reporting only one of the two loses a relay that has stopped being maintained.
         val doc =
             bands(
                 """
@@ -167,8 +164,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `one unit's asks are folded to its outer edges, and any unsettled band unsettles it`() {
-        // A scanning stream owes one ask per bound author, so a unit holds many
-        // bands; the row is about the relay, so the edges are the outer ones.
+        // A unit holds one band per bound author; the row is about the relay, so the edges are the outer ones.
         val doc =
             bands(
                 """
@@ -188,8 +184,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `one settled band out of forty owed asks is not a synced relay`() {
-        // The denominator is what the unit owes, which the roster knows:
-        // `settled == askKeys.size`, not the count of bands the pair holds.
+        // The denominator is what the unit owes, not the count of bands the pair holds.
         val owed = (1..40).map { """{"kinds":[30382],"authors":["a$it"]}""" }
         val doc =
             bands(
@@ -216,8 +211,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `a band for an ask the roster no longer makes is not this unit's`() {
-        // A scan that drops a provider leaves its band behind; counted, it would
-        // move the row's edges and inflate its denominator.
+        // Counted, a left-behind band would move the row's edges and inflate its denominator.
         val doc =
             bands(
                 """
@@ -250,8 +244,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `the statuses partition the pairs, and they close even when the rows are cut`() {
-        // The counts are taken off every unit, never off the published rows, so
-        // a cut list does not read as the whole answer.
+        // The counts are taken off every unit, never off the published rows.
         val units =
             (1..RelayStatusReport.MAX_ROWS + 50).map { unit("wss://r$it.example/", "content", plain) } +
                 unit("wss://bad.example/", "content", plain, abort = "the relay closed the subscription")
@@ -268,8 +261,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `complete says nothing about current, and the sort no longer pretends it does`() {
-        // `complete` means the past is settled; complete with a dead tail and nothing
-        // newer than last week is a worse finding than paging and live.
+        // Complete with a dead tail and nothing newer than last week is worse than paging and live.
         val cold = 1_700_000_000 - 9 * 86_400
         val doc =
             bands(
@@ -311,8 +303,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `a tailed pair is never a staleness fault, however quiet the relay is`() {
-        // The tail carries the present between visits, so old content on a tailed
-        // pair is a quiet relay; otherwise every low-traffic relay sits in the fault band forever.
+        // The tail carries the present between visits, so old content on a tailed pair is a quiet relay.
         val cold = 1_700_000_000 - 60 * 86_400
         val doc =
             bands("""{"content": {"{\"kinds\":[1]}": {"wss://quiet.example/": {"min": 1600000000, "max": $cold, "complete": true}}}}""")
@@ -357,8 +348,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `the terms a relay serves us on ride the row, and unmeasured is not false`() {
-        // The NIP-77 verdict and the learned filter width decide what this mirror can
-        // do with a relay: a `paging` row against one that cannot reconcile never settles by itself.
+        // A `paging` row against a relay that cannot reconcile never settles by itself.
         val rows =
             rowsOf(
                 RelayStatusReport.build(
@@ -386,16 +376,14 @@ class RelayStatusReportTest {
                 .toBoolean(),
         )
         assertEquals(8, rows.getValue("wss://noneg.example/")["kindCap"]!!.jsonPrimitive.int)
-        // Unmeasured is a third reading: "no verdict yet" tries and finds out, so
-        // the member is absent rather than false.
+        // Unmeasured is a third reading, so the member is absent rather than false.
         assertFalse(rows.getValue("wss://plain.example/").containsKey("negentropy"))
         assertFalse(rows.getValue("wss://plain.example/").containsKey("kindCap"))
     }
 
     @Test
     fun `the four status words are the wire's, and the glossary defines every one`() {
-        // The page maps these literals to labels (`SYNC_STATUSES` in shared/sync.js)
-        // and the glossary defines them; renamed here alone, a row shows a raw member name.
+        // The page maps these literals to labels in shared/sync.js; renamed here alone, a row shows a raw name.
         assertEquals(listOf("refused", "notStarted", "paging", "complete"), RelayStatusReport.STATUS_ORDER)
         val defined = StatusVocabulary.TERMS["syncStatus"]!!.jsonPrimitive.content
         for (word in RelayStatusReport.STATUS_ORDER) {
@@ -405,9 +393,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `the roster's keys and the band file's keys are the same strings, against the real SyncBands`() {
-        // The join is verbatim on (stream, url, filter json), and the literal fixtures
-        // above are this report's contract with itself; this drives the real `SyncBands`
-        // and the real quartz Filter so the two sides are shown to meet.
+        // The join is verbatim on (stream, url, filter json); this drives the real `SyncBands` and Filter.
         val bands = SyncBands(null)
         val url = RelayUrlNormalizer.normalize("wss://real.example")
         val filter = Filter(kinds = listOf(1, 30023))
@@ -426,8 +412,7 @@ class RelayStatusReportTest {
             drained = true,
         )
 
-        // `url.url` and `filter.toJson()` are what `VisitPool.primeUnits` hands over,
-        // off `RosterBuilder.UnitAsks.identity`.
+        // `url.url` and `filter.toJson()` are what `VisitPool.primeUnits` hands over.
         val row =
             rowsOf(
                 RelayStatusReport.build(
@@ -449,8 +434,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `a band entry this build cannot read costs a row its claim, never the document`() {
-        // Runs inside the status tick and must never cost the rollup. No `complete`
-        // reads as not settled, the claim that costs a re-walk rather than skipping history.
+        // Runs inside the status tick and must never cost the rollup; no `complete` reads as not settled.
         val doc =
             bands(
                 """
@@ -467,8 +451,7 @@ class RelayStatusReportTest {
 
     @Test
     fun `the live marks ride beside the status, not as values of it`() {
-        // A pair can be paging and tailed and visited at once, so these are not
-        // statuses; absent rather than false when they do not hold.
+        // A pair can be paging and tailed and visited at once; absent rather than false when not held.
         val row =
             rowsOf(RelayStatusReport.build(bands("{}"), listOf(unit("wss://busy.example/", "content", plain, visiting = true, live = true)), 1_700_000_000)!!)
                 .single()

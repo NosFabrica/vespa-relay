@@ -34,10 +34,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
-/**
- * File persistence for the NIP-86 [BanStore]. Only the moderation lists are
- * durable; runtime NIP-11 edits reset to the environment on restart.
- */
+/** File persistence for the NIP-86 [BanStore]. Only the moderation lists are durable. */
 object BanListFile {
     private val json = Json { prettyPrint = true }
 
@@ -64,10 +61,7 @@ object BanListFile {
         }
     }
 
-    /**
-     * Writes [banStore]'s lists to [path] atomically. Synchronized: concurrent
-     * admin RPCs each save, and two writers would share one `.tmp` path.
-     */
+    /** Writes [banStore]'s lists to [path] atomically. Synchronized: two writers would share one `.tmp` path. */
     @Synchronized
     fun save(
         path: String,
@@ -103,10 +97,7 @@ object BanListFile {
     }
 }
 
-/**
- * A NIP-86 [BanStore], backed by [stateFile] when one is given: seeded from
- * it on boot and rewritten on every mutation.
- */
+/** A NIP-86 [BanStore], backed by [stateFile] when one is given: seeded on boot, rewritten on mutation. */
 fun openBanStore(stateFile: String?): BanStore {
     // Blank as well as null: compose's `${RELAY_STATE_FILE:-}` delivers "" for unset.
     if (stateFile.isNullOrBlank()) return BanStore {}

@@ -1,10 +1,6 @@
-// What a git permalink shows below its card: the rest of the NIP-34
-// conversation this relay holds, one REQ away under `#a` (everything that
-// belongs to a repository) and `#e` (everything that answers an event).
-// What to ask and how to shape the answer are pure functions, held by
-// web/src/test/js/related.test.mjs. The cards are the same ones a search
-// draws, at preview depth: the page is about the event above, and app.js
-// delegates click, j/k and the json toggle off #results for these too.
+// What a git permalink shows below its card: the rest of the NIP-34 conversation this
+// relay holds, under `#a` for a repository and `#e` for an event. The ask and the shape
+// are pure functions; the cards are a search's own, at preview depth.
 
 import { card, namedPubkeys } from "./cards.js";
 import { esc } from "./shared/format.js";
@@ -27,25 +23,17 @@ const REPO_ITEM_KINDS = REPO_SECTIONS.flatMap((s) => s.kinds);
 const THREAD_KINDS = [1617, 1618, 1619, 1621];
 /** NIP-34's four verdicts; the newest is the current one. */
 const STATUS_KINDS = [1630, 1631, 1632, 1633];
-/**
- * How an answer is written: NIP-34's own reply, a NIP-22 comment, a plain
- * note. Not parents.js's REPLY_KINDS, which would drag in channel messages
- * and voice replies no issue thread contains.
- */
+/** How an answer is written. Not parents.js's REPLY_KINDS, which no issue thread needs. */
 const ANSWER_KINDS = [1622, 1111, 1];
 
-/** How much of each list a page draws before it says how much it left. */
 const SECTION_CAP = 20;
-/** How much the relay is asked for, and so where a count stops being exact. */
+/** Where a count stops being exact. */
 const ASK_LIMIT = 120;
-/** The one ask; it must not hold the page, since the card is already on screen. */
 export const RELATED_TIMEOUT_MS = 6000;
 
 /**
- * The NIP-01 filters that answer "what else belongs to this", or null for a
- * kind that asks nothing. A repository takes two, ORed in one REQ: everything
- * tagged with its address, and its own state, which is addressed by `d` and
- * carries no `a`.
+ * The filters that answer "what else belongs to this", or null for a kind that asks
+ * nothing. A repository takes two: its state is addressed by `d` and carries no `a`.
  */
 export function relatedAsk(ev) {
   if (!ev || !/^[0-9a-f]{64}$/.test(ev.pubkey || "")) return null;
@@ -64,10 +52,8 @@ export function relatedAsk(ev) {
 }
 
 /**
- * What came back, as the page's shape: `{status, sections, events}`.
- * `events` is every event that will be drawn, flat, for the json toggle and
- * the profile loader. A repository's lists are newest first; a thread is
- * oldest first, because it is a conversation.
+ * What came back as `{within, status, sections, events}`; `events` is everything drawn,
+ * flat. A repository's lists are newest first; a thread is oldest first.
  */
 export function relatedShape(ev, events) {
   const seen = new Set([ev.id]);
@@ -82,8 +68,7 @@ export function relatedShape(ev, events) {
   const partial = (events || []).length >= ASK_LIMIT || (events && events.complete === false);
   const count = (n, one, many) => `${n}${partial ? "+" : ""} ${n === 1 && !partial ? one : many}`;
   const newestFirst = [...fresh].sort((a, b) => b.created_at - a.created_at);
-  // Which repository these cards are already under, so each card can leave
-  // that line out. Passed to the renderer rather than stripped afterwards.
+  // Which repository these cards are already under, so each card can leave that line out.
   const within = ev.kind === 30617 ? selfAddr(ev) : repoAddr(ev);
 
   if (ev.kind === 30617) {
@@ -120,11 +105,7 @@ export function relatedShape(ev, events) {
 
 const singular = (s) => (s === "issues" ? "issue" : s === "patches" ? "patch" : s === "releases" ? "release" : s.replace(/s$/, ""));
 
-/**
- * An event that only mentions the one this page is about. A `#e` ask returns
- * everything carrying the id, and NIP-10 marks a citation as `mention`;
- * listing those as replies would put a quote from elsewhere into the thread.
- */
+/** An event that only cites the one this page is about; a `mention` is not a reply. */
 function onlyMentions(e, id) {
   const es = (e.tags || []).filter((t) => Array.isArray(t) && t[0] === "e" && t[1] === id);
   return es.length > 0 && es.every((t) => String(t[3] || "").toLowerCase() === "mention");
@@ -141,11 +122,7 @@ export const relatedPeople = (shape) =>
   [...new Set(shape.events.flatMap((e) => [e.pubkey, ...namedPubkeys(e, undefined)]))]
     .filter((pk) => /^[0-9a-f]{64}$/.test(pk || ""));
 
-/**
- * The verdict, as the line an issue page owes its reader. It sits under the
- * card rather than in the list below, because it answers the question the
- * page is about; who closed it and when are part of that answer.
- */
+/** The verdict line under an issue's card: the state, who set it and when. */
 const VERDICT = { 1630: ["open", "open"], 1631: ["merged", "applied or merged"], 1632: ["closed", "closed"], 1633: ["draft", "draft"] };
 function statusHtml(status) {
   const v = VERDICT[status.kind];
@@ -156,7 +133,7 @@ function statusHtml(status) {
     ` by ${who} · <a href="${noteHref(status.id)}">${esc(when(status))}</a></div>`;
 }
 
-/** The whole block. Empty string when nothing came back, so nothing is drawn. */
+/** The whole block; "" when nothing came back. */
 export function relatedHtml(shape) {
   if (!shape || (!shape.status && !shape.sections.length)) return "";
   const opts = shape.within ? { within: shape.within } : undefined;
@@ -168,11 +145,7 @@ export function relatedHtml(shape) {
   return `<div class="related">${shape.status ? statusHtml(shape.status) : ""}${shape.sections.map(section).join("")}</div>`;
 }
 
-/**
- * Ask, shape, and load the names the cards need; everything but the DOM.
- * A failure is swallowed: a repository whose issue list timed out is a page
- * missing a list, not a page that failed.
- */
+/** Ask, shape, and load the names the cards need. A failed ask is a page missing a list, not a failed page. */
 export async function loadRelated(ev, conn) {
   const ask = relatedAsk(ev);
   if (!ask) return null;

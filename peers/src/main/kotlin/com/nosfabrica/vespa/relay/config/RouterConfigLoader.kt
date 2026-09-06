@@ -29,14 +29,10 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
 
-/**
- * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling with a
- * nudge on stderr so the config gets updated.
- */
+/** Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling with a nudge on stderr. */
 fun Map<String, String>.syncEnv(
     name: String,
-    // Oldest last: the first spelling set wins, so a deployment mid-migration
-    // is never read from the older of two values it has.
+    // Oldest last: the first spelling set wins.
     vararg legacy: String,
 ): String? {
     this[name]?.let { return it }
@@ -49,10 +45,8 @@ fun Map<String, String>.syncEnv(
 }
 
 /**
- * Loads [RouterConfig] from the environment: `SYNC_CONFIG` holds the HOCON
- * inline, `SYNC_CONFIG_FILE` points at a file. Neither set is null, which
- * SyncMain refuses to start on. `SYNC_STREAMS` narrows the run to a subset of
- * the config's streams, see [narrowToStreams].
+ * Loads [RouterConfig] from the environment: `SYNC_CONFIG` holds the HOCON inline,
+ * `SYNC_CONFIG_FILE` points at a file. Neither set is null. `SYNC_STREAMS` narrows the run.
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -77,8 +71,7 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceIn(1, 20_000) ?: 1000
-        // Sized the removed `auto` transport choice. Refused rather than ignored,
-        // like every removed setting here.
+        // Removed settings are refused, never ignored.
         require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank() && env["ROUTER_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
                 "choice any more: the pool pages forward and reconciles the past on its own clock. Unset it"
@@ -94,7 +87,6 @@ object RouterConfigLoader {
                         ?.toLongOrNull()
                         ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
             )
-        // Runtime tuning, applied with copy() rather than threaded through parse().
         val pageTarget =
             env
                 .syncEnv("SYNC_NEG_PAGE_TARGET", "ROUTER_NEG_PAGE_TARGET")
@@ -130,10 +122,7 @@ object RouterConfigLoader {
             }
     }
 
-    /**
-     * Run only the streams `SYNC_STREAMS` names. A name that matches nothing is
-     * a hard error: a typo would otherwise look like a relay that mirrors nothing.
-     */
+    /** Run only the streams `SYNC_STREAMS` names. A name that matches nothing is a hard error. */
     fun narrowToStreams(
         streams: List<SyncStream>,
         only: String,
@@ -150,8 +139,7 @@ object RouterConfigLoader {
             "router: SYNC_STREAMS names ${unknown.joinToString()}, which the config does not define (has: ${known.joinToString()})"
         }
         val (on, off) = streams.partition { it.name in wanted }
-        // Said every startup: a stream switched off for a measurement must
-        // never look like one that is failing.
+        // Said every startup: a stream switched off must never look like one that is failing.
         System.err.println(
             "router: SYNC_STREAMS is set — running ${on.joinToString { it.name }};" +
                 " NOT running ${off.joinToString { it.name }.ifEmpty { "nothing else" }}",
@@ -189,14 +177,12 @@ object RouterConfigLoader {
 
                 val filter = parseFilter(s.getConfig("filter"))
                 val deleteMissing = parseDeleteMissing(name, s)
-                // Refused rather than accepted and ignored: the pool has one shape for every stream.
                 require(!s.hasPath("sync")) {
                     "router: stream '$name' sets `sync` — gone with the legacy backfill. Every stream is visited " +
                         "the same way now: page forward from the band's edge, live-tail, and re-check the past on " +
                         "`negentropySyncThePastSeconds` (reconcile) and `refetchThePastSeconds` (re-fetch)"
                 }
-                // Floored at an hour: the audit re-reconciles the whole covered
-                // history. `auditSeconds` and `verifySeconds` are the knob's older names.
+                // `auditSeconds` and `verifySeconds` are the knob's older names.
                 val negentropySyncThePastSeconds =
                     when {
                         s.hasPath("negentropySyncThePastSeconds") -> {
@@ -224,8 +210,7 @@ object RouterConfigLoader {
                             null
                         }
                     }?.coerceAtLeast(3600L)
-                // Floored at an hour for the same reason; warned about at or below
-                // the audit, where it re-downloads what the audit would reconcile.
+                // Warned about at or below the audit, where it re-downloads what the audit would reconcile.
                 val refetchThePastSeconds =
                     if (s.hasPath("refetchThePastSeconds")) {
                         s.getLong("refetchThePastSeconds").coerceAtLeast(3600L).also {
@@ -242,8 +227,7 @@ object RouterConfigLoader {
                         null
                     }
                 if (deleteMissing != DeleteMissing.OFF) {
-                    // The comparison runs as the pool's audit, so it needs a relay
-                    // list the monitor answers for and the audit clock.
+                    // The comparison runs as the pool's audit, so it needs a relay list and the audit clock.
                     require(discovery != null) {
                         "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
                             "comparison runs as the pool's audit, over asks a scan paired with their owners"
@@ -252,10 +236,8 @@ object RouterConfigLoader {
                         "router: stream '$name' sets deleteMissing without `negentropySyncThePastSeconds` — " +
                             "the retraction comparison IS that reconcile, and that knob is its clock"
                     }
-                    // The delete's licence is per (relay, provider), so every source must
-                    // bind `authors`; an unbound ask would judge every provider against one relay.
+                    // The delete's licence is per (relay, provider), so every source must bind `authors`.
                     discovery.sources.forEach { source ->
-                        // Catches the kind-30166 source too: its `d`-tag select binds nothing.
                         require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
                             "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
                                 "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
@@ -277,15 +259,13 @@ object RouterConfigLoader {
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     negentropySyncThePastSeconds = negentropySyncThePastSeconds,
-                    // Absent is uncapped: the job is bounded by `visitConcurrency` alone.
                     refetchConcurrency = cap(s, "refetchConcurrency"),
                     negentropyConcurrency = cap(s, "negentropyConcurrency"),
                     maxLiveConcurrency = cap(s, "maxLiveConcurrency"),
                     visitConcurrency = cap(s, "visitConcurrency"),
                 )
             }
-        // Advisory, the overlap can be deliberate: a kind deleted here and
-        // mirrored there is re-mirrored and re-deleted on every audit.
+        // Advisory: a kind deleted here and mirrored there is re-mirrored and re-deleted every audit.
         for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF }) {
             for (other in streams) {
                 if (other.name == retracting.name) continue
@@ -313,11 +293,7 @@ object RouterConfigLoader {
         )
     }
 
-    /**
-     * The pool's socket widths live inside the streams that pay for them.
-     * Refused at the old spelling rather than dropped, so a deployment never
-     * believes it bounded dials it did not.
-     */
+    /** The pool's socket widths live inside the streams; the old top-level spelling is refused, not dropped. */
     private fun refuseRouterWidePoolWidths(cfg: Config) {
         require(!cfg.hasPath("visitConcurrency")) {
             "router: top-level `visitConcurrency` — moved inside each stream, because the four jobs a visit does " +
@@ -331,19 +307,13 @@ object RouterConfigLoader {
         }
     }
 
-    /**
-     * One of a stream's workload caps: absent, or at least one. Zero is
-     * floored, not honored: an off switch wearing a tuning knob's name.
-     */
+    /** One of a stream's workload caps: absent, or at least one. Zero is floored, not honored. */
     private fun cap(
         cfg: Config,
         path: String,
     ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
 
-    /**
-     * The `monitor { }` block. A monitor source is a relay source feeding
-     * verdicts instead of a fan-out, so it reuses the stream-side parsers.
-     */
+    /** The `monitor { }` block. A monitor source is a relay source, so it reuses the stream-side parsers. */
     private fun parseMonitor(cfg: Config): MonitorConfig? {
         if (!cfg.hasPath("monitor")) return null
         val m = cfg.getConfig("monitor")
@@ -386,8 +356,7 @@ object RouterConfigLoader {
                         else -> m.getLong(key).coerceAtLeast(30L)
                     }
                 },
-            // Floored at 1: zero dials is an off switch no operator asked this
-            // knob to be. The ceiling is the operator's own arithmetic.
+            // Floored at 1: zero dials is an off switch no operator asked this knob to be.
             dialConcurrency =
                 when {
                     m.hasPath("dialConcurrency") -> {
@@ -447,9 +416,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * `ownedKinds = [30382]`: the kinds the upstreams are authoritative for.
-     * Required, non-empty and a subset of the filter's kinds when `deleteMissing`
-     * is on; refused when it is off, so no stale licence waits for a later switch.
+     * The kinds the upstreams are authoritative for. Required, non-empty and a subset of the
+     * filter's kinds when `deleteMissing` is on; refused when it is off.
      */
     private fun parseOwnedKinds(
         stream: String,
@@ -471,7 +439,7 @@ object RouterConfigLoader {
                 "because every other kind in the filter would otherwise be deleted for being absent from a relay " +
                 "that was never supposed to serve it"
         }
-        // A kind-less filter is every kind, so the set deletion must not touch has no shape.
+        // A kind-less filter is every kind, so the set deletion must not touch would have no shape.
         val streamKinds =
             requireNotNull(filter.kinds) {
                 "router: stream '$stream' sets deleteMissing on a filter with no `kinds` — " +
@@ -485,11 +453,7 @@ object RouterConfigLoader {
         return declared
     }
 
-    /**
-     * The `relaySource = [ ... ]` list plus the stream-level knobs pacing its
-     * discovery. The cycle engine's knobs are refused by name rather than
-     * ignored, with the message saying where the meaning moved.
-     */
+    /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its discovery. */
     private fun parseDiscovery(
         stream: String,
         s: Config,
@@ -534,8 +498,7 @@ object RouterConfigLoader {
             } else {
                 emptyList()
             }
-        // Said, not refused: which tag and value constitute a vouching is the
-        // operator's knowledge, so the config is the authority.
+        // Said, not refused: which tag and value constitute a vouching is the operator's knowledge.
         if (gatedBy.isEmpty()) {
             System.err.println(
                 "router: stream '$stream' has no `gatedBy` — every url its relaySource names will be dialled, " +
@@ -552,10 +515,7 @@ object RouterConfigLoader {
         )
     }
 
-    /**
-     * Compiled here, where a human types them, so a broken regex refuses the
-     * config naming the stream instead of surfacing mid-cycle.
-     */
+    /** Compiled here so a broken regex refuses the config naming the stream, not mid-cycle. */
     private fun parseExcludes(
         stream: String,
         raw: List<String>,
@@ -570,11 +530,7 @@ object RouterConfigLoader {
             )
         }
 
-    /**
-     * One `{ select = [ ], filter = { } }` entry, for a stream's `relaySource`
-     * and its `gatedBy` alike: where urls come from and which are permitted are
-     * the same shape of question.
-     */
+    /** One `{ select = [ ], filter = { } }` entry, for a stream's `relaySource` and its `gatedBy` alike. */
     private fun parseRelaySource(
         stream: String,
         s: Config,
@@ -584,8 +540,7 @@ object RouterConfigLoader {
         val written = parseFilter(s.getConfig("filter"))
         val kinds = written.kinds
         require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
-        // Kind, not semantics: NIP-66 fixes the url in a 30166's `d` tag, and
-        // nothing else about its tags is ours to read.
+        // NIP-66 fixes the url in a 30166's `d` tag; nothing else about its tags is ours to read.
         val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
         val filter = written
         require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
@@ -593,8 +548,7 @@ object RouterConfigLoader {
                 "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
                 "human and by nothing else"
         }
-        // Replaceable and addressable kinds are one event per author; only they
-        // may be scanned whole. Checked on what was written, not the derived filter.
+        // Only replaceable and addressable kinds may be scanned whole. Checked on what was written.
         val narrowed =
             filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null || s.hasPath("maxAgeSeconds")
         require(narrowed || kinds.all { isBoundedKind(it) }) {
@@ -630,7 +584,6 @@ object RouterConfigLoader {
         return RelaySource(
             selects = selects,
             filter = filter,
-            // Unbounded unless written; see [RelaySource.maxAgeSeconds].
             maxAgeSeconds = if (s.hasPath("maxAgeSeconds")) s.getLong("maxAgeSeconds").coerceAtLeast(60L) else null,
             refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
@@ -664,7 +617,6 @@ object RouterConfigLoader {
                 else -> emptyList()
             }
         return RelaySelect(
-            // No kind: the select applies to everything the filter collected.
             kind = if (s.hasPath("kind")) s.getInt("kind") else null,
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
             urlIndex = index,
@@ -673,17 +625,13 @@ object RouterConfigLoader {
         )
     }
 
-    /**
-     * The fields a select may bind. A closed list: a typo that bound nothing
-     * would look like a stream quietly syncing the wrong thing.
-     */
+    /** The fields a select may bind. A closed list, so a typo cannot bind nothing quietly. */
     private val BINDABLE = setOf("authors", "ids", "kinds")
 
     private fun isBindable(key: String) = key in BINDABLE || (key.length == 2 && key[0] == '#' && key[1].isLetter())
 
     /**
-     * `{ tag = "30382:rank", relay = 2, authors = 1 }`: which tag slot feeds
-     * which filter field. A value is an Int (that element of the tag) or
+     * Which tag slot feeds which filter field. A value is an Int (that element of the tag) or
      * `"pubkey"`/`"id"` for the scanned event's own.
      */
     private fun parseBindings(
@@ -693,8 +641,7 @@ object RouterConfigLoader {
         val out = LinkedHashMap<String, BindingSlot>()
         for (entry in s.root().keys) {
             if (!isBindable(entry)) continue
-            // Quoted: a `#p` key is a HOCON path expression otherwise, and `#`
-            // starts a comment there.
+            // Quoted: unquoted, a `#p` key is a HOCON path expression and `#` starts a comment.
             val v = s.getValue(quote(entry)).unwrapped()
             val slot =
                 when (v) {
@@ -726,9 +673,8 @@ object RouterConfigLoader {
     }
 
     /**
-     * NIP-65's rule spelled as a `where`: keep tags marked the asked-for side,
-     * marked empty, or too short to carry a marker at all, since an unmarked
-     * `r` tag is read and write. `any` keeps everything.
+     * NIP-65's rule spelled as a `where`: keep tags marked the asked-for side, marked empty, or
+     * too short to carry a marker, since an unmarked `r` tag is read and write.
      */
     private fun markerSugar(
         stream: String,
@@ -772,22 +718,18 @@ object RouterConfigLoader {
         require(index == null || index >= 0) {
             "router: stream '$stream' has a where entry with a negative index"
         }
-        // The select itself already demands the url at urlIndex, so a bound
-        // the url can't fit under is a condition that can never match.
+        // A bound the url at urlIndex cannot fit under can never match.
         require(maxSize == null || maxSize >= urlIndex + 1) {
             "router: stream '$stream' has a where entry with maxSize $maxSize, but the url at index $urlIndex already needs ${urlIndex + 1} elements — it can never match"
         }
         require(minSize == null || maxSize == null || minSize <= maxSize) {
             "router: stream '$stream' has a where entry with minSize $minSize > maxSize $maxSize — it can never match"
         }
-        // equals demands the element exist, so its index has to fit under the
-        // entry's own maxSize.
+        // equals demands the element exist, so its index has to fit under the entry's own maxSize.
         require(equals == null || maxSize == null || index!! < maxSize) {
             "router: stream '$stream' has a where entry whose equals at index $index needs ${index!! + 1} elements but maxSize is $maxSize — it can never match"
         }
-        // Every tag reaching a where already has the url, so a minSize at or
-        // under that floor holds for every tag, and one always-true entry in
-        // an OR list silently disables the others.
+        // A minSize the url already guarantees is always true, which silently disables the OR list.
         require(minSize == null || minSize > urlIndex + 1) {
             "router: stream '$stream' has a where entry with minSize $minSize, which the url at index $urlIndex already guarantees — it matches every tag"
         }
@@ -797,18 +739,13 @@ object RouterConfigLoader {
     /** Replaceable (0, 3, 10000-19999) and addressable (30000-39999) kinds hold one event per author. */
     private fun isBoundedKind(kind: Int): Boolean = kind == 0 || kind == 3 || kind in 10_000..19_999 || kind in 30_000..39_999
 
-    /**
-     * Turn a HOCON filter object (`{ "kinds": [0,3], "#t": [...] }`) into a
-     * quartz [Filter]. Standard NIP-01 fields plus `#x` tag filters.
-     */
+    /** Turn a HOCON filter object into a quartz [Filter]: standard NIP-01 fields plus `#x` tag filters. */
     fun parseFilter(f: Config): Filter {
         fun strs(k: String) = if (f.hasPath(quote(k))) f.getStringList(quote(k)) else null
 
         fun ints(k: String) = if (f.hasPath(quote(k))) f.getIntList(quote(k)).map { it.toInt() } else null
 
-        // NIP-01 timestamps are unsigned and `limit` counts events. Relays answer
-        // a negative one with a killed subscription, silence, or their newest
-        // page, and none of those failures name the config that caused them.
+        // Relays answer a negative bound with a killed subscription, silence, or their newest page.
         fun nonNegative(
             key: String,
             value: Long?,
@@ -821,11 +758,7 @@ object RouterConfigLoader {
                 }
             }
 
-        /**
-         * `since = 0` is the absence of a floor, not a floor: normalised to null
-         * so every `since != null` reader sees one spelling. `until = 0` is a
-         * real bound and is left alone.
-         */
+        /** `since = 0` is the absence of a floor, normalised to null; `until = 0` is a real bound. */
         fun epochAsAbsent(value: Long?): Long? = value?.takeIf { it != 0L }
 
         val tags =
@@ -838,8 +771,7 @@ object RouterConfigLoader {
 
         val since = epochAsAbsent(nonNegative("since", if (f.hasPath("since")) f.getLong("since") else null))
         val until = nonNegative("until", if (f.hasPath("until")) f.getLong("until") else null)
-        // An inverted window matches nothing, and the empty page a relay answers
-        // it with would be recorded as a settled past.
+        // The empty page a relay answers an inverted window with would be recorded as a settled past.
         require(since == null || until == null || since <= until) {
             "router: filter at ${f.origin().description()} has `since = $since` after `until = $until` — " +
                 "an inverted window matches nothing, and a relay answers it with the empty page that " +
@@ -853,18 +785,15 @@ object RouterConfigLoader {
             tags = tags,
             since = since,
             until = until,
-            // getInt, not getLong().toInt(): HOCON range-checks the int, and Long
-            // would truncate an out-of-range limit into a plausible one. Zero stays
-            // legal: `limit = 0` is NIP-01 for "no stored events, just the live tail".
+            // getInt, not getLong().toInt(): HOCON range-checks the int. Zero stays legal.
             limit = if (f.hasPath("limit")) f.getInt("limit").also { nonNegative("limit", it.toLong()) } else null,
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }
 
     /**
-     * A filter's `ids` and `authors`, validated as raw hex and left that way:
-     * a `filter { }` block is a NIP-01 filter, so bech32 is refused rather
-     * than decoded. Uppercase is lowercased; an `nsec1` is called out by name.
+     * A filter's `ids` and `authors`, validated as raw hex: a `filter { }` block is a NIP-01
+     * filter, so bech32 is refused rather than decoded. An `nsec1` is called out by name.
      */
     private fun hexKeys(
         f: Config,
@@ -890,6 +819,6 @@ object RouterConfigLoader {
             key
         }
 
-    /** HOCON path segments with dots/hashes/special chars must be quoted for get*(). */
+    /** HOCON path segments with dots or hashes must be quoted for get*(). */
     private fun quote(key: String): String = "\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 }

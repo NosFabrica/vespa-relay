@@ -1,8 +1,6 @@
-// The readiness verdict: which link of the trust chain a signed-in reader is
-// missing, and what the panel may claim about it. Asserts the ordering (the
-// first unmet link wins, everything below it waits) and three rules: an
-// unfinished read is not an absence, a non-answer is not a zero, and a missing
-// denominator is not a percentage. The words live in readiness.js.
+// The readiness verdict: which link of the trust chain a signed-in reader is missing. The first
+// unmet link wins; an unfinished read is not an absence, a non-answer is not a zero, and a
+// missing denominator is not a percentage.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -57,8 +55,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
     }
   }
 
-  // Asserted against the source: readiness.js reads the document at import
-  // and cannot be loaded here.
+  // Asserted against the source: readiness.js reads the document at import and cannot be loaded here.
   const src = readFileSync(
     new URL("../../main/resources/web/readiness.js", import.meta.url), "utf8"
   );
@@ -73,8 +70,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
-  // A list naming only `ws://` relays loses every entry on an https page and
-  // leaves the same empty array as no list at all.
+  // A list naming only `ws://` relays loses every entry on an https page.
   const unusable = assess({
     relayList: { seen: true, declared: 2, writeRelays: [] },
     scoreListSeen: false, rankService: null,
@@ -127,8 +123,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
-  // The sentinels are objects, so they are truthy; nothing may compare them
-  // as numbers.
+  // The sentinels are objects, so they are truthy; nothing may compare them as numbers.
   for (const there of [REFUSED, TIMED_OUT, null]) {
     const v = assess({ ...healthy(), scores: { here: 3197, there } });
     assert.equal(v.state, "importing", `there=${JSON.stringify(there)}`);
@@ -159,8 +154,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
-  // The trust projection is derived per service when the relay starts, so a
-  // service new to it ranks nothing until then.
+  // The trust projection is derived per service when the relay starts.
   const v = assess({ ...healthy(), probe: { authed: 0, anon: 1 } });
   assert.equal(v.state, "projection-pending");
   assert.equal(statusOf(v, "ranked"), "broken");
@@ -229,8 +223,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   assert.equal(normalizeRelay("relay.damus.io"), "wss://relay.damus.io", "a bare host is a relay");
   assert.equal(normalizeRelay("wss://nip85.brainstorm.world/"), normalizeRelay("wss://nip85.brainstorm.world"));
 
-  // Prepending `wss://` to a string that already has a scheme yields a url
-  // whose host is "https"; it parses, dials and means nothing.
+  // Prepending `wss://` to a string that already has a scheme yields a url whose host is "https".
   assert.equal(normalizeRelay("https://relay.damus.io"), null);
   assert.equal(normalizeRelay("http://localhost:7778"), null, "the url in the corpus this rule was written for");
   assert.match(whyNotDialable("https://relay.damus.io"), /wss:\/\/relay\.damus\.io/, "and the reason offers the fix");

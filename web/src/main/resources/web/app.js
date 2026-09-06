@@ -1,7 +1,6 @@
-// The SearchOverTrust page itself: sign-in, the search views (hero, type-ahead
-// popup, full results), the "ranking as" lens, and the URL/backstack wiring.
-// Everything stateful lives here; the shared/ modules underneath are the
-// stateless client, codec and caches, and cards.js is the rendering.
+// The SearchOverTrust page itself: sign-in, the search views (hero, type-ahead popup, full
+// results), the "ranking as" lens, and the URL/backstack wiring. Everything stateful lives
+// here; the shared/ modules underneath are the stateless client, codec and caches.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
@@ -27,17 +26,14 @@ import { mountSearchField, softKeyboard } from "./searchfield.js";
 import { AskCache } from "./shared/asks.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
 
-// Rows the popup draws. The ask itself is one results page wide (askLimit),
-// so Enter can reuse it through shared/asks.js.
+// Rows the popup draws; the ask itself is one results page wide, so Enter can reuse it.
 const POPUP_LIMIT = 8;
-// A keystroke gap long enough to count as a pause. runPopup() serialises the
-// asks; this only keeps the first character from being one.
+// A keystroke gap long enough to count as a pause.
 const DEBOUNCE_MS = 250;
 
 // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
-// `slug` names the tab in the URL, so the kinds can change without breaking
-// bookmarks. A tab's kinds must be the ones the matching family in
-// shared/kinds.js renders; the tone table there is the reference.
+// `slug` names the tab in the URL, so the kinds can change without breaking bookmarks. A tab's
+// kinds must be the ones the matching family in shared/kinds.js renders.
 const KIND_TABS = [
   { label: "Everything", slug: "all", kinds: null },
   { label: "People", slug: "people", kinds: [0] },
@@ -50,8 +46,7 @@ const KIND_TABS = [
 ];
 
 // ---- signed-in preference, shared across the relay's pages ----------------
-// A cookie so every page the relay serves reads it. Unset means "not chosen
-// yet", which defaults to signed in.
+// A cookie so every page the relay serves reads it. Unset defaults to signed in.
 const AUTH_COOKIE = "sot_signedin";
 function wantsSignIn() {
   const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
@@ -62,9 +57,8 @@ function rememberSignIn(yes) {
 }
 
 // ---- the face you ended on, kept across loads ----------------------------
-// The picture and name of the last signed-in account, keyed by pubkey, so the
-// field can draw them before the socket, the challenge and the kind 0 read.
-// A cache of what was on screen, not a session: it authorises nothing.
+// The last signed-in account's picture and name, so the field can draw them before the
+// socket, the challenge and the kind 0 read. A cache of what was on screen; it authorises nothing.
 const FACE_KEY = "sot_face";
 let meFace = readFace();
 function readFace() {
@@ -74,9 +68,8 @@ function readFace() {
   } catch (e) { return null; }
 }
 /**
- * Keep what the relay said about [pk]'s face, but only once it answered:
- * `has` is true then, profile or no profile. A dropped read is not "no
- * picture" (the same rule profiles.js applies to caching absences).
+ * Keep what the relay said about [pk]'s face, but only once it answered (`has`); a dropped
+ * read is not "no picture".
  */
 function rememberFace(pk) {
   if (!pk || !profiles.has(pk)) return;
@@ -97,25 +90,19 @@ function writeFace() {
 }
 
 // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
-// Signing the challenge switches the connection's ranking observer to you. It
-// enrols nothing: the router reaches you through its own streams or not at
-// all, and readiness.js says which.
+// Signing the challenge switches the connection's ranking observer to you. It enrols nothing.
 let me = null;        // the pubkey the relay accepted a NIP-42 AUTH for
 let mePending = null; // the pubkey the extension named, before that proof
 
-// A dropped socket loses the AUTH, not the identity: `me` stays set and the
-// next request re-authenticates rather than silently running unranked.
+// A dropped socket loses the AUTH, not the identity: the next request re-authenticates.
 relay.onclose = () => { renderWhoami(); };
 
-// The restore half of the back/forward cache (pagehide is in shared/conn.js).
-// A restore runs no load code: `me` is still set, the socket is closed and
-// nothing is authenticated.
+// The restore half of the back/forward cache (pagehide is in shared/conn.js): `me` is still
+// set, the socket is closed and nothing is authenticated.
 window.addEventListener("pageshow", (ev) => {
-  // A normal load connects on its own path; re-running it here would open a
-  // second socket.
+  // A normal load connects on its own path.
   if (!ev.persisted) return;
-  // NIP-42 belongs to the connection, so the proof and the settled flight are
-  // both stale; the next ensureLogin() must run a real sign-in.
+  // NIP-42 belongs to the connection, so the proof and the settled flight are both stale.
   loginTried = false;
   loginFlight = null;
   scores.clear();
@@ -124,9 +111,8 @@ window.addEventListener("pageshow", (ev) => {
   ensureLogin().then(paintScores).catch(() => {});
 });
 
-// Sign the current challenge and send it. Signing waits on a human in the
-// extension popup, and a challenge belongs to one connection: if the socket
-// was replaced meanwhile, re-read the challenge and sign again.
+// Sign the current challenge and send it. A challenge belongs to one connection: if the socket
+// was replaced while the human signed, re-read it and sign again.
 async function signAndAuth(attempt = 0, waitMs = 3000) {
   const challenge = await relay.waitForChallenge(waitMs);
   if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
@@ -137,8 +123,7 @@ async function signAndAuth(attempt = 0, waitMs = 3000) {
     tags: [["relay", RELAY_URL], ["challenge", challenge]],
   });
   if (relay.challenge !== challenge) {
-    // Two tries only: a socket flapping faster than a person can click is a
-    // broken relay, and looping would just spam the signer.
+    // Two tries only: looping would spam the signer.
     if (attempt >= 1) throw new Error("The connection kept resetting while signing — try again");
     await relay.connect();
     return signAndAuth(attempt + 1);
@@ -148,10 +133,8 @@ async function signAndAuth(attempt = 0, waitMs = 3000) {
 }
 
 /**
- * Who the extension says you are, and your face, both before the proof.
- * `getPublicKey()` is local, so naming the account and reading its kind 0 run
- * beside the handshake and the signing popup. The pubkey draws and prefetches;
- * it never authorises.
+ * Who the extension says you are, and your face, both before the proof. `getPublicKey()` is
+ * local, so this runs beside the handshake. The pubkey draws and prefetches; it never authorises.
  */
 async function prefetchFace() {
   let pk = null;
@@ -164,8 +147,7 @@ async function prefetchFace() {
   }
   mePending = pk;
   renderMe();                 // the remembered face, if this is the same account
-  // enrichProfiles skips a pubkey it has seen, including a cached `null`, so
-  // delete first to force the re-read.
+  // enrichProfiles skips a pubkey it has seen, including a cached `null`, so delete first.
   profiles.delete(pk);
   try { await enrichProfiles([pk]); } catch (e) {}
   renderMe();
@@ -178,8 +160,7 @@ async function login() {
   const connecting = relay.connect();
   const face = prefetchFace();
   await connecting;
-  // A click gets a longer wait than a background attempt: the socket may have
-  // only just opened, and the challenge arrives after the handshake.
+  // A click gets a longer wait than a background attempt: the challenge arrives after the handshake.
   me = await signAndAuth(0, 10000);
   mePending = null;
   renderWhoami();
@@ -192,8 +173,7 @@ async function login() {
   }
   rememberFace(me);
   renderWhoami();
-  // The read above races the reference socket's opening. Retry quietly, but
-  // only on `has`: a cached `null` is an answer, not a dropped read.
+  // The read above races the reference socket's opening. Retry on `has` only: a cached `null` is an answer.
   for (let i = 0; i < 3 && me && !profiles.has(me); i++) {
     await new Promise((r) => setTimeout(r, 600 * (i + 1)));
     if (!me) break;
@@ -204,10 +184,9 @@ async function login() {
   }
 }
 
-// Signed in automatically, once, best effort: a failure downgrades to the
-// unranked corpus and says so. One in-flight promise that every read awaits,
-// so no REQ goes out on this socket before its auth question is settled; a
-// relay never re-runs a subscription it answered under the old auth state.
+// Signed in automatically, once, best effort; a failure downgrades to the unranked corpus and
+// says so. One in-flight promise that every read awaits, so no REQ goes out on this socket
+// before its auth question is settled.
 let loginTried = false;   // the first attempt has settled (labels key on this)
 let loginFlight = null;   // the first attempt itself, awaited by every search
 async function ensureLogin() {
@@ -218,8 +197,7 @@ async function ensureLogin() {
       // A remembered "signed out" is a decision; do not prompt the extension.
       if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
         mePending = null;
-        // The picker stays live: it is a signed-out reader's only way to a ranked
-        // answer.
+        // The picker stays live: it is a signed-out reader's only way to a ranked answer.
         applyViewingAs(viewingAs, $obsCurrent.textContent);
         renderWhoami();
         return;
@@ -234,28 +212,24 @@ async function ensureLogin() {
   }
   await loginFlight;
   if (!me) { clearReadiness(); return; }
-  // Keyed on the connection's auth state: a reconnect leaves `me` set but the
-  // new socket unauthenticated.
+  // Keyed on the connection's auth state: a reconnect leaves `me` set but the socket unauthenticated.
   if (relay.authed) { checkReadiness(me); return; }
   me = await signAndAuth();
   renderWhoami();
-  // Here rather than in login(): both paths to an authenticated socket meet
-  // here, and the check is about the connection's lens.
+  // Both paths to an authenticated socket meet here, and the check is about the connection's lens.
   checkReadiness(me);
 }
 
-// The resend half of NIP-42: on CLOSED "auth-required:" the client authenticates
-// through the shared flow and resends the REQ. The anonymous reference
-// connection gets no such hook; for it auth-required is a real answer.
+// The resend half of NIP-42: on CLOSED "auth-required:" the client authenticates and resends.
+// The anonymous connection gets no such hook; for it auth-required is a real answer.
 relay.onAuthRequired = () => ensureLogin();
 
 // ---- search over NIP-50 ---------------------------------------------------
 let tab = KIND_TABS[0];
 
 /**
- * Whether this page has a web of trust to read through at all. `me`, not
- * `mePending`: an unproved pubkey is not a lens. Every read awaits
- * ensureLogin() first, so this is settled by the time anything asks.
+ * Whether this page has a web of trust to read through at all. `me`, not `mePending`: an unproved
+ * pubkey is not a lens.
  */
 const lensless = () => !me && !viewingAs;
 
@@ -263,10 +237,8 @@ const lensless = () => !me && !viewingAs;
 const spamOn = () => $spam.checked || lensless();
 
 /**
- * The NIP-50 string a one-off ask needs to be answered: the words, plus this
- * page's lens where the connection does not already carry one. Signed in, the
- * NIP-42 identity is the lens; signed out it is the picked observer, else
- * `include:spam`. Separate from [searchString]: no sort menu, no spam switch.
+ * The NIP-50 string a one-off ask needs: the words, plus this page's lens where the connection
+ * does not already carry one. Separate from [searchString]: no sort menu, no spam switch.
  */
 function askString(words) {
   if (me) return words || "";
@@ -279,18 +251,15 @@ function searchString(text) {
   const sort = $sort.value;
   const parts = text ? [text] : [];
   if (sort) parts.push("sort:" + sort);
-  // Whose web of trust ranks this; absent, the connection's own pubkey. Sent
-  // signed out too: the store resolves `observer:` on an anonymous socket.
+  // Whose web of trust ranks this. Sent signed out too: the store resolves `observer:` anonymously.
   if (viewingAs) parts.push("observer:" + viewingAs);
-  // Last, so the exported string reads lens then waiver. Never both: lensless()
-  // is false whenever `observer:` went out.
+  // Last, so the exported string reads lens then waiver. Never both.
   if (spamOn()) parts.push("include:spam");
   return parts.join(" ");
 }
 
 /**
- * The filters this page's REQ carries. The construction lives in
- * shared/query.js; this adds the page state (tab, limit, NIP-50 string).
+ * The filters this page's REQ carries: shared/query.js's construction plus the page state.
  * Shared with exportText() so the filters shown are the filters sent.
  */
 function buildFilters(text, limit) {
@@ -298,26 +267,19 @@ function buildFilters(text, limit) {
 }
 
 /**
- * The feed's ask: the same builder with nothing to say but its kinds. The sort
- * menu and the spam switch do not ride along, since either would put an order
- * under a heading that says "latest"; the tab does, because `kinds` is a
- * filter field rather than a search extension.
+ * The feed's ask: the same builder with nothing to say but its kinds. The sort menu and the
+ * spam switch do not ride along, since either would put an order under a heading that says "latest".
  */
 const feedFilters = (limit) =>
   filtersFor("", { kinds: feedKinds(tab.kinds), limit, searchString: feedSearchString });
 
 /**
- * The feed's whole NIP-50 string: a lens declaration or nothing. A lensless
- * read has to say so or the relay refuses it, and `include:spam` carries no
- * order on a termless filter, so the feed stays newest-first either way.
+ * The feed's whole NIP-50 string: a lens declaration or nothing; a lensless read has to say so or
+ * the relay refuses it.
  */
 const feedSearchString = () => askString("");
 
-/**
- * One event, one card, however many filters it answered. This store already
- * dedupes across a subscription's filters; NIP-01 does not require it. Arrival
- * order is kept, so a duplicate stays at the best position it earned.
- */
+/** One event, one card, however many filters it answered; arrival order is kept. */
 function uniqueById(events) {
   const seen = new Set();
   const out = [];
@@ -330,75 +292,57 @@ function uniqueById(events) {
 }
 
 /**
- * [deep] is the full results view: it fetches reply lines and the provenance
- * row, which a popup row cannot draw (`provHtml` is reached only from
- * `shell()`), so the type-ahead does not pay for them per keystroke.
+ * [deep] is the full results view: it fetches reply lines and the provenance row, which the
+ * type-ahead does not pay for per keystroke.
  */
 async function search(text, limit, deep, signal) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  // Through the cache, so Enter reuses the popup's answer at the same width.
-  // [signal] is the popup's, so an overtaken type-ahead is closed at the relay.
+  // Through the cache, so Enter reuses the popup's answer. [signal] is the popup's, so an
+  // overtaken type-ahead is closed at the relay.
   const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }));
-  // `complete` is EOSE, not the timeout: the pager reads a short answer as
-  // the end of the corpus only if the relay said so. shared/relay.js marks
-  // the array and uniqueById returns a new one, so read it first.
+  // `complete` is EOSE, not the timeout. shared/relay.js marks the array and uniqueById
+  // returns a new one, so read it first.
   return {
     ...hydrate(uniqueById(answer), deep, { row: deep ? "own" : "keep" }),
     text,
     complete: answer.complete !== false,
     asked: limit,
-    // The raw count: "less than asked" is a claim about what the relay sent,
-    // and a relay that repeats an event would otherwise end the pager early.
+    // The raw count: a relay that repeats an event would otherwise end the pager early.
     got: answer.length,
   };
 }
 
 /**
- * The newest content, for the hero's preview and the feed page. The ask is
- * over-sized and cut back because NIP-01 cannot say "not a reply"; feed.js
- * owns that arithmetic. Not deep: with the replies gone there is no "in reply
- * to" line to fill.
+ * The newest content, for the hero's preview and the feed page. The ask is over-sized and cut
+ * back because NIP-01 cannot say "not a reply"; feed.js owns that arithmetic.
  */
 async function fetchFeed(want) {
   await ensureLogin();
-  // No uniqueById on the way in: pickFeed dedupes by id itself, in the same
-  // pass that drops the replies and the future dates.
+  // pickFeed dedupes by id itself.
   return hydrate(pickFeed(await relay.req(feedFilters(askFor(want))), want), false, { row: "clear" });
 }
 
-/**
- * The lookups a list of events needs once it has arrived, shared by the
- * search and the feed so the two cannot drift.
- */
+/** The lookups a list of events needs once it has arrived, shared by the search and the feed. */
 function hydrate(events, deep, { row = "own" } = {}) {
   seedProfiles(events);
-  // The provenance row is not seeded here but handed back as [row]: every
-  // other cache here is additive, seedProvenance replaces, and a superseded
-  // read must not overwrite the row of the view that won.
-  // A `group:` query already asks for the group's kind 39000, so the pill's
-  // name is usually in this answer.
+  // The provenance row is handed back as [row], not seeded here: seedProvenance replaces, and
+  // a superseded read must not overwrite the row of the view that won.
   if (seedGroupEvents(events)) field.repaint();
-  // Authors plus everyone the cards will name; namedPubkeys lives with the
-  // renderers and is held to them by a test. Not awaited: a face should not
-  // wait on a second round trip. One argument on purpose: namedPubkeys takes
-  // the render depth as its second, and flatMap would pass the index.
+  // Authors plus everyone the cards will name, not awaited. One argument on purpose:
+  // namedPubkeys takes the render depth as its second, and flatMap would pass the index.
   const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  // The rooms those events were said in, on the same terms as the names: only
-  // the ids nothing on the page can name yet, and not awaited.
+  // The rooms those events were said in, on the same terms as the names.
   const groups = enrichGroupNames(events.map(postedTo).filter(Boolean));
-  // Free, and it removes most of the asks below: a thread carries its own
-  // parents, and an event is ground truth about who wrote it.
+  // A thread carries its own parents, and an event is ground truth about who wrote it.
   seedParentAuthors(events);
   return { events, names, groups, row: rowSeed(events, row), parents: deep ? replyParents(events) : null };
 }
 
 /**
- * The reply lines' own lookups, as a separate promise from the names so the
- * author names do not wait two more round trips. Only the parent authors are
- * enriched: enrichProfiles dedupes against the cache, not against what is in
- * flight, so re-asking namedPubkeys here would be a second REQ.
+ * The reply lines' own lookups, as a separate promise from the names so the author names do
+ * not wait two more round trips.
  */
 async function replyParents(events) {
   const learned = await loadParentAuthors(unknownParents(events));
@@ -406,17 +350,14 @@ async function replyParents(events) {
 }
 
 // ---- viewing as somebody else -------------------------------------------
-// Only a pubkey with a kind 10040 is a usable observer; anyone else ranks
-// nothing. The set is small, so it is fetched once and filtered by name here
-// (NIP-01 cannot join kind 0 against kind 10040 in one REQ).
+// Only a pubkey with a kind 10040 is a usable observer. The set is small, so it is fetched
+// once and filtered by name here.
 let viewingAs = null;         // hex pubkey, or null for "as me"
 let observers = null;         // [{pubkey, name}] once loaded
 
 async function loadObservers() {
   if (observers) return observers;
-  // Anonymous on purpose: the authenticated socket is gated to authors the
-  // reader has scored, and the list of lenses you could switch to must not
-  // be personalised.
+  // Anonymous on purpose: the list of lenses you could switch to must not be personalised.
   const anon = await refConn();
   const lists = await anon.req({ kinds: [10040], limit: 2000 });
   const ks = [...new Set(lists.map((e) => e.pubkey))];
@@ -471,25 +412,20 @@ function setViewingAs(pubkey, name) {
 }
 
 // ---- the provenance row's own lookup ------------------------------------
-// A search for `kinds:[0]` is answered with kind 0 and nothing else, so the
-// lists, labels and assertions a profile was found through have to be asked
-// for. Same shape as the score chip: paint what is known, ask anonymously,
-// repaint when it lands, never block a card. shared/pointers.js builds the
-// ask and re-imposes the trust gate.
+// A search for `kinds:[0]` is answered with kind 0 and nothing else, so the lists, labels and
+// assertions a profile was found through have to be asked for: paint what is known, ask
+// anonymously, repaint when it lands, never block a card.
 
 /**
- * Whose word this lens took, from the Map already in hand. Synchronous: the
- * first seed runs before the render, and readiness.js files the Map at sign-in.
+ * Whose word this lens took, from the Map already in hand. Synchronous: the first seed runs before
+ * the render.
  */
 const trustedNow = () => {
   const lens = viewingAs || me;
   return trustedSigners(knownProviders(lens), lens);
 };
 
-/**
- * What the row currently says, as one string. A count is not enough: the
- * second seed can remove a pill as well as add one, netting to zero.
- */
+/** What the row currently says, as one string; the second seed can remove a pill as well as add one. */
 function pillPrint() {
   const out = [];
   for (const [id, pills] of provenance) out.push(id, ...pills.map((p) => `${p.key}:${p.count}`));
@@ -497,11 +433,9 @@ function pillPrint() {
 }
 
 /**
- * Who owns the provenance row, per view, as a thunk [run] fires once the
- * answer is the one on screen. `own` is the results list, which draws it.
- * `clear` is the feed and the hero's preview: a plain NIP-01 read has no row,
- * and a leftover one would explain a list nobody searched. `keep` is the
- * popup, which cannot draw a pill and floats over the results list.
+ * Who owns the provenance row, per view, as a thunk [run] fires once the answer is on screen:
+ * `own` is the results list, `clear` the feed and the hero's preview (a plain NIP-01 read has
+ * no row), `keep` the popup, which cannot draw a pill and floats over the results list.
  */
 function rowSeed(events, mode) {
   if (mode === "keep") return null;
@@ -513,15 +447,12 @@ function rowSeed(events, mode) {
 }
 
 /**
- * Fetch the pointers this page was not sent and fold them into the row.
- * Returns how many pills the page gained, since that is what `run` repaints
- * on. Seeded from `[...events, ...pointers]`: a spliced pointer still counts,
- * and provenance.js collapses an event arriving both ways into one pill.
+ * Fetch the pointers this page was not sent and fold them into the row; returns how many pills
+ * the page gained. Seeded from `[...events, ...pointers]`, since a spliced pointer still counts.
  */
 function enrichProvenance(events) {
   const lens = viewingAs || me;
-  // The epoch this row owns; it moves with each half's own write so the second
-  // half folds on top of the first.
+  // The epoch this row owns, moved by each half's own write so the second folds on top of the first.
   let mine = provenanceEpoch();
   const carried = [];   // every pointer folded so far, both halves
 
@@ -532,39 +463,34 @@ function enrichProvenance(events) {
     if (mine !== provenanceEpoch()) return 0;
     const before = pillPrint();
     carried.push(...got);
-    // Re-seeded from everything: the Map may have landed on this read, and
-    // `carried` keeps the first half's pointers under the second's write.
+    // Re-seeded from everything: the Map may have landed on this read.
     seedProvenance([...events, ...carried], trusted);
     mine = provenanceEpoch();
     return pillPrint() === before ? 0 : 1;
   };
 
-  // Two asks, two repaints: the open half is far larger than the gated one,
-  // and in one REQ the pills a reader asked for waited on the ones nobody did.
+  // Two asks, two repaints: the open half is far larger than the gated one.
   return [fold({ labels: false }), fold({ declarations: false })];
 }
 
 // ---- trust scores, as the active lens sees them -------------------------
-// The chip on a face reads through the same key that ranks the results, so
-// the two cannot disagree. Read anonymously: a score is a fact about a
-// subject, and the authenticated socket is gated to authors already scored.
+// The chip on a face reads through the same key that ranks the results. Read anonymously: a
+// score is a fact about a subject, and the authenticated socket is gated.
 const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
 
 /**
- * The `30382:rank` services an observer trusts, from their kind 10040, via
- * shared/providers.js. All of them, in the reader's order: the dimension is
- * the delegation, and a `followers` service cannot rank.
+ * The `30382:rank` services an observer trusts, all of them in the reader's order; a `followers`
+ * service cannot rank.
  */
 async function rankServicesOf(observer) {
   return (await providersFor(observer)).get("30382:rank") || [];
 }
 
 /**
- * Fill in any score chips currently on the page. The provenance row asks the
- * same kind 30382 read for the page's authors; see docs/decisions/web-app.md
- * before joining the two. Every exit paints, even with nothing to say: the
- * search field's chips outlive every search.
+ * Fill in any score chips currently on the page. The provenance row makes the same kind 30382
+ * read; docs/decisions/web-app.md says why the two stay apart. Every exit paints, even with
+ * nothing to say: the search field's chips outlive every search.
  */
 async function paintScores() {
   const lens = viewingAs || me;
@@ -577,17 +503,14 @@ async function paintScores() {
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
-  // In flight together: one batch's answer never informs the next one's ask.
   const conn = batches.length ? await refConn().catch(() => null) : null;
   const reads = await Promise.all(batches.map((batch) =>
     // A failed read leaves this batch unknown: an empty array is not complete.
     (conn ? conn.req({ kinds: [30382], authors: svc, "#d": batch, limit: batch.length * svc.length }) : Promise.resolve([]))
       .catch(() => [])));
-  // The lens changed while these were in flight; filing them, and the nulls
-  // below, under the new lens would be permanent.
+  // The lens changed while these were in flight; filing them under the new lens would be permanent.
   if (scoreLensKey !== lens) return;
-  // By service priority, not arrival: `authors` is an OR, so two services'
-  // cards interleave, and the reader's stated order decides which wins.
+  // By service priority, not arrival: `authors` is an OR, so two services' cards interleave.
   const priority = new Map(svc.map((pk, i) => [pk, i]));
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i], evs = reads[i];
@@ -603,8 +526,7 @@ async function paintScores() {
       from.set(d, pri);
       scores.set(d, rank == null ? null : Number(rank));
     }
-    // "No card for this pubkey" is a fact only after EOSE; req() also resolves
-    // on its timeout, and a null cached here is permanent for the lens.
+    // "No card for this pubkey" is a fact only after EOSE; a null cached here is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
   paintChips(chips);
@@ -622,9 +544,8 @@ function paintChips(chips) {
 }
 
 /**
- * The whole search, written out so somebody else can argue with the order:
- * what was asked, whose web of trust applied, what each author scores under
- * it. Text rather than JSON, because the reader is a person or a model.
+ * The whole search, written out so somebody else can argue with the order. Text rather than
+ * JSON, because the reader is a person or a model.
  */
 function exportText() {
   const lens = viewingAs || me;
@@ -637,8 +558,7 @@ function exportText() {
   const typed = $q.value.trim();
   const q = parseQuery(typed);
   const full = buildFilters(typed, s.asked || PAGE_SIZE);
-  // The order the store applies, which is not always the menu's: a `sort:`
-  // typed into the box rides through parseQuery untouched.
+  // The order the store applies, which is not always the menu's: a typed `sort:` rides through untouched.
   const sort = effectiveSort(full[0].search ?? "");
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
@@ -692,8 +612,7 @@ function exportText() {
   L.push(JSON.stringify(s.hits, null, 2));
   L.push("");
   L.push("QUESTION FOR THE READER");
-  // Under `sort:recent` the lens still decides membership but not order, so
-  // the question changes. Keyed on the sent string, not on $sort.
+  // Under `sort:recent` the lens decides membership but not order, so the question changes.
   if (sort === "recent") {
     L.push("  This order is not a ranking: `sort:recent` asked for the search's");
     L.push("  own match set in time order, newest first, so a weak match sitting");
@@ -733,8 +652,7 @@ function renderMe() {
   // `me` is proven; `mePending` is only what the extension named, drawn faded.
   const who = me || mePending;
   const p = who ? profiles.get(who) : null;
-  // The remembered face stands in until the relay has answered (`has`), so it
-  // outlives the truth by at most one round trip.
+  // The remembered face stands in until the relay has answered (`has`).
   const kept = who && !profiles.has(who) && meFace && meFace.pubkey === who ? meFace : null;
   const pic = (p && p.picture) || (kept && kept.picture) || "";
   const nm = displayName(p) || (kept ? kept.name : "");
@@ -779,11 +697,9 @@ $me.addEventListener("click", async () => {
       mePending = null;
       // Forgotten, not merely unrendered, or it flashes back on the next load.
       forgetFace();
-      // A label given to a group in private must not stay on a pill for
-      // whoever uses this tab next.
+      // A private group's label must not stay on a pill for whoever uses this tab next.
       forgetPrivateGroupNames();
-      // Both pills that read the cache are already drawn and repaint only on a
-      // lookup that learned something; the rerun() below redraws the cards.
+      // The field's pills repaint only on a lookup that learned something, so repaint by hand.
       field.repaint();
       // The render-only half; the finally below reruns the search once.
       applyViewingAs(null, null);
@@ -829,9 +745,8 @@ document.addEventListener("click", (e) => {
 });
 
 // ---- the advanced filters -------------------------------------------------
-// The <details> element owns the disclosure; this file owns the badge, the
-// one thing that admits a filter is on while the panel is shut.
-// web/src/test/js/filters.test.mjs holds panel, badge and URL param in step.
+// The <details> element owns the disclosure; this file owns the badge, the one thing that
+// admits a filter is on while the panel is shut.
 const $adv = document.getElementById("adv");
 const $advBtn = document.getElementById("advbtn");
 const $advCount = document.getElementById("advcount");
@@ -843,8 +758,7 @@ function renderAdvCount() {
   const on = [];
   if ($sort.value) on.push("Sort: " + $sort.options[$sort.selectedIndex].text);
   if (viewingAs) on.push("Ranking as: " + $obsCurrent.textContent);
-  // The reader's own switch only; a waiver forced by having no lens is not a
-  // filter they set.
+  // The reader's own switch only; a waiver forced by having no lens is not a filter they set.
   if ($spam.checked) on.push("Spam included");
   $advCount.textContent = String(on.length);
   $advCount.hidden = !on.length;
@@ -856,12 +770,10 @@ document.addEventListener("click", (e) => {
   if ($adv.open && !e.target.closest("#adv")) $adv.open = false;
 });
 
-// One Escape handler for the things stacked here, innermost first, rather
-// than a stopPropagation() that would swallow Escape for every other listener.
+// One Escape handler for the things stacked here, innermost first.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  // The <dialog> closes itself on this press (after dispatch, so `open` still
-  // reads true here); anything more would dismiss two things for one key.
+  // The <dialog> closes itself on this press (after dispatch, so `open` still reads true here).
   if ($help.open) return;
   // The list is drawn inside the panel; one key closes one thing.
   if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
@@ -873,9 +785,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- the syntax sheet -----------------------------------------------------
-// A modal <dialog> already closes on Escape, traps Tab, inerts the page and
-// returns focus. What is left is the close button, the backdrop click and the
-// shortcut in.
+// A modal <dialog> already closes on Escape, traps Tab and returns focus; what is left is the
+// close button, the backdrop click and the shortcut in.
 const $help = document.getElementById("help");
 const $helpBtn = document.getElementById("helpbtn");
 
@@ -903,15 +814,12 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- the field renders its own contents ----------------------------------
-// `$q` becomes a field that draws the people in it as faces (searchfield.js);
-// everything below still reads and writes `$q.value`. Mounted before applyUrl()
-// assigns `$q.value` at the foot of this file.
+// `$q` becomes a field that draws the people in it as faces (searchfield.js); everything below
+// still reads and writes `$q.value`. Mounted before applyUrl() assigns `$q.value`.
 
 /**
- * Who the picker offers for a half-typed `from:`/`to:`: a NIP-50 profile
- * search on the authenticated socket, ranked by the reader, unlike the
- * "ranking as" list. A pasted hex key resolves to itself (an npub never
- * reaches here; query.js calls that token finished).
+ * Who the picker offers for a half-typed `from:`/`to:`: a NIP-50 profile search on the
+ * authenticated socket, ranked by the reader. A pasted hex key resolves to itself.
  */
 async function lookupAuthors(partial) {
   const direct = pubkeyParam(partial);
@@ -922,12 +830,9 @@ async function lookupAuthors(partial) {
   return [...new Set(events.map((e) => e.pubkey))];
 }
 
-// The reader's own kind 10009, held for the session. Read on the authenticated
-// socket, so it comes back empty for a reader with no scores mirrored here;
-// routing it around the observer gate would make the group picker the one
-// place showing content the relay cannot rank for them (readiness.js explains
-// instead). Cached only when the relay answered, as providers.js and
-// profiles.js do.
+// The reader's own kind 10009, held for the session. Read on the authenticated socket, so it
+// comes back empty for a reader with no scores mirrored here (readiness.js explains instead).
+// Cached only when the relay answered.
 let ownGroupList = null;   // the parsed candidates, from the public tags
 let ownGroupsFor = null;   // whose they are, so signing out drops them
 let ownGroupLock = null;   // sealed(): the encrypted half, or null if there is none
@@ -963,9 +868,8 @@ async function ownGroupCandidates() {
 }
 
 /**
- * Whether the extension can open a payload of this scheme. NIP-07's nip04 and
- * nip44 are optional and advertised separately; asked up front because
- * "unsupported" and "denied" want different words.
+ * Whether the extension can open a payload of this scheme; "unsupported" and "denied" want
+ * different words.
  */
 const canDecrypt = (scheme) => {
   const api = window.nostr && window.nostr[scheme];
@@ -973,10 +877,8 @@ const canDecrypt = (scheme) => {
 };
 
 /**
- * Open the private half of the reader's own group list: one prompt, ever.
- * Only when there is a payload; once per reader (`unlockAsk` holds the flight);
- * and a refusal is final until the reader clicks the retry row. The peer key
- * is the reader's own pubkey: NIP-51 private items are self-encrypted.
+ * Open the private half of the reader's own group list: one prompt, ever, and a refusal is
+ * final until the reader clicks the retry row. The peer key is the reader's own pubkey.
  */
 async function unlockOwnGroups() {
   if (ownGroupSecret) return ownGroupSecret;
@@ -1002,8 +904,7 @@ async function unlockOwnGroups() {
     })
     .finally(() => {
       unlockAsk = null;
-      // The picker drew before this landed. `field` is declared below this
-      // function; the catch covers the TDZ.
+      // The picker drew before this landed; `field` is declared below, and the catch covers the TDZ.
       try { field.refreshGroups(); } catch (e) { /* nothing mounted, so nothing is showing */ }
     });
   return unlockAsk;
@@ -1016,10 +917,7 @@ async function retryUnlockGroups() {
   await unlockOwnGroups();
 }
 
-/**
- * What the picker should say about the locked half, or null. `unsupported`
- * and `denied` differ: only one of them a click can fix.
- */
+/** What the picker should say about the locked half, or null; only `denied` a click can fix. */
 function groupLockState() {
   if (!ownGroupLock || !me) return null;
   if (!canDecrypt(ownGroupLock.scheme)) return { state: "unsupported", scheme: ownGroupLock.scheme };
@@ -1028,17 +926,14 @@ function groupLockState() {
 }
 
 /**
- * Which groups the picker offers for a half-typed `group:`: the reader's own
- * kind 10009 (which groups are yours, with host) and a NIP-50 search over kind
- * 39000 (which exist), never folded into one row; see shared/groups.js. Hosts
- * are enriched as people, since a NIP-29 relay signs its own groups. The
- * decrypt prompt is raised here, on first use of `group:`, not on page load.
+ * Which groups the picker offers for a half-typed `group:`: the reader's own kind 10009 and a
+ * NIP-50 search over kind 39000, never folded into one row (shared/groups.js). The decrypt
+ * prompt is raised here, on first use of `group:`, not on page load.
  */
 async function lookupGroups(partial) {
   await ensureLogin().catch(() => {});
   const own = await ownGroupCandidates().catch(() => []);
-  // Started, not awaited: the public rows return now with a notice, and the
-  // picker re-asks when the dialog is answered.
+  // Started, not awaited: the public rows return now, and the picker re-asks when the dialog is answered.
   if (ownGroupLock && canDecrypt(ownGroupLock.scheme) && !unlockDenied) unlockOwnGroups();
   const secret = ownGroupSecret || [];
   let found = [];
@@ -1050,8 +945,7 @@ async function lookupGroups(partial) {
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
   if (hosts.length) await enrichProfiles(hosts).catch(() => {});
   const rows = rankGroups(partial, { own: [...own, ...secret], meta });
-  // Rows go in as candidates, so groupnames.js still tells a list name from a
-  // corpus name.
+  // Rows go in as candidates, so groupnames.js still tells a list name from a corpus name.
   seedGroupNames(rows);
   return { rows, lock: groupLockState() };
 }
@@ -1087,9 +981,8 @@ const s = {
 };
 
 /**
- * The type-ahead's answers, kept apart from the results view's: a keystroke
- * over a page of results must not replace `hits` under the pager and the
- * json toggle.
+ * The type-ahead's answers, kept apart from the results view's, so a keystroke over a page of
+ * results does not replace `hits` under the pager.
  */
 const pop = {
   requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, complete: true,
@@ -1107,16 +1000,12 @@ function forget(st) {
 let debounceTimer = null;
 let activeKey = null;
 
-/**
- * The text waiting for the popup while an ask is in flight, latest only. One
- * type-ahead ask at a time: a ranked search is the one read the relay cannot
- * make cheap, so `bitcoin` becomes two searches rather than seven.
- */
+/** The text waiting for the popup while an ask is in flight, latest only; one type-ahead ask at a time. */
 let popupQueued = null;
 
 /**
- * Only what the avatar and the "ranking as" control cannot show: an error, or
- * being signed out by choice.
+ * Only what the avatar and the "ranking as" control cannot show: an error, or being signed out by
+ * choice.
  */
 function renderWhoami() {
   renderMe();
@@ -1150,17 +1039,13 @@ const skelRows = (n) => Array.from({ length: n }, () =>
      </div>
    </div>`).join("");
 
-/**
- * "Nothing matched" against "nothing could match": an `until` before `since`
- * excludes everything, and is easy to inherit from a shared URL.
- */
+/** "Nothing matched" against "nothing could match": an `until` before `since` excludes everything. */
 function emptyWindow(text) {
   const q = parseQuery(text || "");
   return q.since != null && q.until != null && q.since > q.until;
 }
 
-// `empty` is what a view that was asked no question says: both sentences below
-// talk about the query, and the feed has none.
+// `empty` is what a view that was asked no question says; the feed has none.
 function statusBody(st, placeholder, empty) {
   if (st.error) return `<div class="error">${esc(st.error)}</div>`;
   if (st.loading && !st.hits.length) return placeholder;
@@ -1184,9 +1069,8 @@ function renderPopup() {
 }
 
 /**
- * Which corpus this feed is, in one line: signed in the relay applies the
- * trust floor to a plain NIP-01 read too, signed out the same ask is the whole
- * mirror. The title answers why the "ranking as" lens does not apply here.
+ * Which corpus this feed is, in one line; the title answers why the "ranking as" lens does not
+ * apply here.
  */
 const lensNote = () =>
   `<div class="prov" title="The feed is a plain NIP-01 read, so the &quot;ranking as&quot; lens — a NIP-50 observer: extension — applies to searches, not here.">` +
@@ -1195,20 +1079,14 @@ const lensNote = () =>
     : "newest first, the whole corpus — sign in (the avatar in the field) to read it through your web of trust") +
   `</div>`;
 
-/**
- * "Latest", and what it was narrowed to: the lit chip can be off screen on a
- * phone, and a hundred pictures under a bare "Latest" reads as the feed changing.
- */
+/** "Latest", and what it was narrowed to: the lit chip can be off screen on a phone. */
 const feedTitle = () => (tab.kinds ? `Latest &middot; ${esc(tab.label)}` : "Latest");
 
 /** The list heading every card list wears: a name, and whatever goes right. */
 const listHead = (title, right) =>
   `<div class="list-head"><div class="list-title">${title}</div><div class="list-right">${right}</div></div>`;
 
-/**
- * The cards, and the repaints that must follow them: score chips, the cursor
- * and nip05 marks are all filled in after the fact.
- */
+/** The cards, and the repaints that must follow them: score chips, the cursor and nip05 marks. */
 function paintList($el, html) {
   $el.innerHTML = html;
   paintScores();
@@ -1219,8 +1097,7 @@ function paintList($el, html) {
 /** The feed page: the same cards as a search, over a list nobody searched for. */
 function renderFeed() {
   const stats = s.error ? "" : `${s.hits.length} event${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
-  // An empty feed is about the index or the trust floor, never a query; the
-  // chip is named because an empty Media feed says nothing about notes.
+  // An empty feed is about the index or the trust floor, never a query.
   const empty = `<div class="empty"><b>Nothing here yet</b>` +
     (me
       ? "This relay holds no recent posts from anyone your web of trust reaches."
@@ -1233,10 +1110,8 @@ function renderFeed() {
 }
 
 // ---- the same feed, three cards, under the hero ---------------------------
-// Only for a signed-in reader: signed out the same read is the firehose, which
-// the hero does not stand behind (the feed page serves it, labelled). Its own
-// state of the same shape as `s`, driven by the same run(), since it is on
-// screen exactly when the results are not.
+// Only for a signed-in reader: signed out the same read is the firehose, which the hero does
+// not stand behind. Its own state of the same shape as `s`, driven by the same run().
 const feedPreview = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, reader: null, tab: null };
 
 function hideFeedPreview() {
@@ -1246,17 +1121,10 @@ function hideFeedPreview() {
   document.body.classList.remove("has-feed-preview");
 }
 
-/**
- * Where "see more" goes. A parameter on the root, not a `/feed` path: the root
- * already serves this page from cold, and the server need not know the view
- * exists. One spelling, read by the link and by the click interceptor.
- */
+/** Where "see more" goes: a parameter on the root, not a `/feed` path, so the root serves it from cold. */
 const FEED_URL = "/?feed=1";
 
-/**
- * That url carrying the chip, `/?feed=1&tab=media`. "Everything" writes no
- * parameter, so plain `/?feed=1` keeps meaning what it did.
- */
+/** That url carrying the chip, `/?feed=1&tab=media`; "Everything" writes no parameter. */
 const feedUrl = (t = tab) => FEED_URL + (t.kinds ? `&tab=${t.slug}` : "");
 
 /** Does [href] name the feed, whichever chip it carries? */
@@ -1273,10 +1141,8 @@ function renderFeedPreview() {
 }
 
 /**
- * Draw the preview if this is the hero and there is a reader; re-checks both.
- * It re-asks every time but keeps the cards through the wait, except across a
- * change of reader (another account's gated feed) or of chip (the heading
- * would repaint before the cards).
+ * Draw the preview if this is the hero and there is a reader. It keeps the cards through the
+ * wait, except across a change of reader or of chip.
  */
 async function showFeedPreview() {
   const my = feedPreview.requestId;
@@ -1294,10 +1160,7 @@ async function showFeedPreview() {
   run(feedPreview, () => fetchFeed(PREVIEW_CARDS), KEEP, renderFeedPreview);
 }
 
-/**
- * Where the page on screen sits in the answer. The denominator appears only
- * once `exhausted` says so: `s.hits` is how far we asked, not how much there is.
- */
+/** Where the page on screen sits in the answer. The denominator appears only once `exhausted` says so. */
 function rangeLabel(shown) {
   const total = s.hits.length;
   // The reader outran the preload; the page they asked for is in flight.
@@ -1309,9 +1172,8 @@ function rangeLabel(shown) {
 }
 
 /**
- * The pager, redrawn without touching the cards: an innerHTML rewrite of the
- * list re-arms the lazy-media observers, drops loads in progress and takes
- * any selection with it. Falls back to the whole list when there is no foot.
+ * The pager, redrawn without touching the cards: an innerHTML rewrite of the list re-arms the
+ * lazy-media observers and takes any selection with it.
  */
 function repaintPager() {
   const foot = $results.querySelector(".pager-foot");
@@ -1320,10 +1182,8 @@ function repaintPager() {
 }
 
 /**
- * Back, the pages held, and forward. Numbers rather than infinite scroll so
- * Back can return to a place (`?page=`). The page past the buffer is "…", one
- * we can ask for but do not hold; nothing is offered past that, and the note
- * says which way the list ended.
+ * Back, the pages held, and forward. Numbers rather than infinite scroll so Back can return to
+ * a place (`?page=`). The page past the buffer is "…", one we can ask for but do not hold.
  */
 function pagerHtml() {
   const loaded = pageCount(s.hits);
@@ -1350,17 +1210,16 @@ function pagerHtml() {
 }
 
 /**
- * One page of the results and the pager. `s.hits` is the whole buffer; the
- * cut happens here because a NIP-01 filter has a `limit` and no offset.
+ * One page of the results and the pager; the cut happens here because a NIP-01 filter has a `limit`
+ * and no offset.
  */
 function renderResults() {
   const shown = pageOf(s.hits, s.page);
   const stats = s.error ? "" : `${rangeLabel(shown)} · ${s.lastMs ?? "?"} ms`;
   const right = `<span class="list-stats">${stats}</span>` +
     `<button type="button" id="export" class="export" title="Download this search and its results as text">Export</button>`;
-  // Not `.map(card)`: map would hand the index as card's opts argument.
-  // A page with no cards under a buffer that has some is the reader having
-  // outrun the preload, so it draws the skeleton and keeps the pager up.
+  // Not `.map(card)`: map would hand the index as card's opts argument. A page with no cards
+  // under a buffer that has some is the reader having outrun the preload.
   const body = statusBody(s, skelCards(4)) ??
     (shown.length ? shown.map((ev) => card(ev)).join("") : skelCards(3)) +
     `<div class="pager-foot">${pagerHtml()}</div>`;
@@ -1373,23 +1232,20 @@ function goPage(n) {
   const want = Math.max(0, Math.min(n, lastPage(s.hits, s)));
   if (want === s.page) return;
   s.page = want;
-  // A page turn is a place: Back undoes it. Pushed here rather than through
-  // syncUrl(), which reads the search box; see pageUrl().
+  // A page turn is a place: Back undoes it. Pushed here rather than through syncUrl(), which reads the box.
   const url = pageUrl();
   if (url !== location.pathname + location.search) history.pushState(null, "", url);
   renderResults();
-  // Back to the top of the list, clear of the sticky toolbar, whose height
-  // differs on a phone and grows when the chip row wraps.
+  // Back to the top of the list, clear of the sticky toolbar.
   $results.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
   $results.scrollIntoView({ block: "start" });
   preload();
 }
 
 /**
- * Land the reader on the last page there is when the one they asked for
- * stopped existing (`?page=99`, or Next into a "…" the relay had nothing for).
- * Returns whether it moved, because moving is a repaint the caller owes.
- * replaceState: pushing would leave a phantom entry at the same page.
+ * Land the reader on the last page there is when the one they asked for stopped existing.
+ * Returns whether it moved, because moving is a repaint the caller owes. replaceState:
+ * pushing would leave a phantom entry at the same page.
  */
 function settlePage() {
   const end = lastPage(s.hits, s);
@@ -1400,21 +1256,15 @@ function settlePage() {
 }
 
 /**
- * The url of this page of these results, named from `hitsFor` and never from
- * the search box, which may hold the next query half-typed. syncUrl() reads
- * the box because every caller of it has just submitted it.
+ * The url of this page of these results, named from `hitsFor` and never from the search box,
+ * which may hold the next query half-typed.
  */
 const pageUrl = () => currentUrl(s.hitsFor || $q.value.trim(), true, s.page);
 
 /**
- * The three pages ahead of the one on screen, fetched before anybody asks:
- * the ask that reaches page four is the one that reached page one, only longer.
- * Four guards, each a round trip not taken: no query, one in flight, the relay
- * proved there is no more, or the buffer is already three pages ahead (in
- * pages, since a hashtag REQ's `limit` is per filter). It does not bump
- * requestId: the first ask's late lookups must still land. Each widened ask
- * re-sends the pages already held, and hydrate() re-asks the whole buffer's
- * pointers; see docs/decisions/web-app.md.
+ * The three pages ahead of the one on screen, fetched before anybody asks: the ask that reaches
+ * page four is the one that reached page one, only longer. It does not bump requestId: the
+ * first ask's late lookups must still land.
  */
 async function preload() {
   if (!s.more || s.preloading || s.exhausted || s.error) return;
@@ -1441,8 +1291,7 @@ async function preload() {
     s.asked = want;
     s.hits = grown;
     moved = settlePage();
-    // A preload lands under the reader, so it is not worth collapsing an open
-    // json panel for, unless the page on screen is empty or changed.
+    // A preload lands under the reader, so an open json panel is kept unless the page on screen changed.
     const sameCards = wasOnScreen === pageOf(s.hits, s.page).map((e) => e.id).join();
     if (moved || waiting || !sameCards) {
       if (moved || waiting || !document.querySelector(".raw-body:not([hidden])")) renderResults();
@@ -1451,13 +1300,12 @@ async function preload() {
     paintLate(s, myId, [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean), renderResults);
     again = true;
   } catch (e) {
-    // A failed widening is not a failed search; nothing is marked exhausted,
-    // so Next tries again.
+    // A failed widening is not a failed search; nothing is marked exhausted, so Next tries again.
   } finally {
     s.preloading = false;
   }
-  // Once more, in case the reader moved during the round trip; each pass asks
-  // for strictly more, up to the ceiling, so this terminates.
+  // Once more, in case the reader moved during the round trip; each pass asks for strictly more, so
+  // this terminates.
   if (again && myId === s.requestId) preload();
 }
 
@@ -1469,10 +1317,8 @@ function resetPages() {
 /** Whether the list already on screen survives the wait for the next answer. */
 const REPLACE = false, KEEP = true;
 
-// One ask, rendered. `st` is the state it drives (the hero's preview is a
-// second list); `fetch` is a thunk (a NIP-50 search or the feed's NIP-01 read).
-// The stale-answer guard, the timing, the skeleton and the late repaints are
-// the same for every caller.
+// One ask, rendered. `st` is the state it drives; `fetch` is a thunk. The stale-answer guard,
+// the timing, the skeleton and the late repaints are the same for every caller.
 async function run(st, fetch, keep, render) {
   const myId = ++st.requestId;
   st.loading = true; st.error = null;
@@ -1485,9 +1331,8 @@ async function run(st, fetch, keep, render) {
     if (myId !== st.requestId) return;
     // The feed's `hitsFor` is null, so focus can never reopen the popup on it.
     st.hits = found.events; st.hitsFor = found.text ?? null;
-    // What the pager needs: how far this ask reached, and whether the relay
-    // ran out first (EOSE, not our own timeout). Only an ask that named its
-    // limit gets the second half; the feed and the popup do not.
+    // What the pager needs: how far this ask reached, and whether the relay ran out first (EOSE,
+    // not our own timeout). Only an ask that named its limit gets the second half.
     st.complete = found.complete !== false;
     if (found.asked != null) {
       st.asked = found.asked;
@@ -1507,9 +1352,8 @@ async function run(st, fetch, keep, render) {
 }
 
 /**
- * The lookups that land after the list, each painting when it arrives and
- * only if it learned something. Skipped while a raw event is expanded, since
- * a re-render would collapse it.
+ * The lookups that land after the list, each painting when it arrives and only if it learned
+ * something. Skipped while a raw event is expanded, since a re-render would collapse it.
  */
 function paintLate(st, myId, late, render) {
   for (const lookup of late) {
@@ -1550,8 +1394,7 @@ function setActive(idx) {
   activeKey = idx;
 }
 
-// Never over the people picker: a debounced type-ahead from before the `from:`
-// was started can still land after it, and the two popups occupy the same box.
+// Never over the people picker: a debounced type-ahead can land after the `from:` was started.
 function runPopup(text) {
   if (field.picking) return;
   if (pop.loading) { popupQueued = text; return; }
@@ -1565,8 +1408,8 @@ function runPopup(text) {
     if (pop.abort === abort) { pop.inFlightFor = null; pop.abort = null; }
     const next = popupQueued;
     popupQueued = null;
-    // Only while the popup is still the view and the box still says the text,
-    // and through the debounce again: the queued text is the box mid-word.
+    // Only while the popup is still the view and the box still says the text, and through the
+    // debounce again.
     if (live && next != null && next !== text && $q.value.trim() === next) armPopup(next);
   });
 }
@@ -1578,52 +1421,42 @@ function armPopup(text) {
 }
 
 /**
- * The full results view, opening on [page]: 0 for every way in but a restore.
- * The first ask is firstAsk(page) so a deep-linked `?page=4` is drawable the
- * moment the answer lands.
+ * The full results view, opening on [page]: 0 for every way in but a restore. The first ask is
+ * firstAsk(page) so a deep-linked `?page=4` is drawable the moment the answer lands.
  */
 function runFull(text, page = 0) {
   clearTimeout(debounceTimer); // a type-ahead in flight would re-open the popup over the results
   pop.requestId++;             // and its answer must not repaint a popup this view has closed
-  // A type-ahead for this text is this view's answer (shared/asks.js). One for
-  // any other text holds the connection's ranked-read lane at the relay
-  // (SearchGate), so it is closed and the submit takes the lane.
+  // A type-ahead for this text is this view's answer (shared/asks.js). One for any other text
+  // holds the connection's ranked-read lane at the relay, so it is closed and the submit takes it.
   if (pop.abort && pop.inFlightFor !== text) pop.abort.abort();
   cancelEntity(); // a search launched from an entity page must not be painted over by its fetch
   hideFeedPreview();   // the hero's preview is not part of a results page
   document.title = "SearchOverTrust";
   closePopup();
   field.close(); // Enter with nothing highlighted searches; the picker is done
-  // j/k are letters while a caret is in a text field, and "/" brings the box
-  // back; on a phone this also puts the keyboard away.
+  // j/k are letters while a caret is in a text field; on a phone this also puts the keyboard away.
   $q.blur();
   $results.hidden = false;
   document.body.classList.add("searching");
   document.body.classList.remove("feed"); // searching from the feed leaves it
-  // A new answer, so the pager starts over. Before syncUrl(), which writes
-  // the page number.
+  // A new answer, so the pager starts over. Before syncUrl(), which writes the page number.
   resetPages();
   s.page = page;
   const ask = firstAsk(page);
-  // The pager's handle on this view. A thunk, so the closure and the live
-  // controls cannot come apart: every control change re-runs from page one.
+  // The pager's handle on this view. A thunk, so every control change re-runs from page one.
   s.more = (limit) => search(text, limit, true);
-  // Every way into the full view converges here, so this is where the URL
-  // learns about it. Pushed, since each is a state Back should undo.
+  // Every way into the full view converges here, so this is where the URL learns about it.
   syncUrl();
   run(s, () => search(text, ask, true), REPLACE, renderResults).then((live) => {
     if (!live || s.error) return;
-    // run() drew the page it was asked for; if it does not exist, draw the one
-    // that does.
+    // If the page run() drew does not exist, draw the one that does.
     if (settlePage()) renderResults();
     preload();
   });
 }
 
-/**
- * The feed page: the newest [PAGE_CARDS] content events, full cards. The
- * syncUrl() below is a no-op on every way in but a chip picked on this page.
- */
+/** The feed page: the newest [PAGE_CARDS] content events, full cards. */
 function runFeed() {
   clearTimeout(debounceTimer);
   pop.requestId++;
@@ -1636,16 +1469,16 @@ function runFeed() {
   field.close();
   $q.blur();   // a full-page list takes the keyboard, exactly as a search does
   $results.hidden = false;
-  // `feed` hides the Filters half of the bar, whose extensions this view does
-  // not send, and keeps the chips, which are the `kinds` it does.
+  // `feed` hides the Filters half of the bar, whose extensions this view does not send, and keeps
+  // the chips.
   document.body.classList.add("searching", "feed");
   syncUrl();
   run(s, () => fetchFeed(PAGE_CARDS), REPLACE, renderFeed);
 }
 
 /**
- * A picked popup result opens as its own page, through the same pushState +
- * applyUrl() pair as any internal link, so Back undoes the click.
+ * A picked popup result opens as its own page, through the same pushState + applyUrl() pair as any
+ * internal link.
  */
 function openPicked(ev) {
   // selfHref, not a second spelling of the same rule; it also guards a missing id.
@@ -1656,15 +1489,13 @@ function openPicked(ev) {
 const onFeed = () => document.body.classList.contains("feed");
 
 function rerun() {
-  // The entity view gates on the reader's web of trust, and `$q` is empty on
-  // it, so it would otherwise fall through the "nothing typed" branch.
+  // The entity view gates on the reader's web of trust, and `$q` is empty on it.
   const seg = entitySeg();
   if (seg) { openEntity(seg); return; }
   // The feed's answer changes with who is asking and which chip is on.
   if (onFeed()) { runFeed(); return; }
   const text = $q.value.trim();
-  // The hero's preview is the same feed, so it answers the same chip. Nothing
-  // goes to the URL: `/` is the floor Back lands on.
+  // The hero's preview is the same feed, so it answers the same chip. Nothing goes to the URL.
   if (!text) { if ($results.hidden) showFeedPreview(); return; }
   if (!$results.hidden) runFull(text);
   else if ($popup.classList.contains("open")) runPopup(text);
@@ -1695,8 +1526,8 @@ function reset() {
 }
 
 /**
- * Enter in the search box, however it arrived: a phone's action key is not
- * reliably a keydown, so searchfield.js also calls this off `beforeinput`.
+ * Enter in the search box, however it arrived; searchfield.js also calls this off `beforeinput` for
+ * a phone's action key.
  */
 function submitField() {
   // An arrowed-to row is a selection; a plain Enter is the full search.
@@ -1706,8 +1537,7 @@ function submitField() {
 }
 
 $q.addEventListener("keydown", (e) => {
-  // The picker gets first refusal while open, asked outright rather than by
-  // racing this listener on registration order.
+  // The picker gets first refusal while open.
   if (field.handleKey(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
@@ -1723,9 +1553,8 @@ $q.addEventListener("keydown", (e) => {
 
 $clear.addEventListener("click", reset);
 
-// "/" focuses the search box, except while typing (keynav.js's isTyping) and
-// while the syntax sheet is up: a document-level keydown still arrives under
-// a modal <dialog>, and focusing an inert field spends the key on nothing.
+// "/" focuses the search box, except while typing and while the syntax sheet is up: a
+// document-level keydown still arrives under a modal <dialog>.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
   const el = document.activeElement;
@@ -1736,8 +1565,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- j and k walk the results --------------------------------------------
-// The cursor is an event id, not a row number: names and reply parents
-// repaint the list after the cards land, and a filter change replaces it.
+// The cursor is an event id, not a row number: names and reply parents repaint the list after
+// the cards land.
 let cursorId = null;
 
 // Only cards that open something: a permalink card carries no `data-href`.
@@ -1745,9 +1574,8 @@ const cursorCards = () => [...$results.querySelectorAll(".result[data-href]")];
 const cursorAt = (cards) => cards.findIndex((el) => el.dataset.id === cursorId);
 
 /**
- * Draw the cursor after every render. An id the list no longer holds is
- * dropped, but only against a list that has cards: every search paints a
- * skeleton first, and the id has to outlive it.
+ * Draw the cursor after every render. An id the list no longer holds is dropped, but only
+ * against a list that has cards: every search paints a skeleton first.
  */
 function paintCursor() {
   const cards = cursorCards();
@@ -1760,8 +1588,7 @@ function moveCursor(cards, delta) {
   const el = cards[stepIndex(cursorAt(cards), cards.length, delta)];
   cursorId = el.dataset.id;
   paintCursor();
-  // `nearest` knows nothing about the sticky toolbar, whose height differs on
-  // a phone and grows when the chip row wraps.
+  // `nearest` knows nothing about the sticky toolbar.
   el.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
   el.style.scrollMarginBottom = "12px";
   el.scrollIntoView({ block: "nearest" });
@@ -1805,8 +1632,7 @@ $q.addEventListener("focus", () => {
 // Clicks inside a list of cards, for the results view and the hero's preview.
 // `hitsOf` is a thunk because each answer replaces the preview's array.
 const cardClicks = (hitsOf) => (e) => {
-  // The pager's buttons are re-rendered with the cards, so they are delegated
-  // here, before the `button` bail-out below: this is the control.
+  // The pager's buttons are delegated here, before the `button` bail-out below.
   const pg = e.target.closest(".pg");
   if (pg) { goPage(Number(pg.dataset.page)); return; }
   if (e.target.closest("#export")) {
@@ -1839,10 +1665,8 @@ const cardClicks = (hitsOf) => (e) => {
     btn.textContent = "hide json";
     return;
   }
-  // The card itself opens its own page (the byline date is the real anchor
-  // for keyboard and middle-click). Not over a real control, a text selection,
-  // or the json block a reader just opened; at permalink depth there is no
-  // data-href at all.
+  // The card itself opens its own page. Not over a real control, a text selection, or the json
+  // block a reader just opened.
   if (e.target.closest("a, button, input, textarea, select, label, audio, video, summary, .raw")) return;
   // `getSelection()` may return null, and String(null) is truthy.
   const sel = window.getSelection && window.getSelection();
@@ -1865,20 +1689,16 @@ $sort.addEventListener("change", () => { renderAdvCount(); rerun(); });
 $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 
 // ---- the URL is the search ------------------------------------------------
-// The results view is derived from q, tab, sort, spam and lens, so those are
-// the location. Sign-in state is not among them: auth belongs to the socket.
-// The hero is the bare path, the floor Back lands on; the popup never appears
-// here. `feed=1` is exclusive with everything but `tab`, and is a parameter
-// rather than a path so the root serves it from cold.
+// The results view is derived from q, tab, sort, spam and lens, so those are the location.
+// Sign-in state is not among them: auth belongs to the socket. The hero is the bare path, the
+// floor Back lands on; the popup never appears here.
 
-// A restore must not re-push what it is restoring — popstate would otherwise
-// truncate the forward stack it is trying to walk.
+// A restore must not re-push what it is restoring, or popstate truncates the forward stack.
 let navRestoring = false;
 
 /**
- * `?page=4` as this page counts pages: 0-based, 0 for anything that is not a
- * page, clamped at the ceiling the ask stops at. settlePage() clamps against
- * the corpus.
+ * `?page=4` as this page counts pages: 0-based, 0 for anything that is not a page, clamped at
+ * the ceiling the ask stops at.
  */
 function pageParam(p) {
   const n = Number(p.get("page"));
@@ -1886,9 +1706,8 @@ function pageParam(p) {
 }
 
 /**
- * The url for the page as it stands, optionally with a different query, which
- * is what a hashtag chip navigates to: a chip changes the query and nothing
- * else. Knows nothing about the feed; "where am I now" is syncUrl's question.
+ * The url for the page as it stands, optionally with a different query, which is what a
+ * hashtag chip navigates to. Knows nothing about the feed; "where am I now" is syncUrl's question.
  */
 function currentUrl(text = $q.value.trim(), showing = !$results.hidden, page = s.page) {
   const p = new URLSearchParams();
@@ -1914,8 +1733,7 @@ function syncUrl() {
   history.pushState(null, "", url);
 }
 
-// A NIP-19 path is the third view. The shape test only routes; entity.js
-// validates, so a bad checksum still lands on a page that explains itself.
+// A NIP-19 path is the third view. The shape test only routes; entity.js validates.
 const ENTITY_PATH = /^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i;
 
 /** The identifier this page is showing, or null when it is showing anything else. */
@@ -1924,14 +1742,9 @@ function entitySeg() {
   return ENTITY_PATH.test(seg) ? seg : null;
 }
 
-/**
- * Draw the entity view for [seg]: the one call, so the router and [rerun]
- * cannot open it two ways. A declaration rather than a const, since [rerun]
- * sits above this and calls it.
- */
+/** Draw the entity view for [seg]: the one call, so the router and [rerun] cannot open it two ways. */
 function openEntity(seg) {
-  // seedRow is the same thunk the results list runs, so a permalink and a
-  // card in a list agree on who vouched.
+  // seedRow is the same thunk the results list runs, so a permalink and a card agree on who vouched.
   return showEntity(seg, {
     paintScores,
     ensureLogin,
@@ -1941,9 +1754,8 @@ function openEntity(seg) {
 }
 
 /**
- * URL to page, the single restore path: initial load, Back and Forward.
- * Returns whether it started a search, so boot knows whether sign-in is
- * already being driven.
+ * URL to page, the single restore path: initial load, Back and Forward. Returns whether it
+ * started a search, so boot knows whether sign-in is already being driven.
  */
 function applyUrl() {
   navRestoring = true;
@@ -1953,8 +1765,8 @@ function applyUrl() {
       clearTimeout(debounceTimer);
       forget(s); forget(pop); // cancel any in-flight search or type-ahead render
       resetPages();
-      // The lens is part of a permalink too, but only when the URL carries one:
-      // arriving by a click keeps the session's observer.
+      // The lens is part of a permalink only when the URL carries one: a click keeps the session's
+      // observer.
       const asHere = pubkeyParam(new URLSearchParams(location.search).get("as"));
       if (asHere) {
         applyViewingAs(asHere, null);
@@ -1976,13 +1788,12 @@ function applyUrl() {
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch
     document.title = "SearchOverTrust";
     const p = new URLSearchParams(location.search);
-    // The feed takes no q and none of the bar's extensions, so those go back
-    // to their defaults; a leftover sort would apply invisibly to the next
-    // search. The tab is read, not cleared. runFeed() awaits sign-in itself.
+    // The feed takes no q and none of the bar's extensions, so those go back to their defaults;
+    // the tab is read, not cleared.
     if (p.get("feed") === "1") {
       tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
-      // A url naming two views, or an unknown tab, is corrected to what is on
-      // screen. replaceState: the same place, spelled properly.
+      // A url naming two views, or an unknown tab, is corrected to what is on screen; replaceState,
+      // the same place spelled properly.
       if (location.search !== feedUrl().slice(1)) history.replaceState(null, "", feedUrl());
       renderChips();
       $sort.value = "";
@@ -2021,10 +1832,8 @@ function applyUrl() {
 
 window.addEventListener("popstate", applyUrl);
 
-// Internal navigation: every link this app renders stays a real <a>, but a
-// plain left click becomes a pushState render instead of a reload that would
-// tear down the socket and its NIP-42 auth. One document-level listener,
-// since cards are re-rendered wholesale.
+// Internal navigation: every link stays a real <a>, but a plain left click becomes a pushState
+// render instead of a reload that would tear down the socket and its NIP-42 auth.
 document.addEventListener("click", (e) => {
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = e.target.closest("a[href^='/']");
@@ -2032,9 +1841,8 @@ document.addEventListener("click", (e) => {
   const href = a.getAttribute("href");
   if (href === "/") { e.preventDefault(); reset(); return; }
   if (isFeedHref(href)) { e.preventDefault(); navigate(href); return; }
-  // A hashtag chip is a search. Its url is rebuilt through currentUrl() rather
-  // than followed as written, so the filters it does not name are kept: a tag
-  // clicked in a Media feed searches that tag in Media.
+  // A hashtag chip is a search. Its url is rebuilt through currentUrl() so the filters it does not
+  // name are kept.
   if (/^\/\?q=/.test(href)) {
     e.preventDefault();
     // Page one: a hashtag clicked on page four is a different search.
@@ -2047,8 +1855,7 @@ document.addEventListener("click", (e) => {
 });
 
 // ---- media that loads when it is nearly on screen -------------------------
-// `preload="metadata"` is a range request per video card, so a video's url
-// waits in `data-src` until the card is a screen away. Armed from a
+// A video's url waits in `data-src` until the card is a screen away. Armed from a
 // MutationObserver because cards are inserted from more than one place.
 const loadMedia = (v) => { v.src = v.dataset.src; delete v.dataset.src; };
 const nearViewport = "IntersectionObserver" in window
@@ -2073,20 +1880,15 @@ function navigate(href) {
   applyUrl();
 }
 
-// The face from the last load, drawn on the first paint as an assumption the
-// field shows faded; prefetchFace() corrects it. Signed out by choice, nothing
-// is assumed. Chips render here too: the entity branch of applyUrl() returns
-// before drawing them.
+// The face from the last load, drawn on the first paint as an assumption prefetchFace()
+// corrects. Chips render here too: the entity branch of applyUrl() returns before drawing them.
 if (wantsSignIn() && meFace) mePending = meFace.pubkey;
 renderChips();
 renderWhoami();
-// The anonymous reference socket, warmed at boot so its handshake runs beside
-// the main socket's rather than in front of the first answer.
+// The anonymous reference socket, warmed at boot.
 refConn().catch(() => {});
-// A restored search drives sign-in itself; an idle load signs in eagerly so
-// the lens picker does not wait on the first keystroke.
+// A restored search drives sign-in itself; an idle load signs in eagerly.
 if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
-// What `autofocus` did while the field was an <input>: focus the box when the
-// page is the box, and never on a phone, where a scripted focus() cannot raise
-// the keyboard and leaves a dead caret (softKeyboard() is that distinction).
+// Focus the box when the page is the box, and never on a phone, where a scripted focus()
+// cannot raise the keyboard (softKeyboard() is that distinction).
 if ($results.hidden && !softKeyboard()) $q.focus();

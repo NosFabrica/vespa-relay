@@ -58,8 +58,7 @@ assert.strictEqual(nip19Parse(encode("nsec", hexBytes(pk))), null, "nsec is not 
 assert.strictEqual(nip19Parse(""), null);
 assert.strictEqual(nip19Parse("npub1"), null);
 
-// A minted naddr must survive the page's own decoder: the entity page parses
-// it back into the filter it fetches with.
+// A minted naddr must survive the page's own decoder.
 for (const [tag, kind, d] of [
   [`30023:${pk}:my-article`, 30023, "my-article"],
   [`3:${pk}:`, 3, ""],                                   // a d-less replaceable

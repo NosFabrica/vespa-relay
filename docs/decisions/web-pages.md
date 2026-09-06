@@ -193,3 +193,103 @@ had dismissed.
 **Concurrency is per relay, not only across relays.** One relay can hold most
 of the (observer, service) pairs, so parallelising across relays alone did not
 shorten a run; `PER_RELAY_CONCURRENCY` is what did.
+
+## pulse.html
+
+**The pulse document is admin-only, on the NIP-86 credential.** `/stats.json` is public
+because every field in it is a fact about stored events; the pulse document names the observer
+lenses and search terms driving the load and, with the slow-read log on, quotes the queries
+people typed. It is served only to a proven administrator, proven by NIP-98 against
+`RELAY_ADMIN_PUBKEYS`: the same proof and the same list the NIP-86 admin rpc already uses,
+deliberately, so there is one place to add or remove an operator, one thing to leak, and "who
+can read this?" has the same answer as "who can ban a pubkey?". `adminPubkeysFromEnv` moved
+into `:common` beside the parser because both processes read the variable, and a security
+setting is the last place two processes should read one variable through two parsers.
+
+**"No administrators" fails the boot, not open.** `pulseAdmins` refuses to start a process that
+asks for the pulse port without naming who may read it, because "no admins" and "everyone is an
+admin" are one implementation mistake apart and only one of them is survivable for this
+document. There is no unauthenticated mode and no switch that creates one.
+
+**One signature opens a session; the session carries the polls.** NIP-98 tokens are single-use
+(quartz's verifier remembers ids), which is what makes them a proof rather than a bearer
+credential, and it means a page polling every two seconds would need an extension popup every
+two seconds. `AdminSessions` holds the sessions in memory on purpose: a restart signs everyone
+out, no session outlives the process whose counters it was reading, there is no signing key to
+configure or leak, and nothing about who looked is written to disk. Expiry is fixed, not
+sliding, so a tab left open overnight stops being an open door at the TTL. A script that signs
+every request instead must not sign twice within one second for the same url and method: a
+NIP-98 event carries no nonce, so the two tokens are the same event with the same id and the
+second is a replay.
+
+**The expected `u` is the operator's `publicUrl`, never the request.** The `u` tag exists so a
+token stolen from one service cannot be spent at another, which it cannot do if the server
+derives the expected url from a header the caller controls. The default is the loopback address
+the boot line prints, right for the intended deployment (a private port through an SSH tunnel)
+and wrong behind a reverse proxy, which is why every 401 carries the exact `u` and method to
+sign: a token signed against the url the browser dialled while the server expects the
+configured one was the failure this scheme otherwise produced constantly. The route's path,
+not `request.uri`, is what the `u` is judged against, so the refusal and the check cannot
+disagree and a query string (`/pulse.json?t=1`) never enters it. The `Secure` cookie flag is
+decided from the same setting: this site installs no forwarded-headers plugin, so behind a
+TLS-terminating proxy the request's scheme reads `http`, exactly where the mark matters most;
+and it is conditional rather than always because over the SSH tunnel an unconditional `Secure`
+sets a cookie the browser never sends back.
+
+**No CORS and `SameSite=Strict` are both needed.** `installPageDefaults` opens the public pages
+to any origin, which is right for a document anyone may chart; on a site that answers with a
+cookie a permissive origin policy is what would let a page the administrator happens to be
+visiting read the response. Either lock alone has been enough to lose this argument before, so
+the pulse site has its own `installPulseDefaults` and the test pins that the permissive one is
+not installed.
+
+**The CSP admits no inline script or style, so the page keeps its code in files.** Alone among
+the pages here, pulse keeps its logic in `/web/pulse/page.js` and its styling in
+`/web/pulse/pulse.css`: an inline `<script>` cannot satisfy `script-src 'self'`, and that is
+the point. Every value the page renders already goes through `textContent`, so the policy is
+the second lock, worth the extra file on the one page that is not public. `img-src https:` is
+the one relaxation: a NIP-86 rpc can point the deployment's icon at another origin, a favicon
+loads under `img-src`, and an image cannot execute.
+
+**The shell is not gated; the port is a second boundary, not the first.** The page shell holds
+no numbers, only markup and a script that asks for a signature and then fetches `/pulse.json`;
+a browser cannot put an `Authorization` header on a navigation, so gating the shell would make
+the page unreachable rather than more private. The pulse site is on its own port as well as
+behind the guard, not instead of it: the guard is the boundary that matters, the port is the one
+that survives a mistake in it, and it should still be bound on the private side of the network.
+
+**`/pulse.json` is built per request, `no-store`, no ETag.** `/stats.json` costs Vespa queries,
+so it is rolled up on a clock and served from memory with a validator; the pulse document is a
+read of in-process counters, so rolling it up would only make it older, and every field moves
+(`generatedAt` above all) so a validator would never match. It must not sit in any cache: the
+page's whole method is differencing two consecutive polls, and this is admin-only content. The
+document lambda runs only after the request is admitted, so an anonymous poller cannot even
+make the process walk its counters, and a process with no metered store answers 503 rather than
+a document of zeros.
+
+**The 403 echoes the refused pubkey.** A verified non-administrator is told so and shown its
+own key: saying "you are not on the list" to somebody who just proved who they are costs
+nothing and saves an operator from debugging a silent refusal that was a typo in
+`RELAY_ADMIN_PUBKEYS`. The refusal also carries two "what do I sign" answers, `sign` for this
+route and `session` for the session route, because they are signed over different urls and
+methods and a client that posted the document's token to the session route got a 405 with no
+explanation.
+
+**The admin sign-in signs one url and posts to another.** A NIP-98 token's `u` tag is
+checked against the relay's configured origin, and behind a tunnel or a proxy that is not
+the address the browser dialled, so signing `location.href` failed every time with nothing
+on screen to explain it. `shared/pulseauth.js` signs the url the relay named in its 401
+(`session.url`) and sends the request to the document-relative `./pulse/session`, so a
+tunnelled deployment works without the operator making the two agree. The tokens are
+single-use, which is why a page polling every two seconds exchanges one signature for a
+short-lived HttpOnly cookie instead of carrying a token per poll.
+
+**The pulse page polls one read at a time and stamps every panel.** A slow answer (a
+stalled store, a laptop back from sleep) let the next tick start a second read, and two
+answers landing out of order left `prev` newer than the document just drawn, so every
+rate fell to an em dash and stayed there; `pulse/page.js` skips a tick that arrives during a
+poll. Panels are keyed on a stamp so that the slow-read ring and the load sketch, which move
+only when a read is slow or the order changes, are not rebuilt twice a second, which took
+the reader's text selection and scroll with them; the sign-out control lives outside the
+footer for the same reason. The ring arrives newest-first from `CostLedger.snapshot` and
+was once reversed on the page, drawing the oldest read at the top during an incident.

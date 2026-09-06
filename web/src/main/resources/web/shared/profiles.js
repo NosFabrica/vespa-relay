@@ -1,17 +1,12 @@
-// Author profiles: the kind-0 cache and its batched enrichment REQ. One cache
-// for the whole page, exported as the live Map, so every view reads the same
-// names and faces.
+// Author profiles: the kind-0 cache and its batched enrichment REQ. One live Map for the
+// whole page, so every view reads the same names and faces.
 
 import { refConn } from "./conn.js";
 import { shortNpub } from "./nip19.js";
 
 export const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
 
-/**
- * The one name to show when there is room for one: `display_name`, else
- * `name`, and blank means blank so a whitespace value falls through. Where
- * both are shown, this is the primary.
- */
+/** The one name to show: `display_name`, else `name`; a whitespace value falls through. */
 export const displayName = (p) => (p && (p.display_name || "").trim()) || (p && (p.name || "").trim()) || "";
 
 export function parseProfile(ev) {
@@ -38,27 +33,22 @@ export function seedProfiles(events) {
 }
 
 /**
- * Load the profiles for [pubkeys] that are not cached yet; returns how many
- * new ones it learned, so a caller that rendered before the names arrived
- * knows whether repainting would change anything.
+ * Load the uncached profiles among [pubkeys]; returns how many it learned, so a caller
+ * knows whether to repaint.
  */
 export async function enrichProfiles(pubkeys) {
   const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
   if (!missing.length) return 0;
   let asked = false;
   try {
-    // Anonymous, like every reference lookup: the authenticated socket gates
-    // kind 0 to authors the reader has scored, which would leave exactly the
-    // unrated people nameless.
+    // Anonymous: the authenticated socket gates kind 0 to authors the reader has scored.
     const conn = await refConn();
     const found = await conn.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
     seedProfiles(found);
-    // Only an EOSE is an answer; req() resolves with whatever arrived at its
-    // timeout.
+    // Only an EOSE is an answer; req() resolves with whatever arrived at its timeout.
     asked = found.complete === true;
   } catch (e) { asked = false; }
-  // "No profile" is cached only when the relay answered; a null recorded off
-  // a failed read is read before every later render.
+  // "No profile" is cached only when the relay answered.
   const learned = missing.filter((p) => profiles.get(p)).length;
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
   return learned;

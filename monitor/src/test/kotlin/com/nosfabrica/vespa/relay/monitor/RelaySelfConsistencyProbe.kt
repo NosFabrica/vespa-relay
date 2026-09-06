@@ -40,11 +40,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Whether an older anchor makes a relay agree with itself: walks each host
- * twice per anchor age through one filter, prints the containment
- * [RelayAliases.reproducible] applies, then what the real [ConsistencyPass]
- * decides. Asserts nothing. Selected by `-DselfConsistency=true`; hosts via
- * `-DselfConsistencyUrls=a,b`. Run it more than once before moving the anchor.
+ * Whether an older anchor makes a relay agree with itself: walks each host twice per anchor age,
+ * prints the containment, then what the real [ConsistencyPass] decides. Asserts nothing.
+ * `-DselfConsistency=true` selects it; `-DselfConsistencyUrls=a,b` picks the hosts.
  */
 class RelaySelfConsistencyProbe {
     private val urls: List<NormalizedRelayUrl> =
@@ -94,7 +92,7 @@ class RelaySelfConsistencyProbe {
                     val asked = first.kinds?.let { "kinds=$it" } ?: "bare"
                     println("    %-8s %s  (%s)".format(label, containment(first.ids, second.orEmpty()), asked))
                 }
-                // The real pass at its own anchor: the only line that says whether the relay keeps its place.
+                // The real pass at its own anchor, the only line that says whether the relay keeps its place.
                 val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
                 val consistency = RelayConsistency()
                 val pass =
@@ -123,7 +121,7 @@ class RelaySelfConsistencyProbe {
         println("=".repeat(78))
     }
 
-    /** The fold's own arithmetic: how much of the smaller window is in the larger. */
+    /** How much of the smaller window is in the larger. */
     private fun containment(
         a: Set<String>,
         b: Set<String>,

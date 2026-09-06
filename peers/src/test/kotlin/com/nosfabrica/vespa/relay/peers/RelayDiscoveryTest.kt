@@ -168,7 +168,7 @@ class RelayDiscoveryTest {
                 // `equals` is exact and NIP-65 specifies lowercase; the url survives via its twin.
                 arrayOf("r", "wss://write.example", "WRITE"),
                 arrayOf("r", "wss://write.example", "write"),
-                // Scheme-less: the normalizer would coerce it to wss://, and a relay list holds whatever its author typed.
+                // Scheme-less: the normalizer would coerce it to wss://.
                 arrayOf("r", "relay.example"),
                 arrayOf("r", "http://relay.example"), // right host, wrong protocol
                 arrayOf("r"),
@@ -186,8 +186,7 @@ class RelayDiscoveryTest {
 
     @Test
     fun `urls we could never dial are dropped rather than discovered`() {
-        // No Tor transport here, and a loopback host in someone else's list means their
-        // machine. A certain failure kept in the list burns a timeout and a permit every cycle.
+        // A loopback host in someone else's list means their machine; a certain failure burns a permit.
         val list =
             event(
                 10002,
@@ -395,10 +394,8 @@ class RelayDiscoveryTest {
     // ---- when the engine's aggregate may answer ----------------------------
 
     /**
-     * A MISS HERE IS NOT AN ERROR, IT IS A BIGGER SET. The aggregate reads
-     * `tag_index`, lossy three ways at once, so it answers exactly one
-     * question: every url of one single-letter tag, unconditionally. Each case
-     * below is a way the source stops asking that, and each must fall back to
+     * The aggregate reads `tag_index`, lossy three ways, so it answers one question: every
+     * url of one single-letter tag, unconditionally. Anything narrower must fall back to
      * the walk rather than quietly widen.
      */
     @Test
@@ -409,19 +406,16 @@ class RelayDiscoveryTest {
             "a bare `r` select at position 1 is exactly what the aggregate answers",
         )
 
-        // A per-list cap drops the EVENT, and an aggregate has no events to
-        // drop — this deployment's ~9k-entry synthetic lists would return.
+        // A per-list cap drops the event, and an aggregate has no events to drop.
         assertFalse(
             RelayDiscovery.aggregable(dynamic(plain, maxRelaysPerList = 50), plain),
             "a per-list cap must keep the walk",
         )
 
-        // NIP-65's write marker is a condition on the tag's THIRD element,
-        // which `tag_index` does not carry.
+        // A marker is a condition on the tag's third element, which `tag_index` does not carry.
         val marked = source(10002, selects = listOf(select(tag = "r", where = marker("write"))))
         assertFalse(RelayDiscovery.aggregable(dynamic(marked), marked), "a positional condition must keep the walk")
 
-        // The url is at 2 for NIP-85 service tags and relay hints;
         // `tag_index` keeps the first value only.
         val atTwo = source(10040, selects = listOf(select(tag = "p", index = 2)))
         assertFalse(RelayDiscovery.aggregable(dynamic(atTwo), atTwo), "a position-2 read must keep the walk")
@@ -430,12 +424,10 @@ class RelayDiscoveryTest {
         val multi = source(10040, selects = listOf(select(tag = "30382:rank", index = 2)))
         assertFalse(RelayDiscovery.aggregable(dynamic(multi), multi), "a multi-character tag must keep the walk")
 
-        // A source with no selects has nothing to aggregate.
         val none = source(10002, selects = emptyList())
         assertFalse(RelayDiscovery.aggregable(dynamic(none), none), "no selects, nothing to aggregate")
 
-        // EVERY select must qualify: one that does not drags the source back
-        // to the walk, because the walk answers all of them in one pass.
+        // Every select must qualify, because the walk answers all of them in one pass.
         val mixed =
             source(
                 10002,
@@ -543,8 +535,7 @@ class RelayDiscoveryTest {
     fun `a tag that cannot fill a binding is dropped whole, not half-applied`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // No service slot, and a service that is not a key: half-applied, either
-            // would widen the ask back to every author on that relay.
+            // Half-applied, either would widen the ask back to every author on that relay.
             store.insert(event(10040, arrayOf("30382:rank", "wss://short.example")))
             store.insert(event(10040, arrayOf("30382:rank", "not-a-pubkey", "wss://bogus.example")))
 
@@ -708,8 +699,7 @@ class RelayDiscoveryTest {
     fun `a paged scan sees every event, across page boundaries and repeated timestamps`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            // 12 lists over 4 timestamps, so pages of 2 land mid-run of a shared
-            // created_at: the case an inclusive `until` makes a naive cursor loop on or skip.
+            // Pages of 2 land mid-run of a shared created_at, where an inclusive `until` loops or skips.
             repeat(12) { i ->
                 store.insert(
                     NostrSignerSync().sign<Event>(
@@ -759,10 +749,7 @@ class RelayDiscoveryTest {
             assertEquals(4, found.size, "the limit bounds the scan across pages, it does not multiply by them")
         }
 
-    /**
-     * Without a Tor transport an onion url asks the local resolver for a name
-     * only Tor can answer, which fails and tells the resolver who we sync with.
-     */
+    /** Without Tor an onion url asks the local resolver a name only Tor can answer, naming who we sync with. */
     @Test
     fun `an onion relay is kept only when a Tor transport exists`() {
         val list =
@@ -801,10 +788,7 @@ class RelayDiscoveryTest {
             assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))))).isEmpty())
         }
 
-    /**
-     * The fast lane asks about a handful of urls every tick. Bounded by `#d` the
-     * read must give the same answer over that subset as the unbounded one.
-     */
+    /** Bounded by `#d`, the fast lane's read must agree with the unbounded one over that subset. */
     @Test
     fun `the hold-out read can be bounded to the urls a caller is asking about`() =
         runBlocking {
@@ -823,8 +807,7 @@ class RelayDiscoveryTest {
             val whole = RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400)
             assertEquals(setOf(dead, alsoDead), whole, "unbounded, it is the whole dead set")
 
-            // The dead url outside the ask is not returned: a bound that leaked it would
-            // make the two reads disagree about a url the caller never mentioned.
+            // A bound that leaked a url outside the ask would make the two reads disagree.
             assertEquals(
                 setOf(dead),
                 RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(dead, alive)),

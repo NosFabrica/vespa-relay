@@ -27,31 +27,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Whether the TCP pre-probe measures the route the dial will take.
- *
- * [TcpProber] resolves and connects directly from this box, so for anything
- * routed through Tor it answers about a path the transfer never uses: a
- * `.onion` fails name resolution while up, and under `SYNC_TOR_ALL` it would
- * connect to every discovered relay in the clear. The websocket dial is the
- * only verdict there.
+ * Whether the TCP pre-probe measures the route the dial will take. [TcpProber] connects
+ * directly from this box, so for anything routed through Tor only the websocket dial counts.
  */
 internal fun shouldPreProbe(
     url: NormalizedRelayUrl,
     tor: TorTransport?,
 ): Boolean = tor?.routes(url) != true
 
-/**
- * Can we open a socket at all: the cheap guard in front of every dial, shared
- * by the fan-out and the probe passes so one url is judged one way.
- */
+/** Can we open a socket at all: the guard in front of every dial, shared so one url is judged one way. */
 internal class ReachabilityProbe(
     private val tor: TorTransport?,
 ) {
     /**
-     * Short-circuits only on proof. [TcpProber] folds refusal and timeout into
-     * one Boolean, so a failure is re-run once for its cause and believed only
-     * for what [Unreachability] accepts; anything else goes on to the dial.
-     * Nothing is published here: the fitness pass writes the `dead` verdict.
+     * Short-circuits only on proof: [TcpProber] folds refusal and timeout into one Boolean, so a
+     * failure is re-run for its cause and believed only for what [Unreachability] accepts.
+     * Publishes nothing; the fitness pass writes the `dead` verdict.
      */
     suspend fun reachable(url: NormalizedRelayUrl): Boolean {
         if (!shouldPreProbe(url, tor)) return true
@@ -59,10 +50,10 @@ internal class ReachabilityProbe(
         return cause(url)?.let { !Unreachability.proves(it) } ?: true
     }
 
-    /** Our transport can carry it and something answers; what a probe pass asks. */
+    /** Our transport can carry it and something answers. */
     suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && reachable(url)
 
-    /** Null when the retry succeeds (a merely slow host is no reason to publish) or the url has no host. */
+    /** Null when the retry succeeds or the url has no host. */
     private suspend fun cause(url: NormalizedRelayUrl): Exception? =
         withContext(Dispatchers.IO) {
             val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
@@ -82,7 +73,6 @@ internal class ReachabilityProbe(
         }
 
     companion object {
-        /** The question is "refused or not", not "how slow". */
         private const val PROBE_TIMEOUT_MS = 5_000
     }
 }

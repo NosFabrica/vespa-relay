@@ -48,10 +48,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * How often a relay is re-graded depends on nothing but when it was last
- * graded: the fitness pass's write loop and per-url clock, driven by fakes.
- */
+/** The fitness pass's write loop and per-url clock, driven by fakes. */
 class VerdictCadenceTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val signer = NostrSignerInternal(KeyPair())
@@ -68,7 +65,7 @@ class VerdictCadenceTest {
         until: Long?,
     ) = AliasProbe.Page(events.filter { until == null || it.createdAt <= until }.take(want))
 
-    /** Twelve of these is a whole per-url deadline in test time. */
+    /** Small enough that a whole per-url deadline fits in test time. */
     private val tinyIdleMs = 20L
 
     private fun deadlineMs() = AliasProbe.WINDOWS_PER_URL * tinyIdleMs
@@ -83,7 +80,7 @@ class VerdictCadenceTest {
             idleMs = { idleMs },
         )
 
-    /** A NEG-OPEN parked with no timer under it, the shape of a reconciliation whose idle window keeps re-arming. */
+    /** A NEG-OPEN parked with no timer under it, as a reconciliation whose idle window keeps re-arming. */
     private fun parkingNegOpen(hits: AtomicInteger? = null): suspend (NormalizedRelayUrl, Filter) -> Unit =
         { _, _ ->
             hits?.incrementAndGet()
@@ -160,14 +157,13 @@ class VerdictCadenceTest {
             }
 
             assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
-            // Our own clock is not the relay declining, so no nip77 fact in either direction.
             assertNull(
                 tagOf(store, slow, RelayVerdictRecord.NIP77_TAG),
                 "a NEG-OPEN our own clock cut must publish no nip77 fact in either direction",
             )
         }
 
-    /** A store whose writes never answer, which is what ends a batch on the wedge limit. */
+    /** A store whose writes never answer. */
     private class WedgedWrites(
         private val inner: NostrSemanticsStore,
     ) : IEventStore by inner {
@@ -248,7 +244,7 @@ class VerdictCadenceTest {
                     reconcile = { _, _ -> },
                 )
 
-            // One label for both sweeps: the resume cursor is per label. See [FitnessPass.writeCursors].
+            // One label for both sweeps: the resume cursor is per label.
             withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
             val first = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
@@ -257,7 +253,7 @@ class VerdictCadenceTest {
 
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, second.size)
-            // The write that tripped the limit did not land, so it is retried; the ones before it are behind us.
+            // The write that tripped the limit did not land, so it is retried.
             assertEquals(
                 first.last(),
                 second.first(),
@@ -278,7 +274,7 @@ class VerdictCadenceTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             val attempted = mutableListOf<String>()
 
-            // The write loop runs on whatever dispatcher the insert suspends onto; a plain local has no visibility guarantee there.
+            // The write loop runs on whatever dispatcher the insert suspends onto, so a plain local is not safe.
             val wedged = AtomicBoolean(true)
             val recording =
                 object : IEventStore by store {
@@ -364,7 +360,7 @@ class VerdictCadenceTest {
                 pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
             }
 
-            // Thirty urls is under the total time budget, so only the consecutive limit could have ended this early.
+            // Under the time budget, so only the consecutive limit could have ended this early.
             assertEquals(
                 urls.size,
                 n.get(),
@@ -375,7 +371,7 @@ class VerdictCadenceTest {
     @Test
     fun `an inherited verdict is re-signed only when it would change the record`() =
         runBlocking {
-            // The `measured-at` stamp is how a verdict ages; stamping an untested inheritance claims a measurement nothing took.
+            // Stamping an untested inheritance claims a measurement nothing took.
             val alias = RelayUrlNormalizer.normalize("wss://alias.example")
             val canonical = RelayUrlNormalizer.normalize("wss://canonical.example")
             val dialled = RelayUrlNormalizer.normalize("wss://dialled.example")
@@ -439,7 +435,7 @@ class VerdictCadenceTest {
     @Test
     fun `a url that re-folds onto a different canonical is re-signed, grade unchanged`() =
         runBlocking {
-            // The grade alone does not identify the claim: `alias` names a canonical, and the record must name the current one.
+            // `alias` names a canonical, and the record must name the current one.
             val alias = RelayUrlNormalizer.normalize("wss://alias.example")
             val first = RelayUrlNormalizer.normalize("wss://first-canonical.example")
             val second = RelayUrlNormalizer.normalize("wss://second-canonical.example")
@@ -552,7 +548,6 @@ class VerdictCadenceTest {
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
-                    // Five deadlines' worth: enough for real progress, little enough for a test.
                     publishWedgeBudgetMs = 500L,
                     reconcile = { _, _ -> },
                 )
@@ -570,7 +565,7 @@ class VerdictCadenceTest {
                 "spent waiting on writes that never came back" in err,
                 "an alternating store must end the batch on the time budget, not on the consecutive limit; got: $err",
             )
-            // A count of three would have stopped at the sixth write.
+            // The consecutive limit alone would have stopped far sooner.
             assertTrue(
                 attempts.get() > 6,
                 "the budget must buy more than the consecutive limit would; only ${attempts.get()} write(s) attempted",

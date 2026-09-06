@@ -1,8 +1,5 @@
-// The syntax sheet in index.html against the tokenizer in query.js, both
-// ways: a prefix query.js lifts that the sheet never names is a feature
-// nobody finds, and one the sheet names that query.js does not lift stays in
-// the query as words. The sheet's split is checked too: the page's prefixes
-// become filter fields, NIP-50's tokens reach the store as text.
+// The syntax sheet in index.html against the tokenizer in query.js, both ways, and the sheet's
+// split: the page's prefixes become filter fields, NIP-50's tokens reach the store as text.
 
 import assert from "assert";
 import { readFileSync } from "node:fs";
@@ -12,8 +9,7 @@ const html = readFileSync(new URL("../../main/resources/index.html", import.meta
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 const query = readFileSync(new URL("../../main/resources/web/shared/query.js", import.meta.url), "utf8");
 
-// The sheet draws an npub as `npub1…`; this real one, minted by the page's
-// own encoder, stands in for it before the tokenizer is asked anything.
+// A real npub, minted by the page's own encoder, stands in for the sheet's `npub1…`.
 const NPUB = "npub1424242424242424242424242424242424242424242424242424qamrcaj";
 
 const text = (frag) =>
@@ -31,8 +27,7 @@ const toks = (frag) => [...frag.matchAll(/<code class="tok">([\s\S]*?)<\/code>/g
 /** A documented token with a real value in place of the sheet's placeholder. */
 const real = (tok) => tok.replace(/npub1…/g, NPUB);
 
-// Read off query.js's source, not a list repeated here, which would be a
-// third place the prefixes are written down.
+// Read off query.js's source, not a list repeated here.
 const scopes = /const SCOPES = "([^"]+)"/.exec(query);
 assert.ok(scopes, "query.js no longer declares SCOPES — this test cannot read the scope prefixes");
 const known = new Set([
@@ -43,8 +38,7 @@ const known = new Set([
   }),
   "group",
 ]);
-// The reads above ask only for the groups this file knows by name, so a new
-// family in the tokenizer would pass every check below unseen.
+// The reads above ask only for the groups this file knows by name.
 const groups = [...new Set([...query.matchAll(/\(\?<([a-z]+)>/g)].map((m) => m[1]))].sort();
 assert.deepStrictEqual(
   groups,
@@ -132,8 +126,7 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(q.terms, "sort:recent", `the sheet's example leaves ${JSON.stringify(q.terms)} as search words`);
 
-// The store ignores an npub observer silently rather than refusing it, and
-// the page shows the npub form everywhere, so the sheet must say hex.
+// The store ignores an npub observer silently rather than refusing it, so the sheet must say hex.
 for (const tok of store.tokens) {
   if (!tok.startsWith("observer:")) continue;
   assert.ok(/hex/i.test(tok), `\`${tok}\` must say hex: the store ignores an npub observer silently`);
@@ -143,9 +136,8 @@ assert.ok(
   "the sheet stopped documenting `observer:` — the check above went vacuous with it",
 );
 
-// `?` opens the sheet from the Filters panel's summary button, leaving the
-// panel open behind the modal; the panel's document-level Escape handler
-// must stand down or one press dismisses both.
+// `?` opens the sheet over the Filters panel; the panel's Escape handler must stand down or one
+// press dismisses both.
 const esc = app.slice(app.indexOf("// One Escape handler"), app.indexOf("// ---- the syntax sheet"));
 assert.ok(esc.length > 200, "app.js's Escape handler moved — this pin cannot see it any more");
 assert.ok(esc.includes("$help.open"), "the Filters panel's Escape handler must stand down while the syntax sheet is up");

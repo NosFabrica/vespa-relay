@@ -193,6 +193,27 @@ map is shared by every stream and the monitor; between the two walks every
 fold in the store was missing, and another stream landing there dialled the
 duplicates for a whole cycle with nothing reporting it.
 
+**`replace` resolves chains against the store's answer, not the live map.**
+The end of each chain is computed from the verdicts as read, so the result does
+not depend on the order the store returned them in, a cycle resolves to nothing,
+and a url whose chain leads back to itself is skipped rather than pinned as its
+own duplicate, which would leave it `measured` forever. `endOf` and `resolve`
+stay separate for that reason: one reads the store's answer while the live map
+is mid-update, the other reads the live map while learning.
+
+**Containment at half, not a symmetric ratio near one.** One dial may be cut
+short by the peer's `default_limit`, and a truncated window is still the same
+window, so the test is how much of the smaller window appears in the larger.
+The two windows are seconds apart against a moving feed, so near-identity would
+fold nothing on exactly the busy relays where duplication costs most.
+
+**The probe page matches the target, and the fallback page is tried
+unconditionally.** 500 is the cap most hosts advertising `max_limit` publish,
+and asking over a relay's cap risks a refusal rather than a truncation, so a
+relay serving a full page answers in one round trip. A refusal and an empty
+relay are indistinguishable at that layer, so an empty first ask is always
+retried at the humbler page.
+
 **`unresolved` tests `measured`, nothing narrower.** A leader everything
 folded onto is a canonical, which a hand-written predicate did not count, so
 every fully folded group was re-dialled once per pass forever.
@@ -204,3 +225,9 @@ pass that is late rather than one in progress.
 **The fast lane does not bump `generation`.** The counter has no reader in the
 router today, and making the lane move it would be an unobservable behaviour
 change; worth revisiting the day something reads it.
+
+**`collapse` leaves two cases alone on purpose.** A present but un-dialable
+survivor, and an elected stand-in that the caller's own gate then drops, are not
+handled there: the stand-in election only fires for a survivor absent from the
+candidate set, and a survivor that is present but does not answer is the
+fitness pass's `dead` verdict to take, which then holds it out of the next set.

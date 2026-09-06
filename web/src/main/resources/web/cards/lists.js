@@ -1,7 +1,5 @@
-// NIP-51 lists and sets: one card driven by one table, because every list
-// kind is an optional title/description plus items in tags whose name says
-// what they are. Rendering is by tag, not by kind: `p` is always faces,
-// `relay` always relay rows, `emoji` always the emoji themselves.
+// NIP-51 lists and sets: one card driven by one table. Rendering is by tag, not by kind:
+// `p` is always faces, `relay` always relay rows, `emoji` always the emoji themselves.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { relayLabel } from "../shared/groups.js";
@@ -10,15 +8,11 @@ import {
   chipRow, hashtagHref, emojiGrid, refRows, extLink, tagsOf, tagOf, groupHref, plural,
 } from "./base.js";
 
-/**
- * NIP-51 `group` tags, `["group", <id>, <relay url>, <name?>]`, as rows. The
- * name links to the `group:` search; the url stays beside it as text, since
- * it is a relay to dial, not a page here.
- */
+/** `["group", <id>, <relay url>, <name?>]` tags as rows; the name links to the `group:` search. */
 function groupRows(rows, opts) {
   const shown = opts && opts.full ? rows : rows.slice(0, 6);
   const more = rows.length - shown.length;
-  // An id the token language cannot carry keeps its label and loses its link (see base.js groupHref).
+  // An id the token language cannot carry keeps its label and loses its link.
   const cells = shown.map(([id, url, name]) => {
     const href = groupHref(id);
     const label = esc(name || id);
@@ -28,14 +22,12 @@ function groupRows(rows, opts) {
   return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
-// What each tag holds and how it is shown. The table is the whole vocabulary
-// LISTS may declare.
+// What each tag holds and how it is shown; the whole vocabulary LISTS may declare.
 const TAGS = {
   p: { one: "person", many: "people", show: (v, o) => peopleGrid(v, o) },
   e: { one: "event", many: "events", show: (v, o) => refRows(v.map((x) => ({ kind: "e", value: x })), o) },
   a: { one: "entry", many: "entries", show: (v, o) => refRows(v.map((x) => ({ kind: "a", value: x })), o) },
-  // A hashtag is a search wherever it appears. A mute word is not: linking it
-  // to a page full of it would be a joke at the reader's expense.
+  // A hashtag is a search wherever it appears; a mute word is never linked to a page full of it.
   t: { one: "hashtag", many: "hashtags", show: (v, o) => chipRow(v, o, hashtagHref) },
   word: { one: "word", many: "words", show: chipRow },
   relay: { one: "relay", many: "relays", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
@@ -47,9 +39,8 @@ const TAGS = {
 };
 
 /**
- * kind -> the tags it carries, in NIP-51's order. A bare string takes the
- * tag's default nouns; a triple renames them for this kind ("12 communities"
- * rather than "12 entries").
+ * kind -> the tags it carries, in NIP-51's order. A bare string takes the tag's default
+ * nouns; a triple renames them for this kind.
  */
 const LISTS = {
   // ---- standard lists (10000-10099): one per user ------------------------
@@ -93,16 +84,10 @@ const spec = (entry) => {
   return { tag, one: one || d.one, many: many || d.many, show: d.show };
 };
 
-/**
- * A tag's values, deduped: a list holds a thing once, and every section both
- * counts its values and draws them. `emoji` carries a (shortcode, url) pair
- * per tag; everything else a value.
- */
+/** A tag's values, deduped, so a section counts exactly what it draws. */
 const valuesOf = (ev, tag) => {
   if (tag === "emoji") return unique(tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]), (v) => v.join("|"));
-  // A group's identity is the pair (id, host relay); the name is not part of
-  // it, as in quartz's GroupTag.equals. Only the id is required: a card draws
-  // what somebody's list says, and an entry with no host is still an entry.
+  // A group's identity is (id, host); the name is not part of it, and only the id is required.
   if (tag === "group") {
     return unique(
       tagsOf(ev, "group").filter((t) => t[1]).map((t) => [t[1], t[2] || "", t[3] || ""]),
@@ -127,26 +112,19 @@ const sectionsOf = (ev) => (LISTS[ev.kind] || [])
   .map((s) => ({ ...s, values: valuesOf(ev, s.tag) }))
   .filter((s) => s.values.length);
 
-/**
- * What the list is called, or "" for a list with no name. 30007's `d` is the
- * muted kind, not a name, so it is stated as what it is.
- */
+/** What the list is called, or "" for a list with no name. 30007's `d` is the muted kind, not a name. */
 const listTitle = (ev) => ev.kind === 30007
   ? (tagOf(ev, "d") ? `kind ${tagOf(ev, "d")}` : "")
   : (tagsOf(ev, "title").length || tagsOf(ev, "name").length ? titleOf(ev) : "");
 
-/**
- * What it holds in one line: "12 people · 3 hashtags". A list whose items are
- * all NIP-44-encrypted in .content has genuinely empty tags, and "nothing
- * public here" is the true statement where "0 people" would read as empty.
- */
+/** "12 people · 3 hashtags"; a list whose items are all encrypted in .content has genuinely empty tags. */
 const countsLine = (ev, sections = sectionsOf(ev)) => sections.length
   ? sections.map((s) => countOf(s, s.values.length)).join(" · ")
   : `nothing public here${ev.content ? " — this list keeps its items encrypted" : ""}`;
 
 function listCard(ev, opts) {
   const full = opts && opts.full;
-  // Read once and passed down: valuesOf dedupes every tag, and a follow list is thousands.
+  // Computed once and passed down; a follow list is thousands of tags.
   const sections = sectionsOf(ev);
   const body = sections.length
     ? (full
@@ -160,20 +138,18 @@ function listCard(ev, opts) {
 }
 
 register(Object.keys(LISTS).map(Number), listCard);
-// One row for the whole table: name, then what it holds. The count comes
-// before the description so clipping takes words off the sentence, not the number.
+// The count comes before the description so clipping takes words off the sentence, not the number.
 registerRow(Object.keys(LISTS).map(Number), (ev) => ({
   name: listTitle(ev),
   sub: [countsLine(ev), summaryOf(ev)].filter(Boolean).join(" · "),
 }));
-// Derived from the table: a kind draws a people grid exactly when it carries a `p` section.
+// A kind draws a people grid exactly when it carries a `p` section.
 registerPeopleGrid(
   Object.keys(LISTS)
     .filter((k) => LISTS[k].some((e) => (Array.isArray(e) ? e[0] : e) === "p"))
     .map(Number));
 
-// 39701 — a NIP-B0 web bookmark. The `d` is the bookmarked url without its
-// scheme, so the card's job is to make it clickable.
+/** 39701 — a NIP-B0 web bookmark; the `d` is the url without its scheme. */
 function webBookmarkCard(ev, opts) {
   const d = tagOf(ev, "d") || "";
   const url = d ? (/^https?:\/\//i.test(d) ? d : `https://${d}`) : null;

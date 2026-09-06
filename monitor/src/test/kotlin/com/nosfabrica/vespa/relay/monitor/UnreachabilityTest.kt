@@ -29,10 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * A negative NIP-66 record is signed and public, so only a failure that proves
- * the connection never opened may produce one.
- */
+/** A negative NIP-66 record is signed and public, so only a failure proving the connection never opened may produce one. */
 class UnreachabilityTest {
     private fun proves(e: Exception) = Unreachability.proves(e)
 

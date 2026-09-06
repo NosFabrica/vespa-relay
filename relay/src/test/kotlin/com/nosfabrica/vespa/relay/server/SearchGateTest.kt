@@ -47,8 +47,7 @@ class SearchGateTest {
 
     /**
      * An index whose ranked searches park on [holds] until their term is released; plain recall
-     * answers at once. Keyed by term, not arrival: one searching REQ reaches the index several
-     * times (the store's companion queries carry the same term), and the gate's unit is the REQ.
+     * answers at once. Keyed by term, not arrival, because one REQ reaches the index several times.
      */
     private class HoldingIndex : EventIndex {
         val inner = InMemoryEventIndex()
@@ -127,7 +126,7 @@ class SearchGateTest {
                 settle()
                 assertEquals(1, server.searchLanesOpen, "a closed connection's lane is dropped")
 
-                // The first REQ stays open at its live tail after its EOSE, which is why the lane frees at EOSE.
+                // The first REQ stays open at its live tail after its EOSE, so the lane must free at EOSE.
                 release("alpha")
                 awaitMessage(out) { it.startsWith("""["EOSE","a"]""") }
                 awaitStarted("beta")

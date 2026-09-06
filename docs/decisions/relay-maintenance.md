@@ -250,6 +250,8 @@ attempt 1 followed by a throw on attempt 2 deserves the same diagnostic, or the
 loop retries silently for ten minutes; a deterministic bug and a cold engine
 look identical from one message.
 
+**The reconcile's progress callback is wired, throttled once for the whole walk.** `reconcileTrust` always took an `onProgress` and the reconciler emits a real denominator with it, but every caller passed the argument out, so an hour-long walk printed one line at its start and one at its end. Two phases are reported as two things: screening moves `inspected` toward `total`, re-deriving holds it there and moves `rebuilt` and the card count, because a percentage in the second phase reads as a motionless 100%. The reporter is built once outside the retry loop; built inside it, every attempt restarted the 30s window and a reconcile that retried for half an hour printed nothing. Retries stay audible for the same reason: a loop that prints only its first failure cannot be told from one that stopped failing.
+
 ## OrphanScoreSweep
 
 **The sweep log prints counts and three example ids.** Printing the full orphan

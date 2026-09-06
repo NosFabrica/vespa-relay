@@ -1,7 +1,5 @@
-// NIP-19 identifiers, both directions, with no library. Encoding emits npub,
-// note, naddr and nevent; decoding accepts all five forms, because nprofile
-// arrives in pasted links whether or not this page would have minted it.
-// Anywhere a person sees a key it is an npub, never hex.
+// NIP-19 identifiers, both directions, with no library. Encoding emits npub, note, naddr and
+// nevent; decoding accepts nprofile too, since it arrives in pasted links.
 
 const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
@@ -48,17 +46,12 @@ function bech32Bytes(hrp, bytes) {
 
 const hexToBytes = (hex) => hex.match(/../g).map((h) => parseInt(h, 16));
 
-/**
- * Empty for anything that is not a 32-byte hex id, rather than a throw: cards
- * render events from strangers' relays, and a missing id should cost one link,
- * not the page.
- */
+/** Empty for anything that is not a 32-byte hex id, rather than a throw. */
 const bech32 = (hrp, hex) => (/^[0-9a-f]{64}$/i.test(hex || "") ? bech32Bytes(hrp, hexToBytes(String(hex).toLowerCase())) : "");
 
 /**
- * Decode and verify; null for anything malformed, including a bad checksum.
- * No 90-character cap: NIP-19 says to ignore bech32's limit, and identifiers
- * with relay hints routinely exceed it.
+ * Decode and verify; null for anything malformed. No 90-character cap: NIP-19 says to ignore
+ * bech32's limit.
  */
 function bech32Decode(str) {
   const pos = str.lastIndexOf("1");
@@ -81,11 +74,8 @@ export const tinyNpub = (hex) => npub(hex).slice(0, 12) + "…";
 export const shortNote = (hex) => shortB32(noteId(hex));
 
 /**
- * The `kind:pubkey:d` coordinate of a parameterized replaceable event, or
- * null. An absent `d` is the empty string, which is a legal address; a pubkey
- * that is not 64 hex is not, since an naddr minted from it links nowhere. Kept
- * beside the encoder it feeds so the card and the provenance pill spell one
- * address the same way.
+ * The `kind:pubkey:d` coordinate of a parameterized replaceable event, or null. An absent `d`
+ * is the empty string, a legal address; a pubkey that is not 64 hex is not.
  */
 export function addrOf(ev) {
   if (!ev || !Number.isInteger(ev.kind) || ev.kind < 30000 || ev.kind > 39999) return null;
@@ -95,10 +85,8 @@ export function addrOf(ev) {
 }
 
 /**
- * An `a` tag's `kind:pubkey:d` as an naddr, or null when the tag is malformed,
- * so the card renders the entry as text instead of linking to a page that
- * never resolves. The TLV length is one byte, so a `d` over 255 UTF-8 bytes
- * has no legal encoding.
+ * An `a` tag's `kind:pubkey:d` as an naddr, or null when the tag is malformed. The TLV length
+ * is one byte, so a `d` over 255 UTF-8 bytes has no encoding.
  */
 export function naddr(a) {
   const m = /^(\d+):([0-9a-f]{64}):([\s\S]*)$/.exec(String(a || ""));
@@ -115,10 +103,8 @@ export function naddr(a) {
 }
 
 /**
- * An event id plus whatever hints are known, as an nevent, or "" for a bad id.
- * Only what is known is encoded; a caller with no hints should use noteId(),
- * and cards/base.js's eventHref picks for them. Relays are capped at two
- * because this ends up in an address bar.
+ * An event id plus the hints known, as an nevent, or "" for a bad id. Relays are capped at
+ * two because this ends up in an address bar.
  */
 export function nevent(id, { relays = [], author = null, kind = null } = {}) {
   if (!/^[0-9a-f]{64}$/i.test(id || "")) return "";
@@ -142,11 +128,7 @@ export const shortAddr = (a) => {
   return m ? (m[3] || shortNpub(m[2])) : String(a || "");
 };
 
-/**
- * An npub or bare hex back to a hex pubkey; null if malformed, so a corrupted
- * `as=` parameter degrades to "ranking as you" rather than a lens that ranks
- * nothing.
- */
+/** An npub or bare hex back to a hex pubkey; null if malformed. */
 export function pubkeyParam(v) {
   v = String(v || "").trim().toLowerCase();
   if (/^[0-9a-f]{64}$/.test(v)) return v;
@@ -156,14 +138,9 @@ export function pubkeyParam(v) {
 }
 
 /**
- * Any NIP-19 identifier a URL path can carry, parsed to what it names:
- *
- *   npub / nprofile -> { type, pubkey }            a person
- *   note / nevent   -> { type, id, kind?, author? } one event by id
- *   naddr           -> { type, kind, author, d }    one replaceable address
- *
- * All carry `raw` and the TLV forms carry `relays`, which entity.js gates
- * before dialing.
+ * Any NIP-19 identifier a URL path can carry, parsed to what it names: `{ type, pubkey }` for
+ * npub and nprofile, `{ type, id, kind?, author? }` for note and nevent, `{ type, kind, author,
+ * d }` for naddr. All carry `raw`; the TLV forms carry `relays`, which entity.js gates before dialing.
  */
 export function nip19Parse(input) {
   const v = String(input || "").trim().replace(/^nostr:/i, "").toLowerCase();
@@ -203,8 +180,7 @@ export function nip19Parse(input) {
       kind: kind ? be32(kind) : null,
     };
   }
-  // naddr: the d identifier may legitimately be empty, so only author and
-  // kind are required.
+  // naddr: the d identifier may legitimately be empty, so only author and kind are required.
   const dTag = one(0);
   const author = one(2);
   const kind = one(3);

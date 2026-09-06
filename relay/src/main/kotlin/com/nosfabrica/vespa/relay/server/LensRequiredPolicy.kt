@@ -34,30 +34,12 @@ import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * Every read says whose eyes it is read through. A REQ or COUNT from a
- * connection that has not authenticated is answered only if each filter
- * names a lens (`observer:<64-hex>`) or waives one (`include:spam`); anything
- * else is refused with `auth-required:`, and signing in is the third way.
- *
- * This store applies a lens as a filter and has no house observer, so a read
- * with no lens is the whole corpus with trust switched off. That is a
- * legitimate ask, and it must be asked for rather than got by saying nothing.
- *
- * Not authentication: both tokens work on a socket that signs nothing, so
- * `limitation.auth_required` stays false. Not a write gate. NIP-77 is gated
- * too, because quartz runs a NEG-OPEN's filters through `accept(ReqCmd)`;
- * an anonymous peer must declare `include:spam` to mirror from here.
- *
- * All filters or none: a subscription's filters are ORed, so one undeclared
- * filter beside a declared one would serve the undeclared question in full.
- * The parse is quartz's own [SearchQuery], the parser the store maps with.
+ * Every read says whose eyes it is read through: an unauthenticated REQ or COUNT is answered only
+ * if every filter names a lens (`observer:<64-hex>`) or waives one (`include:spam`), because a
+ * subscription's filters are ORed. NIP-77 passes through the same gate.
  */
 class LensRequiredPolicy : PassThroughPolicy() {
-    /**
-     * This connection's context. `@Volatile` because the REQ that reads it can
-     * land on a different coroutine than the connect that wrote it. The set
-     * inside is quartz's own and grows as AUTHs land.
-     */
+    /** This connection's context; `@Volatile` because the REQ can land on another coroutine. */
     @Volatile
     private var scope: RequestContext? = null
 
@@ -86,10 +68,7 @@ class LensRequiredPolicy : PassThroughPolicy() {
         }
 
     companion object {
-        /**
-         * The refusal names all three ways out. `auth-required:` is the half
-         * NIP-42 clients act on; the prose is for a person reading a CLOSED.
-         */
+        /** Names all three ways out; `auth-required:` is the half NIP-42 clients act on. */
         internal val NO_LENS =
             AUTH_REQUIRED.format(
                 "this relay answers through a web of trust and has no house observer to lend you. " +
@@ -99,16 +78,15 @@ class LensRequiredPolicy : PassThroughPolicy() {
     }
 }
 
-/** Whether this filter names a usable lens or waives one. See [observerLens]. */
+/** Whether this filter names a usable lens or waives one. */
 internal fun Filter.declaresLens(): Boolean {
     val parsed = SearchQuery.parse(search ?: return false)
     return parsed.includeSpam || observerLens() != null
 }
 
 /**
- * The pubkey this filter names as its lens, or null. The one reading of the
- * `observer:` token in this module. Must be 64 hex, the store's own
- * acceptance test, or `observer:npub1…` would pass here and rank nothing there.
+ * The pubkey this filter names as its lens, or null. Must be 64 hex, the store's own acceptance
+ * test, or `observer:npub1…` would pass here and rank nothing there.
  */
 internal fun Filter.observerLens(): HexKey? =
     search

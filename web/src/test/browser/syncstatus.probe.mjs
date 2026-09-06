@@ -1,8 +1,6 @@
-// The per-relay table in a real Chromium: the wiring sync.test.mjs cannot
-// reach (the panel guard in stats.html, the import in cards.js, the member
-// names the document and the page must spell the same way). Needs only
-// Chromium: it serves web/src/main/resources itself and answers /stats.json
-// from the fixture below. SHOT=/tmp/sync.png keeps the picture.
+// The per-relay table in a real Chromium: the wiring sync.test.mjs cannot reach. Serves
+// web/src/main/resources itself and answers /stats.json from the fixture below;
+// SHOT=/tmp/sync.png keeps the picture.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -13,9 +11,8 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const now = Math.floor(Date.now() / 1000);
 
 /**
- * The document as `SyncStatus` publishes it, cut to what this table reads: all
- * four statuses at once. The `statuses` counts do not sum to the rows on
- * purpose; the document cuts `rows` but not the partition the chips read.
+ * The document as `SyncStatus` publishes it, cut to what this table reads. The `statuses`
+ * counts do not sum to the rows on purpose: the document cuts `rows`, not the partition.
  */
 const DOC = {
   schema: 1,

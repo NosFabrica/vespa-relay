@@ -1,11 +1,7 @@
-// The NIP-19 entity view: /npub1, /nprofile1, /note1, /nevent1 and /naddr1
-// each render the thing they name with the search's cards, at permalink
-// depth. A signed-in reader asks through their lens first, then
-// anonymously; an event the lens held back but the index holds is offered
-// behind a "show it anyway", never shown outright. When nobody here has it
-// and the identifier carries relay hints, those are dialed last, and a hit
-// is handed back to this relay for indexing. The identifier decides the
-// query; the fetched event's kind decides the card.
+// The NIP-19 entity view: /npub1, /nprofile1, /note1, /nevent1 and /naddr1 each render the
+// thing they name with the search's cards, at permalink depth. A signed-in reader asks through
+// their lens first, then anonymously; an event the lens held back is offered behind a "show it
+// anyway". Relay hints are dialed last, and a hit is handed back to this relay for indexing.
 
 import { refConn, relay } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
@@ -22,8 +18,7 @@ import { card, namedPubkeys } from "./cards.js";
 import { forgetProvenance } from "./provenance.js";
 import { loadRelated, relatedHtml } from "./related.js";
 
-// Navigating away invalidates any fetch still in flight, so a slow lookup
-// never paints over the view that replaced it.
+// Navigating away invalidates any fetch still in flight.
 let token = 0;
 export function cancelEntity() { token++; }
 
@@ -53,9 +48,8 @@ async function fetchEntity(conn, p, timeoutMs) {
 }
 
 /**
- * A relay hint reduced to a url this page will dial, or null: ws schemes
- * only, never loopback or private ranges (in a hint those mean the minter's
- * machine), and never plain ws:// from an https page.
+ * A relay hint reduced to a url this page will dial, or null: ws schemes only, never loopback
+ * or private ranges, and never plain ws:// from an https page.
  */
 function normalizeHint(raw) {
   if (!raw) return null;
@@ -72,8 +66,8 @@ function normalizeHint(raw) {
 }
 
 /**
- * The hint fallback, run only on a miss here: one hint at a time, a short
- * budget each, first hit wins, and the socket is closed whatever happens.
+ * The hint fallback, run only on a miss here: one hint at a time, first hit wins, and the
+ * socket is closed whatever happens.
  */
 const HINT_TRIES = 3;
 const HINT_TIMEOUT_MS = 6000;
@@ -92,9 +86,8 @@ async function fetchFromHints(parsed, stage = () => {}) {
 }
 
 /**
- * Hand a hint-fetched event to our relay, whose signature check is the
- * judgement on a payload taken from a third party. The verdict is printed
- * either way; a rejection is a fact worth showing.
+ * Hand a hint-fetched event to our relay, whose signature check is the judgement on a
+ * third-party payload. The verdict is printed either way.
  */
 async function submitForIndexing(ev, host, my) {
   const note = () => document.getElementById("prov");
@@ -116,15 +109,11 @@ function titleFor(ev, parsed) {
 }
 
 /**
- * Names and faces for everyone the card will mention: every 64-hex tag
- * value, capped, for the faces, and namedPubkeys at this page's depth for
- * the names (a zap's sender is reachable by no tag scan). Profiles must be
- * loaded before the card renders, or it falls back to an npub.
+ * Names and faces for everyone the card will mention. Profiles must be loaded before the card
+ * renders, or it falls back to an npub.
  */
 async function enrichMentions(ev) {
   const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
-  // The parent lookup and the room name run alongside the mentions: this page
-  // renders once, so every serialised round trip is dead time on a blank card.
   const room = postedTo(ev);
   await Promise.all([
     loadParentAuthors(unknownParents([ev])),
@@ -136,10 +125,8 @@ async function enrichMentions(ev) {
 }
 
 /**
- * What a git permalink shows under its card, after the paint and never
- * awaited by it. It asks through the reader's lens when there is one, to
- * match the fetch above. `setHits` hands the drawn events to app.js so their
- * json toggles can find them.
+ * What a git permalink shows under its card, after the paint and never awaited by it. `setHits`
+ * hands the drawn events to app.js so their json toggles can find them.
  */
 async function paintRelated(ev, my, { paintScores, setHits }) {
   const conn = relay.authed ? relay : await refConn().catch(() => null);
@@ -149,8 +136,7 @@ async function paintRelated(ev, my, { paintScores, setHits }) {
   const html = relatedHtml(shape);
   if (!html) return;
   const $results = document.getElementById("results");
-  // The gated card's "Show it anyway" calls this again under the same token,
-  // so "has one already" is the guard the token cannot give.
+  // "Show it anyway" calls this again under the same token, so "has one already" is the guard.
   if (!$results || $results.querySelector(".related")) return;
   $results.insertAdjacentHTML("beforeend", html);
   setHits && setHits([ev, ...shape.events]);
@@ -158,16 +144,12 @@ async function paintRelated(ev, my, { paintScores, setHits }) {
   watchNip05();
 }
 
-/**
- * The card in a slot that can be redrawn without touching what came after
- * it: paintRelated appends to #results and declines to rebuild its section.
- */
+/** The card in a slot that can be redrawn without touching what paintRelated appended after it. */
 const cardSlot = (ev) => `<div id="entity-card">${card(ev, FULL)}</div>`;
 
 /**
- * Ask for this entity's provenance row and redraw the card if it learned
- * any. [seedRow] is app.js's because the lens the ask is made through is app
- * state; absent means no row here.
+ * Ask for this entity's provenance row and redraw the card if it learned any. [seedRow] is
+ * app.js's; absent means no row here.
  */
 function fillRow(ev, my, { seedRow, paintScores }) {
   if (!seedRow) return;
@@ -186,29 +168,25 @@ function fillRow(ev, my, { seedRow, paintScores }) {
 }
 
 /**
- * Render the entity named by [seg] (the URL path segment) into #results.
- * paintScores and ensureLogin arrive as hooks because the lens they involve
- * is app state.
+ * Render the entity named by [seg] (the URL path segment) into #results. The hooks arrive from
+ * app.js because the lens they involve is app state.
  */
 export async function showEntity(seg, { paintScores, ensureLogin, setHits, seedRow }) {
   const my = ++token;
-  // The last search's row would make its presence mean "how you got here";
-  // [seedRow] asks again for the entity itself once it is drawn.
+  // The last search's row would make its presence mean "how you got here".
   forgetProvenance();
   const $results = document.getElementById("results");
   const parsed = nip19Parse(seg);
 
   if (!parsed) {
-    // The server only routes bech32-shaped paths here, so this is a checksum
-    // or structure failure: a truncated paste, a typo.
+    // The server only routes bech32-shaped paths here, so this is a checksum or structure failure.
     $results.innerHTML = headHtml(seg) +
       emptyState("Not a valid NIP-19 identifier", "The checksum does not match — the link was probably truncated or mistyped.");
     document.title = "SearchOverTrust";
     return;
   }
 
-  // The wait can be real (sign-in, two asks, up to three hint dials), so the
-  // skeleton narrates which step it is on.
+  // The skeleton narrates which step it is on.
   $results.innerHTML = headHtml(parsed.raw) +
     `<div class="skel-card"><div class="skel-line" style="width:34%"></div><div class="skel-line" style="width:92%"></div><div class="skel-line" style="width:66%"></div></div>` +
     `<div class="entity-stage" id="entity-stage">looking it up…</div>`;
@@ -220,8 +198,7 @@ export async function showEntity(seg, { paintScores, ensureLogin, setHits, seedR
 
   let ev = null, err = null, hint = null, gated = null;
   try {
-    // The anonymous socket opens alongside sign-in: every path below reaches
-    // it, and refConn() dedupes its own opening.
+    // The anonymous socket opens alongside sign-in; every path below reaches it.
     const warming = refConn().catch(() => null);
     // Settle sign-in first: whether there is a lens decides who gets asked.
     stage("signing in…");
@@ -254,8 +231,7 @@ export async function showEntity(seg, { paintScores, ensureLogin, setHits, seedR
   if (err) {
     $results.innerHTML = headHtml(parsed.raw) + `<div class="error">${esc(err.message || String(err))}</div>`;
   } else if (gated) {
-    // The step outside the lens is the reader's click, and the warning stays
-    // on the revealed card.
+    // The step outside the lens is the reader's click, and the warning stays on the revealed card.
     const what = gated.kind === 0 ? "profile" : "event";
     $results.innerHTML = headHtml(parsed.raw) +
       `<div class="empty"><b>Outside your web of trust</b>` +
@@ -286,8 +262,7 @@ export async function showEntity(seg, { paintScores, ensureLogin, setHits, seedR
       : "It may exist elsewhere — ";
     $results.innerHTML = headHtml(parsed.raw) + emptyState("Not here", `${what} ${also}try njump above.`);
   } else {
-    // A hint-fetched event renders with its provenance on it, then goes to
-    // this relay for indexing; submitForIndexing rewrites the note with the verdict.
+    // A hint-fetched event renders with its provenance on it, then goes to this relay for indexing.
     const host = hint ? hint.replace(/^wss?:\/\//, "") : null;
     const prov = hint
       ? `<div class="prov" id="prov">not in this relay's index — fetched from its hint <span class="mono">${esc(host)}</span>, submitting here for indexing…</div>`

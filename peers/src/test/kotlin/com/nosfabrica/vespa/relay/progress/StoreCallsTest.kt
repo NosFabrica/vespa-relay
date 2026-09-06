@@ -49,8 +49,8 @@ class StoreCallsTest {
     }
 
     /**
-     * Holds [calls] open, runs [body] while they are out, then lets them return.
-     * A real coroutine under a real registry, because booking through the context element is half of what is under test.
+     * Holds [calls] open, runs [body] while they are out, then lets them return. Real
+     * coroutines, because booking through the context element is half of what is under test.
      */
     private fun StoreCalls.whileOut(
         vararg calls: Triple<String, String, String?>,
@@ -133,8 +133,7 @@ class StoreCallsTest {
             assertEquals(1, caller.failed)
             assertEquals(1, caller.cancelled)
             assertEquals(0, snapshot.outstanding, "a call that threw has stopped being outstanding either way")
-            // Exact only with nothing in flight: on a busy router a call finishing mid-snapshot
-            // lands on one side of this identity. What always holds is the live partition, below.
+            // Exact only with nothing in flight; the live partition, below, is what always holds.
             assertEquals(caller.issued, caller.returned + caller.failed + caller.cancelled)
         }
 
@@ -142,8 +141,7 @@ class StoreCallsTest {
     fun `a dispatcher hop keeps the registry, so ingest's own worker pool books its calls`() =
         runBlocking {
             val calls = StoreCalls()
-            // Ingest launches its workers on a dispatcher of their own and the store reaches
-            // for `Dispatchers.IO` underneath; the context element surviving that is the whole claim.
+            // The element surviving ingest's own dispatcher and `Dispatchers.IO` beneath it is the claim.
             val pool = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
             try {
                 CoroutineScope(Dispatchers.Default + calls)
@@ -180,7 +178,6 @@ class StoreCallsTest {
         val scope = CoroutineScope(Dispatchers.Default + calls)
 
         runBlocking {
-            // Three calls of very different ages, against a clock this test moves.
             for (
             (caller, at) in
             listOf(
@@ -258,8 +255,6 @@ class StoreCallsTest {
         val clock = Clock()
         val calls = StoreCalls(now = clock)
 
-        // A wedge is ten minutes of every worker held, which a live run cannot
-        // reach without waiting out `IngestPipeline.WEDGE_AFTER_MS`.
         assertNull(calls.describeOldest(), "no store call out is not a fault — it says the workers are held elsewhere")
 
         calls.whileOut(
@@ -319,15 +314,13 @@ class StoreCallsTest {
             .onSuccess { fail("a negative re-warn period must stop the process too") }
             .onFailure { assertTrue("SYNC_STORE_REWARN_SEC" in (it.message ?: "")) }
 
-        // Taken in seconds: the variable is named in seconds and held in millis. Straddled
-        // rather than hit exactly, because a row's `issuedAt` is truncated to the second.
+        // Straddled rather than hit exactly, because a row's `issuedAt` is truncated to the second.
         val parsed = StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "90"))
         assertTrue(!parsed.namesAt(80_000), "a 90-second bound must not fire at 80 — the value was read as something other than seconds")
         assertTrue(parsed.namesAt(100_000), "…and must fire at 100")
         // The page is told, so a row is marked at the operator's bound and not at the page's copy of the default.
         assertEquals(90L, parsed.snapshot().slowAfterSec)
         assertEquals(0L, StoreCalls.fromEnv(mapOf("SYNC_STORE_SLOW_SEC" to "0")).snapshot().slowAfterSec, "off is published as off")
-        // In effect, checked through the one thing that reveals a threshold: whether a call of a known age is named.
         val tuned = StoreCalls(slowAfterMs = 90_000, now = clock)
         tuned.whileOut(Triple(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, null)) {
             clock.ms += 80_000
@@ -337,10 +330,7 @@ class StoreCallsTest {
         }
     }
 
-    /**
-     * Whether this registry names a call [ageMs] old: a threshold's one observable.
-     * Driven from a fixed instant, so the answer is about the bound and not about how long the assertion took.
-     */
+    /** Whether this registry names a call [ageMs] old, from a fixed instant so only the bound decides. */
     private fun StoreCalls.namesAt(ageMs: Long): Boolean {
         var named = false
         whileOut(Triple(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, null)) {

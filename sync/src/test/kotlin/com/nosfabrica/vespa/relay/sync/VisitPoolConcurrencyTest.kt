@@ -129,7 +129,7 @@ class VisitPoolConcurrencyTest {
             val store = NostrSemanticsStore(InMemoryEventIndex())
             val relay = FakeRelay()
             val sockets = CountingSockets()
-            // Never dialled: the heal queue is empty and no stream schedules an audit. It satisfies the constructors.
+            // Never dialled; it only satisfies the constructors.
             val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
             val bands = SyncBands(null)
             val streams = listOf(streamNamed("content", 1), streamNamed("indexers", 7))
@@ -172,7 +172,6 @@ class VisitPoolConcurrencyTest {
                 relay.release.send(Unit)
                 relay.release.send(Unit)
 
-                // One tail per unit, carrying only that stream's filter.
                 withTimeout(10_000) {
                     while (relay.tails.size < 2) kotlinx.coroutines.delay(20)
                 }

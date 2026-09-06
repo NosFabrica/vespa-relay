@@ -25,19 +25,15 @@ import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.progress.StreamPhases
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
-/**
- * When an ask's audit comes due, as one value: not scheduled, never run, or
- * a time. A value class, so it is a bare `long` at runtime; it is read once
- * per ask per visit on a roster of thousands.
- */
+/** When an ask's audit comes due, as one value: not scheduled, never run, or a time. */
 @JvmInline
 internal value class AuditClock private constructor(
     private val at: Long,
 ) {
-    /** Whether this ask is audited at all; see [NOT_SCHEDULED]. */
+    /** Whether this ask is audited at all. */
     val scheduled: Boolean get() = at != UNSCHEDULED
 
-    /** Scheduled but never yet run, so always due. Counted apart from the overdue by the status row. */
+    /** Scheduled but never yet run, so always due. */
     val neverRun: Boolean get() = at == NEVER_RUN
 
     /** Due by [now]? Never for an unscheduled ask; always for one never run. */
@@ -53,7 +49,7 @@ internal value class AuditClock private constructor(
         /** Nothing audits this ask: never due, and never a backlog either. */
         val NOT_SCHEDULED = AuditClock(UNSCHEDULED)
 
-        /** Scheduled and never run; see [neverRun]. */
+        /** Scheduled and never run. */
         val NEVER_AUDITED = AuditClock(NEVER_RUN)
 
         /** A time, or [NEVER_AUDITED] where the band has no clock yet. */
@@ -62,10 +58,8 @@ internal value class AuditClock private constructor(
 }
 
 /**
- * When each stream's scheduled re-reads of the past come due, and how much
- * is waiting behind them. The one place `deleteMissing` decides which clock
- * schedules an ask; [VisitPool] asks it both questions. No store, sockets or
- * coroutines: a roster in, rows out, so the schedule can be asserted.
+ * When each stream's scheduled re-reads of the past come due, and how much is waiting behind
+ * them. The one place `deleteMissing` decides which clock schedules an ask.
  */
 internal class AuditSchedule(
     private val streams: List<SyncStream>,
@@ -73,9 +67,8 @@ internal class AuditSchedule(
     private val retraction: RetractionAudit?,
 ) {
     /**
-     * Which clock schedules this ask's audit. A `deleteMissing` stream's
-     * comparison runs on the ask's owned-kind projection and stamps its clock
-     * there, so the full ask's band clock would never advance.
+     * Which clock schedules this ask's audit. A `deleteMissing` stream stamps its clock on the
+     * ask's owned-kind projection, so the full ask's band clock would never advance.
      */
     fun clockFor(
         ask: RosterBuilder.Ask,
@@ -90,10 +83,8 @@ internal class AuditSchedule(
     }
 
     /**
-     * Would an audit run for this ask now, without stamping anything? Weaker
-     * than the claim it guards on purpose: it ignores `attemptSpacingSeconds`,
-     * so `claimAudit` may still turn the ask away a moment later. The
-     * alternative is a second copy of the spacing rule.
+     * Would an audit run for this ask now, without stamping anything? Ignores
+     * `attemptSpacingSeconds`, so `claimAudit` may still turn the ask away a moment later.
      */
     fun isDue(
         ask: RosterBuilder.Ask,
@@ -102,11 +93,7 @@ internal class AuditSchedule(
         now: Long,
     ): Boolean = clockFor(ask, url, negentropySyncThePastSeconds).dueBy(now)
 
-    /**
-     * One pass over the roster for every stream at once. Dueness is per
-     * (stream, relay, filter), so no single number knows the answer; the
-     * caller caches (`VisitPool.scheduleFor`).
-     */
+    /** One pass over the roster for every stream at once; the caller caches the result. */
     fun rows(
         roster: Map<NormalizedRelayUrl, Map<String, RosterBuilder.UnitAsks>>,
         nowSec: Long,

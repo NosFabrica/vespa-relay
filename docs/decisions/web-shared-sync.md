@@ -116,6 +116,17 @@ comparable. A ratio also sidesteps `fmtDur` flooring a 400ms stage to "0s".
 something beside the queue backing up behind it, which was in the other table.
 The union is walked so a job with only one half is still drawn.
 
+**`recordedOnly` is inside `candidates`, not beside it.** The router derives
+`known = sourced + recordedOnly` and then `candidates = known - dead`, so a
+funnel that adds `recordedOnly` as a sibling of `candidates` counts every
+record-only url twice. The fixture in `sync.test.mjs` once modelled exactly
+that shape (a `recordedOnly` nine times the size of `candidates`, which the
+router cannot produce), and the double count it hid shipped: staging drew
+twice the corpus the router knew of. The fixture's children now sum to
+`candidates` and the test holds that the partition closes with no
+`unattributed` row, which is the check the old shape could never fail because
+`unattributed` only fires when children fall short.
+
 ## processors.js
 
 **The held urls are on the card.** A fitness pass held one url of 12,374 for 74

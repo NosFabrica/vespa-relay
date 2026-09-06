@@ -36,9 +36,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Asks the `indexers` relays, over the real network, whether an empty page
- * comes back EOSEd and whether an unfloored leg can end at all. Prints a
- * report per relay and asserts nothing. Selected by `-DrealRelayProbe=true`.
+ * Asks the `indexers` relays, over the real network, whether an empty page comes back EOSEd
+ * and whether an unfloored leg can end at all. Prints a report per relay and asserts nothing.
+ * Run with `-DrealRelayProbe=true`.
  */
 class RealRelayDrainProbe {
     /** The legs `SyncCoverage.legs` hands the `indexers` stream: kind 10002 below each relay's oldest relay list. */
@@ -111,10 +111,9 @@ class RealRelayDrainProbe {
     }
 
     /**
-     * Walks each indexer twice from [TRAP_CEILING], once with the leg as
-     * [SyncCoverage.legs] builds it and once through [flooredForPaging]. Read
-     * `end`: `DRAINED` closes the leg, `UNPAGEABLE` leaves it to re-walk every
-     * boot. `lowest until` is what the walk asked for, not what it was answered at.
+     * Walks each indexer twice from [TRAP_CEILING], once with the leg as [SyncCoverage.legs]
+     * builds it and once through [flooredForPaging]. `DRAINED` closes the leg; `UNPAGEABLE`
+     * leaves it to re-walk every boot.
      */
     @Test
     fun reportWhetherAnUnflooredLegCanEndAtAll() {
@@ -167,7 +166,7 @@ class RealRelayDrainProbe {
                         outcome.fold(
                             onSuccess = { r ->
                                 when (r) {
-                                    // Unreachable while the pinned quartz floors its cursor at 0; printing again means that guard regressed.
+                                    // Unreachable while quartz floors its own cursor; printing again means that guard regressed.
                                     null -> "NEVER ENDED in ${TERMINATION_MS / 1000}s"
 
                                     else -> "${r.end} (${r.downloaded} event(s))"
@@ -188,10 +187,10 @@ class RealRelayDrainProbe {
     companion object {
         private const val PER_RELAY_MS = 120_000L
 
-        /** Just above the events purplepag.es stamps `created_at = 0`, so one page reaches the cursor that matters. */
+        /** Just above the `created_at = 0` events, so one page reaches the cursor that matters. */
         private const val TRAP_CEILING = 1_600_000_000L
 
-        /** Not an idle timeout; the relay answers throughout. How long a walk gets to prove it can end. */
+        /** How long a walk gets to prove it can end; not an idle timeout, the relay answers throughout. */
         private const val TERMINATION_MS = 45_000L
     }
 }

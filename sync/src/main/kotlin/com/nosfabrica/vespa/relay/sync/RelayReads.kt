@@ -29,16 +29,13 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * The three things the visit pool asks of a relay, and the seam that lets the
- * pool's scheduling be tested without a network. Deliberately three methods:
- * this is the list of what `VisitPool` does to a relay, not a client
- * abstraction. The url is a parameter because one instance serves every relay.
+ * The three things the visit pool asks of a relay, and the seam that lets the pool's
+ * scheduling be tested without a network. Three methods, not a client abstraction.
  */
 internal interface RelayReads {
     /**
-     * Walks [filter] newest-first until the relay drains, refuses, or goes
-     * quiet for [idleTimeoutMs]. `VisitPool.refusedOutright` decides which of
-     * those endings ends a visit.
+     * Walks [filter] newest-first until the relay drains, refuses, or goes quiet for
+     * [idleTimeoutMs].
      */
     suspend fun page(
         url: NormalizedRelayUrl,
@@ -48,10 +45,8 @@ internal interface RelayReads {
     ): PagedFetchResult
 
     /**
-     * Holds a live subscription on [url] under [subId], delivering only that
-     * relay's events. The relay check lives here: one listener can be fed by
-     * several relays, and a missed check would ingest another relay's events
-     * under this unit's trust and scope.
+     * Holds a live subscription on [url] under [subId], delivering only that relay's events:
+     * one listener can be fed by several relays.
      */
     suspend fun tail(
         subId: String,

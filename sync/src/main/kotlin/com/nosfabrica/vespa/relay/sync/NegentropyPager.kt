@@ -40,8 +40,8 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
 
 /**
- * Sizes for the window stack, all counts of events; the pager turns them into
- * `created_at` boundaries.
+ * Sizes for the window stack, all counts of events; the pager turns them into `created_at`
+ * boundaries.
  *
  * @param target where a peer never asked before starts.
  * @param minTarget the floor the learned target may shrink to; a peer refusing this refuses negentropy.
@@ -55,7 +55,7 @@ internal data class NegPageTuning(
     val slackSeconds: Long = 60,
 )
 
-/** One window against one peer: reconcile it, or page it. The reconcile reads the index per window. */
+/** One window against one peer: reconcile it, or page it. */
 internal interface WindowSync {
     /** @throws NegentropySyncException when NIP-77 cannot enumerate this window. */
     suspend fun reconcile(
@@ -69,9 +69,8 @@ internal interface WindowSync {
     ): NegentropySyncResult
 
     /**
-     * The terminal fallback: walk this window over a plain REQ. Says whether
-     * it was refused as its own fact; a refusal delivers zero events exactly
-     * as an empty window does.
+     * The terminal fallback: walk this window over a plain REQ. Says whether it was refused as
+     * its own fact, since a refusal delivers zero events exactly as an empty window does.
      */
     suspend fun page(
         url: NormalizedRelayUrl,
@@ -90,7 +89,7 @@ internal class PagedWindow(
 internal class StoreWindowIndex(
     private val store: IEventStore,
 ) : NegentropyLocalIndex {
-    // A failed count is not fatal (quartz lets the peer's refusal split), but cancellation is not a failed count.
+    // A failed count is not fatal, but cancellation is not a failed count.
     override suspend fun count(window: Filter): Int? =
         try {
             storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_COUNT, StoreCalls.summarise(window)) {
@@ -102,7 +101,7 @@ internal class StoreWindowIndex(
             null
         }
 
-    // Booked apart from the count: this materialises every id in the window, the largest allocation the router makes.
+    // Booked apart from the count: this materialises every id in the window.
     override suspend fun entriesFor(window: Filter): List<IdAndTime> =
         storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(window)) {
             store.snapshotIdsForNegentropy(listOf(window))
@@ -127,16 +126,15 @@ internal class PrimedIndex(
 
 internal class ClientWindowSync(
     private val client: NostrClient,
-    /** Per-relay kind caps, the same instance the pool learns into. No default, so the sharing cannot regress silently. */
+    /** Per-relay kind caps, the same instance the pool learns into. */
     private val widths: FilterWidths,
     private val idleTimeoutMs: Long = NEG_IDLE_MS,
     /** The twice-refused ids, declined before the REQ that would fetch them. */
     private val refused: RefusedIds = RefusedIds.disabled(),
 ) : WindowSync {
     /**
-     * The predicate quartz consults for every id the reconcile names. Null
-     * when suppression is off, since quartz skips the per-batch copy for an
-     * absent predicate. Keyed on the window because only the id is known yet.
+     * The predicate quartz consults for every id the reconcile names. Null when suppression is
+     * off, since quartz skips the per-batch copy for an absent predicate.
      */
     private fun wantIdFor(window: Filter): ((String) -> Boolean)? =
         if (!refused.enabled) {
@@ -167,10 +165,9 @@ internal class ClientWindowSync(
         )
 
     /**
-     * Pages a window in chunks of the width this relay takes. A page here is a
-     * sub-window of a leg, so its drain settles nothing; that judgement is
-     * [drainSettlesThePast] at the leg's call site. The NEG-OPEN itself is not
-     * chunked: a width-refused one throws `UNAVAILABLE` and lands here.
+     * Pages a window in chunks of the width this relay takes. A page here is a sub-window of a
+     * leg, so its drain settles nothing. The NEG-OPEN itself is not chunked: a width-refused
+     * one throws `UNAVAILABLE` and lands here.
      */
     override suspend fun page(
         url: NormalizedRelayUrl,
@@ -181,7 +178,7 @@ internal class ClientWindowSync(
         for (chunk in widths.chunk(url, window)) {
             val walked = client.fetchAllPages(url, listOf(chunk), idleTimeoutMs, onEvent = onEvent)
             downloaded += walked.downloaded
-            // The first refusal ends it; what was delivered is kept, so the refusal cannot ride on the count.
+            // The first refusal ends it; what was delivered is kept.
             if (VisitPool.refusedOutright(walked)) return PagedWindow(downloaded, refused = true)
         }
         return PagedWindow(downloaded, refused = false)
@@ -195,7 +192,7 @@ internal class SweepOutcome(
     val pagedWindows: Int,
     /** The leg is fully covered; the caller may record a band for it. */
     val complete: Boolean,
-    /** False when the peer could not reconcile the first window at all; the caller should page [outstanding]. */
+    /** False when the first window could not reconcile; the caller should page [outstanding]. */
     val negentropyUsable: Boolean,
     /** The part of the leg this sweep has not covered, when [negentropyUsable] is false. */
     val outstanding: Filter?,
@@ -205,20 +202,9 @@ internal class SweepOutcome(
 )
 
 /**
- * Negentropy paging that sizes itself: one stack of `created_at` windows,
- * split from both ends, checkpointed per window.
- *
- * A NEG-OPEN is all-or-nothing at both ends: our id snapshot must fit in
- * memory, and a relay refuses outright past its `max_sync_events`. So the
- * boundary is a timestamp decided by a count, from two sources: our own
- * [NegentropyLocalIndex.count] before the round trip, and the peer's cap
- * from its refusal ([NegentropySyncResult.peerCap]) or, failing that, a
- * window quartz had to split. quartz owns everything inside one call; this
- * layer owns what survives a call: the cursor, the per-peer size, the order.
- *
- * Windows pop strictly newest-first, so the finished region is one contiguous
- * slice growing down from the ceiling and the cursor can be one timestamp.
- * Every push here keeps that invariant.
+ * Negentropy paging that sizes itself: a stack of `created_at` windows, bisected by count and
+ * checkpointed per window. Windows pop strictly newest-first, so the finished region is one
+ * contiguous slice growing down from the ceiling and the cursor can be one timestamp.
  */
 internal class NegentropyPager(
     private val local: NegentropyLocalIndex,
@@ -232,10 +218,9 @@ internal class NegentropyPager(
     internal val slackSeconds: Long get() = tuning.slackSeconds
 
     /**
-     * Reconcile [leg] against [url], one right-sized window at a time.
-     * [stream] and [shape] are the cursor's identity. Only `since`/`until`
-     * vary across windows: strfry matches a declared negentropy tree by
-     * canonical filter JSON, so any other split drops onto its capped path.
+     * Reconcile [leg] against [url], one right-sized window at a time. [stream] and [shape]
+     * are the cursor's identity. Only `since`/`until` vary across windows: strfry matches a
+     * declared negentropy tree by canonical filter JSON, so any other split is capped.
      */
     suspend fun sweep(
         stream: String,
@@ -243,7 +228,7 @@ internal class NegentropyPager(
         shape: Filter,
         leg: Filter,
         onProgress: ((Int, Int) -> Unit)? = null,
-        /** (since, until) of each window actually reconciled; `since` is the depth reached and only descends. */
+        /** (since, until) of each window reconciled; `since` only descends. */
         onWindow: ((Long, Long) -> Unit)? = null,
         onEvent: suspend (Event) -> Unit,
     ): SweepOutcome {
@@ -258,7 +243,6 @@ internal class NegentropyPager(
 
         var target = state.target(url, tuning.target).coerceIn(tuning.minTarget, tuning.maxTarget)
         val startedTarget = target
-        // Once per sweep: the key serialises the filter.
         val cursor = SweepState.keyFor(stream, url, shape)
         val stack = ArrayDeque<LongRange>()
         pushResumed(stack, url, cursor, floor, ceiling)
@@ -275,7 +259,7 @@ internal class NegentropyPager(
             val sweepWindow = stack.removeLast()
             val minimal = sweepWindow.last - sweepWindow.first <= MIN_WINDOW_SECONDS
 
-            // Our side first: this sizes the checkpoint, and quartz re-uses the number to bound its reads.
+            // Our side first: this sizes the checkpoint.
             val ours = if (minimal) null else local.count(windowFilter(shape, sweepWindow))
             if (ours != null && ours > target) {
                 bisect(stack, sweepWindow)
@@ -287,7 +271,7 @@ internal class NegentropyPager(
             var pagedHere = 0
             // The cursor may only advance over ground that was read; a refused REQ read nothing.
             var refusedHere = false
-            // The floor for reading what the relay says about this window. See [sayRefused].
+            // The floor for reading what the relay says about this window.
             val askedAtMs = System.currentTimeMillis()
             try {
                 // quartz counts from zero per NEG-OPEN; offset so the progress line never walks backwards.
@@ -340,9 +324,8 @@ internal class NegentropyPager(
                         paged++
                         if (badFrom > sweepWindow.first) stack.addLast(sweepWindow.first..(badFrom - 1))
                         if (badTo < sweepWindow.last) stack.addLast((badTo + 1)..sweepWindow.last)
-                        // Claimable only when the drained slice reaches the top of the
-                        // window (a pending piece above it was never compared) and
-                        // only when the drain was served.
+                        // Claimable only when the drained slice reaches the top of the window
+                        // and the drain was served.
                         if (drained.refused) {
                             refusedWindows++
                             sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused", askedAtMs)
@@ -354,7 +337,7 @@ internal class NegentropyPager(
 
                     NegentropySyncException.Reason.UNAVAILABLE -> {
                         if (reconciled == 0 && paged == 0) {
-                            // The first window never landed: this peer does not do negentropy for us. Let the caller page.
+                            // The first window never landed: this peer does not do negentropy for us.
                             return SweepOutcome(
                                 downloaded,
                                 0,
@@ -475,10 +458,8 @@ internal class NegentropyPager(
     )
 
     /**
-     * A slice the peer will not reconcile at any window size: one second can
-     * hold more than a relay's cap. Split by kind where the filter allows (a
-     * shape change strfry answers off its capped path), else page it over REQ.
-     * Called mid-reconcile, so the rest of the window carries on.
+     * A slice the peer will not reconcile at any window size: one second can hold more than a
+     * relay's cap. Split by kind where the filter allows, else page it over REQ.
      */
     private suspend fun drainDense(
         url: NormalizedRelayUrl,
@@ -505,7 +486,7 @@ internal class NegentropyPager(
                     continue
                 }
                 try {
-                    // A slice the peer still refuses inside the per-kind reconcile lands on this hook, not in the catch.
+                    // A slice the peer still refuses inside the per-kind reconcile lands on this hook.
                     var pagedSlices = 0
                     downloaded +=
                         peer
@@ -561,7 +542,7 @@ internal class NegentropyPager(
         sweepWindow: LongRange,
     ) = state.advance(cursor, sweepWindow.first, sweepWindow.last)
 
-    /** Shrink toward what the peer will take: their number when they sent one, halving when they did not. */
+    /** Shrink toward what the peer will take: their number if stated, else halving. */
     private fun shrink(
         url: NormalizedRelayUrl,
         target: Int,

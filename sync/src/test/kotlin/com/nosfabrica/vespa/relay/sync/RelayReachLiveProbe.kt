@@ -47,11 +47,11 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Dials every relay issue 185 names with the full `contentViaOutbox` ask and
- * prints, per relay, how the walk ended, what the relay said, whether our
- * NIP-42 AUTH was accepted, and where the refusal was about width, the cap
- * learned and whether the narrowed ask is served. Asserts nothing. Selected
- * by `-DrelayReachProbe=true`; `-DreachNsec`, `-DreachUrls`, `-DreachNoAuth` tune it.
+ * Dials a list of refusing relays with the full `contentViaOutbox` ask and prints, per relay,
+ * how the walk ended, what the relay said, whether our NIP-42 AUTH was accepted, and where the
+ * refusal was about width, the cap learned and whether the narrowed ask is served. Asserts
+ * nothing. Run with `-DrelayReachProbe=true`; `-DreachUrls` (comma-separated), `-DreachNsec`
+ * and `-DreachNoAuth` (the control arm) tune it.
  */
 class RelayReachLiveProbe {
     @Test
@@ -123,7 +123,7 @@ class RelayReachLiveProbe {
     /** One relay's answer, and what this router could do about it. */
     private class Row(
         val url: String,
-        /** Which of the issue's lists put it here. */
+        /** Which list put it here. */
         val label: String,
         /** quartz's walk ending, or `SKIPPED`/`TIMED-OUT`. */
         val end: String,
@@ -136,7 +136,7 @@ class RelayReachLiveProbe {
         val authed: Boolean,
         /** What the relay said for itself. */
         val said: String?,
-        /** How many halvings it took to get under the relay's limit. See [PROBE_NARROWINGS]. */
+        /** How many halvings it took to get under the relay's limit. */
         val narrowings: Int = 0,
     ) {
         /** `syncs` and `RESCUED` are one verdict reached two ways; only the second is evidence about narrowing. */
@@ -225,7 +225,7 @@ class RelayReachLiveProbe {
     }
 
     companion object {
-        /** quartz's endings that end a visit. See [VisitPool.refusedOutright]. */
+        /** The endings [VisitPool.refusedOutright] treats as refusals. */
         private val REFUSALS =
             setOf(
                 PagedFetchResult.End.IDLE,
@@ -381,7 +381,7 @@ class RelayReachLiveProbe {
                 48106,
             )
 
-        /** Bounded, unlike the real leg: a relay refuses on the REQ, before an event moves, and `LIMIT_REACHED` is not a refusal. */
+        /** Bounded, unlike the real leg: a relay refuses on the REQ, before an event moves. */
         private val ASK = Filter(kinds = CONTENT_KINDS, limit = LIMIT)
 
         private const val LIMIT = 5
@@ -398,9 +398,8 @@ class RelayReachLiveProbe {
         private const val CHUNKS_WALKED = 2
 
         /**
-         * Further than the engine's [MAX_NARROWINGS], which bounds one visit's cost
-         * and has revisits to finish the job. A probe has one visit and must reach
-         * the relay's actual limit; eight halvings take 141 kinds to one.
+         * Further than the engine's [MAX_NARROWINGS]: a probe has one visit and must reach the
+         * relay's actual limit, and eight halvings take the whole ask to one kind.
          */
         private const val PROBE_NARROWINGS = 8
         private val ISSUE_185 =

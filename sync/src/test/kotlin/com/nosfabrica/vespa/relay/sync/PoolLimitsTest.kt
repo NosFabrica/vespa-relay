@@ -30,8 +30,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * The admission control behind the per-stream caps. A cap that stops capping
- * looks like a cap set higher than the load, so each assertion faces that way.
+ * The admission control behind the per-stream caps. A cap that stops capping looks like a
+ * cap set higher than the load, so each assertion faces that way.
  */
 class PoolLimitsTest {
     private val audit = VisitPool.POOL_NEGENTROPY
@@ -52,7 +52,7 @@ class PoolLimitsTest {
 
     @Test
     fun `no cap is no gate, and every ask is granted`() {
-        // Uncapped is unlimited, never zero; a null read as "none allowed" would stop a mirror on upgrade.
+        // Uncapped is unlimited, never zero.
         val limits = PoolLimits(mapOf(("content" to audit) to null))
         repeat(1_000) { assertNotNull(limits.tryHold("content", audit)) }
         assertEquals(0L, limits.deferred("content", audit))
@@ -68,7 +68,6 @@ class PoolLimitsTest {
         assertNull(limits.tryHold("content", audit), "the third is over content's share")
         assertEquals(1L, limits.deferred("content", audit))
 
-        // One stream at its ceiling does not touch another's share.
         assertNotNull(limits.tryHold("indexers", audit), "a different stream has its own share")
         assertEquals(0L, limits.deferred("indexers", audit))
         // A different job is a different gate.
@@ -80,7 +79,6 @@ class PoolLimitsTest {
 
     @Test
     fun `a refusal spends nothing, however many times it happens`() {
-        // A refusal that walked away holding anything would shrink the share by one per refusal.
         val limits = PoolLimits(mapOf(("content" to audit) to 2))
         val one = assertNotNull(limits.tryHold("content", audit))
         val two = assertNotNull(limits.tryHold("content", audit))
@@ -96,7 +94,7 @@ class PoolLimitsTest {
 
     @Test
     fun `releasing twice does not mint a permit`() {
-        // `dropTail` races an eviction, a roster drop and a re-open; a double release on a plain semaphore mints a permit.
+        // `dropTail` can release twice under a race; a plain semaphore would mint a permit.
         val limits = PoolLimits(mapOf(("content" to audit) to 1))
         val hold = assertNotNull(limits.tryHold("content", audit))
         hold.release()
@@ -108,8 +106,7 @@ class PoolLimitsTest {
 
     @Test
     fun `an uncapped job's hold is releasable too, and releases nothing`() {
-        // `tryHold` answers a Hold for an uncapped job so no caller branches on whether a job is capped;
-        // the handle must be inert.
+        // An uncapped job still gets a Hold, so no caller branches on whether a job is capped.
         val limits = PoolLimits(mapOf(("content" to audit) to null))
         val hold = assertNotNull(limits.tryHold("content", audit))
         hold.release()
@@ -120,8 +117,7 @@ class PoolLimitsTest {
 
     @Test
     fun `the live pool is capped even when the config says nothing`() {
-        // A tail is released only when the roster drops the relay, so an uncapped live
-        // gate is one held socket per relay on the roster.
+        // An uncapped live gate is one held socket per relay on the roster.
         val limits =
             PoolLimits.of(
                 listOf(
@@ -143,8 +139,6 @@ class PoolLimitsTest {
 
     @Test
     fun `a refusal the caller is going to answer for itself is not work turned away`() {
-        // The live pool looks for a spare on every tail past the budget and then earns one
-        // by eviction; that look is not work turned away.
         val limits = PoolLimits(mapOf(("content" to VisitPool.POOL_LIVE) to 1))
         val held = assertNotNull(limits.tryHold("content", VisitPool.POOL_LIVE))
         repeat(10) { assertNull(limits.trySpare("content", VisitPool.POOL_LIVE)) }

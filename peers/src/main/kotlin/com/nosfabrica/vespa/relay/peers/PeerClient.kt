@@ -34,39 +34,30 @@ import okhttp3.OkHttpClient
 import java.time.Duration
 
 /**
- * How this process talks to other relays: one websocket client, one socket
- * budget, one Tor transport, one NIP-42 answer, shared by both planes.
- *
- * One object because the mirror and the monitor dial the same relays: a
- * pooled connection either opens is one the other can use without a second
- * dial, and [RelaySockets] only works because there is one pool to count.
- * A plane holds a [PeerClient] and asks it for a socket; it neither builds
- * nor closes one. The constructor's owner calls [connect] once everything is
- * registered and [close] after the planes have stopped touching it.
+ * How this process talks to other relays: one websocket client, one socket budget, one Tor
+ * transport, one NIP-42 answer, shared by both planes so [RelaySockets] has one pool to count.
+ * The owner calls [connect] once everything is registered and [close] after the planes stop.
  */
 class PeerClient(
     private val scope: CoroutineScope,
     /**
-     * Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-     * Null is the anonymous deployment, where a gated relay looks exactly
-     * like an empty one; `SyncMain` says at boot which of the two this is.
+     * Answers NIP-42 challenges from upstreams that gate reads behind AUTH. Null is the
+     * anonymous deployment, where a gated relay looks exactly like an empty one.
      */
     signer: NostrSigner? = null,
     /** `SYNC_TOR_SOCKS`: the proxy `.onion` upstreams are dialled through. Null drops `.onion` urls at discovery. */
     torSettings: TorSettings? = null,
     /** `SYNC_WIRE_LOG`: "" (errors only) / "sent" / "full". */
     wireLogMode: String = "",
-    /** How long a dial may take before it is a failure: `config.connectionTimeoutSec`. */
+    /** How long a dial may take before it is a failure. */
     connectionTimeoutSec: Long = 10,
 ) : AutoCloseable {
-    // The 120s ping surfaces half-open connections as a failed pong, which
-    // routes into quartz's reconnect path.
+    // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.
     private val okhttp =
         OkHttpClient
             .Builder()
-            // An open websocket holds a dispatcher slot for its whole life, so
-            // the budget must exceed static upstreams plus every stream's
-            // `concurrency`, or those knobs stop meaning anything.
+            // An open websocket holds a dispatcher slot for its whole life, so the budget must
+            // exceed static upstreams plus every stream's `concurrency`.
             .dispatcher(
                 Dispatcher().apply {
                     maxRequests = MAX_CONCURRENT_SOCKETS
@@ -77,9 +68,8 @@ class PeerClient(
             .build()
 
     /**
-     * Calls running against [MAX_CONCURRENT_SOCKETS], and calls queued behind
-     * it. `queued` above zero is the one direct sign that the dispatcher is
-     * the constraint. Clearnet only: the Tor dispatcher has its own budget.
+     * Calls running against [MAX_CONCURRENT_SOCKETS] and calls queued behind it; `queued` above
+     * zero is the one direct sign the dispatcher is the constraint. Clearnet only.
      */
     fun socketLoad() = SocketLoad(okhttp.dispatcher.runningCallsCount(), okhttp.dispatcher.queuedCallsCount())
 
@@ -92,34 +82,22 @@ class PeerClient(
     /** The Tor client, when there is one, and which urls it takes. */
     val tor = torSettings?.let { TorTransport(it, okhttp) }
 
-    /**
-     * The OkHttp client that can reach [url]. Exposed for the dials outside
-     * quartz's websocket path, such as the monitor's NIP-11 fetch.
-     */
+    /** The OkHttp client that can reach [url], for dials outside quartz's websocket path. */
     fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
 
-    // Per url, so a relay is dialled over the transport that can reach it.
     val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope)
 
-    // No passive NIP-66 writer here: the monitor's passes are the only writers
-    // of kind 30166, so a record's `created_at` means "we checked this".
-
     // NIP-42: an unanswered challenge looks exactly like an empty relay.
-    // Attaching the authenticator is enough.
     private val authenticator =
         signer?.let { s ->
             RelayAuthenticator(client, scope) { _, template, _ -> listOf(s.sign(template)) }
         }
 
-    /**
-     * What goes down the wire. The error half (NOTICE, CLOSED, failed sends)
-     * is always on; `sent`/`full` add outgoing commands / every message.
-     */
+    /** Wire logging. Errors (NOTICE, CLOSED, failed sends) are always on; `sent`/`full` add more. */
     private val wireLog =
         when (wireLogMode) {
             "full", "sent" -> {
-                // The sent/received lines are DEBUG; without lowering quartz's
-                // floor the switch would construct its logger and print nothing.
+                // The sent/received lines are DEBUG; without lowering the floor the switch prints nothing.
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
@@ -138,10 +116,7 @@ class PeerClient(
         client.connect()
     }
 
-    /**
-     * Say at boot whether the configured Tor proxy is answering. The probe
-     * asks our own SOCKS port, so a false answer is about this container.
-     */
+    /** Say at boot whether the configured Tor proxy is answering. */
     fun announceTor() {
         tor?.let {
             val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
@@ -152,10 +127,7 @@ class PeerClient(
         }
     }
 
-    /**
-     * Stop dialling. Called after the planes' own scopes are cancelled, so a
-     * worker mid-visit is not racing the close and counting its death as an abort.
-     */
+    /** Stop dialling. Called after the planes' own scopes are cancelled. */
     override fun close() {
         runCatching { authenticator?.destroy() }
         runCatching { client.close() }
@@ -166,7 +138,6 @@ class PeerClient(
     }
 
     companion object {
-        /** The socket budget for the whole process, and the number the health line reports against. */
         const val MAX_CONCURRENT_SOCKETS = 1024
         const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
     }

@@ -64,8 +64,7 @@ class DialGateTest {
         runBlocking {
             // Two permits each, four onions, one clearnet url: the onions over-subscribe their own gate.
             val gate = DialGate.over(concurrency = 2, tor = tor(maxSockets = 2))
-            // Only the clearnet job completes this. Under one shared gate it queues
-            // behind the onions and the timeout below is the old behaviour failing.
+            // Under one shared gate the clearnet job queues behind the onions and the timeout fires.
             val clearnetRan = CompletableDeferred<Unit>()
             val onionsSeen = AtomicInteger()
 
@@ -90,10 +89,7 @@ class DialGateTest {
             assertEquals(4, onionsSeen.get(), "every onion should still have been probed — this splits the budget, it does not drop work")
         }
 
-    /**
-     * One semaphore over both transports, so the test above is known to assert
-     * something. Half a second, because the outcome is a deadlock.
-     */
+    /** The control for the test above; half a second, because the outcome is a deadlock. */
     @Test
     fun `one gate over both transports is what deadlocks`() =
         runBlocking {
@@ -124,7 +120,7 @@ class DialGateTest {
                         gate.withPermit(clearnet) {
                             val now = inFlight.incrementAndGet()
                             peak.updateAndGet { seen -> maxOf(seen, now) }
-                            // A suspension point, so the permits are contended rather than each job running to completion.
+                            // A suspension point, so the permits are contended.
                             kotlinx.coroutines.yield()
                             inFlight.decrementAndGet()
                         }
@@ -134,10 +130,7 @@ class DialGateTest {
             assertTrue(peak.get() <= 3, "the clearnet gate let ${peak.get()} dials run against a limit of 3")
         }
 
-    /**
-     * A Tor permit has to mean a socket, not a place in the Tor dispatcher's
-     * queue, so it is sized from the dispatcher and capped by the operator's knob.
-     */
+    /** A Tor permit means a socket, so the gate is the dispatcher's width capped by the operator's knob. */
     @Test
     fun `the Tor gate is the Tor dispatcher's width, and never wider than the operators knob`() {
         DialGate.over(concurrency = 100, tor = tor(maxSockets = TorSettings.DEFAULT_MAX_SOCKETS)).let {
@@ -150,10 +143,7 @@ class DialGateTest {
         }
     }
 
-    /**
-     * At `dialConcurrency = 16` against the default 32 sockets both gates are 16,
-     * and the boot line is the only place an operator sees the split.
-     */
+    /** At equal widths the boot line is the only place an operator sees the split. */
     @Test
     fun `the boot line tells a proxied gate from an unproxied one, even at the same width`() {
         assertEquals(
@@ -184,10 +174,7 @@ class DialGateTest {
         }
     }
 
-    /**
-     * The gate asks [TorTransport.routes], the predicate that picks the OkHttp
-     * client, so the gate a url waits on and the dispatcher it lands in cannot disagree.
-     */
+    /** The gate asks [TorTransport.routes], so the gate a url waits on and its dispatcher agree. */
     @Test
     fun `SYNC_TOR_ALL puts clearnet urls on the Tor gate too`() =
         runBlocking {

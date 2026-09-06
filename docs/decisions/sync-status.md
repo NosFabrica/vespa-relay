@@ -152,3 +152,14 @@ restates the count off the rows, is what made the gap visible.
 **`RELAY_NSEC` unset is said in the boot log.** `PeerClient` attaches the
 NIP-42 responder only with a signer, so an anonymous deployment printed nothing
 and "they turn our key down" and "we never answer" were the same log.
+
+**`stages` is one list, not a total list beside a detail list.** The rows came
+off one `IngestStats.snapshot()` at one instant, and two lists invited a row
+whose `ms` and `calls` were read seconds apart. The present-tense `lockHeldBy`
+sits above the cumulative stages because it is the row that answers a stall,
+and stages are rows rather than a member per stage because a dynamic member
+name is one the glossary can never define.
+
+**The coverage card's denominator is relays a stream has touched, not relays
+it names.** A dynamic stream has no configured list, so the only honest count
+is the urls that reached the band file or a sweep cursor.

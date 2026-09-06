@@ -1,7 +1,5 @@
-// The kind bound a count against this relay has to carry, read off the
-// document the relay publishes and refused rather than guessed: an unknown
-// scope must never become an unscoped count, a partial union never a bound,
-// and an empty list never "everything".
+// The kind bound a count against this relay has to carry, read off the document the relay
+// publishes and refused rather than guessed.
 import assert from "node:assert/strict";
 import {
   mirrorScope, scopedTo, readMirrorScope,
@@ -9,8 +7,8 @@ import {
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
-// The shape `/stats.json` serves: every section wrapped in the
-// `{status, generatedAt, tookMs, data}` envelope, with the payload under `data`.
+// The shape `/stats.json` serves: every section wrapped in the `{status, generatedAt, tookMs, data}`
+// envelope.
 const doc = (mirrors) => ({
   schema: 3,
   relay: "wss://relay.example.com",
@@ -39,8 +37,7 @@ const bare = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: 
   assert.deepEqual(scopedTo({ authors: ["abc"] }, scope), { authors: ["abc"] });
   assert.equal("kinds" in scopedTo({ authors: ["abc"] }, scope), false, "no bound means no `kinds` member");
 
-  // A list beside the flag is only the union over the streams that named
-  // kinds, which is smaller than the truth.
+  // A list beside the flag is only the union over the streams that named kinds.
   assert.deepEqual(mirrorScope(doc({ allKinds: true, kinds: [0, 1] })), { kinds: null });
   ok("`allKinds` is a scope of its own, and it beats a partial list");
 }
@@ -90,8 +87,7 @@ const bare = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: 
   assert.equal(await readMirrorScope(async () => { throw new TypeError("Failed to fetch"); }), null);
   assert.equal(await readMirrorScope(async () => null), null);
 
-  // Document-relative, so a page mounted behind a path prefix reads this
-  // service's document and not the host root's; see paths.test.mjs.
+  // Document-relative, so a page mounted behind a path prefix reads this service's document.
   let asked = null;
   await readMirrorScope(async (url) => { asked = url; return { ok: true, json: async () => doc({ kinds: [1] }) }; });
   assert.equal(asked, "stats.json");

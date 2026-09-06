@@ -21,15 +21,9 @@
 package com.nosfabrica.vespa.relay.server
 
 /**
- * The absolute url of the icon this relay serves at `/favicon.ico`, or null
- * when no stranger could reach it. `RELAY_ICON` defaults to it, so a stock
- * deployment advertises the icon its tab shows; and the server compares the
- * doc's icon against it to tell "no override" from an operator's icon.
- *
- * Refused for anything but `wss://` or a `.onion`: the compose default is
- * `ws://localhost:7777`, and a plain concatenation would sign the reader's
- * own machine into a public kind 0. The origin only, whatever path the
- * websocket answers at.
+ * The absolute url of the icon this relay serves at `/favicon.ico`, or null when no stranger could
+ * reach it: only `wss://` or a `.onion` qualifies, so a `ws://localhost` default is never signed
+ * into a public kind 0. The origin only, whatever path the websocket answers at.
  */
 internal fun selfIconUrl(relayUrl: String?): String? {
     val url = relayUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null

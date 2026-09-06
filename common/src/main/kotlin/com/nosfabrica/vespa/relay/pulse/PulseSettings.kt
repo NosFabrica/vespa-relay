@@ -21,17 +21,9 @@
 package com.nosfabrica.vespa.relay.pulse
 
 /**
- * The store's slow-read threshold, in milliseconds, or null for none. Shared
- * because both processes open a store and both may serve a pulse page.
- *
- * HONOURED ONLY WHERE THE PAGE WILL SHOW IT. The slow-read ring is the one
- * place the store retains a query string, and a query string is what somebody
- * typed. An operator who set a threshold but left the client sections off
- * would be keeping that log for nobody to read — the worst of both — so this
- * says so on stderr and keeps nothing.
- *
- * A value that does not parse stops the boot rather than falling back: silently
- * keeping no log is exactly what the operator was trying to change.
+ * The store's slow-read threshold in milliseconds, or null for none. Honoured only where the
+ * page will show the client sections, since the ring retains query strings; otherwise it says so
+ * on stderr and keeps nothing. A value that does not parse stops the boot rather than falling back.
  */
 fun pulseSlowReadMs(
     env: Map<String, String>,
@@ -54,17 +46,9 @@ fun pulseSlowReadMs(
 }
 
 /**
- * The origin the pulse page's NIP-98 tokens are signed against, no trailing
- * slash.
- *
- * AN OPERATOR SETTING, NOT A REQUEST HEADER. The `u` tag is what stops a token
- * spent at this service from being spent at another, and a server that derives
- * the expected url from the `Host` the caller sent has given that up. The
- * default is the loopback address the boot line prints, which is exactly right
- * for the intended deployment — a private port reached through an SSH tunnel,
- * where the browser and the server agree — and wrong behind a reverse proxy,
- * which is why the page is told the expected url in every refusal rather than
- * left to guess it.
+ * The origin the pulse page's NIP-98 tokens are signed against, no trailing slash. An operator
+ * setting, never the request's `Host`, or the `u` tag would stop binding a token to this service.
+ * The default is the loopback address: right for an SSH tunnel, wrong behind a reverse proxy.
  */
 fun pulsePublicUrl(
     env: Map<String, String>,
@@ -73,13 +57,9 @@ fun pulsePublicUrl(
 ): String = env[key]?.trim()?.takeIf { it.isNotEmpty() }?.trimEnd('/') ?: "http://localhost:$port"
 
 /**
- * The administrators who may read the pulse document, or a boot that stops.
- *
- * FAILS CLOSED, LOUDLY. "No administrators" and "every reader is an
- * administrator" are one implementation mistake apart, and only one of them is
- * survivable for a document that quotes what people searched for. A deployment
- * that asks for this page without saying who may read it does not get an open
- * page — it does not get a boot.
+ * The administrators who may read the pulse document, or a boot that stops. "No administrators"
+ * and "everyone is an administrator" are one mistake apart, and this document quotes what
+ * people searched for.
  */
 fun pulseAdmins(
     admins: Set<String>,

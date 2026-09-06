@@ -26,10 +26,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Delete every kind-30382 signed by a service no stored 10040 names, the
- * orphan cards a by-kind 30382 sync accrues (`SWEEP_ORPHAN_SCORES_ON_START`).
- * A deletion is not a tombstone: the same stream re-downloads what this frees
- * unless its filter is narrowed too. [dryRun] reports and writes nothing.
+ * Delete every kind 30382 signed by a service no stored 10040 names (`SWEEP_ORPHAN_SCORES_ON_START`).
+ * A deletion is not a tombstone: the by-kind 30382 stream re-downloads what this frees unless its
+ * filter is narrowed too. [dryRun] reports and writes nothing.
  */
 fun launchOrphanScoreSweep(
     scope: CoroutineScope,
@@ -45,7 +44,7 @@ fun launchOrphanScoreSweep(
         var lastReport = 0L
         runCatching {
             store.sweepOrphanScores(dryRun) { done, totalServices, swept, totalScores ->
-                // The callback fires per page over millions of cards.
+                // Throttled: the callback fires per page.
                 val now = System.currentTimeMillis()
                 if (now - lastReport >= 15_000) {
                     lastReport = now

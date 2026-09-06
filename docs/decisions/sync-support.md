@@ -205,3 +205,25 @@ passes `ALL_RELAYS` and the relay's own url only, and filters before the
 newest-wins pick: taking the newest first would let a newer relay-scoped
 request mask an older `ALL_RELAYS` one, skipping a push that should happen,
 silently.
+
+**The healer exists because a tombstone is private memory.** A suppressed id is
+as durable as one disk and fixes nothing for anyone else, while a healed source
+stays healed for every mirror. A repair can only be queued because the relay
+served its own stale copy of the author's event, so the push changes the
+version a relay serves and never the distribution set; introducing an author
+to a new relay remains `dir = up`'s job. Everything expensive happens per
+relay at the end of that relay's own visit while its socket is open, yielding
+to `ServingPressure` as ingest does.
+
+**`RelayPages` reports subscription ids rather than filtering on them.** The
+walk's own subscription id is not knowable on the connection listener, and a
+page carrying another subscription's events is itself the answer to "what did
+the relay send when the walk says nothing". The listener is armed per walk
+rather than always on because it sits on the hottest path in the process:
+disarmed, the work per message is one `isEmpty`.
+
+**The manifest computes no union of kinds.** The relay's `MirrorReport` does
+that from the per-stream lists, so two places cannot disagree about it. The
+streams written are the ones this process is running, not every stream in the
+config; a stream with no `kinds` gets no `kinds` member, and `writtenAt` lets
+a reader spot a document that outlived its writer.

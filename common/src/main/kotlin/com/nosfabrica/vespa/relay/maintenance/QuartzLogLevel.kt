@@ -24,9 +24,8 @@ import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 
 /**
- * `QUARTZ_LOG_LEVEL`, quartz's own log floor; it defaults to DEBUG, a line per
- * unparseable event. Read by both processes, without installing the parse
- * audit the relay never feeds.
+ * `QUARTZ_LOG_LEVEL`, quartz's own log floor, which defaults to a DEBUG line per unparseable
+ * event. Read by both processes.
  */
 fun applyQuartzLogLevel(env: Map<String, String>) {
     env["QUARTZ_LOG_LEVEL"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let { name ->

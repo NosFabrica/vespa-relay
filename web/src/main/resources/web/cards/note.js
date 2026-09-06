@@ -1,7 +1,5 @@
-// The text family: notes, threads and chat messages (1, 11, 9, 42, 1311),
-// highlights (9802), channel metadata (40/41, a profile-shaped JSON content)
-// and the NIP-29 group record (39000, the same fields in tags, signed by the
-// host relay).
+// The text family: notes, threads and chat messages, highlights, channel metadata (40/41,
+// a profile-shaped JSON content) and the NIP-29 group record (39000).
 
 import { esc } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
@@ -42,22 +40,22 @@ function channelCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-// The NIP-29 access flags, in the order they answer "can I read, can I post,
-// can I join". The tag's presence is the value.
+// The NIP-29 access flags, in reading order. The tag's presence is the value.
 const GROUP_FLAGS = [
   ["private", "members only"], ["public", "public"],
   ["restricted", "members post"], ["open", "open to post"],
   ["closed", "invite only"], ["hidden", "hidden"],
 ];
 
-/** The access flags this group carries. A `["private"]` tag has no element 1, so this reads names, not tagOf. */
+/**
+ * The access flags this group carries. A `["private"]` tag has no element 1, so this reads names,
+ * not tagOf.
+ */
 const groupAccess = (ev) => GROUP_FLAGS.filter(([f]) => tagsOf(ev, f).length).map(([, label]) => label);
 
 /**
- * 39000 — a NIP-29 group as its host relay describes it. The byline is the
- * relay, which signs this record with its own key. The title links into the
- * `group:` search, and the id is a property because it is what a search
- * filters on and a name like "General" does not say which one.
+ * 39000 — a NIP-29 group as its host relay describes it. The title links into the `group:`
+ * search, and the id is a property because a name like "General" does not say which one.
  */
 function groupCard(ev, opts) {
   const id = tagOf(ev, "d");
@@ -77,8 +75,7 @@ function groupCard(ev, opts) {
   return shell(ev, opts, inner, props);
 }
 
-// 9, 42 and 1311 are chat messages (NIP-C7 rooms, NIP-28 channels, NIP-53
-// streams): one shape, whose room the byline and the json toggle carry.
+// 9, 42 and 1311 are chat messages (NIP-C7 rooms, NIP-28 channels, NIP-53 streams): one shape.
 register([1, 11, 9, 42, 1311], noteCard);
 register([9802], highlightCard);
 register([40, 41], channelCard);

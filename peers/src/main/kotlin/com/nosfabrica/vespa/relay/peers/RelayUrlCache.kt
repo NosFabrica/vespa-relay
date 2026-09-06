@@ -26,16 +26,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Raw tag value to the url a relay-list read makes of it, memoized per
- * distinct spelling. The parse is a pure function of the string; the onion
- * gate is a property of the deployment, so it is applied on the way out and
- * is not part of the key. Keys come from strangers' relay lists, so the map
- * is dropped whole at [maxEntries] rather than allowed to grow.
+ * Raw tag value to the url a relay-list read makes of it, memoized per distinct spelling.
+ * The onion gate is the deployment's, not the string's, so it is applied on the way out and
+ * is not part of the key. The map is dropped whole at [maxEntries].
  */
 internal class RelayUrlCache(
     private val maxEntries: Int = MAX_ENTRIES,
 ) {
-    /** One decided spelling. [url] is null when the string is not a relay url; [onion] says a deployment without Tor must still refuse it. */
+    /** One decided spelling. [url] is null when the string is not a relay url. */
     private class Decided(
         val url: NormalizedRelayUrl?,
         val onion: Boolean,
@@ -43,20 +41,19 @@ internal class RelayUrlCache(
 
     private val cache = ConcurrentHashMap<String, Decided>()
 
-    /** Distinct spellings held. Diagnostics and tests only. */
+    /** Distinct spellings held. */
     fun size(): Int = cache.size
 
     fun clear() = cache.clear()
 
-    /** [raw] as a dialable url, or null. Identical to computing it every time. */
+    /** [raw] as a dialable url, or null. */
     fun normalize(
         raw: String,
         allowOnion: Boolean,
     ): NormalizedRelayUrl? {
         val decided =
             cache[raw] ?: decide(raw).also {
-                // Racing writers compute the same value, so whichever lands is
-                // right; the size test is why this is not putIfAbsent.
+                // Racing writers compute the same value; the size test is why this is not putIfAbsent.
                 if (cache.size >= maxEntries) cache.clear()
                 cache[raw] = it
             }
@@ -64,7 +61,7 @@ internal class RelayUrlCache(
         return decided.url
     }
 
-    /** The rules, once per distinct spelling; everything here is a function of [raw] alone. */
+    /** Everything here is a function of [raw] alone. */
     private fun decide(raw: String): Decided {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return REFUSED
@@ -76,13 +73,12 @@ internal class RelayUrlCache(
     }
 
     companion object {
-        /** Distinct spellings held before the map is dropped whole. */
         const val MAX_ENTRIES = 65_536
 
-        /** Not a relay url, whatever the transport; cached like any other answer. */
+        /** Not a relay url; cached like any other answer. */
         private val REFUSED = Decided(null, false)
 
-        /** The process-wide cache: the sweep and the fast lane read the same relay lists minutes apart. */
+        /** The process-wide cache. */
         val Default = RelayUrlCache()
     }
 }

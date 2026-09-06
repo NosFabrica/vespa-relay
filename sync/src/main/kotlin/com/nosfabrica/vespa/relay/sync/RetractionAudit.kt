@@ -41,12 +41,9 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `deleteMissing` comparison, run in a retracting ask's audit slot. The
- * upstream is the source of truth for the kinds it owns, so the audit goes
- * both ways: download what it has and we lack, delete what we hold and it no
- * longer serves. The catch-up has already paged the ask, so a failed
- * reconcile decides nothing; the download never depends on the comparison
- * and the comparison is never inferred from the download.
+ * The `deleteMissing` comparison, run in a retracting ask's audit slot: download what the
+ * upstream has and we lack, delete what we hold and it no longer serves. The catch-up has
+ * already paged the ask, so a failed reconcile decides nothing.
  */
 internal class RetractionAudit(
     private val client: NostrClient,
@@ -55,12 +52,12 @@ internal class RetractionAudit(
     private val ingest: IngestPipeline,
     private val refusedIds: RefusedIds,
 ) {
-    /** Records dropped because their owning upstream stopped serving them; the one counter that goes down. */
+    /** Records dropped because their owning upstream stopped serving them. */
     val deleted = AtomicLong()
 
     /**
-     * The ask's owned-kind projection: the one filter the audit clock, the
-     * reconcile and the deletes all run on. Null when the ask carries no owned kind.
+     * The ask's owned-kind projection, the one filter the audit clock, the reconcile and the
+     * deletes all run on. Null when the ask carries no owned kind.
      */
     private fun ownedAskOf(
         stream: SyncStream,
@@ -72,9 +69,8 @@ internal class RetractionAudit(
     }
 
     /**
-     * When this ask's comparison next comes due, read-only. On the owned
-     * projection, because that is the filter the reconcile stamps. An ask
-     * with no owned kind is [AuditClock.NOT_SCHEDULED], not due.
+     * When this ask's comparison next comes due, read-only. An ask with no owned kind is
+     * [AuditClock.NOT_SCHEDULED], not due.
      */
     fun auditClock(
         stream: SyncStream,
@@ -98,11 +94,9 @@ internal class RetractionAudit(
     }
 
     /**
-     * Reconcile one ask's owned kinds both ways and act on the difference.
-     * The ids are read for this ask alone; kinds outside
-     * [SyncStream.ownedKinds] are never touched. [sharedAuthors] are found at
-     * more than one relay, so their asks are never judged: one relay's empty
-     * answer does not retract what a sibling still serves.
+     * Reconcile one ask's owned kinds both ways and act on the difference. [sharedAuthors] are
+     * found at more than one relay, so their asks are never judged: one relay's empty answer
+     * does not retract what a sibling still serves.
      */
     suspend fun reconcileAndDelete(
         stream: SyncStream,
@@ -113,8 +107,7 @@ internal class RetractionAudit(
         onEvent: suspend (Event) -> Unit = {},
     ) {
         val ownedAsk = ownedAskOf(stream, ask) ?: return
-        // Enforced where the deletion happens, not only in the loader: an
-        // unbound ask would judge every provider against this one relay.
+        // Enforced here, not only in the loader: an unbound ask would judge every provider at once.
         val bound = ask.authors
         if (bound.isNullOrEmpty()) {
             System.err.println(
@@ -133,7 +126,7 @@ internal class RetractionAudit(
         // Stamped before the comparison: the band claims coverage through this moment.
         val startedAt = nowSeconds()
 
-        // A completed reconcile is the whole licence to delete; quartz throws rather than falling back.
+        // A completed reconcile is the whole licence to delete.
         val diff =
             try {
                 client.negentropyReconcileIds(url, ownedAsk, mine, idleTimeoutMs = NEG_IDLE_MS)
@@ -181,8 +174,7 @@ internal class RetractionAudit(
     }
 
     /**
-     * The download half: fetch what the provider has that we lack and ingest
-     * it. fetchAll, not fetchAllPages: an id set is not a time range. Twice
+     * The download half. fetchAll, not fetchAllPages: an id set is not a time range. Twice
      * refused ids are dropped before any REQ is sent.
      */
     private suspend fun mirrorNeeded(
@@ -202,7 +194,7 @@ internal class RetractionAudit(
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 onEvent(event)
-                // Matched against the owned ask, so a relay answering a by-id REQ with extras cannot widen a trusted ingest.
+                // Matched against the owned ask, so extras in a by-id answer cannot widen a trusted ingest.
                 if (ownedAsk.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
@@ -225,7 +217,7 @@ internal class RetractionAudit(
         mine: Int,
         diff: NegentropyIdDiff,
     ) {
-        // No size guard: a mass retraction is precisely the case that matters, and the completed reconcile is what makes it trustworthy.
+        // No size guard: a mass retraction is precisely the case that matters.
         val share = diff.haveIds.size.toDouble() / mine
         if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
             System.err.println(
@@ -234,7 +226,7 @@ internal class RetractionAudit(
             )
             return
         }
-        // Deleted by id and inside the ask, so a delete can never reach past what this reconcile compared.
+        // By id and inside the ask, so a delete never reaches past what this reconcile compared.
         for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
             storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_DELETE, StoreCalls.ids(chunk.size)) {
                 store.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))

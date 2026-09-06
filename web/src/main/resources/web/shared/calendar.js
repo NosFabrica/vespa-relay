@@ -1,19 +1,13 @@
-// A month as arithmetic: the half of the date picker with no DOM in it, so
-// web/src/test/js/calendar.test.mjs can check the traps (a 23- or 25-hour
-// local day, February's four lengths, a locale's first weekday). Everything
-// here is a pure function of its arguments and the locale; searchfield.js
-// turns what comes back into buttons. Dates in and out are local and at
-// midnight, matching what query.js's dayBound means by a day.
+// A month as arithmetic, the half of the date picker with no DOM in it, so its traps (a 23-
+// or 25-hour local day, February's lengths, a locale's first weekday) are testable. Dates in
+// and out are local and at midnight, matching what query.js's dayBound means by a day.
 
 import { ymd } from "./query.js";
 
 /** The same day at 00:00 local, the only shape the rest of this file passes. */
 export const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-/**
- * `n` days later, by local date fields rather than milliseconds: adding
- * 86,400,000 lands an hour out on the two days a year the clocks move.
- */
+/** `n` days later, by local date fields rather than milliseconds, so the clock-change days land right. */
 export const shiftDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
 /** The 1st of the month `n` months away, the grid's own unit of position. */
@@ -22,8 +16,6 @@ export const shiftMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n,
 export const sameMonth = (a, b) => !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 export const sameDay = (a, b) => sameMonth(a, b) && a.getDate() === b.getDate();
 
-// The locale's formatters, built once: `toLocaleDateString` builds a fresh one
-// on every call, and a calendar render makes dozens.
 const fmt = (opts) => new Intl.DateTimeFormat(undefined, opts);
 const DAY_FMT = fmt({ day: "numeric", month: "short", year: "numeric" });
 const MONTH_FMT = fmt({ month: "long", year: "numeric" });
@@ -34,9 +26,8 @@ export const dayLabel = (d) => DAY_FMT.format(d);
 export const monthLabel = (d) => MONTH_FMT.format(d);
 
 /**
- * Which weekday a week starts on, 0 = Sunday: the locale's own answer where
- * the browser carries `Intl.Locale.weekInfo`, else ISO Monday (Firefox, and
- * Node, which has no `navigator`).
+ * Which weekday a week starts on, 0 = Sunday: the locale's `weekInfo` where the browser has it,
+ * else ISO Monday.
  */
 export function weekStart() {
   try {
@@ -50,10 +41,8 @@ export function weekStart() {
 export const WEEK_START = weekStart();
 
 /**
- * The seven column headings in the order this locale's week runs. 4 January
- * 2026 is a Sunday, so `4 + start + i` walks one week from whichever day
- * starts it. Narrow for the heading and long for the hover, since "T" is two
- * different days.
+ * The seven column headings in this locale's week order, narrow for the heading and long for
+ * the hover. 4 January 2026 is a Sunday.
  */
 export const dowNames = (start = WEEK_START) =>
   Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 4 + start + i)).map((d) => ({
@@ -64,12 +53,9 @@ export const dowNames = (start = WEEK_START) =>
 export const DOW = dowNames();
 
 /**
- * One month as the cells a seven-column grid draws:
- * `{ label, lead, days: [{ at, value, today, ahead }] }`. `lead` is the blanks
- * before the 1st; `value` is the `YYYY-MM-DD` the token is written as, so the
- * renderer cannot disagree with query.js about which day a cell means.
- * `today` is passed in so a test can ask about a day other than the one it
- * runs on.
+ * One month as the cells a seven-column grid draws: `{ label, lead, days: [{ at, value, today,
+ * ahead }] }`. `lead` is the blanks before the 1st; `value` is the `YYYY-MM-DD` the token is
+ * written as. `today` is passed in so a test can pick its day.
  */
 export function monthGrid(month, today, start = WEEK_START) {
   const y = month.getFullYear();
@@ -86,27 +72,20 @@ export function monthGrid(month, today, start = WEEK_START) {
   };
 }
 
-/**
- * The month a half-typed date names, or null while it names none. The day
- * half is not read (`2026-01-3` is not a day yet), nor is a partial year, or
- * the grid would lurch through the year 2 on the way to 2026.
- */
+/** The month a half-typed date names, or null while it names none; a partial year or day is not read. */
 export function typedMonth(partial) {
   const m = /^(\d{4})-(\d{2})/.exec(String(partial || ""));
   if (!m) return null;
   const [y, mo] = m.slice(1).map(Number);
   if (mo < 1 || mo > 12) return null;
   const at = new Date(y, mo - 1, 1);
-  // The constructor reads `26` as 1926 (query.js's dayBound says it in full),
-  // so a year that did not survive it is not a year.
+  // The constructor reads `26` as 1926, so a year that did not survive it is not a year.
   return at.getFullYear() === y ? at : null;
 }
 
 /**
- * The shortcuts under the grid, as days rather than durations: a `since` is
- * the start of a window, an `until` a cutoff. Each is written into the box as
- * an absolute day, since a saved url reading `since:7d` would mean a different
- * search every morning.
+ * The shortcuts under the grid, written into the box as absolute days: a saved url reading
+ * `since:7d` would mean a different search every morning.
  */
 const QUICK = {
   since: [["Today", 0], ["Last 7 days", -6], ["Last 30 days", -29], ["Last 90 days", -89]],

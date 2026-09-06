@@ -32,30 +32,21 @@ import java.time.YearMonth
 import java.time.ZoneOffset
 
 /**
- * The dashboard's aggregation queries: the YQL this relay asks Vespa for its
- * own corpus statistics, and the readers for what comes back. Pure string
- * building and pure tree walking, so both halves are testable without an
- * engine.
- *
- * Deliberately not built on the store's `EventYql`: its builder is private and
- * its pipelines fixed, so every new chart would cost a store release and a pin
- * bump. The proven shapes are copied verbatim; the duplication is the WHERE
- * clause and nothing else. [UNRANKED] and [params] are the two settings that
- * yield a plausible wrong number rather than an error when missing.
+ * The dashboard's aggregation queries: the YQL this relay asks Vespa for its own corpus
+ * statistics, and the readers for what comes back, both testable without an engine. [UNRANKED]
+ * and [params] are the two settings that yield a plausible wrong number rather than an error.
  */
 internal object StatsYql {
-    /** The rank profile every aggregation uses: a recency profile's match phase caps the match set and under-counts. */
+    /** The rank profile every aggregation uses: a recency profile's match phase caps the match set. */
     const val UNRANKED = "unranked"
 
     /**
-     * Vespa's "no ceiling" for the two grouping limits sent per query. Without
-     * them a pipeline returns `grouping.defaultMaxGroups` groups and no error.
-     * The third, `grouping.globalMaxGroups`, is set to -1 in the application
-     * package's default query profile and cannot be sent per request.
+     * Vespa's "no ceiling" for the grouping limits sent per query; without them a pipeline returns
+     * a default number of groups and no error. `grouping.globalMaxGroups` lives in the query profile.
      */
     const val UNLIMITED_GROUPS = "-1"
 
-    /** The query parameters every aggregation below carries. See [UNLIMITED_GROUPS]. */
+    /** The query parameters every aggregation below carries. */
     val params: Map<String, String> =
         mapOf(
             "grouping.defaultMaxGroups" to UNLIMITED_GROUPS,
@@ -77,24 +68,17 @@ internal object StatsYql {
     fun spanBy(field: String) = "all(group($field) each(output(min(created_at), max(created_at))))"
 
     /**
-     * Distinct authors per [field] value. Answers in exactly the shape of
-     * [countsBy], because Vespa collapses the inner list's count onto the outer
-     * group; nothing downstream can tell the two apart.
+     * Distinct authors per [field] value. Answers in exactly the shape of [countsBy], because Vespa
+     * collapses the inner list's count onto the outer group; nothing downstream can tell them apart.
      */
     fun distinctAuthorsBy(field: String) = "all(group($field) each(all(group(pubkey) output(count()))))"
 
-    /**
-     * The UTC calendar day of `created_at`. The `timezone` parameter is left
-     * unset so the day boundary does not follow the container's clock. The
-     * value is not ISO-8601; every reader goes through [isoDay].
-     */
+    /** The UTC calendar day of `created_at`. The value is not ISO-8601; every reader goes through [isoDay]. */
     const val DAY = "time.date(created_at)"
 
     /**
-     * Vespa's `time.date` value as a sortable ISO-8601 date: `time.date` does
-     * not zero-pad, so its values sort as text only intermittently. Null for
-     * anything that is not `Y-M-D`, so a changed format drops the point rather
-     * than mis-ordering an axis.
+     * Vespa's `time.date` value as a sortable ISO-8601 date; `time.date` does not zero-pad. Null for
+     * anything that is not `Y-M-D`, so a changed format drops the point rather than mis-ordering an axis.
      */
     fun isoDay(value: String): String? {
         val parts = value.split('-')
@@ -110,13 +94,12 @@ internal object StatsYql {
 
     private const val WEEK_SECONDS = 604_800L
 
-    /** Epoch second 0 back to the preceding Monday, 1969-12-29. See [WEEK]. */
+    /** Epoch second 0 back to the preceding Monday. */
     private const val WEEK_SHIFT = 259_200L
 
     /**
-     * Monday-aligned 7-day buckets, as one integer. Epoch second 0 is a
-     * Thursday, so the shift is what puts the boundary on a Monday; shifting
-     * backward keeps every bucket index non-negative.
+     * Monday-aligned 7-day buckets, as one integer. Epoch second 0 is a Thursday, so the shift puts
+     * the boundary on a Monday; shifting backward keeps every bucket index non-negative.
      */
     const val WEEK = "(created_at + $WEEK_SHIFT) / $WEEK_SECONDS"
 
@@ -132,11 +115,7 @@ internal object StatsYql {
             .toString()
     }
 
-    /**
-     * Calendar months as one sortable integer, `year * 12 + month`, so the
-     * response keeps the flat one-leaf-per-bucket shape of every other series.
-     * [isoMonth] is the only thing that has to know the encoding.
-     */
+    /** Calendar months as one sortable integer, `year * 12 + month`; [isoMonth] alone knows the encoding. */
     const val MONTH = "time.year(created_at) * 12 + time.monthofyear(created_at)"
 
     /** A [MONTH] bucket as `YYYY-MM`; null if the value is not a month index. */
@@ -149,10 +128,7 @@ internal object StatsYql {
         return "%04d-%02d".format(year, month)
     }
 
-    /**
-     * One calendar year of a monthly series: its months, as [isoMonth] would
-     * label them, and the window that asks for exactly those months.
-     */
+    /** One calendar year of a monthly series: its months as [isoMonth] labels them, and their window. */
     data class MonthSlice(
         val year: Int,
         val months: List<String>,
@@ -161,14 +137,9 @@ internal object StatsYql {
     )
 
     /**
-     * The monthly series from [start] to now, cut into one slice per calendar
-     * year, one query's worth each.
-     *
-     * A [MONTH] bucket must fall entirely inside one slice: distinct authors
-     * do not sum across a split month. Years divide months exactly, so merging
-     * slices is a union of disjoint keys. The cut bounds any one query to
-     * twelve months of pubkey sets however far back the anchor sits; only the
-     * number of queries grows. Empty when [start] is in the future.
+     * The monthly series from [start] to now, one slice per calendar year. A [MONTH] bucket must
+     * fall entirely inside one slice, because distinct authors do not sum across a split month.
+     * Empty when [start] is in the future.
      */
     fun monthSlicesFrom(
         start: YearMonth,
@@ -184,28 +155,21 @@ internal object StatsYql {
                     year = year,
                     months = months.map { it.toString() },
                     since = startOfMonth(months.first()),
-                    // Clipped to now, so the current slice collects no
-                    // future-dated spam.
+                    // Clipped to now, so the current slice collects no future-dated spam.
                     until = minOf(endOfMonth(months.last()), nowSeconds),
                 )
             }
     }
 
-    /**
-     * The first instant of [month] in UTC. An exact boundary, because a window
-     * opening mid-month still returns that month's bucket, short.
-     */
+    /** The first instant of [month] in UTC; a window opening mid-month returns that month's bucket short. */
     fun startOfMonth(month: YearMonth): Long = month.atDay(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond()
 
     /** The last instant of [month] in UTC; [window] is inclusive at both ends. */
     fun endOfMonth(month: YearMonth): Long = startOfMonth(month.plusMonths(1)) - 1
 
     /**
-     * The derived `<letter>:<value>` tag pairs, the only tag shape a grouping
-     * can address. Grouping it emits every pair on every matched document, so
-     * it is only affordable behind a selective `kind` filter whose values
-     * repeat (NIP-65 relay lists). Single-letter names only, cased; a tag's
-     * third element is unreachable.
+     * The derived `<letter>:<value>` tag pairs, the only tag shape a grouping can address. Grouping
+     * it emits every pair on every matched document, so it is only affordable behind a selective `kind`.
      */
     const val TAG = "tag_index"
 
@@ -217,7 +181,7 @@ internal object StatsYql {
 
     // ---- the query ----------------------------------------------------------
 
-    /** One complete aggregation. `limit 0` and no `order by`: attribute sorting trips the match phase [UNRANKED] avoids. */
+    /** One complete aggregation. No `order by`: attribute sorting trips the match phase [UNRANKED] avoids. */
     fun query(
         pipeline: String,
         where: String = "true",
@@ -227,25 +191,18 @@ internal object StatsYql {
     /** The stored events, every aggregation here except the trust one. */
     const val EVENTS = "event"
 
-    /**
-     * The trust projection's parent documents, one per scored pubkey. A
-     * second document type, counted only: the scores are mapped tensors a
-     * grouping cannot take apart.
-     */
+    /** The trust projection's parent documents, one per scored pubkey. Counted only: the scores are tensors. */
     const val REPUTATION = "reputation"
 
     /**
-     * A bare aggregate with no grouping level, `all(output(max(created_at)))`,
-     * fails with HTTP 500 and a null-pointer message that reads like an engine
-     * bug; `count()` at that level works. Wrap anything else in a
-     * `group(...) each(...)`.
+     * A bare aggregate with no grouping level, `all(output(max(created_at)))`, fails with HTTP 500;
+     * only `count()` works at that level. Wrap anything else in a `group(...) each(...)`.
      */
     const val NO_BARE_AGGREGATES = "group(...) each(output(...)) — see NO_BARE_AGGREGATES"
 
     /**
-     * `created_at` within [since]..[until], inclusive. The upper bound
-     * matters: `created_at` is author-signed, and one spam event dated 2100
-     * opens a bucket decades out and squashes every real bar.
+     * `created_at` within [since]..[until], inclusive. The upper bound matters: `created_at` is
+     * author-signed, and one far-future spam event opens a bucket that squashes every real bar.
      */
     fun window(
         since: Long,
@@ -259,10 +216,10 @@ internal object StatsYql {
         until: Long,
     ) = "kind = $kind and ${window(since, until)}"
 
-    /** Everything signed no later than [until]: what makes "the newest event" a freshness number rather than the worst-dated spam. */
+    /** Everything signed no later than [until], so "the newest event" is not the worst-dated spam. */
     fun upTo(until: Long) = "created_at <= $until"
 
-    /** Events signed for a time that has not happened: clock skew and spam, counted rather than hidden. */
+    /** Events signed for a time that has not happened: clock skew and spam. */
     fun after(instant: Long) = "created_at > $instant"
 
     /** One kind, bounded to the past. */
@@ -274,16 +231,15 @@ internal object StatsYql {
     // ---- readers ------------------------------------------------------------
 
     /**
-     * Every `group:` node under the shallowest group list in [root]. A search
-     * rather than a fixed path: the `group:root:N` wrapper's depth has changed
-     * between Vespa versions.
+     * Every `group:` node under the shallowest group list in [root]. A search rather than a fixed
+     * path: the `group:root:N` wrapper's depth has changed between Vespa versions.
      */
     fun topGroups(root: JsonElement): List<JsonObject> = shallowestGroups(listOf(root))
 
     /** Breadth-first to the first `grouplist:` at or below [from], and its `group:` children. */
     private fun shallowestGroups(from: List<JsonElement>): List<JsonObject> {
         var frontier = from
-        // The deepest pipeline here nests twice; ten levels is "lost".
+        // The deepest pipeline here nests twice; ten levels is lost.
         repeat(10) {
             val lists = frontier.filterIsInstance<JsonObject>().filter { it.idOf().startsWith("grouplist:") }
             if (lists.isNotEmpty()) {
@@ -298,9 +254,8 @@ internal object StatsYql {
     }
 
     /**
-     * A two-level pipeline: [outer] values, each carrying its own [inner]
-     * breakdown, in one round trip. The inner list keeps its `each()`, so it
-     * does not collapse like [distinctAuthorsBy]'s; read it with [childGroups].
+     * A two-level pipeline: [outer] values, each carrying its own [inner] breakdown. The inner list
+     * keeps its `each()`, so it does not collapse like [distinctAuthorsBy]'s; read it with [childGroups].
      */
     fun nested(
         outer: String,
@@ -325,10 +280,8 @@ internal object StatsYql {
             ?.longOrNull
 
     /**
-     * The `count()` a [distinctAuthorsBy] group carries. Vespa collapses it
-     * onto the outer group's own `fields`; the nested-list walk is the fallback
-     * for an engine that stops collapsing, and cannot read the wrong number
-     * because in the nested shape the outer group carries no `count()`.
+     * The `count()` a [distinctAuthorsBy] group carries. Vespa collapses it onto the outer group's
+     * own `fields`; the nested-list walk is the fallback for an engine that stops collapsing.
      */
     fun distinctCountOf(group: JsonObject): Long? {
         aggOf(group, "count()")?.let { return it }

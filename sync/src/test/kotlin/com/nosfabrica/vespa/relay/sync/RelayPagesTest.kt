@@ -30,10 +30,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The sample an abort renders: it says which part of the ask the page failed,
- * and an idle sampler claims nothing.
- */
+/** The sample an abort renders: which part of the ask the page failed, and nothing from an idle sampler. */
 class RelayPagesTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
     private val other = RelayUrlNormalizer.normalize("wss://other.example")
@@ -51,7 +48,7 @@ class RelayPagesTest {
 
     @Test
     fun `a page of the wrong kind is named as the wrong kind`() {
-        // The page matches nothing, so the walk ends UNPAGEABLE; the sentence tells an off-kind page from a cursor fault.
+        // The sentence tells an off-kind page from a cursor fault.
         val s = sample(kind1Below)
         repeat(3) { s.add("sub1", kind = 7, createdAt = anchor - it) }
         val said = assertNotNull(s.render(downloaded = 0))
@@ -73,7 +70,7 @@ class RelayPagesTest {
 
     @Test
     fun `a page that matches the ask perfectly says exactly that`() {
-        // A page that matched everything, which quartz still counted as nothing, is our side of the walk.
+        // A page that matched everything and still counted as nothing is our side of the walk.
         val s = sample(Filter(kinds = listOf(1), since = anchor - 100, until = anchor))
         s.add("sub1", kind = 1, createdAt = anchor - 10)
         val said = assertNotNull(s.render(downloaded = 0))
@@ -84,7 +81,7 @@ class RelayPagesTest {
 
     @Test
     fun `the same page under a walk that DID download says the ordinary thing`() {
-        // The sharp reading is only true at zero; the live probe renders on a walk that downloaded.
+        // The sharp reading is only true at zero downloaded.
         val s = sample(kind1Below)
         s.add("sub1", kind = 1, createdAt = anchor - 10)
         val said = assertNotNull(s.render(downloaded = 158))
@@ -95,7 +92,7 @@ class RelayPagesTest {
 
     @Test
     fun `the subscriptions are reported, because a page carrying somebody else's is its own finding`() {
-        // The walk's own subscription id is not knowable from a connection listener, so ids are printed, not filtered on.
+        // A connection listener cannot know the walk's own subscription id, so ids are printed, not filtered.
         val s = sample(kind1Below)
         s.add("walk", kind = 1, createdAt = anchor - 1)
         s.add("tail", kind = 1, createdAt = anchor - 2)
@@ -107,13 +104,11 @@ class RelayPagesTest {
 
     @Test
     fun `nothing arriving is not a finding and says nothing at all`() {
-        // A socket that carried nothing is not evidence about the relay.
         assertNull(sample(Filter(kinds = listOf(1))).render(downloaded = 0))
     }
 
     @Test
     fun `the counts are over every event, not over the handful kept for display`() {
-        // The rows are a sample; the counts are not.
         val s = sample(kind1Below)
         repeat(5) { s.add("sub1", kind = 1, createdAt = anchor - it) }
         repeat(45) { s.add("sub1", kind = 7, createdAt = anchor - 100 - it) }
@@ -137,13 +132,11 @@ class RelayPagesTest {
         )
     }
 
-    // ------------------------------------------------------------------------
     // The slot.
-    // ------------------------------------------------------------------------
 
     @Test
     fun `one walk holds a relay's slot at a time, and the loser reports nothing`() {
-        // Several streams visit one relay over one socket; a second sampler would collect the first walk's events.
+        // Several streams share one socket; a second sampler would collect the first walk's events.
         val pages = pages()
         val first = assertNotNull(pages.arm(url, kind1Below))
         assertNull(pages.arm(url, kind1Below), "the relay's slot is taken")
@@ -155,7 +148,6 @@ class RelayPagesTest {
 
     @Test
     fun `freeing a slot a later walk already took does not steal it`() {
-        // The identity check in `free`: a slow walk must not drop a slot somebody else holds.
         val pages = pages()
         val stale = assertNotNull(pages.arm(url, kind1Below))
         pages.free(stale)

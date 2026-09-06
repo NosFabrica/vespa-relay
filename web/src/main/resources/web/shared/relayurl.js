@@ -1,13 +1,12 @@
-// A relay url as somebody wrote it, reduced to the relay it means, or null for
-// one this page could not dial anyway: a non-ws scheme, a loopback or private
-// host (the author's machine, not the reader's), or `ws://` from an https page.
-// observer_stats.html keeps its own inline copy on purpose; the two must agree.
+// A relay url as somebody wrote it, reduced to the relay it means, or null for one this page
+// could not dial: a non-ws scheme, a loopback or private host, or `ws://` from an https
+// page. observer_stats.html keeps its own inline copy; the two must agree.
 export function normalizeRelay(raw) {
   if (!raw) return null;
   const t = String(raw).trim();
   if (!t || /\s/.test(t)) return null;
-  // A foreign scheme is refused before the fallback below: `wss://` prepended
-  // to `https://x.com` parses, with host "https", and passes every later check.
+  // A foreign scheme is refused before the fallback: `wss://` prepended to `https://x.com`
+  // parses with host "https" and passes every later check.
   if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^wss?:\/\//i.test(t)) return null;
   let u;
   try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch (e) { return null; }
@@ -15,17 +14,12 @@ export function normalizeRelay(raw) {
   if (location.protocol === "https:" && u.protocol === "ws:") return null;
   if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[::1\]|0\.0\.0\.0)/i.test(u.hostname) ||
       /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return null;
-  // The URL parser already lowercased scheme and host. A bare "/" path is the
-  // same relay as no path at all.
+  // A bare "/" path is the same relay as no path at all.
   const path = u.pathname === "/" ? "" : u.pathname.replace(/\/+$/, "");
   return `${u.protocol}//${u.host}${path}`;
 }
 
-/**
- * Why [normalizeRelay] refused this one, in words a person can act on; null
- * when it did not refuse. Only the field the reader types into has a human
- * behind it; urls out of somebody else's tags are dropped silently.
- */
+/** Why [normalizeRelay] refused this one, in words a person can act on; null when it did not. */
 export function whyNotDialable(raw) {
   const t = String(raw || "").trim();
   if (!t) return "Type the address of a relay you use, like wss://relay.damus.io";

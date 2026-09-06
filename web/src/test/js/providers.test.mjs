@@ -1,6 +1,5 @@
-// Whose word a reader took: the kind-10040 parse and the caching rule. A
-// bare `30392` tag (no `:` dimension) is a delegation too; a parser that
-// takes only the NIP-85 shape resolves list delegations to nothing, silently.
+// Whose word a reader took: the kind-10040 parse and the caching rule. A bare `30392` tag (no
+// `:` dimension) is a delegation too.
 import assert from 'assert';
 
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
@@ -27,7 +26,7 @@ const RANKER = "d6e47f060bed6fd8c3ec272edc56aacb9eef853d024cd5087cfbd30c329a9cb1
 const LISTER = "8e901369d45081cf05fe17ba802441dd731f73e000149c333daf4880a58e5fb1";
 const READER = "f8ff11c7a7d3478355d3b4d174e5a473797a906ea4aa61aa9b6bc0652c1ea17a";
 
-// A real Map off staging, tag for tag.
+// A Map in both shapes, tag for tag.
 const MAP = {
   id: "a".repeat(64), pubkey: READER, kind: 10040, created_at: 1, content: "",
   tags: [
@@ -54,7 +53,7 @@ const MAP = {
   assert.deepStrictEqual(publishersOf(d, 30393), [], "a kind the Map never names delegates nobody");
 }
 
-// Reading only the first publisher is the mistake TrustNotice.kt records on the serving side.
+// Every publisher, not the first.
 {
   const second = "b".repeat(64);
   const d = delegationsOf({ tags: [["30382:rank", RANKER, ""], ["30382:rank", second, ""]] });
@@ -74,8 +73,7 @@ const MAP = {
   assert.deepStrictEqual(delegationsOf({}).size, 0);
 }
 
-// An absence may be cached only when the relay answered; cached off a dropped
-// read, "this reader delegates nobody" is permanent for the session.
+// An absence may be cached only when the relay answered.
 answer = ([type, id], ws) => {
   if (type !== "REQ") return;
   ws.deliver(["EVENT", id, MAP]);
@@ -105,8 +103,7 @@ forgetProviders();
     "…so the next attempt still asks — caching the gap is the poisoning bug");
 }
 
-// Dedupe the read, not just the answer: the provenance lookup and the score
-// chips both ask off one render, the second while the first is on the wire.
+// Dedupe the read, not just the answer: two callers ask off one render.
 forgetProviders();
 {
   let deliver = null;

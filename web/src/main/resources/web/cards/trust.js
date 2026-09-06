@@ -1,8 +1,5 @@
-// The Tapestry Trusted List family, 30392-30395: a curated membership,
-// computed under one point of view and published as an event. A provenance
-// pill on a spliced result opens one of these, so the card has to explain
-// the reason the relay just gave. Four kinds, one renderer: only the member
-// tag changes, and the kind decides which to read.
+// The Tapestry Trusted List family, 30392-30395: a membership computed under one point
+// of view. One renderer for four kinds; the kind decides which tag holds the members.
 
 import { esc, titleOf } from "../shared/format.js";
 import { shortAddr, shortNote } from "../shared/nip19.js";
@@ -11,40 +8,26 @@ import {
   noteHref, addrHref, tagOf, tagsOf, plural,
 } from "./base.js";
 
-/**
- * Which tag holds the membership, per kind. Keyed by kind rather than sniffed
- * from the tags: a 30393 may carry `p` tags (its `observer`) that are not members.
- */
+/** Keyed by kind, never sniffed: a 30393 carries `p` tags (its `observer`) that are not members. */
 const MEMBER_TAG = { 30392: "p", 30393: "e", 30394: "a", 30395: "i" };
 
-/** What one member is called, in the vocabulary of the kind that holds it. */
+/** What one member is called, per kind. */
 const MEMBER_NOUN = { 30392: "member", 30393: "event", 30394: "article", 30395: "identifier" };
 
-/**
- * The membership. 30392 goes through `peopleOf` so the faces drawn and the
- * profiles `gridPeople` fetches are the same deduped, hex-only set.
- */
+/** The membership; 30392 goes through `peopleOf` so the faces and the fetched profiles are one set. */
 const membersOf = (ev) =>
   ev.kind === 30392 ? peopleOf(ev) : tagsOf(ev, MEMBER_TAG[ev.kind] || "p").map((t) => t[1]).filter(Boolean);
 
-/**
- * The facts a list is, as the props table: `metric` names the computation,
- * `observer` the point of view, `min-rank` and `cutoff` where it drew the
- * line, `rigor` how hard it looked. None is searchable (quartz indexes a
- * list's `title` only), which is why the card states them.
- */
+/** The tags a list states in its props table; none of them is searchable. */
 const FACTS = ["metric", "observer", "source-tag", "min-rank", "cutoff", "rigor"];
 
-/**
- * A member score, when the publisher assigned one: `["p", <key>, <hint>, <score>]`.
- * A 0..100 percentage, as quartz reads it; anything outside is unscored, not clamped.
- */
+/** The score at index 3 of a member tag; outside 0..100 it is unscored, not clamped. */
 const scoreOf = (tag) => {
   const n = Number.parseInt(tag[3], 10);
   return Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
 };
 
-/** The non-pubkey members, one link per row: an id, an address, an external identifier. */
+/** The non-pubkey members, one link per row. */
 function memberRows(ev, opts) {
   const tags = tagsOf(ev, MEMBER_TAG[ev.kind]).filter((t) => t[1]);
   const cap = opts && opts.full ? 40 : 8;
@@ -65,10 +48,7 @@ function memberRows(ev, opts) {
   return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">+${more.toLocaleString()} more</li>` : ""}</ul>`;
 }
 
-/**
- * 30392-30395 — one Trusted List. The title leads, being the only thing this
- * relay can search for; an untitled list gets its `d` instead of a blank heading.
- */
+/** 30392-30395 — one Trusted List. An untitled list is headed by its `d`. */
 function trustedListCard(ev, opts) {
   const members = membersOf(ev);
   const noun = MEMBER_NOUN[ev.kind] || "member";
@@ -82,11 +62,9 @@ function trustedListCard(ev, opts) {
 }
 
 register([30392, 30393, 30394, 30395], trustedListCard);
-// 30392's members are people, so the page owes itself their profiles before drawing the grid.
 registerPeopleGrid([30392]);
 
-// The row leads with the name and counts underneath. `metric` rides along
-// because two lists can share a title and differ only in what they measured.
+// `metric` rides along because two lists can share a title and differ only in what they measured.
 registerRow([30392, 30393, 30394, 30395], (ev) => ({
   name: titleOf(ev) || tagOf(ev, "d") || "",
   sub: [plural(membersOf(ev).length, MEMBER_NOUN[ev.kind] || "member"), tagOf(ev, "metric")].filter(Boolean).join(" · "),

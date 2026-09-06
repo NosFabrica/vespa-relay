@@ -35,15 +35,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * What this relay mirrors, as `/stats.json` publishes it: the router's
- * `SyncManifest`, read off the shared volume and reduced to the kind set a
- * client needs to scope a count against us.
- *
- * The document is rebuilt member by member, never passed through: the file is
- * another process's, and nothing unreadable in it may cost the relay its
- * rollup or put arbitrary JSON under this relay's name. Only `down`/`both`
- * streams count toward the kind set; a stream with no kind bound makes the
- * whole set unbounded (`allKinds`) rather than a smaller union.
+ * What this relay mirrors, as `/stats.json` publishes it: the router's `SyncManifest`, reduced to
+ * the kind set a client needs to scope a count against us. Rebuilt member by member, never passed
+ * through: the file is another process's, and nothing unreadable in it may cost the rollup.
  */
 internal object MirrorReport {
     private val lenient =
@@ -52,10 +46,7 @@ internal object MirrorReport {
             isLenient = true
         }
 
-    /**
-     * The `mirrors` object of the `sync` section, or null when there is nothing
-     * to say: "does not mirror" and "mirrors nothing" are different claims.
-     */
+    /** The `mirrors` object of the `sync` section, or null when there is nothing to say. */
     fun build(manifestJson: String?): JsonObject? {
         val doc = parse(manifestJson) ?: return null
         val streams =
@@ -69,8 +60,7 @@ internal object MirrorReport {
         val union = mirroring.flatMap { it.kinds.orEmpty() }.distinct().sorted()
 
         return buildJsonObject {
-            // The writer's own stamp: this document outlives the process that
-            // wrote it.
+            // The writer's own stamp: this document outlives the process that wrote it.
             (doc["writtenAt"] as? JsonPrimitive)?.longOrNull?.let { put("writtenAt", it) }
             if (unbounded) {
                 put("allKinds", true)
@@ -104,22 +94,17 @@ internal object MirrorReport {
         val mirrors: Boolean get() = dir == "down" || dir == "both"
     }
 
-    /**
-     * A stream entry, or null when it carries no name. A missing `dir` reads as
-     * `down`: guessing `up` would drop kinds out of the set.
-     */
+    /** A stream entry, or null when it carries no name. A missing `dir` reads as `down`, so no kind is dropped. */
     private fun stream(o: JsonObject): Stream? {
         val name = text(o["name"]) ?: return null
         val kinds =
             when (val raw = o["kinds"]) {
                 null -> null
 
-                // Cast per element: `jsonPrimitive` throws on an object or an
-                // array, and that exception would cost the whole sync section.
+                // Cast per element: `jsonPrimitive` throws on an object or an array.
                 is JsonArray -> raw.mapNotNull { (it as? JsonPrimitive)?.intOrNull }.distinct().sorted()
 
-                // Present and unreadable is a bound we could not read, not an
-                // unbounded stream: it contributes nothing to the union.
+                // Present and unreadable is a bound, not an unbounded stream: it contributes nothing.
                 else -> emptyList()
             }
         return Stream(
@@ -133,7 +118,7 @@ internal object MirrorReport {
     /** A member's text, or null when absent, blank or not a primitive; the cast never throws. */
     private fun text(value: JsonElement?): String? = (value as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
 
-    /** A corrupt manifest costs this object, not the rollup. `Exception`, not `Throwable`, as in [SyncCoverageReport.parse]. */
+    /** A corrupt manifest costs this object, not the rollup. */
     private fun parse(text: String?): JsonObject? {
         if (text.isNullOrBlank()) return null
         return try {

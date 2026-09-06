@@ -26,12 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The line the reconcile prints while it runs. What is asserted here is the
- * arithmetic and, more importantly, the REFUSAL to quote a percentage the
- * number cannot support — a frozen 100% is how the screening phase's end and
- * the re-derive phase's start came to look identical.
- */
+/** The reconcile's progress line: its arithmetic, and its refusal to quote a percentage that cannot move. */
 class TrustReconcileProgressTest {
     @Test
     fun `screening reports a fraction and an eta`() {
@@ -41,12 +36,7 @@ class TrustReconcileProgressTest {
         assertTrue(line.contains("eta 2m"), "750 left at 5/s is 150s: $line")
     }
 
-    /**
-     * PAST SCREENING THE DENOMINATOR STOPS MOVING. The reconciler holds
-     * `inspected` at `total` and advances `rebuilt` and the card count
-     * instead, so a percentage here would read 100% for the whole expensive
-     * half — the exact reading that makes a long walk look finished.
-     */
+    /** Past screening the denominator stops moving, so a percentage would sit at 100 for the expensive half. */
     @Test
     fun `re-deriving reports services and cards, never a frozen percentage`() {
         val line = reconcileProgressLine(inspected = 1000, total = 1000, rebuilt = 7, applied = 4200, elapsedMs = 90_000)
@@ -63,13 +53,7 @@ class TrustReconcileProgressTest {
         assertFalse(line.contains("%"), "no percentage without a denominator: $line")
     }
 
-    /**
-     * THE THROTTLE MUST SPAN THE WHOLE WALK, not one attempt of it. The first
-     * version built a new reporter inside the retry loop, so every attempt
-     * restarted the 30s window; a reconcile that threw and retried inside it
-     * printed NOTHING for half an hour and looked exactly like one running
-     * cleanly. One instance, a clock that moves, lines that appear.
-     */
+    /** One throttle for the whole walk: a reporter rebuilt per attempt restarts its window and never speaks. */
     @Test
     fun `one progress instance emits across the whole walk, not once per attempt`() {
         val out = mutableListOf<String>()
@@ -90,11 +74,7 @@ class TrustReconcileProgressTest {
         assertContains(out[1], "60/100")
     }
 
-    /**
-     * A RETRY LOOP THAT PRINTS ONLY ITS FIRST FAILURE CANNOT BE TOLD FROM ONE
-     * THAT STOPPED FAILING. Both go quiet, and the only line left is the
-     * optimistic one printed before the first attempt.
-     */
+    /** A loop that prints only its first failure cannot be told from one that stopped failing. */
     @Test
     fun `retries stay audible after the first failure`() {
         val out = mutableListOf<String>()

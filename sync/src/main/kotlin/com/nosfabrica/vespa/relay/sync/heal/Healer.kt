@@ -36,10 +36,8 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Which of an author's vanish requests a relay may be handed: `ALL_RELAYS`
- * and the relay's own url, nothing else. A relay-scoped kind 62 handed to a
- * third party leaks where the author is leaving and invites a lax relay to
- * act on it. The scope filter runs before the newest-wins pick, or a newer
+ * Which of an author's vanish requests a relay may be handed: `ALL_RELAYS` and the relay's
+ * own url, nothing else. The scope filter runs before the newest-wins pick, or a newer
  * relay-scoped request would mask an older `ALL_RELAYS` one.
  */
 internal object VanishTargets {
@@ -58,15 +56,9 @@ data class HealSettings(
 )
 
 /**
- * Hands upstreams the thing that supersedes the stale copy they served us.
- *
- * A tombstone is private memory, as durable as one disk; a healed source
- * stays healed for every mirror. A repair can only be queued because the
- * relay served its own stale copy of the author's event, so the push changes
- * the version a relay serves and never the distribution set; introducing an
- * author to a new relay remains `dir = up`'s job. Everything expensive
- * happens here, per relay, at the end of that relay's own visit while its
- * socket is open, yielding to [ServingPressure] as ingest does.
+ * Hands upstreams the thing that supersedes the stale copy they served us. A repair can only
+ * be queued because the relay served its own stale copy, so the push changes the version a
+ * relay serves and never the distribution set.
  */
 class Healer(
     private val client: INostrClient,
@@ -84,11 +76,9 @@ class Healer(
     private val passes = AtomicLong()
 
     /**
-     * Pushes what is queued for [url], at the end of that relay's visit while
-     * its connection is live. What it pushes is usually the previous visit's
-     * discoveries: `ingest.submit` hands the event to a channel, so this
-     * visit's refusals land in the queue after the drain has run. The queue
-     * persists and coalesces, so nothing is lost by that.
+     * Pushes what is queued for [url], at the end of that relay's visit while its connection
+     * is live. Usually the previous visit's discoveries: this visit's refusals land in the
+     * queue after the drain has run, and the queue coalesces, so nothing is lost.
      */
     suspend fun drain(url: NormalizedRelayUrl) {
         if (caps.isClosed(url)) {
@@ -102,7 +92,6 @@ class Healer(
         if (work.isEmpty()) return
 
         val pass = passes.incrementAndGet()
-        // One lookup per author per pass: the guard below is a store query.
         val vanishCache = HashMap<String, Boolean>()
         var attempted = 0
         var accepts = 0
@@ -167,9 +156,8 @@ class Healer(
     }
 
     /**
-     * What to hand over, resolved now rather than when the address was queued:
-     * a version superseded since the enqueue pushes the newest, and an event
-     * retracted since pushes the retraction instead.
+     * What to hand over, resolved now rather than when queued: a version superseded since
+     * pushes the newest, and an event retracted since pushes the retraction instead.
      */
     private suspend fun resolve(
         key: HealKey,
@@ -205,11 +193,7 @@ class Healer(
             }
         }
 
-    /**
-     * One store read, booked as this subsystem's under [StoreCalls]. These
-     * run at the end of every visit on the pool's own worker, so a store that
-     * has stopped answering strands them where a reader would blame the relay.
-     */
+    /** One store read, booked as this subsystem's under [StoreCalls]. */
     private suspend fun read(filter: Filter): List<Event> =
         storeCall(StoreCalls.CALLER_HEAL_RESOLVE, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
             store.query<Event>(filter)

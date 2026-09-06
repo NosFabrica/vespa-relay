@@ -33,16 +33,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Builds a `SYNC_STATE_FILE` the size and shape of the production one that
- * motivated the flat-key prune, loads it, and asserts every flat key is gone
- * and every named stream's band survived byte for byte. Writes `before.json`
+ * Builds a `SYNC_STATE_FILE` the size and shape of a production one, loads it, and asserts every
+ * flat key is gone and every named stream's band survived byte for byte. Writes `before.json`
  * and `after.json` to `-DprodScaleDir` for `SyncCoverageReportProdScaleProbe`.
  * Selected by `-DprodScaleProbe=true`; pass `--rerun` or Gradle skips it silently.
  */
 class SyncBandsProdScaleProbe {
     companion object {
         // Spans per band is the one free knob, tuned so the corpus lands on the real file's size.
-        // A band carries a span per kind the walk observed, and flat bands stopped being written early.
         private const val NESTED_SPANS = 9
         private const val FLAT_SPANS = 6
     }
@@ -52,7 +50,6 @@ class SyncBandsProdScaleProbe {
 
     private val profiles = Filter(kinds = listOf(0, 10002, 10040))
 
-    // 128 kinds, so each flat key carrying this filter is about 700 bytes before its band.
     private val content = Filter(kinds = contentKinds())
 
     private val assertionAuthors = (0 until 24).map { "%064x".format(it * 7919) }
@@ -158,10 +155,8 @@ class SyncBandsProdScaleProbe {
         var nested = 0
 
         /**
-         * One band. The band-level `min`/`max`/`complete` must be the outer edges of
-         * the spans: [bandOf] restores only `spans` and `fullAt` and quartz recomputes
-         * the rest, so edges written independently are corrected on load and fail the
-         * byte-for-byte comparison.
+         * One band. `min`/`max`/`complete` must be the spans' outer edges: [bandOf] restores
+         * only `spans` and `fullAt`, so edges written independently are corrected on load.
          */
         fun band(
             kinds: List<Int>,
@@ -221,7 +216,7 @@ class SyncBandsProdScaleProbe {
                     filter.copy(authors = listOf("%064x".format(1))).toJson(),
                     buildJsonObject {
                         repeat(extraLegs) { i ->
-                            // `complete` ANDs across a relay's legs, so the second leg carries the verdict of the leg it joins.
+                            // `complete` ANDs across legs, so this leg carries the first's verdict.
                             put("wss://$host2-$i.example/", band(filter.kinds!!, NESTED_SPANS, settled = i < reconciled))
                             nested++
                         }

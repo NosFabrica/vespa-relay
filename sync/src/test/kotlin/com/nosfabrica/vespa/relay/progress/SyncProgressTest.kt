@@ -31,8 +31,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * The router's own progress document. Throughout: counts partition, a zero
- * is published, and a section the router cannot answer is absent, not empty.
+ * The router's own progress document: counts partition, a zero is published, and a section
+ * the router cannot answer is absent, not empty.
  */
 class SyncProgressTest {
     @Test
@@ -435,7 +435,7 @@ class SyncProgressTest {
             store["outstanding"]!!.jsonPrimitive.int,
             callers.sumOf { it.jsonObject["outstanding"]!!.jsonPrimitive.int },
         )
-        // Lifetime counters beside a live count; they partition nothing until the router is quiet. See [StoreCalls.Caller].
+        // Lifetime counters beside a live count; they partition nothing until the router is quiet.
         val row = callers.first().jsonObject
         for (member in listOf("issued", "returned", "failed", "cancelled")) {
             assertNotNull(row[member], "`$member` must be published even at zero, or a reader cannot tell it from a router too old to say")

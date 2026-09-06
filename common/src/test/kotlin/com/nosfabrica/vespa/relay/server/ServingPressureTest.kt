@@ -42,7 +42,6 @@ class ServingPressureTest {
 
     @Test
     fun `healthy reads cost the mirror nothing`() {
-        // 400ms is an ordinary read on the production corpus.
         val p = ServingPressure()
 
         feed(p, 400, 60)
@@ -74,8 +73,7 @@ class ServingPressureTest {
 
     @Test
     fun `a single catastrophic read does yield, and that is intended`() {
-        // An eighth of 30s clears any sane threshold on its own; the mean then
-        // decays back over the next few healthy reads.
+        // An eighth of 30s clears any sane threshold; the mean then decays over the next healthy reads.
         val p = ServingPressure(thresholdMs = 2_000)
         feed(p, 200, 60)
 
@@ -89,8 +87,7 @@ class ServingPressureTest {
 
     @Test
     fun `a straggler after a run of instant reads is dampened, not adopted`() {
-        // Instant reads record as 0ms. A zero mean that read as "no samples yet"
-        // would let the next straggler be adopted wholesale.
+        // A zero mean that read as "no samples yet" would let the next straggler be adopted wholesale.
         val p = ServingPressure(thresholdMs = 2_000)
         feed(p, 0, 100)
 

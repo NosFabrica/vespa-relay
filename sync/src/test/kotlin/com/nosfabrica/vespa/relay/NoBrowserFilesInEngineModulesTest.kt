@@ -24,10 +24,7 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
-/**
- * Engines publish `/stats.json` and `:web` renders it; every browser file
- * belongs in `:web`, and this holds the half of that seam a compiler cannot.
- */
+/** Every browser file belongs in `:web`; engines publish `/stats.json` and render nothing. */
 class NoBrowserFilesInEngineModulesTest {
     @Test
     fun `no module but web ships a browser file`() {
@@ -50,7 +47,7 @@ class NoBrowserFilesInEngineModulesTest {
     }
 
     private companion object {
-        /** Extensions rather than paths: the failure to catch is a new file somewhere plausible. */
+        /** Extensions, not paths: the failure to catch is a new file somewhere plausible. */
         val BROWSER = setOf("html", "js", "mjs", "css")
     }
 }

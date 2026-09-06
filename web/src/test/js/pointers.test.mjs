@@ -1,8 +1,6 @@
-// The follow-up read behind the provenance row: which filters a page sends
-// once the relay stops splicing pointers into the answer, and what the row
-// makes of the answer. The gate that used to live on the serving side is now
-// `authors` on every declaration filter; a kind the Map delegates to nobody
-// is not asked for, because the reference socket narrows nothing.
+// The follow-up read behind the provenance row: which filters a page sends, and what the row
+// makes of the answer. Every declaration filter carries `authors`, and a kind the Map delegates
+// to nobody is not asked for.
 import assert from 'assert';
 
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
@@ -82,9 +80,8 @@ const byKind = (filters) => {
     "no delegation is not a reason to ask openly");
 }
 
-// The store splices the members of a NIP-51 people list (30000) and a follow
-// pack (39089), so a page can hold somebody the reader put on a list; the
-// reason must be asked for like any other declaration.
+// A page can hold somebody the reader put on a NIP-51 list; the reason is asked for like any
+// other declaration.
 {
   const page = [profile("1", ALICE), ev("2", BOB, 1)];
   const f = byKind(pointerFilters(targetsOf(page), TRUST, { observer: READER }));
@@ -112,12 +109,10 @@ const byKind = (filters) => {
   for (const f of labels) {
     assert.strictEqual("authors" in f, false, "NIP-32 is open by construction — there is no author list to narrow one");
     assert.strictEqual(f.limit, LABEL_LIMIT, "…so a limit is one of the two bounds there are");
-    // With no `authors`, the reader's trust floor is the other bound; the
-    // relay's own label companion keeps the query's observer the same way.
+    // With no `authors`, the reader's trust floor is the other bound.
     assert.strictEqual(f.search, `observer:${READER}`, "a label read is made through the observer's eyes");
   }
-  // A service key is signed by somebody nobody follows, so a lens on a
-  // declaration filter would drop the reader's own provider's lists.
+  // A lens on a declaration filter would drop the reader's own provider's lists.
   for (const f of pointerFilters(targetsOf(page), TRUST, { observer: READER })) {
     if (f.kinds[0] === 1985) continue;
     assert.strictEqual("search" in f, false, "a declaration filter declares no lens — the socket waives it");

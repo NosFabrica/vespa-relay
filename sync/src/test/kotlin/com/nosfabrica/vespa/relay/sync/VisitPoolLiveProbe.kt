@@ -60,10 +60,9 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Runs the fitness pass over a few live relays, reads the kind-30166 roster
- * back from an in-memory store and lets a small [VisitPool] with two streams
- * work it for 45 seconds, printing each stage's decisions and the progress
- * document. Asserts nothing. Selected by `-DvisitPoolProbe=true`.
+ * Runs the fitness pass over a few live relays, reads the kind-30166 roster back from an
+ * in-memory store and lets a small [VisitPool] with two streams work it, printing each stage's
+ * decisions and the progress document. Asserts nothing. Selected by `-DvisitPoolProbe=true`.
  */
 class VisitPoolLiveProbe {
     /** The kind-30166 source the loader writes for `filter = { "kinds": [30166], "#l": ["prime"] }`. */
@@ -79,7 +78,7 @@ class VisitPoolLiveProbe {
             maxAgeSeconds = 3600,
         )
 
-    /** Healthy hosts, an auth wall (diggoo answers `auth-required` to an unknown key) and a name that does not resolve. */
+    /** Healthy hosts, an auth wall and a name that does not resolve. */
     private val candidates =
         listOf(
             "wss://nos.lol",
@@ -166,7 +165,7 @@ class VisitPoolLiveProbe {
                 val probeStreams =
                     listOf(
                         probeStream("notes", Filter(kinds = listOf(1), limit = 50), visits = 4, live = 3),
-                        // Budgets smaller than the roster, so the caps bite and `deferred` carries real numbers.
+                        // Budgets under the roster size, so the caps bite and `deferred` is nonzero.
                         probeStream("mixed", Filter(kinds = listOf(0, 3, 10002), limit = 50), visits = 2, live = 1, audit = 3600),
                     )
                 val bands = SyncBands(null)

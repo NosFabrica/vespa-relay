@@ -28,7 +28,7 @@ import java.nio.channels.FileChannel
 
 /** What [CuckooFilter.add] did. */
 internal enum class AddResult {
-    /** Already there. Idempotent: re-refusing the same id costs no space. */
+    /** Already there; re-refusing the same id costs no space. */
     PRESENT,
     ADDED,
 
@@ -37,15 +37,9 @@ internal enum class AddResult {
 }
 
 /**
- * A fixed-size cuckoo filter over Nostr event ids, mmap'd to one file. It
- * refuses an insert ([AddResult.FULL]) rather than saturating silently, and
- * its false-positive rate is fixed by the 32-bit fingerprint, not by load;
- * a false positive is a wanted event skipped forever.
- *
- * No hash function: an id is already a hash, so the bucket index and the
- * fingerprint are disjoint bit-fields of its hex. [add] is synchronized
- * because relocation moves other fingerprints; [contains] is lock-free, since
- * the worst a racing read can see is a fingerprint mid-move, which reports absent.
+ * A fixed-size cuckoo filter over Nostr event ids, mmap'd to one file. It refuses an insert
+ * ([AddResult.FULL]) rather than saturating silently; a false positive is a wanted event
+ * skipped forever. [contains] is lock-free: a fingerprint mid-move reports absent, never present.
  */
 internal class CuckooFilter private constructor(
     private val buffer: ByteBuffer,
@@ -83,7 +77,6 @@ internal class CuckooFilter private constructor(
             return AddResult.ADDED
         }
 
-        // Both buckets are full: evict a resident and re-home it, repeatedly.
         // The PRNG is seeded from the fingerprint so a failing insert is reproducible.
         var rng = (fp.toLong() and 0xFFFFFFFFL) or 1L
         var bucket = if (rng and 1L == 0L) i1 else i2
@@ -101,12 +94,11 @@ internal class CuckooFilter private constructor(
                 return AddResult.ADDED
             }
         }
-        // `carried` is homeless and has replaced a stored fingerprint, so the
-        // table lost one entry: a possible false negative, never a false positive.
+        // `carried` is homeless: the table lost one entry, a false negative and never a false positive.
         return AddResult.FULL
     }
 
-    /** Force every mapped page to disk. A lost page costs re-downloads, never correctness. */
+    /** Force every mapped page to disk. */
     fun flush() {
         runCatching { (buffer as? MappedByteBuffer)?.force() }
     }
@@ -115,12 +107,7 @@ internal class CuckooFilter private constructor(
         flush()
     }
 
-    // ---- id → (bucket, fingerprint), with no hashing ------------------------
-
-    /**
-     * The id's second 8 hex characters, never zero (zero is the empty slot).
-     * A non-hex id falls back to the string hash rather than throwing on the ingest path.
-     */
+    /** The id's second 8 hex characters, never zero (zero is the empty slot). */
     private fun fingerprint(id: String): Int {
         val raw = hexToLong(id, 16, 8)?.toInt() ?: id.hashCode()
         return if (raw == 0) 1 else raw
@@ -131,10 +118,7 @@ internal class CuckooFilter private constructor(
         return (raw.toInt() xor (raw ushr 32).toInt()) and mask
     }
 
-    /**
-     * The partner bucket, derived from the fingerprint alone so relocation
-     * needs no id, and forced non-zero so both choices cannot collapse onto one bucket.
-     */
+    /** The partner bucket, from the fingerprint alone so relocation needs no id; never the same bucket. */
     private fun alt(
         bucket: Int,
         fp: Int,
@@ -142,8 +126,6 @@ internal class CuckooFilter private constructor(
         val delta = (mix32(fp) and mask).let { if (it == 0) 1 else it }
         return (bucket xor delta) and mask
     }
-
-    // ---- slots --------------------------------------------------------------
 
     private fun slotIndex(
         bucket: Int,
@@ -180,10 +162,8 @@ internal class CuckooFilter private constructor(
     private fun writeCount() = buffer.putInt(OFFSET_COUNT, entries)
 
     companion object {
-        /** Slots per bucket. */
         const val SLOTS = 4
 
-        /** Relocations before an insert is declared impossible. */
         private const val MAX_KICKS = 500
 
         private const val HEADER_BYTES = 32
@@ -198,24 +178,15 @@ internal class CuckooFilter private constructor(
             return b.coerceAtMost(MAX_BUCKETS.toLong()).toInt()
         }
 
-        /**
-         * The largest table a `ByteBuffer` can address: the next power of two
-         * exceeds `Int.MAX_VALUE`, where `FileChannel.map` throws and the slot
-         * offsets in [readSlot] overflow. Clamped rather than thrown so an
-         * oversized capacity yields the biggest partition we can build.
-         */
+        /** The largest table a `ByteBuffer` can address; the next power of two overflows the slot offsets. */
         const val MAX_BUCKETS = 1 shl 26
 
-        /** Ids a table of [buckets] holds before relocation starts failing; larger than the requested capacity after rounding. */
+        /** Ids a table of [buckets] holds before relocation starts failing. */
         fun capacityOf(buckets: Int): Int = (buckets.toLong() * SLOTS * TARGET_LOAD).toInt()
 
         private const val TARGET_LOAD = 0.95
 
-        /**
-         * Map [file], creating it at the size [capacity] implies. A file whose
-         * header disagrees with the requested geometry is rebuilt, never
-         * reinterpreted: the wrong bucket count scatters every lookup.
-         */
+        /** Map [file], creating it at the size [capacity] implies. A header of another geometry is rebuilt. */
         fun open(
             file: File?,
             capacity: Int,
@@ -223,7 +194,6 @@ internal class CuckooFilter private constructor(
             val buckets = bucketsFor(capacity)
             val bytes = HEADER_BYTES + buckets.toLong() * SLOTS * 4
             if (file == null) {
-                // Memory-only: same geometry and header as the mapped path.
                 val buf = ByteBuffer.allocateDirect(bytes.toInt())
                 writeHeader(buf, buckets)
                 return CuckooFilter(buf, buckets, 0)
@@ -288,7 +258,7 @@ internal class CuckooFilter private constructor(
             return v
         }
 
-        /** murmur3's 32-bit finalizer, enough to scatter the displacement. */
+        /** murmur3's 32-bit finalizer. */
         private fun mix32(x: Int): Int {
             var h = x
             h = h xor (h ushr 16)

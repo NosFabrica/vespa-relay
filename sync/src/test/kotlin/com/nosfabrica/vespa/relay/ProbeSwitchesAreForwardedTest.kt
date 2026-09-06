@@ -25,10 +25,8 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Every `-D` switch a module's probes read must be forwarded by that module's
- * `tasks.test`: the property reaches the Gradle daemon, not the forked test
- * JVM, and an unforwarded probe skips itself and the build stays green.
- * Reads the build files as text because that is where the bug is.
+ * Every `-D` switch a module's probes read is forwarded by that module's `tasks.test`: an
+ * unforwarded switch reaches the Gradle daemon, not the test JVM, and the probe skips itself.
  */
 class ProbeSwitchesAreForwardedTest {
     @Test

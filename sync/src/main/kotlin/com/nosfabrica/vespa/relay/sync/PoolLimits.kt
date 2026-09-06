@@ -28,31 +28,20 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * What each stream may spend on each of the pool's four jobs: a permit per
- * (stream, job), with no router-wide cap beside it.
- *
- * Admission, not a queue. [tryHold] never waits: a visit that cannot get a
- * permit skips that job, the work stays due for the next visit, and the skip
- * is counted in [deferred]. A visit holds a socket and a worker for its whole
- * life, so waiting on a permit would idle both. A visit-job permit lives as
- * long as the job; a tail's lives as long as the tail and is released from
- * `dropTail`.
+ * What each stream may spend on each of the pool's four jobs: a permit per (stream, job),
+ * with no router-wide cap beside it. Admission, not a queue: [tryHold] never waits, and a
+ * refused job stays due for the next visit.
  */
 internal class PoolLimits(
     /** Per (stream, job). Absent means uncapped for that stream. */
     caps: Map<Pair<String, String>, Int?>,
 ) {
     /**
-     * A granted permit, releasable exactly once. Idempotent because a tail's
-     * hold is released from `dropTail`, which races an eviction, a roster
-     * drop and a re-open; a double release would be a cap that stops capping.
+     * A granted permit, releasable exactly once, because a tail's hold is released from
+     * `dropTail`, which races an eviction, a roster drop and a re-open.
      */
     internal class Hold(
-        /**
-         * The gate to hand the permit back to, or null for an uncapped job.
-         * Not a shared `Semaphore(Int.MAX_VALUE)`: that starts at its ceiling
-         * and the first `release()` throws.
-         */
+        /** The gate to hand the permit back to, or null for an uncapped job. */
         private val permit: Semaphore?,
     ) {
         private val spent = AtomicBoolean(false)
@@ -74,9 +63,8 @@ internal class PoolLimits(
     private val deferrals = ConcurrentHashMap<Pair<String, String>, AtomicLong>()
 
     /**
-     * A permit for [stream] to do [job], or null when its share is full. An
-     * uncapped job is granted a hold over nothing: null must mean refused and
-     * only that, or a caller's `?: return` would skip work that has no cap.
+     * A permit for [stream] to do [job], or null when its share is full. An uncapped job is
+     * granted a hold over nothing: null must mean refused and only that.
      */
     fun tryHold(
         stream: String,
@@ -88,10 +76,8 @@ internal class PoolLimits(
     }
 
     /**
-     * [tryHold] for a caller whose refusal is not the end of the work, so it
-     * is not counted in [deferred]. The live pool is that caller: a full live
-     * gate is its ordinary steady state, and a tail past budget goes to
-     * `earnTail` rather than being dropped.
+     * [tryHold] for a caller whose refusal is not the end of the work, so it is not counted in
+     * [deferred]: the live pool, whose full gate is its ordinary steady state.
      */
     fun trySpare(
         stream: String,
@@ -121,12 +107,9 @@ internal class PoolLimits(
 
     companion object {
         /**
-         * The shares a config asks for, over [JOBS]. The live pool is the one
-         * job that must have a number: a tail is taken between visits and held
-         * until the roster drops the relay, so nothing else bounds it, and a
-         * stream naming no `maxLiveConcurrency` gets
-         * [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY]. Eviction
-         * (`VisitPool.earnTail`) happens at that gate, not instead of it.
+         * The shares a config asks for, over [JOBS]. The live pool is the one job that must
+         * have a number, since nothing else bounds a tail; a stream naming none gets
+         * [RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY].
          */
         fun of(streams: List<SyncStream>): PoolLimits =
             PoolLimits(
@@ -136,10 +119,9 @@ internal class PoolLimits(
             )
 
         /**
-         * Every job a stream has a budget for, and where its number comes
-         * from. One list, read by [of] to build the gates and by
-         * `VisitPool.limitsFor` to publish a row per job, so a budget cannot
-         * be enforced and not shown. Ordered as the page draws them.
+         * Every job a stream has a budget for, and where its number comes from. Read by [of]
+         * and by `VisitPool.limitsFor`, so a budget cannot be enforced and not shown. Ordered
+         * as the page draws them.
          */
         val JOBS: List<Pair<String, (SyncStream) -> Int?>> =
             listOf(

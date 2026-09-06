@@ -71,7 +71,7 @@ class RelayInfoTest {
         assertEquals("9.9-test", doc.getValue("version").jsonPrimitive.content)
     }
 
-    /** The relay's own kind 0 is derived from the document, so the holder has to say when it changes. */
+    /** The relay's own kind 0 is derived from the document, so the holder must say when it changes. */
     @Test
     fun `an admin rewrite tells whoever derives from the document`() {
         val seen = mutableListOf<String?>()

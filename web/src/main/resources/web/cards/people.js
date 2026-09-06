@@ -63,9 +63,8 @@ function observerCard(ev, opts) {
 }
 
 /**
- * 30382/30383/30384 — NIP-85 assertions. One renderer; only the `d` changes
- * meaning (a pubkey, an event id, an `a` address), and the subject is
- * resolved by kind, not by shape, since an event id is hex too.
+ * 30382/30383/30384 — NIP-85 assertions. One renderer; the subject is resolved by kind, not by
+ * shape, since an event id is hex too.
  */
 function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
@@ -109,8 +108,7 @@ register([30002], relaySetCard);
 register([10040], observerCard);
 register([30382, 30383, 30384], scoreCard);
 
-// The rows. Every card here counts something and none has a title to lead
-// with, so the count is the row's line and cards.js fills the author in.
+// Every card here counts something and none has a title, so the count is the row's line.
 registerRow([3], (ev) => ({ sub: `follows ${plural(peopleOf(ev).length, "person", "people")}` }));
 registerRow([30000, 39089, 39092], (ev) => ({
   name: titleOf(ev),
@@ -122,7 +120,8 @@ registerRow([30002], (ev) => ({
   sub: [plural(tagsOf(ev, "relay").length, "relay"), summaryOf(ev)].filter(Boolean).join(" · "),
 }));
 registerRow([10040], (ev) => ({ sub: `trusts ${plural(dimensionsOf(ev).length, "score dimension")}` }));
-// An assertion's `d` is its subject and its `rank` the verdict: the card's two facts, in the row's two lines.
+// An assertion's `d` is its subject and its `rank` the verdict: the card's two facts, in the row's
+// two lines.
 registerRow([30382, 30383, 30384], (ev) => ({
   name: `scores ${subjectName(ev.kind, tagOf(ev, "d"))}`,
   sub: tagOf(ev, "rank") ? `rank ${tagOf(ev, "rank")}` : "",

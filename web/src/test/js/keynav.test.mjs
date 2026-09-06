@@ -23,7 +23,7 @@ assert.strictEqual(navKey(key("Enter"), body), "open");
 assert.strictEqual(navKey(key("x"), body), null);
 assert.strictEqual(navKey(key("ArrowDown"), body), null, "the arrows still scroll the page");
 
-// Tab-to-a-chip-and-Enter predates the cursor and must keep working.
+// Tab-to-a-chip-and-Enter works without the cursor.
 for (const tag of ["BUTTON", "A", "SUMMARY"]) {
   assert.strictEqual(navKey(key("Enter"), el(tag)), null, `Enter belongs to the focused ${tag}`);
   assert.strictEqual(navKey(key("j"), el(tag)), "next", `…but ${tag} does nothing with a letter`);

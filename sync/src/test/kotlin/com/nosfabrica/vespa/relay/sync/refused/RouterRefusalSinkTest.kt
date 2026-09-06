@@ -41,7 +41,7 @@ import kotlin.test.assertTrue
 class RouterRefusalSinkTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
 
-    /** A hashed id: the cuckoo filter buckets on the first 16 hex chars, which a small counter leaves all zero. */
+    /** Hashed: the cuckoo filter buckets on the first 16 hex chars, all zero for a small counter. */
     private fun idOf(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("sink-$n".toByteArray()))
 
     private fun event(
@@ -75,7 +75,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `a store failure never becomes a candidate`() {
-        // Failed means the event was good and the store broke; a row would make a transient fault permanent loss.
+        // Failed means the event was good and the store broke; a row would make a transient fault permanent.
         val h = Harness()
         assertFalse(PermanentRefusals.isPermanent(RejectionReason.INSERT_FAILED))
         h.sink().onRefused(event(1), origin(), RejectionReason.INSERT_FAILED)
@@ -123,7 +123,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `the repair is queued before the id is ever recorded`() {
-        // A suppressed id is never downloaded again, so the reverse order would starve the relay of its repair.
+        // A suppressed id is never downloaded again, so the reverse order would starve the repair.
         val h = Harness()
         h.sink().onRefused(event(4), origin(), RejectionReason.REPLACED)
         assertEquals(1, h.queue.size(), "the first refusal must already have queued the repair")
@@ -133,7 +133,7 @@ class RouterRefusalSinkTest {
 
     @Test
     fun `a refusal with no source relay queues no repair`() {
-        // The only way into the queue is a refusal of an event a relay served us; the push never introduces an author.
+        // Only a refusal of an event a relay served reaches the queue; a push never adds an author.
         val h = Harness()
         h.sink().onRefused(event(5), IngestOrigin.Local, RejectionReason.REPLACED)
         assertEquals(0, h.queue.size())

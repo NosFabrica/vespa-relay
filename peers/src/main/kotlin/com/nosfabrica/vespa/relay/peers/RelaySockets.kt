@@ -25,9 +25,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * One socket refcount across every stream and every probe pass. Two streams
- * routinely land on one relay while a probe fingerprints it, so a socket
- * closes only when its last holder releases. Pinned urls are never closed.
+ * One socket refcount across every stream and every probe pass: a socket closes only when
+ * its last holder releases it. Pinned urls are never closed.
  */
 class RelaySockets(
     private val client: NostrClient,
@@ -49,24 +48,20 @@ class RelaySockets(
                 (n - 1).takeIf { it > 0 }
             }
         }
-        // A release nobody claimed is an upstream bug; it must not disconnect
-        // a socket its real holder is still on.
+        // A release nobody claimed must not disconnect a socket its real holder is still on.
         if (!released) {
             System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
             return
         }
-        // Re-checked after the compute: a claim landing in between keeps the
-        // socket. A claim after this check costs one reconnect, not a wrong count.
+        // Re-checked after the compute, so a claim landing in between keeps the socket.
         if (held[url] == null && url !in pinnedUrls) {
             close(url)
         }
     }
 
     /**
-     * Close this url's socket only if quartz still holds one. `getOrCreateRelay`
-     * is a constructor: on a url the pool has already dropped it would put a
-     * fresh, unsubscribed relay back in, which the keep-alive then dials and
-     * nothing ever closes.
+     * Close this url's socket only if quartz still holds one: `getOrCreateRelay` on a url the
+     * pool has dropped would put a fresh relay back in that nothing ever closes.
      */
     private fun close(url: NormalizedRelayUrl) {
         if (url !in client.availableRelaysFlow().value) return

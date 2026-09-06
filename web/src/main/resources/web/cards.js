@@ -1,8 +1,6 @@
-// The renderer assembly. Importing a family module registers its kinds, and
-// card() dispatches bespoke kind, then the generic floor. Two renderings
-// dispatch here: the card, and the type-ahead row the search field draws
-// above it. A family registers both, and the render test holds the two
-// registries to the same key set and every kind to a fixture.
+// The renderer assembly. Importing a family module registers its kinds; card() and
+// rowOf() dispatch on kind, then fall to the generic floor. The render test holds the
+// two registries to the same key set and every kind to a fixture.
 
 import { esc, clip } from "./shared/format.js";
 import { authorOf } from "./shared/profiles.js";
@@ -25,16 +23,14 @@ import "./cards/relays.js";
 import "./cards/trust.js";
 
 /**
- * One event to one card. `opts.full` is the permalink depth; without it the
- * card is a results-list preview. Dispatch is on the event's kind, never the
- * identifier that led here: a note1 id can name an article.
+ * One event to one card. `opts.full` is the permalink depth; without it the card is a
+ * results-list preview. Dispatch is on kind, never on the identifier that led here.
  */
 export const card = (ev, opts) => (renderers.get(ev.kind) || genericCard)(ev, opts);
 
 /**
- * The pubkeys a card writes a name for at this depth: what a page must load
- * profiles for before rendering. Faces need no lookup and are not here.
- * `opts` must be the opts the card will be drawn with.
+ * The pubkeys a card writes a name for at this depth, so a page can load their profiles
+ * first. Faces need no lookup and are not here. `opts` must be the card's own opts.
  */
 export function namedPubkeys(ev, opts) {
   const out = new Set();
@@ -46,7 +42,6 @@ export function namedPubkeys(ev, opts) {
     else add(t[1]);                                        // a 10040's service column
   }
   for (const pk of gridPeople(ev, opts)) add(pk);
-  // Names from slots no tag scan covers, such as a repository's `maintainers` values.
   for (const pk of namedPeople(ev, opts)) add(pk);
   add(replyPerson(ev));
   // A zap receipt's sender is the author of the stringified request in `description`.
@@ -60,10 +55,8 @@ export function namedPubkeys(ev, opts) {
 const NAMES_P_TAGS = new Set([9734, 9735, 1984]);
 
 /**
- * What a type-ahead row says, with the ladder every family leans on applied
- * once. The name never falls back to the content; a family with nothing to
- * say leaves the row leading with the author. A sub that repeats the name is
- * dropped, whatever family produced it.
+ * What a type-ahead row says. The name never falls back to the content, and a sub that
+ * repeats the name is dropped whatever family produced it.
  */
 export function rowOf(ev) {
   const a = authorOf(ev);

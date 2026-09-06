@@ -36,13 +36,15 @@ with thousands still arriving, which is a store that stopped answering, and
 the line could only say the rate, which reads the same as a fan-out gone
 quiet.
 
-**`stageMs` parses `IngestStats.dump()`.** The store keeps its stage map
-private and offers two readers: `statusLine`, which is destructive (a second
-caller halves the operator's log line), and `dump`, which is cumulative and a
-string. The stage split is the one number that says whether a slow batch is
-in `dedup`, `write` or `lock.ingest.wait`. `IngestStageParseTest` books a
-stage through the real formatter so a store bump that rewords it fails a test
-instead of publishing an empty panel.
+**`stageSplit` is one `IngestStats.snapshot()` read, replacing the `dump()`
+parser.** `stageMs` used to come from parsing `dump()`'s string beside a
+second `snapshot()` read for `stageDetail`. Two reads of a live counter
+describe two instants, so a row's `ms` could disagree with the `calls`
+published next to it, and the parser lost precision through `%.2fs`: a stage
+under 5 ms rounded to nothing. `snapshot()` is the structured read the parser
+stood in for, so both members come off one map at one instant in exact
+nanoseconds; `IngestStageReadTest` pins both. The sort is done here, not by
+the store, because the order is this page's presentation choice.
 
 **Fatal errors are counted.** Four OOMs once passed unnoticed while the
 phases still read healthy. `watchForFatals` is a named function because both
@@ -207,6 +209,15 @@ refusal reaches the caller before the sentence reaches the recorder.
 window it is given before deciding whether to sub-split, the same window
 the pager just counted to size the checkpoint; at tens of thousands of
 windows the second query was worth fifteen lines.
+
+**The pager's window boundary is a timestamp decided by a count.** A NEG-OPEN
+is all-or-nothing at both ends: our id snapshot must fit in memory, and a relay
+refuses outright past its `max_sync_events`. So a window is sized from two
+sources, our own `NegentropyLocalIndex.count` before the round trip and the
+peer's cap from its refusal (`NegentropySyncResult.peerCap`) or, failing that,
+a window quartz had to split. quartz owns everything inside one call; the pager
+owns what survives a call: the cursor, the per-peer size, and the newest-first
+order every push onto the stack keeps.
 
 ## SweepState
 

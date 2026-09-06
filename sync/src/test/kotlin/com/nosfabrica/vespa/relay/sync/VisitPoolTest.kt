@@ -53,7 +53,7 @@ class VisitPoolTest {
         assertEquals(VisitPool.REVISIT_UNTAILED_MS, quietUntailed)
         assertEquals(quietTailed / 2, VisitPool.revisitDelayMs(VisitPool.YIELD_HALVES_THE_WAIT, tailed = true))
         assertEquals(quietUntailed / 2, VisitPool.revisitDelayMs(VisitPool.YIELD_HALVES_THE_WAIT, tailed = false))
-        // Five hundred takes the untailed base under the floor; the tailed base, six times longer, still divides.
+        // 500 takes the untailed base under the floor; the tailed base, six times longer, still divides.
         assertEquals(VisitPool.REVISIT_FLOOR_MS, VisitPool.revisitDelayMs(500.0, tailed = false))
         assertTrue(VisitPool.revisitDelayMs(500.0, tailed = true) > VisitPool.revisitDelayMs(500.0, tailed = false))
     }
@@ -201,7 +201,7 @@ class VisitPoolTest {
 
     @Test
     fun `a drained or self-limited walk is not a refusal, and neither is one that delivered`() {
-        // DRAINED proves absence, LIMIT_REACHED was our own instruction, and a CLOSED after 4,000 events is a rate limit.
+        // DRAINED proves absence, LIMIT_REACHED was our ask, and a CLOSED after events is a rate limit.
         assertFalse(VisitPool.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.DRAINED)))
         assertFalse(VisitPool.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.LIMIT_REACHED)))
         assertFalse(VisitPool.refusedOutright(PagedFetchResult(4_000, PagedFetchResult.End.CLOSED)))
@@ -229,7 +229,7 @@ class VisitPoolTest {
 
     @Test
     fun `a tail asks once per shape, not once per provider`() {
-        // Merged by shape: bound asks union their authors, and an unbound ask absorbs its shape's bound ones.
+        // Merged by shape: bound asks union their authors, and an unbound ask absorbs the bound ones.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -320,7 +320,7 @@ class VisitPoolTest {
         assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1)), covered))
         assertTrue(VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_650_000_000, until = 1_660_000_000), covered))
 
-        // The two ordinary legs touch the band exactly at its edges; a `<=` would file every catch-up as a re-walk.
+        // The two ordinary legs touch the band at its edges; a `<=` would file every catch-up as a re-walk.
         assertFalse(
             VisitPool.rewalksCovered(Filter(kinds = listOf(1), since = 1_700_000_000), covered),
             "forward from the band's edge",

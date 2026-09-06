@@ -90,9 +90,8 @@ class StatsRollupTest {
     // ---- the tiering itself -------------------------------------------------
 
     /**
-     * An invariant over the pipelines rather than a list of today's queries, so
-     * a new query landing in the fast tier fails here. Each expensive shape is
-     * recognisable in the YQL; [SELECTIVE_KINDS] covers the kind-bounded one.
+     * An invariant over the pipelines rather than a list of today's queries, so a new
+     * query landing in the fast tier fails here.
      */
     @Test
     fun `the counters tier asks nothing whose cost scales with the corpus`() {
@@ -148,8 +147,8 @@ class StatsRollupTest {
             val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
 
             assertEquals(emptySet(), StatsTier.COUNTERS.sections intersect StatsTier.CHARTS.sections)
-            // `sync` is absent with no router files to read. The declaration is what
-            // StatsSnapshot clears stale members by, so publishing outside it leaves sections nobody clears.
+            // `sync` is absent with no router files to read. StatsSnapshot clears stale members
+            // by the declaration, so a section published outside it is one nobody clears.
             assertEquals(StatsTier.COUNTERS.sections - "sync", sectionsOf(counters))
             assertEquals(StatsTier.CHARTS.sections, sectionsOf(charts))
             for (member in sectionsOf(counters) + sectionsOf(charts)) {
@@ -161,7 +160,7 @@ class StatsRollupTest {
         }
     }
 
-    /** The `sections` list is the published set, not the owned one: naming an absent `sync` reads as a silent failure. */
+    /** The `sections` list is the published set, not the owned one; an absent `sync` named reads as a failure. */
     @Test
     fun `a pass states its own cadence`() {
         runBlocking {
@@ -173,12 +172,12 @@ class StatsRollupTest {
             assertNotNull(tier["tookMs"])
             assertEquals(sectionsOf(doc).toList().sorted(), tier["sections"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted())
             assertNull(doc["tiers"]!!.jsonObject["charts"], "a pass claims nothing about the other half of the document")
-            // A document computed in two passes has no one duration; each pass states its own in `tiers.<name>.tookMs`.
+            // A document computed in two passes has no one duration.
             assertNull(doc["tookMs"])
         }
     }
 
-    /** A section carries one `generatedAt` for all its members, so a slow-cadence number cannot sit in a fast-cadence section. */
+    /** A section carries one `generatedAt`, so a slow-cadence number cannot sit in a fast-cadence section. */
     @Test
     fun `the corpus section is the cheap half of what it used to be`() {
         runBlocking {
@@ -198,7 +197,7 @@ class StatsRollupTest {
 
     // ---- the one number that crosses the boundary ----------------------------
 
-    /** The histogram's `spanBy(kind)`, bounded at both ends so the match set is days rather than the store. */
+    /** The histogram's `spanBy(kind)`, bounded at both ends so the match set is days, not the store. */
     @Test
     fun `the newest event is asked for over days, not over the store`() {
         runBlocking {
@@ -238,7 +237,7 @@ class StatsRollupTest {
 
     // ---- what a failure costs ------------------------------------------------
 
-    /** Which queries can afford the fast cadence is a measurement, and a slow refusal is its own problem. */
+    /** Which queries can afford the fast cadence is a measurement; a slow refusal is its own problem. */
     @Test
     fun `every query is timed, including the ones that fail`() {
         runBlocking {
@@ -315,9 +314,8 @@ class StatsRollupTest {
         val KIND_FILTER = Regex("""kind = (\d+)""")
 
         /**
-         * The kinds a counters query may lean on as its only bound. A kind
-         * filter bounds the group set, not the walk, so only sparse kinds
-         * qualify; kind 9735 does not, which is why `zaps` sits with the charts.
+         * The kinds a counters query may lean on as its only bound. A kind filter bounds the
+         * group set, not the walk, so only sparse kinds qualify.
          */
         val SELECTIVE_KINDS = setOf(10040, 30382)
 

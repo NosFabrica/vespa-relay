@@ -37,10 +37,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The stability gate removes a relay from a fan-out on the router's own evidence,
- * so excluding needs a positive measurement: not silence, not a thin window.
- */
+/** The stability gate excludes a relay only on a positive measurement: not silence, not a thin window. */
 class RelayConsistencyTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val steady = RelayUrlNormalizer.normalize("wss://nos.lol")
@@ -70,14 +67,11 @@ class RelayConsistencyTest {
 
     @Test
     fun `the measured shuffler is refused and the measured steady relays are not`() {
-        // Live readings as verdicts; the steady relays are never near the bar.
+        // Live readings as verdicts; the margin keeps ordinary replication lag from reading as misbehaviour.
         val c = RelayConsistency()
         assertEquals(RelayConsistency.Verdict.CONSISTENT, c.decide(ids(0, 500), ids(0, 500)))
-        // 482 of 500 is 0.964: the margin that keeps ordinary replication lag from reading as misbehaviour.
         assertEquals(RelayConsistency.Verdict.CONSISTENT, c.decide(ids(0, 500), ids(18, 500)))
-        // fiatjaf.com: 128 shared of a 179/203 pair.
         assertEquals(RelayConsistency.Verdict.INCONSISTENT, c.decide(ids(0, 179), ids(51, 203)))
-        // multiplexer.huszonegy.world: 327 of 500 at the seven-day anchor.
         assertEquals(RelayConsistency.Verdict.INCONSISTENT, c.decide(ids(0, 500), ids(173, 500)))
     }
 
@@ -152,7 +146,7 @@ class RelayConsistencyTest {
     @Test
     fun `a stability verdict does not need a fold to be readable`() =
         runBlocking {
-            // Most urls were never folded and carry no `same-as`; reading the fold first would hide their verdicts.
+            // Most urls were never folded and carry no `same-as`.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishConsistency(shuffler, consistent = false, first = 203, second = 179, shared = 128, score = 0.715, anchorDays = 7)
@@ -195,7 +189,7 @@ class RelayConsistencyTest {
                         AliasProbe(
                             fetch = { at, want, _, _ ->
                                 dials.incrementAndGet()
-                                // The shuffler's window walks forward on every ask, so no two answers agree.
+                                // The shuffler's window walks forward on every ask.
                                 val from = if (at == shuffler) drift.getAndAdd(40) else 0
                                 AliasProbe.Page(corpus.drop(from).take(want))
                             },
@@ -218,7 +212,6 @@ class RelayConsistencyTest {
     @Test
     fun `apply never dials`() =
         runBlocking {
-            // It runs in front of every fan-out, on the cycle's critical path.
             val dials = AtomicInteger()
             val pass =
                 ConsistencyPass(
@@ -255,9 +248,8 @@ class RelayConsistencyTest {
     @Test
     fun `a verdict ages on when it was MEASURED, not on the record it rides on`() =
         runBlocking {
-            // Kind 30166 is shared: quartz's RelayMonitor rewrites the record on every connection, so the
-            // event's createdAt is minutes old for any relay still in the fan-out. Written now over a
-            // verdict measured a month and a day ago, the record must read stale.
+            // Quartz rewrites the shared kind 30166 on every connection, so the event's createdAt is
+            // always fresh; a verdict measured past the TTL must still read stale.
             val store = newStore()
             val month = 30L * 24 * 60 * 60
             val record = RelayVerdictRecord(store, signer, ttlSeconds = month)
@@ -288,7 +280,7 @@ class RelayConsistencyTest {
     @Test
     fun `a record written before measured-at existed is re-measured, not believed forever`() =
         runBlocking {
-            // Falling back to the event's clock would date the verdict minutes old for as long as the relay stayed in the fan-out.
+            // Falling back to the event's clock would keep the verdict current forever.
             val store = newStore()
             store.insert(
                 signer.sign(

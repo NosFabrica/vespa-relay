@@ -38,8 +38,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * NIP-42 when the same relay answers at a clearnet url and a hidden service: a Tor client signs the
- * address it dialled. [MultiAddressAuthPolicy] re-states quartz's checks, so each rejection is pinned too.
+ * NIP-42 when the same relay answers at a clearnet url and a hidden service: a Tor client signs
+ * the address it dialled. [MultiAddressAuthPolicy] restates quartz's checks, so each rejection is
+ * pinned too.
  */
 class RelayOnionAuthTest {
     private val clearnet = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -55,7 +56,7 @@ class RelayOnionAuthTest {
             alsoServedAt = alsoAt,
         )
 
-    /** Runs one connection: sends [authFor] against the relay's challenge and returns the relay's `OK` line for it. */
+    /** One connection: sends [authFor] against the relay's challenge and returns the `OK` line for it. */
     private fun okFor(
         server: NostrRelayServer,
         authFor: (challenge: String) -> RelayAuthEvent,
@@ -116,7 +117,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /** Quartz's own `RelayAuthEvent.create(relays, …)` names several relays; the per-connection challenge keeps that safe. */
+    /** Quartz's own auth builder names several relays; the per-connection challenge keeps that safe. */
     @Test
     fun `an auth naming several relays authenticates if any of them is us`() {
         val server = relayServing { setOf(onion) }
@@ -140,7 +141,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /** A hidden service is published on port 80, and the normalizer keeps `…onion:80` and `…onion` apart. */
+    /** A hidden service is published on port 80, and the normalizer keeps `:80` and no port apart. */
     @Test
     fun `the default port spelled out is the same address`() {
         val server = relayServing { setOf(onion) }

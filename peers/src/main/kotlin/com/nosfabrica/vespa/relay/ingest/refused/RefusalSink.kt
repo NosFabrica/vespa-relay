@@ -25,11 +25,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 
 /**
- * Which store refusals mean the event is unstorable here as a property of the
- * event, not of our health. `InsertOutcome.Failed` is excluded because the
- * fault was the store's; a bad signature is excluded because the id hashes the
- * content, so the same id can arrive correctly signed from another relay;
- * `DUPLICATE` is excluded because a reconcile never asks for an id we hold.
+ * Which store refusals mean the event is unstorable here as a property of the event, not of
+ * our health. A bad signature is excluded because the same id can arrive correctly signed
+ * from another relay; a duplicate because a reconcile never asks for an id we hold.
  */
 object PermanentRefusals {
     fun isPermanent(reason: String): Boolean =
@@ -45,10 +43,7 @@ object PermanentRefusals {
             reason == RejectionReason.VANISHED
 }
 
-/**
- * Where a submitted event came from and what its stream may heal. Carried per
- * event because the healer's switches are per-stream while the pipeline is shared.
- */
+/** Where a submitted event came from and what its stream may heal; the pipeline is shared. */
 data class IngestOrigin(
     val url: NormalizedRelayUrl? = null,
     val healContent: Boolean = false,
@@ -60,22 +55,15 @@ data class IngestOrigin(
     }
 }
 
-/**
- * Where the ingest pipeline reports a store refusal and asks whether an event
- * is already suppressed. An interface so the pipeline knows nothing of
- * filters, epochs or upstream repairs, and a test can drive it directly.
- */
+/** Where the ingest pipeline reports a store refusal and asks whether an event is already suppressed. */
 interface RefusalSink {
-    /**
-     * Whether [onRefused] reads the [IngestOrigin] it is handed. Only the heal
-     * path does; a sink answering false saves every batch the id→origin map.
-     */
+    /** Whether [onRefused] reads the [IngestOrigin] it is handed; false saves every batch the id map. */
     val tracksOrigins: Boolean
 
     /** True when this event has been twice refused and should not be stored again. */
     fun isSuppressed(event: Event): Boolean
 
-    /** The store refused [event], which arrived via [origin]. Called on an ingest worker after the batch write. */
+    /** The store refused [event], which arrived via [origin]. Called on an ingest worker. */
     fun onRefused(
         event: Event,
         origin: IngestOrigin,

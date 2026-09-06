@@ -1,16 +1,10 @@
-// The app-ecosystem stragglers: NIP-89 handlers and recommendations, software
-// applications, and feeds. Handler events carry a kind-0-shaped JSON content,
-// so they render as a mini profile of the app.
+// NIP-89 handlers and recommendations, software applications, and feeds.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
 import { register, registerRow, shell, bodyHtml, extLink, tagsOf, tagOf, jsonContent, clipIf, plural } from "./base.js";
 
-/**
- * What an app calls itself, wherever it put it: a NIP-89 handler carries a
- * kind-0-shaped JSON content, and the same three fields also ride as tags for
- * the clients that write them there.
- */
+/** What an app calls itself: from its kind-0-shaped JSON content, else from the same fields as tags. */
 const appOf = (ev) => {
   const c = jsonContent(ev);
   return {

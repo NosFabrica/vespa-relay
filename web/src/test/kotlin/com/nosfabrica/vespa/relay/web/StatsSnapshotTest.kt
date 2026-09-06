@@ -35,8 +35,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The holder behind the stats routes: bytes and validator move together, and
- * "no document yet" is not a document full of zeros. The routes are in [StatsPageTest].
+ * The holder behind the stats routes: bytes and validator move together, and "no document yet"
+ * is not a document full of zeros.
  */
 class StatsSnapshotTest {
     private fun doc(events: Int) =
@@ -69,8 +69,7 @@ class StatsSnapshotTest {
 
         snap.publish(doc(2))
         val second = assertNotNull(snap.served())
-        // Different content never shares a validator, or a poller caches the
-        // first document forever.
+        // Different content never shares a validator, or a poller caches the first document forever.
         assertTrue(first.etag != second.etag, "new content must mint a new validator")
 
         snap.publish(doc(1))
@@ -119,8 +118,7 @@ class StatsSnapshotTest {
 
     @Test
     fun `an unwritable path still serves from memory`() {
-        // A directory where the file should be fails every write; the file is
-        // for durability, not for serving.
+        // A directory where the file should be fails every write.
         val dir = Files.createTempDirectory("stats").toFile()
         val blocked = File(dir, "stats.json").also { it.mkdirs() }
         val snap = StatsSnapshot(blocked.path)
@@ -143,8 +141,8 @@ class StatsSnapshotTest {
     private fun StatsSnapshot.doc() = Json.parseToJsonElement(assertNotNull(served()).bytes.decodeToString()).jsonObject
 
     /**
-     * The counters pass runs many times per charts pass and must not blank the
-     * charts it did not compute. `tiers` is the one member neither tier owns.
+     * The counters pass runs many times per charts pass and must not blank the charts it did not
+     * compute. `tiers` is the one member neither tier owns.
      */
     @Test
     fun `a tier publishes its own sections and keeps the other tier's`() {
@@ -180,8 +178,8 @@ class StatsSnapshotTest {
     }
 
     /**
-     * `sync` is the case: a relay whose router state files are gone publishes no
-     * sync section. Absent is a fact the page draws; stale is one it cannot.
+     * A relay whose router state files are gone publishes no sync section. Absent is a fact the
+     * page draws; stale is one it cannot.
      */
     @Test
     fun `a section the owning tier no longer computes is removed, not left behind`() {
@@ -211,14 +209,14 @@ class StatsSnapshotTest {
     }
 
     /**
-     * A document from another schema is replaced, not merged onto: the members
-     * this schema dropped are owned by nobody and would otherwise stay forever.
+     * A document from another schema is replaced, not merged onto: the members this schema dropped
+     * are owned by nobody and would otherwise stay forever.
      */
     @Test
     fun `a seeded document from an older schema is not merged onto`() {
         val snap = StatsSnapshot()
-        // What a schema-1 state file held: `pubkeys` inside `corpus`, and a
-        // top-level `tookMs` that schema 2 does not write.
+        // What a schema-1 state file held: `pubkeys` inside `corpus`, and a top-level `tookMs`
+        // that schema 2 does not write.
         snap.publish(
             buildJsonObject {
                 put("schema", 1)

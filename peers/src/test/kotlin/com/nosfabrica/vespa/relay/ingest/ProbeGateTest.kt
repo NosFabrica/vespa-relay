@@ -67,8 +67,7 @@ class ProbeGateTest {
     @Test
     fun `a backfill's hit rate does not keep the probe on for the rest of the process`() {
         val gate = ProbeGate(minHitRate = 0.20)
-        // Days of catch-up, then convergence; without decay the backfill's
-        // counters would outvote the present indefinitely.
+        // Without decay the backfill's counters would outvote the present indefinitely.
         feed(gate, events = 2_000_000, hitRate = 0.94)
         assertTrue(gate.worthIt())
         feed(gate, events = 4_000_000, hitRate = 0.0)

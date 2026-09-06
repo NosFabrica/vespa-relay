@@ -20,45 +20,34 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
-/*
- * The NIP-32 label vocabulary this deployment's kind-30166 records are written
- * in. It lives in :peers because it is the contract between the two planes:
- * the monitor writes these values, the mirror reads them back to build a
- * roster (`#l = prime`) and to hold a `dead` url out of a candidate set.
- *
- * (A block comment: a top-level KDoc on no declaration fails ktlint.)
- */
-
 /**
- * The grade vocabulary. [PRIME] is the only admitting value; every refusal is
- * descriptive, so the record explains itself. The grade names the relay, not
- * what this router does with it.
+ * The NIP-32 grade vocabulary of this deployment's kind-30166 records: the monitor writes
+ * it, the mirror reads it back to build a roster. [PRIME] is the only admitting value; every
+ * refusal names what the relay did, not what this router does with it.
  */
 enum class Verdict(
     val value: String,
 ) {
     PRIME("prime"),
 
-    /** No TCP, no TLS, no websocket: the transport itself said no. */
+    /** The transport itself said no: no TCP, no TLS, no websocket. */
     DEAD("dead"),
 
     /** Connected, then nothing: no EOSE, no CLOSED, the window lapsed. */
     SILENT("silent"),
 
-    /** Works, and is another record's relay; syncing it doubles every event. */
+    /** Works, and is another record's relay. */
     ALIAS("alias"),
 
-    /** Two answers to one question; would poison bands and coverage. */
+    /** Two answers to one question. */
     INCONSISTENT("inconsistent"),
 
     /** Ignores `until`: a paged walk against it cannot terminate. */
     UNPAGEABLE("unpageable"),
 
     /**
-     * Answers with events the filter did not ask for: a wrong kind, a stamp
-     * above the `until`. [INCONSISTENT] compares two answers to each other,
-     * so a relay serving the same wrong events every time passes it; this
-     * one reads the events.
+     * Answers with events the filter did not ask for. Unlike [INCONSISTENT] this reads the
+     * events, so a relay serving the same wrong events every time is caught.
      */
     NONCOMPLIANT("noncompliant"),
 

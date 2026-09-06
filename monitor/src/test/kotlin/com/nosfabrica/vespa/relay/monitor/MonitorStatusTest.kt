@@ -42,10 +42,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The monitor plane's status document, and the shared page that draws it off
- * the `monitor` section the document carries.
- */
+/** The monitor plane's status document, and the shared page that draws it. */
 class MonitorStatusTest {
     private fun rows(): Processors =
         Processors().apply {
@@ -79,7 +76,7 @@ class MonitorStatusTest {
 
     @Test
     fun `a deployment with no monitor publishes no section at all`() {
-        // A card of zeroes would read as a monitor that is failing rather than one nobody configured.
+        // A card of zeroes would read as a monitor that is failing.
         val doc = MonitorStatus(Processors(), everySeconds = 30).document(nowSeconds = 1_000)
 
         assertNull(doc["monitor"])
@@ -104,7 +101,6 @@ class MonitorStatusTest {
                 }
             }
 
-            // The markup on disk carries the relay's heading; the monitor's comes from the document's `title`.
             assertTrue(client.get("/").bodyAsText().contains("mountStatsPage"))
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the monitor page")
@@ -121,7 +117,7 @@ class MonitorStatusTest {
     }
 
     private companion object {
-        /** What the page imports, listed by hand: a regex over the markup would stop matching silently. */
+        /** What the page imports, listed by hand so a change in the markup fails here. */
         val IMPORTS =
             listOf(
                 "/web/shared/stats.css",

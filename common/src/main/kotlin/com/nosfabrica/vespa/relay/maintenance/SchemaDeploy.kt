@@ -24,10 +24,9 @@ import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import java.net.URI
 
 /**
- * Deploys the bundled Vespa application package on every boot and waits until
- * Vespa serves it, so the cluster always matches the schema this build
- * expects. Against a Vespa already serving, a failed deploy keeps the process
- * up on the schema Vespa has; on a fresh Vespa it rethrows.
+ * Deploys the bundled Vespa application package on every boot and waits until Vespa serves it.
+ * Against a Vespa already serving, a failed deploy keeps the process up on the schema Vespa has;
+ * on a fresh Vespa it rethrows.
  */
 fun deployBundledSchema(
     vespaUrl: String,
@@ -38,7 +37,7 @@ fun deployBundledSchema(
         deployer.deploy()
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
-        // "schema:", not "relay:": both processes deploy, and a failure in the sync container is not the relay's.
+        // "schema:", not "relay:": both processes deploy.
         System.err.println(
             "schema: deploy to $configUrl failed (${e.message?.take(200)}); " +
                 "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",

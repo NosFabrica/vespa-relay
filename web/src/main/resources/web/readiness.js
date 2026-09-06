@@ -1,10 +1,7 @@
-// The line under the search box that says whether this relay can rank for
-// this reader yet and, when it cannot, the one thing that fixes it. The
-// verdict is shared/readiness.js's; this module makes the asks that feed it
-// and writes the words. The check is lazy: once per pubkey per page, after a
-// delay, stopping at the first broken link, with a `ready` verdict kept in a
-// week-long cookie and the posts count sent only when this relay says which
-// kinds it mirrors (shared/mirrors.js).
+// The line under the search box that says whether this relay can rank for this reader yet
+// and, when it cannot, the one thing that fixes it. The verdict is shared/readiness.js's; this
+// module makes the asks that feed it and writes the words. The check runs once per pubkey per
+// page, after a delay, and a `ready` verdict is kept in a cookie.
 
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
@@ -22,11 +19,7 @@ const PROVIDER_URL = "https://brainstorm.world";
 /** The first ask waits for the search, the faces and the score chips, which share its sockets. */
 const START_DELAY_MS = 1500;
 
-/**
- * How long a `ready` verdict is trusted, in a cookie so the browser enforces
- * the expiry. A complete chain has nothing left to learn; only a verdict
- * short of ready is worth re-asking on the router's next pass.
- */
+/** How long a `ready` verdict is trusted, in a cookie so the browser enforces the expiry. */
 const READY_TTL_DAYS = 7;
 const READY_COOKIE = "sot_ready";
 
@@ -40,16 +33,12 @@ const many = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 let checkedFor = null;   // the pubkey this page has already checked
 
 /**
- * Which check is current. Bumped by every start and clear and carried by the
- * run, so a run whose reason has gone (sign-out, an account switch in the
- * extension) paints nothing.
+ * Which check is current, bumped by every start and clear, so a run whose reason has gone paints
+ * nothing.
  */
 let generation = 0;
 
-/**
- * Check [pubkey] once, in the background. Safe to call from every path that
- * can change who is signed in; a repeat for the same pubkey costs nothing.
- */
+/** Check [pubkey] once, in the background; a repeat for the same pubkey costs nothing. */
 export function checkReadiness(pubkey, { force = false } = {}) {
   if (!pubkey) { clearReadiness(); return; }
   if (!force && checkedFor === pubkey) return;
@@ -67,14 +56,13 @@ export function clearReadiness() {
 }
 
 /**
- * One pass. [gen] is the only concurrency control: a newer pass runs, and
- * the older one finishes into a paint that is dropped.
+ * One pass. [gen] is the only concurrency control: a superseded pass finishes into a paint that is
+ * dropped.
  */
 async function run(me, gen) {
   if (gen !== generation) return;
   const facts = {};
-  // Painted after every stage so the chain fills in, but nothing is shown
-  // until the verdict is worth showing, and nothing once superseded.
+  // Painted after every stage so the chain fills in.
   const paint = () => { if (gen === generation) render(assess(facts), me); };
 
   const anon = await refConn();
@@ -82,19 +70,17 @@ async function run(me, gen) {
   paint();
   if (!facts.relayList.writeRelays.length || !facts.rankService) return;
 
-  // Our count and the provider relay's answer the same question about two
-  // stores; run in series, the local answer waited on a stranger's relay.
+  // Together, so the local answer never waits on a stranger's relay.
   [facts.scores, facts.probe] = await Promise.all([
     scoreCounts(anon, facts.rankService),
     probe(anon),
   ]);
   paint();
 
-  // Only once ranking is complete: a reader still importing scores does not
-  // need a second, quieter number about a different thing.
+  // Only once ranking is complete does the posts stage matter.
   if (assess(facts).state !== "ready") return;
-  // Without the mirror's kind list the two post counts are not the same
-  // question (shared/mirrors.js), so no scope means no posts stage at all.
+  // Without the mirror's kind list the two post counts are not the same question, so no scope
+  // means no posts stage at all.
   const scope = await readMirrorScope();
   // Sign-out across the await above must stop the asks, not only the paint.
   if (gen !== generation) return;
@@ -108,10 +94,9 @@ async function run(me, gen) {
 // ---- the asks -------------------------------------------------------------
 
 /**
- * The reader's kind 0, 10002 and 10040, one REQ read anonymously: the
- * authenticated socket is trust-gated, and this check exists for readers who
- * have scored nobody. False unless the relay reached EOSE; a timed-out read
- * must not become "you have no relay list".
+ * The reader's kind 0, 10002 and 10040, one REQ read anonymously, since the authenticated
+ * socket is trust-gated. False unless the relay reached EOSE; a timed-out read must not become
+ * "you have no relay list".
  */
 async function readLists(anon, me, facts) {
   let evs;
@@ -123,19 +108,17 @@ async function readLists(anon, me, facts) {
     evs.filter((e) => e.kind === kind).sort((a, b) => b.created_at - a.created_at)[0] || null;
 
   const relayList = newest(10002);
-  // NIP-65: an `r` tag with no marker is read and write. Only write relays
-  // matter here, being where the router would look for the rest of the reader.
+  // NIP-65: an `r` tag with no marker is read and write. Only write relays matter here.
   const declared = relayList
     ? (relayList.tags || []).filter((t) => t?.[0] === "r" && t[1] && (t[2] === "write" || t[2] == null))
     : [];
   const writeRelays = [...new Set(declared.map((t) => normalizeRelay(t[1])).filter(Boolean))];
-  // `seen` is not `writeRelays.length`: a list naming only ws:// or loopback
-  // relays is a list the reader published and a browser cannot use.
+  // `seen` is not `writeRelays.length`: a list naming only unusable relays was still published.
   facts.relayList = { seen: !!relayList, declared: declared.length, writeRelays };
 
   const scoreList = newest(10040);
-  // The same event shared/providers.js would fetch again for the chips and
-  // the provenance row; this read is complete-gated, which seeding requires.
+  // The same event shared/providers.js would fetch again; this read is complete-gated, which
+  // seeding requires.
   seedProviders(me, scoreList, true);
   facts.scoreListSeen = !!scoreList;
   const rank = scoreList ? (scoreList.tags || []).find((t) => t?.[0] === "30382:rank") : null;
@@ -144,9 +127,8 @@ async function readLists(anon, me, facts) {
 }
 
 /**
- * How many of the provider's score cards are here, and how many it serves.
- * `there` is null or a sentinel when there is no denominator to be had, and
- * the panel must not invent one.
+ * How many of the provider's score cards are here, and how many it serves; `there` is null or
+ * a sentinel when there is no denominator to be had.
  */
 async function scoreCounts(anon, { service, relay: url }) {
   const filter = { kinds: [30382], authors: [service] };
@@ -158,9 +140,8 @@ async function scoreCounts(anon, { service, relay: url }) {
 }
 
 /**
- * Does a read on the authenticated socket come back? The one check that sees
- * cards that are here but not yet projected. The anonymous read is the
- * control: on a fresh relay both are empty, and that is not a broken lens.
+ * Does a read on the authenticated socket come back? The anonymous read is the control: on a
+ * fresh relay both are empty, and that is not a broken lens.
  */
 async function probe(anon) {
   if (!relay.authed) return null;
@@ -175,16 +156,14 @@ async function probe(anon) {
 }
 
 /**
- * The reader's own events here, against the write relay holding most of
- * them. One filter, scoped to the kinds this relay mirrors, sent to both
- * sides; `scopedTo` refuses to build one without a scope. The newest-event
- * reads carry the same bound and stand in where a relay answers no COUNT.
+ * The reader's own events here, against the write relay holding most of them: one filter
+ * scoped to the mirrored kinds, sent to both sides. The newest-event reads stand in where a
+ * relay answers no COUNT.
  */
 async function postCounts(anon, me, writeRelays, scope) {
   const filter = scopedTo({ authors: [me] }, scope);
   const newest = { ...filter, limit: 1 };
   const url = writeRelays[0];
-  // Three answers to one question, none of which reads the others.
   const [here, newestHere, answer] = await Promise.all([
     anon.count(filter).catch(() => TIMED_OUT),
     anon.req(newest).catch(() => []),
@@ -199,23 +178,18 @@ async function postCounts(anon, me, writeRelays, scope) {
     here,
     there: answer?.there ?? null,
     relay: url || null,
-    // What both sides were asked for, so the words can say so. Null where
-    // the mirror asks for everything.
+    // What both sides were asked for, so the words can say so; null where the mirror asks for everything.
     kinds: filter.kinds || null,
     newestHere: newestHere[0]?.created_at ?? null,
     newestThere: answer?.newest ?? null,
   };
 }
 
-/**
- * One question to somebody else's relay, on a socket opened and closed for
- * it: a connection we keep is one they are holding for us.
- */
+/** One question to somebody else's relay, on a socket opened and closed for it. */
 async function askRemote(url, ask) {
   let conn = null;
   try {
-    // Not `lensless`: `include:spam` is this relay's extension, and a foreign
-    // NIP-50 relay would search for the token as a word.
+    // Not `lensless`: a foreign NIP-50 relay would search for `include:spam` as a word.
     conn = new Relay(url);
     await conn.connect();
     return await ask(conn);
@@ -385,8 +359,7 @@ function words(v) {
       if (pct != null) {
         return {
           state: "mirroring",
-          // "About": the denominator is the other relay's NIP-45 COUNT, which
-          // need not agree with itself across filters.
+          // "About": the denominator is the other relay's NIP-45 COUNT.
           headline: `Ranking is ready. Your own posts are still arriving — about ${pct}%`,
           meter:
             `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
@@ -415,11 +388,7 @@ function words(v) {
 
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
 
-/**
- * What both sides of the posts figure were asked for. Said because the
- * number is smaller than the one the reader's own client shows. Empty where
- * the mirror asks for every kind, since there is no narrowing to explain.
- */
+/** What both sides of the posts figure were asked for; empty where the mirror asks for every kind. */
 const scopeNote = (p) =>
   p.kinds
     ? `Both sides of that comparison cover the ${fmt(p.kinds.length)} kinds this relay mirrors, so it weighs ` +
@@ -437,8 +406,7 @@ function chainHtml(chain) {
     .map((l) => {
       const d = l.detail || {};
       let sub = "";
-      // A link below the break was never asked and has nothing to report;
-      // every case below reads `detail`, and a waiting link carries none.
+      // A link below the break was never asked and has nothing to report.
       if (l.status !== "waiting") switch (l.key) {
         case "relayList":
           sub = l.status !== "broken" ? many(d.writeRelays, "write relay")
@@ -495,9 +463,8 @@ function fetchFormHtml(label, { quiet = false } = {}) {
 // ---- pulling your lists off a relay you name ------------------------------
 
 /**
- * Read [url] for the reader's kind 0, 10002 and 10040 and copy them here,
- * verbatim: an event is its signature, and the smallest edit is a forgery
- * this relay would refuse. The one path out of "no relay list".
+ * Read [url] for the reader's kind 0, 10002 and 10040 and copy them here verbatim: the smallest
+ * edit is a forgery this relay would refuse.
  */
 async function fetchFrom(url, me, say) {
   const dial = normalizeRelay(url);
@@ -524,8 +491,7 @@ async function fetchFrom(url, me, say) {
   }
   for (const ev of first) found.set(ev.id, ev);
 
-  // One hop only: the 10040 usually lives on the write relays the list
-  // names, which is the walk the router does, done once by hand.
+  // One hop only: the 10040 usually lives on the write relays the list names.
   const list = [...found.values()].filter((e) => e.kind === 10002).sort((a, b) => b.created_at - a.created_at)[0];
   const writes = list
     ? [...new Set((list.tags || [])
@@ -552,16 +518,14 @@ async function fetchFrom(url, me, say) {
     return;
   }
 
-  // Newest per kind only; a superseded replaceable copied here would only be
-  // replaced again.
+  // Newest per kind only.
   const newest = new Map();
   for (const ev of found.values()) {
     const prev = newest.get(ev.kind);
     if (!prev || prev.created_at < ev.created_at) newest.set(ev.kind, ev);
   }
   say({ tone: "working", state: "copying", spin: true, headline: "Copying them to this relay…" });
-  // Together, on one socket: NIP-01 never required a client to wait for one
-  // OK before sending the next event.
+  // Together, on one socket: NIP-01 never required a client to wait for one OK before the next.
   const results = new Map(
     await Promise.all([...newest].map(([kind, ev]) =>
       relay.publish(ev).then(() => [kind, null], (e) => [kind, e.message || "refused"]))),
@@ -669,19 +633,13 @@ function hide() {
 }
 
 // ---- what the page remembers ----------------------------------------------
-//
-// Both are per pubkey, so one reader's dismissal never carries to the next
-// to sign in on the same browser. The verdict is a cookie so the browser
-// enforces its week; the dismissal is localStorage because it is keyed on a
-// state as well as a clock.
+// Both are per pubkey. The verdict is a cookie so the browser enforces its expiry; the
+// dismissal is localStorage because it is keyed on a state as well as a clock.
 
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { return null; } };
 const writeJson = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} };
 
-/**
- * The cookie half. Signing out does not clear it: the verdict stays true
- * about the person it names.
- */
+/** The cookie half. Signing out does not clear it: the verdict stays true about the person it names. */
 function rememberedReady(pk) {
   const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${READY_COOKIE}=([^;]*)`));
   return !!m && decodeURIComponent(m[1]) === pk;
@@ -693,8 +651,7 @@ function rememberReady(pk) {
     `${READY_COOKIE}=${encodeURIComponent(pk)}; path=/; max-age=${READY_TTL_DAYS * 24 * 60 * 60}; SameSite=Lax${secure}`;
 }
 
-// A dismissal is about a state, not about the feature: the moment the state
-// changes the panel speaks again.
+// A dismissal is about a state, not the feature: when the state changes the panel speaks again.
 const DISMISS_KEY = "sot_ready_dismissed";
 function dismiss(pk, state) { writeJson(DISMISS_KEY, { pubkey: pk, state, at: Date.now() }); }
 function dismissed(pk, state) {

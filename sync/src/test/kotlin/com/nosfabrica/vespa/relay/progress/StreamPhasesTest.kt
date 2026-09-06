@@ -101,7 +101,7 @@ class StreamPhasesTest {
 
     @Test
     fun `a stuck leg is named on every line until it lets go`() {
-        // The phase cannot say it: a stream is rotating whether its pool turns over or is wedged on one relay.
+        // The phase alone cannot say it: rotating looks the same whether the pool turns or is wedged.
         val p = StreamPhases()
         p.set("content", rotating(5, 5))
         p.names("content", inFlight = {

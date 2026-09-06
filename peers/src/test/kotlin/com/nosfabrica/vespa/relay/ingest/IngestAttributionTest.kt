@@ -39,8 +39,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Who a store refusal gets blamed on. Outcome `i` belongs to event `i` only while
- * the lists are the same length, and a wrong blame suppresses an id forever.
+ * Who a store refusal is blamed on: outcome `i` belongs to event `i` only while the
+ * lists are the same length, and a wrong blame suppresses an id forever.
  */
 class IngestAttributionTest {
     private fun event(n: Int) =
@@ -124,8 +124,7 @@ class IngestAttributionTest {
 
     @Test
     fun `a store that returns fewer outcomes than events attributes nothing`() {
-        // Blaming by position against a shorter list would suppress ids that
-        // never earned it, and a suppressed id is never downloaded again.
+        // A wrongly blamed id is never downloaded again.
         runBlocking {
             val sink = Recorder()
             run(Misaligning(base(), drop = 3), sink, 8)
@@ -137,10 +136,7 @@ class IngestAttributionTest {
         }
     }
 
-    /**
-     * A real id hash with a junk signature: the fast path runs before verification,
-     * so it is the id and not the signature that gates what may be remembered.
-     */
+    /** A real id hash with a junk signature: the fast path runs before verification, so the id gates it. */
     private fun hashed(
         n: Int,
         kind: Int = 0,
@@ -163,9 +159,7 @@ class IngestAttributionTest {
     @Test
     fun `a replaceable superseded inside the batch is reported even though the store never sees it`() =
         runBlocking {
-            // `dropSuperseded` keeps a stale replaceable away from the store, which
-            // is where the `replaced` verdict used to come from, so the fast path
-            // must report the refusal itself.
+            // The store never sees the stale copy, so the fast path must report the refusal itself.
             val sink = Recorder()
             val older = hashed(1, createdAt = 1_700_000_000L)
             val newer = hashed(2, createdAt = 1_700_009_999L)
@@ -178,8 +172,7 @@ class IngestAttributionTest {
                 pipeline.submit(newer, skipVerify = true, IngestOrigin.Local)
                 var spins = 0
                 while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
-                // Wait for the refusal itself, not a duration. Under the list's
-                // monitor, because the pipeline is still writing to it.
+                // Synchronized on the list, because the pipeline is still writing to it.
                 var settling = 0
                 while (settling++ < 200 &&
                     synchronized(sink.refusals) { sink.refusals.none { it.first == older.id } }
@@ -200,8 +193,7 @@ class IngestAttributionTest {
     @Test
     fun `an event whose id does not match its content is never remembered`() =
         runBlocking {
-            // The fast path runs before verification, so an unchecked id would let
-            // a forged stale kind 0 suppress any id its author chose.
+            // Unchecked, a forged stale kind 0 could suppress any id its author chose.
             val sink = Recorder()
             val real = hashed(3, createdAt = 1_700_009_999L)
             val forged =

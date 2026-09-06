@@ -36,11 +36,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Publishes one signed kind-10040 naming a real relay and a dead one, so the
- * `gatedBy` gate and the monitor's 10040 source can be watched on a live stack.
- * Asserts nothing. Selected by `-Dseed10040=true`; the target
- * (`-Dseed10040Url`, default localhost) must be a relay you run, since the
- * provider list is fabricated.
+ * Publishes one signed kind-10040 naming a live relay and a dead one, so the `gatedBy` gate
+ * and the monitor's 10040 source can be watched on a live stack. Asserts nothing. Run with
+ * `-Dseed10040=true`; `-Dseed10040Url` (default localhost) must be a relay you run, since
+ * the provider list is fabricated.
  */
 class Seed10040Probe {
     @Test
@@ -53,7 +52,6 @@ class Seed10040Probe {
         val okhttp = OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(10)).build()
         val scope = CoroutineScope(SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-        // The user whose 10040 this is, and the provider the service tags pair each relay with.
         val user = NostrSignerInternal(KeyPair())
         val provider = NostrSignerInternal(KeyPair())
         try {

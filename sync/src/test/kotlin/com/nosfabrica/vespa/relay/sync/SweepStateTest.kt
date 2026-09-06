@@ -181,7 +181,7 @@ class SweepStateTest {
 
     // ---- a file written before the format nested ---------------------------
 
-    /** The flat key the previous version wrote: relay, a pipe, then the shape. */
+    /** The pre-stream flat key: relay, a pipe, then the shape. */
     private fun writeFlat(
         f: File,
         key: String,
@@ -249,7 +249,7 @@ class SweepStateTest {
 
     @Test
     fun `claiming widens what a sweep has already recorded, never replaces it`() {
-        // `advance` claims too, so the window just finished may already be in the map when the cursor is adopted.
+        // `advance` claims too, so the window just finished may already be in the map at adoption.
         val f = tempFile()
         writeFlat(f, "${relay.url}|${notes.toJson()}", 1_500, 2_000)
 

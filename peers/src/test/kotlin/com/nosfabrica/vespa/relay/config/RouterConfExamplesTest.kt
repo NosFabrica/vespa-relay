@@ -49,8 +49,6 @@ class RouterConfExamplesTest {
 
     @Test
     fun `a static stream seeds the store the discovery scans read from`() {
-        // A relaySource stream reads its relays out of events already held, so a
-        // static stream has to put the first ones there.
         val static = example.streams.filter { it.discovery == null }
         assertTrue(static.isNotEmpty(), "the example needs at least one statically-addressed stream")
         assertTrue(static.any { it.urls.isNotEmpty() }, "a static stream must name real urls")
@@ -71,8 +69,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the example's budgets fit under the socket ceiling it warns about`() {
-        // The numbers are duplicated rather than imported from `VisitPool`: `:peers`
-        // does not see `:sync`, and a ceiling asserted against itself asserts nothing.
+        // Duplicated rather than imported from `VisitPool`: `:peers` does not see `:sync`.
         val dispatcherHeadroom = 900
         val dials = example.streams.sumOf { it.visitConcurrency ?: RouterConfig.DEFAULT_VISIT_CONCURRENCY }
         val tails = example.streams.sumOf { it.maxLiveConcurrency ?: RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY }
@@ -100,7 +97,6 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the monitor fans out over NIP-65 write relays`() {
-        // Found by shape, not by name.
         val sources = example.monitor!!.sources.filter { it.filter.kinds == listOf(10002) }
         assertTrue(sources.isNotEmpty(), "the monitor does not read NIP-65 lists")
 
@@ -108,8 +104,7 @@ class RouterConfExamplesTest {
             val nip65 = source.selects.single()
             assertEquals(10002, nip65.kind)
             assertEquals("r", nip65.tag)
-            // 10002 puts the url first and its marker after it. `marker = "write"` is sugar
-            // for marked write, marked empty, or too short to carry a marker at all.
+            // `marker = "write"` is marked write, marked empty, or too short to carry a marker.
             assertEquals(1, nip65.urlIndex)
             assertEquals(
                 listOf(
@@ -124,8 +119,6 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the monitor also fans out over NIP-29 group hosts`() {
-        // The `group` tag is ["group", <id>, <relay url>, <name?>], the one relay list with
-        // the url at 2. Reading 1 would hand the fan-out group ids, which normalize rejects silently.
         val hosts =
             example.monitor!!
                 .sources
@@ -150,8 +143,7 @@ class RouterConfExamplesTest {
             )
         }
 
-        // NIP-29 posts are kinds 9 (chat) and 11 (thread) with replies in 1111, and
-        // the group's own record is 39000, the one the `group:` picker resolves a name against.
+        // Group posts are kinds 9, 11 and 1111; 39000 is the group's own record.
         assertTrue(
             example.streams.any {
                 it.discovery?.sources?.any { s -> s.filter.kinds == listOf(30166) } == true &&
@@ -165,8 +157,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `a stream that mirrors content mirrors the retractions too`() {
-        // Kind 5 (NIP-09) and kind 62 (NIP-62) retract what kind 1 wrote. The store enforces
-        // both at insert, and the stored request is what the next re-download is checked against.
+        // Kind 5 and kind 62 retract what kind 1 wrote, and the store enforces both at insert.
         val content = example.streams.filter { it.filter.kinds?.contains(1) == true }
         assertTrue(content.isNotEmpty(), "the example mirrors no user-written content at all")
         content.forEach { stream ->
@@ -178,8 +169,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `a stream that audits re-walks far less often than it audits`() {
-        // A visit pages before it audits, so equal periods page the whole history
-        // and then reconcile the same ground in one visit.
+        // A visit pages before it audits, so equal periods re-page and then reconcile the same ground.
         example.streams.filter { it.negentropySyncThePastSeconds != null && it.refetchThePastSeconds != null }.forEach {
             assertTrue(
                 it.refetchThePastSeconds!! > it.negentropySyncThePastSeconds!!,
@@ -209,19 +199,16 @@ class RouterConfExamplesTest {
             source.selects.all { it.tag != null },
             "every select NAMES its delegation tag — see `the 10040 scans read delegations and nothing else`",
         )
-        // Declarations only: a provider relay serves no kind 0 or 10002, and a kind that
-        // never returns an event re-opens a leg over the whole past at every visit.
+        // Declarations only: a kind a provider relay never serves re-opens a leg over the whole past.
         assertEquals(trustedKinds, assertions.filter.kinds)
-        // Owning the whole family lets the retraction audit's band land on the catch-up's key;
-        // see `RetractionAudit`. A kind mirrored but not owned is one nothing reconciles.
+        // A kind mirrored but not owned is one nothing reconciles.
         assertEquals(trustedKinds.toSet(), assertions.ownedKinds)
-        // The service sits at slot 1 of the tag whose slot 2 named the url; bound from anywhere else it is the cross product.
+        // The service sits at slot 1 of the tag whose slot 2 named the url; anywhere else is the cross product.
         assertTrue(
             source.selects.all { it.bindings["authors"] == BindingSlot.OfTag(1) },
             "each service tag binds its own provider as the authors to ask for",
         )
-        // Gated on the monitor's verdicts: a 10040 is as writable as a 10002, and its dead
-        // urls must cost the monitor one probe each, never this stream a dial per cycle.
+        // A 10040 is as writable as a 10002: its dead urls cost the monitor a probe, not this stream a dial.
         assertTrue(
             example.streams
                 .single { it.name == "assertions" }
@@ -278,8 +265,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the 10040 scans name every delegation quartz defines`() {
-        // Held to quartz's vocabulary: a metric added to ProviderTypes and not here
-        // is a provider this router never discovers, with nothing visible about it.
+        // A metric added to ProviderTypes and not here is a provider this router never discovers.
         val declared =
             ProviderTypes.javaClass.methods
                 .filter { it.parameterCount == 0 && it.returnType == ServiceType::class.java }
@@ -298,8 +284,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the 10040 scans read delegations and nothing else`() {
-        // A delegation and a relay hint have the same shape, three elements with hex at 1 and a url
-        // at 2. On the assertions stream a hint read as a delegation binds an event id as an author.
+        // A hint has a delegation's shape, hex at 1 and a url at 2; read as one it binds an event id as an author.
         val provider = "a".repeat(64)
 
         scans10040().forEach { (name, selects) ->
@@ -350,8 +335,7 @@ class RouterConfExamplesTest {
 
     @Test
     fun `a stream that mirrors one trusted declaration mirrors the whole family`() {
-        // A search expands these, so mirroring part of the family is a silent half-feature.
-        // By shape, not by stream name, so a future stream inherits the rule.
+        // A search expands the family, so a partial mirror is a silent half-feature.
         example.streams.forEach { stream ->
             val kinds = stream.filter.kinds.orEmpty()
             val carried = trustedKinds.filter { it in kinds }
@@ -373,7 +357,6 @@ class RouterConfExamplesTest {
 
     @Test
     fun `every dynamic stream states how often its list is re-derived`() {
-        // The one clock the config owes discovery is how often a scan's list is re-read from the store.
         example.discoveryStreams().forEach { stream ->
             assertTrue(stream.discovery!!.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
         }

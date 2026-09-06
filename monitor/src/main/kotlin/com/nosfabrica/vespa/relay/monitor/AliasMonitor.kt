@@ -34,16 +34,9 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The monitor's clock: a sweep of every [passes] entry over the candidate set
- * on its own schedule, and a fast lane over the urls named since the last look.
- *
- * The candidate set is derived by [source] inside the pass, never pushed in by
- * a stream, so no stream's discovery clock decides what a pass sees. The passes
- * read the verdicts back through [AliasFolding.apply] on a later cycle and
- * never wait on a probe.
- *
- * Passes never overlap, sweep or lane: they edit the same kind-30166 record per
- * url by read-modify-write, so [passGate] serialises everything that runs here.
+ * The monitor's clock: a sweep of every [passes] entry over the candidate set on its own
+ * schedule, and a fast lane over the urls named since the last look. Passes never overlap,
+ * sweep or lane: they edit one record per url by read-modify-write, so [passGate] serialises them.
  */
 class AliasMonitor(
     /** Run over each sweep's urls in this order, never concurrently. */
@@ -54,18 +47,11 @@ class AliasMonitor(
     private val emptyRetryMs: Long = DEFAULT_EMPTY_RETRY_MS,
     /** Where the candidate set comes from; null measures nothing. */
     private val source: CandidateSource? = null,
-    /**
-     * How often the fast lane looks for urls named by relay-list events since
-     * the last look, and the passes to run over them, on the same terms as
-     * [passes]. Null, or an empty list, turns the lane off.
-     */
+    /** How often the fast lane looks for newly named urls. Null, or an empty [fastLanePasses], turns it off. */
     private val fastLaneEveryMs: Long? = null,
     private val fastLanePasses: List<Pass> = emptyList(),
 ) {
-    /**
-     * One pass over one label's urls, returning how many verdicts it learned.
-     * An interface so the monitor can drive a pass without reading a verdict.
-     */
+    /** One pass over one label's urls, returning how many verdicts it learned. */
     fun interface Pass {
         suspend fun measure(
             label: String,
@@ -76,27 +62,23 @@ class AliasMonitor(
         ): Int
 
         /**
-         * The pass's progress row, or null for one that reports nothing. The
-         * monitor writes the clock to it and the pass writes the work.
+         * The pass's progress row, or null. The monitor writes the clock to it and the pass writes
+         * the work.
          */
         val progress: Processors.Handle? get() = null
     }
 
-    /** Where the candidate set comes from. See [StreamWorld]. */
+    /** Where the candidate set comes from. */
     interface CandidateSource {
         /** Every url worth measuring, across every configured stream. */
         suspend fun candidates(): List<NormalizedRelayUrl>
 
-        /**
-         * The derivation's own progress row, or null. It has one because
-         * [candidates] walks the whole store, and until it returns every pass
-         * row reads `idle` with no countdown.
-         */
+        /** The derivation's own progress row, or null; [candidates] walks the whole store. */
         val progress: Processors.Handle? get() = null
 
         /**
-         * Only the urls named by relay-list events ingested at or after [since].
-         * The default turns the fast lane into a no-op rather than an error.
+         * Only the urls named by relay-list events ingested at or after [since]; the default makes
+         * the lane a no-op.
          */
         suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
 
@@ -121,23 +103,15 @@ class AliasMonitor(
     private val learnedTotal = AtomicLong()
 
     /**
-     * How many verdicts the sweep has learned since boot, as a version for a
-     * cached relay list rather than a statistic: a list built before the number
-     * moved may still dial a url that has since folded away. Age remains the
-     * primary expiry; this is only an early one.
+     * How many verdicts the sweep has learned since boot: a version for a cached relay list, not a
+     * statistic.
      */
     fun generation(): Long = learnedTotal.get()
 
-    /**
-     * Start the sweep loop and, when configured, the fast lane. Calling it
-     * twice launches two loops.
-     */
+    /** Start the sweep loop and, when configured, the fast lane. Calling it twice launches two loops. */
     fun start(): AliasMonitor {
-        // Registered before the first sleep, so silence never reads as "not
-        // configured".
+        // Registered before the first sleep, so silence never reads as "not configured".
         dueAtMs = System.currentTimeMillis() + startupDelayMs
-        // The derivation runs once per sweep, at its head, so it shares the
-        // passes' clock rather than keeping one of its own.
         source?.progress?.let { p ->
             p.nextPassAt { dueAtMs }
             p.phase(Processors.IDLE)
@@ -149,18 +123,15 @@ class AliasMonitor(
         scope.launch {
             delay(startupDelayMs)
             while (scope.isActive) {
-                // Unset while a pass runs: the next one is not scheduled until
-                // this one returns.
+                // Unset while a pass runs, so a running pass does not read as a late one.
                 dueAtMs = null
                 passGate.withLock { runPass() }
-                // Only the pass knows whether there was anything to do.
                 val wait = if (lastPassHadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait
                 delay(wait)
             }
         }
-        // Under the same gate as the sweep: a lane tick that lands mid-sweep
-        // waits, and its since-bound then reads the same minutes of events.
+        // A lane tick that lands mid-sweep waits on the gate; its since-bound still covers those minutes.
         val everyMs = fastLaneEveryMs
         if (everyMs != null && fastLanePasses.isNotEmpty() && source != null) {
             scope.launch {
@@ -185,11 +156,8 @@ class AliasMonitor(
     }
 
     /**
-     * One lane tick: the urls named since [sinceSec], through every
-     * [fastLanePasses] entry in order. The caller holds [passGate].
-     *
-     * Not bracketed onto the source's row, which is the sweep's derivation; the
-     * passes it runs are bracketed on their own rows.
+     * One lane tick: the urls named since [sinceSec], through every [fastLanePasses] entry in
+     * order. The caller holds [passGate]. Not bracketed onto the source's row, which is the sweep's.
      */
     suspend fun runFastLane(sinceSec: Long): Int {
         val src = source ?: return 0
@@ -200,8 +168,7 @@ class AliasMonitor(
         for (pass in fastLanePasses) {
             pass.progress?.begin()
             try {
-                // Guarded one at a time, so one pass failing does not cost a
-                // new relay its first grade over a fault in the pass before it.
+                // Guarded one at a time, so one pass failing does not cost the passes after it.
                 learned += pass.measure(FAST_LANE, fresh, src::canDial, src::onEvent, src.sockets)
             } catch (e: CancellationException) {
                 throw e
@@ -211,18 +178,14 @@ class AliasMonitor(
                 pass.progress?.finish()
             }
         }
-        // Deliberately not [learnedTotal]; the lane has never moved [generation].
+        // Not added to learnedTotal: the lane does not move generation.
         return learned
     }
 
     /** Serialises the sweep and the fast lane. */
     private val passGate = Mutex()
 
-    /**
-     * When the next pass is due, in epoch millis, or null while one runs. Written
-     * by the loop rather than derived from the interval: an empty pass waits
-     * [emptyRetryMs], and a long pass pushes the next one later.
-     */
+    /** When the next pass is due, in epoch millis, or null while one runs. */
     @Volatile
     private var dueAtMs: Long? = null
 
@@ -231,20 +194,14 @@ class AliasMonitor(
     private var lastPassHadWork = false
 
     /**
-     * One sweep: derive the candidate set, then run every pass over it in
-     * order. The caller holds [passGate].
-     *
-     * A pass that throws must not end the loop or skip the passes after it.
-     * Cancellation is rethrown: that is the scope shutting down.
+     * One sweep: derive the candidate set, then run every pass over it in order. The caller
+     * holds [passGate]. A pass that throws must not end the loop or skip the passes after it.
      */
     suspend fun runPass(): Int {
         var learned = 0
-        // Derived at the moment the pass runs, so no stream's discovery clock
-        // decides what this pass sees.
+        // Derived now, so no stream's discovery clock decides what this pass sees.
         val work =
             source?.let { src ->
-                // Bracketed like a pass: it has a clock, takes minutes, and the
-                // rows under it cannot start until it returns.
                 src.progress?.begin(Processors.COLLECTING)
                 val urls =
                     try {
@@ -257,25 +214,22 @@ class AliasMonitor(
                     } finally {
                         src.progress?.finish()
                     }
-                // Empty, not "fewer than two": the per-url passes grade a lone
-                // url, and only the fold needs two. The fold refuses a world of
-                // one itself, inside [AliasFolding.measure].
+                // Empty, not "fewer than two": the per-url passes grade a lone url, and the fold
+                // refuses a world of one itself.
                 if (urls.isEmpty()) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
             } ?: emptyList()
         lastPassHadWork = work.isNotEmpty()
-        // One pass at a time over every label, so a pass is one clocked unit
-        // and the fold finishes everywhere before the next pass measures.
+        // One pass at a time over every label, so the fold finishes everywhere before the next pass measures.
         for (pass in passes) {
             pass.progress?.begin()
             try {
                 for ((label, w) in work) {
-                    // Each label guarded on its own, so one failing does not
-                    // cost the others.
+                    // Each label guarded on its own, so one failing does not cost the others.
                     try {
                         val n = pass.measure(label, w.candidates, w.canDial, w.onEvent, w.sockets)
                         learned += n
-                        // Per label, not once at the end: a fan-out starting
-                        // mid-pass should see the verdicts already published.
+                        // Per label, not once at the end, so a fan-out starting mid-pass sees the
+                        // verdicts already published.
                         if (n > 0) learnedTotal.addAndGet(n.toLong())
                     } catch (e: CancellationException) {
                         throw e
@@ -292,19 +246,18 @@ class AliasMonitor(
     }
 
     companion object {
-        /** The label a sweep reports under: one row, because the set is a union over streams. */
+        /** The sweep's one row, because the set is a union over streams. */
         const val ALL_STREAMS = "all streams"
 
-        /** What a lane tick reports under. */
         const val FAST_LANE = "fast lane"
 
-        /** Six hours, matching the default stream refresh. */
+        /** Matches the default stream refresh. */
         const val DEFAULT_INTERVAL_MS = 6L * 60 * 60 * 1000
 
-        /** Two minutes, so the first pass competes with downloads rather than every stream's opening burst. */
+        /** So the first pass competes with downloads rather than every stream's opening burst. */
         const val DEFAULT_STARTUP_DELAY_MS = 2L * 60 * 1000
 
-        /** A minute: the retry when a cold store has nothing to derive from yet. */
+        /** The retry when a cold store has nothing to derive from yet. */
         const val DEFAULT_EMPTY_RETRY_MS = 60L * 1000
     }
 }

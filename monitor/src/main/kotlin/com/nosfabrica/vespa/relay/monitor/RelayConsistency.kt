@@ -24,24 +24,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Does a relay answer the same question the same way twice.
- *
- * One filter, one anchor, asked twice. The window sits [ANCHOR_LAG_SECONDS]
- * into the past so "the answer changed" cannot be explained by new events,
- * indexing lag or a shard catching up. The two answers are compared to each
- * other and never to the filter, so a relay serving the same wrong slice every
- * time passes here; that question is [RelayCompliance]'s.
- *
- * A relay with no stable window has no stable band, so every cycle re-downloads
- * what the last one took. That is why a failure excludes rather than
- * downgrades; the verdict expires with [RelayVerdictRecord], so a relay that
- * settles comes back. [Verdict.UNMEASURABLE] is the absence of a claim and
- * never excludes: a relay holding nine events is not misbehaving.
+ * Does a relay answer the same question the same way twice: one filter, one anchor, asked twice,
+ * the answers compared to each other and never to the filter. A failure excludes rather than
+ * downgrades; [Verdict.UNMEASURABLE] is the absence of a claim and never excludes.
  */
 class RelayConsistency(
-    /** The smallest window worth deciding on; two answers of four events look alike whatever the relay does. */
+    /** The smallest window worth deciding on. */
     private val minSample: Int = RelayAliases.DEFAULT_MIN_SAMPLE,
-    /** How much of the smaller answer must appear in the larger. The fold's bar, for the fold's reason. */
+    /** How much of the smaller answer must appear in the larger. */
     private val minOverlap: Double = RelayAliases.DEFAULT_MIN_SELF_OVERLAP,
 ) {
     /** What one pair of answers proved. */
@@ -70,9 +60,8 @@ class RelayConsistency(
     fun refusedCount(): Int = inconsistent.size
 
     /**
-     * Asked per candidate rather than reported as set sizes: [replace] only
-     * rewrites the urls it is handed, so the sets can hold verdicts about urls
-     * no stream discovers any more. See [ConsistencyPass.report].
+     * Asked per candidate, not as set sizes: the sets can hold verdicts about urls nothing
+     * discovers any more.
      */
     fun isConsistent(url: NormalizedRelayUrl): Boolean = url in consistent
 
@@ -81,22 +70,20 @@ class RelayConsistency(
     /** Everything with no verdict yet. */
     fun toProbe(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !measured(it) }
 
-    /** Null is a relay that could not be asked; like an empty answer it is not evidence about how it answers. */
+    /** Null is a relay that could not be asked, which like an empty answer is no evidence. */
     fun decide(
         first: Set<String>?,
         second: Set<String>?,
     ): Verdict {
         if (first == null || second == null) return Verdict.UNMEASURABLE
         val smaller = minOf(first.size, second.size)
-        // A relay that holds almost nothing is the commonest way here, and must not be excluded.
         if (smaller < minSample) return Verdict.UNMEASURABLE
         return if (containment(first, second) >= minOverlap) Verdict.CONSISTENT else Verdict.INCONSISTENT
     }
 
     /**
-     * How much of the smaller answer is inside the larger. Containment rather
-     * than a symmetric ratio, as in [RelayAliases]: a relay may truncate one ask
-     * at its own limit, and a prefix of the same answer is the same answer.
+     * How much of the smaller answer is inside the larger. Containment, as in [RelayAliases],
+     * because a relay may truncate one ask at its own limit.
      */
     fun containment(
         first: Set<String>,
@@ -152,10 +139,8 @@ class RelayConsistency(
     }
 
     /**
-     * Set this candidate set's verdicts to exactly what the store holds, one
-     * url at a time. This object is shared by every stream, so a bulk [forget]
-     * followed by a bulk [adopt] would leave a window in which another stream's
-     * [unusable] sees no refusals at all.
+     * Set the verdicts for [candidates] to exactly what the store holds, one url at a time,
+     * because every stream reads this object while it changes.
      */
     fun replace(
         candidates: Collection<NormalizedRelayUrl>,
@@ -174,8 +159,7 @@ class RelayConsistency(
                     inconsistent -= url
                 }
 
-                // No verdict in the store: expired, or never taken. Forgetting
-                // it is what gives the record's TTL its teeth.
+                // No verdict in the store, expired or never taken: forgetting it gives the TTL its teeth.
                 else -> {
                     consistent -= url
                     inconsistent -= url
@@ -184,10 +168,7 @@ class RelayConsistency(
         }
     }
 
-    /**
-     * Drop every verdict held about these urls, so this cache cannot outlive
-     * the store it caches. Same rule as [RelayAliases.forget].
-     */
+    /** Drop every verdict held about these urls. */
     fun forget(urls: Collection<NormalizedRelayUrl>) {
         for (url in urls) {
             consistent -= url
@@ -197,10 +178,8 @@ class RelayConsistency(
 
     companion object {
         /**
-         * How far back the pair of asks is anchored. The fold's one-minute
-         * anchor settles indexing lag; a week also removes a sharded backend's
-         * replication from the explanations, which is all the depth is for.
-         * Re-take with `RelaySelfConsistencyProbe`, more than once, before moving it.
+         * How far back the pair of asks is anchored: deep enough to take a sharded backend's
+         * replication out of the explanations. Re-take with `RelaySelfConsistencyProbe` before moving it.
          */
         const val ANCHOR_LAG_SECONDS = 7L * 24 * 60 * 60
 

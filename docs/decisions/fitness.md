@@ -241,3 +241,16 @@ number, and they carry opposite retry policies: a known-dead url is out until
 our signed `dead` verdict ages past its 24h TTL, a struck-out one only for the
 rest of this cycle. The durable reason is checked first because it is the one
 with the longer reach.
+
+**The TCP pre-probe is skipped for anything Tor routes.** `TcpProber` resolves
+and connects directly from this box, so for a Tor-routed url it answers about a
+path the transfer never uses: a `.onion` fails name resolution while up, and
+under `SYNC_TOR_ALL` it would connect to every discovered relay in the clear.
+`shouldPreProbe` is the one predicate for that, and the websocket dial is the
+only verdict on those urls.
+
+**`HostStrikes` counts failures per authority, not per url.** The outbox model
+mints one url per user on a filtering relay, so a per-url counter never reaches
+a threshold. The authority is `host[:port]`: a subdomain is not folded into its
+parent, and two ports are two relays. A host that delivered anything this cycle
+is never treated as dead, whatever its siblings did.

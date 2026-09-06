@@ -83,7 +83,6 @@ class ParseAuditTest {
     fun `groups the same failure across different events into one finding`() {
         val dir = createTempDir()
         audit(dir).use { a ->
-            // Same defect, different events.
             a.inspect(metadata("1", "[]"))
             a.inspect(metadata("2", "[1,2,3]"))
             a.inspect(metadata("3", "[]"))

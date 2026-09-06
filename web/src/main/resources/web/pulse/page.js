@@ -1,14 +1,7 @@
-// The pulse page: everything it draws, and the sign-in it draws first.
-//
-// A MODULE FILE RATHER THAN AN INLINE SCRIPT, unlike this repo's other pages.
-// This one is served only to administrators and carries the one document here
-// that is not public, so its Content-Security-Policy is `script-src 'self'`
-// with no `unsafe-inline` — which an inline script cannot satisfy. The imports
-// are module-relative (`../shared/…`), which resolves the same way a
-// document-relative one would if this page were ever mounted behind a prefix.
-//
-// Nothing here holds a credential: the session cookie is HttpOnly and this
-// script cannot read it.
+// The pulse page: everything it draws, and the sign-in it draws first. A module file
+// rather than an inline script, because the page is administrators-only and its CSP is
+// `script-src 'self'` with no `unsafe-inline`. The session cookie is HttpOnly, so
+// nothing here holds a credential.
 
 import { ago, cardHead, el, fitTiles, fmt, fmtDur, isoOf, short } from "../shared/page.js";
 import {
@@ -17,7 +10,7 @@ import {
 } from "../shared/pulse.js";
 import { NotAnAdmin, SignInRequired, canSign, fetchGuarded, signIn, signOut } from "../shared/pulseauth.js";
 
-/** The document schema this page reads; see PulseDocument.SCHEMA. */
+/** The document schema this page reads, PulseDocument.SCHEMA. */
 const SCHEMA = 1;
 
 const docUrl = "./pulse.json";
@@ -26,19 +19,19 @@ const scopeEl = document.getElementById("scope");
 const footEl = document.getElementById("foot");
 const whoEl = document.getElementById("who");
 
-/** The previous document, kept solely so the counters above can be differenced into rates. */
+/** The previous document, so counters can be differenced into rates. */
 let prev = null;
-/** The last document drawn, so a failed poll leaves the numbers up instead of blanking them. */
+/** The last document drawn, so a failed poll leaves the numbers up. */
 let shown = null;
 
 // ── formatting ──────────────────────────────────────────────────────────────
 
-/** A rate, or an em dash while there is no baseline to difference against. */
+/** A rate, or an em dash while there is no baseline. */
 const perSec = (n) => (n == null ? "—" : n >= 100 ? fmt(Math.round(n)) : n >= 1 ? n.toFixed(1) : n.toFixed(2));
-/** Milliseconds at the precision they are worth: sub-millisecond reads are the common case here. */
+/** Milliseconds at the precision they are worth; sub-millisecond reads are common. */
 const ms = (n) => (n == null ? "—" : n >= 1000 ? `${(n / 1000).toFixed(1)}s` : n >= 10 ? `${Math.round(n)}ms` : `${n.toFixed(n >= 1 ? 1 : 2)}ms`);
 const pct = (f) => (f == null ? "—" : `${(f * 100).toFixed(f < 0.01 && f > 0 ? 2 : 0)}%`);
-/** A duration in milliseconds as the seconds a lock hold is read in. */
+/** Milliseconds as a duration in seconds. */
 const heldFor = (msec) => fmtDur(Math.max(0, Math.round(msec / 1000)));
 
 /** A right-aligned numeric cell. */
@@ -89,10 +82,8 @@ const card = (title, sub) => {
 // ── panels ──────────────────────────────────────────────────────────────────
 
 /**
- * The strip: what this process is doing per second right now, and the two
- * instantaneous readings that say whether it is keeping up. Rates need two
- * polls, so the first render draws em dashes rather than zeros — "not measured
- * yet" and "idle" are different facts and must not look alike.
+ * The strip of rates. They need two polls, so the first render draws em dashes rather
+ * than zeros: "not measured yet" and "idle" must not look alike.
  */
 function healthStrip(doc, rows) {
   const row = el("div", "tiles");
@@ -122,20 +113,12 @@ function healthStrip(doc, rows) {
       slow ? `${slow.label}: p50 ${ms(slow.p50Ms)}, p99 ${ms(slow.p99Ms)} over ${fmt(slow.measured)} calls` : "No call shape on this page keeps a histogram yet",
     ),
   );
-  // No gauge tiles here. Every number in this strip is a RATE differenced from
-  // the last poll; an instantaneous reading standing beside them reads as one,
-  // and the one thing a gauge must never be is differenced. They have their
-  // own panel.
+  // No gauge tiles here: beside rates an instantaneous reading reads as one.
   if (ingest) row.appendChild(tile("docs written", perSec(ingest.docsPerSec), "/s", "Documents leaving the store's write path, per second"));
   return fitTiles(row);
 }
 
-/**
- * Where the store's own time goes: one row per activity, its ports indented
- * under it. `calls/doc` is the store's own performance contract in a number —
- * a bulk path that books several port calls per document is talking to the
- * engine more than the work justifies.
- */
+/** Where the store's own time goes: one row per activity, its ports indented under it. */
 function activityPanel(rows) {
   const c = card("What the store is doing", "Wall time inside the engine calls this process made, by the work that made them. Cumulative since boot; the rate column is differenced from the last poll.");
   if (!rows.length) {
@@ -163,14 +146,13 @@ function activityPanel(rows) {
       pr.appendChild(num(perSec(p.callsPerSec)));
       pr.appendChild(num(ms(p.ms)));
       pr.appendChild(el("td"));
-      // calls/doc, warm where the port is chatty.
+      // Warm where the port is chatty.
       const cpd = num(p.docs > 0 ? p.callsPerDoc.toFixed(p.callsPerDoc < 1 ? 3 : 1) : "—", "Port calls per document this call shape touched");
       if (p.chatty) cpd.style.color = "var(--warn)";
       pr.appendChild(el("td", "r", ""));
       pr.appendChild(num(fmt(p.docs)));
       pr.appendChild(cpd);
-      // Absent, not zero: no histogram is kept for a write shape, and "p99 0ms"
-      // would read as instant when it means unmeasured.
+      // Absent, not zero: "p99 0ms" would read as instant when it means unmeasured.
       pr.appendChild(num(p.p99Ms == null ? "—" : ms(p.p99Ms), p.p99Ms == null ? "No histogram is kept for this call shape" : `p50 ${ms(p.p50Ms)} over ${fmt(p.measured)} calls`));
       body.push(pr);
     }
@@ -191,11 +173,7 @@ function activityPanel(rows) {
   return c;
 }
 
-/**
- * What the ENGINE did with the queries, per rank profile. Its own time is not
- * our wall time, and the gap between them is the network and the summary
- * fetch; `matched → served` is how much of the work reached a client.
- */
+/** What the engine did with the queries, per rank profile, in its own time rather than our wall time. */
 function enginePanel(rows) {
   const c = card("What the engine did", "Vespa's own timings and counts, per rank profile, as it reported them on each response.");
   if (!rows.length) {
@@ -227,11 +205,7 @@ function enginePanel(rows) {
   return c;
 }
 
-/**
- * What became of the events offered, per activity. The bar is the answer to
- * "should I narrow this sync": a mirror that is 80% duplicates is fetching
- * what it already holds.
- */
+/** What became of the events offered, per activity. */
 function outcomesPanel(doc) {
   const o = doc.outcomes;
   if (!o || !o.byActivity?.length) return null;
@@ -258,11 +232,7 @@ function outcomesPanel(doc) {
   return c;
 }
 
-/**
- * The write path in the present tense and in the past. `held` answers the only
- * question worth asking while ingest is stalled; the wait split answers the
- * one after it — what was it stalled BEHIND.
- */
+/** What holds a store mutex now, and what the waiting was stalled behind. */
 function locksPanel(doc) {
   const { held, wait } = locksOf(doc);
   if (!held.length && !wait.length) return null;
@@ -303,7 +273,7 @@ function locksPanel(doc) {
   return c;
 }
 
-/** The write path's stage split — the same rows the mirror's status page draws, on the same counters. */
+/** The write path's stage split, the same rows the mirror's status page draws. */
 function stagesPanel(rows) {
   if (!rows.length) return null;
   const c = card("Write path", "Every ingest stage this process has booked, busiest first. `busy` is seconds of work per second of wall clock: 1.0 saturates one thread, and above 1.0 is concurrency.");
@@ -323,7 +293,7 @@ function stagesPanel(rows) {
   return c;
 }
 
-/** The gauges, drawn apart from every counter so nobody differences a queue depth into a rate. */
+/** The gauges, drawn apart from every counter so nobody differences one into a rate. */
 function gaugesPanel(doc) {
   const gauges = gaugesOf(doc);
   if (!gauges.length) return null;
@@ -334,11 +304,7 @@ function gaugesPanel(doc) {
   return c;
 }
 
-/**
- * Who and what is driving the load. A bounded sketch, so the list is the heavy
- * hitters and the tail is forgotten; each row's own overestimate bound is
- * published rather than hidden.
- */
+/** Who and what is driving the load: a bounded sketch, each row with its own error bound. */
 function hotspotsPanel(doc) {
   const h = doc.hotspots;
   if (!h || (!h.observers?.length && !h.terms?.length)) return null;
@@ -365,7 +331,7 @@ function hotspotsPanel(doc) {
   return c;
 }
 
-/** The slow-read ring: bounded by the ring, never by how many distinct queries exist. */
+/** The slow-read ring. */
 function slowPanel(doc) {
   const reads = doc.slowReads || [];
   if (!reads.length) return null;
@@ -373,10 +339,7 @@ function slowPanel(doc) {
     "Slow reads",
     `${fmt(reads.length)} engine calls beat this store's slow threshold, newest first. A slow read here is a slow ENGINE CALL, not a slow query: one REQ fans out into companion queries and admission probes, and which of them was slow is the question a four-second search leaves you with. A ring — the oldest is overwritten, so this is bounded whatever the traffic.`,
   );
-  // NOT reversed. `CostLedger.snapshot` already sorts the ring newest-first and
-  // the document preserves that order, so reversing here drew the oldest read
-  // at the top under a card that says "newest first" — which is the wrong end
-  // of a ring somebody opened during an incident.
+  // The document already orders the ring newest-first; do not reverse it.
   const body = reads.map((s) => {
     const tr = el("tr");
     const when = el("td", "r", ago(s.at));
@@ -387,8 +350,7 @@ function slowPanel(doc) {
     tr.appendChild(num(ms(s.wallMs), `engine ${ms(s.engineMs)}, summaries ${ms(s.summaryMs)}`));
     tr.appendChild(num(short(s.docsMatched)));
     tr.appendChild(num(fmt(s.hits)));
-    // One line, with the whole query on hover: a YQL carrying two hundred ids
-    // is one row that takes a screen, and thirty of them are the whole page.
+    // One line, with the whole query on hover; a YQL carrying two hundred ids takes a screen.
     const q = el("td", "q one", whereOf(s.detail));
     q.title = s.detail;
     tr.appendChild(q);
@@ -410,13 +372,8 @@ function render(doc) {
   scopeEl.textContent = doc.scope || "";
   const rows = activityRowsOf(doc, prev);
   layout();
-  // A stamp per panel, so a panel whose input has not moved keeps the DOM it
-  // already had. Most of these change every poll by design — a rate is what
-  // they are — and take the document's own timestamp as their stamp, which is
-  // always new. The two that do not are the two big ones: the slow-read ring
-  // moves only when a read is slow, and the load sketch only when its order
-  // changes. Those were rebuilding a few hundred rows twice a second and
-  // taking the reader's text selection with them.
+  // A stamp per panel, so a panel whose input has not moved keeps its DOM and the reader's
+  // selection. The rate panels stamp on the document's timestamp, which is always new.
   const tick = doc.generatedAt;
   fill("strip", tick, () => healthStrip(doc, rows));
   fill("activity", tick, () => activityPanel(rows));
@@ -448,36 +405,21 @@ function renderFoot(doc) {
   }
 }
 
-/**
- * Who we are signed in as, when this page load did the signing — never a
- * credential, since the cookie is HttpOnly and invisible to this script. Null
- * on a reload that inherited a live session, where the page is authorised and
- * this page does not know as whom.
- */
+/** Who this page load signed in as; null on a reload that inherited a live session. */
 let admin = null;
 
 /** Whether the last read was admitted. The poll rides this, so a signed-out page stops asking. */
 let authed = false;
 
-/**
- * A section's identity for redraw purposes, cheap enough to compute per poll:
- * its serialized form. These are small members — a handful of rows — and the
- * alternative is a hand-written key per panel that goes stale the first time
- * somebody adds a field to one.
- */
+/** A section's identity for redraws: its serialized form, so no hand-written key can go stale. */
 const stampOf = (section) => (section == null ? "-" : JSON.stringify(section));
 
-/** The auth state the identity line was last built for, so it is only rebuilt when that changes. */
+/** The auth state the identity line was last built for. */
 let whoDrawn = null;
 
 /**
- * Who is signed in, and the way out — IN ITS OWN ELEMENT, outside the footer.
- *
- * The footer is rebuilt every poll (its timestamp moves), and a control rebuilt
- * twice a second is one nobody can use: a click can land on a button that has
- * already been replaced, and a keyboard can never keep focus on it long enough
- * to press it. This is the only interactive thing on the signed-in page, so it
- * is drawn once and left alone until the auth state actually changes.
+ * Who is signed in, and the sign-out button, in its own element outside the footer: the
+ * footer is rebuilt every poll, and a control rebuilt twice a second cannot be clicked.
  */
 function renderWho() {
   const state = authed ? admin || "?" : "";
@@ -485,28 +427,24 @@ function renderWho() {
   whoDrawn = state;
   whoEl.replaceChildren();
   if (!authed) return;
-  // The pubkey only when this page load signed in; a reload that inherited a
-  // live session is authorised without this script knowing as whom, and
-  // guessing would be worse than saying less.
+  // The pubkey only when this page load signed in.
   whoEl.append(admin ? `Signed in as ${admin.slice(0, 12)}… ` : "Signed in. ");
   const out = el("button", "linkish", "sign out");
   out.addEventListener("click", async () => {
     await signOut();
     admin = null;
     authed = false;
-    // `load()`, not a card built here: the refusal it gets back carries the
-    // relay's own `session` block, and a card built with none would sign the
-    // url this browser dialled — which behind a proxy is not the one the relay
-    // checks, so the next sign-in would fail for no visible reason.
+    // `load()`, not a card built here: the refusal it gets back carries the relay's own
+    // `session` block, which the next sign-in must sign over.
     await load();
   });
   whoEl.appendChild(out);
 }
 
-/** The panels, laid out once and kept, so an untouched one keeps its scroll and its selection. */
+/** The panels, laid out once and kept. */
 const PANEL_KEYS = ["strip", "activity", "engine", "outcomes", "locks", "stages", "gauges", "hotspots", "slow", "closed"];
 
-/** What each panel was last built from, by key. Cleared with the body. */
+/** What each panel was last built from, by key. */
 const drawn = new Map();
 
 /** Put the containers in place if the body does not already hold them. */
@@ -522,18 +460,13 @@ function layout() {
   drawn.clear();
 }
 
-/** Empty the body and forget what was drawn — every path that shows a card instead of the panels. */
+/** Empty the body and forget what was drawn. */
 function resetBody() {
   bodyEl.replaceChildren();
   drawn.clear();
 }
 
-/**
- * Build panel [key] unless [stamp] says it is already what is on screen.
- *
- * Scroll is carried across a rebuild: the slow-read table is a scroll box, and
- * resetting it to the top twice a second makes it unreadable.
- */
+/** Build panel [key] unless [stamp] says it is already on screen. Scroll boxes keep their position. */
 function fill(key, stamp, build) {
   const box = bodyEl.querySelector(`[data-panel="${key}"]`);
   if (!box || (drawn.get(key) === stamp && box.hasChildNodes())) return;
@@ -546,7 +479,7 @@ function fill(key, stamp, build) {
   });
 }
 
-/** Said when the document carries no client-derived sections: an absent panel and a disabled one look alike. */
+/** Said when the document carries no client-derived sections; an absent panel and a disabled one look alike. */
 function clientSectionsCard() {
   const c = card("Not on this page", null);
   c.appendChild(
@@ -559,7 +492,7 @@ function clientSectionsCard() {
   return c;
 }
 
-/** The sign-in prompt: the only thing an unauthenticated visitor is ever shown. */
+/** The sign-in prompt, the only thing an unauthenticated visitor is shown. */
 function signInCard(why, session) {
   resetBody();
   shown = null;
@@ -575,7 +508,7 @@ function signInCard(why, session) {
       "an administrator of this relay."),
   );
   if (!canSign()) {
-    // The honest dead end, with the one thing that fixes it.
+    // The dead end, with the one thing that fixes it.
     c.appendChild(el("p", "err",
       "No Nostr extension found in this browser (window.nostr / NIP-07). Signing in needs one, because the proof is a " +
       "signature by an administrator's key — this page never sees the key itself."));
@@ -604,12 +537,8 @@ function signInCard(why, session) {
 }
 
 /**
- * True while a poll is in flight. Without it a slow answer — a stalled store, a
- * laptop coming back from sleep — lets the next tick start a second read, and
- * two answers can land out of order: `prev` ends up NEWER than the document
- * just rendered, the next window is negative, and every rate on the page falls
- * to an em dash and stays there. One at a time; a tick that arrives during a
- * poll is simply skipped, which is what a fixed cadence means anyway.
+ * True while a poll is in flight; a tick during one is skipped. Two answers landing out
+ * of order would leave `prev` newer than the document drawn and every rate an em dash.
  */
 let polling = false;
 
@@ -617,7 +546,7 @@ async function load() {
   if (polling) return;
   polling = true;
   try {
-    // `no-store` on the route, so every poll is a real read; that is the point.
+    // `no-store` on the route, so every poll is a real read.
     const res = await fetchGuarded(docUrl);
     authed = true;
     if (res.status === 503) {
@@ -633,12 +562,9 @@ async function load() {
     }
     render(await res.json());
   } catch (e) {
-    // A SESSION THAT ENDED IS NOT AN ERROR. Sessions expire on a fixed clock and
-    // die with the process; the page returns to the prompt rather than leaving
-    // stale numbers under a red line that says "could not refresh".
+    // A session that ended is not an error: the page returns to the prompt.
     if (e instanceof SignInRequired || e instanceof NotAnAdmin) {
-      // "Your session ended" only when there WAS one. On a first visit there is
-      // nothing to have ended, and saying so reads as a bug in the page.
+      // "Your session ended" only when there was one.
       const expired = authed;
       admin = null;
       authed = false;
@@ -649,8 +575,7 @@ async function load() {
       return;
     }
     const why = String(e && e.message ? e.message : e);
-    // A failed poll is not a failed page: what is on screen is still the last
-    // thing this process reported, and the footer says when.
+    // A failed poll is not a failed page; the footer says when the numbers are from.
     if (shown) {
       const note = el("p", "err", `Could not refresh: ${why}. The numbers above are from the last successful read.`);
       note.dataset.refresh = "";
@@ -669,13 +594,8 @@ async function load() {
   }
 }
 
-// No hover tooltip is wired: every explanation on this page rides a `title`
-// attribute, which the browser draws itself and a keyboard can reach. The
-// shared `showTip` exists for svg chart marks, and this page has none.
+// Every explanation on this page rides a `title` attribute; no hover tooltip is wired.
 load();
-// A fixed cadence, not a document-stated one: this document has no rollup to
-// follow, and the rates on screen are only as fresh as the interval. Gated on
-// being signed in, so a page sitting on the prompt is not knocking on a route
-// that will refuse it every two seconds — and so the prompt is not rebuilt out
-// from under the button while somebody is clicking it.
+// Gated on being signed in, so the prompt is neither polling a route that refuses it nor
+// rebuilt out from under the button while somebody is clicking it.
 setInterval(() => { if (authed) load(); }, POLL_MS);

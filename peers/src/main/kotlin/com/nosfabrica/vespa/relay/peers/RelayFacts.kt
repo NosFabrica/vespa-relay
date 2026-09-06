@@ -21,20 +21,9 @@
 package com.nosfabrica.vespa.relay.peers
 
 /**
- * The NIP-66 payload proper: what the relay is, as opposed to the verdict,
- * which is what this deployment decided about it. Every field is a tag whose
- * meaning the spec already fixes, so a stranger's crawler reads them without
- * knowing this router exists.
- *
- * Two sources, stated per field: measured on the fitness pass's dial
- * ([network], the rtts, the auth half of [requirements]) or read off the
- * relay's NIP-11 document ([software], [supportedNips], the rest). A relay's
- * software name is a claim it makes about itself and nothing more.
- *
- * Deliberately absent: `rtt-write` (this router never writes to a relay it
- * monitors), `g` and `T` (need a GeoIP database and a classifier this process
- * does not have), and a `v` tag (not a tag anyone writes; the version rides
- * as the third element of [software] instead).
+ * The NIP-66 payload proper: what the relay is, as opposed to the verdict, which is what this
+ * deployment decided about it. Each field is either measured on the fitness dial or read off
+ * the relay's NIP-11 document, which is a claim the relay makes about itself.
  */
 data class RelayFacts(
     /** `clearnet` / `tor`, from the transport that would carry this url, not from the document. */
@@ -44,9 +33,8 @@ data class RelayFacts(
     /** Milliseconds from the REQ going out to the relay's first answer. */
     val rttReadMs: Long? = null,
     /**
-     * NIP-11's `limitation` keys in NIP-66's spelling (`auth`, `payment`,
-     * `pow`, `writes`), each negated with a `!` prefix. A relay that told us
-     * nothing gets no requirement tags: `!auth` claims reads are open.
+     * NIP-11's `limitation` keys in NIP-66's spelling (`auth`, `payment`, `pow`, `writes`),
+     * negated with a `!` prefix. A relay that told us nothing gets no requirement tags.
      */
     val requirements: List<String> = emptyList(),
     /** NIP-11's `software`, and its `version` behind it. */
@@ -56,9 +44,8 @@ data class RelayFacts(
     val supportedNips: List<Int> = emptyList(),
 ) {
     /**
-     * The tags, in NIP-66's spelling. An absent fact writes nothing, never a
-     * zero or an empty string; since the writer owns all of these, absence also
-     * clears whatever the last pass wrote.
+     * The tags, in NIP-66's spelling. An absent fact writes nothing, and since the writer owns
+     * all of these, absence also clears whatever the last pass wrote.
      */
     fun tags(): List<Array<String>> =
         buildList {
@@ -67,7 +54,7 @@ data class RelayFacts(
             rttReadMs?.let { add(arrayOf(RTT_READ_TAG, it.toString())) }
             for (requirement in requirements) add(arrayOf(REQUIREMENT_TAG, requirement))
             software?.let {
-                // A reader of `["s", <software>]` is unaffected by a third element.
+                // The version rides as a third element, which a reader of `["s", <software>]` ignores.
                 if (version.isNullOrBlank()) add(arrayOf(SOFTWARE_TAG, it)) else add(arrayOf(SOFTWARE_TAG, it, version))
             }
             for (nip in supportedNips) add(arrayOf(SUPPORTED_NIP_TAG, nip.toString()))
@@ -80,7 +67,7 @@ data class RelayFacts(
 
         const val RTT_READ_TAG = "rtt-read"
 
-        /** Named without a field: nothing may write one, but the writer must be able to clear one. */
+        /** Never written; named so the writer can clear one left by an older pass. */
         const val RTT_WRITE_TAG = "rtt-write"
 
         const val REQUIREMENT_TAG = "R"
@@ -89,7 +76,7 @@ data class RelayFacts(
 
         const val SUPPORTED_NIP_TAG = "N"
 
-        /** Every tag the fitness writer replaces on each pass; `rtt-write` is in it so a stale one is cleared. */
+        /** Every tag the fitness writer replaces on each pass. */
         val OWNED =
             setOf(NETWORK_TAG, RTT_OPEN_TAG, RTT_READ_TAG, RTT_WRITE_TAG, REQUIREMENT_TAG, SOFTWARE_TAG, SUPPORTED_NIP_TAG)
 
@@ -110,11 +97,7 @@ data class RelayFacts(
         /** The key a requirement is about, with any `!` stripped. */
         fun subjectOf(requirement: String): String = requirement.removePrefix("!")
 
-        /**
-         * The requirements to publish: everything [advertised], with anything
-         * [measured] overriding the claim about the same key. Each key appears
-         * once, measured first; a record holding both `auth` and `!auth` says nothing.
-         */
+        /** Everything [advertised], with anything [measured] overriding the claim about the same key. */
         fun merge(
             measured: List<String>,
             advertised: List<String>,

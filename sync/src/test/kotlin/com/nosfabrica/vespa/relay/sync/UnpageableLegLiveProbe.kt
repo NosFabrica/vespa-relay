@@ -34,12 +34,10 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * The mirror's catch-up leg (the stream's kinds with `since` at the band's
- * edge) through quartz's own pager, against relays staging files as
- * `abortedUnpageable`. Prints each page's cursor and the ending; asserts nothing.
- *
- *   ./gradlew :sync:test --tests '*UnpageableLegLiveProbe*' -DunpageableProbe=true --rerun -i
- *   …or pairs of your own: -DunpageableLegs='wss://relay.example=1765993162,wss://other.example=1736768033'
+ * The mirror's catch-up leg (the stream's kinds with `since` at the band's edge) through quartz's
+ * own pager, against relays staging files as `abortedUnpageable`. Prints each page's cursor and
+ * the ending; asserts nothing. Selected by `-DunpageableProbe=true`;
+ * `-DunpageableLegs='wss://relay.example=<coveredTo>,...'` picks the legs.
  */
 class UnpageableLegLiveProbe {
     @Test
@@ -102,7 +100,7 @@ class UnpageableLegLiveProbe {
         private val PROFILE_KINDS = listOf(0, 10002, 10040)
         private const val IDLE_MS = 10_000L
 
-        /** Five of staging's unpageable rows, with their `coveredTo`. */
+        /** Staging's unpageable rows, with their `coveredTo`. */
         private const val DEFAULT_LEGS =
             "wss://nostr.lopp.social=1765993162," +
                 "wss://n.ka.st=1736768033," +

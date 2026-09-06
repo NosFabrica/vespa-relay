@@ -27,10 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Whether the monitor runs is asked of the whole config through the real
- * loader: what counts as a source is the loader's decision.
- */
+/** Whether the monitor runs is asked of the whole config through the real loader. */
 class MonitorGateTest {
     private fun config(text: String) = RouterConfigLoader.parse(text.trimIndent())
 

@@ -35,10 +35,8 @@ import io.ktor.server.routing.get
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * `GET /web/…`: a page's native ES modules, straight off the classpath. Its
- * own prefix because the relay's root is already overloaded, and its own
- * function so a test can mount it alone. One route serves :web's shared assets
- * and each service's own beside them; a jar boundary is not a url.
+ * `GET /web/…`: a page's native ES modules, straight off the classpath. One route serves :web's
+ * shared assets and each service's own beside them; a jar boundary is not a url.
  */
 fun Route.webModules() {
     get("/web/{path...}") {
@@ -57,8 +55,8 @@ fun Route.webModules() {
 }
 
 /**
- * `GET /favicon.ico`, for everything that has not read the page's markup: a
- * bare `/stats.json` tab, a 404, a crawler. The same bytes as `/web/favicon.ico`.
+ * `GET /favicon.ico`, for everything that has not read the page's markup: a bare `/stats.json`
+ * tab, a 404, a crawler. The same bytes as `/web/favicon.ico`.
  */
 fun Route.favicon(icon: () -> String? = { null }) {
     get("/favicon.ico") {
@@ -72,7 +70,7 @@ fun Route.favicon(icon: () -> String? = { null }) {
     }
 }
 
-/** The same exchange [respondPage] runs, for a /web module, which additionally may be reused for a minute. */
+/** The same exchange as [respondPage], for a /web module, which may additionally be reused for a minute. */
 internal suspend fun ApplicationCall.respondAsset(asset: WebAssets.Asset) {
     response.header(HttpHeaders.ETag, asset.etag)
     response.header(HttpHeaders.CacheControl, "max-age=60")
@@ -84,9 +82,8 @@ internal suspend fun ApplicationCall.respondAsset(asset: WebAssets.Asset) {
 }
 
 /**
- * A page's ES modules, read off the classpath once each and held. Filled on
- * first use rather than enumerated at boot; the safety is [WEB_PATH], which
- * admits only plain segment names under `web/`.
+ * A page's ES modules, read off the classpath once each and held. Filled on first use rather
+ * than enumerated at boot; the safety is [WEB_PATH], which admits only plain segment names.
  */
 object WebAssets {
     class Asset(

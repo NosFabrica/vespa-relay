@@ -38,16 +38,14 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `up` direction: pushes our matching events to an upstream that lacks
- * them, every [intervalSec]. Each pass negentropy-reconciles the store against
- * the upstream until nothing more is missing, which also suppresses echo: an
- * event just pulled from a relay is one that relay already has.
+ * The `up` direction: pushes our matching events to an upstream that lacks them, every
+ * [intervalSec], reconciling until nothing more is missing.
  */
 internal class UpstreamPush(
     private val client: NostrClient,
     private val store: IEventStore,
     private val intervalSec: Long,
-    /** The engine-wide one-snapshot-at-a-time gate; an id snapshot of a broad filter is gigabytes. */
+    /** The engine-wide one-id-snapshot-at-a-time gate. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
 ) {
@@ -73,7 +71,7 @@ internal class UpstreamPush(
                             localEntries = local,
                             idleTimeoutMs = NEG_IDLE_MS,
                             onHaveIds = { ids ->
-                                // Chunked so the store never materialises a whole reconcile diff as one query.
+                                // Chunked so the store never materialises a whole diff as one query.
                                 for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
                                     val events: List<Event> =
                                         storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {

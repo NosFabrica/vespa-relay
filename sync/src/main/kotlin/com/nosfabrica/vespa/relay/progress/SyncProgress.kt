@@ -28,16 +28,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * The progress document: what each stream and processor is doing right now,
- * rebuilt on the progress tick and served by this process's own status site.
- *
- * `health` and `store` sit at the root because they are facts about the
- * process, not about any stream. `live` is at the root because it is one
- * table of the pool's steady state; every row names its `stream`, and `pool`
- * on a held row says which of the mirror's four workloads the relay is in.
- * There is no heartbeat member: the process that serves the document is the
- * one that builds it. A member that would only appear on damage is published
- * at zero too, so it can be told from a router too old to say.
+ * The progress document: what each stream and processor is doing right now, rebuilt on the
+ * progress tick and served by this process's own status site. A member that would only appear
+ * on damage is published at zero too, so it can be told from a router too old to say.
  */
 class SyncProgress {
     /** Where the constraint is, and the numbers behind it. */
@@ -49,23 +42,11 @@ class SyncProgress {
         /** Events handed to ingest per second over the same minute; the arrival side. */
         val arrivingPerSec: Int,
         /**
-         * Every ingest stage since boot, busiest first: the cumulative
-         * milliseconds AND the shape of that time — calls, mean, worst single
-         * call. One pathological call and a hundred thousand ordinary ones sum
-         * the same and need different fixes.
-         *
-         * Cumulative because `IngestStats.statusLine` is destructive; the page
-         * differences consecutive polls to recover a rate. One list rather
-         * than a total list beside a detail list: they came off one
-         * `IngestStats.snapshot()` at one instant, and two lists invited a row
-         * whose `ms` and `calls` were read seconds apart.
+         * Every ingest stage since boot, busiest first, with the shape of its time: calls,
+         * mean, worst call. Cumulative, so the page differences consecutive polls for a rate.
          */
         val stageDetail: List<StageDetail> = emptyList(),
-        /**
-         * What holds the store's write lock AT THIS INSTANT — null when
-         * nothing does. The stages are a history; this is the present tense,
-         * which is what an operator wants while ingest is stalled.
-         */
+        /** What holds the store's write lock right now, or null when nothing does. */
         val lockHeld: LockHeld? = null,
         /** The store's own feed-health line, quoted verbatim rather than parsed. */
         val feed: String? = null,
@@ -75,17 +56,15 @@ class SyncProgress {
         val sockets: Int,
         val socketCeiling: Int,
         val socketsRunning: Int,
-        /** Calls OkHttp is holding behind the socket budget; the only direct evidence the budget is the constraint. */
+        /** Calls OkHttp is holding behind the socket budget. */
         val socketsQueued: Int,
-        /** The relay's mean client read latency, which this router yields to. Null with no pressure feed. */
+        /** The relay's mean client read latency, which this router yields to; null without a feed. */
         val servingMs: Long?,
     )
 
     /**
-     * One stage's time with its shape: [ms] over [calls] calls, worst single
-     * call [maxMs]. `calls = 0` means the stage was booked from a duration
-     * measured elsewhere (a lock's wait/hold pair), where a mean would be a
-     * fiction — so the page shows none.
+     * One stage's time with its shape: [ms] over [calls] calls, worst single call [maxMs].
+     * `calls = 0` means the stage was booked from a duration measured elsewhere, so no mean.
      */
     class StageDetail(
         val stage: String,
@@ -95,21 +74,14 @@ class SyncProgress {
         val maxMs: Long,
     )
 
-    /**
-     * The store's write lock in the present tense: which stage holds it, how
-     * long for, and the holder's own sentence about the work ([detail],
-     * quoted rather than parsed).
-     */
+    /** The store's write lock right now: which stage holds it, for how long, and its own sentence. */
     class LockHeld(
         val stage: String,
         val heldMs: Long,
         val detail: String?,
     )
 
-    /**
-     * The last document published, or null before the first tick. One writer
-     * on the progress tick, readers on Netty threads, swapped whole.
-     */
+    /** The last document published, or null before the first tick. Swapped whole. */
     @Volatile
     var latest: JsonObject? = null
         private set
@@ -120,9 +92,9 @@ class SyncProgress {
         health: Health? = null,
         /** Every relay holding a tail right now; see `VisitPool.livePool`. */
         live: InFlight? = null,
-        /** VirtualMachineErrors this process has survived; an OOM kills one thread and is caught by nobody. */
+        /** VirtualMachineErrors this process has survived. */
         fatals: Long = 0,
-        /** Null on a process with no registry installed, which publishes no section rather than an empty one. */
+        /** Null on a process with no registry, which publishes no section rather than an empty one. */
         store: StoreCalls.Snapshot? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
@@ -159,11 +131,7 @@ class SyncProgress {
                             put("socketsQueued", h.socketsQueued)
                             h.servingMs?.let { put("servingMs", it) }
                             h.feed?.takeIf { it.isNotBlank() }?.let { put("feed", it) }
-                            // The present-tense holder goes FIRST, above the
-                            // history: when ingest is stalled this is the row
-                            // that answers it, and a reader should not have to
-                            // scroll a cumulative table to learn the gate is
-                            // held right now by something else.
+                            // The present-tense holder goes above the history: it answers a stall.
                             h.lockHeld?.let { held ->
                                 put(
                                     "lockHeldBy",
@@ -174,8 +142,7 @@ class SyncProgress {
                                     },
                                 )
                             }
-                            // Rows, not a member per stage: the names are the
-                            // store's, and a dynamic member name is one the
+                            // Rows, not a member per stage: a dynamic member name is one the
                             // glossary can never define.
                             if (h.stageDetail.isNotEmpty()) {
                                 putJsonArray("stages") {
@@ -184,10 +151,7 @@ class SyncProgress {
                                             buildJsonObject {
                                                 put("stage", d.stage)
                                                 put("ms", d.ms)
-                                                // Only where the store timed the stage as
-                                                // calls: a lock's wait/hold pair has no call
-                                                // count, and inventing one would put a mean
-                                                // over a denominator that does not exist.
+                                                // A lock's wait/hold pair has no call count, so no mean.
                                                 if (d.calls > 0) {
                                                     put("calls", d.calls)
                                                     put("meanMs", d.meanMs)
@@ -213,8 +177,7 @@ class SyncProgress {
                                 // The same word the pool's own row uses for the same quantity.
                                 s.queued?.let { put("awaitingVisit", it) }
                                 s.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { put("inFlight", held(it)) }
-                                // `schedule` and `limits` are omitted rather
-                                // than empty: an empty list would claim the
+                                // Omitted rather than empty: an empty list would claim the
                                 // stream has no such jobs.
                                 s.schedule.takeIf { it.isNotEmpty() }?.let { rows ->
                                     putJsonArray("schedule") {
@@ -253,24 +216,19 @@ class SyncProgress {
                     }
                 }
                 live?.takeIf { it.relays.isNotEmpty() }?.let { put("live", held(it)) }
-                // Omitted when nothing registered: an empty array would claim
-                // this router runs no processors.
+                // Omitted when nothing registered: an empty array would claim this router
+                // runs no processors.
                 processors.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
                 }
                 store?.let { put("store", storeCalls(it)) }
             }
 
-        /**
-         * The store section; see [StoreCalls]. Every count is written with
-         * its zeroes so `issued = returned + failed + cancelled + outstanding`
-         * and the age bands summing to `outstanding` can always be checked.
-         */
+        /** The store section. Every count is written with its zeroes so the sums can always be checked. */
         private fun storeCalls(s: StoreCalls.Snapshot): JsonObject =
             buildJsonObject {
                 put("outstanding", s.outstanding)
-                // The operator's own threshold (`SYNC_STORE_SLOW_SEC`), so the
-                // page marks rows by it rather than a copy of the default.
+                // The operator's own threshold, so the page marks rows by it, not a copy of the default.
                 put("slowAfterSec", s.slowAfterSec)
                 put("issued", s.issued)
                 put("returned", s.returned)
@@ -283,7 +241,7 @@ class SyncProgress {
                                 buildJsonObject {
                                     put("caller", c.caller)
                                     put("op", c.op)
-                                    // A summary of the ask, never the ask; see [StoreCalls.Call.asked].
+                                    // A summary of the ask, never the ask.
                                     c.asked?.let { put("asked", it) }
                                     put("issuedAt", c.issuedAt)
                                     put("elapsedSec", c.elapsedSec)
@@ -325,10 +283,7 @@ class SyncProgress {
                 }
             }
 
-        /**
-         * A list of held relays, one shape for a stream's `inFlight` and the
-         * root's `live`, so the page reads both with one renderer.
-         */
+        /** A list of held relays, one shape for a stream's `inFlight` and the root's `live`. */
         private fun held(f: InFlight): JsonObject =
             buildJsonObject {
                 putJsonArray("relays") {
@@ -336,7 +291,7 @@ class SyncProgress {
                         add(
                             buildJsonObject {
                                 put("relay", r.relay)
-                                // Only on the root `live` list; inside a stream's own `inFlight` it would repeat the row above.
+                                // Only on the root list; a stream's own list would repeat it.
                                 r.stream?.let { put("stream", it) }
                                 put("heldForSec", r.heldForSec)
                                 // Absent when the worker has no transfer slot.
@@ -344,7 +299,7 @@ class SyncProgress {
                                 put("events", r.events)
                                 put("quietForSec", r.quietForSec)
                                 r.stage?.let { put("doing", it) }
-                                // Absent for a visit in none of the four pools; see [InFlight.Relay.pool].
+                                // Absent for a visit in none of the four pools.
                                 r.pool?.let { put("pool", it) }
                                 r.pagingUntil?.let { put("pagingUntil", it) }
                             },
@@ -355,9 +310,8 @@ class SyncProgress {
             }
 
         /**
-         * `SYNC_PROGRESS_FILE` named where this document was written for the
-         * relay to read. Refused rather than ignored, like every removed
-         * setting: a router configured with it expects a card that has moved.
+         * `SYNC_PROGRESS_FILE` is refused rather than ignored, like every removed setting: a
+         * router configured with it expects a card that has moved.
          */
         fun refuseRemovedEnv(env: Map<String, String>) {
             env["SYNC_PROGRESS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
