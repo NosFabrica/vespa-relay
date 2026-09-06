@@ -246,11 +246,7 @@ fun main() {
     if (profile != null) {
         launchRelayProfile(maintenanceScope, profile, nip11)
     }
-    // THE PULSE'S NUMBERS ON THE LOG. The page itself is admin-gated because
-    // it quotes search terms; these counters are not, and without them the
-    // ordinary "what is this store spending its time on" is unanswerable from
-    // a terminal. Default on, because a diagnostic nobody enables is the
-    // reason this was missing in the first place.
+    // On by default: the page is gated, these counters are not, and a diagnostic nobody enables is missing.
     StoreMetricsLog.startLogging("relay", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
 
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {

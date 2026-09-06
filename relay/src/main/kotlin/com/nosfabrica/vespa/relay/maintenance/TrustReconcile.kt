@@ -32,11 +32,7 @@ import java.util.concurrent.atomic.AtomicLong
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     var waited = 0L
     var attempt = 0
-    // ONE instance for the whole retry sequence. Built inside the loop — as it
-    // was — every attempt got a fresh throttle starting at zero, so a walk that
-    // threw and retried inside the window printed nothing at all, and a
-    // reconcile retrying forever was indistinguishable from one running
-    // cleanly. That is the failure this line was added to prevent.
+    // One reporter for the whole retry sequence, or every attempt restarts the throttle window.
     val progress = reconcileProgress()
     val reportFailure = reconcileFailures()
     while (true) {
@@ -92,26 +88,8 @@ private const val TRUST_RECONCILE_RETRY_MS = 5_000L
 private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
 
 /**
- * THE RECONCILE'S OWN PROGRESS, WHICH NOTHING WAS LISTENING TO.
- *
- * [VespaEventStore.reconcileTrust] has always taken an `onProgress`, and
- * [com.nosfabrica.vespa.eventstore.trust.TrustReconciler.reconcile] emits a
- * real DENOMINATOR with it — the one thing an operator needs to turn "it is
- * still going" into "it has 30 minutes left". Every caller here passed the
- * argument out, so a walk that takes the better part of an hour over a real
- * corpus printed one line when it started and one when it ended. Asked how
- * long a live reconcile had to run, the best available answer was to sample
- * documents and infer the fraction from how many still carried a stale
- * `max_rank`.
- *
- * TWO PHASES, REPORTED AS TWO THINGS. The reconciler screens every service
- * first, moving `inspected` toward `total`; then it re-derives the ones that
- * came back unprojected, holding `inspected` at `total` and moving `rebuilt`
- * and the card count instead. Rendering the second phase as a percentage
- * would print a motionless 100%, which is how the first phase's completion
- * and the second phase's start look identical.
- *
- * Throttled, because the walk calls this per page.
+ * The reconcile's progress callback, throttled because the walk calls it per page. Screening moves
+ * `inspected` toward `total`; re-deriving then holds it there and moves `rebuilt` and the card count.
  */
 internal fun reconcileProgress(
     everyMillis: Long = PROGRESS_EVERY_MS,
@@ -139,8 +117,7 @@ internal fun reconcileProgressLine(
 ): String {
     val secs = (elapsedMs / 1000).coerceAtLeast(1)
     if (rebuilt > 0 || (total > 0 && inspected >= total)) {
-        // Past screening: the denominator no longer moves, so quoting one
-        // would be a percentage frozen at 100 for the whole expensive half.
+        // Past screening the denominator no longer moves, so no percentage.
         val cards = if (applied > 0) ", $applied card(s) applied" else ""
         return "trust: reconcile re-deriving $rebuilt service(s) of $total$cards (${secs}s elapsed)"
     }
@@ -151,13 +128,7 @@ internal fun reconcileProgressLine(
     return "trust: reconcile screening $inspected/$total service(s) ($pct%), eta $eta (${secs}s elapsed)"
 }
 
-/**
- * Retries, said out loud but not per attempt. Returns whether this call was
- * the FIRST failure, which is the one that earns a stack trace.
- *
- * A retry loop that prints only its first failure cannot be told from a loop
- * that stopped failing. Both go quiet.
- */
+/** Retries, said out loud but not per attempt. Returns whether this was the first failure, which earns the stack. */
 internal fun reconcileFailures(
     everyMillis: Long = PROGRESS_EVERY_MS,
     now: () -> Long = System::currentTimeMillis,
@@ -184,5 +155,5 @@ internal fun reconcileFailures(
     }
 }
 
-/** Between progress lines — the walk calls back per page, and a log is not a metrics feed. */
+/** Between progress lines; a log is not a metrics feed. */
 private const val PROGRESS_EVERY_MS = 30_000L

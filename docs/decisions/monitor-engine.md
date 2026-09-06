@@ -207,6 +207,8 @@ for nobody to read, so `pulseSlowReadMs` says so on stderr and keeps nothing. A 
 not parse stops the boot: silently keeping no log is exactly what the operator was trying to
 change.
 
+**The pulse's operational numbers also go to the log, and nothing sensitive does.** The page is gated because it quotes search terms, which made the ordinary questions (which activity spends the engine's time, what holds the write gate, is a background walk moving) unanswerable from a terminal; diagnosing a store matching tens of millions of documents a second while retiring almost no work took hours at Vespa's own metrics endpoint because of it. `StoreMetricsLog` prints activity and port counters, stage timings, lock holders and gauges, never `topTerms`, `topObservers` or `slowReads`, since a log line is read by anything that reads container logs. Counters, not rates, so two lines subtract to an interval. On by default, on a daemon thread, because a diagnostic nobody enables is the reason it was missing.
+
 ## Web
 
 **Pages carry content-derived ETags.** A jar entry's mtime is the build's, so
