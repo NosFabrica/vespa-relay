@@ -51,6 +51,7 @@ import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
+import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
@@ -270,6 +271,13 @@ fun main() {
     if (profile != null) {
         launchRelayProfile(maintenanceScope, profile, nip11)
     }
+    // THE PULSE'S NUMBERS ON THE LOG. The page itself is admin-gated because
+    // it quotes search terms; these counters are not, and without them the
+    // ordinary "what is this store spending its time on" is unanswerable from
+    // a terminal. Default on, because a diagnostic nobody enables is the
+    // reason this was missing in the first place.
+    StoreMetricsLog.startLogging("relay", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
+
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         maintenanceScope.launch {
             println("trust: reconciling in the background — ranked search may return less until this finishes")
