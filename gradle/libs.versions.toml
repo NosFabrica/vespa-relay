@@ -425,10 +425,17 @@ quartz = "cecc3287b2"
 # walked: the check asked a question whose answer was always yes.
 #
 # Measured here: a service with 279,594 cards and a cell on ~1% of parents
-# passed that check every pass. Of 200 provider lists sampled, only FOUR named
-# a service carrying cells — so ~98% of observers got an empty ranked page, and
-# the relay's own operator could not find his own profile through his own lens.
-# Nothing reported the projection as incomplete, because nothing measured it.
+# passed that check every pass, and the relay's own operator could not find his
+# own profile through his own lens. Across 360 provider lists against 1,339
+# sampled parents, 246 (68%) resolved to a service carrying cells and 114 did
+# not — 125 distinct services named by somebody and never walked. Nothing
+# reported the projection as incomplete, because nothing measured it.
+#
+# An earlier note here said "4 of 200, ~98% of observers broken". That was a
+# measurement error, not a finding: the projected set had been built from a
+# truncated top-N listing of six services rather than from every service
+# carrying a cell, so it undercounted by two orders of magnitude. A third of
+# observers were affected, not nearly all.
 #
 # `.any` was not the defect and is unchanged — it is right for the failure the
 # check exists to catch (a service never walked at all), and `.all` would
