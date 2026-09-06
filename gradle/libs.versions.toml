@@ -414,46 +414,55 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 52ac77e5ac = vespa-eventstore main @ 2026-09-06, the merge of PR #120 — a
-# background failure says WHERE it failed.
+# 27d43f84c1 = vespa-eventstore main @ 2026-09-06, the merge of PR #121 — the
+# service walk falls back to the document-API scan when the engine cuts its
+# sorted read. THE FIX for the projection that stopped at 236 of 342 services.
 #
-# WHY THIS BUMP: this deployment's drain has been failing with
-#   background trust.drain 4 fail (4 consecutive, last: timeout)
-# and that is the whole of the evidence. It names neither the query that timed
-# out nor the walk it was under, because every background worker records
-# `error.message` and drops the exception — the drainer catches Throwable,
-# records, delays and retries, and the stack is gone.
+# WHAT WAS HAPPENING. The walk lists a service's card ids through SEARCH with
+# `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
+# truncate — `sorting.degrading` defaults true — and it reports the truncation
+# as `match-phase`. The coverage guard then correctly refuses the partial
+# answer, the walk throws, and the drain dies. Meanwhile visitIdsByScan sits
+# right there: the document API, no ranking, no sorting, no match phase,
+# nothing to truncate.
 #
-# An afternoon went into reproducing the walk's queries by hand against this
-# cluster. Every one is fast: 568-2679ms, full coverage, including the
-# unbounded 100,000-hit ordered read over a 279,594-card service. So the
-# timeout is NOT the query anyone would guess, and guessing was the wrong
-# method. The first failure now prints its stack, and the status line carries
-# the cause chain plus the first frame in our own code.
+# Caught here as: `unranked/kinds,authors match-phase x34 REFUSED, last 54% of
+# 186,754,978`, with the stack naming SearchCoverage.requireComplete.
 #
-# WHAT THIS DOES NOT DO: fix anything. The drain still fails, the projection is
-# still incomplete (coverage near 236 of 342 services), and an observer whose
-# 10040 names an unwalked service still gets an empty ranked page. This is the
-# line that should have existed before any of the last several pins.
+# LOAD, NOT SHAPE. The same query — same 279,594-card service, same 2064-id
+# page, same profile — comes back 100% complete on an idle cluster. It
+# degraded while the cluster was saturated at 16 cores and 17.5M docs/s. And
+# the failure is self-reinforcing: the drain fails, retries, adds load, makes
+# truncation likelier. That is why a StatefulSet roll appeared to fix it
+# earlier — the roll dropped the load.
 #
-# DIRECTION: 34fb127523 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — main plus #120.
+# WHICH IS WHY THE FALLBACK IS THE FIX AND NOT A WORKAROUND: a walk that must
+# be complete cannot depend on a read the engine may truncate. `sorting.degrading=false`
+# was considered and rejected — unverifiable under the load that triggers this,
+# and forbidding truncation under saturation most likely turns a partial answer
+# into a timeout, which is worse: a timeout carries no signal telling the
+# caller to take another path.
 #
-# LEXICOGRAPHIC: '52ac…' > '34fb…' ('5' > '3'), the safe direction. No
+# Also types the refusal. "The answer was short" and "the query was wrong" were
+# both IllegalArgumentException, which is why a walk holding a perfectly good
+# fallback died instead of using it.
+#
+# DIRECTION: 52ac77e5ac is a strict ancestor of this — main plus #121.
+#
+# LEXICOGRAPHIC: '27d4…' < '52ac…' ('2' < '5'), the unsafe direction. No
 # `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line reads 52ac77e5ac with no `->`:
+# eventstore line reads 27d43f84c1 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: 34fb127523 = PR #119 — a stalled step reads as stalled
-# (`coerceAtLeast(1)` had rendered a frozen timer as a confident "1s"), and the
-# walk's read path is timed.
+# Superseded: 52ac77e5ac = PR #120 — a background failure says WHERE it failed.
+# It printed the stack that named this bug on its first failure, after an
+# afternoon of `last: timeout` with no query, stage or frame.
 #
-# Superseded: 02b528a85a = PR #118 — the per-service card walk reports a
-# fraction. 8f353d8d05 = #117, the drain reports itself. 2fa2b67141 = #116,
-# TrustHealth. a23a6a3a68 = #113 and #114. aca0552c4e = #112, the
-# projected-check stopped sampling the newest cards. 53441182f5 = #108,
-# per-slice retirement.
-vespaEventStore = "52ac77e5ac"
+# Superseded: 34fb127523 = #119 (a stalled step reads as stalled; the walk's
+# read path is timed). 02b528a85a = #118 (the walk reports a fraction).
+# 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 = #113/#114.
+# aca0552c4e = #112. 53441182f5 = #108.
+vespaEventStore = "27d43f84c1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
