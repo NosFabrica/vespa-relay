@@ -414,53 +414,46 @@ quartz = "cecc3287b2"
 # `proj.fetch` split into `.derive`/`.maxrank`), the per-slice write gate it
 # found, and the trust-gate split that followed. Measured on staging: a client
 # write 32-42s -> 0.05s, mirror ingest 0 -> 2,884 ev/s.
-# 34fb127523 = vespa-eventstore main @ 2026-09-06, the merge of PR #119 — a
-# stalled step reads as stalled, and the walk's read path is timed.
+# 52ac77e5ac = vespa-eventstore main @ 2026-09-06, the merge of PR #120 — a
+# background failure says WHERE it failed.
 #
-# WHY THIS BUMP: a service walk here sat twenty minutes without one gate hold
-# or one projection write, and every instrument said it was fine. Two reasons,
-# both fixed.
+# WHY THIS BUMP: this deployment's drain has been failing with
+#   background trust.drain 4 fail (4 consecutive, last: timeout)
+# and that is the whole of the evidence. It names neither the query that timed
+# out nor the walk it was under, because every background worker records
+# `error.message` and drops the exception — the drainer catches Throwable,
+# records, delays and retries, and the stack is gone.
 #
-# A FROZEN STEP READ AS A FAST ONE. `updatedMs` moves only on an advance, so a
-# step that begins and never advances has an elapsed of 0 — and the
-# `coerceAtLeast(1)` in the progress line rendered that as a confident "1s",
-# forever. A walk BLOCKED on a read is indistinguishable from one RESTARTING
-# constantly; this deployment was read as the latter for an hour. `stalledForSec`
-# is wall time since the step last moved, and the line says STALLED past two
-# minutes.
+# An afternoon went into reproducing the walk's queries by hand against this
+# cluster. Every one is fast: 568-2679ms, full coverage, including the
+# unbounded 100,000-hit ordered read over a 279,594-card service. So the
+# timeout is NOT the query anyone would guess, and guessing was the wrong
+# method. The first failure now prints its stack, and the status line carries
+# the cause chain plus the first frame in our own code.
 #
-# THE READ PATH WAS UNTIMED. `visitIds` probes to choose cursor over scan, and
-# that probe can cost a page fetch plus an unbounded [T,T] count; the cursor
-# loop then pays a page fetch per step and another window query at a tied
-# boundary. Any of those can be the slow one and none was named. Four stages
-# now: walk.cursor.decide, walk.cursor.countat, walk.ids.page,
-# walk.ids.tiegroup.
+# WHAT THIS DOES NOT DO: fix anything. The drain still fails, the projection is
+# still incomplete (coverage near 236 of 342 services), and an observer whose
+# 10040 names an unwalked service still gets an empty ranked page. This is the
+# line that should have existed before any of the last several pins.
 #
-# WHAT WAS MEASURED: relay 12m CPU (idle, blocked); vespa 16 cores at 17.5M
-# docs/s with a 24-27s max query latency; two projection writes in twenty
-# minutes. The work is in the read path, and this pin says which read.
+# DIRECTION: 34fb127523 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates) — main plus #120.
 #
-# DIRECTION: 02b528a85a is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates) — main plus #119.
-#
-# LEXICOGRAPHIC: '34fb…' > '02b5…' ('3' > '0'), so this sorts ABOVE the pin it
-# replaces — the safe direction. No `force(…)`: nothing else in the graph names
-# vespa-eventstore. Every eventstore line reads 34fb127523 with no `->`:
+# LEXICOGRAPHIC: '52ac…' > '34fb…' ('5' > '3'), the safe direction. No
+# `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line reads 52ac77e5ac with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
+# Superseded: 34fb127523 = PR #119 — a stalled step reads as stalled
+# (`coerceAtLeast(1)` had rendered a frozen timer as a confident "1s"), and the
+# walk's read path is timed.
+#
 # Superseded: 02b528a85a = PR #118 — the per-service card walk reports a
-# fraction, which is what showed the walk was reaching no pages at all.
-#
-# Superseded: 8f353d8d05 = PR #117 — the drain reports itself.
-#
-# Superseded: 2fa2b67141 = PR #116 — TrustHealth, which /trust.html needs.
-#
-# Superseded: a23a6a3a68 = #113 and #114 — unconditional progress, coverage
-# gauges, trust.queued.*, explainTrust, and which degradation on which shape.
-#
-# Superseded: aca0552c4e = PR #112 — the projected-check stopped sampling the
-# newest cards. Superseded: 53441182f5 = PR #108 — per-slice retirement.
-vespaEventStore = "34fb127523"
+# fraction. 8f353d8d05 = #117, the drain reports itself. 2fa2b67141 = #116,
+# TrustHealth. a23a6a3a68 = #113 and #114. aca0552c4e = #112, the
+# projected-check stopped sampling the newest cards. 53441182f5 = #108,
+# per-slice retirement.
+vespaEventStore = "52ac77e5ac"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
