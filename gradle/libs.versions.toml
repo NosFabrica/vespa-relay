@@ -422,69 +422,62 @@ quartz = "cecc3287b2"
 # `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
 # truncate — `sorting.degrading` defaults true — and it reports the truncation
 # as `match-phase`. The coverage guard then correctly refuses the partial
-# THE LISTING QUEUE IS UNBOUNDED (#127) — the fix for the fix.
+# THE STREAMED VISIT NOW SETS THE SERVER DEADLINE (#128) — the actual cause.
 #
-# #125 split the visit reader from the gated writer, then bounded the queue
-# between them at 64 batches, which made the fix not work. The reader is fast
-# and the writer is not, so the reader ran ahead, filled the queue, blocked on
-# `send`, and was holding the visit socket idle again. A SINGLE gate
-# acquisition over the 120s read gap still killed the stream.
+# pagedWalk sets `&timeout=SERVER_TIMEOUT_SECONDS` and says why: the server's
+# default (180s) OUTLIVES the client's 120s read timeout, so on a sparse
+# selection the client kills the stream and the retry re-issues the identical
+# request forever. streamedSlice never set it, and streaming is the path that
+# runs.
 #
-# Deployed here and it went on timing out, identical stack
-# (Http2Stream$FramingSource.read). Worse at the tail, because isolation now
-# cycles services — each timed out partway, the drain moved to the next, and
-# nothing finished:
-#   21:19  walk 28,500/116,352 (425s)
-#   21:20  walk 40,000/ 61,120 (38s)    <- different service
-#   21:22  walk  6,000/136,360 (64s)    <- another
-#   21:30  walk  4,750/116,352 (33s)    <- switched again
-# The drain never empties, so the reconcile never screens, so coverage is
-# never measured.
+# A service walk is exactly that sparse — one author's cards across a 196M
+# document corpus — which is why this deployment spent a night on
+# SocketTimeoutException raised from Http2Stream$FramingSource.read, the visit
+# body. Services cycled, each restarting from zero, none finishing, so the
+# drain never emptied and coverage was never measured.
 #
-# Channel.UNLIMITED: the reader never waits on the writer, which is the actual
-# invariant. The bill is known up front — `total` counts the service's cards
-# and an id is ~104 bytes, so ~29 MB transiently for the largest service seen
-# here, one service at a time.
+# THIS RETIRES #125 AND #127, both mine, both on the theory that a gate wait
+# was starving the read. Nothing the client does makes a silent server speak.
+# The timer #125 added to keep its own claim checkable is what disproved it:
+#   proj.visit.ids(ms=6521191 calls=8 mean=815148ms)
+# I had called the listing a small fraction of the walk; it is ~13.6 minutes
+# per service and IS the wall clock. Measure before theorising.
 #
-# The #125 test passed because it asserted the reader gets PAST THE FIRST
-# BATCH, which a bounded queue also does. It now demands the whole listing
-# while the writer is parked, verified failing at a bound of 2 and passing
-# unbounded.
+# All three visit URLs now come from one builder — the bug was one of three
+# hand-assembled strings dropping a parameter — and tests pin both that every
+# URL carries the deadline and that the server's stays under the client's.
 #
-# WHAT TO WATCH: services must COMPLETE rather than cycle. Then the drain
-# empties, `trust-reconcile` leaves 0/342, and servicesNamed /
-# servicesProjected stop reading 0.
+# WHAT TO WATCH: walks must stop dying mid-service. Then the drain empties,
+# `trust-reconcile` leaves 0/342, and servicesNamed / servicesProjected stop
+# reading 0.
 #
-# AND: every deploy restarts the relay, which re-queues the walk and puts the
-# reconcile back behind it. Four deploys tonight each cost a full re-walk.
-# Deploy this, then leave it alone.
+# DIRECTION: 4c2b026cfc is a strict ancestor of this — main plus #128.
+#   git merge-base --is-ancestor 4c2b026cfc ab90b08f02   # verified
 #
-# DIRECTION: a2499fa4c1 is a strict ancestor of this — main plus #127.
-#   git merge-base --is-ancestor a2499fa4c1 4c2b026cfc   # verified
-#
-# LEXICOGRAPHIC: '4c2b…' < 'a249…' ('4' < 'a'), the unsafe direction. No
+# LEXICOGRAPHIC: 'ab90…' > '4c2b…' ('a' > '4'), the safe direction. No
 # `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line must read 4c2b026cfc with no `->`:
+# eventstore line must read ab90b08f02 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
+# Superseded: 4c2b026cfc = #127 (unbounded listing queue) and 61b39e7280 =
+# #125 (the reader/writer split). Both defensible on their own terms — a
+# reader genuinely should not block on a writer — but neither addressed the
+# cause, and #127 bought exactly one clean 136k walk before the timeouts
+# returned.
+#
 # Superseded: a2499fa4c1 = #126 — a sample may be short. The reconcile's
-# projected-check was refused 119 times over two hours at 57% coverage, with
-# the drain empty and every service walked; that one refusal was all that
-# stood between the store and a measured coverage number. NOT the maxHits
-# guard (the sample asks for 3 hits) — unranked searches carry `order by
-# created_at desc` and sorting.degrading is never set, so the engine may
-# truncate a sorted read and flag it match-phase, the same mechanism as #121.
+# projected-check was refused 119 times over two hours at 57% coverage. Not
+# the maxHits guard (the sample asks for 3 hits): unranked searches carry
+# `order by created_at desc` and sorting.degrading is never set, so the engine
+# may truncate a sorted read and flag it match-phase, as in #121.
 #
-# Superseded: 61b39e7280 = #125 (the split, with the bound that defeated it).
-# cba205940b = #124 — the walk batches across pages: 16.3 -> 178 cards/s,
-# holds annotated "250 card(s)" instead of "1 card(s)".
-#
-# Superseded: 1211420526 = #122 + #123 — a failing unit costs only itself;
-# 93 consecutive drain failures to zero. 27d43f84c1 = #121 (document-API scan
-# fallback when a sorted read is truncated). 52ac77e5ac = #120.
-# 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117. 2fa2b67141 = #116.
-# a23a6a3a68 = #113/#114. aca0552c4e = #112. 53441182f5 = #108.
-vespaEventStore = "4c2b026cfc"
+# Superseded: cba205940b = #124 — the walk batches across pages, 16.3 -> 178
+# cards/s. 1211420526 = #122 + #123 — a failing unit costs only itself, 93
+# consecutive drain failures to zero. 27d43f84c1 = #121 (document-API scan
+# fallback for a truncated sorted read). 52ac77e5ac = #120. 34fb127523 = #119.
+# 02b528a85a = #118. 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 =
+# #113/#114. aca0552c4e = #112. 53441182f5 = #108.
+vespaEventStore = "ab90b08f02"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
