@@ -5,7 +5,7 @@ import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
-  chipRow, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink, plural, satsOf,
+  chipRow, markHref, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink, plural, satsOf,
 } from "./base.js";
 
 /** The event a reactive kind points at: `e` by id, `a` by address, in that order. */
@@ -166,7 +166,7 @@ function labelCard(ev, opts) {
   const labels = labelsOf(ev);
   const inner =
     relationLine("labels", targetLink(ev)) +
-    chipRow(labels, opts) +
+    chipRow(labels, opts, markHref) +
     bodyHtml(opts, ev.content, 300);
   return shell(ev, opts, inner, [["namespace", ns.length ? esc(ns.join(", ")) : null]]);
 }

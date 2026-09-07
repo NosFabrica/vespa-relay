@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink

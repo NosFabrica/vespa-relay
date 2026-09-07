@@ -3,14 +3,19 @@
 // starts and ends.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, dateAt, groupAt, groupTokenizes, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
+const { tokenize, parseQuery, mentionAt, dateAt, groupAt, groupTokenizes, labelTokenizes, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
   await import(new URL("../../main/resources/web/shared/query.js", import.meta.url));
+const { noteId, nevent, naddr } = await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const A = "npub1424242424242424242424242424242424242424242424242424qamrcaj";
 const B = "npub1hwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwasxw04hu";
+// The two other things `to:` can name, minted by the page's own encoder.
+const NOTE = noteId(HEX_A);
+const ADDR = `31990:${HEX_B}:1685802317447`;
+const NADDR = naddr(ADDR);
 
 // ---- tokenize: what the field draws ---------------------------------------
 
@@ -589,6 +594,67 @@ for (const v of ["recent", "rank", "rank:asc", "followers", "text"]) {
   assert.strictEqual(effectiveSort(`cats sort:${v}`), v, `sort:${v} reads back as itself`);
 }
 
+// ---- to: an event, and label: the labels themselves ------------------------
+//
+// A label pill's query: this mark, on this target. `to:` is one question about three subjects,
+// and which tag it is asked with is the pointer's shape.
+
+assert.deepStrictEqual(tokenize(`to:${NOTE}`).map((s) => [s.type, s.tag, s.value]),
+  [["pointer", "e", HEX_A]], "a note names an event, asked by `#e`");
+assert.deepStrictEqual(tokenize(`to:${nevent(HEX_A, { author: HEX_B })}`).map((s) => [s.type, s.tag, s.value]),
+  [["pointer", "e", HEX_A]], "…so does an nevent, hints and all");
+assert.deepStrictEqual(tokenize(`to:${NADDR}`).map((s) => [s.type, s.tag, s.value]),
+  [["pointer", "a", ADDR]], "an naddr names an address, asked by `#a`");
+assert.strictEqual(tokenize(`to:${NOTE}`)[0].raw, `to:${NOTE}`, "the chip covers the whole token");
+
+// A pointer that does not decode is not a filter: the same rule a corrupt npub takes.
+const BROKEN_NOTE = NOTE.slice(0, -1) + "q";
+assert.deepStrictEqual(tokenize(`to:${BROKEN_NOTE}`).map((s) => s.type), ["text"], "a bad checksum stays text");
+assert.deepStrictEqual(tokenize(`to:${A}`).map((s) => s.type), ["key"], "an npub is still a person");
+assert.deepStrictEqual(tokenize(`from:${NOTE}`).map((s) => s.type), ["text"], "nobody authored an event id: `from:` takes people only");
+assert.deepStrictEqual(tokenize(`x to:${NOTE}`).at(-1).raw, `to:${NOTE}`, "…and the token still has to start a word");
+
+// The people picker stands down over a pointer: there is no name to look up.
+assert.strictEqual(mentionAt(`to:${NOTE.slice(0, 20)}`, 20), null, "a half-typed pointer is not a people lookup");
+assert.ok(mentionAt("to:ali", 6), "…while a half-typed name still is");
+
+q = parseQuery(`label:review/app to:${NADDR} words`);
+assert.deepStrictEqual(q.labels, ["review/app"], "the mark is a filter");
+assert.deepStrictEqual(q.addrs, [ADDR], "…and the target is the address it was written on");
+assert.deepStrictEqual([q.cites, q.mentions], [[], []], "an naddr is not an id and not a person");
+assert.strictEqual(q.terms, "words", "neither the mark nor the pointer is a search term");
+assert.deepStrictEqual(parseQuery(`to:${NOTE} to:${NOTE}`).cites, [HEX_A], "a repeat collapses");
+
+// The labels themselves, which is what the pill counted: kind 1985, that mark, that target.
+f = build(`label:review/app to:${NADDR}`);
+assert.deepStrictEqual(f, [{
+  "#a": [ADDR], kinds: [1985], "#l": ["review/app", "Review/app", "REVIEW/APP"], limit: 40,
+}], "a label pill's query is one filter: the labels under that mark that name that address");
+
+// 1985 is on no tab, and the mark is on the label, not on what carries it.
+f = build("label:review/app", { kinds: [0] });
+assert.deepStrictEqual(f[0].kinds, [1985], "a label: keeps its own kind whatever the tab says");
+
+f = build(`from:${A} label:zapped since:2026-08-06 cats`);
+assert(f.every((x) => x.authors[0] === HEX_A && x.since === secs(2026, 8, 6) && x.search === "cats"),
+  "person, window and words ride on the label filter too");
+
+f = build(`to:${NOTE} cats`);
+assert.deepStrictEqual(f, [{ search: "cats", "#e": [HEX_A], limit: 40 }],
+  "a pointer alone is one filter: everything this relay holds that cites that event");
+assert.deepStrictEqual(build("#nostr label:zapped").length, 5, "a hashtag and a mark are two subjects: one filter plus four");
+
+// ---- can a mark be written as the token that finds it? ---------------------
+//
+// A card may only mint a `label:` link for a mark that reads back as itself.
+for (const mark of ["review/app", "zapped", "en", "ISO-639-1", "#p", "a,b"]) {
+  assert.strictEqual(labelTokenizes(mark), true, `\`${mark}\` is a mark the search language can carry`);
+  assert.deepStrictEqual(parseQuery(`label:${mark}`).labels, [mark], "…and it reads back as itself");
+}
+for (const mark of ["two words", "hello.", "x?", "", null, undefined]) {
+  assert.strictEqual(labelTokenizes(mark), false, `\`${mark}\` cannot be written as a token that means itself`);
+}
+
 // ---- can an id be written as the token that finds it? ----------------------
 //
 // Whatever groupTokenizes accepts must read back as itself, and a card may only mint a
@@ -605,4 +671,4 @@ for (const id of ["my group", "hello.", "x?"]) {
     `\`${id}\` is rejected precisely because the tokenizer would read it as another group`);
 }
 
-console.log("query: from:/to:, since:/until:, #hashtags and NIP-73 scopes tokenize, build their REQ, and complete consistently");
+console.log("query: from:/to:, since:/until:, #hashtags, label: and NIP-73 scopes tokenize, build their REQ, and complete consistently");

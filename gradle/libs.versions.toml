@@ -457,15 +457,61 @@ quartz = "cecc3287b2"
 # It is what finally let the projection finish — drain empty, reconcile done,
 # servicesProjected 231/242, lensesResolvable 245/358.
 #
-# DIRECTION: ab90b08f02 is a strict ancestor of this — main plus #130.
-#   git merge-base --is-ancestor ab90b08f02 d0e25c3325   # verified
+# b767bdb7a8 = vespa-eventstore main @ 2026-09-07, the merge of PR #131 —
+# every package given a layer, and the front door's engine handle made
+# read-only. A SOURCE-LEVEL move: nothing about a document, a query or a rank
+# profile changed, `engine/app/` has a zero diff against the previous pin, and
+# the store's own integration gate (real Vespa, testcontainers) is green on it.
 #
-# LEXICOGRAPHIC: 'd0e2…' > 'ab90…' ('d' > 'a'), the safe direction. No
-# `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line must read d0e25c3325 with no `->`:
+# WHAT THIS PIN CHANGES ON DEPLOY: nothing. No schema change, so no app-package
+# rollout, no re-derivation, no field dropped — the first pin in a while whose
+# deployment step is genuinely just the image.
+#
+# WHAT IT CHANGES HERE is the relay's own imports, in the commit this pin lands
+# with: eight declarations moved package (InMemoryEventIndex ->
+# engine.memory, IngestStats/DegradedReads -> engine.metrics, mapBounded and
+# QUERY_FANOUT -> engine.async, WriterTopology -> runtime, SchemaDeployer ->
+# engine.app and :store -> :engine), and `store.eventIndex` became
+# `store.engine`. That last one is the point of the store PR: the old handle
+# was the concrete VespaEventIndex, which published `put`, `putAll`,
+# `removeDocs` and a settable `trustDescent` to every caller — a way to write
+# behind every rule the store enforces. What replaces it is read-only.
+#
+# SyncMain's ingest survives that narrowing because #131 added `existingIds` to
+# the read-only facet FOR this caller: the membership probe behind `knownIds`,
+# which is what lets the mirror skip verifying a signature for an event already
+# held. Un-lensed on purpose — a duplicate must be skipped whether or not the
+# connecting user's lens would serve it. Without it the only migration was to
+# verify every duplicate, and this pin would have been a throughput regression
+# rather than a rename.
+#
+# It is also published as 1.0.1 on Maven Central. This repo pins by commit and
+# always has, so that number is not what resolves here — but it is a PATCH
+# number over a source-breaking change, which is why the rename table above is
+# written out rather than left to the compiler.
+#
+# DIRECTION: d0e25c3325 is a strict ancestor of this — main plus #131.
+#   git merge-base --is-ancestor d0e25c3325 b767bdb7a8   # verified
+#
+# LEXICOGRAPHIC: 'b767…' < 'd0e2…' ('b' < 'd'), and this is the FIRST bump that
+# goes DOWN. Every note above records the safe direction because it had one to
+# record; a sha is not a version, so half of them will sort backwards and this
+# one does. What the direction actually guards is Gradle's conflict resolution,
+# which picks the higher of two REQUESTED versions — so it only bites if
+# something else in the graph names vespa-eventstore, and nothing does. That is
+# the claim every one of these notes has rested on, so here it is CHECKED
+# rather than asserted: the resolved graph must read b767bdb7a8 with no `->`
+# anywhere, in all five JVM modules.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+# Verified on this bump against the real JitPack artifact (not a composite
+# build): :common 1 line, :peers/:monitor/:relay 2, :sync 3 — every one of them
+# `store:b767bdb7a8`, zero arrows, no force(…) needed. If a transitive
+# ever DOES name it, this is the pin where that stops resolving quietly and
+# starts needing a `force(…)` — the downgrade is the case Gradle will not pick
+# on its own.
 #
-# Superseded: ab90b08f02 = #128 (the streamed visit's server deadline).
+# Superseded: d0e25c3325 = #130 (the trust descent's removal) and #128.
+# ab90b08f02 = #128 (the streamed visit's server deadline).
 # 4c2b026cfc = #127 and 61b39e7280 = #125 — the reader/writer split and its
 # unbounded queue; both defensible, neither the cause. a2499fa4c1 = #126 (a
 # sample may be short: the reconcile's projected-check was refused 119 times
@@ -475,7 +521,7 @@ quartz = "cecc3287b2"
 # 52ac77e5ac = #120. 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117.
 # 2fa2b67141 = #116. a23a6a3a68 = #113/#114. aca0552c4e = #112.
 # 53441182f5 = #108.
-vespaEventStore = "d0e25c3325"
+vespaEventStore = "b767bdb7a8"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

@@ -21,8 +21,8 @@
 package com.nosfabrica.vespa.relay.pulse
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 
 /**
  * The pulse's operational numbers on the log, for a deployment that cannot open the gated page.

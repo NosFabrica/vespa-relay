@@ -1,12 +1,17 @@
-// The search box's own small language, parsed in one place: `from:`/`to:`, `since:`/`until:`,
-// `#hashtag`, `group:<id>` and the NIP-73 scopes (`site:`, `isbn:`, `geo:`, `isan:`, `doi:`,
-// `podcast:*`). All become NIP-01 filter fields, never NIP-50 extensions, so they compose with
-// the ranking. The field renderer and the query builder both take token boundaries from here.
+// The search box's own small language, parsed in one place: `from:`/`to:` (a person, an event
+// or an address), `since:`/`until:`, `#hashtag`, `label:<mark>`, `group:<id>` and the NIP-73
+// scopes (`site:`, `isbn:`, `geo:`, `isan:`, `doi:`, `podcast:*`). All become NIP-01 filter
+// fields, never NIP-50 extensions, so they compose with the ranking. The field renderer and the
+// query builder both take token boundaries from here.
 
-import { pubkeyParam } from "./nip19.js";
+import { pubkeyParam, nip19Parse } from "./nip19.js";
 
 // An npub is a fixed 63 characters, so the token boundary is known before decoding.
 const NPUB = "npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}";
+
+// The other two things `to:` can name: an event, and an addressable event's coordinate. Their
+// payloads vary in length, so the boundary is where the bech32 alphabet stops.
+const POINTER = "(?:note|nevent|naddr)1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+";
 
 // Only the ISO spelling: `06/08/2026` is a different day to half the world.
 const YMD = "\\d{4}-\\d{2}-\\d{2}";
@@ -21,6 +26,9 @@ const SCOPE_VALUE = "\\S*[^\\s.,;!?]";
 // A group id is whatever its host relay minted, so it is delimited like a scope's value.
 const GROUP_ID = SCOPE_VALUE;
 
+// A NIP-32 mark is an opaque string from its namespace (`review/app`, `en`), delimited the same way.
+const LABEL_VALUE = SCOPE_VALUE;
+
 /**
  * Can this id be written as a `group:` token that reads back as itself? Whitespace or trailing
  * punctuation in an id would silently link to somebody else's room, so the link is refused.
@@ -28,22 +36,29 @@ const GROUP_ID = SCOPE_VALUE;
 const GROUP_ONLY = new RegExp(`^${GROUP_ID}$`);
 export const groupTokenizes = (id) => GROUP_ONLY.test(String(id ?? ""));
 
+/** The same question for a mark a `label:` token would carry: a value with a space is no token. */
+const LABEL_ONLY = new RegExp(`^${LABEL_VALUE}$`);
+export const labelTokenizes = (mark) => LABEL_ONLY.test(String(mark ?? ""));
+
 // Every token in one scan, because they interleave and the field measures its caret against
 // their order. The lead group anchors a token to a word start so a `to:` inside a url is not a
 // filter; a date ends on anything but a word character or a hyphen.
 const TOKEN = new RegExp(
   `(?<lead>^|\\s)(?:` +
     `(?<who>(?:from|to):)?(?<key>${NPUB})(?![a-z0-9])` +
+    `|to:(?<ptr>${POINTER})(?![a-z0-9])` +
     `|(?<when>(?:since|until):)(?<day>${YMD})(?![\\w-])` +
     `|(?<ext>(?:${SCOPES}):)(?<sid>${SCOPE_VALUE})` +
+    `|(?<lbl>label:)(?<lid>${LABEL_VALUE})` +
     `|(?<grp>group:)(?<gid>${GROUP_ID})` +
     `)`,
   "gi",
 );
 const WHOLE = new RegExp(`^${NPUB}$`, "i");
 
-// The prefixes while they are still being typed: everything after the colon up to the caret.
-const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
+// The prefixes while they are still being typed: everything after the colon up to the caret. A
+// `to:` at a NIP-19 pointer names no person, so the people picker stands down for it.
+const PARTIAL = /(^|\s)(from|to):((?!(?:note|nevent|naddr)1)\S*)$/i;
 const PARTIAL_DAY = /(^|\s)(since|until):(\S*)$/i;
 const PARTIAL_GROUP = /(^|\s)(group):(\S*)$/i;
 
@@ -117,9 +132,22 @@ function tagSegments(chunk, out) {
 }
 
 /**
- * The typed string as segments: `{ type: "text", text }` and the tokens in it (key, date, tag,
- * scope, group), each carrying `raw` exactly as typed, so a renderer can put it back verbatim,
- * beside its normalised value. A corrupt value (a failed checksum, a day that does not exist) stays text.
+ * Which tag a `to:` pointer is asked with and the value it carries: `#e` for an event, `#a` for
+ * an addressable one's coordinate. Null for anything that does not decode to one of the two.
+ */
+function pointerAsk(raw) {
+  const p = nip19Parse(raw);
+  if (!p) return null;
+  if (p.type === "note" || p.type === "nevent") return { tag: "e", value: p.id };
+  if (p.type === "naddr") return { tag: "a", value: `${p.kind}:${p.author}:${p.d}` };
+  return null;
+}
+
+/**
+ * The typed string as segments: `{ type: "text", text }` and the tokens in it (key, pointer,
+ * date, tag, label, scope, group), each carrying `raw` exactly as typed, so a renderer can put
+ * it back verbatim, beside its normalised value. A corrupt value (a failed checksum, a day that
+ * does not exist) stays text.
  */
 export function tokenize(text) {
   const s = String(text ?? "");
@@ -135,6 +163,13 @@ export function tokenize(text) {
       const pubkey = pubkeyParam(g.key);
       if (!pubkey) continue;
       seg = { type: "key", raw, field: g.who ? g.who.slice(0, -1).toLowerCase() : null, pubkey };
+    } else if (g.ptr) {
+      // A pointer whose checksum fails stays text, exactly as a corrupt npub does.
+      const at = pointerAsk(g.ptr);
+      if (!at) continue;
+      seg = { type: "pointer", raw, field: "to", tag: at.tag, value: at.value };
+    } else if (g.lbl) {
+      seg = { type: "label", raw, value: g.lid };
     } else if (g.ext) {
       const field = g.ext.slice(0, -1).toLowerCase();
       // A scope with no askable id (`site:#top`) is not a token: the pill would
@@ -158,7 +193,7 @@ export function tokenize(text) {
 }
 
 /** The token types that pill only once the caret has left them. */
-const SETTLES = new Set(["tag", "date", "scope", "group"]);
+const SETTLES = new Set(["tag", "date", "scope", "group", "label"]);
 
 /**
  * The segments to draw: `tokenize`'s, minus the settling token the caret is inside, which stays
@@ -177,14 +212,17 @@ export function drawable(text, typingAt) {
 }
 
 /**
- * What the relay is asked, from what the person typed: `{ terms, authors, mentions, hashtags,
- * scopes, groups, since, until }`. `terms` is what is left for NIP-50 once every token is lifted
- * out; two of one date prefix keep the narrower bound; a bare npub stays a term.
+ * What the relay is asked, from what the person typed: `{ terms, authors, mentions, cites, addrs,
+ * hashtags, labels, scopes, groups, since, until }`. `terms` is what is left for NIP-50 once every
+ * token is lifted out; two of one date prefix keep the narrower bound; a bare npub stays a term.
  */
 export function parseQuery(text) {
   const authors = [];
   const mentions = [];
+  const cites = [];
+  const addrs = [];
   const hashtags = [];
+  const labels = [];
   const scopes = [];
   const groups = [];
   let since = null;
@@ -193,6 +231,14 @@ export function parseQuery(text) {
   for (const seg of tokenize(text)) {
     if (seg.type === "text") { terms += seg.text; continue; }
     if (seg.type === "tag") { if (!hashtags.includes(seg.tag)) hashtags.push(seg.tag); continue; }
+    // The same `to:` question about an event: which tag it is asked with is the pointer's shape.
+    if (seg.type === "pointer") {
+      const into = seg.tag === "e" ? cites : addrs;
+      if (!into.includes(seg.value)) into.push(seg.value);
+      continue;
+    }
+    // A mark is opaque and asked as it stands; the spellings worth asking are tagValues's question.
+    if (seg.type === "label") { if (!labels.includes(seg.value)) labels.push(seg.value); continue; }
     // Verbatim, deduped as typed; the spellings worth asking are scopeIds's question.
     if (seg.type === "scope") {
       if (!scopes.some((s) => s.field === seg.field && s.value === seg.value)) scopes.push({ field: seg.field, value: seg.value });
@@ -209,13 +255,17 @@ export function parseQuery(text) {
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: tidyTerms(terms), authors, mentions, hashtags, scopes, groups, since, until };
+  return { terms: tidyTerms(terms), authors, mentions, cites, addrs, hashtags, labels, scopes, groups, since, until };
 }
 
 // A NIP-22 comment names its thread's root scope in `I` and its parent's in `i`. One filter
 // per tag: both in one filter would AND them and drop the deeper replies.
 const COMMENT_KIND = 1111;
 const COMMENT_SCOPE_TAGS = ["#I", "#i"];
+
+// NIP-32. A `label:` asks for the labels themselves, so its filter names this kind over the tab's:
+// 1985 is on no tab, and the mark is on the label, not on what it names.
+const LABEL_KIND = 1985;
 
 // A NIP-29 group's own metadata, signed by the host relay's key.
 const GROUP_META_KIND = 39000;
@@ -304,7 +354,8 @@ export function effectiveSort(searchString) {
  * The typed string as the REQ the page sends: NIP-01 filters ORed in one subscription. `kinds`
  * is the tab's (null for all), `limit` the page's, `searchString(terms)` the caller's NIP-50
  * builder. A hashtag asks `t`, `i`/`I` and `l`; a scope asks the comment question alone; a group
- * asks `h` plus its kind-39000 metadata. Only the hashtag comment filters are gated on the tab.
+ * asks `h` plus its kind-39000 metadata; a `label:` asks the label events under that mark. Only
+ * the hashtag comment filters are gated on the tab.
  */
 export function buildFilters(text, { kinds = null, limit, searchString = (t) => t } = {}) {
   const q = parseQuery(text);
@@ -314,14 +365,17 @@ export function buildFilters(text, { kinds = null, limit, searchString = (t) => 
   if (kinds) base.kinds = kinds;
   if (q.authors.length) base.authors = q.authors;
   if (q.mentions.length) base["#p"] = q.mentions;
+  if (q.cites.length) base["#e"] = q.cites;
+  if (q.addrs.length) base["#a"] = q.addrs;
   // On `base`, so the window rides every filter of a union.
   if (q.since != null) base.since = q.since;
   if (q.until != null) base.until = q.until;
   const scoped = scopeAsks(q.scopes);
-  if (!q.hashtags.length && !scoped.length && !q.groups.length) return [{ ...base, limit }];
+  if (!q.hashtags.length && !scoped.length && !q.groups.length && !q.labels.length) return [{ ...base, limit }];
 
   const side = sideLimit(limit);
   const filters = [];
+  if (q.labels.length) filters.push({ ...base, kinds: [LABEL_KIND], "#l": tagAsks(q.labels), limit });
   if (q.groups.length) {
     filters.push({ ...base, [GROUP_TAG]: q.groups, limit });
     filters.push({ ...base, kinds: [GROUP_META_KIND], "#d": q.groups, limit: side });

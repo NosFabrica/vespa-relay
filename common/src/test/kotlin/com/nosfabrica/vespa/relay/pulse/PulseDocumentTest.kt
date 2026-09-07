@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.PortCall
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

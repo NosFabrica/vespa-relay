@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.store
 
-import com.nosfabrica.vespa.eventstore.WriterTopology
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.pulse
 
 import com.nosfabrica.vespa.eventstore.TrustHealth
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.DegradedReads
+import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject

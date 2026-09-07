@@ -4,6 +4,7 @@
 import assert from "assert";
 import { readFileSync } from "node:fs";
 import { parseQuery, tokenize } from "../../main/resources/web/shared/query.js";
+import { noteId } from "../../main/resources/web/shared/nip19.js";
 
 const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
@@ -11,6 +12,8 @@ const query = readFileSync(new URL("../../main/resources/web/shared/query.js", i
 
 // A real npub, minted by the page's own encoder, stands in for the sheet's `npub1…`.
 const NPUB = "npub1424242424242424242424242424242424242424242424242424qamrcaj";
+// The same for `note1…`: a pointer only tokenizes once its checksum passes.
+const NOTE = noteId("42".repeat(32));
 
 const text = (frag) =>
   frag
@@ -24,8 +27,8 @@ const text = (frag) =>
 /** Every `<code class="tok">` inside one stretch of markup, as plain text. */
 const toks = (frag) => [...frag.matchAll(/<code class="tok">([\s\S]*?)<\/code>/g)].map((m) => text(m[1]));
 
-/** A documented token with a real value in place of the sheet's placeholder. */
-const real = (tok) => tok.replace(/npub1…/g, NPUB);
+/** A documented token with a real value in place of the sheet's placeholders. */
+const real = (tok) => tok.replace(/npub1…/g, NPUB).replace(/note1…/g, NOTE);
 
 // Read off query.js's source, not a list repeated here.
 const scopes = /const SCOPES = "([^"]+)"/.exec(query);
@@ -37,16 +40,22 @@ const known = new Set([
     return m[1].split("|");
   }),
   "group",
+  // The one-off prefixes, read the same way: each is its own alternative in the tokenizer.
+  ...["lbl"].map((g) => {
+    const m = new RegExp(`\\(\\?<${g}>([a-z]+):\\)`).exec(query);
+    assert.ok(m, `query.js's token regex no longer names its <${g}> prefix`);
+    return m[1];
+  }),
 ]);
 // The reads above ask only for the groups this file knows by name.
 const groups = [...new Set([...query.matchAll(/\(\?<([a-z]+)>/g)].map((m) => m[1]))].sort();
 assert.deepStrictEqual(
   groups,
-  ["day", "ext", "grp", "gid", "key", "lead", "when", "who", "sid"].sort(),
+  ["day", "ext", "grp", "gid", "key", "lbl", "lead", "lid", "ptr", "when", "who", "sid"].sort(),
   `query.js's tokenizer grew or lost a named group (${groups.join(", ")}) — the syntax sheet has to keep up with it`,
 );
 
-assert.ok(known.has("from") && known.has("until") && known.has("group") && known.has("podcast:item:guid"), `read the wrong prefixes off query.js: ${[...known].join(", ")}`);
+assert.ok(known.has("from") && known.has("until") && known.has("group") && known.has("label") && known.has("podcast:item:guid"), `read the wrong prefixes off query.js: ${[...known].join(", ")}`);
 
 const sheetAt = html.indexOf('<dialog id="help"');
 const sheet = html.slice(sheetAt, html.indexOf("</dialog>", sheetAt));

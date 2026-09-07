@@ -3,7 +3,7 @@
 // here; the shared/ modules underneath are the stateless client, codec and caches.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
-import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
+import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
@@ -566,8 +566,13 @@ function exportText() {
   L.push(`  terms         ${JSON.stringify(q.terms)}`);
   if (q.authors.length) L.push(`  from          ${people(q.authors)}`);
   if (q.mentions.length) L.push(`  to            ${people(q.mentions)}`);
+  // The other half of `to:`: an event by id, an addressable one by its coordinate.
+  const cited = [...q.cites.map((id) => noteId(id)), ...q.addrs];
+  if (cited.length) L.push(`  cites         ${cited.join(", ")}`);
   // A hashtag search is a union of three claims: a `t` tag, a NIP-22 comment, a NIP-32 label.
   if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
+  // The labels themselves, at their own kind: this line is not about what they name.
+  if (q.labels.length) L.push(`  labels        ${q.labels.map((l) => `label:${l}`).join(", ")}  (the kind 1985 records carrying the mark)`);
   // As typed; the ids the filter carries are in the full filter lines below.
   if (q.scopes.length) L.push(`  scopes        ${q.scopes.map((s) => `${s.field}:${s.value}`).join(", ")}`);
   // An `h` tag holds only the id, so the host is not recoverable from the events.

@@ -21,10 +21,10 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.mapBounded
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -83,13 +83,13 @@ class IngestCostBench {
                 audit = null,
                 servingPressure = null,
                 scope = scope,
-                knownIds = if (arm.probe) store.eventIndex::existingIds else null,
+                knownIds = if (arm.probe) store.engine::existingIds else null,
                 newestVersions =
                     if (!arm.probe) {
                         null
                     } else {
                         { kind, authors ->
-                            store.eventIndex
+                            store.engine
                                 .search(EventQuery(kinds = listOf(kind), authors = authors))
                                 .groupBy { it.pubkey }
                                 .mapValues { (_, docs) ->
@@ -209,7 +209,7 @@ class IngestCostBench {
             val found =
                 authors
                     .chunked(CHECK_CHUNK)
-                    .mapBounded(QUERY_FANOUT) { chunk -> store.eventIndex.search(EventQuery(kinds = listOf(0), authors = chunk)) }
+                    .mapBounded(QUERY_FANOUT) { chunk -> store.engine.search(EventQuery(kinds = listOf(0), authors = chunk)) }
                     .flatten()
             val dt = System.nanoTime() - t0
             if (pass > 0) {
@@ -230,7 +230,7 @@ class IngestCostBench {
         val ids = events.map { it.id }
         repeat(2) { pass ->
             val t0 = System.nanoTime()
-            val hit = ids.chunked(DEDUP_CHUNK).mapBounded(QUERY_FANOUT) { store.eventIndex.existingIds(it) }.flatMapTo(HashSet()) { it }
+            val hit = ids.chunked(DEDUP_CHUNK).mapBounded(QUERY_FANOUT) { store.engine.existingIds(it) }.flatMapTo(HashSet()) { it }
             val dt = System.nanoTime() - t0
             if (pass > 0) {
                 println(

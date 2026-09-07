@@ -675,10 +675,14 @@ assert(!note.includes("njump.me"), "search cards no longer link out");
   assert(html.includes('class="prov pills"'), "a spliced card draws its provenance row");
   assert(!/prov-why|>why</.test(html), "the row carries no standing label — the pills are the row");
 
-  // The three destinations, spelled by base.js and nowhere else.
+  // The destinations, spelled by base.js and nowhere else.
   assert(html.includes(`href="/${naddr(`30392:${lister}:x`)}"`),
     "a list pill opens the list's own page — the same address its card opens");
-  assert(html.includes(`href="/?q=zapped"`), "a label pill runs a search for itself");
+  // A label pill opens the labels it counted: this mark, on this target, asked through the tag
+  // the label named it with.
+  const labelQ = new URLSearchParams({ q: `label:zapped to:${npub(pk)}` }).toString();
+  assert(html.includes(`href="/?${labelQ}"`),
+    `a label pill opens the labels themselves, not a word search: ${/href="(\/\?[^"]*)"/.exec(html)?.[1]}`);
 
   // Two tones, and the count that makes the duplicate honest.
   assert(html.includes('class="prov-pill vouched"'), "a delegated source takes the yours tone");
