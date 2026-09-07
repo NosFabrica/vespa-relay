@@ -33,12 +33,6 @@ stops the boot: `=0s` and `=off` are the obvious spellings of "turn this off",
 and `?: default` accepted both by running the rollup on the schedule the
 operator was trying to change.
 
-**The trust descent line says which state applies.** The store's early stop
-turns itself on once the `max_rank` walk has finished, and the walk runs even
-with `VESPA_TRUST_DESCENT` off because it keeps the invariant the descent
-needs. A boot log reading "on" while every ranked search takes the full walk is
-the state the switch exists to name.
-
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
 publishes the relay's own `/favicon.ico` url, the doc's `icon` is no longer a

@@ -9,8 +9,6 @@ against `wss://search-staging.brainstorm.world/` for the wire measurements.
   word, before and after the change (staging).
 - `bench.mjs` — the store's own YQL (from `searchTrace`, `SEARCH_YQL=1`,
   saved as `yql-all.txt`) re-sent with a match-phase cut (`ATTR`, `VARIANTS`).
-- `proof.mjs`, `descent.mjs` — the trust-keyed cut and the exact trust
-  descent with its bound; `maxrank.mjs` fills the experimental `max_rank` on
   the reputation documents, `hist.mjs` / `share.mjs` / `top.mjs` read the
   corpus back.
 
