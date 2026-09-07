@@ -258,23 +258,6 @@ fun main() {
             println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
         }
     }
-    // The max_rank walk runs even with the operator's switch off; the line says which state applies.
-    maintenanceScope.launch {
-        val written =
-            runCatching { store.awaitTrustDescent() }.getOrElse { e ->
-                System.err.println("trust descent: OFF — the max_rank walk did not finish (${e.message?.take(200)}); ranked search stays on the full walk")
-                return@launch
-            }
-        val walked = if (written > 0) " — max_rank written onto $written reputation documents" else ""
-        println(
-            if (store.trustDescent) {
-                "trust descent: on$walked"
-            } else {
-                "trust descent: off by ${VespaEventStore.TRUST_DESCENT_ENV}$walked; ranked search takes the full walk"
-            },
-        )
-    }
-
     val servingPressure = ServingPressure()
     // On maintenanceScope, so a check still running at shutdown dies with it.
     val trustNotice = TrustNotice(store, maintenanceScope)

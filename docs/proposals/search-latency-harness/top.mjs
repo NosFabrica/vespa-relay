@@ -9,6 +9,5 @@ const d=await (await fetch("http://localhost:8080/search/",{method:"POST",header
 console.log(word, "served", d.root.fields.totalCount, "degraded", !!d.root.coverage.degraded?.["match-phase"], d.timing.searchtime*1000+"ms");
 for (const c of d.root.children) {
   const f=c.fields, m=f.matchfeatures||{};
-  const r = await (await fetch(`http://localhost:8080/document/v1/reputation/reputation/docid/${f.pubkey}?fieldSet=reputation:max_rank`)).json();
-  console.log(` rel=${c.relevance.toExponential(2)} kind=${f.kind} trust=${m.user_score} max_rank=${r.fields?.max_rank} text=${Number(m.text_score).toFixed(0)} wot=${Number(m.wot_mult).toFixed(0)} tok=${m.any_token_match} near=${m.any_near_match} weak=${m.weak_match} body=${m.tier_body_match} affil=${m.affiliation_match}`);
+  console.log(` rel=${c.relevance.toExponential(2)} kind=${f.kind} trust=${m.user_score} text=${Number(m.text_score).toFixed(0)} wot=${Number(m.wot_mult).toFixed(0)} tok=${m.any_token_match} near=${m.any_near_match} weak=${m.weak_match} body=${m.tier_body_match} affil=${m.affiliation_match}`);
 }

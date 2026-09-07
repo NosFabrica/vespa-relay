@@ -17,7 +17,6 @@ export const ACTIVITY_LABELS = {
   Reconcile: "trust reconcile",
   Sweep: "sweeps",
   GuardRefresh: "guard refresh",
-  Backfill: "max_rank backfill",
   Other: "everything else",
 };
 
