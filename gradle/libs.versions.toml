@@ -422,47 +422,60 @@ quartz = "cecc3287b2"
 # `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
 # truncate — `sorting.degrading` defaults true — and it reports the truncation
 # as `match-phase`. The coverage guard then correctly refuses the partial
-# answer, the walk throws, and the drain dies. Meanwhile visitIdsByScan sits
-# right there: the document API, no ranking, no sorting, no match phase,
-# nothing to truncate.
+# THE TRUST DESCENT IS GONE (#130), and #128 before it.
 #
-# Caught here as: `unranked/kinds,authors match-phase x34 REFUSED, last 54% of
-# 186,754,978`, with the stack naming SearchCoverage.requireComplete.
+# #130 REMOVES THE DESCENT ENTIRELY — 32 files, -1366 lines. Measured on this
+# cluster it made ranked search 1.6-4x SLOWER on the very queries it exists to
+# accelerate (`bitcoin` 3.1s -> 13.3s, identical result counts). The rung is a
+# range over an imported field, which Vespa resolves through the parent
+# reference at match time — no posting list, nothing to seek — so it filters
+# instead of driving, and the descent paid for two such queries:
+#   text only                      69-95ms      (3,624,868 matching kind-1)
+#   text + author_max_rank >= 90   1.06-1.19s   -- 15x SLOWER
+#   author_max_rank >= 90 ALONE    2.20/2.20/2.21s  (46.1M matching)
 #
-# LOAD, NOT SHAPE. The same query — same 279,594-card service, same 2064-id
-# page, same profile — comes back 100% complete on an idle cluster. It
-# degraded while the cluster was saturated at 16 cores and 17.5M docs/s. And
-# the failure is self-reinforcing: the drain fails, retries, adds load, makes
-# truncation likelier. That is why a StatefulSet roll appeared to fix it
-# earlier — the roll dropped the load.
+# Two further findings, either fatal alone. The rung had already lost its
+# selectivity: rank>=90 covers 21.6% of kind-1 (35.2M of 162.7M) against the
+# 0.5% the design assumed, 43x off, and max_rank is a MAXIMUM over all
+# observers so it saturates upward as the graph fills in — worse after launch,
+# not better. And the match set was never the bottleneck: matching 3.6M docs
+# costs ~80ms, scoring them ~820ms, and match-phase (already in the schema on
+# created_at) runs in 45-52ms with no imported field and no write
+# amplification. That is where the speed is; see vespa-eventstore#129.
 #
-# WHICH IS WHY THE FALLBACK IS THE FIX AND NOT A WORKAROUND: a walk that must
-# be complete cannot depend on a read the engine may truncate. `sorting.degrading=false`
-# was considered and rejected — unverifiable under the load that triggers this,
-# and forbidding truncation under saturation most likely turns a partial answer
-# into a timeout, which is worse: a timeout carries no signal telling the
-# caller to take another path.
+# WHAT THIS PIN CHANGES ON DEPLOY: `reputation.max_rank` and event.sd's
+# `author_max_rank` import are gone from the app package, so the field's data
+# is dropped (it was derived). Watch the vespa-app deploy on the first rollout.
 #
-# Also types the refusal. "The answer was short" and "the query was wrong" were
-# both IllegalArgumentException, which is why a walk holding a perfectly good
-# fallback died instead of using it.
+# AND THEN: delete the VESPA_TRUST_DESCENT guard from staging-values.yaml.
+# It is only there because the PREVIOUS image reads unset as ON; on this image
+# the variable is not read at all. (brainstorm-k8s, relay + sync extraEnv.)
 #
-# DIRECTION: 52ac77e5ac is a strict ancestor of this — main plus #121.
+# #128 also rides here: streamedSlice never sent `&timeout=`, so the server
+# default (180s) outlived the client's 120s read gap and every sparse service
+# walk died with SocketTimeoutException from Http2Stream$FramingSource.read.
+# It is what finally let the projection finish — drain empty, reconcile done,
+# servicesProjected 231/242, lensesResolvable 245/358.
 #
-# LEXICOGRAPHIC: '27d4…' < '52ac…' ('2' < '5'), the unsafe direction. No
+# DIRECTION: ab90b08f02 is a strict ancestor of this — main plus #130.
+#   git merge-base --is-ancestor ab90b08f02 d0e25c3325   # verified
+#
+# LEXICOGRAPHIC: 'd0e2…' > 'ab90…' ('d' > 'a'), the safe direction. No
 # `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line reads 27d43f84c1 with no `->`:
+# eventstore line must read d0e25c3325 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: 52ac77e5ac = PR #120 — a background failure says WHERE it failed.
-# It printed the stack that named this bug on its first failure, after an
-# afternoon of `last: timeout` with no query, stage or frame.
-#
-# Superseded: 34fb127523 = #119 (a stalled step reads as stalled; the walk's
-# read path is timed). 02b528a85a = #118 (the walk reports a fraction).
-# 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 = #113/#114.
-# aca0552c4e = #112. 53441182f5 = #108.
-vespaEventStore = "27d43f84c1"
+# Superseded: ab90b08f02 = #128 (the streamed visit's server deadline).
+# 4c2b026cfc = #127 and 61b39e7280 = #125 — the reader/writer split and its
+# unbounded queue; both defensible, neither the cause. a2499fa4c1 = #126 (a
+# sample may be short: the reconcile's projected-check was refused 119 times
+# over two hours at 57% coverage). cba205940b = #124 (the walk batches across
+# pages, 16.3 -> 178 cards/s). 1211420526 = #122 + #123 (a failing unit costs
+# only itself; 93 consecutive drain failures to zero). 27d43f84c1 = #121.
+# 52ac77e5ac = #120. 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117.
+# 2fa2b67141 = #116. a23a6a3a68 = #113/#114. aca0552c4e = #112.
+# 53441182f5 = #108.
+vespaEventStore = "d0e25c3325"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

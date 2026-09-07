@@ -894,8 +894,8 @@ object StatusVocabulary {
                 "One named stage inside ingest, as the STORE names it. The router's own are `verify` and " +
                     "`dedup.pre`/`versions.pre` (its two drop probes); the rest are the store's — `dedup`, " +
                     "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's " +
-                    "`proj.fetch.derive` (the contact-card recall behind a batch) / `proj.fetch.maxrank` (its " +
-                    "`max_rank` reads, a function of cache misses) / `proj.write`, and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
+                    "`proj.fetch.derive` (the contact-card recall behind a batch) / `proj.write`, " +
+                    "and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
                     "mutex versus holding it. Read `wait` against `hold` and `write`, never alone: workers queueing " +
                     "for a saturated engine show a huge `wait` and are not the reason for anything.",
             )

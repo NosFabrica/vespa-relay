@@ -198,169 +198,57 @@ Three things to read off it:
 Match threads help the uncut shape and nothing under the cut: `the` uncut
 629 → 331 ms from one thread to four, `the` at 10,000 53 → 69 ms (noise).
 
-## A cut that does not decide the answer: trust descent (2026-09-03, later)
+## The trust descent: built 2026-09-03, removed 2026-09-07
 
-The newest-N cut above was refused as a product: a configured depth must not
-decide what a search answers. So the question became whether the engine can
-be made to stop early WITHOUT changing the answer, and the answer is yes —
-because of what the ranking is.
+Two sections used to sit here arguing for a rung — `author_max_rank >= T` on
+the reputation parent, imported into every event — and reporting it on staging.
+It was built, shipped behind a switch, measured, and **removed**
+(vespa-eventstore#130). The argument was sound and the mechanism was not.
 
-**The ranking is trust, then text.** `search` scores `text × wot_mult(trust)
-× recency`; text spans ×236 across its bands, trust spans ×250,000 across
-0..100 (`wot_mult = 1 + (rank − floor)^2.7`), recency ×1.1. The exact top-10
-for `the` under the observer is ten weak-band hashtag hits ordered purely by
-their authors' trust (97, 95, 71, 71, 64, 61, 58, 58, 51, 51); for `nostr`,
-ten hits by authors ranked 100, 100, 100, 99, 99, 99, 99, 97, 97, 97. So the
-docs that can be on a page are, overwhelmingly, the docs of the most trusted
-authors — and the reputation parent already knows who those are.
+**What it assumed.** That Vespa would *drive* the AND with that range: walk the
+trusted authors' documents and check the word, instead of walking a common
+word's postings. It cannot. `author_max_rank` was an **imported** field, which
+Vespa resolves through the parent reference at match time — no posting list,
+nothing to seek — so the range filters rather than drives, and the descent paid
+for two such queries.
 
-**The mechanism.** A scalar on the reputation document, `max_rank` — the best
-rank ANY observer gives this author, kept fresh by the trust projection —
-imported into the event as `author_max_rank`. A relevance search then carries
-`author_max_rank >= T`, and Vespa drives the AND with THAT range: it walks the
-trusted authors' notes and checks the word against each, instead of walking
-the word's postings (millions) and checking each against the gate. Measured
-on the local slice (1.28M kind-1 notes, the observer's provider's real cards):
+Measured on staging (343.8M events), `ranking=unranked`:
 
-| authors ranked ≥ T (by anyone) | share of kind-1 notes |
-|---:|---:|
-| 2 (everyone the provider scores) | 10.6% |
-| 10 | 5.0% |
-| 20 | 3.8% |
-| 50 | 2.2% |
-| 90 | 0.5% |
+| query | matches | time |
+| --- | --- | --- |
+| text only | 3,624,868 kind-1 | 69–95 ms |
+| text + `author_max_rank >= 90` | subset | **1.06–1.19 s** |
+| `author_max_rank >= 90` alone | 46,102,622 | 2.20 / 2.20 / 2.21 s |
 
-**The proof.** Every doc the clause excludes has `max_rank < T`, so its score
-under THIS observer (whose rank for it is ≤ its max) is at most
-`ceiling × wot_mult(T−1) × 1.1`, where `ceiling` is the largest text score a
-document can earn (the token tier plus its tails, ~131,100 — a schema
-constant). If the page's K-th hit scores at least that, no excluded doc could
-have displaced it: the page is the exact page. The K-th score also says how
-low T must go for the proof to hold, so the descent is two queries — a first
-rung high (T=90, cheap) that reveals the K-th score, then one rung at the T
-that score proves — and a page whose K-th hit is by a poorly ranked author
-descends to `T = floor`, which is the exact answer walked over the trusted
-authors only. The answer is exact at every rung it stops on; T never decides
-it, only how fast it was found.
+End to end, ranked NIP-50 with the descent on was **1.6–4× slower** on every
+query it existed to accelerate (`bitcoin` 3.1 s → 13.3 s), with identical
+result counts — correct, and slower.
 
-Measured, same corpus, kind 1, K=40, 4 threads (`descent.mjs`, ladder shown
-rung by rung; `proven` is the bound above holding):
+**Two further findings, either fatal alone.**
 
-```
-"the"      exact 154ms, served 31,604
-  rank>=90  13ms kept  2,138  top10  2/10   rank>=50  22ms kept 7,409  top10 10/10
-  rank>=20  30ms kept 11,716  top10 10/10   rank>=10  35ms kept 16,157 PROVEN, page identical
-"nostr"    exact  86ms — rank>=90 12ms 10/10 … rank>=20 35ms PROVEN, identical
-"bitcoin"  exact  39ms — rank>=90 14ms 10/10 … rank>=20 25ms PROVEN, identical
-"love"     exact  32ms — rank>=90 15ms  6/10 … rank>=10 24ms PROVEN, identical
-```
+- *The rung had already lost its selectivity.* The design assumed authors at
+  rank ≥ 90 wrote 0.5% of notes. Measured: **21.6%** (35.2M of 162.7M), 43×
+  off. `max_rank` is a MAXIMUM over all observers, so it saturates upward as
+  the graph fills in — and the platform is not public yet, so this gets worse,
+  not better.
+- *The match set was never the bottleneck.* Matching 3.6M documents costs
+  ~80 ms; bm25-scoring them costs ~820 ms. `match-phase` — already in the
+  schema, on the ordinary `created_at` attribute — bounds what reaches the
+  scorer and runs in **45–52 ms**.
 
-Two rungs (T=90, then the proven T) cost 46 ms for `the` against 154 exact.
-The slice is 190x smaller than staging and its authors are scored by ONE
-provider (so `max_rank` is that provider's rank; on staging it is the max
-over 1,023 providers and covers more authors); the transferable numbers are
-the shares and the per-doc walk cost (~0.5 µs per trusted-author note
-checked, 4 threads). On staging, authors ranked ≥ 20 by anyone are perhaps
-5-10% of 149M notes: an exact `the` becomes a ~3-7M-doc walk, roughly
-**0.5-1 s where it is 16 s today**, and `bitcoin` **~0.3-0.5 s** — for every
-common word alike, since the walk is the trusted corpus rather than the
-word. Rare words stay on the text driver and stay fast. That is exact, with
-no knob in the answer; it is not 200 ms.
+**Where the speed actually is**, and what this document should be read as
+pointing at now: apply the `recency_gated` pattern to the trust-ranked text
+path — match-phase for the fast page, degradation detected, exact rerun when
+too few trusted hits survive ("degradation can cost a second query, never a
+result"). No imported field, no 343M-document backfill, no write amplification
+when an author's score changes.
 
-**Why exact cannot be 200 ms**, in one line: 200 ms buys a walk of ~1.5M
-notes, which is authors ranked ≥ ~50; the proof at T=50 needs the K-th hit to
-score 5.3e9, and no note can (a body hit by a rank-100 author scores 1.3e8).
-The ×236 text spread is what defeats a trust-only stop; the recency term is
-too weak to stop on at all.
+The exactness argument the descent rested on is still good and is preserved in
+git history: a rung is exact when the page's K-th hit outscores the ceiling any
+excluded author could reach. It needs an attribute the engine can seek, and a
+statistic that still discriminates. Neither was true of `max_rank`.
 
-**What the trust key can also do, if the product allows a first answer that
-is not the final one:** the T=90 rung answers in ~100 ms on staging's shape
-and is the exact top of the page for most words (`nostr`, `bitcoin`: 10/10
-already); the proven rung follows. A relay REQ streams, so a page could draw
-the first rung and re-sort when the proven one lands. That is a product
-decision, not made here.
-
-**What was checked and set aside:** Vespa accepts a match phase keyed on the
-imported `author_max_rank` (it works, and at moderate depths it was exact on
-every word tried), but its threshold is an ESTIMATE — kept sets held docs of
-rank 2 while excluding rank-40 ones — so no bound can be proven over it; the
-explicit range clause is what makes the proof sound, and it is as cheap.
-
-**Through this relay, on the same slice** (2026-09-04, the pinned build and
-this branch each run over the same local Vespa, one REQ at a time, p50 of 5,
-`kinds:[1]`, limit 40, the observer's lens):
-
-| word | pinned relay | this branch | page |
-|---|---:|---:|---|
-| `the` | 179 ms | 109 ms | identical |
-| `nostr` | 144 ms | 129 ms | identical |
-| `bitcoin` | 90 ms | 101 ms | identical |
-| `lightning` | 58 ms | 84 ms | identical |
-| `love` | 70 ms | 82 ms | identical |
-| `zap` | 28 ms | 45 ms | identical |
-| `bitc` | 56 ms | 60 ms | identical |
-| `xylophonist` | 23 ms | 39 ms | identical (no hits) |
-
-Every page byte-identical, and the boot log said `trust descent: on` before
-the first ask. On a slice this small the relay's own floor (the expansion's
-companion reads, the splice, the wire) is most of every number, so the
-engine-side gain (`the` 154 → 46 ms) shows as 179 → 109; what transfers to
-staging is the shape — a common word costs the trusted walk, a rare word
-pays one extra cheap rung (~15 ms here). Staging itself still runs the old
-build as of this writing (`bitcoin` 4.3 s, `nostr` and `the` 16.5 s, re-timed
-2026-09-04) and is the measurement that remains.
-
-**Where it lives now:** the store branch `claude/trust-descent-myuucz` on
-NosFabrica/vespa-eventstore (merged as PR #98; this branch pins it) — `reputation.max_rank` and its import, the
-projection's upkeep and the one-time backfill, `EventQuery.trustFloor`, the
-descent and its bound in `TrustDescent`, the mock engine's rung support and
-the tests, and the measurement in that repo's `benchmark/README.md` §6. The
-relay takes it by bumping `vespaEventStore` in `gradle/libs.versions.toml`
-once it lands; nothing on the relay side changes shape, since a REQ still
-answers with its events in final rank order and then EOSE. The earlier
-depth-cut branch (`claude/search-query-performance-myuucz` there) is
-superseded and should be closed unmerged.
-
-## On staging, with the descent on (2026-09-04, after the deploy)
-
-The pin landed (PR #189, deployed 02:11 UTC), the `max_rank` walk finished on
-a later boot (`trust descent: on — max_rank written onto 317595 reputation
-documents`), and the same probe as above, one REQ at a time on one socket,
-`kinds:[1]`, limit 40, the observer's lens:
-
-| word | before (old build) | descent on | control, same socket |
-|---|---:|---:|---|
-| `bitcoin` | 2.7–4.4 s | **8.4–14 s** | `sort:text include:spam` 2.1 s (was 2.3); `sort:recent` 0.8 s (was 0.6) |
-| `nostr` | 16.0 s | **23–29 s** | |
-| `the` | 16.4 s | **19–21 s** | `sort:text include:spam` 8.1 s |
-| `lightning` | 1.5 s | 1.9–2.6 s | |
-| `zap` | 0.9 s | 1.3–1.5 s | |
-| `xylophonist` | 0.3 s | 0.1–0.4 s | |
-
-The controls say the engine is not starved (the sync process was wedged at
-boot with twenty-odd store scans outstanding — see the issue on
-`retireOwnStaleVerdicts` — and text-only and recency reads cost what they
-cost yesterday). Only the shape that descends regressed, by two to three
-times: that is two or three rungs, each costing a full text walk. On this
-cluster (two content nodes, 333M events) Vespa is NOT driving a rung's AND by
-the imported `author_max_rank` range, which is what made a rung cheap on the
-local slice (`the` 154 → 46 ms); it is walking the word's postings and
-filtering, so a rung costs the exact query and the descent pays for two or
-three of them. Which iterator Vespa picks is decided by its estimated hit
-counts per term, and an estimate for a range over an IMPORTED attribute is
-not one the slice could have exercised at staging's cardinalities.
-
-**What to do:** switch the descent off on staging (`VESPA_TRUST_DESCENT=off`,
-store PR #99; the schema, the walk and the upkeep stay, so on again is a
-restart) and take a query trace there — `trace.level=3` on one rung, or the
-relay's `searchTrace` task against staging's Vespa — to see which term drives
-the AND and what the range term's estimate is. If the estimate is the
-problem, the rung can be written to force the range as the driver (Vespa's
-`rank()`/`weakAnd` shaping, or a `filter` annotation on the text term); if the
-imported-range iterator itself is the cost at this scale, the descent should
-stay off until the parent field is replaced by something the child carries.
-Either way this branch's measurement of the descent on the slice stands, and
-its transfer to staging did not.
+Full record: NosFabrica/vespa-eventstore#129 and #130.
 
 ## What is NOT the problem
 
