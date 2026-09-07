@@ -349,14 +349,14 @@ object StatusVocabulary {
             )
             put(
                 "excluded",
-                "Urls dropped by CONFIG — a stream's `exclude` list, or this relay's own url, which is in plenty of " +
+                "Urls dropped by CONFIG — an `exclude` list, or this relay's own url, which is in plenty of " +
                     "other people's relay lists. Its own member because an operator's instruction being obeyed and a " +
                     "duplicate the router worked out for itself are different facts with different fixes; they were " +
                     "one number while the fold count was inferred from a subtraction. Published in two places with the " +
-                    "same meaning and different scopes: on a CYCLE it is after that stream's fold, and on a PROBE PASS " +
-                    "it is over the union of every stream, where `sourced = excluded + heldOutDead + candidates`. " +
-                    "`exclude` is per stream, so a url one stream excludes and another asks for counts as a candidate " +
-                    "there — it is dialled, and counting it on both sides would break the one partition it belongs to.",
+                    "same meaning and different scopes: on a mirror CYCLE it is the stream's own `exclude`, applied " +
+                    "after that stream's fold; on a monitor PROBE PASS it is monitor.conf's single `exclude` over the " +
+                    "union of its sources, where `sourced = excluded + heldOutDead + candidates`. The two planes " +
+                    "declare their exclusions separately, and neither number narrows the other.",
             )
             put(
                 "pending",
@@ -441,10 +441,11 @@ object StatusVocabulary {
             )
             put(
                 "sourced",
-                "Every url the streams' relay lists yielded for a probe pass, before anything was held out — the " +
-                    "widest number this router has about the network it can see, and the one `candidates` is a share " +
-                    "of. Per PASS and over the union of every stream, so it is not the sum of the streams' own " +
-                    "`discovered`: two streams routinely find the same url and it is one url here.",
+                "Every url the relay lists in monitor.conf's own `sources` yielded for a probe pass, before " +
+                    "anything was held out — the widest number this router has about the network it can see, and the " +
+                    "one `candidates` is a share of. Per PASS and over the union of those sources, so two sources " +
+                    "naming the same url make it one url here. Nothing the STREAMS discover reaches this number: " +
+                    "what the monitor measures is its own declaration, never inferred from what the mirror syncs.",
             )
             put(
                 "corpus",

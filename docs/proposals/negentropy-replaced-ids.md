@@ -994,7 +994,7 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    which was cut; the fetch path therefore has no bandwidth saving of its own
    and relies on Fix 2 healing the source instead.
 3. **Fix 2's healer, on the static upstreams only** — the `urls` in
-   `router.conf`, where we have a relationship and plausibly write access.
+   `sync.conf`, where we have a relationship and plausibly write access.
    Per-stream opt-in, default off, and **two switches**: one for the retraction
    kinds (5 and `ALL_RELAYS` 62), one for the content kinds. Build the bounded
    coalescing queue, the per-relay post-sync drain, the `ServingPressure` yield
