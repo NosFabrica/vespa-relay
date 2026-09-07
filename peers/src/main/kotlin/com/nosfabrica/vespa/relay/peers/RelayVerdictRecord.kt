@@ -61,6 +61,12 @@ class RelayVerdictRecord(
          * out is not in here: it says what we measured once, not what we measure now.
          */
         val measured: Set<NormalizedRelayUrl> = emptySet(),
+        /**
+         * Urls a record of ours exists for AT ALL, whatever its tags now say. The corpus this
+         * monitor covers, which is a question about the config; [measured] is a question about
+         * freshness, and an epoch bump or a lapsed TTL empties that without narrowing this.
+         */
+        val recorded: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /** One chunked record read, booked as the monitor's. */
@@ -142,8 +148,9 @@ class RelayVerdictRecord(
         val inconsistent = HashSet<NormalizedRelayUrl>()
         val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
         val measured = HashSet<NormalizedRelayUrl>()
+        val recorded = HashSet<NormalizedRelayUrl>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded)
     }
 
     /** A page of records, folded into the sets. */
@@ -161,6 +168,8 @@ class RelayVerdictRecord(
     ) {
         val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return
         val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
+        // Before any currency check: the record existing is what says this url is in our corpus.
+        recorded += from
         event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
             RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
                 if (from == to) distinct += from else aliases[from] = to

@@ -82,27 +82,35 @@ internal class RosterBuilder(
         /** url → whether the monitor measured it answering a NEG-OPEN; absent where unmeasured. */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
         /**
-         * The urls here our own monitor holds a current verdict about. Every other url on this
-         * roster is one the mirror syncs and the monitor is not watching — the shape a monitor
-         * whose `sources` have drifted from the streams takes.
+         * The urls here our own monitor holds a record about at all, whatever that record's
+         * current label says. Every other url on this roster is one the mirror syncs and the
+         * monitor is not covering — the shape a monitor whose `sources` have drifted from the
+         * streams takes. Deliberately membership and not freshness: an epoch bump or a lapsed
+         * TTL empties the labels for a pass or two without narrowing the corpus, and reading
+         * that as drift would flag the whole roster on every re-measure.
          */
         val measured: Set<NormalizedRelayUrl> = emptySet(),
         /** Whether [measured] means anything; false on a deployment that measures nothing on purpose. */
         val watching: Boolean = false,
         /**
-         * Urls a stream names in its own `urls`. They are on the roster because an operator put
-         * them there, not because a verdict admitted them, so no verdict is owed for one.
+         * Stream name → the urls that stream names in its own `urls`. They are on the roster
+         * because an operator put them there, not because a verdict admitted them, so no verdict
+         * is owed for one — but only on the stream that pins it, since another stream reaching
+         * the same url through discovery is still owed one.
          */
-        val declared: Set<NormalizedRelayUrl> = emptySet(),
+        val declared: Map<String, Set<NormalizedRelayUrl>> = emptyMap(),
     ) {
         /**
-         * Whether a verdict of ours stands behind [url], or none was ever owed. Three absences are
-         * not drift: a router that measures nothing on purpose, one holding no verdict about
-         * ANYTHING (a cold start, or a rebuild whose verdict read threw), and a url a stream pins
-         * by hand — that one bypasses the verdicts by design and monitor.conf has no syntax to
-         * name it, so counting it would be a fault with no available fix.
+         * Whether a verdict of ours stands behind [url] on [stream], or none was ever owed. Three
+         * absences are not drift: a router that measures nothing on purpose, one holding no record
+         * about ANYTHING (a cold start, or a rebuild whose verdict read threw), and a url this
+         * stream pins by hand — that one bypasses the verdicts by design and monitor.conf has no
+         * syntax to name it, so counting it would be a fault with no available fix.
          */
-        fun watches(url: NormalizedRelayUrl): Boolean = !watching || measured.isEmpty() || url in declared || url in measured
+        fun watches(
+            url: NormalizedRelayUrl,
+            stream: String,
+        ): Boolean = !watching || measured.isEmpty() || url in declared[stream].orEmpty() || url in measured
     }
 
     /** One source's discovery, held for its own `refreshSeconds`. */
@@ -167,9 +175,9 @@ internal class RosterBuilder(
             asks = units,
             sharedAuthors = shared,
             speaksNegentropy = standing.speaksNegentropy,
-            measured = standing.measured,
+            measured = standing.recorded,
             watching = watching,
-            declared = streams.flatMapTo(HashSet()) { it.urls },
+            declared = streams.filter { it.urls.isNotEmpty() }.associate { it.name to it.urls.toSet() },
         )
     }
 

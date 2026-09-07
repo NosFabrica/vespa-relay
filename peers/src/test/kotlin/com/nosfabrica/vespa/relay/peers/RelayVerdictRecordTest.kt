@@ -385,6 +385,34 @@ class RelayVerdictRecordTest {
         }
 
     @Test
+    fun `a record whose every verdict has aged out still says the url is ours to cover`() =
+        runBlocking {
+            // `measured` is freshness and `recorded` is membership, and an epoch bump empties the
+            // first for a pass or two without narrowing the second. A reader that conflated them
+            // would call the whole corpus undrifted-then-drifted on every rules change.
+            val store = newStore()
+            store.insert(
+                signer.sign(
+                    RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
+                        add(
+                            arrayOf(
+                                RelayVerdictRecord.SAME_AS_TAG,
+                                canonical.url,
+                                "500 newest events, 498 shared with ${canonical.url}",
+                                nowSeconds().toString(),
+                                "1",
+                            ),
+                        )
+                    },
+                ),
+            )
+
+            val held = RelayVerdictRecord(store, signer).load(listOf(alias))
+            assertTrue(held.measured.isEmpty(), "a superseded verdict was still counted as current")
+            assertEquals(setOf(alias), held.recorded, "the record exists, so the url is in this monitor's corpus")
+        }
+
+    @Test
     fun `a verdict written before the epoch existed is re-measured, not trusted forever`() =
         runBlocking {
             // The event's clock is rewritten on every connect, so a fallback to it would never age out.

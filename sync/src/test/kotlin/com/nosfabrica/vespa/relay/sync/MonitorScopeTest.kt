@@ -87,8 +87,8 @@ class MonitorScopeTest {
 
             assertEquals(setOf(ourRelay, theirRelay), roster.asks.keys, "the fixture has to hold both for this to mean anything")
             assertEquals(setOf(ourRelay), roster.measured, "a stranger's verdict is not ours, and grades nothing for us")
-            assertTrue(roster.watches(ourRelay))
-            assertFalse(roster.watches(theirRelay))
+            assertTrue(roster.watches(ourRelay, "a"))
+            assertFalse(roster.watches(theirRelay, "a"))
         }
 
     @Test
@@ -100,8 +100,8 @@ class MonitorScopeTest {
             val roster = rosterOf(store).rebuild()
 
             assertEquals(emptySet(), roster.measured)
-            assertTrue(roster.watches(ourRelay))
-            assertTrue(roster.watches(theirRelay), "a deployment with no monitor is not one whose every relay is ungraded")
+            assertTrue(roster.watches(ourRelay, "a"))
+            assertTrue(roster.watches(theirRelay, "a"), "a deployment with no monitor is not one whose every relay is ungraded")
         }
 
     @Test
@@ -114,8 +114,8 @@ class MonitorScopeTest {
             val roster = rosterOf(store, watching = true, verdicts = RelayVerdictRecord(store, stranger2)).rebuild()
 
             assertEquals(emptySet(), roster.measured, "the fixture has to hold no verdict of OURS for this to mean anything")
-            assertTrue(roster.watches(ourRelay))
-            assertTrue(roster.watches(theirRelay), "drift is one set differing from another, and needs both to exist")
+            assertTrue(roster.watches(ourRelay, "a"))
+            assertTrue(roster.watches(theirRelay, "a"), "drift is one set differing from another, and needs both to exist")
         }
 
     @Test
@@ -150,9 +150,41 @@ class MonitorScopeTest {
             assertTrue(pinned in roster.asks.keys, "the fixture has to put the pinned url on the roster")
             assertTrue(ourRelay in roster.asks.keys, "…and the graded one beside it")
             assertEquals(setOf(ourRelay), roster.measured, "so the cold-start rule is not what answers below")
-            assertEquals(setOf(pinned), roster.declared)
-            assertTrue(roster.watches(pinned), "no verdict is owed for a url the operator pinned")
-            assertTrue(roster.watches(ourRelay))
+            assertEquals(mapOf("pinned" to setOf(pinned)), roster.declared, "the exemption belongs to the stream that pinned it, not to the roster")
+            assertTrue(roster.watches(pinned, "pinned"), "no verdict is owed for a url the operator pinned")
+            assertTrue(roster.watches(ourRelay, "graded"))
+        }
+
+    @Test
+    fun `pinning a url on one stream does not exempt it on another`() =
+        runBlocking {
+            // The exemption is "an operator put this here", and that is true of one stream only.
+            // Reaching the same url through another stream's discovery is still a verdict owed,
+            // so the exemption is keyed by stream rather than pooled across the roster.
+            val store = storeWithBothMonitors()
+            val roster =
+                RosterBuilder(
+                    store = store,
+                    watching = true,
+                    verdicts = { urls -> RelayVerdictRecord(store, ours).load(urls) },
+                    streams =
+                        RouterConfigLoader
+                            .parse(
+                                """
+                                streams {
+                                    pinned { dir = "down", filter = { "kinds": [1] }, urls = [ "${theirRelay.url}" ] }
+                                    scanned { dir = "down", filter = { "kinds": [1] }
+                                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
+                                }
+                                """.trimIndent(),
+                            ).streams,
+                    bands = SyncBands(null),
+                ).rebuild()
+
+            assertEquals(setOf("pinned", "scanned"), roster.asks[theirRelay]?.keys, "the fixture needs the url on both streams")
+            assertEquals(setOf(ourRelay), roster.measured, "so the cold-start rule is not what answers below")
+            assertTrue(roster.watches(theirRelay, "pinned"), "the stream that pinned it is owed nothing")
+            assertFalse(roster.watches(theirRelay, "scanned"), "the stream that discovered it is still owed a verdict")
         }
 
     @Test
