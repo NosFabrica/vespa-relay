@@ -1473,6 +1473,9 @@
         <dd>Only what that person wrote.</dd>
         <dt><code class="tok">to:<em>npub1…</em></code></dt>
         <dd>Only events that mention them.</dd>
+        <dt><code class="tok">to:<em>note1…</em></code></dt>
+        <dd>Only events that cite that event — its replies, its reactions, the labels written on
+          it. An <code>naddr1…</code> asks the same about an article, an app or a list.</dd>
       </dl>
     </section>
 
@@ -1488,10 +1491,13 @@
     </section>
 
     <section class="help-sec">
-      <h3>Topics and groups</h3>
+      <h3>Topics, labels and groups</h3>
       <dl class="help-rows">
         <dt><code class="tok">#<em>hashtag</em></code></dt>
         <dd>Events tagged with that topic, plus the labels and the comments written on it.</dd>
+        <dt><code class="tok">label:<em>review/app</em></code></dt>
+        <dd>The NIP-32 labels carrying that mark — the labels themselves, not what they name.
+          Add a <code>to:</code> to read the ones written on one thing.</dd>
         <dt><code class="tok">group:<em>id</em></code></dt>
         <dd>A NIP-29 relay group. Type a few letters and pick one; the ids are not memorable.</dd>
       </dl>

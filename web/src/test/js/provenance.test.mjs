@@ -107,7 +107,7 @@ const texts = (pills) => pills.map((p) => p.text);
     "equal counts break alphabetically, never on arrival order");
 }
 
-// ---- the three destinations -----------------------------------------------
+// ---- the four destinations ------------------------------------------------
 {
   const page = [
     profile("1", READER),
@@ -122,8 +122,28 @@ const texts = (pills) => pills.map((p) => p.text);
   assert.strictEqual(by["rank 92"], undefined, "a score is not a reason — see below");
   assert.deepStrictEqual([by["permaculture"].to, by["permaculture"].value], ["topic", "permaculture"],
     "an assertion that carries topics pills the topic, and opens the topic");
-  assert.deepStrictEqual([by["zapped"].to, by["zapped"].value], ["search", "zapped"],
-    "a label runs a search for itself — the useful answer is the other events under it");
+  assert.deepStrictEqual([by["zapped"].to, by["zapped"].value], ["label", "zapped"],
+    "a label opens the labels themselves — the records the pill counted, not the word searched for");
+  assert.strictEqual(by["zapped"].via, "p",
+    "…asked back through the tag the label named this target with, so the query cannot miss them");
+}
+
+// ---- a label pill carries the tag it was named through ---------------------
+//
+// One label may name an event by `e`, its author by `p` and its address by `a` at once, and the
+// query behind each pill has to ask the tag that pill was built from.
+{
+  const app = ev("7", READER, 31990, [["d", "1685802317447"]]);
+  const addr = `31990:${READER}:1685802317447`;
+  const page = [
+    profile("1", READER),
+    app,
+    ev("8", BOT, 1985, [["L", "social.coracle.ontology"], ["l", "review/app", "social.coracle.ontology"],
+                        ["p", READER], ["a", addr]]),
+  ];
+  const built = provenanceOf(page, TRUSTED);
+  assert.strictEqual(built.get(hex("7"))[0].via, "a", "the app was named by its address");
+  assert.strictEqual(built.get(hex("1"))[0].via, "p", "…and its author by their key, from the one label");
 }
 
 // ---- an assertion speaks only through its topics ---------------------------

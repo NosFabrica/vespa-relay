@@ -241,6 +241,23 @@ and a larger feature.
 kind 1111 the gate left nothing standing for the scope, and the base filter
 answered as if the token had never been typed.
 
+**`label:` asks for the labels, not for what they carry.** `#nostr` already
+reads `l` beside `t`, which finds the events a label names; the mark itself is
+on the kind-1985 record, and nothing in the language could open those. The
+filter names 1985 over the tab's kinds for the reason a scope keeps 1111: the
+tabs are content kinds, so gating would leave the token visible in the box and
+inert in the REQ. The mark is asked in every spelling `tagValues` gives, as a
+hashtag is, since the store compares tag values cased.
+
+**`to:` is one question about three subjects.** It meant `#p` and took an npub
+only. A note or an nevent asks `#e`, an naddr asks `#a`, and all three ride on
+`base` so they compose with the words, the window and the other tokens. The
+pointer decides the tag: an naddr carries no id, so there is nothing to ask
+`#e` with, and a label that named an addressable event by `e` is not found by
+its address. `from:` still takes people alone — nobody authors an event id —
+and the people picker stands down over a `to:` at a NIP-19 pointer, which
+names no one to look up.
+
 ## stats.css
 
 **Tile numbers size to the tile.** Ten tabular digits are about 6.3em; the

@@ -9,7 +9,7 @@ import { kindLabel, kindTone } from "../shared/kinds.js";
 import { npub, noteId, naddr, addrOf, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
-import { groupTokenizes } from "../shared/query.js";
+import { groupTokenizes, labelTokenizes } from "../shared/query.js";
 import { postedTo } from "../shared/groups.js";
 import { groupName } from "../shared/groupnames.js";
 import { provenance, attribution, PILL_BUDGET } from "../provenance.js";
@@ -129,17 +129,17 @@ export function provHtml(ev, opts) {
   const shown = pills.slice(0, cap);
   const rest = pills.slice(cap);
   return `<div class="prov pills">` +
-    shown.map((p) => pillHtml(p)).join("") +
+    shown.map((p) => pillHtml(p, ev)).join("") +
     (rest.length
       ? `<button type="button" class="prov-more" aria-expanded="false" data-label="+${rest.length.toLocaleString()} more">+${rest.length.toLocaleString()} more</button>` +
-        rest.map((p) => pillHtml(p, true)).join("")
+        rest.map((p) => pillHtml(p, ev, true)).join("")
       : "") +
     `</div>`;
 }
 
 /** One pill. `overflow` pills sit hidden in the DOM behind the count, so expanding is no re-render. */
-function pillHtml(p, overflow = false) {
-  const href = pillHref(p);
+function pillHtml(p, ev, overflow = false) {
+  const href = pillHref(p, ev);
   const tone = p.gated ? "vouched" : "open";
   const body =
     facesFor(p) +
@@ -151,13 +151,34 @@ function pillHtml(p, overflow = false) {
 }
 
 /**
- * A pill's destination: a list or assertion opens its entity page, a label searches for itself, a
- * topic opens its screen.
+ * A pill's destination: a list or assertion opens its entity page, a label opens the labels
+ * themselves, a topic opens its screen.
  */
-function pillHref(p) {
+function pillHref(p, ev) {
   if (p.to === "addr") return addrHref(p.value);
   if (p.to === "topic") return hashtagHref(p.value);
+  if (p.to === "label") return labelHref(p, ev);
   return searchHref(p.value);
+}
+
+/**
+ * The `to:` token that names [ev] the way the label named it, so the query asks the tag the
+ * pill was built from; "" when it cannot be written.
+ */
+function citeToken(ev, via) {
+  if (!ev) return "";
+  if (via === "p") return HEX64.test(ev.pubkey || "") ? npub(ev.pubkey) : "";
+  if (via === "a") { const a = addrOf(ev); return (a && naddr(a)) || ""; }
+  return HEX64.test(ev.id || "") ? noteId(ev.id) : "";
+}
+
+/**
+ * The records a label pill counted: the NIP-32 labels carrying that mark and naming this event,
+ * not a search for the word. Null when the mark or the target has no token, and the pill is text.
+ */
+function labelHref(p, ev) {
+  const cite = citeToken(ev, p.via);
+  return cite && labelTokenizes(p.value) ? searchHref(`label:${p.value} to:${cite}`) : null;
 }
 
 /** What the hover says: the count, and who is behind it. */
@@ -339,6 +360,9 @@ export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#$
  * read back as itself in the token language.
  */
 export const groupHref = (id) => (groupTokenizes(id) ? searchHref(`group:${id}`) : null);
+
+/** A NIP-32 mark as the search that opens every label carrying it; null when it has no token. */
+export const markHref = (mark) => (labelTokenizes(mark) ? searchHref(`label:${mark}`) : null);
 
 /** Short values that read as chips, not rows. `hrefOf` makes them links; the rest stay spans. */
 export function chipRow(values, opts, hrefOf = null) {
