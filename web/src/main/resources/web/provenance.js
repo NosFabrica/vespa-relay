@@ -112,7 +112,8 @@ const delegated = (trusted, kind, pubkey) => {
 
 /**
  * NIP-32: one pill per label value, on every record the label names; `r` and `t` targets name
- * nothing on this page.
+ * nothing on this page. `via` is the tag the label named this target with, which is the tag the
+ * pill's own query has to ask back.
  */
 function labelContributions(ev, page, emit) {
   const ns = tagOf(ev, "L");
@@ -124,15 +125,15 @@ function labelContributions(ev, page, emit) {
       : t[0] === "p" ? page.profileOf.get(t[1])
       : t[0] === "a" ? page.byAddr.get(t[1])
       : null;
-    if (target) targets.push(target);
+    if (target) targets.push({ target, via: t[0] });
   }
   if (!targets.length) return;
   for (const tag of (ev.tags || [])) {
     if (!Array.isArray(tag) || tag[0] !== "l" || !tag[1]) continue;
     // A mark's namespace is its own third element where it has one, else the event's `L`.
     if (QUIET_NAMESPACES.has(tag[2] || ns)) continue;
-    const pill = { key: `label:${tag[1]}`, text: tag[1], to: "search", value: tag[1], gated: false, author: ev.pubkey, from: ev.id };
-    for (const target of targets) emit(target, pill);
+    const pill = { key: `label:${tag[1]}`, text: tag[1], to: "label", value: tag[1], gated: false, author: ev.pubkey, from: ev.id };
+    for (const { target, via } of targets) emit(target, { ...pill, via });
   }
 }
 

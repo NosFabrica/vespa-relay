@@ -188,6 +188,18 @@ ways the row is partial.
 are one pill with a 2; 66 labels saying "zapped" are one pill with a 66. The
 rule took the worst real card from 139 pills to 2.
 
+**A label pill opens the labels it counted, not a word search.** `review/app`
+on Amethyst's kind 31990 is seven Coracle app reviews, whose text is in the
+label events' `content`; the pill ran `?q=review/app`, a NIP-50 search for a
+word no review contains. It now asks the pill's own question back —
+`label:review/app to:naddr1…`, one filter for kind 1985 carrying that mark and
+naming that target — which on staging returns exactly the seven the count
+promised. The target is written with the tag the label named it with (`via`,
+kept from `labelContributions`): the same review names the app by `a` and its
+author by `p`, and each pill has to ask the tag it was built from or its query
+answers with nothing. A mark that would not tokenize (a space, a trailing full
+stop) draws as text, the rule a group link already took.
+
 **`ISO-639-1` and `pub.ditto.trends` are furniture.** `ISO-639-1` is 87% of
 the labels on staging. Ditto's trending feed is NIP-32 with
 `["l","#p","pub.ditto.trends"]` and forty `p` tags, so the pill reads `#p`

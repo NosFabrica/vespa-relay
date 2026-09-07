@@ -3,7 +3,7 @@
 // one square of screen with the results popup, so while a token is being built this
 // module owns the arrows and Enter and app.js stands down.
 
-import { npub, shortNpub } from "./shared/nip19.js";
+import { npub, shortNpub, shortNote, shortAddr } from "./shared/nip19.js";
 import { esc, clip } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
@@ -187,6 +187,24 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       span.innerHTML = `<b>${esc(seg.field)}:</b><span class="scope-id">${esc(seg.value)}</span>`;
       const asks = scopeIds(seg.field, seg.value);
       span.title = `${seg.raw} — a NIP-73 scope filter: comments written on ${asks[0] || seg.value}`;
+      return span;
+    }
+    if (seg.type === "pointer") {
+      // A `to:` that names an event, not a person. The chip shows what a card would: the `d` of
+      // an address, the short form of an id.
+      span.className = "scopepill";
+      const shown = seg.tag === "a" ? shortAddr(seg.value) : shortNote(seg.value);
+      span.innerHTML = `<b>to:</b><span class="scope-id">${esc(clip(shown, 48))}</span>`;
+      span.title = `${seg.raw} — a NIP-01 #${seg.tag} filter: events that cite ${seg.value}`;
+      return span;
+    }
+    if (seg.type === "label") {
+      // The mark, as typed; the hover says the filter asks for the labels and not for what
+      // carries them.
+      span.className = "scopepill";
+      span.innerHTML = `<b>label:</b><span class="scope-id">${esc(clip(seg.value, 48))}</span>`;
+      span.title = `${seg.raw} — a NIP-32 label filter: the kind 1985 labels carrying this mark, ` +
+        `not the events they name`;
       return span;
     }
     if (seg.type === "group") {
