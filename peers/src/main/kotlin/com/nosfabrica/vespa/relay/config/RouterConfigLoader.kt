@@ -60,15 +60,27 @@ object RouterConfigLoader {
         require(monitorInline == null || monitorFile == null) {
             "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
         }
-        val monitorRaw = monitorInline ?: monitorFile?.readText()
+        // Not read here: a file is handed to `parse` as a file, so `include` resolves against its
+        // own directory. Only its existence is settled now, where the message can still name it.
+        val monitorOrigin = monitorFile.takeIf { monitorInline == null }
+        require(monitorOrigin == null || monitorOrigin.isFile) {
+            "router: MONITOR_CONFIG_FILE points at ${monitorOrigin?.path}, which is not a readable file"
+        }
+        val hasMonitor = monitorInline != null || monitorOrigin != null
 
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
         val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
-        require(monitorRaw == null || inline != null || syncFile != null) {
+        require(!hasMonitor || inline != null || syncFile != null) {
             "router: a monitor config is set and no sync config is — this process mirrors and measures in one, " +
                 "and there is nothing here to mirror. Set SYNC_CONFIG_FILE too, or unset the monitor variable"
         }
-        val raw = inline ?: syncFile?.readText() ?: return null
+        if (inline == null && syncFile == null) return null
+        // Only where the text did not come inline: an `include` resolves against the including
+        // document's own directory, and a string-parsed one has no directory to resolve against.
+        val syncOrigin = syncFile.takeIf { inline == null }
+        require(syncOrigin == null || syncOrigin.isFile) {
+            "router: SYNC_CONFIG_FILE points at ${syncOrigin?.path}, which is not a readable file"
+        }
         val upInterval =
             env
                 .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
@@ -128,16 +140,14 @@ object RouterConfigLoader {
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L
         return parse(
-            raw,
+            inline,
             upInterval,
             ingestConcurrency,
             ingestBatch,
             relaySourceDefaults,
-            monitorRaw,
-            // Only where the text came from a file: an `include` resolves against the including
-            // document's own directory, and a string-parsed one has no directory to resolve against.
-            syncOrigin = syncFile.takeIf { inline == null },
-            monitorOrigin = monitorFile.takeIf { monitorInline == null },
+            monitorInline,
+            syncOrigin = syncOrigin,
+            monitorOrigin = monitorOrigin,
         ).copy(
             negPageTarget = pageTarget,
             negPageMin = pageMin,
@@ -194,11 +204,14 @@ object RouterConfigLoader {
     }
 
     /**
-     * The two planes' configs into one model. [monitorHocon] is `monitor.conf` — the `monitor { }`
-     * block's contents at the top level, no wrapper — or null where the block lives in [hocon].
+     * The two planes' configs into one model. Each plane arrives as text OR as the file to read it
+     * from, never both: a file is parsed in place so its `include` resolves against its own
+     * directory. [monitorHocon]/[monitorOrigin] carry `monitor.conf` — the `monitor { }` block's
+     * contents at the top level, no wrapper — and are both null where the block lives in the sync
+     * config.
      */
     fun parse(
-        hocon: String,
+        hocon: String? = null,
         upIntervalSec: Long = 300L,
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
@@ -379,7 +392,7 @@ object RouterConfigLoader {
     ): MonitorConfig? {
         val m =
             when {
-                monitorHocon != null -> {
+                monitorHocon != null || monitorOrigin != null -> {
                     // Two declarations cannot both be the truth, and picking one silently is how a
                     // deployment measures a set nobody is looking at.
                     require(!cfg.hasPath("monitor")) {
@@ -459,7 +472,7 @@ object RouterConfigLoader {
      * so it is refused rather than read past.
      */
     private fun monitorDocument(
-        hocon: String,
+        hocon: String?,
         origin: File?,
     ): Config {
         val parsed = document(hocon, origin)
@@ -476,16 +489,20 @@ object RouterConfigLoader {
      * working directory instead and skips one it cannot find, without saying so.
      */
     private fun document(
-        hocon: String,
+        hocon: String?,
         origin: File?,
-    ): Config =
-        if (origin != null) {
+    ): Config {
+        require((hocon == null) != (origin == null)) {
+            "router: a config document is text or a file, not both and not neither — this is a caller bug"
+        }
+        return if (origin != null) {
             // Syntax forced: `parseFile` would otherwise take it from the extension, and a config
             // an operator named `.json` holding HOCON would stop parsing on its first comment.
             ConfigFactory.parseFile(origin, ConfigParseOptions.defaults().setSyntax(ConfigSyntax.CONF))
         } else {
             ConfigFactory.parseString(hocon)
         }
+    }
 
     private fun normalizeUrls(
         stream: String,

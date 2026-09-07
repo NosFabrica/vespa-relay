@@ -46,8 +46,8 @@ class RouterConfExamplesTest {
     /** Both shipped files, parsed together the way a deployment reads them. */
     private val example: RouterConfig =
         RouterConfigLoader.parse(
-            at("sync.conf.example").readText(),
-            monitorHocon = at("monitor.conf.example").readText(),
+            syncOrigin = at("sync.conf.example"),
+            monitorOrigin = at("monitor.conf.example"),
         )
 
     /** The shipped monitor names what it measures; a template that did not would be the bug. */

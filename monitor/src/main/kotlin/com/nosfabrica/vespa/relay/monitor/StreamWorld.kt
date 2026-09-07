@@ -118,16 +118,16 @@ internal class StreamWorld(
         derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
             if (kept) all += url else excluded += url
         }
-        // `exclude` is per stream: a url one stream excludes and another asks for is a candidate.
-        val onlyExcluded = excluded - all
+        // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
+        // url is kept is a function of the url, however many sources found it.
         val recorded = ownRecords()
-        val recordedOnly = recorded.filterNot { it in all || it in onlyExcluded }
+        val recordedOnly = recorded.filterNot { it in all || it in excluded }
         val known = all + recordedOnly
         val live = known.filterNot { it in dead }
         lastDerivation =
             Derivation(
-                sourced = all.size + onlyExcluded.size,
-                excluded = onlyExcluded.size,
+                sourced = all.size + excluded.size,
+                excluded = excluded.size,
                 heldOutDead = known.size - live.size,
                 recordedOnly = recordedOnly.size,
                 candidates = live.size,

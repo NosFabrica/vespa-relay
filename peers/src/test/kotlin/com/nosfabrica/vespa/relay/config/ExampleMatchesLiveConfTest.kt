@@ -51,7 +51,9 @@ class ExampleMatchesLiveConfTest {
     /** Tests run from the module directory, so the repo root is one level up. */
     private fun find(name: String) = listOf(File("../$name"), File(name)).firstOrNull { it.isFile }
 
-    private fun load(file: File) = RouterConfigLoader.parse(file.readText())
+    // From the file, not its text: an `include` in either config resolves against the including
+    // file's own directory, and a string-parsed one is skipped without a word.
+    private fun load(file: File) = RouterConfigLoader.parse(syncOrigin = file)
 
     @Test
     fun `the shipped example parses to the same streams a live config runs`() {
@@ -107,6 +109,6 @@ class ExampleMatchesLiveConfTest {
         RouterConfigLoader
             .parse(
                 """streams { none { dir = "down", filter = { "kinds": [1] }, urls = [] } }""",
-                monitorHocon = file.readText(),
+                monitorOrigin = file,
             ).monitor!!
 }

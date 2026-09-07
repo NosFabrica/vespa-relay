@@ -25,9 +25,11 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
   util/Format.kt            fmtDuration — the one formatter both processes print
   (test) arch/              the guards that read the checkout instead of
                             running it: the module graph and package map, the
-                            browser-file rule, the probe-switch list. They are
-                            declared inputs of `:common:test`, or Gradle calls
-                            it up to date after the change they exist to catch
+                            browser-file rule, the probe-switch list. They run
+                            in `:common:archTest` (on `check`, not on `test`),
+                            which declares the whole tree as an input — without
+                            that, Gradle calls the guards up to date after
+                            exactly the change they exist to catch
 
 web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
   StatusSite.kt             installPageDefaults (compression + CORS, on the terms

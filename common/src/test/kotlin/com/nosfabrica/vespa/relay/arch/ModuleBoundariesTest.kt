@@ -30,8 +30,11 @@ import kotlin.test.assertTrue
  * looks for a file and cannot say which module holds it.
  */
 class ModuleBoundariesTest {
-    /** Scopes that put a module on another's compile classpath, as opposed to its test one. */
-    private val compileScopes = setOf("api", "implementation")
+    /** Scopes that put a module on another's compile classpath. */
+    private val compileScopes = setOf("api", "implementation", "compileOnly", "runtimeOnly")
+
+    /** …and the ones that put it on the test classpath only. */
+    private val testScopes = setOf("testImplementation", "testCompileOnly", "testRuntimeOnly")
 
     private fun projectDeps(module: String): List<Pair<String, String>> =
         PROJECT_DEP
@@ -42,11 +45,23 @@ class ModuleBoundariesTest {
     /** The packages a module declares in its main sources, which is what depending on it can reach. */
     private fun owned(module: String): Set<String> = Repo.packages(module, "main")
 
-    /** The packages one source set of a module imports from, with the imported name dropped. */
+    /**
+     * The package an import names. Not `substringBeforeLast`: a nested class imports as
+     * `pkg.Outer.Inner`, and cutting one segment would call `pkg.Outer` the package and match
+     * nothing any module declares.
+     */
+    private fun packageOf(name: String): String =
+        name
+            .removeSuffix(".*")
+            .split('.')
+            .dropLastWhile { it.firstOrNull()?.isUpperCase() == true }
+            .joinToString(".")
+
+    /** The packages one source set of a module imports from. */
     private fun importedPackages(
         module: String,
         sourceSet: String,
-    ): Set<String> = Repo.imports(module, sourceSet).map { it.substringBeforeLast('.') }.toSet()
+    ): Set<String> = Repo.imports(module, sourceSet).map(::packageOf).toSet()
 
     @Test
     fun `a dependency only ever points backwards along the include order`() {
@@ -122,7 +137,14 @@ class ModuleBoundariesTest {
         val unused =
             Repo.modules.flatMap { module ->
                 projectDeps(module).mapNotNull { (scope, target) ->
-                    val set = if (scope in compileScopes) "main" else "test"
+                    // Named, not defaulted: bucketing an unrecognised scope as "test" is how a
+                    // `compileOnly(project(…))` used in main got reported as reaching nothing.
+                    val set =
+                        when (scope) {
+                            in compileScopes -> "main"
+                            in testScopes -> "test"
+                            else -> error("unknown dependency scope `$scope(project(\":$target\"))` in :$module — put it in one of the two buckets")
+                        }
                     val reached = importedPackages(module, set).intersect(owned(target))
                     "$scope(project(\":$target\")) in :$module, imported by nothing in src/$set".takeIf { reached.isEmpty() }
                 }

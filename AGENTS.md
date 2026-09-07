@@ -140,7 +140,8 @@ common/…/relay/
                               open a store, and because :web must not depend on one
   store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), fmtDuration
   (test) arch/                the guards that read the checkout: ModuleBoundariesTest, the browser-file
-                              rule, the probe-switch list. `:common:test` declares the tree as an input
+                              rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
+                              that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
   peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
