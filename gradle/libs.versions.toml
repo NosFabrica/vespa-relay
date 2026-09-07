@@ -422,64 +422,64 @@ quartz = "cecc3287b2"
 # `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
 # truncate — `sorting.degrading` defaults true — and it reports the truncation
 # as `match-phase`. The coverage guard then correctly refuses the partial
-# THE ID LISTING NO LONGER WAITS ON THE WRITE GATE (#125).
+# A SAMPLE MAY BE SHORT (#126), plus the visit/gate split (#125).
 #
-# The service walk wrote inside the visit's own callback. That listing is a
-# live HTTP stream whose timeout is a GAP timeout — 120s with no bytes and the
-# server drops it — so every gate wait was a gap in it, and this deployment's
-# lock.gate.wait runs into the hundreds of seconds against live feed traffic.
+# #126 IS THE ONE THAT UNBLOCKS COVERAGE. The reconcile's projected-check
+# samples three cards per service and asks whether ANY of them carries that
+# service's cell. A match-phase cut returns FEWER cards, never wrong ones, so a
+# short page answers it — but `allowMatchPhase` was derived from the rank
+# profile alone (recency, recency_gated) and this read is unranked, so the
+# sample could never accept the one degradation that cannot hurt it.
 #
-# Seen here, twice over: a walk died at 98,000 of 116,352 cards (exactly
-# 392x250, a batch boundary — which is what said it ended early rather than
-# finished), with
-#   Caused by: java.net.SocketTimeoutException: timeout
-#     at okhttp3.internal.http2.Http2Stream$FramingSource.read
-#     at okio.InflaterSource.readOrInflate        <- the visit body, not the write
-# and then that service went into a RETRY LOOP: restart at 0, fail at ~17,500,
-# repeat, while degraded reads climbed 4 -> 6 -> 8. It was the last service in
-# the queue, so nothing else could finish behind it and coverage — which is
-# only measured AFTER the drain empties — stayed unmeasured all evening.
+# Seen here, with the drain empty and EVERY service walked:
+#   trust: reconcile still retrying, attempt 42
+#     (last: vespa searched only 57% of the corpus over 196,085,865 documents)
+#   trust: reconcile screening 0/342 service(s) (0%), eta unknown (5097s elapsed)
+# 85 minutes, 42 attempts, one query, no progress. That single refusal was all
+# that stood between the store and a measured coverage number.
 #
-# Reader and writer are now separate coroutines with a bounded queue (64
-# batches, 16,000 ids). A gate wait stalls the WRITER, which holds no socket.
+# `sampled` is `complete`'s opposite, threaded the same way and opt-in. Safe by
+# DIRECTION: fewer sampled cards can only make the check MISS a projection, and
+# a false negative re-walks a service that did not need it; truncation cannot
+# invent a card, so it cannot produce the false positive that would matter.
+# Truncated pages are still recorded in DegradedReads.
 #
-# NOT FOR THE PARALLELISM, which is worth little and was measured before the
-# change rather than assumed: on that 872s walk, proj.fetch.page (~36s) and
-# proj.write (~44s) together are ~80s. The reads and writes are not the wall
-# clock; the waiting is. proj.visit.ids is now timed so that claim stays
-# checkable rather than argued.
+# #125 rides along: the walk wrote inside the visit's own callback, so every
+# gate wait was a gap in a live HTTP stream whose timeout is a GAP timeout.
+# A walk died at 98,000 of 116,352 (SocketTimeoutException from
+# Http2Stream$FramingSource.read), then that service retried for an hour.
+# It DID eventually finish without this fix — 9 timeouts, restarting from zero
+# each time — so #125 is a tax removed, not a blocker cleared. Reader and
+# writer are now separate coroutines with a bounded queue; a gate wait stalls
+# the writer, which holds no socket.
 #
-# Ordering is untouched: still written by id INSIDE the gate, one writer, so a
-# card superseded between listing and fetch is still simply gone.
+# WHAT TO WATCH: `trust-reconcile` must leave 0/342 and climb, and
+# servicesNamed / servicesProjected must stop reading 0. That is the first
+# properly measured coverage of this deployment; the last number anyone
+# trusted was 246/360 by hand, and 236/342 unverified.
 #
-# WHAT TO WATCH: fdd9a29c134a should finish its 116,352 cards on the first
-# attempt, the queue should reach 0, and coverage should measure on its own.
-# If it still times out, the next suspect is the gate hold itself, not the
-# coupling.
+# DIRECTION: 61b39e7280 is a strict ancestor of this — main plus #126.
+#   git merge-base --is-ancestor 61b39e7280 a2499fa4c1   # verified
 #
-# DIRECTION: cba205940b is a strict ancestor of this — main plus #125.
-#   git merge-base --is-ancestor cba205940b 61b39e7280   # verified
-#
-# LEXICOGRAPHIC: '61b3…' < 'cba2…' ('6' < 'c'), the unsafe direction. No
+# LEXICOGRAPHIC: 'a249…' > '61b3…' ('a' > '6'), the safe direction. No
 # `force(…)`: nothing else in the graph names vespa-eventstore. Every
-# eventstore line must read 61b39e7280 with no `->`:
+# eventstore line must read a2499fa4c1 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Superseded: cba205940b = #124 — the walk batches across pages. Measured
-# 16.3 -> 178 cards/s on the same workload, holds annotated "250 card(s)"
-# instead of "1 card(s)", queue 5 -> 1 in under an hour.
+# Superseded: 61b39e7280 = #125 (the id listing no longer waits on the gate).
+# cba205940b = #124 — the walk batches across pages: 16.3 -> 178 cards/s on the
+# same workload, holds annotated "250 card(s)" instead of "1 card(s)",
+# queue 5 -> 1 in under an hour.
 #
 # Superseded: 1211420526 = #122 + #123 — a failing unit costs only itself.
-# Took staging from 93 consecutive drain failures to zero. It is why the
-# timeout above was survivable: that service lost its round, the other four
-# finished around it.
+# 93 consecutive drain failures to zero, and it is why nine visit timeouts cost
+# one service its round instead of the whole projection.
 #
 # Superseded: 27d43f84c1 = #121 (fall back to the document-API scan when the
-# engine truncates a sorted read). 52ac77e5ac = #120 (a background failure
-# says WHERE). 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117.
-# 2fa2b67141 = #116. a23a6a3a68 = #113/#114. aca0552c4e = #112.
-# 53441182f5 = #108.
-vespaEventStore = "61b39e7280"
+# engine truncates a sorted read). 52ac77e5ac = #120. 34fb127523 = #119.
+# 02b528a85a = #118. 8f353d8d05 = #117. 2fa2b67141 = #116. a23a6a3a68 =
+# #113/#114. aca0552c4e = #112. 53441182f5 = #108.
+vespaEventStore = "a2499fa4c1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
