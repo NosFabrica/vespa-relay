@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning

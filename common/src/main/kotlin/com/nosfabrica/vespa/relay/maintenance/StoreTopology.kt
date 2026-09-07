@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.nosfabrica.vespa.eventstore.WriterTopology
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 
 /**
  * What this deployment tells the store about its writers at every `VespaEventStore.open()`.

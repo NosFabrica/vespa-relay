@@ -236,10 +236,10 @@ fun main() {
             progress = progress,
             storeCalls = storeCalls,
             // A pure membership read, which is all ingest needs to skip verifying a duplicate.
-            knownIds = store.eventIndex::existingIds,
+            knownIds = store.engine::existingIds,
             // The winner rule is stage D's: newest created_at, ties to the lower id.
             newestVersions = { kind, authors ->
-                store.eventIndex
+                store.engine
                     .search(EventQuery(kinds = listOf(kind), authors = authors))
                     .groupBy { it.pubkey }
                     .mapValues { (_, docs) ->

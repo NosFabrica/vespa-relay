@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
