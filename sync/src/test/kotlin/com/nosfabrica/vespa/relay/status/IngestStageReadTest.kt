@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.status
 
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.progress.SyncProgress
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonObject

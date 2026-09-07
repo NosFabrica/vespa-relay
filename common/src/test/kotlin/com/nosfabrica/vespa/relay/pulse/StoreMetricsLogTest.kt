@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
-import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.HeavyHitters
+import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertFalse
