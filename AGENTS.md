@@ -247,7 +247,9 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
 ## Instrumentation
 
 Reach for these before forming a theory. The long form, with what each one
-measured, is [docs/instrumentation.md](docs/instrumentation.md).
+measured, is [docs/instrumentation.md](docs/instrumentation.md); what each
+operator page shows and why is
+[docs/operator-pages.md](docs/operator-pages.md).
 
 - The health line, once a minute: heap, ingest queue depth against capacity,
   ev/s in and out, relays transferring, fatals, events lost to store errors,

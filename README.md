@@ -1,5 +1,10 @@
 # vespa-relay
 
+[![build](https://github.com/NosFabrica/vespa-relay/actions/workflows/build.yml/badge.svg)](https://github.com/NosFabrica/vespa-relay/actions/workflows/build.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Kotlin 2.4](https://img.shields.io/badge/Kotlin-2.4-7F52FF.svg)](https://kotlinlang.org)
+[![JDK 21](https://img.shields.io/badge/JDK-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
+
 A [Vespa](https://vespa.ai)-backed standalone [Nostr](https://nostr.com) relay
 that filters and ranks everything — REQs, COUNTs, and full-text
 [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) search —
@@ -10,32 +15,60 @@ high, what it doesn't falls below your floor. And it scales like a search
 engine, because it is one — the store is
 [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore).
 
+## The difference, in one exchange
+
+This relay has no house observer, so a read has to say whose eyes it is read
+through. Say nothing and you are not answered:
+
+```jsonc
+["REQ","s",{"kinds":[0,30392],"search":"podcaster"}]
+  <- ["CLOSED","s","auth-required: this relay answers through a web of trust …"]
+```
+
+Name a lens — anybody's, no key and no signature, because trust scores are
+public — and the same query ranks, and answers with what its hits are *about*:
+
+```jsonc
+["REQ","s",{"kinds":[0,30392],"search":"podcaster observer:<64-hex>"}]
+  <- ["EVENT","s", … kind 30392 "Podcaster Trust List" …]  // ranked by that lens
+  <- ["EVENT","s", … kind 0, a member's profile …]         // holds no "podcaster"
+```
+
+The profile is there because the list *points* at it, placed by the list's own
+rank discounted by the 0..100 confidence the list expressed in that member — so
+a member its publisher doubts sinks past the organic hits. Sign a NIP-42 AUTH
+instead and the lens is your own pubkey, on every query, including plain NIP-01
+filters. `include:spam` waives the lens and takes the whole corpus, unranked.
+
+## Who this is for
+
+- **Running a relay?** [`docker compose up`](#run-it) is a working, self-filling
+  relay — schema deployed, [web UI](#the-search-boxs-own-language) and
+  [operator pages](#operator-pages) included.
+- **Filling one?** The [router](#the-router-mirror-from-upstream-relays) mirrors
+  from upstream relays and discovers new ones from the store as it fills.
+- **Building on one?** The whole thing [embeds](#embed-it) in your own Ktor app,
+  and every diagnostic page is a JSON document you can read instead.
+
 **What you get:**
 
-- **Trust-ranked search.** Log in with NIP-42 and results are ranked by your own
-  NIP-85 web of trust — relevance × how much *you* trust the author, with
-  below-floor authors dropped as spam. There is no house lens standing in for
-  you, so [every read says whose eyes it is read through](#every-read-says-whose-eyes-it-is-read-through).
-- **The subject travels with the pointer.** A search that matches a Trusted
-  List, a NIP-85 assertion or a NIP-32 label also answers with the record that
-  pointer is *about* — so "podcaster" finds the *Podcaster Trust List* **and**
-  the podcasters in it, which hold none of the words searched for.
-  [How it is bounded](#a-search-answers-with-what-its-hits-are-about).
-- **A relay that fills itself.** The **router** — a sibling process sharing the
-  same store — mirrors events from upstream relays: strfry-style `streams` of
-  live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
-  resumable paged fetch where they don't — and *dynamic* streams that discover
-  relays from the store itself (NIP-65 outbox lists, NIP-66 monitors, relay
-  hints), so the fan-out widens as the store fills. Its own process on purpose:
-  restart or retune the mirror and the relay never drops a client.
-- **A full relay, not just search.** NIP-01 filters and publishes, NIP-09
+- **Trust-ranked search** — relevance × how much *you* trust the author, with
+  below-floor authors dropped as spam, and
+  [no answer at all to a read that names no lens](#every-read-says-whose-eyes-it-is-read-through).
+- **The subject travels with the pointer** — a hit on a list, an assertion or a
+  label also answers with the record it points at,
+  [bounded two ways](#a-search-answers-with-what-its-hits-are-about).
+- **A relay that fills itself** — the **router** mirrors from upstream relays
+  (strfry-style `streams`, NIP-77 backfill where they speak it, resumable paged
+  fetch where they don't) and *discovers* new ones from the store itself, so the
+  fan-out widens as it fills. A sibling process on purpose: retune or restart
+  the mirror and the relay never drops a client.
+- **A full relay, not just search** — NIP-01 filters and publishes, NIP-09
   deletions, NIP-40 expirations, NIP-45 counts, NIP-62 right to vanish, NIP-77
   negentropy for peers, NIP-86 runtime management.
-- **Batteries included.** A web search UI with [its own query
-  language](#the-search-boxs-own-language) and operator diagnostic pages ship on
-  the same port; the Vespa schema deploys itself on boot, so `docker compose up`
-  is a working relay; the whole thing also embeds as a library in your own
-  Ktor app.
+- **Batteries included** — the Vespa schema deploys itself on boot, and the
+  search UI, its [own query language](#the-search-boxs-own-language) and the
+  operator pages all ship on the relay's own port.
 
 ## Run it
 
@@ -270,202 +303,48 @@ guards that make absence trustworthy enough to act on.
 
 ## Operator pages
 
-Five pages, on three ports. Each is served by the process that does the work it
-describes, so a page that will not load is itself an answer.
+Five diagnostic pages, on three ports, each served by the process that does the
+work it describes — so a page that will not load is itself an answer.
 
 | page | port | asks |
 |---|---|---|
-| [`/stats.html`](#statshtml) | relay, `7777` | what does this store hold, and how is it filling? |
-| [`/trust.html`](#trusthtml) | relay, `7777` | is ranked search working — and if not, which part is incomplete? |
-| `/observer_stats.html` | relay, `7777` | is the trust *sync* working? Each kind-10040 observer's providers' kind-30382 score counts, here and on the relay its 10040 names, **side by side** — a local count alone reads as healthy until you learn the source holds 45× more |
-| [`/pulse.html`](#where-the-resources-go--pulsehtml) | own port, **off by default, admins only** | what does any of it *cost*? |
-| [the sync and monitor pages](#the-mirrors-own-pages) | `7778` / `7779` | what is the mirror doing, and which relays may be dialled at all? |
+| `/stats.html` | relay, `7777` | what does this store hold, and how is it filling? |
+| `/trust.html` | relay, `7777` | is ranked search working — and if not, which part is incomplete? |
+| `/observer_stats.html` | relay, `7777` | is the trust *sync* working — does a provider hold 45× what we mirrored? |
+| `/pulse.html` | own port, off by default | what does any of it *cost*? |
+| `/` on sync / monitor | `7778` / `7779` | what is the mirror doing, and which relays may be dialled at all? |
 
-### `/stats.html`
-
-Totals, a per-kind table with distinct authors, events and publishing pubkeys
-per UTC day/week/month, the hour-of-day shape, a daily series per kind, the
-relays our NIP-65 lists name, zap receipts, how fresh the store is, whether the
-**web of trust is actually populated** — a `scoredPubkeys` of zero means ranked
-search is silently falling back for every reader — and, last on the page, **every
-kind in the store** with its events, distinct authors and last-seen age.
-
-Charted from **`GET /stats.json`**, a public document a background rollup
-recomputes with Vespa grouping queries. The JSON is the artifact and the page is
-one reader of it — publish it and anyone can chart this relay's coverage, or diff
-it against a network-wide dashboard, without scraping markup.
-
-Which is the thing to keep in mind reading it: every number describes **this
+Each charts a JSON document served beside it — `/stats.json`, `/trust.json`,
+`/pulse.json` — and the JSON is the artifact: publish it and anyone can chart
+this relay's coverage without scraping markup. Every number describes **this
 relay's store**, not the Nostr network, so a total below a network-wide one is a
-mirror's coverage rather than a fault. And a mirror is a **filtered** subset,
-which is why the document also carries `sync.mirrors.kinds` — the kinds the
-router asks for. Any count taken against this relay has to carry them: measured
-against an author's own relay, unfiltered, this store once read as *35%
-mirrored* while missing nothing — the entire gap being kinds no stream here
-asks for.
+mirror's coverage rather than a fault.
 
-### `/trust.html`
+Two things to know before opening a port. **`/pulse.html` is the exception to
+all of the above**: off by default, administrators only over NIP-98, and
+published on `127.0.0.1` by compose — it names the observer lenses and search
+terms driving the load, so it is the one page that is not a fact about stored
+events. And the three services can share **one hostname**: every reference the
+pages make is document-relative, so a plain strip rewrite behind a path prefix
+works — mind the trailing slash on both sides.
 
-Whether ranked search is working on this deployment, and if not which part of
-the trust projection is incomplete. **Public**, unlike the pulse: every field
-here is a count, a phase, or a query *shape* — never a search term. Four panels,
-in the order the question is actually asked:
-
-- **Can people search** — provider lists resolving to a service that carries
-  cells. An observer whose lens resolves to an unprojected service gets an
-  **empty** ranked page, and the page says so: the gate failing closed is
-  correct, the projection is what is incomplete.
-- **What is being repaired** — live phases, with a fraction and an ETA only
-  where a denominator exists.
-- **Why reads come back short** — degraded reads by profile, shape and flags,
-  with *served* marked more loudly than refused. A match-phase cut on a recency
-  profile is allowed and returned silently, so nothing throws and ranked pages
-  quietly get shorter; that is the failure worth seeing first.
-- **Explain one pubkey** — over `GET /trust/explain/{pubkey}`. A pubkey is
-  public and the relay already serves what it holds about one over NIP-01, so
-  this reveals nothing the protocol does not: the answer describes the
-  projection, not the person.
-
-**Never measured is not zero**, and the page says which — an unmeasured coverage
-drawn as 0% reads as an outage when it means no reconcile has finished. Charted
-from **`GET /trust.json`**.
-
-### Where the resources go — `/pulse.html`
-
-On its own port (`PULSE_PORT`, 7780, on the relay; `SYNC_PULSE_PORT`, 7781, on
-the mirror), **off by default** and **administrators only**.
-
-The pages above say what this deployment *holds* and what the mirror is *doing*.
-This one says what any of it **costs** — read live from the store's own counters,
-so there is no rollup and nothing to go stale:
-
-- **What the store is doing** — wall time inside the engine calls this process
-  made, grouped by the work that made them, with **calls per document** beside
-  each. That ratio is the store's own performance contract in a number: a bulk
-  path booking several engine calls per document it writes is the shape "never
-  ingest in a loop over `insert()`" exists to prevent, and the page calls it out.
-- **What the engine did** — Vespa's own timings per rank profile, and **matched
-  against served**: a profile matching 561K documents to serve 53K is doing work
-  no client sees.
-- **Locks** — what holds a store mutex *at this instant*, and cumulative wait
-  split by **what each waiter was queued behind**. That split is the point:
-  `lock.ingest.wait 41s` only raises a question, `38s of it behind "derive 500
-  subject(s) in 10 chunk(s)"` names a fix.
-- **What became of the events offered** — admitted against duplicate, replaced,
-  deleted, expired. "81% of what this node is offered is already stored" is what
-  tells you to narrow a sync, and no port-level counter can see it: a refused
-  event never reaches the index.
-- **Right now** — the gauges (feed operations in flight, trust backlog, mutexes
-  held), drawn apart from every counter, because a queue depth must never be
-  differenced into a rate.
-
-Every total is cumulative since the process started and the page differences two
-consecutive polls to recover a rate, so any number of tabs may watch it and
-nothing is consumed by being read.
-
-#### Who may read it
-
-The other pages are public because every field in them is a fact about stored
-events. This one is not that document: with `PULSE_CLIENT_DETAIL` on it names
-the heaviest observer lenses and search terms driving the load, and carries a
-slow-read log that **quotes the query**. So `/pulse.json` is served only to an
-administrator.
-
-- **The proof is NIP-98** against the same `RELAY_ADMIN_PUBKEYS` the NIP-86
-  admin RPC uses — so "who can read this?" has the same answer as "who can ban a
-  pubkey?".
-- **A port set with no admin keys stops the boot.** "No administrators" and
-  "everyone is an administrator" are one mistake apart.
-- **In a browser**, press sign in: a NIP-07 extension signs once and the relay
-  returns a 30-minute `HttpOnly`, `SameSite=Strict` session cookie. **From a
-  script**, sign a kind-27235 event over the request's url and method and send
-  `Authorization: Nostr <base64>` — then poll through the session, since NIP-98
-  tokens are single-use.
-- **Still don't publish this port.** Compose publishes both pulse ports on
-  `127.0.0.1` only — like Vespa's, and unlike the status pages — so reach them
-  over an SSH tunnel. Behind a reverse proxy set `PULSE_PUBLIC_URL` to the origin
-  the browser reaches: the `u` a token is signed over is an operator setting,
-  never the `Host` header the caller sent.
-
-`PULSE_CLIENT_DETAIL` stays a separate switch from all of this: sign-in governs
-who can *read* those sections, that switch governs whether the store *retains*
-them at all, which is the stronger guarantee.
-
-What is measured, what it costs, and what is deliberately left to Vespa's own
-metrics proxy is
-[`docs/telemetry.md`](https://github.com/NosFabrica/vespa-eventstore/blob/main/docs/telemetry.md)
-in the event store.
-
-### The mirror's own pages
-
-Up with the `sync` profile, each served by the process doing the work:
-
-- **`/` on the sync service** (`SYNC_STATUS_PORT`, 7778) — what the mirror is
-  doing right now, charted from that service's own **`GET /stats.json`**.
-
-  It opens with **`prime relays`** — one row per relay a stream is allowed to
-  dial, on two independent axes. **How current** we are: the age of the newest
-  event we hold from it, and whether a live tail is carrying its present. **How
-  far back** the walk has got: `complete`, `paging` (with how deep and how much
-  of what it owes is settled), `refused` with the reason, or `hasn't started`.
-  The two are not the same question — a relay can be `complete` and nine days
-  cold — and the headline answers the first one, because that is the one an
-  operator arrives with.
-
-  Beside them, **on what terms** that relay lets us sync: whether the monitor
-  measured it as speaking negentropy (without it, its history can never be
-  reconciled), the filter width its own refusal taught us, and the last thing it
-  said when it turned us away. Rows that need somebody come first, and the counts
-  above the table stay complete even when the list is cut.
-
-- **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779) — what this router has
-  decided about the relay urls it discovers: which are one server wearing several
-  addresses, which cannot answer the same question twice, which are graded
-  `prime`, and which are unreachable. Below the passes, a panel reads the signed
-  **kind-30166** records themselves out of the relay over its own websocket,
-  which makes it a protocol check as much as a view: a verdict that cannot be
-  read there cannot be read by any client either.
-
-  Its own page because it asks a different question in a different unit: sync
-  coverage is measured in events and asks whether the mirror is keeping up; this
-  is measured in relay urls and asks which of them may be dialled at all.
-
-### Three services, one hostname
-
-Each of the three binds its own port, but nothing requires three hostnames and
-three certificates to read them. Every reference the pages make is
-**document-relative** — the assets under `web/…`, and the `stats.json` each page
-charts — so a service can be mounted behind a path prefix with a plain strip
-rewrite and nothing else:
-
-```nginx
-location /sync/    { proxy_pass http://sync:7778/;    }
-location /monitor/ { proxy_pass http://monitor:7779/; }
-```
-
-The **trailing slash matters on both sides**. `https://host/sync/` has `/sync/`
-as its base directory and every asset is asked for under it; `https://host/sync`
-has the ROOT as its base, and the page then asks the *relay* for its modules —
-which the relay answers, 200, with its own copy of the same file names. Redirect
-the bare prefix to the slashed one, the way ingresses normally do.
-
-The search UI is the exception and is root-only: it is a single-page app whose
-history writes are anchored at `/` by construction, so a prefix would survive
-the first load and be lost by the first navigation.
+[**`docs/operator-pages.md`**](docs/operator-pages.md) is the full guide: what
+each panel shows and why, the pulse's sign-in and what it retains, the mirror's
+`prime relays` table, and the proxy layout.
 
 ## Supported NIPs
 
 | NIP | | In this relay |
 |---|---|---|
 | [01](https://github.com/nostr-protocol/nips/blob/master/01.md) | Core protocol | Filters, publishes, subscriptions |
-| [09](https://github.com/nostr-protocol/nips/blob/master/09.md) | Event deletion | |
+| [09](https://github.com/nostr-protocol/nips/blob/master/09.md) | Event deletion | Enforced at insert, so a re-mirrored event stays deleted |
 | [11](https://github.com/nostr-protocol/nips/blob/master/11.md) | Relay info document | Identity and limits, served on the same port |
 | [40](https://github.com/nostr-protocol/nips/blob/master/40.md) | Expiration timestamps | Expired events are swept on a timer |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Authentication | Login switches search to your own web of trust |
 | [45](https://github.com/nostr-protocol/nips/blob/master/45.md) | Event counts | `COUNT` |
 | [50](https://github.com/nostr-protocol/nips/blob/master/50.md) | Search | Full-text, trust-ranked — the core feature |
-| [62](https://github.com/nostr-protocol/nips/blob/master/62.md) | Right to vanish | |
-| [77](https://github.com/nostr-protocol/nips/blob/master/77.md) | Negentropy sync | |
+| [62](https://github.com/nostr-protocol/nips/blob/master/62.md) | Right to vanish | Scoped by this relay's own `RELAY_URL` |
+| [77](https://github.com/nostr-protocol/nips/blob/master/77.md) | Negentropy sync | Peers reconcile — a `NEG-OPEN` declares a lens like any other read |
 | [86](https://github.com/nostr-protocol/nips/blob/master/86.md) | Relay management | Ban/allow pubkeys, events, kinds; edit identity at runtime. Only when `RELAY_ADMIN_PUBKEYS` is set |
 
 ## Embed it

@@ -8,4 +8,5 @@ visit pool, monitor verdicts and roster fit together, the instruments to reach
 for before forming a theory, the conventions this codebase holds itself to, and
 one line per trap that has already cost real time. The long forms live in
 `docs/` (`router-internals.md`, `layout.md`, `instrumentation.md`, `traps.md`,
-`operations.md`) and the decisions behind the code in `docs/decisions/`.
+`operations.md`, `operator-pages.md`) and the decisions behind the code in
+`docs/decisions/`.
