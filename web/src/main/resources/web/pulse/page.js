@@ -205,6 +205,83 @@ function enginePanel(rows) {
   return c;
 }
 
+/**
+ * The join `engine` and `activities` never had: the same engine cost, keyed by
+ * WHO asked for it. `engine` says the unranked profile matched 90M documents;
+ * `activities` says the drain made 3,477 calls; neither says the drain IS that
+ * traffic. Finding that out used to take an ablation — stop the mirror and
+ * watch the number fall.
+ */
+function callersPanel(doc) {
+  const c = card(
+    "What made the engine work",
+    "The same engine cost as above, attributed to the work that asked for it. Heaviest first, so the top row is the answer to \u201cwhat is loading the cluster\u201d.",
+  );
+  const rows = Array.isArray(doc.engineByCaller) ? doc.engineByCaller : [];
+  if (!rows.length) {
+    c.appendChild(el("p", "why", "No engine call has been attributed yet. A store whose callers never declared an activity publishes nothing here rather than guessing."));
+    return c;
+  }
+  const body = rows.map((e) => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, e.activity));
+    tr.appendChild(el("td", null, e.profile));
+    tr.appendChild(el("td", null, e.shape));
+    tr.appendChild(num(fmt(e.queries)));
+    tr.appendChild(num(ms(e.engineMs), `${ms(e.summaryMs)} of it fetching summaries`));
+    tr.appendChild(num(short(e.docsMatched)));
+    tr.appendChild(num(short(e.hitsServed)));
+    const deg = num(fmt(e.degraded));
+    if (e.degraded > 0) deg.style.color = "var(--warn)";
+    tr.appendChild(deg);
+    return tr;
+  });
+  c.appendChild(
+    table(
+      [["asked by"], ["rank profile"], ["query shape"], ["queries", "r"], ["engine time", "r"], ["matched", "r"], ["served", "r"], ["degraded", "r"]],
+      body,
+    ),
+  );
+  c.appendChild(el("p", "note", "Query SHAPE, never the terms \u2014 clause kinds only, the same rule the degraded-read tally follows."));
+  return c;
+}
+
+/**
+ * What the ENGINE has left, which every other panel here is silent about. Two
+ * content nodes were lost to OOM on 2026-09-07/08 \u2014 one on an app-package
+ * activation, one on a routine restart \u2014 while every panel looked healthy,
+ * because none of them showed this.
+ */
+function headroomPanel(doc) {
+  const h = doc.engineHeadroom;
+  const c = card(
+    "What the engine has left",
+    "Proton\u2019s memory and disk against the limits that block feed, per content node. The worst node is the one that decides whether the cluster can still take writes.",
+  );
+  if (!h || !Array.isArray(h.nodes) || !h.nodes.length) {
+    c.appendChild(el("p", "why", "The engine has not answered a resource probe yet."));
+    return c;
+  }
+  const body = h.nodes.map((n) => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, n.host));
+    const mem = barCell(n.memory, "level");
+    if (n.memory >= 0.85) mem.style.color = "var(--warn)";
+    tr.appendChild(mem);
+    tr.appendChild(barCell(n.disk, "level"));
+    tr.appendChild(el("td", null, n.feedBlocked ? "BLOCKED" : "accepting"));
+    return tr;
+  });
+  c.appendChild(table([["content node"], ["memory", "r"], ["disk", "r"], ["feed"]], body));
+  if (h.feedBlocked) {
+    c.appendChild(el("p", "alarm", "Feed is BLOCKED: proton is refusing writes until it has room. Ingest is stalled, not slow."));
+  } else if (h.peakMemory >= 0.85) {
+    c.appendChild(el("p", "alarm", `Peak memory ${pct(h.peakMemory)} \u2014 at this level an app-package activation or a restart has taken a content node down here before. Do neither until it falls.`));
+  }
+  c.appendChild(el("p", "note", `Read ${fmt(h.ageSeconds)}s ago; cached, so a page refresh is not a metrics fan-out.`));
+  return c;
+}
+
 /** What became of the events offered, per activity. */
 function outcomesPanel(doc) {
   const o = doc.outcomes;
@@ -378,6 +455,8 @@ function render(doc) {
   fill("strip", tick, () => healthStrip(doc, rows));
   fill("activity", tick, () => activityPanel(rows));
   fill("engine", tick, () => enginePanel(engineRowsOf(doc, prev)));
+  fill("callers", tick, () => callersPanel(doc));
+  fill("headroom", tick, () => headroomPanel(doc));
   fill("outcomes", stampOf(doc.outcomes), () => outcomesPanel(doc));
   fill("locks", tick, () => locksPanel(doc));
   fill("stages", tick, () => stagesPanel(stageRowsOf(doc, prev)));
@@ -442,7 +521,7 @@ function renderWho() {
 }
 
 /** The panels, laid out once and kept. */
-const PANEL_KEYS = ["strip", "activity", "engine", "outcomes", "locks", "stages", "gauges", "hotspots", "slow", "closed"];
+const PANEL_KEYS = ["strip", "activity", "engine", "callers", "headroom", "outcomes", "locks", "stages", "gauges", "hotspots", "slow", "closed"];
 
 /** What each panel was last built from, by key. */
 const drawn = new Map();

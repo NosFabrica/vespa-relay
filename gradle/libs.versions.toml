@@ -422,106 +422,53 @@ quartz = "cecc3287b2"
 # `order by created_at desc`. A sorted read is one Vespa is PERMITTED to
 # truncate — `sorting.degrading` defaults true — and it reports the truncation
 # as `match-phase`. The coverage guard then correctly refuses the partial
-# THE TRUST DESCENT IS GONE (#130), and #128 before it.
+# THE PULSE CAN NAME WHO MADE THE ENGINE WORK (#132), plus the package
+# restructuring (#131) this pin already carried.
 #
-# #130 REMOVES THE DESCENT ENTIRELY — 32 files, -1366 lines. Measured on this
-# cluster it made ranked search 1.6-4x SLOWER on the very queries it exists to
-# accelerate (`bitcoin` 3.1s -> 13.3s, identical result counts). The rung is a
-# range over an imported field, which Vespa resolves through the parent
-# reference at match time — no posting list, nothing to seek — so it filters
-# instead of driving, and the descent paid for two such queries:
-#   text only                      69-95ms      (3,624,868 matching kind-1)
-#   text + author_max_rank >= 90   1.06-1.19s   -- 15x SLOWER
-#   author_max_rank >= 90 ALONE    2.20/2.20/2.21s  (46.1M matching)
+# #132 answers two questions this deployment could not, each of which cost real
+# time here:
 #
-# Two further findings, either fatal alone. The rung had already lost its
-# selectivity: rank>=90 covers 21.6% of kind-1 (35.2M of 162.7M) against the
-# 0.5% the design assumed, 43x off, and max_rank is a MAXIMUM over all
-# observers so it saturates upward as the graph fills in — worse after launch,
-# not better. And the match set was never the bottleneck: matching 3.6M docs
-# costs ~80ms, scoring them ~820ms, and match-phase (already in the schema on
-# created_at) runs in 45-52ms with no imported field and no write
-# amplification. That is where the speed is; see vespa-eventstore#129.
+# WHO ASKED. CostLedger booked engine cost per rank PROFILE and nothing said
+# who made it do that, so attributing load meant an ablation — on 2026-09-06
+# the only way to find what drove ~20M docs/s was to scale the mirror to zero
+# and watch it fall. engineQuery now also books (activity, profile, shape),
+# heaviest first. Shape, never terms: the pulse page is admin-gated BECAUSE it
+# quotes searches, and attribution must not become a second search log.
 #
-# WHAT THIS PIN CHANGES ON DEPLOY: `reputation.max_rank` and event.sd's
-# `author_max_rank` import are gone from the app package, so the field's data
-# is dropped (it was derived). Watch the vespa-app deploy on the first rollout.
+# WHAT THE ENGINE HAS LEFT. EngineResources reads proton memory/disk and
+# feed-block per content node from /metrics/v2/values — the SAME endpoint the
+# store already queries, so no new port or config. This deployment lost two
+# content nodes to OOM on 2026-09-07/08 (one on an app-package activation at
+# 0.810, one on a routine restart at 0.808) and in both cases the numbers that
+# would have predicted it were only reachable by hand.
 #
-# AND THEN: delete the VESPA_TRUST_DESCENT guard from staging-values.yaml.
-# It is only there because the PREVIOUS image reads unset as ON; on this image
-# the variable is not read at all. (brainstorm-k8s, relay + sync extraEnv.)
+# DIRECTION: b767bdb7a8 is a strict ancestor of this — main plus #132.
+#   git merge-base --is-ancestor b767bdb7a8 58011b670c   # verified
 #
-# #128 also rides here: streamedSlice never sent `&timeout=`, so the server
-# default (180s) outlived the client's 120s read gap and every sparse service
-# walk died with SocketTimeoutException from Http2Stream$FramingSource.read.
-# It is what finally let the projection finish — drain empty, reconcile done,
-# servicesProjected 231/242, lensesResolvable 245/358.
+# ALSO #133, which wires the headroom probe: #132 shipped EngineResources as
+# DEAD CODE — parsed, tested, and constructed nowhere, so the feature did not
+# exist and every test still passed because they drove the parser seam. The
+# store now references the index accessor, so deleting either end breaks the
+# build; the guard is the compiler, not an assertion.
 #
-# b767bdb7a8 = vespa-eventstore main @ 2026-09-07, the merge of PR #131 —
-# every package given a layer, and the front door's engine handle made
-# read-only. A SOURCE-LEVEL move: nothing about a document, a query or a rank
-# profile changed, `engine/app/` has a zero diff against the previous pin, and
-# the store's own integration gate (real Vespa, testcontainers) is green on it.
-#
-# WHAT THIS PIN CHANGES ON DEPLOY: nothing. No schema change, so no app-package
-# rollout, no re-derivation, no field dropped — the first pin in a while whose
-# deployment step is genuinely just the image.
-#
-# WHAT IT CHANGES HERE is the relay's own imports, in the commit this pin lands
-# with: eight declarations moved package (InMemoryEventIndex ->
-# engine.memory, IngestStats/DegradedReads -> engine.metrics, mapBounded and
-# QUERY_FANOUT -> engine.async, WriterTopology -> runtime, SchemaDeployer ->
-# engine.app and :store -> :engine), and `store.eventIndex` became
-# `store.engine`. That last one is the point of the store PR: the old handle
-# was the concrete VespaEventIndex, which published `put`, `putAll`,
-# `removeDocs` and a settable `trustDescent` to every caller — a way to write
-# behind every rule the store enforces. What replaces it is read-only.
-#
-# SyncMain's ingest survives that narrowing because #131 added `existingIds` to
-# the read-only facet FOR this caller: the membership probe behind `knownIds`,
-# which is what lets the mirror skip verifying a signature for an event already
-# held. Un-lensed on purpose — a duplicate must be skipped whether or not the
-# connecting user's lens would serve it. Without it the only migration was to
-# verify every duplicate, and this pin would have been a throughput regression
-# rather than a rename.
-#
-# It is also published as 1.0.1 on Maven Central. This repo pins by commit and
-# always has, so that number is not what resolves here — but it is a PATCH
-# number over a source-breaking change, which is why the rename table above is
-# written out rather than left to the compiler.
-#
-# DIRECTION: d0e25c3325 is a strict ancestor of this — main plus #131.
-#   git merge-base --is-ancestor d0e25c3325 b767bdb7a8   # verified
-#
-# LEXICOGRAPHIC: 'b767…' < 'd0e2…' ('b' < 'd'), and this is the FIRST bump that
-# goes DOWN. Every note above records the safe direction because it had one to
-# record; a sha is not a version, so half of them will sort backwards and this
-# one does. What the direction actually guards is Gradle's conflict resolution,
-# which picks the higher of two REQUESTED versions — so it only bites if
-# something else in the graph names vespa-eventstore, and nothing does. That is
-# the claim every one of these notes has rested on, so here it is CHECKED
-# rather than asserted: the resolved graph must read b767bdb7a8 with no `->`
-# anywhere, in all five JVM modules.
+# LEXICOGRAPHIC: '5801…' < 'b767…' ('5' < 'b'), the unsafe direction. No
+# `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line must read 58011b670c with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-# Verified on this bump against the real JitPack artifact (not a composite
-# build): :common 1 line, :peers/:monitor/:relay 2, :sync 3 — every one of them
-# `store:b767bdb7a8`, zero arrows, no force(…) needed. If a transitive
-# ever DOES name it, this is the pin where that stops resolving quietly and
-# starts needing a `force(…)` — the downgrade is the case Gradle will not pick
-# on its own.
 #
-# Superseded: d0e25c3325 = #130 (the trust descent's removal) and #128.
-# ab90b08f02 = #128 (the streamed visit's server deadline).
-# 4c2b026cfc = #127 and 61b39e7280 = #125 — the reader/writer split and its
-# unbounded queue; both defensible, neither the cause. a2499fa4c1 = #126 (a
-# sample may be short: the reconcile's projected-check was refused 119 times
-# over two hours at 57% coverage). cba205940b = #124 (the walk batches across
-# pages, 16.3 -> 178 cards/s). 1211420526 = #122 + #123 (a failing unit costs
-# only itself; 93 consecutive drain failures to zero). 27d43f84c1 = #121.
+# Superseded: b767bdb7a8 = #131, the package restructuring (every package one
+# owning module, a read-only engine handle on the front door), published 1.0.1.
+# d0e25c3325 = #130, the trust descent removed — measured 1.6-4x SLOWER than
+# no descent because the rung was a range over an imported field with no
+# posting list to seek. ab90b08f02 = #128 (the streamed visit's server
+# deadline, which is what finally let the projection finish).
+#
+# Superseded: 4c2b026cfc = #127. 61b39e7280 = #125. a2499fa4c1 = #126.
+# cba205940b = #124. 1211420526 = #122 + #123. 27d43f84c1 = #121.
 # 52ac77e5ac = #120. 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117.
 # 2fa2b67141 = #116. a23a6a3a68 = #113/#114. aca0552c4e = #112.
 # 53441182f5 = #108.
-vespaEventStore = "b767bdb7a8"
+vespaEventStore = "58011b670c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

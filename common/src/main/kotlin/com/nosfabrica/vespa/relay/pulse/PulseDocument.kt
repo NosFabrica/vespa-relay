@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.pulse
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.client.EngineResources
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import kotlinx.serialization.json.JsonObject
@@ -45,14 +46,26 @@ object PulseDocument {
      * the load hotspots and the slow-read log that quotes queries; off by default, and never to be
      * served where `/stats.json` is served.
      */
-    fun of(
+    suspend fun of(
         store: VespaEventStore,
         title: String,
         scope: String,
         startedAtMillis: Long,
         clientDerived: Boolean = false,
         nowMillis: Long = System.currentTimeMillis(),
-    ): JsonObject = of(store.metrics(), store.runCatching { feedStatus() }.getOrNull(), title, scope, startedAtMillis, clientDerived, nowMillis)
+    ): JsonObject =
+        of(
+            store.metrics(),
+            store.runCatching { feedStatus() }.getOrNull(),
+            title,
+            scope,
+            startedAtMillis,
+            clientDerived,
+            nowMillis,
+            // A probe that fails must not take the page with it: the moment
+            // headroom matters most is the moment the engine can least answer.
+            headroom = runCatching { store.engineHeadroom() }.getOrNull(),
+        )
 
     /**
      * A reader bound to one store, for the route to call per request. [startedAtMillis] is when
@@ -65,7 +78,7 @@ object PulseDocument {
         title: String,
         scope: String,
         clientDerived: Boolean = false,
-    ): () -> JsonObject = { of(store, title, scope, startedAtMillis, clientDerived) }
+    ): suspend () -> JsonObject = { of(store, title, scope, startedAtMillis, clientDerived) }
 
     /** The pure form, so the shape can be asserted without a store. */
     fun of(
@@ -77,6 +90,7 @@ object PulseDocument {
         clientDerived: Boolean = false,
         nowMillis: Long = System.currentTimeMillis(),
         // Read once here rather than three times below, so every lock member describes one instant.
+        headroom: EngineResources.Usage? = null,
         held: List<IngestStats.Held> = IngestStats.heldAll(),
         stages: Map<String, IngestStats.Stage> = IngestStats.snapshot(),
         blocked: Map<String, Map<String, Long>> = IngestStats.blockedSplit(),
@@ -94,6 +108,8 @@ object PulseDocument {
             putActivities(metrics)
             putOutcomes(metrics)
             putEngine(metrics)
+            putEngineByCaller(metrics)
+            putHeadroom(headroom, nowMillis)
             putGauges(metrics)
             putLocks(held, blocked)
             putStages(stages)
@@ -207,6 +223,85 @@ object PulseDocument {
                 )
             }
         }
+    }
+
+    /**
+     * THE SAME ENGINE COST, KEYED BY WHO ASKED — the join `engine` and
+     * `activities` never had.
+     *
+     * `engine` says the unranked profile matched 90M documents; `activities`
+     * says the drain made 3,477 calls. Neither says the drain IS the unranked
+     * traffic, and on 2026-09-06 finding that out took an ablation: scale the
+     * mirror to zero and watch the number fall. Heaviest first, so the top row
+     * is the answer.
+     *
+     * SHAPE, NEVER TERMS — clause kinds, the way `degradedReads` reports them.
+     * This page is admin-gated because it quotes searches; this table must not
+     * quietly become a second place they are kept.
+     */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putEngineByCaller(m: CostLedger.Snapshot) {
+        if (m.engineByCaller.isEmpty()) return
+        putJsonArray("engineByCaller") {
+            m.engineByCaller.forEach { e ->
+                add(
+                    buildJsonObject {
+                        put("activity", e.activity.name)
+                        put("profile", e.profile)
+                        put("shape", e.shape)
+                        put("queries", e.queries)
+                        put("engineMs", e.engineNanos / 1_000_000.0)
+                        put("summaryMs", e.summaryNanos / 1_000_000.0)
+                        put("docsMatched", e.docsMatched)
+                        put("hitsServed", e.hitsServed)
+                        put("degraded", e.degraded)
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * WHAT THE ENGINE HAS LEFT, per content node — the half of the picture
+     * this page never had.
+     *
+     * Every panel here describes what the STORE is doing. None of them said
+     * what the engine underneath had left, and on 2026-09-07/08 that gap cost
+     * two content-node OOM kills: one on an app-package activation at proton
+     * 0.810, one on a routine restart at 0.808, both while every panel looked
+     * healthy. "The walk is running" beside "we are at 0.81 of the limit that
+     * blocks feed" is the whole story; two pages holding half each is how an
+     * afternoon disappears.
+     *
+     * `peak`, not an average: the worst node decides whether the cluster
+     * feeds. `ageSeconds` because the reading is cached and a stale number
+     * that says so is worth more than a fresh-looking one that lies.
+     */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putHeadroom(
+        usage: EngineResources.Usage?,
+        nowMillis: Long,
+    ) {
+        if (usage == null || usage.nodes.isEmpty()) return
+        put(
+            "engineHeadroom",
+            buildJsonObject {
+                put("peakMemory", usage.peakMemory)
+                put("peakDisk", usage.peakDisk)
+                put("feedBlocked", usage.anyFeedBlocked)
+                put("ageSeconds", (nowMillis - usage.atMillis) / 1000)
+                putJsonArray("nodes") {
+                    usage.nodes.sortedByDescending { it.memory }.forEach { n ->
+                        add(
+                            buildJsonObject {
+                                put("host", n.host)
+                                put("memory", n.memory)
+                                put("disk", n.disk)
+                                put("feedBlocked", n.feedBlocked)
+                            },
+                        )
+                    }
+                }
+            },
+        )
     }
 
     /** The instantaneous readings, named apart from every counter so a reader cannot difference them. */
