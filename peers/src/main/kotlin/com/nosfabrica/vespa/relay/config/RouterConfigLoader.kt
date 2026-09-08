@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.config
 
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigParseOptions
+import com.typesafe.config.ConfigSyntax
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -50,9 +52,35 @@ fun Map<String, String>.syncEnv(
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
+        // The monitor's own file, if the deployment keeps the two planes apart. Read BEFORE the
+        // sync config decides there is nothing to do, so a monitor declaration is never dropped
+        // without a word and the one-declaration rule holds on every path.
+        val monitorInline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
+        val monitorFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
+        require(monitorInline == null || monitorFile == null) {
+            "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
+        }
+        // Not read here: a file is handed to `parse` as a file, so `include` resolves against its
+        // own directory. Only its existence is settled now, where the message can still name it.
+        val monitorOrigin = monitorFile.takeIf { monitorInline == null }
+        require(monitorOrigin == null || monitorOrigin.isFile) {
+            "router: MONITOR_CONFIG_FILE points at ${monitorOrigin?.path}, which is not a readable file"
+        }
+        val hasMonitor = monitorInline != null || monitorOrigin != null
+
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
-        val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
-        val raw = inline ?: fromFile ?: return null
+        val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
+        require(!hasMonitor || inline != null || syncFile != null) {
+            "router: a monitor config is set and no sync config is — this process mirrors and measures in one, " +
+                "and there is nothing here to mirror. Set SYNC_CONFIG_FILE too, or unset the monitor variable"
+        }
+        if (inline == null && syncFile == null) return null
+        // Only where the text did not come inline: an `include` resolves against the including
+        // document's own directory, and a string-parsed one has no directory to resolve against.
+        val syncOrigin = syncFile.takeIf { inline == null }
+        require(syncOrigin == null || syncOrigin.isFile) {
+            "router: SYNC_CONFIG_FILE points at ${syncOrigin?.path}, which is not a readable file"
+        }
         val upInterval =
             env
                 .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
@@ -111,15 +139,43 @@ object RouterConfigLoader {
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults)
-            .copy(
-                negPageTarget = pageTarget,
-                negPageMin = pageMin,
-                negPageMax = pageMax.coerceAtLeast(pageMin),
-                negPageSlackSec = pageSlack,
-            ).let {
-                if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
-            }
+        return parse(
+            inline,
+            upInterval,
+            ingestConcurrency,
+            ingestBatch,
+            relaySourceDefaults,
+            monitorInline,
+            syncOrigin = syncOrigin,
+            monitorOrigin = monitorOrigin,
+        ).copy(
+            negPageTarget = pageTarget,
+            negPageMin = pageMin,
+            negPageMax = pageMax.coerceAtLeast(pageMin),
+            negPageSlackSec = pageSlack,
+        ).let {
+            if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
+        }
+    }
+
+    /**
+     * Refuses a deployment whose streams discover their relays and which declares no monitor: it
+     * would measure nothing, and the config never said that was the intent. At boot, not at parse,
+     * because such a config is well formed — it is the process that would run inert.
+     */
+    fun refuseUndeclaredMonitor(config: RouterConfig) {
+        // The block existing is not the declaration — `sources` is. One that only tunes the clocks
+        // never said what to measure, and would run the plane over nothing without a word.
+        if (config.monitor?.sources != null) return
+        val discovering = config.discoveryStreams().map { it.name }
+        require(discovering.isEmpty()) {
+            "router: ${discovering.joinToString()} discover their relays, and this deployment declares no monitor. " +
+                "The monitor measures what its own config names and nothing else — every url it derives becomes a " +
+                "signed public claim about somebody else's relay, so it is never inferred from a stream. Point " +
+                "MONITOR_CONFIG_FILE at a monitor.conf naming the relay lists to scan (start from " +
+                "monitor.conf.example), or keep a `monitor { }` block in the sync config. A deployment that mirrors " +
+                "these streams and deliberately measures nothing declares an empty monitor: `monitor { sources = [] }`"
+        }
     }
 
     /** Run only the streams `SYNC_STREAMS` names. A name that matches nothing is a hard error. */
@@ -147,14 +203,24 @@ object RouterConfigLoader {
         return on
     }
 
+    /**
+     * The two planes' configs into one model. Each plane arrives as text OR as the file to read it
+     * from, never both: a file is parsed in place so its `include` resolves against its own
+     * directory. [monitorHocon]/[monitorOrigin] carry `monitor.conf` — the `monitor { }` block's
+     * contents at the top level, no wrapper — and are both null where the block lives in the sync
+     * config.
+     */
     fun parse(
-        hocon: String,
+        hocon: String? = null,
         upIntervalSec: Long = 300L,
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
+        monitorHocon: String? = null,
+        syncOrigin: File? = null,
+        monitorOrigin: File? = null,
     ): RouterConfig {
-        val cfg = ConfigFactory.parseString(hocon)
+        val cfg = document(hocon, syncOrigin)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
         require(cfg.hasPath("streams")) { "router: config has no `streams { }` block" }
         val streamsCfg = cfg.getConfig("streams")
@@ -283,13 +349,14 @@ object RouterConfigLoader {
             }
         }
         refuseRouterWidePoolWidths(cfg)
+        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
         return RouterConfig(
             connTimeout,
             streams,
             upIntervalSec,
             ingestConcurrency,
             ingestBatch,
-            monitor = parseMonitor(cfg),
+            monitor = monitor,
         )
     }
 
@@ -313,16 +380,40 @@ object RouterConfigLoader {
         path: String,
     ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
 
-    /** The `monitor { }` block. A monitor source is a relay source, so it reuses the stream-side parsers. */
-    private fun parseMonitor(cfg: Config): MonitorConfig? {
-        if (!cfg.hasPath("monitor")) return null
-        val m = cfg.getConfig("monitor")
-        val sources =
-            if (m.hasPath("sources")) {
-                m.getConfigList("sources").map { parseRelaySource("monitor", it) }
-            } else {
-                emptyList()
+    /**
+     * The monitor's declaration, from its own file when there is one and from the sync config's
+     * `monitor { }` block otherwise. A monitor source is a relay source, so it reuses the
+     * stream-side parsers.
+     */
+    private fun parseMonitor(
+        cfg: Config,
+        monitorHocon: String?,
+        monitorOrigin: File?,
+    ): MonitorConfig? {
+        val m =
+            when {
+                monitorHocon != null || monitorOrigin != null -> {
+                    // Two declarations cannot both be the truth, and picking one silently is how a
+                    // deployment measures a set nobody is looking at.
+                    require(!cfg.hasPath("monitor")) {
+                        "router: the sync config has a `monitor { }` block AND a separate monitor config is set " +
+                            "(MONITOR_CONFIG / MONITOR_CONFIG_FILE). Keep one: move the block's contents into the " +
+                            "monitor file and delete it here, or unset the variable"
+                    }
+                    monitorDocument(monitorHocon, monitorOrigin)
+                }
+
+                cfg.hasPath("monitor") -> {
+                    cfg.getConfig("monitor")
+                }
+
+                else -> {
+                    return null
+                }
             }
+        // Absent and empty are different answers: one never said what to measure, the other said
+        // "nothing". Only the first is refused at boot.
+        val sources = if (m.hasPath("sources")) m.getConfigList("sources").map { parseRelaySource("monitor", it) } else null
         return MonitorConfig(
             sources = sources,
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
@@ -373,6 +464,44 @@ object RouterConfigLoader {
                     }
                 },
         )
+    }
+
+    /**
+     * `monitor.conf` is the block's CONTENTS, not the block: the file is already named for it.
+     * A pasted-in wrapper would parse to a monitor with no sources — measuring nothing, quietly —
+     * so it is refused rather than read past.
+     */
+    private fun monitorDocument(
+        hocon: String?,
+        origin: File?,
+    ): Config {
+        val parsed = document(hocon, origin)
+        require(!parsed.hasPath("monitor")) {
+            "router: the monitor config has a `monitor { }` block wrapped around it. The file IS the block — " +
+                "unwrap it, so `sources`, `exclude` and the clocks sit at the top level"
+        }
+        return parsed
+    }
+
+    /**
+     * One config document. Parsed from [origin] where the text came from a file, so an `include`
+     * resolves against that file's own directory; `parseString` resolves it against the process's
+     * working directory instead and skips one it cannot find, without saying so.
+     */
+    private fun document(
+        hocon: String?,
+        origin: File?,
+    ): Config {
+        require((hocon == null) != (origin == null)) {
+            "router: a config document is text or a file, not both and not neither — this is a caller bug"
+        }
+        return if (origin != null) {
+            // Syntax forced: `parseFile` would otherwise take it from the extension, and a config
+            // an operator named `.json` holding HOCON would stop parsing on its first comment.
+            ConfigFactory.parseFile(origin, ConfigParseOptions.defaults().setSyntax(ConfigSyntax.CONF))
+        } else {
+            ConfigFactory.parseString(hocon)
+        }
     }
 
     private fun normalizeUrls(

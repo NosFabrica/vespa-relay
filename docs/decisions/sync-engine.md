@@ -1,6 +1,6 @@
 # Sync engine decisions
 
-The history behind `SyncEngine.kt` and `sync/.../{SyncBands,NegentropyPager,
+The history behind `sync/.../{SyncEngine,SyncBands,NegentropyPager,
 SweepState,RosterBuilder,RetractionAudit}.kt`, moved out of the source so the
 code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.

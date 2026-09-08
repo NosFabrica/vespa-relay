@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.typesafe.config)
+    // api: PeerClient.httpFor and TorTransport.clientFor hand out an OkHttpClient.
     api(libs.okhttp)
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.serialization.json)
@@ -30,7 +31,7 @@ tasks.test {
     useJUnitPlatform()
     // Every property a probe reads must be forwarded here: the forked test JVM does not
     // inherit them, and a probe missing its switch skips itself silently.
-    // ProbeSwitchesAreForwardedTest in :sync checks the list.
+    // ProbeSwitchesAreForwardedTest checks the list; it runs under `:common:archTest`.
     System.getProperty("liveListKind")?.let { systemProperty("liveListKind", it) }
     System.getProperty("liveListProbe")?.let { systemProperty("liveListProbe", it) }
     System.getProperty("liveListRelay")?.let { systemProperty("liveListRelay", it) }

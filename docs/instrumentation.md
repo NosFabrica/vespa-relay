@@ -105,6 +105,22 @@ Reach for it first.
   against a `false` relay a `paging` row can never settle by itself, which is a
   configuration question rather than a puzzle) and the filter width its own
   refusal taught us (`kindCap`), beside the relay's own sentence.
+- **`unwatched`, on that same table** — the pairs this mirror syncs that our own
+  monitor holds no current verdict about. Not a relay reading at all: it is the
+  monitor's config and the streams describing different sets of relays, which
+  they can, because `monitor.conf` is a separate declaration from `sync.conf` and
+  neither names anything in the other — every url the monitor derives becomes a
+  signed public claim, so nothing is inherited. Zero
+  is healthy. Anything else is quiet damage: `negentropy` and the fold read as
+  unmeasured for those relays (a legal third state, so nothing else complains),
+  and a stream whose `relaySource` is a verdict query loses them at the next
+  rebuild. The card names it only when it is non-zero. READ THE COUNT, not the
+  rows: it is taken over every pair, while an unwatched row ranks below
+  `behindSec` and a current one can fall past the row cut — a cold relay is that
+  pair's problem, an unwatched one is the config's, and the fix is in
+  monitor.conf rather than in any row. A url a stream pins in its own `urls`
+  never counts: it bypasses the verdicts by an operator's decision, and
+  monitor.conf has no syntax that could name it.
 - **…and the same table's per-relay reading** — WHERE EACH RELAY STANDS,
   which everything else the mirror publishes is an aggregate over. `roster`
   counts them, the coverage card charts their bands folded per stream, and the
@@ -138,6 +154,16 @@ Reach for it first.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
+- **a probe pass's position** (`measuring`) — `attempted of toProbe unit(s)`,
+  with `quietForSec` beside it once nothing has ended for a while, which the
+  page draws as "nothing finished for …". READ THE UNIT: the stability gate and
+  the fitness pass count a `url`, the fold a `host`, the alias source a
+  `source`, and the fitness pass's WRITE phase a `verdict` — it re-arms when it
+  stops dialling and starts writing, because it writes more than it dialled (a
+  folded or already-inconsistent url is graded without a socket). One position
+  for both sat full at the dial count for the whole write with `quietForSec`
+  climbing: measured on a live stack at 2016 of 2016 for six minutes while the
+  writes went on, which is the shape of a wedge and was a healthy pass.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said

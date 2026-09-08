@@ -513,6 +513,9 @@ class Processors {
         /** The alias source walks one configured relay-list source at a time. */
         const val UNIT_SOURCE = "source"
 
+        /** A verdict written. The fitness pass re-arms on it: its writes outnumber its dials. */
+        const val UNIT_VERDICT = "verdict"
+
         /** Between passes: the last one finished and the next is on the clock. */
         const val IDLE = "idle"
 

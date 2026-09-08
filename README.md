@@ -238,10 +238,12 @@ source.
 To try it under compose — the `sync` profile is the on-switch:
 
 ```bash
-cp router.conf.example router.conf   # then edit the relay list / filters
-SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
+cp sync.conf.example sync.conf         # what to mirror: the relay list / filters
+cp monitor.conf.example monitor.conf   # what to measure: the relay lists to scan
+SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
+  docker compose --profile sync up -d --build
 
-# after editing router.conf: bounce only the mirror, the relay keeps serving
+# after editing either: bounce only the mirror, the relay keeps serving
 docker compose --profile sync restart sync
 ```
 

@@ -5,19 +5,19 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 ## The router, in one pass
 
 `SyncEngine` syncs upstream events into the store. Operators know this
-subsystem as **the router** — `router.conf`, the `router:` log prefix and the
+subsystem as **the router** — `sync.conf` + `monitor.conf`, the `router:` log prefix and the
 `router` package keep that name. Its env vars are `SYNC_*`; the pre-rename
 `ROUTER_*` spellings still work and warn on boot.
 
 It is its own process (`SyncMain`, the compose `sync` service behind
-`--profile sync`), so a `router.conf` change is a `restart sync`, never a
+`--profile sync`), so a `sync.conf` or `monitor.conf` change is a `restart sync`, never a
 relay outage — and the sync bands make the re-run resume rather than
 re-download. The relay hard-errors if `SYNC_CONFIG*` is aimed at it: that
 setting used to start the mirror in-process, and accepting-but-ignoring it
 would be a mirror that quietly stopped mirroring. A stream's relays come from
 one of two places and are walked the same way after that:
 
-- **declared** — relays listed in `urls` in `router.conf`
+- **declared** — relays listed in `urls` in `sync.conf`
 - **discovered** — relays found in stored events via `relaySource` (NIP-65
   outbox lists, NIP-85 provider lists, relay hints), admitted by the monitor's
   verdicts
@@ -902,7 +902,7 @@ now that nothing filters on the way out, the pin is a stronger claim than it was
 bounds `foldedOnto` and the undecided reasons because discovery decides how long
 those get; it bounds NOTHING whose length is decided by our own source — the
 processor rows (a registration in `SyncEngine`), a processor's stream rows (a
-line in `router.conf`), the in-flight rows (a worker, so `visitConcurrency`).
+line in `sync.conf`), the in-flight rows (a worker, so `visitConcurrency`).
 Capping those only picks which rows an operator is not shown, and the processor
 one had the worst version of that: `splitProcessors` deliberately draws a
 processor name the page has not been taught rather than dropping it, because
@@ -1218,7 +1218,7 @@ filter, so a long-lived kind (0) vouched for a short-lived one (30382) and
 `legs()` skipped the interior. Upstream took per-kind spans *inside* the
 filter-keyed band (amethyst#3862, picked up in `94e3136`) — not per-kind keys,
 which would break the invalidation property above. Every stream in
-`router.conf.example` is multi-kind, so nothing here is shielded by luck: the
+`sync.conf.example` is multi-kind, so nothing here is shielded by luck: the
 `indexers` stream alone is `[0, 10002]` on the paged path, which is exactly the
 combination quartz refuses to record a band for unless the caller threads
 `observedByKind`.
@@ -2925,7 +2925,7 @@ and nothing else. Four consequences, each with its own home:
   during its cycle, so worst case is one per id-set stream plus one draining
   generation, where it used to be one across the process. The levers if that
   matters for a deployment are `sync = "fetch"` (which every wide stream in
-  `router.conf.example` already uses — only `assertions`, at concurrency 8,
+  `sync.conf.example` already uses — only `assertions`, at concurrency 8,
   holds a set at all) and narrowing the stream's filter.
 - **"The cycle finished" stopped meaning "everything settled".** `pending`
   non-zero at the end of a pass is now the ordinary state rather than a sign the
@@ -3151,7 +3151,7 @@ group is forgotten and nothing is published. Three things about it:
 
 The host stays in the fan-out, unmeasured and re-probed. Dropping such a host
 from the fan-out entirely is a separate policy question — note that
-`router.conf.example` DOES ask for kind 30023, so this one is not pure cost, it
+`sync.conf.example` DOES ask for kind 30023, so this one is not pure cost, it
 is a relay we cannot walk coherently whose events are carried elsewhere.
 
 **Three more ways a url was permanently unmeasurable, all found auditing the
@@ -3290,7 +3290,8 @@ that does not arise.
 It also ended a trap nobody could see from the config: a BOUND select could
 never take the projection (it hands back a set of values, and the pairing a
 binding exists to keep is gone by then), so `authors = 1` was quietly the fast
-path. The same 38 delegation tags appear twice in `router.conf.example` — bound
+path. The same 38 delegation tags appear once in `sync.conf.example` and once in
+`monitor.conf.example` — bound
 on the `assertions` stream, unbound under `monitor { sources }` — and only the
 unbound copy was expensive.
 
@@ -3329,7 +3330,7 @@ touched; not worth a pin on its own.
 **RUN AGAINST REAL DATA, END TO END** (`RelayListLiveProbe`, 2026-09-02): the
 364 kind-10040 declarations pulled off `wss://search-staging.brainstorm.world`
 — the same 364 #182 counted — fed into a real Vespa in Docker and read back
-through `router.conf.example`'s own `monitor { sources }` block, all 38
+through `monitor.conf.example`'s own `sources`, all 38
 delegation tags:
 
 ```

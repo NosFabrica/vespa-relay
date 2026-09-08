@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import java.io.File
+import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -983,6 +985,47 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `an include beside a config file is resolved, on both planes`() {
+        // The reason a file is handed to the loader as a file rather than as text: `parseString`
+        // resolves an `include` against the PROCESS's working directory and skips one it cannot
+        // find without a word, so a split-out streams file would silently mirror nothing.
+        val dir = createTempDirectory("router-include").toFile()
+        try {
+            File(dir, "streams.conf").writeText(
+                """
+                streams {
+                    included { dir = "down", filter = { "kinds": [1] }, urls = [ "wss://included.example" ] }
+                }
+                """.trimIndent(),
+            )
+            File(dir, "sources.conf").writeText("""sources = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]""")
+            File(dir, "sync.conf").writeText("""include "streams.conf"""")
+            File(dir, "monitor.conf").writeText("""include "sources.conf"""")
+
+            val cfg =
+                RouterConfigLoader.fromEnv(
+                    mapOf(
+                        "SYNC_CONFIG_FILE" to File(dir, "sync.conf").path,
+                        "MONITOR_CONFIG_FILE" to File(dir, "monitor.conf").path,
+                    ),
+                )
+            assertEquals(listOf("included"), cfg!!.streams.map { it.name }, "the included streams file was dropped")
+            assertEquals(1, cfg.monitor?.sources?.size, "the included monitor sources file was dropped")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a config file that is not there is named, not read as an empty config`() {
+        val missing = File(createTempDirectory("router-missing").toFile(), "nope.conf")
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG_FILE" to missing.path)) }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "MONITOR_CONFIG_FILE" to missing.path))
+        }
+    }
+
+    @Test
     fun `no router config env yields null`() {
         assertNull(RouterConfigLoader.fromEnv(emptyMap()))
     }
@@ -1223,7 +1266,7 @@ class RouterConfigTest {
                 """.trimIndent(),
             )
         val m = cfg.monitor!!
-        assertEquals(1, m.sources.size)
+        assertEquals(1, m.sources!!.size)
         assertEquals(3600L, m.sweepSeconds)
         assertEquals(60L, m.fastLaneSeconds)
         assertEquals(32, m.dialConcurrency)

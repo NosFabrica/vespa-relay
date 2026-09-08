@@ -1,10 +1,77 @@
 # Sync status decisions
 
-The history behind `sync/.../SyncMain.kt`, `progress/SyncProgress.kt`,
-`progress/StreamPhases.kt`, `status/SyncStatus.kt`, `status/StatusRollup.kt`,
+The history behind `sync/.../SyncMain.kt`, `status/SyncProgress.kt`,
+`status/StreamPhases.kt`, `status/SyncStatus.kt`, `status/StatusRollup.kt`,
 `status/GaugeSeries.kt`, `status/SyncCoverageReport.kt` and
 `status/RelayStatusReport.kt`, moved out of the source so the code reads on its
 own. One paragraph per decision; `git log -L` on the function finds the commit.
+
+
+**`unwatched` is the guardrail for a declared monitor corpus.** Once the monitor
+measures what `monitor { }` names rather than what the streams happen to
+discover, the failure mode flips: the old risk was publishing claims about
+relays nobody chose, the new one is the mirror syncing relays nothing grades.
+That is quiet — `negentropy` and the fold read as unmeasured, which is a legal
+third state, and a stream whose `relaySource` is a verdict query would simply
+stop finding them. So the roster carries which of its urls our own monitor holds
+a current verdict about, and the prime-relays report counts the pairs it does
+not. It is counted over every pair rather than the cut row list; the COUNT is what
+survives, since an unwatched row ranks below `behindSec` — which is near-unique
+per row, so the tiebreak rarely fires and a current unwatched pair can fall past
+`MAX_ROWS`. That is the right ranking: a cold relay is that pair's problem and
+an unwatched one is the config's, and the answer is in monitor.conf, not in the
+row. It comes
+from `RelayVerdictRecord.Verdicts.measured`, which records a url whenever a
+CURRENT verdict of ours stands behind it — the fold answer, the stability one,
+the NIP-77 one, or the fitness grade, which carries neither of the first two and
+is the one the roster actually selects on. A record whose every tag has aged out
+is not in it: it says what we measured once, not what we measure now.
+
+**"Nobody graded this" and "nothing here grades anything" are different
+absences.** A router with no signer, or one whose `monitor { }` block declares
+no source on purpose, has an empty `measured` set for the honest reason, and
+counting every pair as drift there would put a warning on a correct deployment
+— the loudest possible false alarm, on the page an operator reads first. So the
+roster carries whether anything was supposed to be watching (`signer != null &&
+config.monitorSources() != null`), and `Roster.watches` is the join — see the
+paragraphs below for the three absences it also answers true for. `unwatched` is zero throughout a deployment that
+measures nothing, and the card draws nothing at all.
+
+**No verdicts at all is a third absence, and also not drift.** A cold start
+before the first sweep (six hours, in the shipped example) and a rebuild whose
+verdict read threw both arrive as an empty `measured` on a watching router.
+Reading that as 100% drift put a config warning — naming a specific wrong cause
+— on every row of a correct deployment's first minutes. Drift is one declared
+set differing from another, so it needs both to exist: `watches` answers true
+while `measured` is empty.
+
+
+
+**A pinned url is not drift either.** A relay a stream names in its own `urls`
+is on the roster because an operator put it there, bypassing the verdicts by
+design — the shipped example says so beside the `indexers` stream — and
+`MonitorConfig`'s sources are relay-list selects with no literal-url form, so
+nothing could ever put it in `measured`. Counting it made `unwatched` sit at a
+floor no configuration could clear, with the card diagnosing a drift that had no
+fix. Seen on a live run: two of five, both static upstreams. The roster carries
+the declared set and `watches` answers true for it.
+
+**The vocabulary is checked against a built document, not a written one.** The
+glossary test used to walk a JSON literal, so it only ever covered members
+somebody remembered to type into it — and its other half, "no term describes
+something never published", could not use that document at all and was a
+hand-kept list of ~150 names beside the map it was checking. Both now walk one
+document assembled by the real builders (`SyncCoverageReport`,
+`RelayStatusReport`, `SyncProgress.document`) over real inputs: a `SyncBands`
+written through `record`, a `SweepState`, typed `Processors.Snapshot`s. A member
+renamed or dropped in a builder now fails the orphan half; a member added
+without a term fails the other. The list that survives is ten entries, and every
+one is a concept the page synthesises or a phase word rather than a member.
+
+The COUNT names inside a processor row stay a list, passed through
+`Processors.Count` rather than typed as JSON keys. They are spelled by the jobs
+that raise them, and listing them is the judgement the abort names already
+carried: a name that moves on one side should be noticed, not silently followed.
 
 **The mirror serves its own status page.** The mirror used to write three JSON
 files to a shared volume that the serving relay read back, re-parsed against an

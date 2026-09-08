@@ -21,35 +21,20 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.relay.config.PubKeys
-import com.nosfabrica.vespa.relay.config.RelayIdentity
-import com.nosfabrica.vespa.relay.config.adminPubkeysFromEnv
-import com.nosfabrica.vespa.relay.config.allowKindsFromEnv
-import com.nosfabrica.vespa.relay.config.allowPubkeysFromEnv
-import com.nosfabrica.vespa.relay.config.denyKindsFromEnv
-import com.nosfabrica.vespa.relay.config.denyPubkeysFromEnv
-import com.nosfabrica.vespa.relay.config.expirationSweepSecondsFromEnv
-import com.nosfabrica.vespa.relay.config.negentropySettingsFromEnv
-import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
-import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
-import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
-import com.nosfabrica.vespa.relay.config.requireReadLensFromEnv
-import com.nosfabrica.vespa.relay.config.searchConcurrencyPerConnectionFromEnv
-import com.nosfabrica.vespa.relay.config.searchExpansionFromEnv
+import com.nosfabrica.vespa.relay.identity.PubKeys
+import com.nosfabrica.vespa.relay.identity.RelayIdentity
+import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
-import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
 import com.nosfabrica.vespa.relay.maintenance.StatsTier
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
-import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
-import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
-import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.TrustDocument
@@ -60,11 +45,26 @@ import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
-import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.server.TrustNotice
+import com.nosfabrica.vespa.relay.server.config.allowKindsFromEnv
+import com.nosfabrica.vespa.relay.server.config.allowPubkeysFromEnv
+import com.nosfabrica.vespa.relay.server.config.denyKindsFromEnv
+import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
+import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
+import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
+import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
+import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
+import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
+import com.nosfabrica.vespa.relay.server.config.requireReadLensFromEnv
+import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFromEnv
+import com.nosfabrica.vespa.relay.server.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
+import com.nosfabrica.vespa.relay.store.STORE_WRITERS
+import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
@@ -86,14 +86,15 @@ import java.io.File
 fun main() {
     val env = System.getenv()
 
-    // A sync config aimed at this process is a configured component that would run nothing.
-    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE")
+    // A sync or monitor config aimed at this process is a configured component that would run
+    // nothing. The monitor rides the sync process, so its config is refused for the same reason.
+    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE", "MONITOR_CONFIG", "MONITOR_CONFIG_FILE")
         .firstOrNull { !env[it].isNullOrBlank() }
         ?.let {
             error(
-                "$it is set, but the relay no longer runs the sync engine — it moved to its own process " +
-                    "(the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
-                    "`docker compose --profile sync up`). Move the SYNC_* settings there, or unset $it " +
+                "$it is set, but the relay no longer runs the sync engine or the monitor — they moved to their own " +
+                    "process (the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
+                    "`docker compose --profile sync up`). Move the SYNC_* and MONITOR_* settings there, or unset $it " +
                     "to serve without mirroring.",
             )
         }

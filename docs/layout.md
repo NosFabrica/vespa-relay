@@ -4,22 +4,32 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 
 ## Layout
 
-All three modules share the `com.nosfabrica.vespa.relay` package root — files
-moved between modules in the process split without renaming packages, so
-history and imports stayed put.
+All six modules share the `com.nosfabrica.vespa.relay` package root, and every
+package below it belongs to exactly one module: a package name says which
+module holds the file, and the root package holds the two entrypoints and
+nothing else. `ModuleBoundariesTest` fails the build on either rule.
 
 ```
 common/src/main/kotlin/com/nosfabrica/vespa/relay/
-  config/RelayIdentity.kt   RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor;
+  identity/RelayIdentity.kt RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor;
                             both processes read it (same key on purpose)
-  server/ServingPressure.kt EWMA of client read latency. The relay record()s
+  identity/PubKeys.kt       every pubkey setting, npub only, no bare hex
+  pressure/ServingPressure.kt
+                            EWMA of client read latency. The relay record()s
                             into it and serves it on GET /pressure; the sync
                             process adopt()s the polled mean and yields on it
-  maintenance/
-    QuartzLogLevel.kt       QUARTZ_LOG_LEVEL, split from ParseAudit — the one
+  util/QuartzLogLevel.kt    QUARTZ_LOG_LEVEL, split from ParseAudit — the one
                             piece of it both processes read
-    SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
+  store/SchemaDeploy.kt     the every-boot Vespa schema deploy (both processes)
+  store/StoreTopology.kt    STORE_WRITERS, the one writer topology both open
   util/Format.kt            fmtDuration — the one formatter both processes print
+  (test) arch/              the guards that read the checkout instead of
+                            running it: the module graph and package map, the
+                            browser-file rule, the probe-switch list. They run
+                            in `:common:archTest` (on `check`, not on `test`),
+                            which declares the whole tree as an input — without
+                            that, Gradle calls the guards up to date after
+                            exactly the change they exist to catch
 
 web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
   StatusSite.kt             installPageDefaults (compression + CORS, on the terms
@@ -82,11 +92,15 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
   MonitorEngine.kt        the plane: the three passes, the derivation, the boot
                           retirement of verdicts this router would no longer
                           sign. Its CONSTRUCTOR is the account of what the
-                          monitor still takes from the mirror
+                          monitor still takes from the mirror, and it names no
+                          mirror type: the monitor's own config, the relay
+                          lists it scans, a dial budget, and a sink for an
+                          event a probe happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
-  StreamWorld.kt          the candidate set all three measure over
+  StreamWorld.kt          the candidate set all three measure over — monitor.conf's
+                          own declaration, never inherited from the streams
   AliasMonitor.kt         their clock, and the fast lane — which runs the
                           stability gate then fitness over urls named since its
                           last look, and never the fold (per-host work)
@@ -256,10 +270,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
                               report — lives here because ingest is what feeds it
   util/SyncFormat.kt          fmtCount / nowSeconds, internal again
-  SyncMain.kt           entrypoint; env, store, engine, block
-  SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
-                        which is why it sits above both: it starts them
+  SyncMain.kt           entrypoint; env, store, engine, block. The root
+                        package holds this file and nothing else
   sync/                 THE MIRROR — everything that moves events into the store
+    SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
+                          which is why it starts both
     VisitPool.kt          EVERY down stream's engine: the roster (declared
                           `urls` plus the relays the monitor's 30166 verdicts
                           admit), rotating visits (catch-up, the reconcile of
@@ -307,7 +322,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
                           streams and their kinds — written once at boot so the
                           relay can publish it. The kind list exists in
-                          router.conf and nowhere else, and a count taken
+                          sync.conf and nowhere else, and a count taken
                           against this relay is wrong without it
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
     RouterTuning.kt       the constants the mirror is paced by
@@ -348,9 +363,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           dial can measure — and the connect that carries it,
                           which IS the `rtt-open` we publish. Pure `parse`,
                           because it is somebody else's json
-    StreamWorld.kt        the url universe the monitor measures: every stream's
-                          sources, plus the monitor's own. Reports as the
-                          `aliasSource` processor
+    StreamWorld.kt        the url universe the monitor measures: the relay
+                          lists monitor.conf names, and nothing else — no
+                          stream contributes. Reports as the `aliasSource`
+                          processor
   shared/               WHAT BOTH PLANES TOUCH, and the whole of it — the split
                         was derived from the imports, not guessed
     RelayDiscovery.kt     pulling relay urls out of stored events: the mirror
@@ -728,7 +744,7 @@ relay/src/main/resources/
                         Its quietest number is the one that needed a whole
                         mechanism: "your own posts, N% mirrored" compares OUR
                         count for you against your write relay's, and ours is
-                        narrowed by router.conf while theirs is not — 35% on a
+                        narrowed by sync.conf while theirs is not — 35% on a
                         mirror missing nothing. shared/mirrors.js reads the
                         kinds this relay actually asks for off `sync.mirrors` on
                         GET /stats.json and puts them on BOTH counts (and both

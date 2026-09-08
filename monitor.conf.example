@@ -1,0 +1,176 @@
+# Example monitor config — what this deployment measures, and says so publicly.
+#
+# The monitor is the measuring plane: it parses relay urls out of the store
+# (10002 outbox lists, 10009 group lists, anything with a url in a tag), probes
+# every one — reachability, aliasing, consistency, whether `until` is honoured,
+# whether NIP-77 is spoken, whether our auth sticks — and signs the verdict onto
+# that relay's kind-30166 record. Everything is measured on the socket; NIP-11 is
+# never trusted for a decision.
+#
+# THIS FILE IS THE WHOLE OF WHAT THIS DEPLOYMENT MEASURES. Every url derived here
+# becomes a signed, public claim about somebody else's relay, published under
+# RELAY_NSEC. So it is written down, in its own terms: it names the relay lists
+# to scan, and it never points at a stream. sync.conf can be edited freely
+# without changing what this deployment says about anyone.
+#
+# Copy it and start it:
+#   cp monitor.conf.example monitor.conf
+#   MONITOR_CONFIG_LOCAL=./monitor.conf docker compose --profile sync up -d --build
+#
+# Without Docker, point MONITOR_CONFIG_FILE at your copy on the SYNC process.
+# It runs in the same process as the mirror, so a change here is the same
+# `docker compose --profile sync restart sync`.
+#
+# THIS FILE IS THE BLOCK'S CONTENTS, NOT THE BLOCK. `sources` and the clocks sit
+# at the top level; a `monitor { }` wrapper around them is refused rather than
+# read past, because it would parse to a monitor with no sources — measuring
+# nothing, quietly.
+#
+# A deployment that mirrors relay lists and deliberately measures nothing says so
+# with `sources = []`, which is a declaration and boots. Having no monitor
+# declaration at all, while streams discover their relays, is refused.
+#
+# The sync side is sync.conf.example. The two are read independently; nothing in
+# either file names anything in the other.
+# THE RELAY LISTS TO SCAN. Nothing here points at a stream, and nothing in
+# sync.conf points here: the two files name their relays independently, so an
+# edit to one never changes what the other does. If a stream of yours scans a
+# relay list this file does not, say so here too — the same `select` block goes
+# in both, or an `include` shared by both files does.
+#
+# The mirror's `unwatched` count on /stats.json is what says you got this
+# wrong: pairs it syncs that no current verdict of ours grades. Zero is the
+# healthy reading.
+#
+# An empty list is legal and means it: mirror the streams, measure nothing,
+# sign nothing. It is a declaration, so it boots — having no monitor config at
+# all, while streams discover their relays, is what gets refused.
+
+# Where candidate urls come from — the same select syntax streams use.
+# NIP-65 write relays, and NIP-29 group hosts (their tag carries the url at
+# element 2, the one relay list in the protocol that does not put it at 1).
+sources = [
+    {
+        select = [ { kind = 10002, tag = "r", marker = "write" } ]
+        filter = { "kinds": [10002] }
+    },
+    {
+        select = [ { kind = 10009, tag = "group", relay = 2 } ]
+        filter = { "kinds": [10009] }
+    },
+    {
+        # NIP-85 provider relays (10040 service tags carry the url at 2).
+        # As writable as a 10002 — same dead hosts, same spammed urls — so
+        # they earn verdicts here and the assertions stream dials only the
+        # ones a verdict vouches for.
+        #
+        # EVERY DELEGATION TAG, NAMED. A 10040 delegates in two shapes:
+        # NIP-85 names a service per kind AND metric (`["30382:rank",
+        # <pubkey>, <relay>]` — quartz's ProviderTypes defines 34 of them
+        # across 30382-30385), and Tapestry's Trusted Lists delegate bare
+        # (`["30392", <pubkey>, <relay>]`, ADR tl-treasure-map/0001). Both
+        # put the pubkey at 1 and the url at 2.
+        #
+        # NAMED RATHER THAN TAGLESS, though one tagless select would match
+        # both shapes: it would also match every OTHER tag carrying a url
+        # at 2, and a 10040 may hold `["p", <pubkey>, <relay>]` or
+        # `["e", <id>, <relay>]` relay hints that fit exactly that shape.
+        # What a stranger puts in their Treasure Map is not ours to
+        # predict, so the scan SAYS which tags are delegations rather than
+        # inferring it from where a url happens to sit.
+        #
+        # NAMING THEM IS NOT A PERFORMANCE CHOICE, and it used to read
+        # like one. Each named tag used to be a separate ask of the store,
+        # taking a tags projection that is a document-API visit — a walk of
+        # the WHOLE corpus per tag, 75s each at 319M events against 0.0058s
+        # for the same predicate through the search index (#182). The
+        # router now reads every source off the index, all 38 tags in ONE
+        # walk, so name them for the reason above and nothing else.
+        select = [
+            # kind 30382
+            { tag = "30382:rank",                 relay = 2 }
+            { tag = "30382:followers",            relay = 2 }
+            { tag = "30382:active_hours_end",     relay = 2 }
+            { tag = "30382:active_hours_start",   relay = 2 }
+            { tag = "30382:first_created_at",     relay = 2 }
+            { tag = "30382:post_cnt",             relay = 2 }
+            { tag = "30382:reactions_cnt",        relay = 2 }
+            { tag = "30382:reply_cnt",            relay = 2 }
+            { tag = "30382:reports_cnt_recd",     relay = 2 }
+            { tag = "30382:reports_cnt_sent",     relay = 2 }
+            { tag = "30382:t",                    relay = 2 }
+            { tag = "30382:zap_amt_recd",         relay = 2 }
+            { tag = "30382:zap_amt_sent",         relay = 2 }
+            { tag = "30382:zap_avg_amt_day_recd", relay = 2 }
+            { tag = "30382:zap_avg_amt_day_sent", relay = 2 }
+            { tag = "30382:zap_cnt_recd",         relay = 2 }
+            { tag = "30382:zap_cnt_sent",         relay = 2 }
+            # kind 30383
+            { tag = "30383:rank",                 relay = 2 }
+            { tag = "30383:comment_cnt",          relay = 2 }
+            { tag = "30383:quote_cnt",            relay = 2 }
+            { tag = "30383:reaction_cnt",         relay = 2 }
+            { tag = "30383:repost_cnt",           relay = 2 }
+            { tag = "30383:zap_amount",           relay = 2 }
+            { tag = "30383:zap_cnt",              relay = 2 }
+            # kind 30384
+            { tag = "30384:rank",                 relay = 2 }
+            { tag = "30384:comment_cnt",          relay = 2 }
+            { tag = "30384:quote_cnt",            relay = 2 }
+            { tag = "30384:reaction_cnt",         relay = 2 }
+            { tag = "30384:repost_cnt",           relay = 2 }
+            { tag = "30384:zap_amount",           relay = 2 }
+            { tag = "30384:zap_cnt",              relay = 2 }
+            # kind 30385
+            { tag = "30385:rank",                 relay = 2 }
+            { tag = "30385:comment_cnt",          relay = 2 }
+            { tag = "30385:reaction_cnt",         relay = 2 }
+            # Tapestry Trusted Lists delegate bare: no metric, one entry per kind.
+            { tag = "30392",                      relay = 2 }
+            { tag = "30393",                      relay = 2 }
+            { tag = "30394",                      relay = 2 }
+            { tag = "30395",                      relay = 2 }
+        ]
+        filter = { "kinds": [10040] }
+    }
+]
+
+# Urls or regexes never probed, never verdicted. A plain url matches by
+# normalized equality; an entry with a regex metacharacter (* + ? [ ] etc —
+# a dot does not count) must match a discovered url in full, ignoring case.
+exclude = [
+    "wss://filter.nostr.wine/npub.*"
+]
+
+# The full sweep: every candidate re-verdicted this often.
+sweepSeconds = 21600
+
+# The fast lane: how often to look for urls named by relay-list events
+# ingested since the last look, and run the STABILITY GATE and then the
+# FITNESS probe over just those. This is what bounds a NEW relay's wait for
+# its first `prime` at minutes. 0 turns the lane off.
+#
+# The gate is in the lane rather than only in the sweep because `prime` is
+# the whole admission decision: without it a relay that answers the same
+# question two different ways was admitted to every roster on the tick that
+# discovered it, and poisoned bands until the next sweep re-graded it. It
+# costs no extra dials over a sweep — a stability verdict stands for a
+# month, so a url measured here is one the sweep skips. The alias FOLD
+# stays on the sweep: it needs a host's whole group, and this set holds
+# only what was named in the last tick.
+fastLaneSeconds = 120
+
+# CLEARNET relays a probe pass dials at once — the sweep's wall clock,
+# since most of a discovered corpus is dead and a dead relay costs a full
+# timeout. Size it against the socket budget the sync plane leaves free;
+# the monitor's passes run one at a time, so this is the most clearnet
+# sockets it ever holds.
+#
+# `.onion` urls do NOT come out of this number. They wait on a second gate
+# of their own, `min(dialConcurrency, SYNC_TOR_MAX_SOCKETS)` wide, because
+# Tor is a separate dispatcher with a separate budget and a hidden service
+# is allowed the circuit timeout ON TOP of `connectionTimeout`. Shared,
+# 10% of the urls held 60-74% of this gate and the clearnet corpus queued
+# behind dead onions; raise SYNC_TOR_MAX_SOCKETS, not this, to buy onion
+# throughput.
+dialConcurrency = 128

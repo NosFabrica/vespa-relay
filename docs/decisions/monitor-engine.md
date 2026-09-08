@@ -12,8 +12,99 @@ finds the commit.
 inside `SyncEngine`, and one class started two planes that ask different
 questions on different clocks in different units. Both planes' rows landed in
 one document and the page split them back apart by name (`splitProcessors`
-in the JS). What the monitor still takes from the mirror is `ingest`,
-`sockets` and `pinnedUrls`; cut those and it is a separate process.
+in the JS). What the monitor still takes from the mirror is
+`sockets`, `pinnedUrls` and a sink for a probe-seen event; cut those and it is a
+separate process.
+
+**The corpus is declared, never inherited from the streams.** Every discovery
+stream used to be a monitor source by existing, so adding a `relaySource` to a
+stream silently widened the set of servers this deployment signs public
+kind-30166 claims about. The rule the router already held for negative verdicts
+— `Unreachability.proves()` stays quiet on a failure it cannot attribute, because
+being wrong costs a false statement about somebody else's server — applies to
+the corpus itself. The monitor names the relay lists it scans, in its own terms.
+Writing the set down is also what showed that two of the shipped example's three
+discovery streams source from a verdict query, so inheriting them had been
+feeding the monitor its own output.
+
+**The declaration is `sources`, not the block.** The first cut of the refusal
+tested `config.monitor != null`, which a block holding only `fastLaneSeconds = 60`
+satisfies — so a config that tuned a clock and never said what to measure walked
+straight through the guard written for exactly that, ran every monitor row at
+`off`, and signed nothing. `sources` is now nullable in the model so absent and
+`[]` cannot be confused: absent never answered and is refused, `[]` answered
+"nothing" and boots.
+
+**The boot refuses the ambiguous config rather than picking a reading.** A
+deployment with discovery streams and no monitor declaration used to measure all
+of their sources and now measures nothing, and both are legitimate deployments.
+The refusal names the streams and where the declaration goes, per the rule that
+a configured component must never be silently inert; `sources = []` is how an
+operator says "measure nothing" as a declaration rather than an omission. It
+sits at boot (`RouterConfigLoader.refuseUndeclaredMonitor`) rather than in
+`parse`, because a config with no monitor is well formed — it is the process
+that would run doing nothing.
+
+**Two files, and neither names anything in the other.** The monitor's config is
+`monitor.conf` (`MONITOR_CONFIG_FILE`), read into the same `RouterConfig`. A
+`monitor { }` block in the sync config still works and declaring both is
+refused, because two declarations cannot both be the truth and picking one
+silently is the failure this whole rule exists for. The first cut of the split
+kept an `inheritStreams` key naming streams from the other file, which was the
+one thing still coupling them: a cross-file name reference is the same coupling
+with more steps, and it made the parse-time check need both documents. Where a
+stream scans a list the monitor should measure too, the `select` block goes in
+both files, or an `include` they share — the source list, not a pointer to one.
+`monitor.conf` is the block's contents with no wrapper, and a pasted-in wrapper
+is refused: read past, it parses to a monitor with no sources.
+
+**The plane knows no mirror type.** `MonitorEngine` took the whole
+`RouterConfig` and read four things out of it, and `StreamWorld` took
+`List<SyncStream>` for two unrelated jobs: deriving candidates, and attributing
+an event a probe dial happened to see. With the derivation declared, the
+attribution is the only stream reader left, and it belongs to the mirror — it
+has to agree with the mirror's own ingest — so it is a sink `SyncEngine` closes
+over. `SyncStream`, `RouterConfig` and `IngestPipeline` are gone from `:monitor`
+entirely; what crosses the seam is the `monitor { }` block, labelled
+derivations, a timeout and that sink.
+
+**A probe dial is not an upstream, so its events are always verified.** The sink
+used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
+one declared upstream's events; an event here came off whichever relay a pass
+happened to dial, and any relay it probes can serve anything. Widening the sink
+from the discovery streams to all of them turned that into a hole a static
+`trusted` stream opened for the whole probed corpus — a forged event matching
+its filter would have been stored without a signature check. The events are a
+handful per relay, so verifying them all costs nothing worth having.
+
+**The probe-event sink asks the streams that pull.** It first asked
+`config.streams`, which includes `dir = "up"`: an up stream's filter describes
+what this router PUBLISHES, so a deployment pushing its own notes would have
+stored any matching event a probe happened to see on any of twenty thousand
+relays. `VisitPool.ridesThePool` is the set that pulls, and the sink asks that.
+
+**The probe-event sink asks every stream, where it used to ask the discovering
+ones.** `StreamWorld` was handed `discoveryStreams` for both jobs, so an event a
+probe dial happened to see was attributed against those streams alone — which
+meant a pure-monitor deployment (static `urls`, candidates through
+`monitor { sources }`) had no streams there at all and dropped every one. That
+was a proxy for "the streams the monitor is about", and there is no such
+relationship any more. The sink asks the mirror, and the mirror's answer is any
+stream whose filter matches. The volume is bounded by what the passes fetch,
+which is a handful of events per relay.
+
+**The fitness pass re-arms its position for the writes.** It dials one set and
+writes a bigger one — a url folded onto another, or already failed by the
+stability gate, is graded without a socket — and the position was armed for the
+dials alone. So once the last dial landed the row sat at `n of n` with
+`quietForSec` climbing for as long as the writes took, which on a live stack
+under a saturated ingest queue was minutes: the page's own "nothing finished
+for 5m" warning firing on a pass writing thousands of verdicts. Watched on a
+real run: 2016 of 2016 for six minutes while `monitor.publish` went from 2138
+to 2445 store calls. The write loop now declares its own set in a `verdict`
+unit and ticks each url through, skips included; the batch guard's `break`
+deliberately does not tick, so a stopped batch reads as stopped rather than
+full.
 
 **The start gate is `hasMonitorSources`, not `discoveryStreams.isNotEmpty()`.**
 A pure-monitor deployment (streams on static `urls`, every url entering

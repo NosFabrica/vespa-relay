@@ -21,8 +21,7 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.MonitorConfig
-import com.nosfabrica.vespa.relay.config.RouterConfig
-import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
@@ -49,7 +48,15 @@ import kotlin.coroutines.EmptyCoroutineContext
  */
 class MonitorEngine(
     private val store: IEventStore,
-    private val config: RouterConfig,
+    /** The `monitor { }` block. Null is a deployment with no monitor. */
+    private val settings: MonitorConfig?,
+    /**
+     * The relay lists this plane scans, from the monitor's own config. Every url they name becomes
+     * a signed public claim, so the set is declared here and never inferred from a stream.
+     */
+    private val sources: RelayDiscoveryConfig?,
+    /** The dial budget a probe starts with, before Tor's own slack. */
+    private val connectionTimeoutMs: Long,
     private val peers: PeerClient,
     /** The identity every verdict is signed under. Null is a deployment with no monitor. */
     private val signer: NostrSigner?,
@@ -57,23 +64,22 @@ class MonitorEngine(
     private val processors: Processors = Processors(),
     /** The socket refcount shared with the mirror, so a pass never closes a socket a stream is on. */
     private val sockets: RelaySockets,
-    /** Where an event a probe dial happened to see goes. */
-    private val ingest: IngestPipeline,
+    /** Where an event a probe dial happened to see goes; the mirror decides who wanted it. */
+    private val onProbeEvent: suspend (Event) -> Unit,
     /** The relays the mirror holds live; never dialled twice, never closed by a pass. */
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
     private val client = peers.client
     private val tor = peers.tor
-    private val discoveryStreams = config.discoveryStreams()
 
     /** Decided once for the start gate and the `off` rows, so they cannot disagree. */
-    private val hasSources = hasMonitorSources(config)
+    private val hasSources = sources != null
 
-    private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+    private val monitorConcurrency = settings?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
     /** How often the fast lane looks, or null for a lane that is off. */
-    private val fastLaneSeconds = fastLaneSecondsFor(config)
+    private val fastLaneSeconds = fastLaneSecondsFor(settings)
 
     /**
      * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
@@ -113,7 +119,7 @@ class MonitorEngine(
     /** The three passes' probe: same transport and timeout budget, only the target depth differs. */
     private fun probeOver(target: Int) =
         AliasProbe.over(client, target) { url ->
-            probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
+            probeIdleMs(url, tor, connectionTimeoutMs)
         }
 
     private val probe = ReachabilityProbe(tor)
@@ -122,22 +128,20 @@ class MonitorEngine(
     private val world =
         StreamWorld(
             store,
-            discoveryStreams,
+            sources,
             probe,
-            ingest,
-            // Our signer plus every monitor the verdict sources and gates name. A source with no
-            // `authors` contributes nothing: an unscoped `dead` would starve a relay out for good.
+            // Our signer plus every monitor our own sources name: a peer we read verdicts from is
+            // a peer whose `dead` we honour. A source with no `authors` contributes nothing —
+            // an unscoped `dead` would starve a relay out for good.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
-                        discoveryStreams
-                            .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
-                            .flatMap { it.filter.authors.orEmpty() }
+                        sources?.sources.orEmpty().flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
             self = signer?.pubKey,
             tor = tor,
             sockets = sockets,
-            monitorConfig = config.monitor,
+            onProbeEvent = onProbeEvent,
             progress = sourceProgress,
         )
 
@@ -191,7 +195,7 @@ class MonitorEngine(
                 AliasMonitor(
                     passes,
                     scope,
-                    intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
+                    intervalMs = (settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
                     source = world,
                     // Stability then fitness, so a first `prime` waits on the stability answer; the fold
                     // needs a host's whole group and rides the sweep.
@@ -278,16 +282,10 @@ class MonitorEngine(
 
     companion object {
         /**
-         * Is there anything for the monitor to work on: a stream's own `relaySource`, or the
-         * `monitor { sources }` block?
-         */
-        internal fun hasMonitorSources(config: RouterConfig): Boolean = config.discoveryStreams().isNotEmpty() || config.monitor?.sources?.isNotEmpty() == true
-
-        /**
          * How often the fast lane looks, or null for a lane that is off. No `monitor` block takes
          * the default; `fastLaneSeconds = 0` inside a block is the off switch and survives.
          */
-        internal fun fastLaneSecondsFor(config: RouterConfig): Long? = config.monitor?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { config.monitor == null }
+        internal fun fastLaneSecondsFor(settings: MonitorConfig?): Long? = settings?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { settings == null }
 
         /** The published names of the monitor's jobs; a rename changes a chart. */
         const val FOLD_PROCESSOR = "aliasFold"

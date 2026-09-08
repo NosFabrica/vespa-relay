@@ -481,7 +481,7 @@ class SyncBands(
             require(set.isEmpty()) {
                 "router: ${set.joinToString(", ")} is set — one number used to mean two things and now means " +
                     "neither. Re-walking a relay's whole history is per STREAM (`refetchThePastSeconds` in " +
-                    "router.conf, unset meaning never, because one period cannot be right for a 130-kind content " +
+                    "sync.conf, unset meaning never, because one period cannot be right for a 130-kind content " +
                     "mirror and a five-relay bootstrap at once); how old an INTERRUPTED sweep's cursor may be and " +
                     "still resume is `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS`. Set whichever you meant and unset this"
             }

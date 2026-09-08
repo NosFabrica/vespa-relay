@@ -175,7 +175,7 @@ on (Tor's rounds to nothing).
 **Tor is a container, not a layer.** One image carries both JVM processes on
 purpose, so installing a daemon in it would put Tor in the serving relay too,
 give the container a second thing to supervise, and make `restart sync` — a
-`router.conf` edit, meant to be cheap — drop every circuit and re-bootstrap.
+`sync.conf` edit, meant to be cheap — drop every circuit and re-bootstrap.
 Its SOCKS port is published nowhere: an open SOCKS proxy on a public interface
 is an open proxy.
 

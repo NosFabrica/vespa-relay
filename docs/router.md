@@ -596,6 +596,57 @@ NIP-42, and the identity this router signs with is not a member of anybody's
 group; the failure is membership, not reachability, so no amount of config
 reaches them.
 
+## monitor.conf: what this deployment measures
+
+The monitor's config is its own file. `MONITOR_CONFIG_FILE` points at it,
+`MONITOR_CONFIG` carries it inline, and the file is the declaration's
+**contents** — no wrapper, because the file is already named for it:
+
+```hocon
+# monitor.conf
+sources         = [ { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } } ]
+exclude         = []
+sweepSeconds    = 21600
+fastLaneSeconds = 120
+dialConcurrency = 128
+```
+
+Every url derived here becomes a signed, public kind-30166 record — a claim
+about somebody else's relay, published under `RELAY_NSEC`. That is why it is a
+file of its own: **nothing in `sync.conf` widens it, and nothing here names a
+stream.** The two files are read independently and neither refers to the other,
+so editing the streams cannot change what this deployment says about anyone.
+
+Where a stream scans a relay list the monitor should measure too, say so in both
+— the same `select` block in each file, or an `include` both files share. A
+pointer from one to the other would put the two planes back in one config with
+extra steps.
+
+Three things are refused rather than resolved:
+
+- **A `monitor { }` wrapper inside `monitor.conf`.** It is the copy-paste out of
+  a one-file config, and read past it would parse to a monitor with no sources —
+  measuring nothing, quietly.
+- **Declaring the monitor twice**, in `monitor.conf` and in a `monitor { }`
+  block of the sync config. Two declarations cannot both be the truth, and
+  picking one silently is how a deployment measures a set nobody is looking at.
+  (One file with a `monitor { }` block is still a supported shape; it is only
+  having *both* that is refused.)
+- **No monitor declaration at all, while streams discover their relays.** That
+  configuration used to measure every one of those streams' sources and now
+  measures nothing, and both are legitimate deployments. `sources = []` is how
+  you say "mirror these streams and measure nothing" — a declaration, so it
+  boots.
+
+The number that says the two files have drifted apart is `unwatched`, on the
+mirror's `/stats.json` and its prime-relays card: (relay, stream) pairs the
+mirror syncs that no current verdict of ours grades. Zero is the healthy
+reading. Anything else matters beyond tidiness — `negentropy` and the fold are
+unknown for those relays, and a stream whose `relaySource` is a verdict query
+would drop them at the next rebuild. It stays at zero on a deployment that
+measures nothing on purpose: "nobody graded this" and "nothing here grades
+anything" are different absences.
+
 ## Mirroring the deletions themselves
 
 Kinds **5** (NIP-09 deletion request) and **62** (NIP-62 request to vanish) are
@@ -870,7 +921,7 @@ The relay reads it off the shared volume and publishes the union of the `down`
 kinds as `sync.mirrors.kinds` on `/stats.json`. A client scopes its remote
 `COUNT` to that list, and the percentage becomes one that can reach 100%.
 
-Once at boot is the whole lifecycle: a `router.conf` edit is a `restart sync`, so
+Once at boot is the whole lifecycle: a `sync.conf` edit is a `restart sync`, so
 there is no other moment this can change, and `writtenAt` is how a reader tells a
 live declaration from one left behind by a router that was switched off. What is
 written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
@@ -1011,11 +1062,13 @@ The router is the `sync` service, behind the `sync` profile — the profile is
 the on-switch. Copy the bundled example, then start with the mirror on:
 
 ```bash
-cp router.conf.example router.conf   # then edit the relay list / filters
-SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
+cp sync.conf.example sync.conf         # what to mirror: the relay list / filters
+cp monitor.conf.example monitor.conf   # what to measure: the relay lists to scan
+SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
+  docker compose --profile sync up -d --build
 ```
 
-Plain `docker compose up` serves without mirroring. Edited `router.conf`?
+Plain `docker compose up` serves without mirroring. Edited either file?
 Restart only the mirror — the relay keeps serving, and the sync cursors make
 the re-run cost a diff, not a corpus:
 

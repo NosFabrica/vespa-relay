@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.nosfabrica.vespa.relay.config.defaultRelayLimits
+import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import com.vitorpamplona.quartz.nip11RelayInfo.relayInformation

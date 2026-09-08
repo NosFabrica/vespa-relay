@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
+import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -47,8 +48,17 @@ internal class RosterBuilder(
     /** Urls a static subscription holds; their bands are never dropped. */
     private val keepBands: Set<NormalizedRelayUrl> = emptySet(),
     private val tor: TorTransport? = null,
-    /** The monitor's NIP-77 verdict per url. Empty (every ask keeps trying) for probes and unsigned routers. */
-    private val speaksNegentropy: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, Boolean> = { emptyMap() },
+    /**
+     * What our own monitor stands behind, per url: the NIP-77 answer each ask paces on, and which
+     * urls it has measured at all. Empty (every ask keeps trying) for probes and unsigned routers.
+     */
+    private val verdicts: suspend (List<NormalizedRelayUrl>) -> RelayVerdictRecord.Verdicts = { RelayVerdictRecord.Verdicts() },
+    /**
+     * Whether this deployment measures anything at all: it signs verdicts and its `monitor { }`
+     * block names a source. False makes [Roster.measured] meaningless rather than empty — a
+     * router that runs no monitor is not a router whose every relay is ungraded.
+     */
+    private val watching: Boolean = false,
 ) {
     /** One unit of work against one relay: the stream asking and the exact filter. Bands, audits and tails key on it. */
     internal data class Ask(
@@ -71,7 +81,37 @@ internal class RosterBuilder(
         val sharedAuthors: Map<String, Set<String>>,
         /** url → whether the monitor measured it answering a NEG-OPEN; absent where unmeasured. */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
-    )
+        /**
+         * The urls here our own monitor holds a record about at all, whatever that record's
+         * current label says. Every other url on this roster is one the mirror syncs and the
+         * monitor is not covering — the shape a monitor whose `sources` have drifted from the
+         * streams takes. Deliberately membership and not freshness: an epoch bump or a lapsed
+         * TTL empties the labels for a pass or two without narrowing the corpus, and reading
+         * that as drift would flag the whole roster on every re-measure.
+         */
+        val measured: Set<NormalizedRelayUrl> = emptySet(),
+        /** Whether [measured] means anything; false on a deployment that measures nothing on purpose. */
+        val watching: Boolean = false,
+        /**
+         * Stream name → the urls that stream names in its own `urls`. They are on the roster
+         * because an operator put them there, not because a verdict admitted them, so no verdict
+         * is owed for one — but only on the stream that pins it, since another stream reaching
+         * the same url through discovery is still owed one.
+         */
+        val declared: Map<String, Set<NormalizedRelayUrl>> = emptyMap(),
+    ) {
+        /**
+         * Whether a verdict of ours stands behind [url] on [stream], or none was ever owed. Three
+         * absences are not drift: a router that measures nothing on purpose, one holding no record
+         * about ANYTHING (a cold start, or a rebuild whose verdict read threw), and a url this
+         * stream pins by hand — that one bypasses the verdicts by design and monitor.conf has no
+         * syntax to name it, so counting it would be a fault with no available fix.
+         */
+        fun watches(
+            url: NormalizedRelayUrl,
+            stream: String,
+        ): Boolean = !watching || measured.isEmpty() || url in declared[stream].orEmpty() || url in measured
+    }
 
     /** One source's discovery, held for its own `refreshSeconds`. */
     private class ScannedList(
@@ -115,22 +155,30 @@ internal class RosterBuilder(
             }
         }
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
-        val negentropy =
+        val standing =
             try {
-                speaksNegentropy(asksByUrl.keys.toList())
+                verdicts(asksByUrl.keys.toList())
             } catch (e: CancellationException) {
                 // A rebuild cancelled at shutdown is not a store that could not answer.
                 throw e
             } catch (e: Exception) {
-                // An unread verdict is unmeasured, so every ask keeps trying.
+                // An unread verdict is unmeasured, so every ask keeps trying. `measured` stays
+                // empty with it, which reads as "not watched" rather than inventing coverage.
                 System.err.println("router: could not read the NIP-77 verdicts (${e.message?.take(120)}) — audits will try every relay this rebuild")
-                emptyMap()
+                RelayVerdictRecord.Verdicts()
             }
         val units =
             asksByUrl.mapValues { (url, byStream) ->
                 byStream.mapValues { (stream, asks) -> UnitAsks(asks, wantsByUrl[url]?.get(stream).orEmpty()) }
             }
-        return Roster(asks = units, sharedAuthors = shared, speaksNegentropy = negentropy)
+        return Roster(
+            asks = units,
+            sharedAuthors = shared,
+            speaksNegentropy = standing.speaksNegentropy,
+            measured = standing.recorded,
+            watching = watching,
+            declared = streams.filter { it.urls.isNotEmpty() }.associate { it.name to it.urls.toSet() },
+        )
     }
 
     /** One stream's diallable relays: everything its sources found, intersected with what its `gatedBy` vouches for. */

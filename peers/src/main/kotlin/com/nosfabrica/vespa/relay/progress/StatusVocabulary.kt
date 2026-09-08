@@ -349,14 +349,14 @@ object StatusVocabulary {
             )
             put(
                 "excluded",
-                "Urls dropped by CONFIG — a stream's `exclude` list, or this relay's own url, which is in plenty of " +
+                "Urls dropped by CONFIG — an `exclude` list, or this relay's own url, which is in plenty of " +
                     "other people's relay lists. Its own member because an operator's instruction being obeyed and a " +
                     "duplicate the router worked out for itself are different facts with different fixes; they were " +
                     "one number while the fold count was inferred from a subtraction. Published in two places with the " +
-                    "same meaning and different scopes: on a CYCLE it is after that stream's fold, and on a PROBE PASS " +
-                    "it is over the union of every stream, where `sourced = excluded + heldOutDead + candidates`. " +
-                    "`exclude` is per stream, so a url one stream excludes and another asks for counts as a candidate " +
-                    "there — it is dialled, and counting it on both sides would break the one partition it belongs to.",
+                    "same meaning and different scopes: on a mirror CYCLE it is the stream's own `exclude`, applied " +
+                    "after that stream's fold; on a monitor PROBE PASS it is monitor.conf's single `exclude` over the " +
+                    "union of its sources, where `sourced = excluded + heldOutDead + candidates`. The two planes " +
+                    "declare their exclusions separately, and neither number narrows the other.",
             )
             put(
                 "pending",
@@ -441,10 +441,11 @@ object StatusVocabulary {
             )
             put(
                 "sourced",
-                "Every url the streams' relay lists yielded for a probe pass, before anything was held out — the " +
-                    "widest number this router has about the network it can see, and the one `candidates` is a share " +
-                    "of. Per PASS and over the union of every stream, so it is not the sum of the streams' own " +
-                    "`discovered`: two streams routinely find the same url and it is one url here.",
+                "Every url the relay lists in monitor.conf's own `sources` yielded for a probe pass, before " +
+                    "anything was held out — the widest number this router has about the network it can see, and the " +
+                    "one `candidates` is a share of. Per PASS and over the union of those sources, so two sources " +
+                    "naming the same url make it one url here. Nothing the STREAMS discover reaches this number: " +
+                    "what the monitor measures is its own declaration, never inferred from what the mirror syncs.",
             )
             put(
                 "corpus",
@@ -605,7 +606,11 @@ object StatusVocabulary {
                     "and dials every url of one to do it. A fold position counted in urls would jump by 55 for one " +
                     "verdict and by 1 for the next. The alias source counts neither — its unit is a `source`, one " +
                     "configured relay-list block at a time, since how many urls the walk yields is the thing it is " +
-                    "finding out and cannot be a denominator until it has.",
+                    "finding out and cannot be a denominator until it has. THE FITNESS PASS SHOWS TWO IN TURN: `url` " +
+                    "while it dials, then `verdict` while it writes. It writes more than it dialled — a url folded " +
+                    "onto another, or already failed by the stability gate, is graded without a socket — so one " +
+                    "position for both would sit full at the dial count for the whole write, with `quietForSec` " +
+                    "climbing on a pass doing thousands of writes.",
             )
             put(
                 "rotating",
@@ -1292,6 +1297,15 @@ object StatusVocabulary {
                     "one of them and disagree with it. True for a refusal, for a pair never reached, and for one " +
                     "with nothing recent AND no tail watching it. A cold pair that IS tailed is excluded: something " +
                     "is listening, so what is old is the relay's content and not our copy of it.",
+            )
+            put(
+                "unwatched",
+                "Pairs whose relay our OWN monitor holds no current verdict about — the mirror syncs it and nothing " +
+                    "grades it. The monitor measures what its own config names (monitor.conf), which is a separate " +
+                    "declaration from the streams (sync.conf) and never derived from them, so this is the number " +
+                    "that says the two have drifted apart. Not harmless: `negentropy` and the fold are unknown for " +
+                    "these relays, and a stream whose `relaySource` is a verdict query would lose them outright at " +
+                    "the next rebuild. Zero is the healthy reading; anything else is a config question, not a relay one.",
             )
             put(
                 "negentropy",

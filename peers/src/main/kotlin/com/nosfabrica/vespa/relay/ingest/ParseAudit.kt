@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
-import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.utils.Log

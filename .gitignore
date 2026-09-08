@@ -23,8 +23,12 @@ local.properties
 .idea/
 *.iml
 
-# The live router config — machine-local (relay list, filters, stream urls).
-# router.conf.example is the tracked template.
+# The live router configs — machine-local (relay list, filters, stream urls;
+# and the relay lists the monitor scans). The *.conf.example files are the
+# tracked templates. router.conf is the pre-split name, still ignored so an
+# operator's old copy does not get committed by accident.
+sync.conf
+monitor.conf
 router.conf
 
 # Parse audit reports and router sync cursors (PARSE_AUDIT_FILE /

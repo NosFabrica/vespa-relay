@@ -44,7 +44,7 @@ data class RouterConfig(
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
-    /** Null runs the probe passes on candidates derived from the streams' own sources. */
+    /** Null is a deployment with no monitor: nothing is measured and no verdict is signed. */
     val monitor: MonitorConfig? = null,
 ) {
     companion object {
@@ -66,6 +66,12 @@ data class RouterConfig(
     /** The streams whose relay list is discovered from the store, not configured. */
     fun discoveryStreams(): List<SyncStream> = streams.filter { it.discovery != null }
 
+    /**
+     * What the monitor measures, or null where it measures nothing. Its own `sources` and only
+     * those: the monitor's config names relays in its own terms, and never points at a stream.
+     */
+    fun monitorSources(): RelayDiscoveryConfig? = monitor?.asDiscovery()
+
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
@@ -73,12 +79,17 @@ data class RouterConfig(
 }
 
 /**
- * The `monitor { }` block: where candidate urls come from, and the clocks the probe passes
- * run on. Candidates derived here union with what the streams' own sources yield.
+ * The monitor's config — its own file, or the `monitor { }` block of the sync config: where
+ * candidate urls come from, and the clocks the probe passes run on. It is the whole of what this
+ * deployment measures, written in its own terms; no stream contributes to it.
  */
 data class MonitorConfig(
-    /** Where candidate urls come from; the same shape as a stream's `relaySource`. */
-    val sources: List<RelaySource>,
+    /**
+     * Where candidate urls come from; the same shape as a stream's `relaySource`. Null is a block
+     * that never said — a config that tunes the clocks and leaves the corpus unanswered, which the
+     * boot refuses. An empty list is the answer "measure nothing", and boots.
+     */
+    val sources: List<RelaySource>?,
     val exclude: RelayExcludes = RelayExcludes.NONE,
     /** How often every candidate is re-verdicted. */
     val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
@@ -93,6 +104,12 @@ data class MonitorConfig(
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
 ) {
+    /** This block's own sources as a discovery config; the cadence fields carry the sweep. */
+    fun asDiscovery(): RelayDiscoveryConfig? =
+        sources
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { RelayDiscoveryConfig(sources = it, refreshSeconds = sweepSeconds, exclude = exclude) }
+
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 

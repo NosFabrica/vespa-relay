@@ -26,9 +26,9 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
-import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -650,7 +650,7 @@ data class AddressVersion(
     val id: String,
 )
 
-/** `ingestConcurrency` and `ingestBatch` from `router.conf`. A type so a caller cannot swap them. */
+/** `ingestConcurrency` and `ingestBatch` from `sync.conf`. A type so a caller cannot swap them. */
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,

@@ -20,11 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
-import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelayExcludes
-import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
@@ -36,36 +33,29 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
 
 /**
- * Every url every stream would dial, derived from the store when a pass runs rather than taken
- * from the streams' caches. The corpus is the union of what the relay lists name and what this
- * router already holds records about.
+ * Every url the monitor measures, derived from the store when a pass runs rather than taken from
+ * a cache. The corpus is the union of what [sources] name and what this router already holds
+ * records about; [sources] is the monitor's own declaration, never a stream's.
  */
 internal class StreamWorld(
     private val store: IEventStore,
-    private val streams: List<SyncStream>,
+    /** The relay lists to scan, from `RouterConfig.monitorSources`. Null measures nothing. */
+    private val sources: RelayDiscoveryConfig?,
     private val probe: ReachabilityProbe,
-    private val ingest: IngestPipeline,
     /** Whose `dead` verdicts may hold a url out; never unscoped, because a hold-out forecloses. */
     private val monitorAuthors: List<String>,
     /** This router's own signing identity; the scope of [ownRecords]. */
     private val self: String?,
     private val tor: TorTransport?,
     override val sockets: Sockets,
-    /** The `monitor { sources }` block, unioned with the streams' parsed sources. */
-    private val monitorConfig: MonitorConfig? = null,
+    /**
+     * Where an event a probe dial happened to see goes. The mirror supplies it, because who wants
+     * an event is the mirror's question; this plane only hands over what it saw.
+     */
+    private val onProbeEvent: suspend (Event) -> Unit,
     /** Where this derivation reports. Null in a test asserting the numbers rather than the row. */
     override val progress: Processors.Handle? = null,
 ) : AliasMonitor.CandidateSource {
-    /** The monitor block as a discovery config; the cadence fields are inert here. */
-    private val monitorDiscovery: RelayDiscoveryConfig? =
-        monitorConfig?.takeIf { it.sources.isNotEmpty() }?.let {
-            RelayDiscoveryConfig(
-                sources = it.sources,
-                refreshSeconds = it.sweepSeconds,
-                exclude = it.exclude,
-            )
-        }
-
     /** What the last derivation started from and dropped. */
     @Volatile
     var lastDerivation: Derivation = Derivation()
@@ -121,23 +111,23 @@ internal class StreamWorld(
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = ownDead()
         // One unit per configured source, timed from after the dead-set read.
-        progress?.measuring(derivations().sumOf { it.second.sources.size }, Processors.UNIT_SOURCE)
+        progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
         // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
         derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
             if (kept) all += url else excluded += url
         }
-        // `exclude` is per stream: a url one stream excludes and another asks for is a candidate.
-        val onlyExcluded = excluded - all
+        // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
+        // url is kept is a function of the url, however many sources found it.
         val recorded = ownRecords()
-        val recordedOnly = recorded.filterNot { it in all || it in onlyExcluded }
+        val recordedOnly = recorded.filterNot { it in all || it in excluded }
         val known = all + recordedOnly
         val live = known.filterNot { it in dead }
         lastDerivation =
             Derivation(
-                sourced = all.size + onlyExcluded.size,
-                excluded = onlyExcluded.size,
+                sourced = all.size + excluded.size,
+                excluded = excluded.size,
                 heldOutDead = known.size - live.size,
                 recordedOnly = recordedOnly.size,
                 candidates = live.size,
@@ -157,7 +147,7 @@ internal class StreamWorld(
         }
         lastSourced = all.size
         System.err.println(
-            "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
+            "router: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
                 "; ${all.size} named by a relay list this round" +
                 (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
                 (
@@ -173,11 +163,6 @@ internal class StreamWorld(
     /** What the last round's relay lists named; null until a round has run. */
     private var lastSourced: Int? = null
 
-    /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
-    private fun derivations(): List<Pair<String, RelayDiscoveryConfig>> =
-        streams.mapNotNull { s -> s.discovery?.let { s.name to it } } +
-            listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
-
     /**
      * One walk over every derivation, [bound] applied to each config first. Discovery is asked
      * for the unfiltered set; `kept` applies the exclude list and the self check here.
@@ -188,30 +173,29 @@ internal class StreamWorld(
         onSource: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
-        for ((label, discovery) in derivations()) {
-            // Topped up after a throw: a source we could not read is still behind us.
-            var ticked = 0
-            val found =
-                try {
-                    RelayDiscovery.discover(
-                        store,
-                        bound(discovery).copy(exclude = RelayExcludes.NONE),
-                        skip = emptySet(),
-                        allowOnion = tor != null,
-                        onSource = {
-                            ticked++
-                            onSource()
-                        },
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: $what could not derive $label: ${e.message}")
-                    emptyList()
-                }
-            repeat(discovery.sources.size - ticked) { onSource() }
-            found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
-        }
+        val discovery = sources ?: return
+        // Topped up after a throw: a source we could not read is still behind us.
+        var ticked = 0
+        val found =
+            try {
+                RelayDiscovery.discover(
+                    store,
+                    bound(discovery).copy(exclude = RelayExcludes.NONE),
+                    skip = emptySet(),
+                    allowOnion = tor != null,
+                    onSource = {
+                        ticked++
+                        onSource()
+                    },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
+                emptyList()
+            }
+        repeat(discovery.sources.size - ticked) { onSource() }
+        found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
     }
 
     /**
@@ -231,12 +215,8 @@ internal class StreamWorld(
 
     override suspend fun canDial(url: NormalizedRelayUrl): Boolean = probe.canDial(url)
 
-    /** Submitted once, not once per wanting stream. Verified unless every wanting stream trusts its source. */
-    override suspend fun onEvent(event: Event) {
-        val wanted = streams.filter { it.filter.match(event) }
-        if (wanted.isEmpty()) return
-        ingest.submit(event, wanted.all { it.trusted })
-    }
+    /** Handed straight over; whether anything wants it, and on whose word, is the mirror's call. */
+    override suspend fun onEvent(event: Event) = onProbeEvent(event)
 
     companion object {
         const val DEAD_TTL_SECONDS = 24L * 60 * 60

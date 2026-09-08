@@ -55,6 +55,18 @@ class RelayVerdictRecord(
         val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
         /** Whether a url answered a NEG-OPEN when the fitness pass asked. Absent is unmeasured, not "no". */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
+        /**
+         * Urls this monitor stands behind any current verdict about — the fold answer, the
+         * stability one, the NIP-77 one, or the fitness grade. A record whose every tag has aged
+         * out is not in here: it says what we measured once, not what we measure now.
+         */
+        val measured: Set<NormalizedRelayUrl> = emptySet(),
+        /**
+         * Urls a record of ours exists for AT ALL, whatever its tags now say. The corpus this
+         * monitor covers, which is a question about the config; [measured] is a question about
+         * freshness, and an epoch bump or a lapsed TTL empties that without narrowing this.
+         */
+        val recorded: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /** One chunked record read, booked as the monitor's. */
@@ -99,13 +111,8 @@ class RelayVerdictRecord(
                 val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
                 val url = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
                 if (event.createdAt < (newestAt[url] ?: Long.MIN_VALUE)) continue
-                val label =
-                    event.tags.firstOrNull {
-                        it.size > LABEL_NAMESPACE_INDEX && it[0] == LABEL_TAG && it[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
-                    } ?: continue
-                if (label.getOrNull(LABEL_EPOCH_INDEX) != FITNESS_EPOCH) continue
-                val measuredAt = label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: continue
-                if (measuredAt < floor) continue
+                val label = event.tags.firstOrNull(::isFitnessLabel) ?: continue
+                if (!currentLabel(label, floor)) continue
                 newestAt[url] = event.createdAt
                 grades[url] = StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX))
             }
@@ -140,8 +147,10 @@ class RelayVerdictRecord(
         val consistent = HashSet<NormalizedRelayUrl>()
         val inconsistent = HashSet<NormalizedRelayUrl>()
         val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
+        val measured = HashSet<NormalizedRelayUrl>()
+        val recorded = HashSet<NormalizedRelayUrl>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded)
     }
 
     /** A page of records, folded into the sets. */
@@ -159,9 +168,12 @@ class RelayVerdictRecord(
     ) {
         val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return
         val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
+        // Before any currency check: the record existing is what says this url is in our corpus.
+        recorded += from
         event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
             RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
                 if (from == to) distinct += from else aliases[from] = to
+                measured += from
             }
         }
         event.tags
@@ -170,23 +182,47 @@ class RelayVerdictRecord(
             ?.get(1)
             ?.let { answer ->
                 when (answer) {
-                    CONSISTENT_YES -> consistent += from
+                    CONSISTENT_YES -> {
+                        consistent += from
+                        measured += from
+                    }
 
-                    CONSISTENT_NO -> inconsistent += from
+                    CONSISTENT_NO -> {
+                        inconsistent += from
+                        measured += from
+                    }
 
                     // An unreadable answer is no verdict, not "unstable".
-                    else -> Unit
+                    else -> {
+                        Unit
+                    }
                 }
             }
+        // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
+        // and it carries neither a fold answer nor a NIP-77 one.
+        event.tags
+            .firstOrNull(::isFitnessLabel)
+            ?.takeIf { currentLabel(it, floor) }
+            ?.let { measured += from }
         event.tags
             .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
             ?.takeIf { current(it, FITNESS_EPOCH, floor) }
             ?.get(1)
             ?.let { answer ->
                 when (answer) {
-                    "true" -> speaksNegentropy[from] = true
-                    "false" -> speaksNegentropy[from] = false
-                    else -> Unit
+                    "true" -> {
+                        speaksNegentropy[from] = true
+                        measured += from
+                    }
+
+                    "false" -> {
+                        speaksNegentropy[from] = false
+                        measured += from
+                    }
+
+                    else -> {
+                        Unit
+                    }
                 }
             }
     }
@@ -378,6 +414,20 @@ class RelayVerdictRecord(
 
     /** [edit]'s ordinary ownership: these tag names, whole. Wrong for the shared `l`/`L`. */
     private fun owning(vararg names: String): (Array<String>) -> Boolean = { it.firstOrNull() in names }
+
+    /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
+    private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+
+    /**
+     * [current] for the fitness label, whose epoch and stamp sit at their own offsets. One
+     * definition, because a bumped [FITNESS_EPOCH] read in two places is a stale grade kept alive.
+     */
+    private fun currentLabel(
+        tag: Array<String>,
+        floor: Long,
+    ): Boolean =
+        tag.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH &&
+            (tag.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor
 
     /**
      * Is this verdict one we would still act on: under the current rules and within its TTL?

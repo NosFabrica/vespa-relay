@@ -11,10 +11,11 @@ configurations.all {
 }
 
 dependencies {
-    api(project(":common"))
-    api(project(":web"))
-    api(libs.quartz)
-    api(libs.vespa.eventstore.store)
+    // implementation, not api: this module is a process, nothing compiles against it.
+    implementation(project(":common"))
+    implementation(project(":web"))
+    implementation(libs.quartz)
+    implementation(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.ktor.server.core)

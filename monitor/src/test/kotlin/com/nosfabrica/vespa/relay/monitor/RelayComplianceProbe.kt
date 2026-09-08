@@ -310,7 +310,7 @@ class RelayComplianceProbe {
 
         private const val OUTBOX_WINDOW_SECONDS = 3600L
 
-        /** The two visit streams, verbatim from `router.conf.example`. */
+        /** The two visit streams, verbatim from `sync.conf.example`. */
         private val STREAM_SHAPES by lazy {
             listOf(
                 StreamShape("content", OUTBOX_KINDS),
@@ -318,7 +318,7 @@ class RelayComplianceProbe {
             )
         }
 
-        /** `contentViaOutbox`'s kinds, verbatim from `router.conf.example`. */
+        /** `contentViaOutbox`'s kinds, verbatim from `sync.conf.example`. */
         private val OUTBOX_KINDS = listOf(0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808, 1985, 2003, 2004, 2473, 3302, 5050, 5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734, 9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154, 11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005, 30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030, 30054, 30055, 30063, 30175, 30176, 30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315, 30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873, 31890, 31922, 31923, 31924, 31925, 31990, 32267, 33401, 33863, 34139, 34235, 34236, 34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002, 40100, 45001, 45003, 48106)
 
         /** The mirror's asks; both carry a `since`. */

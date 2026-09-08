@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
@@ -42,6 +43,7 @@ import java.io.PrintStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -117,6 +119,73 @@ class PublishDeadlineTest {
             assertEquals(1L, row.passes, "a pass the store wedged must still count as a pass that ran")
             assertEquals(Processors.IDLE, row.phase, "…and must not be left reading `measuring` forever")
             assertNull(row.measuring, "a finished pass holds no position")
+        }
+
+    /** Blocks the [nth] insert until released, so the pass can be read while it is writing. */
+    private class PausesOnWrite(
+        inner: NostrSemanticsStore,
+        private val nth: Int,
+    ) : IEventStore by inner {
+        private val inner = inner
+        val reached = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val inserts = AtomicInteger()
+
+        override suspend fun insert(event: Event) {
+            if (inserts.incrementAndGet() == nth) {
+                reached.complete(Unit)
+                release.await()
+            }
+            inner.insert(event)
+        }
+    }
+
+    @Test
+    fun `a pass writing its verdicts says so, and its position moves`() =
+        runBlocking {
+            // The state that reads as a hang: every dial is behind the pass, and it is writing more
+            // verdicts than it dialled. Left on the dial position that shows `n of n` with
+            // `quietForSec` climbing for as long as the writes take.
+            val store = PausesOnWrite(NostrSemanticsStore(InMemoryEventIndex(), relay = self), nth = 3)
+            val processors = Processors()
+            val handle = processors.of("fitness")
+            val dialled = (0 until 4).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
+            // Folded urls are graded without a socket, so the writes outnumber the dials.
+            val folded = (0 until 6).map { RelayUrlNormalizer.normalize("wss://alias$it.example") }
+            val canonical = RelayUrlNormalizer.normalize("wss://canonical.example")
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, want, until, _ -> paged(corpus(), want, until) },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { tinyIdleMs },
+                        ),
+                    client = EmptyNostrClient(),
+                    foldedAway = { urls -> urls.filter { it in folded }.associateWith { canonical } },
+                    inconsistent = { emptySet() },
+                    progress = handle,
+                )
+
+            val running = async { pass.measure("writing", dialled + folded, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { store.reached.await() }
+
+            val mid = assertNotNull(processors.snapshot().single().measuring, "a pass mid-write holds a position")
+            assertEquals(Processors.UNIT_VERDICT, mid.unit, "the write phase counts verdicts, which is what it is doing")
+            assertEquals(
+                dialled.size + folded.size,
+                mid.toProbe,
+                "and counts every verdict it will write, which is more than it dialled",
+            )
+            assertTrue(mid.attempted > 0, "the position moves as the writes land, rather than sitting full at the dial count")
+            assertTrue(mid.attempted < mid.toProbe, "the fixture has to pause mid-batch for the assertion above to mean anything")
+
+            store.release.complete(Unit)
+            withTimeout(30_000) { running.await() }
+            assertNull(processors.snapshot().single().measuring, "a finished pass holds no position")
         }
 
     /** A store that answers every write with a throw, the fast-fail shape of the same outage. */

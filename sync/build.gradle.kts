@@ -11,13 +11,14 @@ configurations.all {
 }
 
 dependencies {
-    api(project(":common"))
-    api(project(":peers"))
+    // implementation, not api: this module is a process, nothing compiles against it.
+    implementation(project(":common"))
+    implementation(project(":peers"))
     // This process hosts the monitor. The dependency must stay one-directional.
-    api(project(":monitor"))
-    api(project(":web"))
-    api(libs.quartz)
-    api(libs.vespa.eventstore.store)
+    implementation(project(":monitor"))
+    implementation(project(":web"))
+    implementation(libs.quartz)
+    implementation(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)

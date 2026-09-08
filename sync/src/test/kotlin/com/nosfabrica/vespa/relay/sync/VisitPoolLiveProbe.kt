@@ -39,8 +39,8 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
-import com.nosfabrica.vespa.relay.progress.StreamPhases
-import com.nosfabrica.vespa.relay.progress.SyncProgress
+import com.nosfabrica.vespa.relay.status.StreamPhases
+import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
