@@ -53,8 +53,8 @@ here is a count, a phase, or a query *shape* — never a search term. Four panel
 in the order the question is actually asked:
 
 - **Can people search** — provider lists resolving to a service that carries
-  cells. An observer whose lens resolves to an unprojected service gets an
-  **empty** ranked page, and the page says so: the gate failing closed is
+  cells. An observer whose own providers resolve to an unprojected service gets
+  an **empty** ranked page, and the page says so: the gate failing closed is
   correct, the projection is what is incomplete.
 - **What is being repaired** — live phases, with a fraction and an ETA only
   where a denominator exists.
@@ -108,7 +108,7 @@ nothing is consumed by being read.
 
 The other pages are public because every field in them is a fact about stored
 events. This one is not that document: with `PULSE_CLIENT_DETAIL` on it names
-the heaviest observer lenses and search terms driving the load, and carries a
+the heaviest observers and the search terms driving the load, and carries a
 slow-read log that **quotes the query**. So `/pulse.json` is served only to an
 administrator.
 

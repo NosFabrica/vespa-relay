@@ -25,20 +25,21 @@ through. Say nothing and you are not answered:
   <- ["CLOSED","s","auth-required: this relay answers through a web of trust …"]
 ```
 
-Name a lens — anybody's, no key and no signature, because trust scores are
+Name an observer — anybody's, no key and no signature, because trust scores are
 public — and the same query ranks, and answers with what its hits are *about*:
 
 ```jsonc
 ["REQ","s",{"kinds":[0,30392],"search":"podcaster observer:<64-hex>"}]
-  <- ["EVENT","s", … kind 30392 "Podcaster Trust List" …]  // ranked by that lens
+  <- ["EVENT","s", … kind 30392 "Podcaster Trust List" …]  // ranked by that observer
   <- ["EVENT","s", … kind 0, a member's profile …]         // holds no "podcaster"
 ```
 
 The profile is there because the list *points* at it, placed by the list's own
 rank discounted by the 0..100 confidence the list expressed in that member — so
 a member its publisher doubts sinks past the organic hits. Sign a NIP-42 AUTH
-instead and the lens is your own pubkey, on every query, including plain NIP-01
-filters. `include:spam` waives the lens and takes the whole corpus, unranked.
+instead and the observer is your own pubkey, on every query, including plain
+NIP-01 filters. `include:spam` waives the observer and takes the whole corpus,
+unranked.
 
 ## Who this is for
 
@@ -54,7 +55,7 @@ filters. `include:spam` waives the lens and takes the whole corpus, unranked.
 
 - **Trust-ranked search** — relevance × how much *you* trust the author, with
   below-floor authors dropped as spam, and
-  [no answer at all to a read that names no lens](#every-read-says-whose-eyes-it-is-read-through).
+  [no answer at all to a read that names no observer](#every-read-says-whose-eyes-it-is-read-through).
 - **The subject travels with the pointer** — a hit on a list, an assertion or a
   label also answers with the record it points at,
   [bounded two ways](#a-search-answers-with-what-its-hits-are-about).
@@ -140,7 +141,7 @@ from the query before matching, so they never become search terms:
 
 | token | effect |
 |---|---|
-| `observer:<pubkey>` | rank as seen by that pubkey's web of trust (scores are public, so any client may rank through any lens) |
+| `observer:<pubkey>` | rank as seen by that pubkey's web of trust (scores are public, so any client may rank through any observer) |
 | `sort:rank` | order by trust, most trusted first (also `rank:asc`, `followers`, `text`) |
 | `sort:recent` | chronological: the same match set a search always recalls, newest first and still trust-gated, with match quality not consulted |
 | `filter:rank:gte:N` | drop results below trust rank `N` (0–100) |
@@ -158,9 +159,9 @@ implements it.
 
 ### Every read says whose eyes it is read through
 
-**Before AUTH, a REQ or COUNT is answered only if it declares a lens.** Each of
-its filters must name an `observer:<64-hex>` or waive one with `include:spam`;
-anything else is refused with
+**Before AUTH, a REQ or COUNT is answered only if it declares an observer.**
+Each of its filters must name an `observer:<64-hex>` or waive one with
+`include:spam`; anything else is refused with
 
 ```
 ["CLOSED","<subid>","auth-required: this relay answers through a web of trust …"]
@@ -170,19 +171,20 @@ There are three ways to be answered, and only one of them involves a key:
 
 | | |
 |---|---|
-| sign a NIP-42 AUTH | the connection's own pubkey is the lens (NIP-42 clients already retry through `auth-required:`) |
+| sign a NIP-42 AUTH | the connection's own pubkey is the observer (NIP-42 clients already retry through `auth-required:`) |
 | `observer:<64-hex>` | rank through that pubkey's trust — **no signature needed**, scores are public |
-| `include:spam` | the whole corpus, unranked, which is what a lensless read always was |
+| `include:spam` | the whole corpus, unranked, which is what a read naming none always was |
 
-This relay has no house observer, so a read with no lens is not the same answers
-unranked — it is a different corpus, with the trust this relay exists to apply
-switched off. That answer is a legitimate thing to want; what it must not be is
-what a client gets by saying nothing. `include:spam` on a plain NIP-01 filter
-costs nothing else: the store maps a termless waiver to ordinary recall.
+This relay has no house observer, so a read that names none is not the same
+answers unranked — it is a different corpus, with the trust this relay exists
+to apply switched off. That answer is a legitimate thing to want; what it must
+not be is what a client gets by saying nothing. `include:spam` on a plain
+NIP-01 filter costs nothing else: the store maps a termless waiver to ordinary
+recall.
 
 **NIP-77 is gated too**, and deliberately: a negentropy reconcile hands over the
-ids and timestamps of everything matching a filter, which is the lensless read
-this rule exists to stop. An undeclared `NEG-OPEN` comes back `NEG-ERR …
+ids and timestamps of everything matching a filter, which is the corpus-wide
+read this rule exists to stop. An undeclared `NEG-OPEN` comes back `NEG-ERR …
 auth-required:`; the same filter carrying `include:spam` is admitted — so an
 anonymous **peer** cannot mirror from here without declaring.
 
@@ -322,11 +324,11 @@ mirror's coverage rather than a fault.
 
 Two things to know before opening a port. **`/pulse.html` is the exception to
 all of the above**: off by default, administrators only over NIP-98, and
-published on `127.0.0.1` by compose — it names the observer lenses and search
-terms driving the load, so it is the one page that is not a fact about stored
-events. And the three services can share **one hostname**: every reference the
-pages make is document-relative, so a plain strip rewrite behind a path prefix
-works — mind the trailing slash on both sides.
+published on `127.0.0.1` by compose — it names the heaviest observers and the
+search terms driving the load, so it is the one page that is not a fact about
+stored events. And the three services can share **one hostname**: every
+reference the pages make is document-relative, so a plain strip rewrite behind
+a path prefix works — mind the trailing slash on both sides.
 
 [**`docs/operator-pages.md`**](docs/operator-pages.md) is the full guide: what
 each panel shows and why, the pulse's sign-in and what it retains, the mirror's
@@ -344,7 +346,7 @@ each panel shows and why, the pulse's sign-in and what it retains, the mirror's
 | [45](https://github.com/nostr-protocol/nips/blob/master/45.md) | Event counts | `COUNT` |
 | [50](https://github.com/nostr-protocol/nips/blob/master/50.md) | Search | Full-text, trust-ranked — the core feature |
 | [62](https://github.com/nostr-protocol/nips/blob/master/62.md) | Right to vanish | Scoped by this relay's own `RELAY_URL` |
-| [77](https://github.com/nostr-protocol/nips/blob/master/77.md) | Negentropy sync | Peers reconcile — a `NEG-OPEN` declares a lens like any other read |
+| [77](https://github.com/nostr-protocol/nips/blob/master/77.md) | Negentropy sync | Peers reconcile — a `NEG-OPEN` declares an observer like any other read |
 | [86](https://github.com/nostr-protocol/nips/blob/master/86.md) | Relay management | Ban/allow pubkeys, events, kinds; edit identity at runtime. Only when `RELAY_ADMIN_PUBKEYS` is set |
 
 ## Embed it
