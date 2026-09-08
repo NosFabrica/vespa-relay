@@ -88,7 +88,7 @@ fun main() {
 
     // A sync or monitor config aimed at this process is a configured component that would run
     // nothing. The monitor rides the sync process, so its config is refused for the same reason.
-    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE", "MONITOR_CONFIG", "MONITOR_CONFIG_FILE")
+    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "MONITOR_CONFIG", "MONITOR_CONFIG_FILE")
         .firstOrNull { !env[it].isNullOrBlank() }
         ?.let {
             error(
@@ -103,7 +103,7 @@ fun main() {
     env.keys
         .filter { key ->
             (
-                key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
+                key.startsWith("SYNC_") ||
                     key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
             ) &&
                 key !in SYNC_FILES_THE_RELAY_READS &&

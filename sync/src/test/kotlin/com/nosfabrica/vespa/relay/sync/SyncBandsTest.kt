@@ -272,7 +272,7 @@ class SyncBandsTest {
         quiet.use { assertEquals(SyncBands.NEVER, it.refetchThePastSecondsFor(mirror)) }
 
         // An old spelling is an error, not a no-op; ignored, it would drop a running schedule on upgrade.
-        for (name in listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")) {
+        for (name in listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS")) {
             assertFailsWith<IllegalArgumentException>("$name must be refused, not ignored") {
                 SyncBands.fromEnv(mapOf(name to "604800"), emptyList())
             }

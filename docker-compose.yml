@@ -99,8 +99,6 @@ services:
       # would be silently gone. Value never used — presence alone fires it.
       SYNC_CONFIG: ${SYNC_CONFIG:-}
       SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-}
-      ROUTER_CONFIG: ${ROUTER_CONFIG:-}
-      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
       MONITOR_CONFIG: ${MONITOR_CONFIG:-}
       MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-}
       # Deploy the bundled schema on boot (default true; see AUTO_DEPLOY docs).
@@ -313,11 +311,8 @@ services:
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The streams to mirror. The profile is the on-switch, so this defaults
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
-      # which local file is mounted there. The nested ROUTER_ fallback stays
-      # deliberately: compose only passes through what is mapped here, so
-      # without it a .env still on the old name would silently mirror the
-      # mounted default instead of the file it names.
-      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-${ROUTER_CONFIG_FILE:-/etc/vespa-relay/sync.conf}}
+      # which local file is mounted there.
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-/etc/vespa-relay/sync.conf}
       # What this deployment MEASURES, in its own file: the relay lists the
       # monitor scans and the clocks its passes run on. Separate because every
       # url it derives becomes a signed public claim about somebody else's
@@ -337,16 +332,15 @@ services:
       # Mean read latency (ms) above which ingest starts yielding.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       # How often (seconds) up/both streams re-reconcile to push new local events.
-      SYNC_UP_INTERVAL_SECONDS: ${SYNC_UP_INTERVAL_SECONDS:-${ROUTER_UP_INTERVAL_SECONDS:-300}}
+      SYNC_UP_INTERVAL_SECONDS: ${SYNC_UP_INTERVAL_SECONDS:-300}
       # Ingest tuning. Throughput comes from the batch size, not the worker count
       # (the store serializes writes). Lower the batch to cut memory.
-      SYNC_INGEST_BATCH: ${SYNC_INGEST_BATCH:-${ROUTER_INGEST_BATCH:-1000}}
-      SYNC_INGEST_CONCURRENCY: ${SYNC_INGEST_CONCURRENCY:-${ROUTER_INGEST_CONCURRENCY:-2}}
+      SYNC_INGEST_BATCH: ${SYNC_INGEST_BATCH:-1000}
+      SYNC_INGEST_CONCURRENCY: ${SYNC_INGEST_CONCURRENCY:-2}
       # Defaults for `relaySource = [...]` streams, whose relay list is read out of
       # the store's own events instead of the config (see the `outbox` and
       # `assertions` streams in sync.conf.example). Per-stream keys override these.
-      SYNC_DYNAMIC_REFRESH_SECONDS: ${SYNC_DYNAMIC_REFRESH_SECONDS:-${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}}
-      SYNC_DYNAMIC_CONCURRENCY: ${SYNC_DYNAMIC_CONCURRENCY:-${ROUTER_DYNAMIC_CONCURRENCY:-8}}
+      SYNC_DYNAMIC_REFRESH_SECONDS: ${SYNC_DYNAMIC_REFRESH_SECONDS:-21600}
       # For `sync = "auto"` streams: how many events both we and the relay must
       # hold on the stream's filter before a negentropy reconcile is worth its id
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that
@@ -357,13 +351,13 @@ services:
       # router prints what it is NOT running on every startup, so a leftover
       # setting can't be mistaken for a stream that is failing.
       #   SYNC_STREAMS=contentViaOutbox docker compose --profile sync up -d sync
-      SYNC_STREAMS: ${SYNC_STREAMS:-${ROUTER_STREAMS:-}}
+      SYNC_STREAMS: ${SYNC_STREAMS:-}
       # What goes down the wire to upstream relays. Empty (the default) still
       # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —
       # which are the relay telling us why it stopped and were previously
       # discarded. "sent" adds every command we send; "full" adds every message
       # received, which is a line per event and is for a specific investigation.
-      SYNC_WIRE_LOG: ${SYNC_WIRE_LOG:-${ROUTER_WIRE_LOG:-}}
+      SYNC_WIRE_LOG: ${SYNC_WIRE_LOG:-}
       # Name one stream to get a line per relay from it: how many authors it was
       # paired with, how many asks that became, how many legs the cursor left,
       # and what came back. A dynamic fan-out is 16k relays wide, so this is a
@@ -372,7 +366,7 @@ services:
       # Where the per-(relay, filter) synced created_at band is kept, so a relay
       # without NIP-77 resumes instead of re-reading its corpus every restart —
       # and so a `restart sync` after a config edit costs a diff, not a corpus.
-      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
+      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}
       # How old an INTERRUPTED sweep's resume cursor may be and still be resumed
       # from — past it the sweep starts over. Not a schedule: re-walking a
       # relay's whole history is `refetchThePastSeconds`, per stream, in
@@ -483,7 +477,7 @@ services:
     volumes:
       # Mounts your local ./sync.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.
-      - ${SYNC_CONFIG_LOCAL:-${ROUTER_CONFIG_LOCAL:-./sync.conf.example}}:/etc/vespa-relay/sync.conf:ro
+      - ${SYNC_CONFIG_LOCAL:-./sync.conf.example}:/etc/vespa-relay/sync.conf:ro
       # …and your ./monitor.conf beside it, the same way.
       - ${MONITOR_CONFIG_LOCAL:-./monitor.conf.example}:/etc/vespa-relay/monitor.conf:ro
       # Sync cursors + the parse audit report, shared with the relay's mount.

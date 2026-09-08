@@ -31,19 +31,44 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
 
-/** Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling with a nudge on stderr. */
-fun Map<String, String>.syncEnv(
-    name: String,
-    // Oldest last: the first spelling set wins.
-    vararg legacy: String,
-): String? {
-    this[name]?.let { return it }
-    for (old in legacy) {
-        val value = this[old] ?: continue
-        System.err.println("router: $old was renamed to $name — the old name still works; update your config")
-        return value
+/**
+ * The pre-rename `ROUTER_*` spellings and the `SYNC_*` name that replaced each. They were read
+ * for a release with a nudge on stderr; every deployment is on the new names now, so they are
+ * REFUSED rather than ignored. A name that is merely dropped leaves the mirror running on a
+ * default nobody chose, which is the failure the rest of this file refuses everywhere else.
+ */
+private val RENAMED_TO =
+    mapOf(
+        "ROUTER_CONFIG" to "SYNC_CONFIG",
+        "ROUTER_CONFIG_FILE" to "SYNC_CONFIG_FILE",
+        "ROUTER_UP_INTERVAL_SECONDS" to "SYNC_UP_INTERVAL_SECONDS",
+        "ROUTER_INGEST_CONCURRENCY" to "SYNC_INGEST_CONCURRENCY",
+        "ROUTER_INGEST_BATCH" to "SYNC_INGEST_BATCH",
+        "ROUTER_STREAMS" to "SYNC_STREAMS",
+        "ROUTER_DYNAMIC_REFRESH_SECONDS" to "SYNC_DYNAMIC_REFRESH_SECONDS",
+        "ROUTER_NEG_PAGE_TARGET" to "SYNC_NEG_PAGE_TARGET",
+        "ROUTER_NEG_PAGE_MIN" to "SYNC_NEG_PAGE_MIN",
+        "ROUTER_NEG_PAGE_MAX" to "SYNC_NEG_PAGE_MAX",
+        "ROUTER_NEG_PAGE_SLACK_SECONDS" to "SYNC_NEG_PAGE_SLACK_SECONDS",
+        "ROUTER_PRESSURE_URL" to "SYNC_PRESSURE_URL",
+        "ROUTER_WIRE_LOG" to "SYNC_WIRE_LOG",
+        "ROUTER_SYNC_STATE_FILE" to "SYNC_STATE_FILE",
+        "ROUTER_SWEEP_STATE_FILE" to "SYNC_SWEEP_STATE_FILE",
+    )
+
+/**
+ * Refuse every `ROUTER_*` setting still in the environment, naming what replaced it. Two of them
+ * (`ROUTER_NEG_MIN_EVENTS`, `ROUTER_FULL_RESYNC_SECONDS`) name a setting that is gone rather than
+ * renamed; they are refused here too, and the `SYNC_*` spelling of each keeps its own message.
+ */
+fun requireNoRenamedRouterEnv(env: Map<String, String>) {
+    val stale = env.keys.filter { it.startsWith("ROUTER_") && !env[it].isNullOrBlank() }.sorted()
+    require(stale.isEmpty()) {
+        val detail = stale.joinToString(", ") { RENAMED_TO[it]?.let { now -> "$it is now $now" } ?: "$it is gone" }
+        "router: the ROUTER_* names were renamed to SYNC_* and the old spellings are no longer read — " +
+            "$detail. Rename them where this process gets its environment; left set, they would do nothing " +
+            "while reading as configuration"
     }
-    return null
 }
 
 /**
@@ -52,6 +77,7 @@ fun Map<String, String>.syncEnv(
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
+        requireNoRenamedRouterEnv(env)
         // The monitor's own file, if the deployment keeps the two planes apart. Read BEFORE the
         // sync config decides there is nothing to do, so a monitor declaration is never dropped
         // without a word and the one-declaration rule holds on every path.
@@ -68,8 +94,8 @@ object RouterConfigLoader {
         }
         val hasMonitor = monitorInline != null || monitorOrigin != null
 
-        val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
-        val syncFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
+        val inline = env["SYNC_CONFIG"]?.takeIf { it.isNotBlank() }
+        val syncFile = env["SYNC_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
         require(!hasMonitor || inline != null || syncFile != null) {
             "router: a monitor config is set and no sync config is — this process mirrors and measures in one, " +
                 "and there is nothing here to mirror. Set SYNC_CONFIG_FILE too, or unset the monitor variable"
@@ -82,60 +108,52 @@ object RouterConfigLoader {
             "router: SYNC_CONFIG_FILE points at ${syncOrigin?.path}, which is not a readable file"
         }
         val upInterval =
-            env
-                .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
+            env["SYNC_UP_INTERVAL_SECONDS"]
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(10L) ?: 300L
         val ingestConcurrency =
-            env
-                .syncEnv("SYNC_INGEST_CONCURRENCY", "ROUTER_INGEST_CONCURRENCY")
+            env["SYNC_INGEST_CONCURRENCY"]
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceIn(1, 64) ?: 2
         val ingestBatch =
-            env
-                .syncEnv("SYNC_INGEST_BATCH", "ROUTER_INGEST_BATCH")
+            env["SYNC_INGEST_BATCH"]
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceIn(1, 20_000) ?: 1000
         // Removed settings are refused, never ignored.
-        require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank() && env["ROUTER_NEG_MIN_EVENTS"].isNullOrBlank()) {
+        require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
                 "choice any more: the pool pages forward and reconciles the past on its own clock. Unset it"
         }
         val fallback = RelaySourceDefaults()
-        val only = env.syncEnv("SYNC_STREAMS", "ROUTER_STREAMS")?.trim()?.takeIf { it.isNotBlank() }
+        val only = env["SYNC_STREAMS"]?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
             RelaySourceDefaults(
                 refreshSeconds =
-                    env
-                        .syncEnv("SYNC_DYNAMIC_REFRESH_SECONDS", "ROUTER_DYNAMIC_REFRESH_SECONDS")
+                    env["SYNC_DYNAMIC_REFRESH_SECONDS"]
                         ?.trim()
                         ?.toLongOrNull()
                         ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
             )
         val pageTarget =
-            env
-                .syncEnv("SYNC_NEG_PAGE_TARGET", "ROUTER_NEG_PAGE_TARGET")
+            env["SYNC_NEG_PAGE_TARGET"]
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceAtLeast(0) ?: 100_000
         val pageMin =
-            env
-                .syncEnv("SYNC_NEG_PAGE_MIN", "ROUTER_NEG_PAGE_MIN")
+            env["SYNC_NEG_PAGE_MIN"]
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceAtLeast(1) ?: 1_000
         val pageMax =
-            env
-                .syncEnv("SYNC_NEG_PAGE_MAX", "ROUTER_NEG_PAGE_MAX")
+            env["SYNC_NEG_PAGE_MAX"]
                 ?.trim()
                 ?.toIntOrNull()
                 ?.coerceAtLeast(pageMin) ?: 1_000_000
         val pageSlack =
-            env
-                .syncEnv("SYNC_NEG_PAGE_SLACK_SECONDS", "ROUTER_NEG_PAGE_SLACK_SECONDS")
+            env["SYNC_NEG_PAGE_SLACK_SECONDS"]
                 ?.trim()
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L) ?: 60L

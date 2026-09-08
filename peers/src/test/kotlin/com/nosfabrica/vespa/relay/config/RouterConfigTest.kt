@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -1031,18 +1032,23 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `legacy ROUTER_ spellings still load, and the SYNC_ name wins when both are set`() {
-        // A deployment still exporting the old names must keep mirroring, not silently serve-only.
-        val legacy =
-            RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "77"),
-            )
-        assertEquals(77, legacy?.ingestBatch)
-        val both =
-            RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_INGEST_BATCH" to "77", "SYNC_INGEST_BATCH" to "88", "SYNC_CONFIG" to streamsConfig),
-            )
-        assertEquals(88, both?.ingestBatch)
+    fun `the pre-rename ROUTER_ spellings are refused, and say what replaced them`() {
+        // Refused, not ignored: a name that is merely dropped would mirror on a default nobody chose.
+        val renamed =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "77"))
+            }
+        assertTrue(renamed.message!!.contains("ROUTER_INGEST_BATCH is now SYNC_INGEST_BATCH"), renamed.message!!)
+
+        // One that was removed outright, not renamed, is refused by the same guard.
+        val gone =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "ROUTER_FULL_RESYNC_SECONDS" to "604800"))
+            }
+        assertTrue(gone.message!!.contains("ROUTER_FULL_RESYNC_SECONDS is gone"), gone.message!!)
+
+        // A blank one is somebody's unset placeholder, not a setting.
+        assertNotNull(RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "")))
     }
 
     @Test
