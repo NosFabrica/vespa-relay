@@ -83,6 +83,26 @@
 #                   without NIP-77 can get — so a stream whose relays are
 #                   mixed wants both, the re-fetch on the longer clock.
 #
+# EITHER ONE CAN BE BANDED BY AGE, which is usually what a large mirror wants:
+# records from the last month still move, records from three years ago do not,
+# and re-walking the tail at the cadence the last month needs is where a
+# mirror's CPU goes. `negentropy` and `refetch` take the list form of the two
+# knobs above:
+#
+#   negentropy = [
+#     { thePast = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
+#     { thePast = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
+#     { every = 31536000 }                       # 1y+      reconciled yearly
+#   ]
+#
+# The bands tile the past: each `thePast` is a band's older edge and the one
+# before it is its newer edge, so every record is in exactly one band. The last
+# entry omits `thePast` to reach the corpus floor. One band is walked per visit,
+# youngest first. `every = 0` is always due (floored at 15 minutes) — for a
+# stream whose upstream is the source of truth and whose past must be re-read as
+# of today rather than taken on trust. A list cannot be set beside its scalar:
+# they are the same schedule at different resolutions.
+#
 # `sync = "negentropy" | "fetch" | "auto"` is REFUSED at parse time, and so is
 # SYNC_NEG_MIN_EVENTS: they chose a transport for the engine that is gone. The
 # transport is decided per relay now, by what the monitor measured it can do.
