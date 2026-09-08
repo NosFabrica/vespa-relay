@@ -57,16 +57,47 @@ fun pulsePublicUrl(
 ): String = env[key]?.trim()?.takeIf { it.isNotEmpty() }?.trimEnd('/') ?: "http://localhost:$port"
 
 /**
+ * Whether this pulse is served to anyone, from [key] — and the interlock that makes that safe.
+ *
+ * The document has two halves. The operational half (what the store did, what the engine did,
+ * who made it work, what the engine has left) names no person. The client-derived half —
+ * hotspots and slow reads — names observer lenses and QUOTES SEARCH TERMS, and is added only
+ * when `PULSE_CLIENT_DETAIL` is on.
+ *
+ * Public is therefore allowed, but only for the half that describes machines. Both on is
+ * REFUSED at boot rather than quietly serving one of them: "public" and "publishes what people
+ * searched for" must never be one forgotten variable apart, and a deployment that set the
+ * detail flag months ago would not think to re-read it when someone opens the page up.
+ */
+fun pulsePublic(
+    env: Map<String, String>,
+    clientDerived: Boolean,
+    key: String = "PULSE_PUBLIC",
+    detailKey: String = "PULSE_CLIENT_DETAIL",
+): Boolean {
+    val public = env[key]?.trim()?.toBooleanStrictOrNull() ?: false
+    require(!(public && clientDerived)) {
+        "$key and $detailKey are both on — the client-derived half of the pulse names observer lenses and quotes " +
+            "what people searched for, and must not be served to anyone who asks. Turn $detailKey off to serve the " +
+            "operational half publicly, or turn $key off to keep the whole document behind the administrator gate."
+    }
+    return public
+}
+
+/**
  * The administrators who may read the pulse document, or a boot that stops. "No administrators"
  * and "everyone is an administrator" are one mistake apart, and this document quotes what
- * people searched for.
+ * people searched for — unless [public] says this deployment serves the operational half to
+ * everyone, which [pulsePublic] only allows with the client-derived half off.
  */
 fun pulseAdmins(
     admins: Set<String>,
     portKey: String,
     adminKey: String = "RELAY_ADMIN_PUBKEYS",
+    public: Boolean = false,
 ): Set<String> =
     admins.ifEmpty {
+        if (public) return emptySet()
         error(
             "$portKey is set but $adminKey is empty — the pulse document names the observer lenses and search terms " +
                 "driving this relay's load and can quote slow queries, so it is served only to a proven administrator. " +
