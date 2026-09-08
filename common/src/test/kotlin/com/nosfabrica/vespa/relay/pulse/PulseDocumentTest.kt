@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
+import com.nosfabrica.vespa.eventstore.engine.client.EngineResources
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -52,9 +53,11 @@ class PulseDocumentTest {
         held: List<IngestStats.Held> = emptyList(),
         stages: Map<String, IngestStats.Stage> = emptyMap(),
         blocked: Map<String, Map<String, Long>> = emptyMap(),
+        headroom: EngineResources.Usage? = null,
     ): JsonObject =
         PulseDocument.of(
             metrics = ledger.snapshot(),
+            headroom = headroom,
             feed = feed,
             title = "Eventstore pulse",
             scope = "a test",
@@ -65,6 +68,74 @@ class PulseDocumentTest {
             stages = stages,
             blocked = blocked,
         )
+
+    /**
+     * The join `engine` and `activities` never had. Attributing load used to
+     * mean an ablation — stop the mirror and watch the number fall.
+     */
+    @Test
+    fun `the document names who made the engine work`() {
+        val l = CostLedger()
+        l.engineQuery(
+            profile = "unranked",
+            engineNanos = 9_000_000,
+            summaryNanos = 0,
+            docsMatched = 90_000_000,
+            hitsServed = 10,
+            degraded = false,
+            activity = Activity.Drain,
+            shape = "kinds,authors",
+        )
+        val row = member(docOf(l), "engineByCaller")?.first()?.jsonObject
+        assertNotNull(row, "engineByCaller is missing — the page has nothing to draw")
+        assertEquals("Drain", row["activity"]?.jsonPrimitive?.content)
+        assertEquals("kinds,authors", row["shape"]?.jsonPrimitive?.content)
+        assertEquals(90_000_000, row["docsMatched"]?.jsonPrimitive?.long)
+    }
+
+    /** SHAPES, not terms — this page is gated because it quotes searches. */
+    @Test
+    fun `attribution publishes a shape and never a term`() {
+        val l = CostLedger()
+        l.engineQuery(
+            profile = "search",
+            engineNanos = 1,
+            summaryNanos = 1,
+            docsMatched = 1,
+            hitsServed = 1,
+            degraded = false,
+            activity = Activity.Query,
+            shape = "kinds,search,observer",
+        )
+        val rendered = member(docOf(l), "engineByCaller").toString()
+        assertTrue("kinds,search,observer" in rendered, "the shape is what identifies the read")
+        assertFalse("bitcoin" in rendered || "npub" in rendered, "no term or key may ride along: $rendered")
+    }
+
+    /**
+     * The half of the picture the page never had. Two content nodes were lost
+     * to OOM while every other panel looked healthy.
+     */
+    @Test
+    fun `the document carries the engine's own headroom, worst node first`() {
+        // Built, not parsed: how Vespa's JSON maps onto these readings is the
+        // engine's contract and is tested there. This asserts what the PAGE gets.
+        val usage =
+            EngineResources.Usage(
+                nodes =
+                    listOf(
+                        EngineResources.NodeUsage(host = "vespa-1", memory = 0.72, disk = 0.42, feedBlocked = false),
+                        EngineResources.NodeUsage(host = "vespa-0", memory = 0.81, disk = 0.43, feedBlocked = false),
+                    ),
+                atMillis = 1_060_000L,
+            )
+        val h = docOf(CostLedger(), headroom = usage)["engineHeadroom"]?.jsonObject
+        assertNotNull(h, "engineHeadroom is missing — the page cannot warn about what it cannot see")
+        assertEquals(0.81, h["peakMemory"]?.jsonPrimitive?.double)
+        assertEquals(false, h["feedBlocked"]?.jsonPrimitive?.boolean)
+        val first = h["nodes"]?.jsonArray?.first()?.jsonObject
+        assertEquals("vespa-0", first?.get("host")?.jsonPrimitive?.content, "worst node first — it decides whether the cluster feeds")
+    }
 
     private fun member(
         doc: JsonObject,

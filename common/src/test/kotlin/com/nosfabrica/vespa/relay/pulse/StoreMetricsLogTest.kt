@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
+import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.HeavyHitters
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -35,6 +36,22 @@ class StoreMetricsLogTest {
             ports = emptyList(),
             outcomes = emptyMap(),
             engine = emptyList(),
+            // Attribution is SHAPES, so a term must not be able to ride in on
+            // one — the same rule this whole test exists to hold.
+            engineByCaller =
+                listOf(
+                    CostLedger.CallerEngineStat(
+                        activity = Activity.Query,
+                        profile = "search",
+                        shape = "kinds,search,observer",
+                        queries = 1,
+                        engineNanos = 1,
+                        summaryNanos = 1,
+                        docsMatched = 1,
+                        hitsServed = 1,
+                        degraded = 0,
+                    ),
+                ),
             gauges = mapOf("trust.pending.subjects" to 139_524L),
             topObservers = listOf(HeavyHitters.Hit("cafebabecafebabe", 9, 0)),
             topTerms = listOf(HeavyHitters.Hit("someone's private search", 7, 0)),

@@ -170,7 +170,7 @@ private suspend fun ApplicationCall.refuse(
  */
 fun Route.pulseDocument(
     guard: PulseGuard,
-    document: () -> JsonObject?,
+    document: suspend () -> JsonObject?,
     path: String = PULSE_DOC_PATH,
 ) {
     get(path) {
@@ -253,7 +253,7 @@ fun servePulseSite(
     port: Int,
     page: String,
     guard: PulseGuard,
-    document: () -> JsonObject?,
+    document: suspend () -> JsonObject?,
     // Null keeps the page's markup byte-identical to the classpath's.
     icon: String? = null,
     wait: Boolean = false,
