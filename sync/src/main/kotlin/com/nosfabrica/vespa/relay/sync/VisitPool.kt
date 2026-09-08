@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.peers.Sockets
@@ -603,10 +604,36 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
+        val tiers = ask.stream.refetchSchedule.ifEmpty { listOf(SyncTier(thePastSeconds = null, everySeconds = SyncBands.NEVER)) }
+        val now = nowSeconds()
+        // Oldest-last, so the catch-up of recent history is never queued behind a re-page of
+        // the tail. Each band keeps its own coverage: a band expires, and only its legs re-open.
+        for ((tier, olderEdge, newerEdge) in SyncTier.tile(tiers)) {
+            val refusal =
+                catchUpBand(
+                    ask,
+                    url,
+                    SyncTier.keyFor(ask.stream.name, tiers, tier),
+                    ask.filter.windowed(olderEdge, newerEdge, now),
+                    ongoingVisit,
+                )
+            if (refusal != null) return refusal
+        }
+        return null
+    }
+
+    /** One band's outstanding legs, under the coverage filed at [key]. */
+    private suspend fun catchUpBand(
+        ask: RosterBuilder.Ask,
+        url: NormalizedRelayUrl,
+        key: String,
+        bandAsk: Filter,
+        ongoingVisit: OngoingVisit,
+    ): Refusal? {
         val stream = ask.stream
         // Read before the first `record` below widens it; it tells a catch-up from a re-fetch.
-        val covered = bands.band(stream.name, url, ask.filter)
-        for (leg in bands.legs(stream.name, url, ask.filter)) {
+        val covered = bands.band(key, url, bandAsk)
+        for (leg in bands.legs(key, url, bandAsk)) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
             // A refused permit skips the leg: it stays outstanding for the next visit.
@@ -621,7 +648,7 @@ internal class VisitPool(
             try {
                 var narrowings = 0
                 while (true) {
-                    val refusal = walkLeg(ask, url, flooredLeg, ongoingVisit) ?: break
+                    val refusal = walkLeg(ask, url, key, bandAsk, flooredLeg, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
                     if (!refusal.ours &&
                         narrowings < MAX_NARROWINGS &&
@@ -651,6 +678,8 @@ internal class VisitPool(
     private suspend fun walkLeg(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
+        key: String,
+        bandAsk: Filter,
         flooredLeg: Filter,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
@@ -697,14 +726,14 @@ internal class VisitPool(
                 )
             }
             bands.record(
-                stream.name,
+                key,
                 url,
-                ask.filter,
+                bandAsk,
                 seenMin,
                 seenMax,
                 paged = true,
                 observedByKind = seenByKind,
-                drained = drainSettlesThePast(walked, chunk, ask.filter),
+                drained = drainSettlesThePast(walked, chunk, bandAsk),
             )
         }
         return null
@@ -722,20 +751,30 @@ internal class VisitPool(
         sharedAuthors: Set<String>,
         speaksNegentropy: Boolean?,
     ) {
-        val negentropySyncThePastSeconds = ask.stream.negentropySyncThePastSeconds ?: return
+        val tiers = ask.stream.negentropySchedule
+        if (tiers.isEmpty()) return
         if (speaksNegentropy == false) {
             auditsSkipped.incrementAndGet()
             return
         }
+        val now = nowSeconds()
         // Dueness first (read-only), then the cap, then the claim, which stamps the attempt clock.
         // Any other order spends a permit or an attempt on work that never runs.
-        if (!schedule.isDue(ask, url, negentropySyncThePastSeconds, nowSeconds())) return
+        //
+        // Youngest band first, one band per visit: the cheap re-check of recent history always
+        // gets its turn, and the long walk of the tail takes one only when nothing newer is due.
+        val due =
+            SyncTier.tile(tiers).firstOrNull { (tier, _, _) ->
+                schedule.isDue(ask, url, tier.everySeconds, now, SyncTier.bandIdOf(tiers, tier))
+            } ?: return
+        val (tier, olderEdge, newerEdge) = due
+        val band = SyncTier.bandIdOf(tiers, tier)
         val hold = limits.tryHold(ask.stream.name, POOL_NEGENTROPY) ?: return
         try {
             if (ask.stream.deleteMissing != DeleteMissing.OFF) {
-                retractionIfDue(ask, url, negentropySyncThePastSeconds, ongoingVisit, sharedAuthors)
+                retractionIfDue(ask, url, tier.everySeconds, ongoingVisit, sharedAuthors, band)
             } else {
-                sweepAudit(ask, url, negentropySyncThePastSeconds, ongoingVisit)
+                sweepAudit(ask, url, tier, olderEdge, newerEdge, band, now, ongoingVisit)
             }
         } finally {
             hold.release()
@@ -750,23 +789,29 @@ internal class VisitPool(
     private suspend fun sweepAudit(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        negentropySyncThePastSeconds: Long,
+        tier: SyncTier,
+        olderEdge: Long?,
+        newerEdge: Long?,
+        band: String,
+        now: Long,
         ongoingVisit: OngoingVisit,
     ) {
         val stream = ask.stream
-        val now = nowSeconds()
         // Read before the claim, which would stamp this audit's own clock.
-        val verifiedBefore = bands.verifiedAt(stream.name, url, ask.filter)
-        if (!bands.claimAudit(stream.name, url, ask.filter, negentropySyncThePastSeconds, now)) return
+        val verifiedBefore = bands.verifiedAt(stream.name, url, ask.filter, band)
+        if (!bands.claimAudit(stream.name, url, ask.filter, tier.everySeconds, now, band)) return
         val auditStarted = now
         var received = 0
         ongoingVisit.stage = NEGENTROPY
         val outcome =
             pager.sweep(
-                stream.name,
+                // The cursor's identity. Band-qualified, or every band of a stream would resume
+                // on one cursor: `SweepState.keyFor` strips `since`/`until`, which is all a band has.
+                if (band.isEmpty()) stream.name else "${stream.name}#$band",
                 url,
+                // Shape stays the whole ask, so the cursor survives the window sliding with `now`.
                 ask.filter,
-                ask.filter,
+                ask.filter.windowed(olderEdge, newerEdge, now),
                 // A clean audit downloads nothing, so frames must count as activity.
                 onProgress = { _, _ -> ongoingVisit.lastActivityMs = System.currentTimeMillis() },
                 // The window's `since`: how far back the audit has got, like a paging cursor.
@@ -793,15 +838,27 @@ internal class VisitPool(
                 observedMax = null,
                 paged = false,
                 reconciledThrough = auditStarted - pager.slackSeconds,
+                band = band,
             )
         }
         System.err.println(
-            "router: audit ${stream.name} ${url.url} — $received event(s) recovered, " +
+            "router: audit ${stream.name}${if (band.isEmpty()) "" else " [$band]"} ${url.url} — $received event(s) recovered, " +
                 (if (outcome.complete) "history verified" else "incomplete (negentropy usable: ${outcome.negentropyUsable})") +
                 (if (outcome.refusedWindows > 0) ", ${outcome.refusedWindows} window(s) REFUSED and not claimed" else "") +
                 ", last verified ${verifiedBefore?.let { "${auditStarted - it}s ago" } ?: "never"}",
         )
     }
+
+    /**
+     * This ask narrowed to one age band. The band's edges are intersected with whatever bounds
+     * the ask already carries, so a band can only narrow a stream's window, never widen it past
+     * what the stream asked for.
+     */
+    private fun Filter.windowed(
+        olderEdge: Long?,
+        newerEdge: Long?,
+        now: Long,
+    ): Filter = SyncTier.windowedFilter(this, now, olderEdge, newerEdge)
 
     /** The retraction audit for one ask, on the same clock as every other audit. */
     private suspend fun retractionIfDue(
@@ -810,9 +867,10 @@ internal class VisitPool(
         negentropySyncThePastSeconds: Long,
         ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
+        band: String = "",
     ) {
         val retraction = retraction ?: return
-        if (!retraction.claimAudit(ask.stream, url, ask.filter, negentropySyncThePastSeconds)) return
+        if (!retraction.claimAudit(ask.stream, url, ask.filter, negentropySyncThePastSeconds, band)) return
         ongoingVisit.stage = RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,

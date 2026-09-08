@@ -77,9 +77,10 @@ internal class RetractionAudit(
         url: NormalizedRelayUrl,
         ask: Filter,
         negentropySyncThePastSeconds: Long,
+        band: String = "",
     ): AuditClock {
         val ownedAsk = ownedAskOf(stream, ask) ?: return AuditClock.NOT_SCHEDULED
-        return AuditClock.of(bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds))
+        return AuditClock.of(bands.auditDueAt(stream.name, url, ownedAsk, negentropySyncThePastSeconds, band))
     }
 
     /** [SyncBands.claimAudit] on the owned ask. True commits the caller to running the reconcile. */
@@ -88,9 +89,10 @@ internal class RetractionAudit(
         url: NormalizedRelayUrl,
         ask: Filter,
         negentropySyncThePastSeconds: Long,
+        band: String = "",
     ): Boolean {
         val ownedAsk = ownedAskOf(stream, ask) ?: return false
-        return bands.claimAudit(stream.name, url, ownedAsk, negentropySyncThePastSeconds)
+        return bands.claimAudit(stream.name, url, ownedAsk, negentropySyncThePastSeconds, band = band)
     }
 
     /**

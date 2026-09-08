@@ -306,6 +306,8 @@ object RouterConfigLoader {
                     } else {
                         null
                     }
+                val negentropyTiers = parseTiers(name, s, "negentropy", "negentropySyncThePastSeconds", negentropySyncThePastSeconds)
+                val refetchTiers = parseTiers(name, s, "refetch", "refetchThePastSeconds", refetchThePastSeconds)
                 if (deleteMissing != DeleteMissing.OFF) {
                     // The comparison runs as the pool's audit, so it needs a relay list and the audit clock.
                     require(discovery != null) {
@@ -336,6 +338,8 @@ object RouterConfigLoader {
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     refetchThePastSeconds = refetchThePastSeconds,
+                    negentropyTiers = negentropyTiers,
+                    refetchTiers = refetchTiers,
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     negentropySyncThePastSeconds = negentropySyncThePastSeconds,
@@ -509,6 +513,56 @@ object RouterConfigLoader {
                 if (it == null) System.err.println("router: stream '$stream' skips invalid url '$url'")
             }
         }
+
+    /**
+     * One stream's age bands under [key], youngest-first. Each entry is `{ thePast, every }`:
+     * `thePast` is the band's older edge in seconds before now, omitted on the last to mean the
+     * corpus floor, and `every` is how stale that band may get.
+     *
+     * Refuses the list alongside [scalarKey] rather than merging them. The two say the same
+     * thing at different resolutions, and picking one silently would leave a config whose
+     * schedule is not the one it reads like — the failure this whole structure exists to avoid.
+     */
+    private fun parseTiers(
+        stream: String,
+        s: Config,
+        key: String,
+        scalarKey: String,
+        scalar: Long?,
+    ): List<SyncTier> {
+        if (!s.hasPath(key)) return emptyList()
+        require(scalar == null) {
+            "router: stream '$stream' sets both `$key` and `$scalarKey` — they are the same schedule at " +
+                "different resolutions. Keep `$key` and drop `$scalarKey`, or the other way around"
+        }
+        val tiers =
+            s.getConfigList(key).mapIndexed { i, t ->
+                require(t.hasPath("every")) { "router: stream '$stream' `$key`[$i] has no `every` — a band with no cadence is never due" }
+                val every = t.getLong("every")
+                require(every >= 0L) { "router: stream '$stream' `$key`[$i] has a negative `every`" }
+                SyncTier(
+                    thePastSeconds = if (t.hasPath("thePast")) t.getLong("thePast") else null,
+                    everySeconds = every,
+                )
+            }
+        require(tiers.isNotEmpty()) { "router: stream '$stream' has an empty `$key` — remove the key to schedule nothing" }
+        // Youngest-first and strictly widening, because each band's newer edge IS the previous
+        // band's older one. Out of order, the bands would overlap or leave a hole, and a hole in
+        // the middle of the past is invisible: every band reports itself verified.
+        tiers.dropLast(1).forEachIndexed { i, t ->
+            requireNotNull(t.thePastSeconds) {
+                "router: stream '$stream' `$key`[$i] omits `thePast`, which means the corpus floor — only the " +
+                    "last band may, since nothing older is left for the bands after it"
+            }
+        }
+        tiers.zipWithNext().forEachIndexed { i, (a, b) ->
+            require(b.thePastSeconds == null || b.thePastSeconds > a.thePastSeconds!!) {
+                "router: stream '$stream' `$key` must run youngest-first, each `thePast` larger than the last — " +
+                    "`$key`[$i] reaches ${a.thePastSeconds}s back but `$key`[${i + 1}] only ${b.thePastSeconds}s"
+            }
+        }
+        return tiers
+    }
 
     /** `deleteMissing = false | "dryRun" | true`. */
     private fun parseDeleteMissing(
