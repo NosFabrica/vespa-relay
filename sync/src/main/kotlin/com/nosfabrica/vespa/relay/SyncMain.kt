@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.config.syncEnv
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
@@ -211,7 +210,7 @@ fun main() {
     val refusedIds = RefusedIds.fromEnv(env)
 
     // Opt-in: a sync running without a relay has no readers to yield to.
-    val pressureUrl = env.syncEnv("SYNC_PRESSURE_URL", "ROUTER_PRESSURE_URL")?.trim()?.takeIf { it.isNotEmpty() }
+    val pressureUrl = env["SYNC_PRESSURE_URL"]?.trim()?.takeIf { it.isNotEmpty() }
     val servingPressure =
         pressureUrl?.let {
             ServingPressure(
@@ -234,7 +233,7 @@ fun main() {
             sweepState = sweepState,
             refusedIds = refusedIds,
             signer = identity,
-            wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
+            wireLogMode = env["SYNC_WIRE_LOG"]?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
             progress = progress,

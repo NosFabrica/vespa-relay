@@ -7,7 +7,7 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 `SyncEngine` syncs upstream events into the store. Operators know this
 subsystem as **the router** — `sync.conf` + `monitor.conf`, the `router:` log prefix and the
 `router` package keep that name. Its env vars are `SYNC_*`; the pre-rename
-`ROUTER_*` spellings still work and warn on boot.
+`ROUTER_*` spellings are refused at boot, each naming what replaced it.
 
 It is its own process (`SyncMain`, the compose `sync` service behind
 `--profile sync`), so a `sync.conf` or `monitor.conf` change is a `restart sync`, never a

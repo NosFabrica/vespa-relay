@@ -97,7 +97,7 @@ class SyncManifest(
                 }
             }
 
-        /** `SYNC_MANIFEST_FILE`: where the manifest is written. Unset publishes nothing; there is no `ROUTER_*` spelling. */
+        /** `SYNC_MANIFEST_FILE`: where the manifest is written. Unset publishes nothing. */
         fun fromEnv(env: Map<String, String>): SyncManifest =
             SyncManifest(
                 env["SYNC_MANIFEST_FILE"]

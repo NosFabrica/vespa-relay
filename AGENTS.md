@@ -192,7 +192,7 @@ already holds data, and `docs/search-latency.md` what a search costs.
 ## How the router works
 
 `SyncEngine` mirrors upstream events into the store. Its env vars are `SYNC_*`
-(the `ROUTER_*` spellings still work and warn on boot), and the monitor beside
+(a pre-rename `ROUTER_*` spelling is refused at boot), and the monitor beside
 it reads `MONITOR_CONFIG_FILE`; it is its own process,
 so a `sync.conf` / `monitor.conf` change is `restart sync`, never a relay outage. The long form
 is [docs/router-internals.md](docs/router-internals.md); the config format is
@@ -247,7 +247,9 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
 ## Instrumentation
 
 Reach for these before forming a theory. The long form, with what each one
-measured, is [docs/instrumentation.md](docs/instrumentation.md).
+measured, is [docs/instrumentation.md](docs/instrumentation.md); what each
+operator page shows and why is
+[docs/operator-pages.md](docs/operator-pages.md).
 
 - The health line, once a minute: heap, ingest queue depth against capacity,
   ev/s in and out, relays transferring, fatals, events lost to store errors,

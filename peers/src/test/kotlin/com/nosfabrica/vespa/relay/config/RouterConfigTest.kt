@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -661,29 +662,55 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `the renamed knobs still answer to their old names, loudly`() {
-        // A renamed key must never silently turn a deployment's reconciles or fast lane off.
-        val cfg =
+    fun `the renamed knobs are refused under their old names, each naming the new one`() {
+        // Refused, not ignored: read as nothing, these keys silently turn a deployment's
+        // reconcile of the past or its fast lane off, and no page reports that as an error.
+        fun monitor(key: String) =
             RouterConfigLoader.parse(
                 """
                 monitor {
                     sources = [ { select = [ { tag = "r", relay = 1 } ], filter = { "kinds": [10002] } } ]
-                    newUrlSeconds = 90
-                    concurrency = 7
+                    $key
                 }
+                streams {
+                    s { dir = "down", filter = { "kinds": [1] }, urls = [ "wss://a.example" ] }
+                }
+                """.trimIndent(),
+            )
+
+        fun stream(key: String) =
+            RouterConfigLoader.parse(
+                """
                 streams {
                     s {
                         dir = "down"
                         filter = { "kinds": [1] }
                         relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
-                        verifySeconds = 604800
+                        $key
                     }
                 }
                 """.trimIndent(),
             )
-        assertEquals(604_800L, cfg.streams.single().negentropySyncThePastSeconds)
-        assertEquals(90L, cfg.monitor!!.fastLaneSeconds)
-        assertEquals(7, cfg.monitor!!.dialConcurrency)
+
+        for (old in listOf("auditSeconds = 604800", "verifySeconds = 604800")) {
+            val e = assertFailsWith<IllegalArgumentException>(old) { stream(old) }
+            assertTrue(e.message!!.contains("renamed to negentropySyncThePastSeconds"), e.message!!)
+        }
+        assertTrue(
+            assertFailsWith<IllegalArgumentException> { monitor("newUrlSeconds = 90") }
+                .message!!
+                .contains("renamed to fastLaneSeconds"),
+        )
+        assertTrue(
+            assertFailsWith<IllegalArgumentException> { monitor("concurrency = 7") }
+                .message!!
+                .contains("renamed to dialConcurrency"),
+        )
+
+        // The new spellings still land where they always did.
+        assertEquals(604_800L, stream("negentropySyncThePastSeconds = 604800").streams.single().negentropySyncThePastSeconds)
+        assertEquals(90L, monitor("fastLaneSeconds = 90").monitor!!.fastLaneSeconds)
+        assertEquals(7, monitor("dialConcurrency = 7").monitor!!.dialConcurrency)
     }
 
     @Test
@@ -1031,18 +1058,37 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `legacy ROUTER_ spellings still load, and the SYNC_ name wins when both are set`() {
-        // A deployment still exporting the old names must keep mirroring, not silently serve-only.
-        val legacy =
+    fun `the pre-rename ROUTER_ spellings are refused, and say what replaced them`() {
+        // Refused, not ignored: a name that is merely dropped would mirror on a default nobody chose.
+        val renamed =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "77"))
+            }
+        assertTrue(renamed.message!!.contains("ROUTER_INGEST_BATCH is now SYNC_INGEST_BATCH"), renamed.message!!)
+
+        // One that was removed outright, not renamed, is refused by the same guard.
+        val gone =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "ROUTER_FULL_RESYNC_SECONDS" to "604800"))
+            }
+        assertTrue(gone.message!!.contains("ROUTER_FULL_RESYNC_SECONDS is gone"), gone.message!!)
+
+        // A blank one is somebody's unset placeholder, not a setting.
+        assertNotNull(RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "")))
+
+        // Kubernetes injects these into every pod in a namespace holding a Service called `router`,
+        // and this subsystem is what operators call the router. Refusing on the prefix would kill the
+        // pod over a name nobody set, so the guard names its settings one by one.
+        assertNotNull(
             RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "77"),
-            )
-        assertEquals(77, legacy?.ingestBatch)
-        val both =
-            RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_INGEST_BATCH" to "77", "SYNC_INGEST_BATCH" to "88", "SYNC_CONFIG" to streamsConfig),
-            )
-        assertEquals(88, both?.ingestBatch)
+                mapOf(
+                    "SYNC_CONFIG" to streamsConfig,
+                    "ROUTER_SERVICE_HOST" to "10.0.0.1",
+                    "ROUTER_SERVICE_PORT" to "7778",
+                    "ROUTER_PORT_7778_TCP_ADDR" to "10.0.0.1",
+                ),
+            ),
+        )
     }
 
     @Test
@@ -1250,7 +1296,7 @@ class RouterConfigTest {
                     exclude       = [ "wss://skip.example" ]
                     sweepSeconds  = 3600
                     fastLaneSeconds = 60
-                    concurrency   = 32
+                    dialConcurrency = 32
                 }
                 streams {
                     content {
@@ -1286,7 +1332,7 @@ class RouterConfigTest {
         val absent = RouterConfigLoader.parse("monitor { sweepSeconds = 3600 }\n$block")
         assertEquals(MonitorConfig.DEFAULT_DIAL_CONCURRENCY, absent.monitor!!.dialConcurrency)
         // Zero dials is an off switch wearing a tuning knob's name: floored, not honored.
-        val floored = RouterConfigLoader.parse("monitor { concurrency = 0 }\n$block")
+        val floored = RouterConfigLoader.parse("monitor { dialConcurrency = 0 }\n$block")
         assertEquals(1, floored.monitor!!.dialConcurrency)
     }
 

@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.config.syncEnv
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -464,8 +463,7 @@ class SyncBands(
         ): SyncBands =
             refuseRemovedEnv(env).let {
                 SyncBands(
-                    env
-                        .syncEnv("SYNC_STATE_FILE", "ROUTER_SYNC_STATE_FILE")
+                    env["SYNC_STATE_FILE"]
                         ?.trim()
                         ?.takeIf { it.isNotEmpty() }
                         ?.let(::File),
@@ -476,7 +474,7 @@ class SyncBands(
         /** Retired env names, refused by name so an upgrade cannot silently drop a schedule. */
         private fun refuseRemovedEnv(env: Map<String, String>) {
             val set =
-                listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
+                listOf("SYNC_REFETCH_THE_PAST_SECONDS", "SYNC_FULL_RESYNC_SECONDS")
                     .filter { env[it]?.isNotBlank() == true }
             require(set.isEmpty()) {
                 "router: ${set.joinToString(", ")} is set — one number used to mean two things and now means " +

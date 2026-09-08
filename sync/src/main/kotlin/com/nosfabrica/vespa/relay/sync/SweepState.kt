@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.config.syncEnv
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -351,8 +350,7 @@ class SweepState(
          */
         fun fromEnv(env: Map<String, String>): SweepState =
             SweepState(
-                env
-                    .syncEnv("SYNC_SWEEP_STATE_FILE", "ROUTER_SWEEP_STATE_FILE")
+                env["SYNC_SWEEP_STATE_FILE"]
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.let(::File),

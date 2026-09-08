@@ -64,7 +64,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   that the upstream no longer serves. Only for a stream whose upstream owns the
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
-- **`negentropySyncThePastSeconds`** *(optional, was `auditSeconds`)* — how
+- **`negentropySyncThePastSeconds`** *(optional)* — how
   often to reconcile the whole past over NIP-77, against the relays a verdict
   says can answer one. It reconciles the stream's entire range, not only what
   the bands already cover — they clock this pass, they do not bound it. See
