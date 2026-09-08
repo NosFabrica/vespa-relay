@@ -266,34 +266,21 @@ object RouterConfigLoader {
                         "the same way now: page forward from the band's edge, live-tail, and re-check the past on " +
                         "`negentropySyncThePastSeconds` (reconcile) and `refetchThePastSeconds` (re-fetch)"
                 }
-                // `auditSeconds` and `verifySeconds` are the knob's older names.
+                // The knob's two older names. Refused rather than read: a rename that is quietly
+                // ignored turns the reconcile of the past OFF, and the symptom is a past that
+                // stopped being checked — which nothing on any page reports as an error.
+                for (old in listOf("auditSeconds", "verifySeconds")) {
+                    require(!s.hasPath(old)) {
+                        "router: stream '$name' sets $old — renamed to negentropySyncThePastSeconds (it clocks the " +
+                            "reconcile of the whole past, against relays that answer a NEG-OPEN). Rename the key"
+                    }
+                }
                 val negentropySyncThePastSeconds =
-                    when {
-                        s.hasPath("negentropySyncThePastSeconds") -> {
-                            s.getLong("negentropySyncThePastSeconds")
-                        }
-
-                        s.hasPath("auditSeconds") -> {
-                            System.err.println(
-                                "router: stream '$name' uses auditSeconds — renamed to negentropySyncThePastSeconds " +
-                                    "(it clocks the reconcile of the whole past, against relays that answer a NEG-OPEN); " +
-                                    "the old name still works",
-                            )
-                            s.getLong("auditSeconds")
-                        }
-
-                        s.hasPath("verifySeconds") -> {
-                            System.err.println(
-                                "router: stream '$name' uses verifySeconds — renamed to negentropySyncThePastSeconds; " +
-                                    "the old name still works",
-                            )
-                            s.getLong("verifySeconds")
-                        }
-
-                        else -> {
-                            null
-                        }
-                    }?.coerceAtLeast(3600L)
+                    if (s.hasPath("negentropySyncThePastSeconds")) {
+                        s.getLong("negentropySyncThePastSeconds").coerceAtLeast(3600L)
+                    } else {
+                        null
+                    }
                 // Warned about at or below the audit, where it re-downloads what the audit would reconcile.
                 val refetchThePastSeconds =
                     if (s.hasPath("refetchThePastSeconds")) {
@@ -432,6 +419,15 @@ object RouterConfigLoader {
         // Absent and empty are different answers: one never said what to measure, the other said
         // "nothing". Only the first is refused at boot.
         val sources = if (m.hasPath("sources")) m.getConfigList("sources").map { parseRelaySource("monitor", it) } else null
+        // Both renamed knobs are refused for the same reason the stream's are: read as nothing,
+        // `newUrlSeconds` silently retires the fast lane and `concurrency` silently re-floors the dials.
+        require(!m.hasPath("newUrlSeconds")) {
+            "router: monitor sets newUrlSeconds — renamed to fastLaneSeconds. Rename the key"
+        }
+        require(!m.hasPath("concurrency")) {
+            "router: monitor sets concurrency — renamed to dialConcurrency (it bounds the probe passes' dials). " +
+                "Rename the key"
+        }
         return MonitorConfig(
             sources = sources,
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
@@ -439,47 +435,20 @@ object RouterConfigLoader {
                 (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
                     .coerceAtLeast(300L),
             fastLaneSeconds =
-                run {
-                    // `newUrlSeconds` is the knob's old name.
-                    val key =
-                        when {
-                            m.hasPath("fastLaneSeconds") -> {
-                                "fastLaneSeconds"
-                            }
+                when {
+                    !m.hasPath("fastLaneSeconds") -> MonitorConfig.DEFAULT_FAST_LANE_SECONDS
 
-                            m.hasPath("newUrlSeconds") -> {
-                                System.err.println("router: monitor uses newUrlSeconds — renamed to fastLaneSeconds; the old name still works")
-                                "newUrlSeconds"
-                            }
+                    // 0 is the documented off switch.
+                    m.getLong("fastLaneSeconds") <= 0L -> null
 
-                            else -> {
-                                null
-                            }
-                        }
-                    when {
-                        key == null -> MonitorConfig.DEFAULT_FAST_LANE_SECONDS
-
-                        // 0 is the documented off switch.
-                        m.getLong(key) <= 0L -> null
-
-                        else -> m.getLong(key).coerceAtLeast(30L)
-                    }
+                    else -> m.getLong("fastLaneSeconds").coerceAtLeast(30L)
                 },
             // Floored at 1: zero dials is an off switch no operator asked this knob to be.
             dialConcurrency =
-                when {
-                    m.hasPath("dialConcurrency") -> {
-                        m.getInt("dialConcurrency").coerceAtLeast(1)
-                    }
-
-                    m.hasPath("concurrency") -> {
-                        System.err.println("router: monitor uses concurrency — renamed to dialConcurrency (it bounds the probe passes' dials); the old name still works")
-                        m.getInt("concurrency").coerceAtLeast(1)
-                    }
-
-                    else -> {
-                        MonitorConfig.DEFAULT_DIAL_CONCURRENCY
-                    }
+                if (m.hasPath("dialConcurrency")) {
+                    m.getInt("dialConcurrency").coerceAtLeast(1)
+                } else {
+                    MonitorConfig.DEFAULT_DIAL_CONCURRENCY
                 },
         )
     }
