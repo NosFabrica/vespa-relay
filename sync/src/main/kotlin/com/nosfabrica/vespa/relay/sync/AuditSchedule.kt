@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.status.StreamPhases
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
@@ -74,12 +75,13 @@ internal class AuditSchedule(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         negentropySyncThePastSeconds: Long,
+        band: String = "",
     ): AuditClock {
         if (ask.stream.deleteMissing == DeleteMissing.OFF) {
-            return AuditClock.of(bands.auditDueAt(ask.stream.name, url, ask.filter, negentropySyncThePastSeconds))
+            return AuditClock.of(bands.auditDueAt(ask.stream.name, url, ask.filter, negentropySyncThePastSeconds, band))
         }
         val r = retraction ?: return AuditClock.NOT_SCHEDULED
-        return r.auditClock(ask.stream, url, ask.filter, negentropySyncThePastSeconds)
+        return r.auditClock(ask.stream, url, ask.filter, negentropySyncThePastSeconds, band)
     }
 
     /**
@@ -91,28 +93,37 @@ internal class AuditSchedule(
         url: NormalizedRelayUrl,
         negentropySyncThePastSeconds: Long,
         now: Long,
-    ): Boolean = clockFor(ask, url, negentropySyncThePastSeconds).dueBy(now)
+        band: String = "",
+    ): Boolean = clockFor(ask, url, negentropySyncThePastSeconds, band).dueBy(now)
 
     /** One pass over the roster for every stream at once; the caller caches the result. */
     fun rows(
         roster: Map<NormalizedRelayUrl, Map<String, RosterBuilder.UnitAsks>>,
         nowSec: Long,
     ): Map<String, List<StreamPhases.Scheduled>> {
-        val audits = HashMap<String, Tally>()
-        val refetches = HashMap<String, Tally>()
-        val refetchPeriods = HashMap<String, Long>()
+        // Keyed by stream and the band inside it: a banded stream gets a row per band, and its
+        // bands are on different clocks, so one tally over all of them would report neither.
+        val audits = HashMap<Pair<String, String>, Tally>()
+        val refetches = HashMap<Pair<String, String>, Tally>()
+        val byName = streams.associateBy { it.name }
         for ((url, byStream) in roster) {
             for ((name, unit) in byStream) {
-                // Per stream, not per ask: the knob and the tally are the stream's.
-                val refetching = refetchPeriods.getOrPut(name) { bands.refetchThePastSecondsFor(name) } != SyncBands.NEVER
+                val stream = byName[name] ?: continue
+                val auditTiers = stream.negentropySchedule
+                val refetchTiers = refetchBandsOf(stream)
                 for (ask in unit.asks) {
-                    ask.stream.negentropySyncThePastSeconds?.let { period ->
+                    for (tier in auditTiers) {
+                        val band = SyncTier.bandIdOf(auditTiers, tier)
                         // An ask nothing schedules is left out rather than counted due forever.
-                        val clock = clockFor(ask, url, period)
-                        if (clock.scheduled) audits.getOrPut(name) { Tally(nowSec) }.add(clock)
+                        val clock = clockFor(ask, url, tier.everySeconds, band)
+                        if (clock.scheduled) audits.getOrPut(name to band) { Tally(nowSec) }.add(clock)
                     }
-                    if (refetching) {
-                        refetches.getOrPut(name) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(name, url, ask.filter)))
+                    for ((tier, older, newer) in SyncTier.tile(refetchTiers)) {
+                        val key = SyncTier.keyFor(name, refetchTiers, tier)
+                        // Per band, not per stream: the knob and the tally are the band's.
+                        if (bands.refetchThePastSecondsFor(key) == SyncBands.NEVER) continue
+                        val bandAsk = SyncTier.windowedFilter(ask.filter, nowSec, older, newer)
+                        refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(key, url, bandAsk)))
                     }
                 }
             }
@@ -120,17 +131,36 @@ internal class AuditSchedule(
         val rows = HashMap<String, List<StreamPhases.Scheduled>>()
         for (stream in streams) {
             val out = mutableListOf<StreamPhases.Scheduled>()
-            stream.negentropySyncThePastSeconds?.let { period ->
-                out += (audits[stream.name] ?: Tally(nowSec)).row(VisitPool.POOL_NEGENTROPY, period)
+            val auditTiers = stream.negentropySchedule
+            for (tier in auditTiers) {
+                val band = SyncTier.bandIdOf(auditTiers, tier)
+                out += (audits[stream.name to band] ?: Tally(nowSec)).row(jobOf(VisitPool.POOL_NEGENTROPY, band), tier.everySeconds)
             }
-            val refetchPeriod = bands.refetchThePastSecondsFor(stream.name)
-            if (refetchPeriod != SyncBands.NEVER) {
-                out += (refetches[stream.name] ?: Tally(nowSec)).row(VisitPool.POOL_REFETCHING, refetchPeriod)
+            val refetchTiers = refetchBandsOf(stream)
+            for (tier in refetchTiers) {
+                val key = SyncTier.keyFor(stream.name, refetchTiers, tier)
+                val period = bands.refetchThePastSecondsFor(key)
+                if (period == SyncBands.NEVER) continue
+                val band = SyncTier.bandIdOf(refetchTiers, tier)
+                out += (refetches[stream.name to tier.id] ?: Tally(nowSec)).row(jobOf(VisitPool.POOL_REFETCHING, band), period)
             }
             rows[stream.name] = out
         }
         return rows
     }
+
+    /**
+     * A stream's re-fetch bands as the pool walks them: its own, else the one unbounded band
+     * that a bare period — the stream's or the router's — resolves to. Must match `catchUp`'s,
+     * or the page reports on a coverage nothing writes.
+     */
+    private fun refetchBandsOf(stream: SyncStream): List<SyncTier> = stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = SyncBands.NEVER)) }
+
+    /** The pool word, band-qualified where a stream has more than one. */
+    private fun jobOf(
+        pool: String,
+        band: String,
+    ): String = if (band.isEmpty()) pool else "$pool $band"
 
     /** One job's asks sorted into due, never run and waiting, with the soonest of the waiting. */
     private class Tally(

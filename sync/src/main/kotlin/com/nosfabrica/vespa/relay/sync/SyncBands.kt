@@ -21,12 +21,14 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -72,6 +74,13 @@ class SyncBands(
         val stream: String,
         val filter: String,
         val relay: String,
+        /**
+         * The age band this clock is for, empty for a stream that audits its past as one. A
+         * band's window slides with `now`, so the window can never be its identity: a key that
+         * moved with it would orphan the record of having walked the band, and the band would
+         * read as never verified on the very next visit.
+         */
+        val band: String = "",
     )
 
     private val verified = ConcurrentHashMap<VerifiedKey, Long>()
@@ -89,10 +98,11 @@ class SyncBands(
         filter: Filter,
         negentropySyncThePastSeconds: Long,
         now: Long = System.currentTimeMillis() / 1000,
+        band: String = "",
     ): Boolean {
-        val dueAt = auditDueAt(stream, url, filter, negentropySyncThePastSeconds)
+        val dueAt = auditDueAt(stream, url, filter, negentropySyncThePastSeconds, band)
         if (dueAt != null && now < dueAt) return false
-        val key = VerifiedKey(stream, filter.toJson(), url.url)
+        val key = VerifiedKey(stream, filter.toJson(), url.url, band)
         if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(negentropySyncThePastSeconds)) return false
         attempts[key] = now
         return true
@@ -107,8 +117,14 @@ class SyncBands(
         url: NormalizedRelayUrl,
         filter: Filter,
         negentropySyncThePastSeconds: Long,
+        band: String = "",
     ): Long? {
-        val clock = verified[VerifiedKey(stream, filter.toJson(), url.url)] ?: band(stream, url, filter)?.fullAt ?: 0L
+        // Only an unbanded stream falls back to the coverage's `fullAt`. A band's coverage is
+        // the stream's whole filter, so the first band audited sets a `fullAt` every other band
+        // would then inherit — and each would sit out its whole period before its FIRST walk,
+        // the tail for a year. A band with no clock of its own has never been verified.
+        val own = verified[VerifiedKey(stream, filter.toJson(), url.url, band)]
+        val clock = own ?: (if (band.isEmpty()) band(stream, url, filter)?.fullAt else null) ?: 0L
         return if (clock <= 0L) null else clock + negentropySyncThePastSeconds
     }
 
@@ -129,7 +145,8 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): Long? = verified[VerifiedKey(stream, filter.toJson(), url.url)]
+        band: String = "",
+    ): Long? = verified[VerifiedKey(stream, filter.toJson(), url.url, band)]
 
     init {
         val pruned = load()
@@ -151,7 +168,17 @@ class SyncBands(
      * forward-only mirror is legitimate; being in one by accident is not.
      */
     private fun announceUncheckedPasts(streams: List<SyncStream>) {
-        val blind = streams.filter { it.negentropySyncThePastSeconds == null && refetchThePastSecondsFor(it.name) == NEVER }
+        val blind =
+            streams.filter { stream ->
+                val refetchTiers = stream.refetchSchedule
+                stream.negentropySchedule.isEmpty() &&
+                    // A banded re-fetch checks the past unless every band of it is NEVER.
+                    if (refetchTiers.isEmpty()) {
+                        refetchThePastSecondsFor(stream.name) == NEVER
+                    } else {
+                        refetchTiers.all { it.everySeconds == NEVER }
+                    }
+            }
         if (blind.isEmpty()) return
         System.err.println(
             "router: stream(s) ${blind.joinToString(", ") { it.name }} have neither `negentropySyncThePastSeconds` nor " +
@@ -180,10 +207,12 @@ class SyncBands(
         observedByKind: Map<Int, SyncCoverage.Span>? = null,
         /** The relay EOSEd on an empty page. Gate every call site on [drainSettlesThePast]. */
         drained: Boolean = false,
+        /** The age band [reconciledThrough] verified. Coverage is always recorded against the whole [filter]. */
+        band: String = "",
     ) {
         coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
         if (reconciledThrough != null) {
-            verified[VerifiedKey(stream, filter.toJson(), url.url)] = reconciledThrough
+            verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = reconciledThrough
             dirty = true
         }
     }
@@ -289,6 +318,18 @@ class SyncBands(
             val root = Json.parseToJsonElement(f.readText()).jsonObject
             root.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
+                if (streamOrFlatKey == BAND_CLOCKS) {
+                    o.forEach { (stream, byBand) ->
+                        byBand.jsonObject.forEach { (band, byFilter) ->
+                            byFilter.jsonObject.forEach { (filter, byRelay) ->
+                                byRelay.jsonObject.forEach { (relay, ts) ->
+                                    ts.jsonPrimitive.longOrNull?.let { verified[VerifiedKey(stream, filter, relay, band)] = it }
+                                }
+                            }
+                        }
+                    }
+                    return@forEach
+                }
                 // Told apart by shape: a filter is serialised JSON and can never be named `min`.
                 if (o["min"] != null) {
                     pruned++
@@ -412,7 +453,42 @@ class SyncBands(
                     },
                 )
             }
+            putBandClocks()
         }
+
+    /**
+     * The tiered audits' clocks, in a section of their own. A band records its coverage against
+     * the stream's whole filter — the window slides, and a coverage band per window per day
+     * would grow without bound — so there is no per-band band object to hang a `verifiedAt` on
+     * the way an untiered stream does. Without this, a band's schedule would be memory-only and
+     * every restart would re-walk the oldest, most expensive band.
+     */
+    private fun JsonObjectBuilder.putBandClocks() {
+        val banded = verified.entries.filter { it.key.band.isNotEmpty() }
+        if (banded.isEmpty()) return
+        put(
+            BAND_CLOCKS,
+            buildJsonObject {
+                banded.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
+                    put(
+                        stream,
+                        buildJsonObject {
+                            ofStream.groupBy { it.key.band }.forEach { (band, ofBand) ->
+                                put(
+                                    band,
+                                    buildJsonObject {
+                                        ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
+                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, it.value) } })
+                                        }
+                                    },
+                                )
+                            }
+                        },
+                    )
+                }
+            },
+        )
+    }
 
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     @Synchronized
@@ -456,6 +532,12 @@ class SyncBands(
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE
 
+        /**
+         * The band-clock section's key in the state file. `#` cannot start a HOCON key that
+         * reaches us as a stream name, so it can never collide with one.
+         */
+        private const val BAND_CLOCKS = "#bandClocks"
+
         /** `SYNC_STATE_FILE`, unset for in-memory. [streams] are the only source of a re-fetch period. */
         fun fromEnv(
             env: Map<String, String>,
@@ -467,7 +549,14 @@ class SyncBands(
                         ?.trim()
                         ?.takeIf { it.isNotEmpty() }
                         ?.let(::File),
-                    perStream = streams.mapNotNull { stream -> stream.refetchThePastSeconds?.let { stream.name to it } }.toMap(),
+                    // One entry per band: a coverage carries its period for the process's life,
+                    // so a banded re-fetch needs a coverage — and therefore a key — per band.
+                    perStream =
+                        streams
+                            .flatMap { stream ->
+                                val tiers = stream.refetchSchedule
+                                tiers.map { tier -> SyncTier.keyFor(stream.name, tiers, tier) to tier.everySeconds }
+                            }.toMap(),
                 ).also { it.announceUncheckedPasts(streams) }.startPeriodicFlush()
             }
 

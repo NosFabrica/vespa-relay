@@ -74,6 +74,16 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   relays that cannot reconcile. Defaults to
   `SYNC_REFETCH_THE_PAST_SECONDS` (7 days). See
   [`refetchThePastSeconds` and the audit](#refetchthepastseconds-and-the-audit).
+- **`negentropy`** *(optional)* — the same reconcile, scheduled per age band
+  instead of once for the whole past. A list of `{ maxAge, every }`,
+  youngest-first: `maxAge` is the age in seconds of the oldest record the band
+  holds, omitted on the last entry to mean no maximum, and `every` is how stale
+  that band may get before it is re-checked. Cannot be set beside `negentropySyncThePastSeconds`, which
+  is the same schedule as a single unbounded band. See
+  [Age-banded schedules](#age-banded-schedules).
+- **`refetch`** *(optional)* — the same list, for the re-fetch. Replaces
+  `refetchThePastSeconds` the way `negentropy` replaces
+  `negentropySyncThePastSeconds`.
 - **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
   the upstream is the source of truth for, and therefore the only ones absence
   may delete. See
@@ -132,6 +142,45 @@ One thing it does not promise: Nostr lets an event be published with any
 `created_at`, so one can land inside a band already walked past. The trade is
 deliberate — re-reading a corpus every restart is a certain daily cost, while
 that hole is occasional and clears the next time the filter changes.
+
+### Age-banded schedules
+
+Age and churn correlate. Records from the last month still move; records from
+three years ago do not, and re-reconciling them at the cadence the last month
+needs is most of what a mirror spends its CPU on. `negentropy` and `refetch`
+take a list of bands instead of one period:
+
+```hocon
+negentropy = [
+  { maxAge = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
+  { maxAge = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
+  { every = 31536000 }                       # 1y+      reconciled yearly
+]
+```
+
+The bands **tile** the past: each entry's `maxAge` is its older edge and the
+previous entry's is its newer one, so every record falls in exactly one band and
+no band re-walks another's records. The youngest band stays open at the top, so
+events arriving mid-walk are inside it. The loader refuses a list that is not
+youngest-first, or that omits `maxAge` anywhere but the last entry — either
+would leave a hole in the middle of the past, and a hole is invisible, because
+every band still reports itself verified.
+
+`every = 0` is always due, floored by `attemptSpacingSeconds` at 15 minutes.
+That is what a stream wants when its upstream is the source of truth for the
+records in the ask and its past must be re-read as of today rather than taken
+on trust.
+
+One band is walked per visit, youngest first, so the cheap frequent re-check of
+recent history always gets its turn and the long walk of the tail takes one only
+when nothing newer is due.
+
+Each band keeps its own clock, and its own paging cursor and coverage. Those are
+keyed by the band, never by its window: the window slides with `now`, and a key
+that moved with it would orphan the very record of having walked the band. A
+bare `negentropySyncThePastSeconds` or `refetchThePastSeconds` resolves to a
+single unbounded band and keeps the unqualified keys it has always used, so
+turning bands on for one stream never orphans another's state file.
 
 ### `refetchThePastSeconds` and the audit
 
