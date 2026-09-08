@@ -2,7 +2,35 @@
 
 import { withoutLensAll } from "./lens.js";
 
-const REQ_TIMEOUT_MS = 10000;
+/**
+ * How long one REQ may take, END TO END — not a first-byte deadline.
+ *
+ * This relay does not stream a search: the page arrives in one burst when the
+ * engine finishes, EOSE a step behind it. Measured on staging against the
+ * observer's own lens, `bitcoin` put its first EVENT on the wire at 3,162 ms
+ * and `nostr` at 12,192 ms. At 10,000 the deadline expired with ZERO events in
+ * hand, and because a timeout resolves rather than throws, the search page drew
+ * an empty list — "the relay gave up" wearing the face of "nothing matched",
+ * for the single most obvious word to type into a Nostr relay.
+ *
+ * AN IDLE WINDOW WOULD NOT FIX IT, which is why this is a plain deadline while
+ * COUNT_IDLE_MS below is not: an idle timer resets on messages, and until the
+ * burst there are no messages, so a 10s idle window and a 10s deadline expire
+ * at the same instant.
+ *
+ * 30s because nothing upstream bounds the wait. The query profile sets Vespa's
+ * `timeout` to its maximum with `ranking.softtimeout.enable` false — slow
+ * queries are deliberately SLOW rather than silently truncated — and the
+ * store's own http client sets no read or call deadline. This number is the
+ * only bound there is, so it has to outlive a common word on a loaded cluster
+ * (`nostr` measured 24s at one match thread) while still failing a hung relay
+ * in a bounded time.
+ *
+ * It buys the answer, not speed: 12s for a common word is the engine's problem
+ * (vespa-eventstore#129), and a caller that wants to say so reads `complete` on
+ * the resolved array.
+ */
+const REQ_TIMEOUT_MS = 30000;
 
 /**
  * How long a COUNT may stay silent: an idle window reset by any message on the connection,
