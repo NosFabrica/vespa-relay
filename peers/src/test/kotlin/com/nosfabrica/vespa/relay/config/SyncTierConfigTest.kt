@@ -42,8 +42,8 @@ class SyncTierConfigTest {
     private val banded =
         """
         negentropy = [
-          { thePast = 2592000,  every = 604800   }
-          { thePast = 31536000, every = 2592000  }
+          { maxAge = 2592000,  every = 604800   }
+          { maxAge = 31536000, every = 2592000  }
           { every = 31536000 }
         ]
         """.trimIndent()
@@ -53,7 +53,7 @@ class SyncTierConfigTest {
         val stream = RouterConfigLoader.parse(conf(banded)).streams.single()
 
         assertEquals(3, stream.negentropyTiers.size)
-        assertEquals(listOf(2592000L, 31536000L, null), stream.negentropyTiers.map { it.thePastSeconds })
+        assertEquals(listOf(2592000L, 31536000L, null), stream.negentropyTiers.map { it.maxAgeSeconds })
         assertEquals(listOf(604800L, 2592000L, 31536000L), stream.negentropyTiers.map { it.everySeconds })
         assertEquals(stream.negentropyTiers, stream.negentropySchedule)
     }
@@ -66,7 +66,7 @@ class SyncTierConfigTest {
                     conf(
                         """
                         refetch = [
-                          { thePast = 2592000, every = 2592000 }
+                          { maxAge = 2592000, every = 2592000 }
                           { every = 31536000 }
                         ]
                         """.trimIndent(),
@@ -74,7 +74,7 @@ class SyncTierConfigTest {
                 ).streams
                 .single()
 
-        assertEquals(listOf(2592000L, null), stream.refetchTiers.map { it.thePastSeconds })
+        assertEquals(listOf(2592000L, null), stream.refetchTiers.map { it.maxAgeSeconds })
         assertEquals(listOf(2592000L, 31536000L), stream.refetchTiers.map { it.everySeconds })
     }
 
@@ -82,7 +82,7 @@ class SyncTierConfigTest {
     fun `a bare period still resolves to one band over the whole past`() {
         val stream = RouterConfigLoader.parse(conf("negentropySyncThePastSeconds = 604800")).streams.single()
 
-        assertEquals(listOf(SyncTier(thePastSeconds = null, everySeconds = 604800L)), stream.negentropySchedule)
+        assertEquals(listOf(SyncTier(maxAgeSeconds = null, everySeconds = 604800L)), stream.negentropySchedule)
         assertTrue(SyncTier.isUnbanded(stream.negentropySchedule), "so its keys stay the ones it has always used")
         assertEquals("", SyncTier.bandIdOf(stream.negentropySchedule, stream.negentropySchedule[0]))
     }
@@ -117,8 +117,8 @@ class SyncTierConfigTest {
                     conf(
                         """
                         negentropy = [
-                          { thePast = 31536000, every = 2592000 }
-                          { thePast = 2592000,  every = 604800  }
+                          { maxAge = 31536000, every = 2592000 }
+                          { maxAge = 2592000,  every = 604800  }
                         ]
                         """.trimIndent(),
                     ),
@@ -136,7 +136,7 @@ class SyncTierConfigTest {
                         """
                         negentropy = [
                           { every = 604800 }
-                          { thePast = 31536000, every = 2592000 }
+                          { maxAge = 31536000, every = 2592000 }
                         ]
                         """.trimIndent(),
                     ),
@@ -149,7 +149,7 @@ class SyncTierConfigTest {
     fun `a band with no cadence is refused`() {
         val e =
             assertFailsWith<IllegalArgumentException> {
-                RouterConfigLoader.parse(conf("negentropy = [ { thePast = 2592000 } ]"))
+                RouterConfigLoader.parse(conf("negentropy = [ { maxAge = 2592000 } ]"))
             }
         assertTrue(e.message!!.contains("no `every`"), e.message!!)
     }

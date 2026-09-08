@@ -47,9 +47,9 @@ class SyncTierBandsTest {
     /** The schedule this whole structure was asked for. */
     private val tiers =
         listOf(
-            SyncTier(thePastSeconds = month, everySeconds = week),
-            SyncTier(thePastSeconds = year, everySeconds = month),
-            SyncTier(thePastSeconds = null, everySeconds = year),
+            SyncTier(maxAgeSeconds = month, everySeconds = week),
+            SyncTier(maxAgeSeconds = year, everySeconds = month),
+            SyncTier(maxAgeSeconds = null, everySeconds = year),
         )
 
     private fun tempFile(): File {
@@ -167,7 +167,7 @@ class SyncTierBandsTest {
     fun `an unbanded stream keeps the key it has always used`() {
         // A bare `negentropySyncThePastSeconds` resolves to one unbounded band. Turning tiers on
         // for another stream must not orphan this one's state.
-        val single = listOf(SyncTier(thePastSeconds = null, everySeconds = week))
+        val single = listOf(SyncTier(maxAgeSeconds = null, everySeconds = week))
         assertEquals("", SyncTier.bandIdOf(single, single[0]), "no discriminator")
         assertEquals(mirror, SyncTier.keyFor(mirror, single, single[0]), "and no qualified coverage key")
 
@@ -193,7 +193,7 @@ class SyncTierBandsTest {
         // Paging one band leaves the others outstanding in full. Real clock: quartz refuses to
         // band a timestamp it considers implausible, and a fixed future `now` is one.
         val now = System.currentTimeMillis() / 1000
-        val youngest = SyncTier.windowedFilter(profiles, now, tiers[0].thePastSeconds, null)
+        val youngest = SyncTier.windowedFilter(profiles, now, tiers[0].maxAgeSeconds, null)
         c.record(SyncTier.keyFor(mirror, tiers, tiers[0]), relay, youngest, now - week, now, paged = true)
 
         assertNotNull(c.band(SyncTier.keyFor(mirror, tiers, tiers[0]), relay, youngest), "the walked band is covered")

@@ -90,14 +90,14 @@
 # knobs above:
 #
 #   negentropy = [
-#     { thePast = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
-#     { thePast = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
+#     { maxAge = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
+#     { maxAge = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
 #     { every = 31536000 }                       # 1y+      reconciled yearly
 #   ]
 #
-# The bands tile the past: each `thePast` is a band's older edge and the one
+# The bands tile the past: each `maxAge` is a band's older edge and the one
 # before it is its newer edge, so every record is in exactly one band. The last
-# entry omits `thePast` to reach the corpus floor. One band is walked per visit,
+# entry omits `maxAge` to reach the corpus floor. One band is walked per visit,
 # youngest first. `every = 0` is always due (floored at 15 minutes) — for a
 # stream whose upstream is the source of truth and whose past must be re-read as
 # of today rather than taken on trust. A list cannot be set beside its scalar:

@@ -75,10 +75,10 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   `SYNC_REFETCH_THE_PAST_SECONDS` (7 days). See
   [`refetchThePastSeconds` and the audit](#refetchthepastseconds-and-the-audit).
 - **`negentropy`** *(optional)* — the same reconcile, scheduled per age band
-  instead of once for the whole past. A list of `{ thePast, every }`,
-  youngest-first: `thePast` is the band's older edge in seconds before now,
-  omitted on the last entry to mean the corpus floor, and `every` is how stale
-  that band may get. Cannot be set beside `negentropySyncThePastSeconds`, which
+  instead of once for the whole past. A list of `{ maxAge, every }`,
+  youngest-first: `maxAge` is the age in seconds of the oldest record the band
+  holds, omitted on the last entry to mean no maximum, and `every` is how stale
+  that band may get before it is re-checked. Cannot be set beside `negentropySyncThePastSeconds`, which
   is the same schedule as a single unbounded band. See
   [Age-banded schedules](#age-banded-schedules).
 - **`refetch`** *(optional)* — the same list, for the re-fetch. Replaces
@@ -152,17 +152,17 @@ take a list of bands instead of one period:
 
 ```hocon
 negentropy = [
-  { thePast = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
-  { thePast = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
+  { maxAge = 2592000,  every = 604800   }   # 0-30d    reconciled weekly
+  { maxAge = 31536000, every = 2592000  }   # 30d-1y   reconciled monthly
   { every = 31536000 }                       # 1y+      reconciled yearly
 ]
 ```
 
-The bands **tile** the past: each entry's `thePast` is its older edge and the
+The bands **tile** the past: each entry's `maxAge` is its older edge and the
 previous entry's is its newer one, so every record falls in exactly one band and
 no band re-walks another's records. The youngest band stays open at the top, so
 events arriving mid-walk are inside it. The loader refuses a list that is not
-youngest-first, or that omits `thePast` anywhere but the last entry — either
+youngest-first, or that omits `maxAge` anywhere but the last entry — either
 would leave a hole in the middle of the past, and a hole is invisible, because
 every band still reports itself verified.
 

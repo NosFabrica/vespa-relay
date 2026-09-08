@@ -131,16 +131,19 @@ data class SyncUpstream(
 
 /**
  * One age band of a stream's past and how often it is re-checked. Bands tile the timeline
- * youngest-first: [thePastSeconds] is a band's *older* edge and the previous band's is its
- * newer one, so every record falls in exactly one band and no band re-walks another's records.
+ * youngest-first: a band holds records up to [maxAgeSeconds] old, and the band before it holds
+ * everything younger, so every record falls in exactly one band and no band re-walks another's.
  *
  * The point is that age and churn correlate. Records from the last month still move; records
  * from three years ago do not, and re-reconciling them weekly is most of what a mirror spends
  * its CPU on. A band's cost is paid at its own cadence instead of the whole past's.
  */
 data class SyncTier(
-    /** The band's older edge, in seconds before now. Null is the corpus floor: everything older. */
-    val thePastSeconds: Long?,
+    /**
+     * The age of the oldest record this band holds, in seconds — and so the band's older edge.
+     * Null is no maximum: everything below the band before it, down to the corpus floor.
+     */
+    val maxAgeSeconds: Long?,
     /**
      * How stale this band may get before it is re-checked. Zero is always due, which
      * `attemptSpacingSeconds` still floors at 15 minutes — for a past whose upstream is the
@@ -153,7 +156,7 @@ data class SyncTier(
      * paging cursor, neither of which may be tied to the window: the window moves with `now`,
      * and a key that moved with it would orphan the very record of having walked the band.
      */
-    val id: String get() = "tier:" + (thePastSeconds?.toString() ?: "all")
+    val id: String get() = "tier:" + (maxAgeSeconds?.toString() ?: "all")
 
     companion object {
         /**
@@ -170,8 +173,8 @@ data class SyncTier(
 
         private fun edge(
             now: Long,
-            thePastSeconds: Long?,
-        ): Long? = thePastSeconds?.let { ((now - it) / EDGE_QUANTUM_SECONDS) * EDGE_QUANTUM_SECONDS }
+            maxAgeSeconds: Long?,
+        ): Long? = maxAgeSeconds?.let { ((now - it) / EDGE_QUANTUM_SECONDS) * EDGE_QUANTUM_SECONDS }
 
         /**
          * [filter] narrowed to one band. The band's edges are intersected with whatever bounds
@@ -197,7 +200,7 @@ data class SyncTier(
          * unqualified ones it has always used, so turning tiers on for one stream never orphans
          * another's state.
          */
-        fun isUnbanded(tiers: List<SyncTier>): Boolean = tiers.size == 1 && tiers[0].thePastSeconds == null
+        fun isUnbanded(tiers: List<SyncTier>): Boolean = tiers.size == 1 && tiers[0].maxAgeSeconds == null
 
         /** A band's discriminator for the audit's verified clock; empty when [isUnbanded]. */
         fun bandIdOf(
@@ -223,7 +226,7 @@ data class SyncTier(
          */
         fun tile(tiers: List<SyncTier>): List<Triple<SyncTier, Long?, Long?>> =
             tiers.mapIndexed { i, tier ->
-                Triple(tier, tier.thePastSeconds, if (i == 0) null else tiers[i - 1].thePastSeconds)
+                Triple(tier, tier.maxAgeSeconds, if (i == 0) null else tiers[i - 1].maxAgeSeconds)
             }
     }
 }
@@ -296,14 +299,14 @@ data class SyncStream(
     val negentropySchedule: List<SyncTier>
         get() =
             negentropyTiers.ifEmpty {
-                negentropySyncThePastSeconds?.let { listOf(SyncTier(thePastSeconds = null, everySeconds = it)) } ?: emptyList()
+                negentropySyncThePastSeconds?.let { listOf(SyncTier(maxAgeSeconds = null, everySeconds = it)) } ?: emptyList()
             }
 
     /** The re-fetch's bands, resolved the same way from [refetchThePastSeconds]. */
     val refetchSchedule: List<SyncTier>
         get() =
             refetchTiers.ifEmpty {
-                refetchThePastSeconds?.let { listOf(SyncTier(thePastSeconds = null, everySeconds = it)) } ?: emptyList()
+                refetchThePastSeconds?.let { listOf(SyncTier(maxAgeSeconds = null, everySeconds = it)) } ?: emptyList()
             }
 }
 

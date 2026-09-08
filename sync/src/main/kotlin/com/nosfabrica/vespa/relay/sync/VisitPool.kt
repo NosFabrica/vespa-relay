@@ -604,7 +604,7 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
-        val tiers = ask.stream.refetchSchedule.ifEmpty { listOf(SyncTier(thePastSeconds = null, everySeconds = SyncBands.NEVER)) }
+        val tiers = ask.stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = SyncBands.NEVER)) }
         val now = nowSeconds()
         // Oldest-last, so the catch-up of recent history is never queued behind a re-page of
         // the tail. Each band keeps its own coverage: a band expires, and only its legs re-open.

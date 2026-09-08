@@ -515,8 +515,8 @@ object RouterConfigLoader {
         }
 
     /**
-     * One stream's age bands under [key], youngest-first. Each entry is `{ thePast, every }`:
-     * `thePast` is the band's older edge in seconds before now, omitted on the last to mean the
+     * One stream's age bands under [key], youngest-first. Each entry is `{ maxAge, every }`:
+     * `maxAge` is the band's older edge in seconds before now, omitted on the last to mean the
      * corpus floor, and `every` is how stale that band may get.
      *
      * Refuses the list alongside [scalarKey] rather than merging them. The two say the same
@@ -541,7 +541,7 @@ object RouterConfigLoader {
                 val every = t.getLong("every")
                 require(every >= 0L) { "router: stream '$stream' `$key`[$i] has a negative `every`" }
                 SyncTier(
-                    thePastSeconds = if (t.hasPath("thePast")) t.getLong("thePast") else null,
+                    maxAgeSeconds = if (t.hasPath("maxAge")) t.getLong("maxAge") else null,
                     everySeconds = every,
                 )
             }
@@ -550,15 +550,15 @@ object RouterConfigLoader {
         // band's older one. Out of order, the bands would overlap or leave a hole, and a hole in
         // the middle of the past is invisible: every band reports itself verified.
         tiers.dropLast(1).forEachIndexed { i, t ->
-            requireNotNull(t.thePastSeconds) {
-                "router: stream '$stream' `$key`[$i] omits `thePast`, which means the corpus floor — only the " +
+            requireNotNull(t.maxAgeSeconds) {
+                "router: stream '$stream' `$key`[$i] omits `maxAge`, which means the corpus floor — only the " +
                     "last band may, since nothing older is left for the bands after it"
             }
         }
         tiers.zipWithNext().forEachIndexed { i, (a, b) ->
-            require(b.thePastSeconds == null || b.thePastSeconds > a.thePastSeconds!!) {
-                "router: stream '$stream' `$key` must run youngest-first, each `thePast` larger than the last — " +
-                    "`$key`[$i] reaches ${a.thePastSeconds}s back but `$key`[${i + 1}] only ${b.thePastSeconds}s"
+            require(b.maxAgeSeconds == null || b.maxAgeSeconds > a.maxAgeSeconds!!) {
+                "router: stream '$stream' `$key` must run youngest-first, each `maxAge` larger than the last — " +
+                    "`$key`[$i] reaches ${a.maxAgeSeconds}s back but `$key`[${i + 1}] only ${b.maxAgeSeconds}s"
             }
         }
         return tiers
