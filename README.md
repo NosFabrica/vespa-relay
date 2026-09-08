@@ -305,8 +305,8 @@ guards that make absence trustworthy enough to act on.
 
 ## Operator pages
 
-Five diagnostic pages, on three ports, each served by the process that does the
-work it describes — so a page that will not load is itself an answer.
+Five diagnostic pages, each served by the process that does the work it
+describes — so a page that will not load is itself an answer.
 
 | page | port | asks |
 |---|---|---|

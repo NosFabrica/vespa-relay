@@ -313,6 +313,20 @@ services:
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
       # which local file is mounted there.
       SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-/etc/vespa-relay/sync.conf}
+      # Migration tripwires, not settings, like the relay's: the ROUTER_* names
+      # were renamed to SYNC_* and the sync process refuses to boot on one. It
+      # can only refuse what it can SEE, and compose injects only what is mapped
+      # — so a stale .env would sail past the guard and take a default instead.
+      # Only the names whose silent loss is destructive: a wrong config, a moved
+      # cursor file (every upstream re-downloads its corpus), or the bundled
+      # example mounted in place of your streams. A tuning knob quietly back on
+      # its default is recoverable and shows on the status pages; these do not.
+      # Delete this block once the rename is old news.
+      ROUTER_CONFIG: ${ROUTER_CONFIG:-}
+      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
+      ROUTER_CONFIG_LOCAL: ${ROUTER_CONFIG_LOCAL:-}
+      ROUTER_SYNC_STATE_FILE: ${ROUTER_SYNC_STATE_FILE:-}
+      ROUTER_SWEEP_STATE_FILE: ${ROUTER_SWEEP_STATE_FILE:-}
       # What this deployment MEASURES, in its own file: the relay lists the
       # monitor scans and the clocks its passes run on. Separate because every
       # url it derives becomes a signed public claim about somebody else's

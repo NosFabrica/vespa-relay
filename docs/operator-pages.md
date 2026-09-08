@@ -181,7 +181,7 @@ rewrite and nothing else:
 
 ```nginx
 location /sync/    { proxy_pass http://sync:7778/;    }
-location /monitor/ { proxy_pass http://monitor:7779/; }
+location /monitor/ { proxy_pass http://sync:7779/;    }
 ```
 
 The **trailing slash matters on both sides**. `https://host/sync/` has `/sync/`

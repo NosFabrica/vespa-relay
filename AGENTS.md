@@ -192,7 +192,7 @@ already holds data, and `docs/search-latency.md` what a search costs.
 ## How the router works
 
 `SyncEngine` mirrors upstream events into the store. Its env vars are `SYNC_*`
-(the `ROUTER_*` spellings still work and warn on boot), and the monitor beside
+(a pre-rename `ROUTER_*` spelling is refused at boot), and the monitor beside
 it reads `MONITOR_CONFIG_FILE`; it is its own process,
 so a `sync.conf` / `monitor.conf` change is `restart sync`, never a relay outage. The long form
 is [docs/router-internals.md](docs/router-internals.md); the config format is

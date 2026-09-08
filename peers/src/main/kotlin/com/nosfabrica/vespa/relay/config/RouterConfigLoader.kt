@@ -32,12 +32,18 @@ import java.io.File
 import java.util.regex.PatternSyntaxException
 
 /**
- * The pre-rename `ROUTER_*` spellings and the `SYNC_*` name that replaced each. They were read
- * for a release with a nudge on stderr; every deployment is on the new names now, so they are
- * REFUSED rather than ignored. A name that is merely dropped leaves the mirror running on a
- * default nobody chose, which is the failure the rest of this file refuses everywhere else.
+ * Every pre-rename `ROUTER_*` spelling, against the `SYNC_*` name that replaced it — or null where
+ * the setting is gone rather than renamed. They were read for a release with a nudge on stderr;
+ * every deployment is on the new names now, so they are REFUSED rather than ignored. A name that
+ * is merely dropped leaves the mirror running on a default nobody chose, which is the failure the
+ * rest of this file refuses everywhere else.
+ *
+ * NAMED ONE BY ONE, never matched on the `ROUTER_` prefix: Kubernetes injects `ROUTER_SERVICE_HOST`
+ * and friends into every pod in a namespace holding a Service called `router`, and this subsystem
+ * is what operators call the router. A prefix test would refuse to boot over a name the operator
+ * never set, blaming a setting they have never heard of.
  */
-private val RENAMED_TO =
+private val RENAMED_ROUTER_ENV =
     mapOf(
         "ROUTER_CONFIG" to "SYNC_CONFIG",
         "ROUTER_CONFIG_FILE" to "SYNC_CONFIG_FILE",
@@ -54,17 +60,20 @@ private val RENAMED_TO =
         "ROUTER_WIRE_LOG" to "SYNC_WIRE_LOG",
         "ROUTER_SYNC_STATE_FILE" to "SYNC_STATE_FILE",
         "ROUTER_SWEEP_STATE_FILE" to "SYNC_SWEEP_STATE_FILE",
+        // Compose-only: it picks the file bind-mounted at SYNC_CONFIG_FILE, and never reaches a
+        // container on its own. The sync service passes it in purely so this guard can see it.
+        "ROUTER_CONFIG_LOCAL" to "SYNC_CONFIG_LOCAL",
+        // Removed outright rather than renamed. The SYNC_ spelling of each keeps its own message.
+        "ROUTER_NEG_MIN_EVENTS" to null,
+        "ROUTER_FULL_RESYNC_SECONDS" to null,
     )
 
-/**
- * Refuse every `ROUTER_*` setting still in the environment, naming what replaced it. Two of them
- * (`ROUTER_NEG_MIN_EVENTS`, `ROUTER_FULL_RESYNC_SECONDS`) name a setting that is gone rather than
- * renamed; they are refused here too, and the `SYNC_*` spelling of each keeps its own message.
- */
-fun requireNoRenamedRouterEnv(env: Map<String, String>) {
-    val stale = env.keys.filter { it.startsWith("ROUTER_") && !env[it].isNullOrBlank() }.sorted()
+/** Refuse any [RENAMED_ROUTER_ENV] name still set, saying what replaced it. Blank is somebody's unset placeholder. */
+fun refuseRenamedRouterEnv(env: Map<String, String>) {
+    val stale = RENAMED_ROUTER_ENV.keys.filter { !env[it].isNullOrBlank() }.sorted()
     require(stale.isEmpty()) {
-        val detail = stale.joinToString(", ") { RENAMED_TO[it]?.let { now -> "$it is now $now" } ?: "$it is gone" }
+        val detail =
+            stale.joinToString(", ") { name -> RENAMED_ROUTER_ENV[name]?.let { "$name is now $it" } ?: "$name is gone" }
         "router: the ROUTER_* names were renamed to SYNC_* and the old spellings are no longer read — " +
             "$detail. Rename them where this process gets its environment; left set, they would do nothing " +
             "while reading as configuration"
@@ -77,7 +86,7 @@ fun requireNoRenamedRouterEnv(env: Map<String, String>) {
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
-        requireNoRenamedRouterEnv(env)
+        refuseRenamedRouterEnv(env)
         // The monitor's own file, if the deployment keeps the two planes apart. Read BEFORE the
         // sync config decides there is nothing to do, so a monitor declaration is never dropped
         // without a word and the one-declaration rule holds on every path.

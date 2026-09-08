@@ -1075,6 +1075,20 @@ class RouterConfigTest {
 
         // A blank one is somebody's unset placeholder, not a setting.
         assertNotNull(RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "")))
+
+        // Kubernetes injects these into every pod in a namespace holding a Service called `router`,
+        // and this subsystem is what operators call the router. Refusing on the prefix would kill the
+        // pod over a name nobody set, so the guard names its settings one by one.
+        assertNotNull(
+            RouterConfigLoader.fromEnv(
+                mapOf(
+                    "SYNC_CONFIG" to streamsConfig,
+                    "ROUTER_SERVICE_HOST" to "10.0.0.1",
+                    "ROUTER_SERVICE_PORT" to "7778",
+                    "ROUTER_PORT_7778_TCP_ADDR" to "10.0.0.1",
+                ),
+            ),
+        )
     }
 
     @Test
