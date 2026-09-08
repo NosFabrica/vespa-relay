@@ -172,10 +172,16 @@ fun Route.pulseDocument(
     guard: PulseGuard,
     document: suspend () -> JsonObject?,
     path: String = PULSE_DOC_PATH,
+    // Served to anyone, and only ever the operational half: `pulsePublic`
+    // refuses at boot if the client-derived sections are also on, so a public
+    // document cannot be one that quotes what people searched for.
+    public: Boolean = false,
 ) {
     get(path) {
-        val who = call.admin(guard, path, "GET")
-        if (who !is Admitted.Admin) return@get call.refuse(who, guard, path, "GET")
+        if (!public) {
+            val who = call.admin(guard, path, "GET")
+            if (who !is Admitted.Admin) return@get call.refuse(who, guard, path, "GET")
+        }
         val doc = document()
         call.response.header(HttpHeaders.CacheControl, "no-store")
         if (doc == null) {
@@ -257,6 +263,9 @@ fun servePulseSite(
     // Null keeps the page's markup byte-identical to the classpath's.
     icon: String? = null,
     wait: Boolean = false,
+    // Serve the document to anyone. Only reachable with the client-derived
+    // sections off — `pulsePublic` refuses the pair at boot.
+    public: Boolean = false,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     val cached = CachedPage(pageWithIcon(page, icon))
     return embeddedServer(Netty, port = port) {
@@ -264,7 +273,7 @@ fun servePulseSite(
         routing {
             get("/") { call.respondPage(cached) }
             get("/pulse.html") { call.respondPage(cached) }
-            pulseDocument(guard, document)
+            pulseDocument(guard, document, public = public)
             pulseSession(guard)
             webModules()
             favicon { icon }

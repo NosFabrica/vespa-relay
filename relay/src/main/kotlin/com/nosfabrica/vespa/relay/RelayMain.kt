@@ -39,6 +39,7 @@ import com.nosfabrica.vespa.relay.pulse.PulseDocument
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.TrustDocument
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
+import com.nosfabrica.vespa.relay.pulse.pulsePublic
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
@@ -186,6 +187,8 @@ fun main() {
     // Read before the store opens: the slow-read threshold is a constructor setting.
     val pulsePort = env["PULSE_PORT"]?.trim()?.toIntOrNull() ?: 0
     val pulseClientDetail = env["PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    // Refuses the pair: a public pulse must be the operational half only.
+    val pulseIsPublic = pulsePublic(env, pulseClientDetail)
     val slowReadMs = pulseSlowReadMs(env, "PULSE_SLOW_READ_MS", pulseClientDetail, "PULSE_CLIENT_DETAIL")
     // Resolved here, not where the site is mounted: a port with no administrator named must
     // refuse the boot beside the other settings checks, before the schema deploy.
@@ -193,7 +196,7 @@ fun main() {
         if (pulsePort <= 0) {
             null
         } else {
-            PulseGuard(Nip98AdminGate(pulseAdmins(adminPubkeys, "PULSE_PORT"), pulsePublicUrl(env, "PULSE_PUBLIC_URL", pulsePort)))
+            PulseGuard(Nip98AdminGate(pulseAdmins(adminPubkeys, "PULSE_PORT", public = pulseIsPublic), pulsePublicUrl(env, "PULSE_PUBLIC_URL", pulsePort)))
         }
 
     val store =
@@ -308,6 +311,7 @@ fun main() {
                 port = pulsePort,
                 page = page,
                 guard = pulseGuard,
+                public = pulseIsPublic,
                 document =
                     PulseDocument.reader(
                         store,
