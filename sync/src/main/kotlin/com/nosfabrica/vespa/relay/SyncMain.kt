@@ -36,6 +36,7 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.nosfabrica.vespa.relay.pulse.pulseAdmins
+import com.nosfabrica.vespa.relay.pulse.pulsePublic
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.status.StatusRollup
@@ -159,6 +160,8 @@ fun main() {
         env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
         } ?: 0
+    // Refuses the pair: a public pulse must be the operational half only.
+    val pulseIsPublic = pulsePublic(env, pulseClientDetail, "SYNC_PULSE_PUBLIC", "SYNC_PULSE_CLIENT_DETAIL")
     // Resolved here so a port set with no administrator named refuses before boot has spent
     // a minute standing everything else up.
     val pulseGuard =
@@ -167,7 +170,7 @@ fun main() {
         } else {
             PulseGuard(
                 Nip98AdminGate(
-                    pulseAdmins(adminPubkeysFromEnv(env), "SYNC_PULSE_PORT"),
+                    pulseAdmins(adminPubkeysFromEnv(env), "SYNC_PULSE_PORT", public = pulseIsPublic),
                     pulsePublicUrl(env, "SYNC_PULSE_PUBLIC_URL", pulsePort),
                 ),
             )
@@ -323,6 +326,7 @@ fun main() {
                 port = pulsePort,
                 page = statusPage("/pulse.html"),
                 guard = pulseGuard,
+                public = pulseIsPublic,
                 document =
                     PulseDocument.reader(
                         store,

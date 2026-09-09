@@ -74,7 +74,11 @@ from **`GET /trust.json`**.
 ## Where the resources go — `/pulse.html`
 
 On its own port (`PULSE_PORT`, 7780, on the relay; `SYNC_PULSE_PORT`, 7781, on
-the mirror), **off by default** and **administrators only**.
+the mirror), **off by default** and **administrators only** — unless
+`PULSE_PUBLIC` / `SYNC_PULSE_PUBLIC` opens the operational half to anyone. Both
+services take the flag, and both refuse the boot if the matching
+`*_CLIENT_DETAIL` switch is also on: what the page may say publicly is decided
+at boot, not per request.
 
 The pages above say what this deployment *holds* and what the mirror is *doing*.
 This one says what any of it **costs** — read live from the store's own counters,

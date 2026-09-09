@@ -123,6 +123,7 @@ services:
       # the port below publishes, which is right for an SSH tunnel; set it only
       # behind a reverse proxy.
       PULSE_PUBLIC_URL: ${PULSE_PUBLIC_URL:-}
+      PULSE_PUBLIC: ${PULSE_PUBLIC:-}
       # Whether the store RETAINS the sections that describe the people using
       # this relay — heaviest observer lenses, heaviest search terms, and a
       # slow-read log that quotes the query. Off unless you say so.
@@ -418,6 +419,7 @@ services:
       RELAY_ADMIN_PUBKEYS: ${RELAY_ADMIN_PUBKEYS:-}
       SYNC_PULSE_PORT: ${SYNC_PULSE_PORT:-}
       SYNC_PULSE_PUBLIC_URL: ${SYNC_PULSE_PUBLIC_URL:-}
+      SYNC_PULSE_PUBLIC: ${SYNC_PULSE_PUBLIC:-}
       SYNC_PULSE_CLIENT_DETAIL: ${SYNC_PULSE_CLIENT_DETAIL:-}
       SYNC_PULSE_SLOW_READ_MS: ${SYNC_PULSE_SLOW_READ_MS:-}
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}

@@ -72,10 +72,10 @@ class ComposePassesEnvTest {
 
         // Named outright because both halves fail silently: an unmapped port means no
         // page, an unmapped admin list means a boot that stops.
-        for (name in listOf("PULSE_PORT", "PULSE_PUBLIC_URL", "PULSE_CLIENT_DETAIL", "PULSE_SLOW_READ_MS")) {
+        for (name in listOf("PULSE_PORT", "PULSE_PUBLIC_URL", "PULSE_PUBLIC", "PULSE_CLIENT_DETAIL", "PULSE_SLOW_READ_MS")) {
             assertTrue(compose.contains("$name: \${$name"), "$name is not passed to the relay service")
         }
-        for (name in listOf("SYNC_PULSE_PORT", "SYNC_PULSE_PUBLIC_URL", "SYNC_PULSE_CLIENT_DETAIL", "SYNC_PULSE_SLOW_READ_MS")) {
+        for (name in listOf("SYNC_PULSE_PORT", "SYNC_PULSE_PUBLIC_URL", "SYNC_PULSE_PUBLIC", "SYNC_PULSE_CLIENT_DETAIL", "SYNC_PULSE_SLOW_READ_MS")) {
             assertTrue(compose.contains("$name: \${$name"), "$name is not passed to the sync service")
         }
         assertTrue(
