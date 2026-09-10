@@ -31,72 +31,89 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# cecc3287b2 = amethyst main @ 2026-09-01 (PR #4035). MOVED BECAUSE THE STORE
-# ASKED, exactly as b10be95a6e was: the store pinned below names this same
-# string in its own libs.versions.toml, and `force(libs.quartz)` means THIS
-# line — not the store's — decides which jar every module compiles and runs
-# against. Left at b10be95a6e while only the store pin moved, the deploy would
-# ship the store's new column expectations against a quartz whose
-# `SearchFieldExtractor` still drops seventeen kinds' titles into the body
-# role, and half the fix would silently not exist. That is the failure mode the
-# note at the top of this file was written about — the reason these two lines
-# move together, and the reason to read the store's own pin before touching
-# either.
+# a8e8778265 = amethyst main @ 2026-09-10 (PR #4069). MOVED BECAUSE THE STORE
+# ASKED, the same way cecc3287b2 and b10be95a6e were: the store pinned below
+# names this exact string in its own libs.versions.toml, and `force(libs.quartz)`
+# means THIS line — not the store's — decides which jar every module compiles
+# and runs against. Left at cecc3287b2 while only the store pin moved, the
+# ELEVEN kinds this range makes searchable would still not parse as
+# `SearchableEvent`, `SearchExtractors` would keep deriving nothing from them,
+# and the whole reason for taking the store bump would silently not exist.
 #
-# The range over b10be95a6e is 46 commits and 142 files, but only THIRTEEN
-# quartz sources and only TWO this relay can reach, both under `nip50Search`.
-# `IEventStore`, `SQLiteEventStore`, `RelayServerBase`, `EventFactory`,
-# `Filter`, `SearchableEvent` and `SearchQuery` are byte-identical, so the
-# protocol surface this relay serves is unmoved and the searchable set stays at
-# 130 classes / 133 kind values (131 files naming `SearchableEvent` at both
-# ends of the range). Everything else is NIP-47 wallet-connect, its
-# Jackson/kotlinx serializers, and relay-pool tests.
+# The range is 220 commits over 202 files, and unlike the last two it is
+# UPSTREAM'S OWN work rather than an ask from this side. The protocol surface
+# this relay serves does not move: nothing under `nip01Core/relay/server`
+# (RelayServerBase, RelaySession, SessionBackend, IngestQueue, the policies),
+# nothing under `nip01Core/relay/client` (the negentropy accessories the router
+# drives), and none of `Filter`, `SearchQuery`, `SearchFieldExtractor`,
+# `IndexableFields`, `IEventStore` — byte-identical, all of them. Four files in
+# `nip01Core/` and `nip50Search/` move at all, and one of those four is a new
+# file (`EventSearchMatcher`, an in-memory NIP-50 matcher for a client with no
+# index — nothing here calls it; this relay's search is the engine's). What the
+# range does carry for this repo:
 #
-#   SearchFieldExtractor gained NINETEEN branches, counted in the diff, and the
-#     store's own accounting of them is that SEVENTEEN had been falling through
-#     the generic `is SearchableEvent ->` fallback with a title trapped in the
-#     BODY role — where it can never reach the title band, the same 236x
-#     discount the Trusted List title carried before the previous pin. Those
-#     are the NIP-15 marketplace family (30017/30018/30019/30020), the
-#     Podcasting 2.0 pair (30054/30055), the group-metadata EDIT (9002, whose
-#     published twin 39000 already had a branch), plus 1010, 1065, 1068, 1163,
-#     1985, 2473, 6969, 12473, 38192 and 38383. The remaining two (1111, 1311)
-#     are body-only and branch for the opposite reason: their
-#     indexableContent() concatenates the `t` tags INTO the body, and the
-#     funnel already carries them in the hashtag role, so the words were being
-#     indexed twice.
+#   THE SEARCHABLE SET MOVES, for the first time in three bumps: 133 -> 144 kind
+#     values (130 -> 141 classes). The eleven are the citation trio (31/32/33),
+#     the wiki merge request (818), the publication pair (30040/30041), the
+#     library family (30045/30142/32176) and the two ratings kinds
+#     (31987/34259). `SearchFieldExtractor` gained NO branch for any of them, so
+#     all eleven fall through its `is SearchableEvent ->` catch-all with the
+#     whole `indexableContent()` in the BODY role — the same 236x title discount
+#     the previous two bumps FIXED for nineteen other kinds, and it takes the
+#     same fix, one branch each, upstream. A RANKING gap, on kinds this corpus
+#     has almost none of; the store's own README footnote carries the list and
+#     the second half of it (a field a kind never joins into
+#     `indexableContent()` is not indexed at all — a citation's `author` and
+#     `doi`, a relay review's `relay` url, a learning resource's schema.org
+#     facets).
 #
-#   Four kinds with a public url now fill the AFFILIATION role — a git repo's
-#     clone urls beside its homepage, a meeting space's `streaming` endpoint,
-#     and both nSite kinds' `source`.
+#   SearchableEvent grew a READ path: `forEachIndexableField(visitor)` hands the
+#     same fields over one at a time without building the joined string, for
+#     Amethyst's per-keystroke scan of its whole cache. Both it and
+#     `indexableSeparator()` are DEFAULTED, every override in the range
+#     re-expresses a join that already existed (upstream's
+#     `IndexableContentGoldenTest` is what pins that), and the store only ever
+#     calls the WRITE path. So: nothing to implement here, and no column moves.
 #
-#   IndexableFields gained KDOC ONLY: the Profile-XOR-Tiered contract written
-#     down. A kind fills the profile roles or the content roles, never both,
-#     and `event.sd` composes the two column groups with a plain SUM on that
-#     premise — so a doc filling a naming column in each would claim the token
-#     band twice (~260 000 against the ~130 000 a whole-field match earns). The
-#     sealed type enforced it; nothing said it was load-bearing.
+#   FilterMatcher was rewritten to allocate NOTHING — the per-key `toSet()`, the
+#     `tagsAll` tag walk and the stdlib `any` iterators are gone, replaced by
+#     in-place loops over the same data; upstream's
+#     `FilterMatcherEquivalenceTest` pins the semantics. Free here, and not
+#     nothing: `Filter.match(event)` is the router's per-event live-tail
+#     predicate (VisitPool's three arms, SyncEngine's stream fan-out,
+#     RetractionAudit), so this is allocation taken off the hottest loop the
+#     sync side runs.
 #
-#   And write-path allocation, which changes no answer: the two `tiers`
-#     overloads end in one `build`, the role lists collect lazily, and the
-#     hashtag/location scans no longer allocate for the events — nearly all of
-#     them — that carry neither tag.
+#   MetadataEvent overrides the new read path and declares its `" "` separator.
+#     Write path unchanged, so kind 0 indexes exactly what it did.
 #
-# RE-FEED REQUIRED, and it is the store pin below that carries the procedure:
-# extraction is data we WRITE on put, so every event of those kinds keeps its
-# old columns until `REINDEX_FTS_ON_START` re-derives them. Same words,
-# different rungs — a ranking backfill, not an outage.
+#   And outside those two packages, EventFactory + KindNames wire FIFTEEN new
+#     classes. Eleven are the searchable ones above; the other four are wired
+#     but not searchable — external reaction (17), wiki merge acceptance (819),
+#     wiki redirect (30819) and the DVM heartbeat (11998). KindNames names all
+#     fifteen, which is what the `/stats.json` kind rollup prints instead of a
+#     bare number.
 #
-# DIRECTION: b10be95a6e is a strict ancestor of this (`git merge-base
+# NO RE-FEED for anything already indexed, unlike the two bumps before it: no
+# `indexableContent()` body moved in the range, so every kind already stored
+# derives the same words onto the same columns. What the eleven new kinds need
+# is a RECALL repair rather than a ranking backfill, and it is the store pin
+# below that carries the procedure.
+#
+# DIRECTION: cecc3287b2 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates).
+#   git merge-base --is-ancestor cecc3287b2 a8e8778265   # verified
 #
-# LEXICOGRAPHIC: 'b10b…' < 'cecc…' ('b' < 'c'), so this sorts ABOVE the pin it
-# replaces — the SAFE direction, and the store asks for this exact string
-# anyway, so there is no conflict for ordering to settle. The resolved graph is
-# still the proof, and on this bump every quartz line reads cecc3287b2 with no
-# `->` left anywhere, in all five JVM modules:
+# LEXICOGRAPHIC: 'a8e8…' < 'cecc…' ('a' < 'c'), so this sorts BELOW the pin it
+# replaces — the direction that LOSES a conflict, the opposite of the last bump.
+# It costs nothing, and for once not because no conflict is possible: quartz is
+# the dependency two parts of the graph DO both name, and every module's
+# `resolutionStrategy { force(libs.quartz) }` is what settles it, not ordering.
+# The proof stays the resolved graph — every quartz line reads a8e8778265 with
+# no `->` left anywhere, in every module that names it (all six: `:web` takes
+# quartz without the store):
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "cecc3287b2"
+quartz = "a8e8778265"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -526,7 +543,69 @@ quartz = "cecc3287b2"
 # line must still read 3c6f651a1c with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-vespaEventStore = "3c6f651a1c"
+# ELEVEN KINDS BECOME SEARCHABLE (#136). The first store pin in this file that
+# carries no store code at all: `git diff 3c6f651a1c..c11472eb18` is five files,
+# and the only one under `src` is a test. What it carries is the QUARTZ pin
+# above — the store's own libs.versions.toml moves cecc3287b2 -> a8e8778265, and
+# `force(libs.quartz)` means this repo has to move with it or the bump is a
+# no-op. Read the quartz note for what upstream changed; this one is about what
+# the relay has to DO about it.
+#
+# WHAT THE RELAY GETS: kinds 31, 32, 33, 818, 30040, 30041, 30045, 30142, 31987,
+# 32176 and 34259 now parse as `SearchableEvent`, so `SearchExtractors.extract`
+# derives search columns for them on put where it derived none before. Nothing
+# else about a put changes, no column is written differently for any other kind,
+# and `event.sd` does not move — so there is no deploy step, nothing for
+# `configChangeActions` to report, and no restart.
+#
+# RECALL IS FORWARD-ONLY UNTIL THE WALK RUNS, and that is the one thing about
+# this bump that is not free. An event of those kinds stored BEFORE it carries
+# no search fields at all — not the wrong tier, none — because when it was
+# ingested nothing parsed it as searchable. It is therefore invisible to NIP-50,
+# and unlike the last two bumps' backfill that is a RECALL hole rather than a
+# ranking one: the search does not rank it low, it does not return it.
+#
+# `REINDEX_FTS_ON_START` is the repair, for the same reason it was the repair
+# for the Trusted List titles: the store's drift check re-puts a document whose
+# extracted columns differ from the stored ones, `visitDocsPage(EventQuery())`
+# walks EVERY document rather than the searchable ones, and a pre-bump kind-30040
+# doc differs by all of them. docs/migrations.md carries the entry and the
+# procedure; the walk is resumable and the cursor survives a restart.
+#
+# It is also the CHEAPEST such repair this file has recorded, because of the
+# other half of this change: no stream ever fetched these kinds, so the back
+# catalogue is whatever arrived by direct write to this relay, not a mirrored
+# corpus. sync.conf.example's `contentViaOutbox` now asks for all eleven — the
+# same shape as the three NIP-34 git statuses that were missing there, searchable
+# kinds no stream fetched — so the corpus this walk is worth running against is
+# the one that arrives AFTER the router is restarted with the new list.
+#
+# THE GATE AT THIS COMMIT, per AGENTS.md's rule — the relay's own tests run on
+# InMemoryEventIndex and cannot see a Vespa-only regression:
+#   git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
+#   git checkout c11472eb18
+#   DOCKER_MIN_API_VERSION=1.24 dockerd &          # AGENTS.md: no daemon by default
+#   TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test -Pintegration --max-workers=1 --no-daemon
+# Run HERE on 2026-09-10: 78 suites, 685 tests, 0 failures, 27m25s. EIGHTEEN of
+# those suites are ITs against a real Vespa and SEVENTEEN of them ran —
+# VespaParityIT, SearchCountIT, SearchExactTextIT, SearchPrefixLadderIT,
+# SearchBodyGramIT, RankRegressionIT, FieldCoverageRankIT, MatchThreadPageIT and
+# the rest. `skipped="1"` read off the result XML rather than off `BUILD
+# SUCCESSFUL`, per AGENTS.md, and the one skip is StagingCorpusIT declining on
+# `Assumption failed: set STAGING_CORPUS to a capture_staging.py export` — an
+# absent corpus export, NOT the `assumeTrue(dockerAvailable())` abort that makes
+# a whole green run meaningless.
+#
+# DIRECTION: 3c6f651a1c is a strict ancestor of this.
+#   git merge-base --is-ancestor 3c6f651a1c c11472eb18   # verified
+#
+# LEXICOGRAPHIC: 'c114…' > '3c6f…' ('c' > '3'), so this sorts ABOVE the pin it
+# replaces — the SAFE direction, as the last one was. No `force(…)`: nothing
+# else in the graph names vespa-eventstore. Every eventstore line must read
+# c11472eb18 with no `->`:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+vespaEventStore = "c11472eb18"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
