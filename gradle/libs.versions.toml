@@ -495,7 +495,38 @@ quartz = "cecc3287b2"
 # eventstore line must read 2e05757a41 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-vespaEventStore = "2e05757a41"
+# THE SCAN WALK IS TIMED (#135). `visitIdsByScan` had no instrumentation of any
+# kind while every sibling branch had it -- walk.cursor.decide, walk.ids.page,
+# walk.ids.tiegroup, walk.cursor.countat -- and a document-API visit is not a
+# query either, so it books no engine time against any caller on the pulse. A
+# walk could read every document in the corpus and look, on every instrument the
+# process has, like a walk doing nothing.
+#
+# Taken to close a 44x hole in the accounting. On staging with NO USERS: sync
+# drives ~15.5 cores of Vespa (proved by scaling sync to 0 -- CPU fell to 0.26
+# cores in 90s and stayed), Vespa matches ~7.0M docs/s on the event doctype, and
+# the store's query ledger accounts for 160k/s. The scan is the only path to
+# Vespa that is neither a recorded query nor a timed stage.
+#
+# It is also the standing explanation for two fixes that moved no CPU: the
+# age-banded schedules and #134's wider pages both touch the CURSOR path only,
+# and the scan cannot narrow -- a selection is evaluated per document, so
+# `created_at` bounds shrink what is RETURNED, never what is READ.
+#
+# NEW STAGES: `walk.scan`, `walk.scan.page`, `walk.scan.unselectable`. Read them
+# with `walk.cursor.decide`, which counts every choice: decide-minus-scan is how
+# often the cursor won. MEASURES, DOES NOT FIX -- shipped to kill or confirm the
+# hypothesis, not on the assumption it is right.
+#
+# DIRECTION: 2e05757a41 is a strict ancestor of this.
+#   git merge-base --is-ancestor 2e05757a41 3c6f651a1c   # verified
+#
+# LEXICOGRAPHIC: '3c6f…' > '2e05…' ('3' > '2'), so this sorts ABOVE the pin it
+# replaces -- the SAFE direction, unlike the last two bumps. Every eventstore
+# line must still read 3c6f651a1c with no `->`:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+vespaEventStore = "3c6f651a1c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
