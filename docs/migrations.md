@@ -292,6 +292,62 @@ docker compose exec vespa sh -c 'ps -eo pid,lstart,comm | grep proton'
 Lowering it again is always safe: a smaller ceiling makes the ranked search
 slower, never wrong, and every other query shape already asks for one thread.
 
+## Migration: eleven kinds become searchable (store `c11472eb18`)
+
+The first **recall-class** entry in this file. The two re-feeds above moved
+events between *columns* — the same words, ranked differently — and could be
+left for whenever. This one decides whether an event is returned at all.
+
+Kinds **31, 32, 33** (citations), **818** (wiki merge request), **30040 /
+30041** (publication index and section), **30045** (bookshelf directory),
+**30142** (learning resource), **32176** (Blossom piece index), **31987**
+(relay review) and **34259** (entity rating) became `SearchableEvent` in the
+quartz pin that rides with this store bump (`a8e8778265`). Before it, nothing
+parsed them as searchable, so `SearchExtractors` derived **no** search fields
+for them: an event of one of these kinds that is already stored carries not the
+wrong tier but none at all, and NIP-50 does not return it. New writes are
+correct on arrival.
+
+**The schema does not move.** `event.sd` is untouched by this bump — no field,
+no rank expression, no `match-features` — so `AUTO_DEPLOY` has a no-op to do,
+`configChangeActions` should come back empty on all three lists, and there is
+nothing to restart. Read the response object anyway, per the top of this file.
+
+### The procedure
+
+Two halves, and the mirror half is the one that decides whether the walk is
+worth anything:
+
+1. **Mirror them.** `sync.conf.example`'s `contentViaOutbox` now asks for all
+   eleven; no stream fetched them before, so a corpus that only ever received
+   what the router pulled holds none of them. Copy the new kinds into the live
+   `sync.conf` and `docker compose --profile sync restart sync`. Everything that
+   arrives after that is indexed on arrival and needs nothing else.
+2. **Repair what is already there.** One boot with `REINDEX_FTS_ON_START=true`,
+   then turn it back off. This is the case that flag exists for: `search_*` are
+   fields we WRITE on `put`, the store's walk visits **every** document
+   (`visitDocsPage(EventQuery())`, not a searchable-kind filter), and its drift
+   check re-puts any document whose extracted columns differ from the stored
+   ones — which for a pre-bump event of these kinds is all of them. On a relay
+   that has only ever been fed by the router this repairs whatever arrived by
+   direct write, which is usually little; run it anyway, because nothing about
+   the corpus distinguishes the two cases from outside.
+
+A Vespa reindex is the wrong tool here, for the same reason as the entries
+above — see "Which repair applies".
+
+### What it does not fix
+
+The walk buys recall, not ranking. Upstream's `SearchFieldExtractor` has no
+branch for any of the eleven, so each one's whole `indexableContent()` lands in
+the **body** role: a title on a publication or a learning resource is reached
+like prose, without the prefix and typo matching a primary field carries. And a
+field the kind never joins into `indexableContent()` — a citation's `author` and
+`doi`, a relay review's `relay` url, a learning resource's schema.org facets —
+is still not indexed at all, so it cannot be searched for after this walk
+either. Both halves are upstream's to close, one branch per kind; the
+`vespaEventStore` note in `gradle/libs.versions.toml` carries the detail.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus
