@@ -468,7 +468,34 @@ quartz = "cecc3287b2"
 # 52ac77e5ac = #120. 34fb127523 = #119. 02b528a85a = #118. 8f353d8d05 = #117.
 # 2fa2b67141 = #116. a23a6a3a68 = #113/#114. aca0552c4e = #112.
 # 53441182f5 = #108.
-vespaEventStore = "58011b670c"
+# WIDER CURSOR PAGES (#134). An id walk is billed per PAGE, not per id: a page
+# is `order by created_at desc` with a limit, and proton matches every document
+# in the cursor's remaining range, sorts, and returns the top N — the limit
+# never touches the matching, which is nearly all of the cost. PAGE_IDS went
+# 2,000 -> 20,000, which is ~5.4x less work on the largest consumer this
+# cluster has.
+#
+# WHY IT MATTERED HERE: read off the mirror's own pulse (`engineByCaller`, made
+# reachable by relay #230), the Snapshot walks were 79.3% of ALL engine time on
+# staging — 10.9 of 13.7 core-hours in 14.5h, across 653,476 pages that matched
+# 148,493,275,456 documents between them, on a cluster with NO USERS.
+#
+# Measured on staging, same shape, only the limit varying (totalCount 2,809,568
+# and coverage.full at every size): 2,000 -> 0.122s/page, 20,000 -> 0.227s,
+# 50,000 -> 0.363s, 100,000 -> 0.643s. Ten times the rows for 1.86x the time.
+# 100,000 is not a value it may take: the fetch is PAGE_IDS + TIE_SLACK and a
+# page over the query profile's maxHits cap is refused outright, not trimmed.
+#
+# DIRECTION: 58011b670c is a strict ancestor of this.
+#   git merge-base --is-ancestor 58011b670c 2e05757a41   # verified
+#
+# LEXICOGRAPHIC: '2e05…' < '5801…' ('2' < '5'), the UNSAFE direction — this
+# sorts BELOW the pin it replaces, so a conflict would resolve away from it. No
+# `force(…)`: nothing else in the graph names vespa-eventstore. Every
+# eventstore line must read 2e05757a41 with no `->`:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+vespaEventStore = "2e05757a41"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
