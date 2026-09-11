@@ -14,13 +14,22 @@ import "./cards/people.js";
 import "./cards/social.js";
 import "./cards/lists.js";
 import "./cards/article.js";
+import "./cards/citations.js";
 import "./cards/media.js";
+import "./cards/podcast.js";
 import "./cards/code.js";
 import "./cards/live.js";
 import "./cards/market.js";
 import "./cards/apps.js";
 import "./cards/relays.js";
 import "./cards/trust.js";
+import "./cards/ratings.js";
+import "./cards/forums.js";
+import "./cards/agents.js";
+import "./cards/attest.js";
+import "./cards/story.js";
+import "./cards/records.js";
+import "./cards/dvm.js";
 
 /**
  * One event to one card. `opts.full` is the permalink depth; without it the card is a
@@ -44,15 +53,17 @@ export function namedPubkeys(ev, opts) {
   for (const pk of gridPeople(ev, opts)) add(pk);
   for (const pk of namedPeople(ev, opts)) add(pk);
   add(replyPerson(ev));
-  // A zap receipt's sender is the author of the stringified request in `description`.
-  if (ev.kind === 9735) {
+  // A zap receipt's sender is the author of the stringified request in `description`; a BOLT12
+  // zap may also name its payer outright, in `P`, which no scan of lowercase `p` reaches.
+  if (ev.kind === 9735 || ev.kind === 9736) {
     try { add(JSON.parse(tagOf(ev, "description") || "{}").pubkey); } catch (e) { /* a malformed receipt names nobody */ }
+    add(tagOf(ev, "P"));
   }
   return [...out];
 }
 
 /** The kinds whose card names the person a `p` tag points at, one per event. */
-const NAMES_P_TAGS = new Set([9734, 9735, 1984]);
+const NAMES_P_TAGS = new Set([1313, 1984, 8333, 9321, 9734, 9735, 9736, 9737, 31871, 31872, 31873]);
 
 /**
  * What a type-ahead row says. The name never falls back to the content, and a sub that

@@ -101,6 +101,71 @@ export const imetas = (ev) => tagsOf(ev, "imeta").map((t) => {
   return m;
 });
 
+/**
+ * A count of sats with the separators every amount on this page reads with, or null when the
+ * value is not a count. Not `satsOf`, which divides: this is for the tags already denominated
+ * in sats.
+ */
+export const satCount = (v) => {
+  const n = Number(oneLine(v));
+  return Number.isFinite(n) && n > 0 ? n.toLocaleString() : null;
+};
+
+/** Seconds as 0:42, or null when the value is not a count of them. */
+export const fmtDuration = (secs) => {
+  const n = Math.round(Number(secs));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const two = (x) => String(x).padStart(2, "0");
+  return n >= 3600
+    ? `${Math.floor(n / 3600)}:${two(Math.floor(n / 60) % 60)}:${two(n % 60)}`
+    : `${Math.floor(n / 60)}:${two(n % 60)}`;
+};
+
+/**
+ * A player for one video url. `data-src`, never `src`: app.js promotes it when the card comes
+ * within a screen, and a url this page would not follow gets no player rather than a dead frame.
+ */
+export const videoEmbed = (url) => {
+  const safe = safeUrl(url);
+  return safe
+    ? `<div class="embed"><video controls playsinline preload="none" data-src="${esc(safe)}" onerror="this.parentElement.remove()"></video></div>`
+    : "";
+};
+
+/** A player for one audio file. A url this page would not follow gets none rather than a dead control. */
+export const audioEmbed = (url) => {
+  const safe = safeUrl(url);
+  return safe ? `<div class="embed"><audio controls preload="metadata" src="${esc(safe)}"></audio></div>` : "";
+};
+
+/**
+ * A byte count as a size a reader takes in at a glance, or null when the value is not a number —
+ * `size` is published as a string, and a publisher who put something else there has not said how
+ * big the file is.
+ */
+export const fmtBytes = (n) => {
+  n = Number(n);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+};
+
+/** The event's topics as `#` chips, each once, case-insensitively — `t` tags carry them unhashed. */
+export function topicsOf(ev) {
+  const seen = new Set(), out = [];
+  for (const t of tagsOf(ev, "t")) {
+    const v = oneLine(t[1]).replace(/^#+/, "");
+    if (!v || seen.has(v.toLowerCase())) continue;
+    seen.add(v.toLowerCase());
+    out.push(`#${v}`);
+  }
+  return out;
+}
+
+/** A relay url as the host a card heads itself with: no scheme, no trailing slash. */
+export const hostOf = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
+
 /** Unix seconds as a local date; a non-number comes back verbatim, so escape the result. */
 export const fmtTs = (secs) => {
   const n = Number(secs);
@@ -385,20 +450,31 @@ export function emojiGrid(pairs, opts) {
   return `<div class="emoji-grid">${shown.map(([name, url]) => `<img src="${esc(url)}" alt=":${esc(name)}:" title=":${esc(name)}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`;
 }
 
-/** What a list points at, as links: `e` tags to /note1…, `a` tags to /naddr1…. */
+/**
+ * What a list points at, as links: `e` tags to /note1…, `a` tags to /naddr1…. A ref may carry
+ * a `label` — the title a table of contents wrote beside the entry — which reads in place of the
+ * identifier, so a book's chapters have names before a single section event has been fetched.
+ */
 export function refRows(refs, opts) {
   const shown = opts && opts.full ? refs : refs.slice(0, 8);
   const more = refs.length - shown.length;
   if (!shown.length) return "";
   const row = (r) => {
-    if (r.kind === "e") return /^[0-9a-f]{64}$/.test(r.value)
-      ? `<a class="mono" href="${noteHref(r.value)}">${esc(shortNote(r.value))}</a>`
-      : `<span class="mono">${esc(clip(r.value, 40))}</span>`;
+    const named = oneLine(r.label);
+    if (r.kind === "e") {
+      if (!/^[0-9a-f]{64}$/.test(r.value)) return `<span class="mono">${esc(clip(r.value, 40))}</span>`;
+      return named
+        ? `<a href="${noteHref(r.value)}">${esc(clip(named, 60))}</a>`
+        : `<a class="mono" href="${noteHref(r.value)}">${esc(shortNote(r.value))}</a>`;
+    }
     const href = addrHref(r.value);
-    const label = shortAddr(r.value);
-    return href ? `<a href="${href}">${esc(clip(label, 60))}</a>` : `<span class="mono">${esc(clip(label, 60))}</span>`;
+    const label = esc(clip(named || shortAddr(r.value), 60));
+    return href ? `<a href="${href}">${label}</a>` : `<span class="mono">${label}</span>`;
   };
-  return `<ul class="ref-list">${shown.map((r) => `<li>${row(r)}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
+  // A ref's `level` indents it under the one above: the class, never a style attribute, because
+  // the number is a stranger's. The parser clamps it, so only these classes can be asked for.
+  const li = (r) => `<li${r.level > 1 ? ` class="lv${Math.min(6, Math.round(r.level))}"` : ""}>${row(r)}</li>`;
+  return `<ul class="ref-list">${shown.map(li).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
 /** A strip of faces where people are a card's context — a poll's winners, a community's moderators. */

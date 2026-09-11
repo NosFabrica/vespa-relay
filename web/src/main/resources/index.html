@@ -36,10 +36,15 @@
   runs after the DOM is parsed.
 -->
 <link rel="modulepreload" href="./web/cards.js" />
+<link rel="modulepreload" href="./web/cards/agents.js" />
 <link rel="modulepreload" href="./web/cards/apps.js" />
 <link rel="modulepreload" href="./web/cards/article.js" />
 <link rel="modulepreload" href="./web/cards/base.js" />
+<link rel="modulepreload" href="./web/cards/attest.js" />
+<link rel="modulepreload" href="./web/cards/citations.js" />
 <link rel="modulepreload" href="./web/cards/code.js" />
+<link rel="modulepreload" href="./web/cards/dvm.js" />
+<link rel="modulepreload" href="./web/cards/forums.js" />
 <link rel="modulepreload" href="./web/cards/generic.js" />
 <link rel="modulepreload" href="./web/cards/lists.js" />
 <link rel="modulepreload" href="./web/cards/live.js" />
@@ -47,8 +52,12 @@
 <link rel="modulepreload" href="./web/cards/media.js" />
 <link rel="modulepreload" href="./web/cards/note.js" />
 <link rel="modulepreload" href="./web/cards/people.js" />
+<link rel="modulepreload" href="./web/cards/podcast.js" />
 <link rel="modulepreload" href="./web/cards/profile.js" />
+<link rel="modulepreload" href="./web/cards/ratings.js" />
+<link rel="modulepreload" href="./web/cards/records.js" />
 <link rel="modulepreload" href="./web/cards/relays.js" />
+<link rel="modulepreload" href="./web/cards/story.js" />
 <link rel="modulepreload" href="./web/cards/trust.js" />
 <link rel="modulepreload" href="./web/provenance.js" />
 <link rel="modulepreload" href="./web/cards/social.js" />
@@ -864,6 +873,7 @@
   [data-tone="social"]   { --h: 285; --s: 40%; }
   [data-tone="list"]     { --h: 95;  --s: 40%; }
   [data-tone="apps"]     { --h: 250; --s: 30%; }
+  [data-tone="record"]   { --h: 68;  --s: 50%; }
 
   /* ---- the room a chat was said in, beside the badge that says it is one ---
      A link into this page's own `group:` search. The accent, not the badge's
@@ -1217,6 +1227,11 @@
   .pill-row { margin: 0 0 4px; }
   .pill-row .status-pill:first-child { margin-left: 0; }
   .price-line { margin: 2px 0 6px; font-size: 15px; font-weight: 650; }
+  /* A score out of five: the glyphs place it at a glance, the number is what was
+     actually published, since a half star cannot be drawn in a character. */
+  .stars { display: inline-flex; align-items: baseline; gap: 5px; vertical-align: middle; }
+  .stars .star-glyphs { color: var(--warn); font-size: 14px; letter-spacing: 1px; }
+  .stars .star-n { color: var(--muted); font-size: 12.5px; font-weight: 650; }
   .rank-big { margin: 2px 0; font-size: 28px; font-weight: 700; color: var(--accent); }
   /* what a list points at: e tags to notes, a tags to addressable entities */
   .ref-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
@@ -1224,6 +1239,13 @@
   .ref-list a { color: var(--accent); text-decoration: none; }
   .ref-list a:hover { text-decoration: underline; }
   .ref-list .mono { font-family: var(--mono); font-size: 12px; }
+  /* A table of contents nests: a part holds chapters. The parser clamps the published
+     level to 1..6, so these five rules cover every indent that can reach the page. */
+  .ref-list li.lv2 { padding-left: 14px; }
+  .ref-list li.lv3 { padding-left: 28px; }
+  .ref-list li.lv4 { padding-left: 42px; }
+  .ref-list li.lv5 { padding-left: 56px; }
+  .ref-list li.lv6 { padding-left: 70px; }
   /* Short values (hashtags, branches, NIPs) as a wrapped row. Not `.chip`: that
      is the filter tab above, and this rule sits later in the sheet. */
   .chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }

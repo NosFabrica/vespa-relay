@@ -15,7 +15,7 @@ const hex64 = (v) => {
  * namedPubkeys so the line and its profile lookup cover the same kinds. A highlight's `e` is
  * its source, and a reactive kind already says "liked <note>", so neither is here.
  */
-export const REPLY_KINDS = new Set([1, 9, 11, 42, 1311, 1111, 1222, 1244, 1622]);
+export const REPLY_KINDS = new Set([1, 9, 11, 14, 42, 1311, 1111, 1222, 1244, 1622, 2004, 45003]);
 
 /**
  * A relay hint as an `e` tag wrote it, or null. Shape only; entity.js re-gates every hint before

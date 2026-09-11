@@ -94,7 +94,7 @@ function readDiff(lines, upTo) {
  * A code block, optionally headed and tinted per line. `classes` tints text only, never a
  * filled row: the block scrolls sideways and a background would stop at the fold.
  */
-function codeBlock(opts, src, { name = null, lang = null, classes = null } = {}) {
+export function codeBlock(opts, src, { name = null, lang = null, classes = null } = {}) {
   const { lines, more } = clipLines(opts, src, CODE_LINES);
   if (!lines.length) return "";
   const head = name || lang

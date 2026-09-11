@@ -148,6 +148,176 @@ const FIXTURES = [
   [1244,  ev(1244, [["imeta", "url https://x/reply.mp3"]]), "<audio"],
   [30040, ev(30040, [["title", "The Book"], ["author", "Alice"], ["a", `30041:${pk}:ch1`]]), "1 section"],
   [30041, ev(30041, [["title", "Chapter One"]], "the chapter text"), "the chapter text"],
+  // ---- the citation kinds, one per sort of source -------------------------
+  [31,    ev(31, [["u", "https://src.example/paper"], ["title", "A Page Worth Citing"],
+                  ["accessed_on", "2026-08-01"]], "why it matters here"), "A Page Worth Citing"],
+  [32,    ev(32, [["title", "Chapter Two"], ["author", "Ursula Franklin"], ["published_in", "The Real World", "vol 2"],
+                  ["page_range", "31-48"], ["doi", "10.1000/xyz"]]), "The Real World vol 2"],
+  [33,    ev(33, [["llm", "claude-opus-5"], ["accessed_on", "2026-08-02"]], "what is a relay?"), "what is a relay?"],
+  // ---- the library kinds ---------------------------------------------------
+  [818,   ev(818, [["a", `30818:${pk2}:wiki-page`], ["p", pk2], ["e", eid, "", "source"],
+                   ["e", "a".repeat(64)]], "I fixed the second paragraph"), "asks"],
+  [30045, ev(30045, [["d", "shelf"], ["title", "My Shelf"], ["a", `30040:${pk}:book`, "The Book"]]), "1 item"],
+  [30142, ev(30142, [["d", "lesson"], ["name", "Intro to Nostr"], ["description", "a first course"],
+                     ["author", "Alice"], ["inLanguage", "de"], ["about:prefLabel:de", "Informatik"],
+                     ["about:prefLabel:en", "Computer science"], ["learningResourceType:prefLabel:de", "Arbeitsmaterial"],
+                     ["encoding:contentUrl", "https://x/course.pdf"], ["encoding:contentSize", "123456"]],
+                     "the lesson itself"), "Informatik"],
+  [32176, ev(32176, [["d", "piece-index"], ["title", "A Big File"], ["size", "123456"], ["type", "video/mp4"],
+                     ["r", "https://blossom.example/abc.mp4"], ["x", "ab".repeat(32)],
+                     ["b", "cd".repeat(32), "1024"], ["blossom", "https://blossom.example"]]), "1 piece"],
+  // ---- the ratings ---------------------------------------------------------
+  [31987, ev(31987, [["d", "wss://relay.example"], ["rating", "0.8"], ["rating", "1", "speed"]],
+                     "fast, and it keeps what I send it"), "★★★★☆"],
+  [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
+                     ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
+
+  // ---- the last of the mirrored kinds --------------------------------------
+  [62,    ev(62, [["relay", "wss://a.example"], ["relay", "wss://b.example"]], "please forget me"), "2 relays"],
+  [1010,  ev(1010, [["e", eid], ["summary", "fixed a typo"]], "the corrected note"), "edits"],
+  [1312,  ev(1312, [["a", `30311:${pk}:mine`, "", "root"], ["a", `30311:${pk2}:theirs`, "", "mention"]],
+                   "go watch them"), "raids"],
+  [1313,  ev(1313, [["a", `30311:${pk2}:show`], ["p", pk2], ["r", "https://x/clip.mp4"],
+                    ["title", "The best bit"]], "he did it again"), "The best bit"],
+  [1315,  ev(1315, [["t", "speed_camera"], ["g", "u2mw"], ["lat", "48.1485965"], ["lon", "17.1077477"],
+                    ["expiration", String(now + 604800)], ["alt", "Speed camera reported"]], "northbound"), "speed camera"],
+  [5050,  ev(5050, [["i", "summarise this", "text"], ["param", "model", "llama-3"],
+                    ["output", "text/plain"], ["bid", "21000"], ["p", pk2]]), "asks for text"],
+  [5100,  ev(5100, [["i", "a cat in a hat", "text"], ["param", "size", "1024x1024"]]), "asks for an image"],
+  [5250,  ev(5250, [["i", eid, "event"], ["output", "audio/mpeg"]]), "asks for speech"],
+  [5302,  ev(5302, [["i", "relays", "text"], ["relays", "wss://a.example"]]), "asks to search content"],
+  [5303,  ev(5303, [["i", "alice", "text"]]), "asks to search people"],
+  [6969,  ev(6969, [["poll_option", "0", "Yes"], ["poll_option", "1", "No"],
+                    ["value_minimum", "21000"], ["value_maximum", "2100000"],
+                    ["closed_at", String(now + 3600)]], "Should we?"), "21,000 to 2,100,000 sats a vote"],
+  [9002,  ev(9002, [["h", "chan"], ["name", "The Room"], ["about", "what it is for"], ["t", "nostr"]]), "The Room"],
+  [30019, ev(30019, [["d", "mkt"]], JSON.stringify({ name: "The Market", about: "things for sats",
+            ui: { banner: "https://x/b.jpg" }, merchants: [pk2, pk] })), "2 merchants"],
+  [30385, ev(30385, [["d", "isbn:9780316769488"], ["rank", "72"], ["reaction_cnt", "9"]]), "isbn:9780316769488"],
+  [30817, ev(30817, [["d", "nip-99"], ["title", "NIP-99"], ["summary", "classified listings"]],
+                    "# NIP-99\n\nThe body of the NIP."), "The body of the NIP."],
+  [33863, ev(33863, [["d", "fund"], ["title", "The Fundraiser"], ["goal", "2100000"],
+                     ["deadline", String(now + 86400)], ["w", "bc1qexampleaddress"],
+                     ["banner", "https://x/b.jpg"], ["t", "freedom"]], "help us out"), "2,100,000 sats to raise"],
+  [38192, ev(38192, [["d", "card1-3"], ["m", "card1"], ["block", "3"], ["filename", "BASLUS-00594"],
+                     ["region", "NTSC"], ["state", "first"], ["x", "ab".repeat(32)]], "ff".repeat(100)),
+                     "one memory-card block"],
+
+  // ---- attestations ---------------------------------------------------------
+  [31871, ev(31871, [["d", "att-1"], ["e", eid], ["s", "valid"], ["valid_from", String(now)],
+                     ["valid_to", String(now + 86400)], ["request", `31872:${pk2}:req-1`]],
+                     "This is Frank's new npub."), "status-pill lead open"],
+  [31872, ev(31872, [["d", "req-1"], ["p", pk2], ["e", eid], ["cashu_token", "cashuAeyJ0b2tlbiI"]],
+                     "please check this key"), "asks for an attestation"],
+  [11871, ev(11871, [["k", "31871"], ["k", "30023"]], "I check keys and articles"), "attests 2 kinds"],
+  [31873, ev(31873, [["d", "rec-1"], ["p", pk2], ["k", "31871"]], "they are quick"), "recommends"],
+  // ---- the file headers, which describe bytes that live somewhere else ------
+  [1065,  ev(1065, [["e", eid], ["m", "image/png"], ["size", "123456"], ["dim", "800x600"],
+                    ["x", "ab".repeat(32)], ["image", "https://x/preview.png"], ["service", "nostr.build"],
+                    ["summary", "a diagram"]]), "120.6 KB"],
+  [1163,  ev(1163, [["url", "https://x/gallery.jpg"], ["m", "image/jpeg"], ["dim", "1024x768"],
+                    ["e", eid]], "from the trip"), "https://x/gallery.jpg"],
+  [1808,  ev(1808, [["title", "The Take"], ["stream_url", "https://x/take.mp3"],
+                    ["download_url", "https://x/take.wav"], ["waveform", "[1,2,3]"]], "a rough cut"), "<audio"],
+  [2003,  ev(2003, [["title", "The Release"], ["btih", "ab".repeat(20)],
+                    ["file", "release.iso", "700000000"], ["file", "README", "1024"],
+                    ["tracker", "udp://tracker.example:451"], ["t", "linux"]], "seed it"), "2 files"],
+  [2004,  ev(2004, [["e", eid, "", "root"]], "thanks for seeding"), "in reply to"],
+  [40100, ev(40100, [["h", "chan"]], "# The plan\n\nwrite it down"), "the shared document of this room"],
+  // ---- an interactive story --------------------------------------------------
+  [30296, ev(30296, [["d", "story"], ["title", "The Cave"], ["summary", "you wake in the dark"],
+                     ["option", "Light a match", `30297:${pk}:match`],
+                     ["option", "Feel for a wall", `30297:${pk}:wall`]],
+                     "It is dark."), "2 ways on"],
+  [30297, ev(30297, [["d", "match"], ["title", "The Match"],
+                     ["option", "Walk on", `30297:${pk}:walk`]], "The flame catches."), "Walk on"],
+  [30298, ev(30298, [["d", "state"], ["title", "The Cave"], ["status", "reading"],
+                     ["A", `30296:${pk}:story`], ["a", `30297:${pk}:match`]]), "status-pill"],
+  // ---- static websites, which are napplet manifests by another name ---------
+  [15128, ev(15128, [["title", "My Site"], ["path", "/index.html", "ab".repeat(32)],
+                     ["server", "https://blossom.example"]]), "the default website for this key"],
+  [35128, ev(35128, [["d", "notes"], ["title", "Notes Site"], ["path", "/index.html", "ab".repeat(32)],
+                     ["source", "https://git.example/site"]]), "a named website"],
+  // ---- what somebody did or saw ---------------------------------------------
+  [1301,  ev(1301, [["title", "Morning run"], ["type", "run"], ["distance", "5.2", "km"],
+                    ["duration", "00:32:10"], ["calories", "320"], ["avg_heart_rate", "148"],
+                    ["elevation_gain", "45", "m"], ["source", "RUNSTR"]], "felt good"), "5.2 km · 00:32:10"],
+  [33401, ev(33401, [["d", "squat"], ["title", "Back Squat"], ["equipment", "barbell"],
+                     ["difficulty", "intermediate"], ["format", "weight", "reps"]],
+                     "keep the bar over midfoot"), "barbell · intermediate"],
+  [2473,  ev(2473, [["n", "Porphyrio martinica"], ["i", "https://www.wikidata.org/entity/Q27074644"],
+                    ["g", "dhwtsz"], ["alt", "Bird detection: Purple Gallinule"]]), "Porphyrio martinica"],
+  [12473, ev(12473, [["n", "Icterus galbula"], ["i", "https://www.wikidata.org/entity/Q805774"],
+                     ["n", "Cardinalis cardinalis"], ["alt", "Birdex: 2 species"]]), "2 species"],
+
+  // ---- the payments beyond NIP-57 ------------------------------------------
+  // 8333 counts SATS in the same `amount` tag NIP-57 counts millisats in; the fixtures
+  // pin both, since reading one as the other is a thousandfold error on a payment.
+  [8333,  ev(8333, [["p", pk2], ["e", eid], ["amount", "2100"], ["i", "f".repeat(64)],
+                    ["block", "870000"]], "for the article"), "2,100 sats"],
+  [9321,  ev(9321, [["p", pk2], ["e", eid], ["u", "https://mint.example"],
+                    ["proof", JSON.stringify({ amount: 8, secret: "s", C: "c" })],
+                    ["proof", JSON.stringify({ amount: 13, secret: "s", C: "c" })]], "ecash"), "21 sats"],
+  [9736,  ev(9736, [["p", pk2], ["e", eid], ["amount", "21000"], ["offer", "lno1pg" + "q".repeat(40)],
+                    ["P", pk], ["proof", "lnp1x"],
+                    ["description", JSON.stringify({ pubkey: pk, content: "for the show", tags: [] })]]), "21 sats"],
+  [9737,  ev(9737, [["p", pk2], ["amount", "21000"], ["offer", "lno1pg"], ["zap_id", "abc"]],
+                    "here it comes"), "intends to zap"],
+  [38383, ev(38383, [["d", "ord"], ["k", "sell"], ["s", "pending"], ["amt", "100000"],
+                     ["fa", "50"], ["f", "EUR"], ["pm", "SEPA", "Revolut"], ["name", "Alice"],
+                     ["y", "mostro"], ["premium", "2"]]), "sell 100,000 sats for 50 EUR"],
+  [38000, ev(38000, [["d", "38172"], ["k", "38172"], ["u", "https://mint.example"],
+                     ["a", `38172:${pk}:mint`]], "the ones I use"), "2 mints"],
+  // ---- agents, workflows and napplets --------------------------------------
+  [10100, ev(10100, [], JSON.stringify({ display_name: "Helper", agent_type: "assistant",
+            status: "online", capabilities: ["search", "summarise"], channel_ids: ["a", "b"],
+            channel_add_policy: "owner-only" })), "in 2 rooms"],
+  [30175, ev(30175, [["d", "researcher"]], JSON.stringify({ display_name: "The Researcher",
+            system_prompt: "You dig for sources.", model: "claude-opus-5", provider: "anthropic",
+            respond_to: "mentions", parallelism: 2 })), "You dig for sources."],
+  [30176, ev(30176, [["d", "team-1"]], JSON.stringify({ name: "The Desk", description: "who covers what",
+            instructions: "check sources twice", persona_ids: ["researcher", "editor"] })), "2 personas"],
+  [30177, ev(30177, [["d", pk2]], JSON.stringify({ name: "Desk Bot", persona_id: "researcher",
+            model: "claude-opus-5", parallelism: 1, respond_to: "anyone" })), "runs as"],
+  [30620, ev(30620, [["d", "wf-1"], ["h", "chan"], ["name", "Nightly digest"]],
+            "on:\n  schedule: nightly\nsteps:\n  - summarise\n"), "codeblock"],
+  [5129,  ev(5129, [["title", "Notes"], ["description", "a tiny notes app"],
+                    ["path", "/index.html", "ab".repeat(32)], ["path", "/app.js", "cd".repeat(32)],
+                    ["x", "ef".repeat(32)], ["server", "https://blossom.example"],
+                    ["requires", "nip07"]]), "2 files"],
+  [15129, ev(15129, [["title", "My Napplet"], ["path", "/index.html", "ab".repeat(32)]]), "the default napplet for this key"],
+  [35129, ev(35129, [["d", "notes"], ["title", "Named Notes"], ["path", "/index.html", "ab".repeat(32)],
+                     ["source", "https://git.example/notes"]]), "a named napplet"],
+
+  // ---- podcasts and music -------------------------------------------------
+  [10154, ev(10154, [["title", "The Show"], ["description", "a podcast about relays"],
+                     ["image", "https://x/show.jpg"], ["website", "https://show.example"],
+                     ["p", pk2, "host"]]), "claims"],
+  [54,    ev(54, [["title", "Episode One"], ["description", "the first one"],
+                  ["audio", "https://x/ep1.mp3", "audio/mpeg"]], "the show notes"), "<audio"],
+  [30054, ev(30054, [["d", "ep2"], ["title", "Episode Two"], ["description", "the second"],
+                     ["audio", "https://x/ep2.mp3"], ["season", "2"], ["episode", "14"],
+                     ["duration", "3600"], ["transcript", "https://x/ep2.vtt"], ["t", "nostr"]],
+                     "more notes"), "S2 E14"],
+  [30055, ev(30055, [["d", "tr"], ["title", "The Trailer"], ["url", "https://x/tr.mp3"],
+                     ["pubdate", "Tue, 01 Sep 2026 10:00:00 GMT"], ["length", "123456"],
+                     ["type", "audio/mpeg"]]), "120.6 KB"],
+  [31337, ev(31337, [["d", "trk"], ["subject", "A Live Set"], ["media", "https://x/set.mp3"],
+                     ["c", "dj set"], ["cover", "https://x/cover.jpg"], ["p", pk2]]), "A Live Set"],
+  [36787, ev(36787, [["d", "song"], ["title", "The Song"], ["artist", "The Band"], ["album", "The Album"],
+                     ["url", "https://x/song.mp3"], ["duration", "212"], ["released", "1979"],
+                     ["explicit", "true"], ["track_number", "3"]], "a song"), "The Band — The Album"],
+  [34139, ev(34139, [["d", "mix"], ["title", "The Mix"], ["a", `36787:${pk}:song`],
+                     ["a", `30023:${pk}:not-a-track`], ["private", "true"]]), "1 track"],
+  // ---- messages and forums -------------------------------------------------
+  [14,    ev(14, [["p", pk2], ["subject", "about the thing"]], "the message body"), "the message body"],
+  [24,    ev(24, [["p", pk2]], "a message in the open"), "a message in the open"],
+  [3302,  ev(3302, [["e", eid], ["h", "chan"]], "the corrected text"), "edits"],
+  [40002, ev(40002, [["h", "chan"], ["broadcast", "1"], ["p", pk2]], "a line in the channel"), "broadcast"],
+  [45001, ev(45001, [["h", "chan"], ["p", pk2]], "the opening post"), "the opening post"],
+  [45003, ev(45003, [["h", "chan"], ["e", eid, "", "root"]], "a reply in the thread"), "in reply to"],
+  [48106, ev(48106, [["h", "chan"]], "be excellent to each other"), "be excellent to each other"],
+
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
@@ -243,6 +413,34 @@ const ROW_SAYS = [
   [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
   [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
   [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
+  // A citation leads with the source, not with the note about it.
+  [32, "Chapter Two · Ursula Franklin · The Real World vol 2"], [33, "claude-opus-5 · what is a relay?"],
+  [818, "asks to merge into wiki-page"], [30045, "My Shelf · 1 item"], [30142, "Intro to Nostr · Alice"],
+  [32176, "A Big File · video/mp4 · 120.6 KB"],
+  // A review says what it reviewed, then the score; a rating, what it rated.
+  [31987, "relay.example · 4★"], [34259, "rated book 4.5★"],
+  // An episode says where it sits in the show before what it is about.
+  [30054, "Episode Two · S2 E14 · 1:00:00"], [36787, "The Song · The Band — The Album · 3:32"],
+  [34139, "The Mix · 1 track"], [10154, "The Show · a podcast about relays"],
+  // A message leads with its text, or with the subject that stands over it.
+  [14, "about the thing · the message body"], [45001, "the opening post"],
+  [3302, "edits a message · the corrected text"], [48106, "room guidelines"],
+  // Each payment in the unit its own kind counts in, and the verb its own NIP uses.
+  [8333, "paid onchain 2,100 sats"], [9321, "nutzapped 21 sats"], [9736, "zapped 21 sats"],
+  [9737, "intends to zap 21 sats"], [38383, "sell 100,000 sats for 50 EUR · pending"],
+  [38000, "recommends 2 mints"],
+  [10100, "Helper · assistant · online"], [30176, "The Desk · 2 personas"],
+  [30620, "Nightly digest · 4 lines"], [5129, "Notes · one pinned build · 2 files"],
+  // A verdict, a life list, a run: each row leads with the fact its kind exists to carry.
+  [31871, "attests: valid"], [11871, "attests 2 kinds · attestation, article"],
+  [2003, "The Release · 2 files · 667.6 MB"], [1301, "Morning run · 5.2 km · 00:32:10 · ↑ 45 m · 320 kcal · 148 bpm"],
+  [12473, "2 species · Icterus galbula, Cardinalis cardinalis"],
+  [30296, "The Cave · you wake in the dark · 2 ways on"], [40100, "room canvas"],
+  // The last of them: an ask, an edit, a raid, a job, a target.
+  [62, "asks to be erased from 2 relays"], [1010, "edits a note · fixed a typo"],
+  [5050, "asks for text"], [6969, "Should we? · 2 choices · 21,000 to 2,100,000 sats a vote"],
+  [9002, "edits this room to The Room"], [30385, "scores isbn:9780316769488 · rank 72"],
+  [33863, "The Fundraiser · 2,100,000 sats to raise"], [1315, "speed camera"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
@@ -1047,6 +1245,88 @@ for (const kind of REPLY_KINDS) {
     assert(lineOf(html), `kind ${kind}: the poisoned reply fixture rendered no line, so this asserts nothing`);
     assert(ESCAPED(html), `kind ${kind}: a reply's parent tag reached the ${opts ? "permalink" : "preview"} as MARKUP`);
   }
+}
+
+// ---- what an audit of the new renderers turned up -------------------------
+//
+// Six defects, each pinned by the case that produced it.
+{
+  // A rating with no score at all must draw none: `Number(null)` is 0, and a zero-star verdict
+  // is one this author never gave.
+  const unscored = ev(34259, [["d", "books:dune"], ["m", "books"]], "no number, just words");
+  assert(!card(unscored, { full: true }).includes("star-glyphs"), "an unscored rating draws no stars");
+  assert(!/0★/.test(rowOf(unscored).name), `…and none in its row either: ${rowOf(unscored).name}`);
+  assert(card(ev(34259, [["d", "x"], ["rating", "0"]]), { full: true }).includes("star-glyphs"),
+    "a rating that really IS zero still draws, since the author published it");
+
+  // Whoever a card names, namedPubkeys owes: an attestation about a key names that key.
+  const aboutKey = ev(31871, [["d", "a"], ["p", pk2], ["s", "valid"]], "that key is theirs");
+  assert(card(aboutKey, { full: true }).includes(npub(pk2)), "an attestation about a key names it");
+  assert(namedPubkeys(aboutKey, { full: true }).includes(pk2), "…and declares it, or it renders as an npub forever");
+
+  // A `t` value already carrying its hash must not get a second one: `##freedom` searches for nothing.
+  for (const [kind, tags] of [[33863, [["d", "f"], ["title", "T"]]], [9002, [["h", "c"], ["name", "R"]]]]) {
+    const html = card(ev(kind, [...tags, ["t", "#freedom"], ["t", "freedom"]]), { full: true });
+    assert(!html.includes("##"), `kind ${kind}: a hashtag that arrived with its # got a second one`);
+    assert((html.match(/>#freedom</g) || []).length === 1, `kind ${kind}: the same topic twice, spelled two ways`);
+  }
+
+  // A raid's ends are told apart by their markers alone, so an unmarked one is still shown —
+  // just never as an end it might not be.
+  const unmarked = card(ev(1312, [["a", `30311:${pk}:theirs`]], "go watch"), { full: true });
+  assert(unmarked.includes(naddr(`30311:${pk}:theirs`)), "an unmarked raid still shows the stream it names");
+  assert(!unmarked.includes("<dt>from</dt>"), "…without claiming it is the end it did not mark");
+  // And an `a` that is not a stream is not an end of a raid, which is quartz's own rule.
+  assert(!card(ev(1312, [["a", `30023:${pk}:essay`, "", "mention"]]), { full: true }).includes("naddr1"),
+    "only a 30311 address is a raid target");
+
+  // A zap poll's band is counted in SATS, unlike every `amount` tag around it.
+  const poll = ev(6969, [["value_minimum", "21000"], ["value_maximum", "2100000"]], "Should we?");
+  assert(card(poll, { full: true }).includes("21,000 to 2,100,000 sats"),
+    `the band is read as sats: ${/result-body muted">([^<]*)</.exec(card(poll, { full: true }))?.[1]}`);
+
+  // The broadcast flag is the literal "1" the publisher writes; "0" is the opposite claim.
+  assert(card(ev(40002, [["h", "c"], ["broadcast", "1"]], "x"), { full: true }).includes(">broadcast<"), "a broadcast says so");
+  assert(!card(ev(40002, [["h", "c"], ["broadcast", "0"]], "x"), { full: true }).includes(">broadcast<"),
+    "…and a message that says it is NOT one is not drawn as one");
+}
+
+// ---- a publication index is a table of contents ---------------------------
+//
+// The entries are what an index IS, so they are asserted on the card: named from the index's own
+// slot 2 (no section event has been fetched at this point), ordered as published, and indented by
+// the level in slot 3. NKBIP-01 documents neither the title nor the level; both are what the
+// publishing clients write, and reading only the documented shape leaves a book as a run of slugs.
+{
+  const entries = (html) => [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)]
+    .map((m) => ({ level: Number((/class="lv(\d)"/.exec(m[0]) || ["", "1"])[1]), text: m[1].replace(/<[^>]+>/g, "").trim() }));
+  const index = ev(30040, [
+    ["d", "the-book"], ["title", "The Book"],
+    ["a", `30041:${pk}:p1`, "Part One", "1"],
+    ["a", `30041:${pk}:c1`, "Chapter One", "2"],
+    ["a", `30041:${pk}:c1a`, "A Section", "3"],
+    ["a", `30041:${pk}:c2`, "Chapter Two", "9"],              // past the deepest level there is
+    ["e", eid, "Chapter Three", "2"],                          // a section listed by id
+    ["a", `30041:${pk}:c4`, "Chapter Four", "ab".repeat(32)],  // slot 3 pins a revision, not a level
+    ["a", `30041:${pk}:c5`, "relay.example.com"],              // a hint, schemeless
+    ["a", `30041:${pk}:c6`, "2"],                              // a level in the title's slot
+    ["A", `30040:${pk}:original`, "The original"],             // the work this derives from
+  ]);
+  const rows = entries(card(index, { full: true }));
+  assert.deepStrictEqual(rows.map((r) => r.text),
+    ["Part One", "Chapter One", "A Section", "Chapter Two", "Chapter Three", "Chapter Four", "c5", "c6"],
+    "an index names its chapters from its own slot 2, in tag order, and an uppercase `A` is not one of them");
+  assert.deepStrictEqual(rows.map((r) => r.level), [1, 2, 3, 6, 2, 1, 1, 1],
+    "the level in slot 3 indents the entry; a deeper one clamps, and an event id there is no level at all");
+  assert(card(index, { full: true }).includes(">8 sections<"), "…and the count is the entries, the derivation excluded");
+  // The fallbacks, where slot 2 said nothing usable: the coordinate's own `d`, never a hostname.
+  assert(!card(index, { full: true }).includes("relay.example.com"), "a schemeless relay hint is not a chapter title");
+  // An `e` has no coordinate to fall back on, so its slot 2 stands even when it reads as a level.
+  assert.deepStrictEqual(entries(card(ev(30040, [["e", eid, "1984"]]), { full: true })).map((r) => r.text), ["1984"],
+    "a chapter listed by id and called 1984 keeps its name");
+  // A shelf lists what is on it through the same parser, so it indents the same way.
+  assert.deepStrictEqual(entries(card(ev(30045, [["d", "s"], ["title", "S"], ["a", `30040:${pk}:b`, "The Book", "2"]]), { full: true })),
+    [{ level: 2, text: "The Book" }], "a bookshelf reads its items with the index's parser");
 }
 
 // ---- an article previews as cover, title, summary --------------------------

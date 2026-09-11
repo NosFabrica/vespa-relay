@@ -1,8 +1,12 @@
 // The marketplace family: NIP-99 listings keep everything in tags, NIP-15 stalls and
-// products keep a JSON content. Nothing is invented for a missing field.
+// products keep a JSON content. Nothing is invented for a missing field. The two ends of a
+// trade are here too — a NIP-69 peer-to-peer order, and the mints a NIP-87 reader recommends.
 
-import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, registerRow, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf, oneLine, satsOf } from "./base.js";
+import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import {
+  register, registerRow, shell, bodyHtml, chipRow, relayRows, refRows, faceStrip, hashtagHref,
+  topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine, fmtTs, plural, satsOf,
+} from "./base.js";
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
 const priceText = (amount, currency, period) => {
@@ -76,11 +80,111 @@ function badgeCard(ev, opts) {
 }
 
 // 30403 and 30020 are drafts carrying their published twin's shape.
+/** NIP-69 writes the side in `k` and the state in `s`; both are closed vocabularies. */
+const ORDER_SIDES = new Set(["buy", "sell"]);
+const ORDER_STATES = new Set(["pending", "canceled", "in-progress", "success", "expired"]);
+/** The states that get a tinted pill; the rest read as plain text so an unknown one still shows. */
+const STATE_TONE = { pending: "open", "in-progress": "accepted", success: "merged", canceled: "closed", expired: "closed" };
+
+/**
+ * 38383 — a peer-to-peer order: somebody offering to buy or sell sats for fiat, on one of the
+ * NIP-69 platforms. What a reader is scanning for is the side, the money on both ends and
+ * whether the order is still open, so those are the line; the rest is the table.
+ */
+function orderCard(ev, opts) {
+  const side = oneLine(tagOf(ev, "k")).toLowerCase();
+  const state = oneLine(tagOf(ev, "s")).toLowerCase();
+  const sats = satCount(tagOf(ev, "amt")) || oneLine(tagOf(ev, "amt"));
+  const fiat = oneLine(tagOf(ev, "fa"));
+  const currency = oneLine(tagOf(ev, "f"));
+  // `pm` is one tag carrying every method, not one tag each.
+  const methods = tagsOf(ev, "pm").flatMap((t) => t.slice(1)).map(oneLine).filter(Boolean);
+  const headline = [
+    ORDER_SIDES.has(side) ? side : "",
+    sats ? `${sats} sats` : "",
+    fiat || currency ? `for ${[fiat, currency].filter(Boolean).join(" ")}` : "",
+  ].filter(Boolean).join(" ");
+  const inner =
+    (state
+      ? `<div class="pill-row"><span class="status-pill lead ${ORDER_STATES.has(state) ? STATE_TONE[state] || "" : ""}">${esc(clip(state, 24))}</span>` +
+        `${headline ? `<span class="price-line">${esc(headline)}</span>` : ""}</div>`
+      : (headline ? `<div class="price-line">${esc(headline)}</div>` : "")) +
+    bodyHtml(opts, ev.content, 300) +
+    chipRow(methods, opts);
+  return shell(ev, opts, inner, [
+    ["maker", tagOf(ev, "name") ? esc(clip(tagOf(ev, "name"), 60)) : null],
+    ["premium", tagOf(ev, "premium") ? esc(clip(tagOf(ev, "premium"), 24)) : null],
+    ["bond", tagOf(ev, "bond") ? esc(clip(tagOf(ev, "bond"), 24)) : null],
+    ["platform", tagOf(ev, "y") ? esc(clip(tagOf(ev, "y"), 40)) : null],
+    ["network", [tagOf(ev, "network"), tagOf(ev, "layer")].map(oneLine).filter(Boolean).map((v) => esc(clip(v, 24))).join(" · ") || null],
+    ["rating", tagOf(ev, "rating") ? esc(clip(tagOf(ev, "rating"), 40)) : null],
+  ]);
+}
+
+/** 38000 — a mint recommendation: which mints this reader vouches for, and of which sort. */
+function mintRecommendationCard(ev, opts) {
+  const urls = tagsOf(ev, "u").map((t) => t[1]).filter(Boolean);
+  const addrs = tagsOf(ev, "a").map((t) => t[1]).filter(Boolean);
+  // The `k` is the kind of mint announcement being seconded — 38172 cashu, 38173 fedimint.
+  const of = oneLine(tagOf(ev, "k"));
+  const inner =
+    `<div class="result-body">recommends ${esc(plural(urls.length + addrs.length, "mint"))}${of ? ` of kind ${esc(clip(of, 12))}` : ""}</div>` +
+    bodyHtml(opts, ev.content, 300) +
+    relayRows(urls.map((url) => ({ url })), opts) +
+    refRows(addrs.map((a) => ({ kind: "a", value: a })), opts);
+  return shell(ev, opts, inner);
+}
+
+/** 30019 — a marketplace: a shopfront over a set of merchants, with its look in the same JSON. */
+function marketplaceCard(ev, opts) {
+  const c = jsonContent(ev);
+  const ui = c && typeof c.ui === "object" && c.ui ? c.ui : {};
+  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => /^[0-9a-f]{64}$/.test(pk || "")) : [];
+  const banner = oneLine(ui.banner) || oneLine(ui.picture);
+  const full = opts && opts.full;
+  const inner =
+    (full && banner ? imgEmbed(banner) : "") +
+    (oneLine(c.name) ? `<h2 class="result-title">${esc(clipIf(opts, oneLine(c.name), 120))}</h2>` : "") +
+    bodyHtml(opts, oneLine(c.about), 300, true) +
+    `<div class="result-body">${esc(plural(merchants.length, "merchant"))}</div>` +
+    faceStrip(merchants, full ? 24 : 12);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * 33863 — a fundraiser. The goal is in sats and the progress toward it is not knowable here:
+ * the zaps that count toward it are other events, and the `w` addresses are paid on-chain,
+ * where this page cannot see. So the card states the target and the deadline, never a total.
+ */
+function fundraiserCard(ev, opts) {
+  // `goal` is already in sats, so it is counted, not converted: satsOf would divide it away.
+  const goal = satCount(tagOf(ev, "goal"));
+  const addresses = tagsOf(ev, "w").map((t) => t[1]).filter(Boolean);
+  const banner = tagOf(ev, "banner") || imageOf(ev);
+  const full = opts && opts.full;
+  const inner =
+    (full && banner ? imgEmbed(banner) : "") +
+    (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    (goal ? `<div class="price-line">${esc(goal)} sats to raise</div>` : "") +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 400) +
+    chipRow(topicsOf(ev), opts, hashtagHref);
+  return shell(ev, opts, inner, [
+    ["deadline", tagOf(ev, "deadline") ? esc(fmtTs(tagOf(ev, "deadline"))) : null],
+    ["published", tagOf(ev, "published_at") ? esc(fmtTs(tagOf(ev, "published_at"))) : null],
+    // Shown to be copied, never linked: this page has no way to pay one and no way to check one.
+    ["onchain", addresses.length ? `<span class="mono">${esc(clip(addresses[0], 40))}</span>` : null],
+  ]);
+}
+
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
+register([38383], orderCard);
+register([30019], marketplaceCard);
+register([33863], fundraiserCard);
+register([38000], mintRecommendationCard);
 
 // The price rides in the sub line, never the title.
 registerRow([30402, 30403], (ev) => {
@@ -106,3 +210,29 @@ registerRow([30009], (ev) => ({
   name: tagOf(ev, "name") || titleOf(ev),
   sub: tagOf(ev, "description") || ev.content,
 }));
+// An order's line is what it offers and whether it is still open.
+registerRow([38383], (ev) => {
+  const side = oneLine(tagOf(ev, "k")).toLowerCase();
+  const sats = satCount(tagOf(ev, "amt")) || oneLine(tagOf(ev, "amt"));
+  const fiat = [oneLine(tagOf(ev, "fa")), oneLine(tagOf(ev, "f"))].filter(Boolean).join(" ");
+  return {
+    name: [ORDER_SIDES.has(side) ? side : "order", sats ? `${sats} sats` : "", fiat ? `for ${fiat}` : ""].filter(Boolean).join(" "),
+    sub: [oneLine(tagOf(ev, "s")), oneLine(tagOf(ev, "name")), oneLine(tagOf(ev, "y"))].filter(Boolean).join(" · "),
+  };
+});
+registerRow([38000], (ev) => ({
+  name: `recommends ${plural(tagsOf(ev, "u").length + tagsOf(ev, "a").length, "mint")}`,
+  sub: ev.content,
+}));
+registerRow([30019], (ev) => {
+  const c = jsonContent(ev);
+  const merchants = Array.isArray(c.merchants) ? c.merchants.length : 0;
+  return { name: oneLine(c.name), sub: [plural(merchants, "merchant"), oneLine(c.about)].filter(Boolean).join(" · ") };
+});
+registerRow([33863], (ev) => {
+  const goal = satCount(tagOf(ev, "goal"));
+  return {
+    name: titleOf(ev),
+    sub: [goal && `${goal} sats to raise`, summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+  };
+});
