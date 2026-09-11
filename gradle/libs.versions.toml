@@ -649,7 +649,42 @@ quartz = "a8e8778265"
 #
 # THE GATE AT THIS COMMIT: 20 of 21 ITs ran against a real Vespa, 0 failures.
 # The skip is StagingCorpusIT, which needs a STAGING_CORPUS export.
-vespaEventStore = "c79d2fdb2d"
+# A CUT MATCH SET TAKES THE SCAN AGAIN (#140). #138 made every refusal wait four
+# asks over 4.2s and then throw, on the premise that this walk cannot be refused
+# for SIZE. That premise holds only for a BOUNDED walk. Measured on staging
+# within minutes of deploying it:
+#
+#   kind in (0,10002,10040), order by created_at desc, ranking=unranked
+#     limit  2064 -> cov=1%  docs=2,251,965 of 362M  degraded={match-phase:true}
+#     limit 20064 -> cov=1%  docs=2,251,965 of 362M  degraded={match-phase:true}
+#
+# while the SAME shape windowed answers completely (943,949 matches at 100% over
+# 23 hours). It is `order by created_at desc` over a wide range that trips the
+# limiter, not the match count -- so the walks that most needed the fallback
+# were the ones refused, and `match-phase` is the one refusal waiting cannot
+# clear. Staging aborted 7 of 146 visits in three minutes, each after sleeping
+# 4.2s first.
+#
+# Now: one ask, then the document-API visit, BOUNDED AT the cursor's own
+# position so nothing already emitted arrives twice. `non-ideal-state` and a
+# bare coverage shortfall keep #138's behaviour exactly -- full backoff, then
+# throw for the caller's own retry loop.
+#
+# #138's win is intact and is the reason for all of this: `walk.scan` went from
+# 583 calls and 383 CORE-HOURS a day to zero, and the cluster from ~16 cores to
+# ~5.5, on a deployment with no users.
+#
+# DIRECTION: c79d2fdb2d is a strict ancestor of this.
+#   git merge-base --is-ancestor c79d2fdb2d 369a3f8e1c   # verified
+#
+# LEXICOGRAPHIC: '369a…' < 'c79d…', the UNSAFE direction -- this sorts BELOW the
+# pin it replaces, so the resolved graph is the proof. Quartz untouched by the
+# range (a8e8778265 both sides); no eventstore or quartz line may carry a `->`.
+#
+# THE GATE AT THIS COMMIT: 20 of 21 ITs ran against a real Vespa, 0 failures.
+# The skip is StagingCorpusIT, which needs a STAGING_CORPUS export.
+#
+vespaEventStore = "369a3f8e1c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
