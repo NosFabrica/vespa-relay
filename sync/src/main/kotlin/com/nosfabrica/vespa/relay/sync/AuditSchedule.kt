@@ -118,12 +118,18 @@ internal class AuditSchedule(
                         val clock = clockFor(ask, url, tier.everySeconds, band)
                         if (clock.scheduled) audits.getOrPut(name to band) { Tally(nowSec) }.add(clock)
                     }
-                    for ((tier, older, newer) in SyncTier.tile(refetchTiers)) {
+                    for (tier in refetchTiers) {
                         val key = SyncTier.keyFor(name, refetchTiers, tier)
                         // Per band, not per stream: the knob and the tally are the band's.
                         if (bands.refetchThePastSecondsFor(key) == SyncBands.NEVER) continue
-                        val bandAsk = SyncTier.windowedFilter(ask.filter, nowSec, older, newer)
-                        refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(key, url, bandAsk)))
+                        // THE STREAM'S OWN FILTER, which is what the pool RECORDS under. This
+                        // read used to window the filter first, and coverage stopped being keyed
+                        // that way when the band moved off the sliding window — so every lookup
+                        // missed and every re-fetch row reported `neverRun`, on three streams,
+                        // including asks whose coverage was sitting right there. A status page
+                        // that asks a different question than the writer answered reports a
+                        // catastrophe it invented.
+                        refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(key, url, ask.filter)))
                     }
                 }
             }
