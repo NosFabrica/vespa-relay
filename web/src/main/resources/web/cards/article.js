@@ -58,24 +58,44 @@ function curationCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** How deep a table of contents may nest; a part holding chapters is level 1 holding level 2. */
+const MAX_LEVEL = 6;
+
+/** A nesting level as published: a plain integer, clamped to the levels that exist. Anything else is level 1. */
+const levelOf = (v) => (/^-?\d+$/.test(v) ? Math.min(MAX_LEVEL, Math.max(1, Number(v))) : 1);
+
+/**
+ * Whether slot 2 is a relay hint rather than a title. Schemeless hosts count: publishers write a
+ * bare `relay.example.com` there, and reading that as a title puts a hostname in the contents.
+ */
+const looksLikeRelay = (v) =>
+  /^(?:wss?|https?):\/\//i.test(v) || /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::\d+)?(?:\/\S*)?$/.test(v);
+
 /**
  * A table of contents, in tag order, which is the order it is meant to be read in.
  *
  * NKBIP-01 documents `["a", "<kind:pubkey:d>", "<relay hint>", "<event id>"]`, but what the
  * publishing clients emit is looser, and reading only the documented shape loses most of a real
- * book: an index may list its chapters by `e` id, interleaved with the `a` tags, and slot 2 is
- * as often the entry's own title as it is a relay hint — the valuable case, since it names every
- * chapter before one section event has been fetched. Uppercase `A`/`E` are NOT entries: on a
- * derivative work they name the original, so the match is case-sensitive.
+ * book:
+ *
+ * - `e` entries are sections too, interleaved with the `a` tags in tag order.
+ * - Slot 2 is as often the entry's own title as it is a relay hint — the valuable case, since it
+ *   names every chapter before one section event has been fetched.
+ * - Slot 3 may be a nesting level rather than the documented event id: a small integer is a
+ *   level, a 64-hex value is the revision the entry is pinned to.
+ *
+ * Under an `a`, a slot 2 that is a plausible level is that level's stray spelling rather than a
+ * title; under an `e` it is kept, because an `e` has no coordinate to fall back on and a chapter
+ * really can be called "1984". Uppercase `A`/`E` are NOT entries at all: on a derivative work
+ * they name the original, so the match is case-sensitive.
  */
 const contentsOf = (ev) =>
   tagsWhere(ev, (name) => name === "a" || name === "e")
     .filter((t) => t[1])
     .map((t) => {
       const slot2 = oneLine(t[2]);
-      // A small integer there is a nesting level and a url is a relay hint; neither is a title.
-      const titled = slot2 && !/^[1-6]$/.test(slot2) && !/^(?:wss?|https?):\/\//i.test(slot2);
-      return { kind: t[0], value: t[1], label: titled ? slot2 : "" };
+      const titled = slot2 && !looksLikeRelay(slot2) && (t[0] === "e" || !/^\d+$/.test(slot2));
+      return { kind: t[0], value: t[1], label: titled ? slot2 : "", level: levelOf(oneLine(t[3])) };
     });
 
 /** 30040 — a curated publication index: a table of contents whose entries are its ordered sections. */

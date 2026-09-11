@@ -434,7 +434,10 @@ export function refRows(refs, opts) {
     const label = esc(clip(named || shortAddr(r.value), 60));
     return href ? `<a href="${href}">${label}</a>` : `<span class="mono">${label}</span>`;
   };
-  return `<ul class="ref-list">${shown.map((r) => `<li>${row(r)}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
+  // A ref's `level` indents it under the one above: the class, never a style attribute, because
+  // the number is a stranger's. The parser clamps it, so only these classes can be asked for.
+  const li = (r) => `<li${r.level > 1 ? ` class="lv${Math.min(6, Math.round(r.level))}"` : ""}>${row(r)}</li>`;
+  return `<ul class="ref-list">${shown.map(li).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
 /** A strip of faces where people are a card's context — a poll's winners, a community's moderators. */

@@ -1231,6 +1231,13 @@
   .ref-list a { color: var(--accent); text-decoration: none; }
   .ref-list a:hover { text-decoration: underline; }
   .ref-list .mono { font-family: var(--mono); font-size: 12px; }
+  /* A table of contents nests: a part holds chapters. The parser clamps the published
+     level to 1..6, so these five rules cover every indent that can reach the page. */
+  .ref-list li.lv2 { padding-left: 14px; }
+  .ref-list li.lv3 { padding-left: 28px; }
+  .ref-list li.lv4 { padding-left: 42px; }
+  .ref-list li.lv5 { padding-left: 56px; }
+  .ref-list li.lv6 { padding-left: 70px; }
   /* Short values (hashtags, branches, NIPs) as a wrapped row. Not `.chip`: that
      is the filter tab above, and this rule sits later in the sheet. */
   .chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }

@@ -1079,6 +1079,44 @@ for (const kind of REPLY_KINDS) {
   }
 }
 
+// ---- a publication index is a table of contents ---------------------------
+//
+// The entries are what an index IS, so they are asserted on the card: named from the index's own
+// slot 2 (no section event has been fetched at this point), ordered as published, and indented by
+// the level in slot 3. NKBIP-01 documents neither the title nor the level; both are what the
+// publishing clients write, and reading only the documented shape leaves a book as a run of slugs.
+{
+  const entries = (html) => [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)]
+    .map((m) => ({ level: Number((/class="lv(\d)"/.exec(m[0]) || ["", "1"])[1]), text: m[1].replace(/<[^>]+>/g, "").trim() }));
+  const index = ev(30040, [
+    ["d", "the-book"], ["title", "The Book"],
+    ["a", `30041:${pk}:p1`, "Part One", "1"],
+    ["a", `30041:${pk}:c1`, "Chapter One", "2"],
+    ["a", `30041:${pk}:c1a`, "A Section", "3"],
+    ["a", `30041:${pk}:c2`, "Chapter Two", "9"],              // past the deepest level there is
+    ["e", eid, "Chapter Three", "2"],                          // a section listed by id
+    ["a", `30041:${pk}:c4`, "Chapter Four", "ab".repeat(32)],  // slot 3 pins a revision, not a level
+    ["a", `30041:${pk}:c5`, "relay.example.com"],              // a hint, schemeless
+    ["a", `30041:${pk}:c6`, "2"],                              // a level in the title's slot
+    ["A", `30040:${pk}:original`, "The original"],             // the work this derives from
+  ]);
+  const rows = entries(card(index, { full: true }));
+  assert.deepStrictEqual(rows.map((r) => r.text),
+    ["Part One", "Chapter One", "A Section", "Chapter Two", "Chapter Three", "Chapter Four", "c5", "c6"],
+    "an index names its chapters from its own slot 2, in tag order, and an uppercase `A` is not one of them");
+  assert.deepStrictEqual(rows.map((r) => r.level), [1, 2, 3, 6, 2, 1, 1, 1],
+    "the level in slot 3 indents the entry; a deeper one clamps, and an event id there is no level at all");
+  assert(card(index, { full: true }).includes(">8 sections<"), "…and the count is the entries, the derivation excluded");
+  // The fallbacks, where slot 2 said nothing usable: the coordinate's own `d`, never a hostname.
+  assert(!card(index, { full: true }).includes("relay.example.com"), "a schemeless relay hint is not a chapter title");
+  // An `e` has no coordinate to fall back on, so its slot 2 stands even when it reads as a level.
+  assert.deepStrictEqual(entries(card(ev(30040, [["e", eid, "1984"]]), { full: true })).map((r) => r.text), ["1984"],
+    "a chapter listed by id and called 1984 keeps its name");
+  // A shelf lists what is on it through the same parser, so it indents the same way.
+  assert.deepStrictEqual(entries(card(ev(30045, [["d", "s"], ["title", "S"], ["a", `30040:${pk}:b`, "The Book", "2"]]), { full: true })),
+    [{ level: 2, text: "The Book" }], "a bookshelf reads its items with the index's parser");
+}
+
 // ---- an article previews as cover, title, summary --------------------------
 //
 // Asserted on the card rather than the reducer: the property is what a reader sees.
