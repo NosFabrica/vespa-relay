@@ -277,7 +277,18 @@ class RelayVerdictRecord(
                 add(arrayOf(LABEL_TAG, status, FITNESS_NAMESPACE, evidence, at, FITNESS_EPOCH))
                 add(arrayOf(LABEL_NAMESPACE_TAG, FITNESS_NAMESPACE))
                 pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
-                nip77?.let { (yes, why) -> add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+                nip77?.let { (yes, why) ->
+                    add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH))
+                    // The same measured fact again, as a NIP-32 label, because NIP-01 indexes
+                    // single-letter tags ONLY: `nip77` above can never be a `#` filter, so a
+                    // stream could not select on it and would be left with the relay's own
+                    // NIP-11 claim — which is the thing the monitor exists to not believe.
+                    // Measured: 11 of the 37 relays advertising NIP-77 declined our NEG-OPEN.
+                    // Its own namespace, so `#l` on the grade and `#l` on this stay separable
+                    // and a stream ANDs them with `gatedBy`.
+                    add(arrayOf(LABEL_TAG, if (yes) SPEAKS_NEGENTROPY else REFUSES_NEGENTROPY, NEGENTROPY_NAMESPACE, why, at, FITNESS_EPOCH))
+                    add(arrayOf(LABEL_NAMESPACE_TAG, NEGENTROPY_NAMESPACE))
+                }
                 compliant?.let { (yes, why) -> add(arrayOf(COMPLIANT_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 addAll(facts.tags())
             }
@@ -295,8 +306,8 @@ class RelayVerdictRecord(
     private fun ownedByFitness(tag: Array<String>): Boolean =
         when (val name = tag.firstOrNull()) {
             null -> false
-            LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX).let { it == null || it == FITNESS_NAMESPACE }
-            LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX).let { it == null || it == FITNESS_NAMESPACE }
+            LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX).let { it == null || it in OWNED_NAMESPACES }
+            LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX).let { it == null || it in OWNED_NAMESPACES }
             PAGEABLE_TAG, NIP77_TAG, COMPLIANT_TAG -> true
             else -> name in RelayFacts.OWNED
         }
@@ -486,6 +497,23 @@ class RelayVerdictRecord(
 
         /** Whose vocabulary the grade is written in. Named for the judgement, not for us. */
         const val FITNESS_NAMESPACE = "relay.fitness"
+
+        /**
+         * The NIP-32 namespace for what the monitor MEASURED about NIP-77, kept apart from the
+         * grade so a stream can filter on either. Both are `l` tags, and NIP-01 ORs the values
+         * inside one `#l` — so "prime AND speaks negentropy" is two sources, the grade on
+         * `relaySource` and this on `gatedBy`, which intersects them.
+         */
+        const val NEGENTROPY_NAMESPACE = "relay.negentropy"
+
+        /** Answered a NEG-OPEN when the fitness pass asked. NEVER the relay's own NIP-11 claim. */
+        const val SPEAKS_NEGENTROPY = "negentropy"
+
+        /** Declined it. A relay with no measurement carries neither, which is not a "no". */
+        const val REFUSES_NEGENTROPY = "no-negentropy"
+
+        /** Every label namespace the fitness pass replaces on each write. */
+        private val OWNED_NAMESPACES = setOf(FITNESS_NAMESPACE, NEGENTROPY_NAMESPACE)
 
         const val LABEL_NAMESPACE_INDEX = 2
 
