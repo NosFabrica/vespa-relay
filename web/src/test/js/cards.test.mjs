@@ -189,7 +189,7 @@ const FIXTURES = [
   [5303,  ev(5303, [["i", "alice", "text"]]), "asks to search people"],
   [6969,  ev(6969, [["poll_option", "0", "Yes"], ["poll_option", "1", "No"],
                     ["value_minimum", "21000"], ["value_maximum", "2100000"],
-                    ["closed_at", String(now + 3600)]], "Should we?"), "21 to 2,100 sats a vote"],
+                    ["closed_at", String(now + 3600)]], "Should we?"), "21,000 to 2,100,000 sats a vote"],
   [9002,  ev(9002, [["h", "chan"], ["name", "The Room"], ["about", "what it is for"], ["t", "nostr"]]), "The Room"],
   [30019, ev(30019, [["d", "mkt"]], JSON.stringify({ name: "The Market", about: "things for sats",
             ui: { banner: "https://x/b.jpg" }, merchants: [pk2, pk] })), "2 merchants"],
@@ -438,7 +438,7 @@ const ROW_SAYS = [
   [30296, "The Cave · you wake in the dark · 2 ways on"], [40100, "room canvas"],
   // The last of them: an ask, an edit, a raid, a job, a target.
   [62, "asks to be erased from 2 relays"], [1010, "edits a note · fixed a typo"],
-  [5050, "asks for text"], [6969, "Should we? · 2 choices · 21 to 2,100 sats a vote"],
+  [5050, "asks for text"], [6969, "Should we? · 2 choices · 21,000 to 2,100,000 sats a vote"],
   [9002, "edits this room to The Room"], [30385, "scores isbn:9780316769488 · rank 72"],
   [33863, "The Fundraiser · 2,100,000 sats to raise"], [1315, "speed camera"],
 ];
@@ -1245,6 +1245,50 @@ for (const kind of REPLY_KINDS) {
     assert(lineOf(html), `kind ${kind}: the poisoned reply fixture rendered no line, so this asserts nothing`);
     assert(ESCAPED(html), `kind ${kind}: a reply's parent tag reached the ${opts ? "permalink" : "preview"} as MARKUP`);
   }
+}
+
+// ---- what an audit of the new renderers turned up -------------------------
+//
+// Six defects, each pinned by the case that produced it.
+{
+  // A rating with no score at all must draw none: `Number(null)` is 0, and a zero-star verdict
+  // is one this author never gave.
+  const unscored = ev(34259, [["d", "books:dune"], ["m", "books"]], "no number, just words");
+  assert(!card(unscored, { full: true }).includes("star-glyphs"), "an unscored rating draws no stars");
+  assert(!/0★/.test(rowOf(unscored).name), `…and none in its row either: ${rowOf(unscored).name}`);
+  assert(card(ev(34259, [["d", "x"], ["rating", "0"]]), { full: true }).includes("star-glyphs"),
+    "a rating that really IS zero still draws, since the author published it");
+
+  // Whoever a card names, namedPubkeys owes: an attestation about a key names that key.
+  const aboutKey = ev(31871, [["d", "a"], ["p", pk2], ["s", "valid"]], "that key is theirs");
+  assert(card(aboutKey, { full: true }).includes(npub(pk2)), "an attestation about a key names it");
+  assert(namedPubkeys(aboutKey, { full: true }).includes(pk2), "…and declares it, or it renders as an npub forever");
+
+  // A `t` value already carrying its hash must not get a second one: `##freedom` searches for nothing.
+  for (const [kind, tags] of [[33863, [["d", "f"], ["title", "T"]]], [9002, [["h", "c"], ["name", "R"]]]]) {
+    const html = card(ev(kind, [...tags, ["t", "#freedom"], ["t", "freedom"]]), { full: true });
+    assert(!html.includes("##"), `kind ${kind}: a hashtag that arrived with its # got a second one`);
+    assert((html.match(/>#freedom</g) || []).length === 1, `kind ${kind}: the same topic twice, spelled two ways`);
+  }
+
+  // A raid's ends are told apart by their markers alone, so an unmarked one is still shown —
+  // just never as an end it might not be.
+  const unmarked = card(ev(1312, [["a", `30311:${pk}:theirs`]], "go watch"), { full: true });
+  assert(unmarked.includes(naddr(`30311:${pk}:theirs`)), "an unmarked raid still shows the stream it names");
+  assert(!unmarked.includes("<dt>from</dt>"), "…without claiming it is the end it did not mark");
+  // And an `a` that is not a stream is not an end of a raid, which is quartz's own rule.
+  assert(!card(ev(1312, [["a", `30023:${pk}:essay`, "", "mention"]]), { full: true }).includes("naddr1"),
+    "only a 30311 address is a raid target");
+
+  // A zap poll's band is counted in SATS, unlike every `amount` tag around it.
+  const poll = ev(6969, [["value_minimum", "21000"], ["value_maximum", "2100000"]], "Should we?");
+  assert(card(poll, { full: true }).includes("21,000 to 2,100,000 sats"),
+    `the band is read as sats: ${/result-body muted">([^<]*)</.exec(card(poll, { full: true }))?.[1]}`);
+
+  // The broadcast flag is the literal "1" the publisher writes; "0" is the opposite claim.
+  assert(card(ev(40002, [["h", "c"], ["broadcast", "1"]], "x"), { full: true }).includes(">broadcast<"), "a broadcast says so");
+  assert(!card(ev(40002, [["h", "c"], ["broadcast", "0"]], "x"), { full: true }).includes(">broadcast<"),
+    "…and a message that says it is NOT one is not drawn as one");
 }
 
 // ---- a publication index is a table of contents ---------------------------

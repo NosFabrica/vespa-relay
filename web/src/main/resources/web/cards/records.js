@@ -6,7 +6,7 @@
 
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import {
-  register, registerRow, shell, titleHtml, bodyHtml, chipRow, extLink, safeUrl,
+  register, registerRow, shell, titleHtml, bodyHtml, extLink, safeUrl,
   tagOf, tagsOf, oneLine, fmtDuration, fmtTs, plural,
 } from "./base.js";
 
@@ -136,13 +136,10 @@ function birdexCard(ev, opts) {
 }
 
 /**
- * The roadstr vocabulary, as codes in a `t` tag. Anything outside it still draws: this is an
- * app's own list, not a closed protocol, and an unknown condition is still a report.
+ * 1315 — a road report: what was seen, and where, at whatever precision was published. The `t`
+ * carries roadstr's own code (`speed_camera`, `pothole`, …); an unknown one still draws, since
+ * this is an app's list rather than a closed protocol.
  */
-const ROAD_EVENTS = new Set(["police", "speed_camera", "traffic_jam", "accident", "road_closure",
-  "construction", "hazard", "road_condition", "pothole", "fog", "ice", "animal", "other"]);
-
-/** 1315 — a road report: what was seen, and where, at whatever precision was published. */
 function roadReportCard(ev, opts) {
   const type = oneLine(tagOf(ev, "t"));
   const where = [oneLine(tagOf(ev, "lat")), oneLine(tagOf(ev, "lon"))].filter(Boolean).join(", ");

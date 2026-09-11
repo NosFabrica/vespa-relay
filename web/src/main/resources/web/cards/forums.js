@@ -15,7 +15,7 @@
 // The room itself needs nothing here: every one of these scopes with NIP-29's `h`, which the
 // byline already draws as the group pill.
 
-import { esc, clip, titleOf } from "../shared/format.js";
+import { esc, titleOf } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, faceStrip, noteHref,
@@ -36,7 +36,8 @@ function messageBody(ev, opts) {
   return (
     titleHtml(opts, titleOf(ev), 140) +
     // A Buzz stream message may be a broadcast: the one thing about it a reader cannot infer.
-    (tagOf(ev, "broadcast") ? `<div class="pill-row"><span class="status-pill lead">broadcast</span></div>` : "") +
+    // The flag is the literal "1" the sdk writes — a `["broadcast", "0"]` is the opposite claim.
+    (tagOf(ev, "broadcast") === "1" ? `<div class="pill-row"><span class="status-pill lead">broadcast</span></div>` : "") +
     bodyHtml(opts, ev.content, 400) +
     faceStrip(mentionsOf(ev), full ? 24 : 12)
   );

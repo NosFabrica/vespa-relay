@@ -5,7 +5,7 @@
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, shell, bodyHtml, chipRow, relayRows, refRows, faceStrip, hashtagHref,
-  extLink, tagsOf, tagOf, jsonContent, clipIf, oneLine, fmtTs, plural, satsOf,
+  topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine, fmtTs, plural, satsOf,
 } from "./base.js";
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
@@ -80,12 +80,6 @@ function badgeCard(ev, opts) {
 }
 
 // 30403 and 30020 are drafts carrying their published twin's shape.
-/** A sat count with the separators every other amount on this page reads with; non-numeric, verbatim. */
-const satCount = (v) => {
-  const n = Number(oneLine(v));
-  return Number.isFinite(n) && n > 0 ? n.toLocaleString() : oneLine(v);
-};
-
 /** NIP-69 writes the side in `k` and the state in `s`; both are closed vocabularies. */
 const ORDER_SIDES = new Set(["buy", "sell"]);
 const ORDER_STATES = new Set(["pending", "canceled", "in-progress", "success", "expired"]);
@@ -100,7 +94,7 @@ const STATE_TONE = { pending: "open", "in-progress": "accepted", success: "merge
 function orderCard(ev, opts) {
   const side = oneLine(tagOf(ev, "k")).toLowerCase();
   const state = oneLine(tagOf(ev, "s")).toLowerCase();
-  const sats = satCount(tagOf(ev, "amt"));
+  const sats = satCount(tagOf(ev, "amt")) || oneLine(tagOf(ev, "amt"));
   const fiat = oneLine(tagOf(ev, "fa"));
   const currency = oneLine(tagOf(ev, "f"));
   // `pm` is one tag carrying every method, not one tag each.
@@ -163,7 +157,8 @@ function marketplaceCard(ev, opts) {
  * where this page cannot see. So the card states the target and the deadline, never a total.
  */
 function fundraiserCard(ev, opts) {
-  const goal = satsOf(`${Number(oneLine(tagOf(ev, "goal"))) * 1000}`);
+  // `goal` is already in sats, so it is counted, not converted: satsOf would divide it away.
+  const goal = satCount(tagOf(ev, "goal"));
   const addresses = tagsOf(ev, "w").map((t) => t[1]).filter(Boolean);
   const banner = tagOf(ev, "banner") || imageOf(ev);
   const full = opts && opts.full;
@@ -172,7 +167,7 @@ function fundraiserCard(ev, opts) {
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
     (goal ? `<div class="price-line">${esc(goal)} sats to raise</div>` : "") +
     bodyHtml(opts, summaryOf(ev) || ev.content, 400) +
-    chipRow(tagsOf(ev, "t").map((t) => t[1]).filter(Boolean).map((v) => `#${v}`), opts, hashtagHref);
+    chipRow(topicsOf(ev), opts, hashtagHref);
   return shell(ev, opts, inner, [
     ["deadline", tagOf(ev, "deadline") ? esc(fmtTs(tagOf(ev, "deadline"))) : null],
     ["published", tagOf(ev, "published_at") ? esc(fmtTs(tagOf(ev, "published_at"))) : null],
@@ -218,7 +213,7 @@ registerRow([30009], (ev) => ({
 // An order's line is what it offers and whether it is still open.
 registerRow([38383], (ev) => {
   const side = oneLine(tagOf(ev, "k")).toLowerCase();
-  const sats = satCount(tagOf(ev, "amt"));
+  const sats = satCount(tagOf(ev, "amt")) || oneLine(tagOf(ev, "amt"));
   const fiat = [oneLine(tagOf(ev, "fa")), oneLine(tagOf(ev, "f"))].filter(Boolean).join(" ");
   return {
     name: [ORDER_SIDES.has(side) ? side : "order", sats ? `${sats} sats` : "", fiat ? `for ${fiat}` : ""].filter(Boolean).join(" "),
@@ -235,10 +230,9 @@ registerRow([30019], (ev) => {
   return { name: oneLine(c.name), sub: [plural(merchants, "merchant"), oneLine(c.about)].filter(Boolean).join(" · ") };
 });
 registerRow([33863], (ev) => {
-  const goal = oneLine(tagOf(ev, "goal"));
+  const goal = satCount(tagOf(ev, "goal"));
   return {
     name: titleOf(ev),
-    sub: [goal && `${Number(goal).toLocaleString()} sats to raise`, summaryOf(ev) || ev.content]
-      .filter(Boolean).join(" · "),
+    sub: [goal && `${goal} sats to raise`, summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
   };
 });

@@ -101,6 +101,16 @@ export const imetas = (ev) => tagsOf(ev, "imeta").map((t) => {
   return m;
 });
 
+/**
+ * A count of sats with the separators every amount on this page reads with, or null when the
+ * value is not a count. Not `satsOf`, which divides: this is for the tags already denominated
+ * in sats.
+ */
+export const satCount = (v) => {
+  const n = Number(oneLine(v));
+  return Number.isFinite(n) && n > 0 ? n.toLocaleString() : null;
+};
+
 /** Seconds as 0:42, or null when the value is not a count of them. */
 export const fmtDuration = (secs) => {
   const n = Math.round(Number(secs));

@@ -88,7 +88,11 @@ function subjectOf(ev) {
 function ratedStars(ev) {
   const s = Number.parseInt(tagOf(ev, "s"), 10);
   if (Number.isInteger(s) && s >= 1 && s <= MAX_STARS) return s;
-  const raw = Number(tagOf(ev, "rating"));
+  // An absent tag is not a zero: `Number(null)` is 0, which would publish a one-star verdict
+  // this author never gave.
+  const rating = tagOf(ev, "rating");
+  if (rating === null) return null;
+  const raw = Number(rating);
   if (!Number.isFinite(raw) || raw < 0) return null;
   if (raw <= 1) return raw * MAX_STARS;
   return raw <= MAX_STARS ? raw : null;

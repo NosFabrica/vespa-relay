@@ -18,21 +18,29 @@ function streamLink(addr) {
   return href ? `<a href="${href}">${esc(clip(shortAddr(addr), 60))}</a>` : `<span class="mono">${esc(clip(shortAddr(addr), 60))}</span>`;
 }
 
-/** The `a` tag carrying one NIP-10 marker: a raid names its source `root` and its target `mention`. */
+/** The streams a raid names: `a` tags pointing at a 30311, which is what makes one an end of a raid. */
+const raidAddrs = (ev) => tagsWhere(ev, (name, t) => name === "a" && /^30311:[0-9a-f]{64}:/.test(String(t[1] || "")));
+
+/** The one carrying a NIP-10 marker: a raid names its source `root` and its target `mention`. */
 const markedAddr = (ev, marker) =>
-  (tagsWhere(ev, (name, t) => name === "a" && String(t[3] || "") === marker)[0] || [])[1] || null;
+  (raidAddrs(ev).find((t) => String(t[3] || "") === marker) || [])[1] || null;
 
 /**
  * 1312 — a raid: a streamer handing their audience to another stream. Both ends are `a` tags and
- * only the marker tells them apart, so a raid with no markers says who it came from and no more.
+ * ONLY the marker tells them apart, so an unmarked one is shown as a stream this raid names
+ * without claiming which end it is — guessing would send a reader to the wrong room.
  */
 function raidCard(ev, opts) {
   const to = markedAddr(ev, "mention");
   const from = markedAddr(ev, "root");
+  const unmarked = to || from ? [] : raidAddrs(ev).map((t) => t[1]);
   const inner =
     `<div class="result-body">raids ${streamLink(to) || "another stream"}</div>` +
     bodyHtml(opts, ev.content, 300);
-  return shell(ev, opts, inner, [["from", streamLink(from)]]);
+  return shell(ev, opts, inner, [
+    ["from", streamLink(from)],
+    ["stream", unmarked.length ? unmarked.map(streamLink).filter(Boolean).join(" · ") : null],
+  ]);
 }
 
 /** 1313 — a clip cut from a stream: the video itself, and the stream it came out of. */

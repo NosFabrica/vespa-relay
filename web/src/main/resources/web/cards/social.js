@@ -6,8 +6,8 @@ import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
-  chipRow, markHref, hashtagHref, relayRows, tagOf, tagsOf, tagsWhere, jsonContent, oneLine, fmtTs,
-  extLink, plural, satsOf,
+  chipRow, markHref, hashtagHref, topicsOf, relayRows, satCount, tagOf, tagsOf, tagsWhere,
+  jsonContent, oneLine, fmtTs, extLink, plural, satsOf,
 } from "./base.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -317,10 +317,15 @@ function textEditCard(ev, opts) {
 /** A zap poll's choices: `["poll_option", <index>, <label>]`, in the order published. */
 const zapPollOptions = (ev) => tagsOf(ev, "poll_option").map((t) => t[2]).filter(Boolean);
 
-/** "21 to 2,100 sats", the band a zap poll accepts as a vote. */
+/**
+ * "21,000 to 2,100,000 sats", the band a zap poll accepts as a vote. These two are counted in
+ * SATS, unlike every `amount` tag around them: the reference client prints the tag value with
+ * "sats" after it and no conversion, so dividing by a thousand here would under-report a vote
+ * by that much.
+ */
 const zapPollBand = (ev) => {
-  const low = satsOf(tagOf(ev, "value_minimum"));
-  const high = satsOf(tagOf(ev, "value_maximum"));
+  const low = satCount(tagOf(ev, "value_minimum"));
+  const high = satCount(tagOf(ev, "value_maximum"));
   if (low && high) return `${low} to ${high} sats`;
   if (low) return `${low} sats and up`;
   return high ? `up to ${high} sats` : "";
@@ -350,7 +355,7 @@ function groupEditCard(ev, opts) {
   const inner =
     `<div class="result-body">edits this room${name ? ` to <b>${esc(clip(name, 80))}</b>` : ""}</div>` +
     bodyHtml(opts, about || ev.content, 300, true) +
-    chipRow(tagsOf(ev, "t").map((t) => t[1]).filter(Boolean).map((v) => `#${v}`), opts, hashtagHref);
+    chipRow(topicsOf(ev), opts, hashtagHref);
   return shell(ev, opts, inner);
 }
 

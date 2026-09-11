@@ -63,7 +63,7 @@ export function namedPubkeys(ev, opts) {
 }
 
 /** The kinds whose card names the person a `p` tag points at, one per event. */
-const NAMES_P_TAGS = new Set([1313, 1984, 8333, 9321, 9734, 9735, 9736, 9737, 31872, 31873]);
+const NAMES_P_TAGS = new Set([1313, 1984, 8333, 9321, 9734, 9735, 9736, 9737, 31871, 31872, 31873]);
 
 /**
  * What a type-ahead row says. The name never falls back to the content, and a sub that
