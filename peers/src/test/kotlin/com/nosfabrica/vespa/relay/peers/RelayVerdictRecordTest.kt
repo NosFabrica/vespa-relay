@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.EventTemplate
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
@@ -35,6 +36,7 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachability
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -242,6 +244,62 @@ class RelayVerdictRecordTest {
                 setOf("countryCode", RelayVerdictRecord.FITNESS_NAMESPACE),
                 tags.filter { it[0] == "L" }.map { it[1] }.toSet(),
                 "and both namespaces are still declared — ours re-stated, theirs carried",
+            )
+        }
+
+    /**
+     * NIP-01 indexes single-letter tags only, so the `nip77` tag can never be a `#` filter and a
+     * stream could not select on what the monitor measured — leaving it the relay's own NIP-11
+     * claim, which is the thing the monitor exists to not believe.
+     */
+    @Test
+    fun `the measured NIP-77 verdict is written as an indexable label a stream can select on`(): Unit =
+        runBlocking {
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+            record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
+
+            suspend fun labelIn(url: NormalizedRelayUrl) =
+                recordFor(store, url.url)
+                    ?.tags
+                    ?.firstOrNull { it[0] == "l" && it.getOrNull(2) == RelayVerdictRecord.NEGENTROPY_NAMESPACE }
+
+            assertEquals(RelayVerdictRecord.SPEAKS_NEGENTROPY, labelIn(canonical)?.get(1))
+            assertEquals(RelayVerdictRecord.REFUSES_NEGENTROPY, labelIn(alias)?.get(1))
+            assertNull(labelIn(self), "a relay the probe never got an answer from is not a no")
+
+            // The grade keeps its own namespace: `#l` on one must not select the other.
+            assertEquals(
+                RelayVerdictRecord.FITNESS_NAMESPACE,
+                recordFor(store, canonical.url)!!.tags.first { it[0] == "l" && it.getOrNull(1) == "prime" }[2],
+            )
+            assertTrue(
+                recordFor(store, canonical.url)!!.tags.any { it[0] == "L" && it[1] == RelayVerdictRecord.NEGENTROPY_NAMESPACE },
+                "a label whose namespace is never declared is not a NIP-32 label",
+            )
+        }
+
+    /**
+     * The verdict flips far more often than the grade does. A label the writer does not own
+     * rides through every later edit, so `#l` would go on selecting a relay the monitor has
+     * since measured as declining — silently, and for as long as the record lives.
+     */
+    @Test
+    fun `a changed negentropy verdict replaces the old label rather than joining it`(): Unit =
+        runBlocking {
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+
+            val labels = recordFor(store, alias.url)!!.tags.filter { it[0] == "l" && it.getOrNull(2) == RelayVerdictRecord.NEGENTROPY_NAMESPACE }
+            assertEquals(listOf(RelayVerdictRecord.REFUSES_NEGENTROPY), labels.map { it[1] }, "the stale verdict is still selectable")
+            assertEquals(
+                1,
+                recordFor(store, alias.url)!!.tags.count { it[0] == "L" && it[1] == RelayVerdictRecord.NEGENTROPY_NAMESPACE },
+                "the namespace declaration was added a second time",
             )
         }
 
