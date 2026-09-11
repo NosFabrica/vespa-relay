@@ -684,7 +684,47 @@ quartz = "a8e8778265"
 # THE GATE AT THIS COMMIT: 20 of 21 ITs ran against a real Vespa, 0 failures.
 # The skip is StagingCorpusIT, which needs a STAGING_CORPUS export.
 #
-vespaEventStore = "369a3f8e1c"
+# NARROW THE CUT (#141) AND SAY WHERE THE TIME WENT (#142).
+#
+# #140 sent every match-phase cut to the whole-corpus visit. #141 halves the
+# window instead, because a cut is about the RANGE and not the match set --
+# measured on staging, `kind in (0,10002,10040)` ending at one instant with only
+# the window varying:
+#
+#     30d     189,623 matches  100% coverage  UNCUT
+#     90d     529,357 matches   54% coverage  cut
+#      1y   1,106,187 matches    7% coverage  cut
+#
+# A 23-hour window with 944,000 matches answers whole, so COUNT does not drive
+# it. The halving carries a budget counted in SPLITS, not depth: a depth of six
+# permits 63 splits and 64 leaves, and every leaf that still refuses scans, so a
+# depth bound bought up to 64 corpus reads. Six splits bound it at seven.
+#
+# AND #142 IS WHY THIS ONE IS DIFFERENT. Four passes over this path today each
+# inferred a cause from aggregate stage totals and each landed somewhere else.
+# Staging had 19 calls open, the oldest 1081s, over a 15.7-HOUR window on three
+# kinds -- a query that answers 3,560 matches at 100% coverage in 0.05s by hand.
+# A SIGQUIT dump found 27 of 30 threads in `VespaVisits.streamOnce:294`,
+# mid-scan. Nothing joined "which call" to "which stage", and the hold registry
+# cannot: it is keyed by stage, one slot per name, so concurrent walks overwrite
+# each other by design.
+#
+# WHAT TO READ, AND WHAT WOULD CONDEMN #141. `walk.cut.width.<bucket>` counts
+# the width of every refused window; `walk.cut.narrowed` against
+# `walk.cut.budget` says whether halving CONVERGES. Cuts that come back `1h`
+# with the budget firing mean narrowing cannot help and #141 should be reverted.
+# Cuts at `1y+` with the budget near zero mean it is right. #141 could not be
+# measured before it shipped -- it is upstream of the instrument -- so this is
+# the check that settles it after.
+#
+# DIRECTION: 369a3f8e1c is a strict ancestor of this.
+#   git merge-base --is-ancestor 369a3f8e1c 6747f3ad4f   # verified
+#
+# LEXICOGRAPHIC: '6747…' > '369a…', so this sorts ABOVE the pin it replaces --
+# the SAFE direction. Quartz untouched by the range (a8e8778265 both sides), and
+# no eventstore or quartz line may carry a `->`.
+#
+vespaEventStore = "6747f3ad4f"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
