@@ -603,7 +603,7 @@ class RelayProtocolTest {
      * needs a signature.
      */
     @Test
-    fun `an undeclared read is refused before AUTH, and the two declarations get through`() =
+    fun `an undeclared read is refused before AUTH, and the two declarations get through`(): Unit =
         runBlocking {
             store.insert(MetadataEvent("6".repeat(64), "a3".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
             val out = Collections.synchronizedList(mutableListOf<String>())
@@ -675,7 +675,7 @@ class RelayProtocolTest {
 
     /** After AUTH the connection IS the lens, and nothing has to be declared. */
     @Test
-    fun `an authenticated read needs no declaration`() =
+    fun `an authenticated read needs no declaration`(): Unit =
         runBlocking {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }

@@ -191,6 +191,7 @@ class SyncProgress {
                                                     put("everySec", r.everySec)
                                                     put("due", r.due)
                                                     put("neverRun", r.neverRun)
+                                                    if (r.cannotRun > 0) put("cannotRun", r.cannotRun)
                                                     put("waiting", r.waiting)
                                                     // Absent when nothing is waiting; a 0 would read as "due now".
                                                     r.nextInSec?.let { put("nextInSec", it) }

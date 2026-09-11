@@ -139,6 +139,70 @@ class AuditScheduleTest {
         assertEquals(1, tail.neverRun, "a band with no pass behind it is still neverRun")
     }
 
+    /**
+     * THE THIRD STATE. A relay that will not open a NEG-OPEN for this ask cannot be swept at
+     * all — the band is neither verified nor outstanding. Counted as `neverRun` it reads as a
+     * backlog waiting for a visit, and no visit of it can ever succeed, so the number never
+     * falls and the stream looks like it is failing to keep up with work that does not exist.
+     */
+    @Test
+    fun `a band no sweep can walk is counted apart from one still waiting for its first`() {
+        val bands = SyncBands(null)
+        val s = stream("content")
+        val schedule = AuditSchedule(listOf(s), bands, retraction = null)
+        // REAL CLOCK: this class's `now` is in the future, and a verdict stamped there would
+        // read as lapsed the moment it is asked about.
+        val at = System.currentTimeMillis() / 1000
+
+        repeat(SyncBands.STRIKES_BEFORE_IMPOSSIBLE) { bands.noteCannotReconcile(s.name, a, s.filter, "", "no NEG-OPEN", at) }
+
+        val row = schedule.rows(roster(a to ask(s), b to ask(s)), at)["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }
+        assertEquals(1, row.cannotRun, "the band negentropy cannot walk must say so")
+        assertEquals(1, row.neverRun, "only the other relay is genuinely waiting for a first pass")
+        assertEquals(0, row.due, "an impossible band is never due; a visit would spend a slot to fail")
+    }
+
+    @Test
+    fun `one refusal is not a verdict, and a reconciled window takes it back`() {
+        val bands = SyncBands(null)
+        val s = stream("content")
+        val schedule = AuditSchedule(listOf(s), bands, retraction = null)
+        val at = System.currentTimeMillis() / 1000
+
+        // `UNAVAILABLE` is also what a failed dial looks like, so a run of them is the evidence.
+        repeat(SyncBands.STRIKES_BEFORE_IMPOSSIBLE - 1) { bands.noteCannotReconcile(s.name, a, s.filter, "", "silent", at) }
+        assertEquals(
+            0,
+            schedule.rows(roster(a to ask(s)), at)["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }.cannotRun,
+            "gave up on ${SyncBands.STRIKES_BEFORE_IMPOSSIBLE - 1} refusal(s)",
+        )
+
+        bands.noteCannotReconcile(s.name, a, s.filter, "", "silent", at)
+        assertEquals(1, schedule.rows(roster(a to ask(s)), at)["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }.cannotRun)
+
+        bands.clearCannotReconcile(s.name, a, s.filter, "")
+        val back = schedule.rows(roster(a to ask(s)), at)["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }
+        assertEquals(0, back.cannotRun, "a band that reconciled is ordinary work again")
+        assertEquals(1, back.neverRun)
+    }
+
+    @Test
+    fun `the verdict lapses so a relay that gains NIP-77 is swept again`() {
+        val bands = SyncBands(null)
+        val s = stream("content")
+        val schedule = AuditSchedule(listOf(s), bands, retraction = null)
+        val at = System.currentTimeMillis() / 1000
+        repeat(SyncBands.STRIKES_BEFORE_IMPOSSIBLE) { bands.noteCannotReconcile(s.name, a, s.filter, "", "silent", at) }
+
+        val justInside = schedule.rows(roster(a to ask(s)), at + SyncBands.CANNOT_RECONCILE_TTL_SECONDS - 1)
+        assertEquals(1, justInside["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }.cannotRun)
+
+        val lapsed = schedule.rows(roster(a to ask(s)), at + SyncBands.CANNOT_RECONCILE_TTL_SECONDS)
+        val row = lapsed["content"]!!.single { it.job == VisitPool.POOL_NEGENTROPY }
+        assertEquals(0, row.cannotRun, "the verdict never expires, so a relay that gains NIP-77 is never asked again")
+        assertEquals(1, row.neverRun, "and it goes back to being ordinary outstanding work")
+    }
+
     @Test
     fun `an ask never audited is due, and counted apart from one whose period elapsed`() {
         val bands = SyncBands(null)
