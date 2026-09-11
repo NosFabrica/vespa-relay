@@ -609,31 +609,40 @@ internal class VisitPool(
         // Oldest-last, so the catch-up of recent history is never queued behind a re-page of
         // the tail. Each band keeps its own coverage: a band expires, and only its legs re-open.
         for ((tier, olderEdge, newerEdge) in SyncTier.tile(tiers)) {
-            val refusal =
-                catchUpBand(
-                    ask,
-                    url,
-                    SyncTier.keyFor(ask.stream.name, tiers, tier),
-                    ask.filter.windowed(olderEdge, newerEdge, now),
-                    ongoingVisit,
-                )
+            val (since, until) = SyncTier.windowAt(now, olderEdge, newerEdge)
+            val refusal = catchUpBand(ask, url, SyncTier.keyFor(ask.stream.name, tiers, tier), since, until, ongoingVisit)
             if (refusal != null) return refusal
         }
         return null
     }
 
-    /** One band's outstanding legs, under the coverage filed at [key]. */
+    /**
+     * One band's outstanding legs, under the coverage filed at [key].
+     *
+     * THE BAND BOUNDS THE LEGS, NEVER THE KEY. Coverage is quartz's, keyed by
+     * `(relay, filter)`, so a filter carrying the band's window would take a new
+     * key every time that window moved — and the window moves with `now`. It
+     * did: every band was re-keyed daily, its coverage orphaned, and its whole
+     * span re-paged from scratch, for every relay, three bands over. Against a
+     * `refetchThePastSeconds` that used to re-page the same ground MONTHLY.
+     *
+     * So the key is the band-qualified stream and the stream's own filter, both
+     * of which stand still, and the window is intersected into the legs after
+     * they come back. What that costs per day is the day the window gained at
+     * the top, which is what a re-fetch was always supposed to cost.
+     */
     private suspend fun catchUpBand(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         key: String,
-        bandAsk: Filter,
+        bandSince: Long?,
+        bandUntil: Long?,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
         val stream = ask.stream
         // Read before the first `record` below widens it; it tells a catch-up from a re-fetch.
-        val covered = bands.band(key, url, bandAsk)
-        for (leg in bands.legs(key, url, bandAsk)) {
+        val covered = bands.band(key, url, ask.filter)
+        for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
             // A refused permit skips the leg: it stays outstanding for the next visit.
@@ -648,7 +657,7 @@ internal class VisitPool(
             try {
                 var narrowings = 0
                 while (true) {
-                    val refusal = walkLeg(ask, url, key, bandAsk, flooredLeg, ongoingVisit) ?: break
+                    val refusal = walkLeg(ask, url, key, flooredLeg, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
                     if (!refusal.ours &&
                         narrowings < MAX_NARROWINGS &&
@@ -679,7 +688,6 @@ internal class VisitPool(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         key: String,
-        bandAsk: Filter,
         flooredLeg: Filter,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
@@ -728,12 +736,12 @@ internal class VisitPool(
             bands.record(
                 key,
                 url,
-                bandAsk,
+                ask.filter,
                 seenMin,
                 seenMax,
                 paged = true,
                 observedByKind = seenByKind,
-                drained = drainSettlesThePast(walked, chunk, bandAsk),
+                drained = drainSettlesThePast(walked, chunk, ask.filter),
             )
         }
         return null
@@ -847,6 +855,17 @@ internal class VisitPool(
                 (if (outcome.refusedWindows > 0) ", ${outcome.refusedWindows} window(s) REFUSED and not claimed" else "") +
                 ", last verified ${verifiedBefore?.let { "${auditStarted - it}s ago" } ?: "never"}",
         )
+    }
+
+    /** [this] intersected with a band's window, or null where nothing is left of it. */
+    private fun Filter.clampedTo(
+        bandSince: Long?,
+        bandUntil: Long?,
+    ): Filter? {
+        val lo = listOfNotNull(since, bandSince).maxOrNull()
+        val hi = listOfNotNull(until, bandUntil).minOrNull()
+        if (lo != null && hi != null && lo > hi) return null
+        return copy(since = lo, until = hi)
     }
 
     /**
