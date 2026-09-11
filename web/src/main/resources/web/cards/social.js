@@ -1,12 +1,13 @@
 // The reactive kinds: reactions, reposts, zaps and the other payments, comments, approvals,
-// reports, labels and deletions. Their content is a fragment, so every card leads with the
-// relation and links the target.
+// reports, labels, edits and deletions. Their content is a fragment, so every card leads with
+// the relation and links the target.
 
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
-  chipRow, markHref, tagOf, tagsOf, tagsWhere, jsonContent, oneLine, fmtTs, extLink, plural, satsOf,
+  chipRow, markHref, hashtagHref, relayRows, tagOf, tagsOf, tagsWhere, jsonContent, oneLine, fmtTs,
+  extLink, plural, satsOf,
 } from "./base.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -300,6 +301,75 @@ function statusCard(ev, opts) {
   ]);
 }
 
+/**
+ * 1010 — an edit of a note: a proposal, not a replacement. The original keeps its id, so the
+ * card leads with what is being edited and the body is the text offered in its place.
+ */
+function textEditCard(ev, opts) {
+  const summary = tagOf(ev, "summary");
+  const inner =
+    relationLine("edits", targetLink(ev)) +
+    (summary ? `<div class="result-body muted">${esc(clip(summary, 200))}</div>` : "") +
+    bodyHtml(opts, ev.content, 400);
+  return shell(ev, opts, inner);
+}
+
+/** A zap poll's choices: `["poll_option", <index>, <label>]`, in the order published. */
+const zapPollOptions = (ev) => tagsOf(ev, "poll_option").map((t) => t[2]).filter(Boolean);
+
+/** "21 to 2,100 sats", the band a zap poll accepts as a vote. */
+const zapPollBand = (ev) => {
+  const low = satsOf(tagOf(ev, "value_minimum"));
+  const high = satsOf(tagOf(ev, "value_maximum"));
+  if (low && high) return `${low} to ${high} sats`;
+  if (low) return `${low} sats and up`;
+  return high ? `up to ${high} sats` : "";
+};
+
+/** 6969 — a poll voted on with zaps, so what a vote costs is part of the question. */
+function zapPollCard(ev, opts) {
+  const options = zapPollOptions(ev);
+  const band = zapPollBand(ev);
+  const inner =
+    bodyHtml(opts, ev.content, 400) +
+    (band ? `<div class="result-body muted">${esc(band)} a vote</div>` : "") +
+    (options.length
+      ? `<ul class="ref-list">${(opts && opts.full ? options : options.slice(0, 6)).map((o) => `<li>${esc(clip(o, 120))}</li>`).join("")}</ul>`
+      : "");
+  return shell(ev, opts, inner, [
+    ["choices", options.length ? String(options.length) : null],
+    ["closes", tagOf(ev, "closed_at") ? esc(fmtTs(tagOf(ev, "closed_at"))) : null],
+    ["consensus", tagOf(ev, "consensus_threshold") ? esc(clip(tagOf(ev, "consensus_threshold"), 12)) : null],
+  ]);
+}
+
+/** 9002 — a NIP-29 moderator editing the room itself: its name, what it is about, its topics. */
+function groupEditCard(ev, opts) {
+  const name = tagOf(ev, "name");
+  const about = tagOf(ev, "about");
+  const inner =
+    `<div class="result-body">edits this room${name ? ` to <b>${esc(clip(name, 80))}</b>` : ""}</div>` +
+    bodyHtml(opts, about || ev.content, 300, true) +
+    chipRow(tagsOf(ev, "t").map((t) => t[1]).filter(Boolean).map((v) => `#${v}`), opts, hashtagHref);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * 62 — a NIP-62 request to vanish: an author asking relays to erase everything they hold of
+ * theirs. Whether a relay obeyed is not a fact this card has, so it says what was asked.
+ */
+function vanishCard(ev, opts) {
+  const relays = tagsOf(ev, "relay").map((t) => t[1]).filter(Boolean);
+  const everywhere = relays.some((r) => r === "ALL_RELAYS");
+  const named = relays.filter((r) => r !== "ALL_RELAYS");
+  const where = everywhere ? "every relay" : plural(named.length, "relay");
+  const inner =
+    `<div class="result-body">asks to be erased from ${esc(where)}</div>` +
+    bodyHtml(opts, ev.content, 300, true) +
+    (!everywhere && named.length ? relayRows(named.map((url) => ({ url })), opts) : "");
+  return shell(ev, opts, inner);
+}
+
 register([7, 17], reactionCard);
 register([6, 16], repostCard);
 register([9735, 9736], zapCard);
@@ -311,6 +381,10 @@ register([1018], pollResponseCard);
 register([1984], reportCard);
 register([1985], labelCard);
 register([5], deletionCard);
+register([1010], textEditCard);
+register([6969], zapPollCard);
+register([9002], groupEditCard);
+register([62], vanishCard);
 register([8], badgeAwardCard);
 register([4550], approvalCard);
 register([34550], communityCard);
@@ -355,3 +429,22 @@ registerRow([4550], (ev) => ({ name: "approved a post", sub: quotedText(ev) }));
 registerRow([34550], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || ev.content }));
 // A status with no text is a status cleared.
 registerRow([30315], (ev) => ({ name: ev.content || "cleared" }));
+// An edit says what it edits; the new text is the second line, as a poll's question is.
+registerRow([1010], (ev) => ({ name: `edits${targetNoun(ev)}`, sub: tagOf(ev, "summary") || ev.content }));
+registerRow([6969], (ev) => ({
+  name: ev.content,
+  sub: [plural(zapPollOptions(ev).length, "choice"), zapPollBand(ev) && `${zapPollBand(ev)} a vote`]
+    .filter(Boolean).join(" · "),
+}));
+registerRow([9002], (ev) => ({
+  name: `edits this room${tagOf(ev, "name") ? ` to ${tagOf(ev, "name")}` : ""}`,
+  sub: tagOf(ev, "about") || ev.content,
+}));
+registerRow([62], (ev) => {
+  const relays = tagsOf(ev, "relay").map((t) => t[1]).filter(Boolean);
+  const everywhere = relays.some((r) => r === "ALL_RELAYS");
+  return {
+    name: `asks to be erased from ${everywhere ? "every relay" : plural(relays.length, "relay")}`,
+    sub: ev.content,
+  };
+});

@@ -4,8 +4,8 @@
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
-  register, registerRow, shell, bodyHtml, chipRow, relayRows, refRows, extLink, tagsOf, tagOf,
-  jsonContent, clipIf, oneLine, plural, satsOf,
+  register, registerRow, shell, bodyHtml, chipRow, relayRows, refRows, faceStrip, hashtagHref,
+  extLink, tagsOf, tagOf, jsonContent, clipIf, oneLine, fmtTs, plural, satsOf,
 } from "./base.js";
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
@@ -141,12 +141,54 @@ function mintRecommendationCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** 30019 — a marketplace: a shopfront over a set of merchants, with its look in the same JSON. */
+function marketplaceCard(ev, opts) {
+  const c = jsonContent(ev);
+  const ui = c && typeof c.ui === "object" && c.ui ? c.ui : {};
+  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => /^[0-9a-f]{64}$/.test(pk || "")) : [];
+  const banner = oneLine(ui.banner) || oneLine(ui.picture);
+  const full = opts && opts.full;
+  const inner =
+    (full && banner ? imgEmbed(banner) : "") +
+    (oneLine(c.name) ? `<h2 class="result-title">${esc(clipIf(opts, oneLine(c.name), 120))}</h2>` : "") +
+    bodyHtml(opts, oneLine(c.about), 300, true) +
+    `<div class="result-body">${esc(plural(merchants.length, "merchant"))}</div>` +
+    faceStrip(merchants, full ? 24 : 12);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * 33863 — a fundraiser. The goal is in sats and the progress toward it is not knowable here:
+ * the zaps that count toward it are other events, and the `w` addresses are paid on-chain,
+ * where this page cannot see. So the card states the target and the deadline, never a total.
+ */
+function fundraiserCard(ev, opts) {
+  const goal = satsOf(`${Number(oneLine(tagOf(ev, "goal"))) * 1000}`);
+  const addresses = tagsOf(ev, "w").map((t) => t[1]).filter(Boolean);
+  const banner = tagOf(ev, "banner") || imageOf(ev);
+  const full = opts && opts.full;
+  const inner =
+    (full && banner ? imgEmbed(banner) : "") +
+    (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    (goal ? `<div class="price-line">${esc(goal)} sats to raise</div>` : "") +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 400) +
+    chipRow(tagsOf(ev, "t").map((t) => t[1]).filter(Boolean).map((v) => `#${v}`), opts, hashtagHref);
+  return shell(ev, opts, inner, [
+    ["deadline", tagOf(ev, "deadline") ? esc(fmtTs(tagOf(ev, "deadline"))) : null],
+    ["published", tagOf(ev, "published_at") ? esc(fmtTs(tagOf(ev, "published_at"))) : null],
+    // Shown to be copied, never linked: this page has no way to pay one and no way to check one.
+    ["onchain", addresses.length ? `<span class="mono">${esc(clip(addresses[0], 40))}</span>` : null],
+  ]);
+}
+
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
 register([38383], orderCard);
+register([30019], marketplaceCard);
+register([33863], fundraiserCard);
 register([38000], mintRecommendationCard);
 
 // The price rides in the sub line, never the title.
@@ -187,3 +229,16 @@ registerRow([38000], (ev) => ({
   name: `recommends ${plural(tagsOf(ev, "u").length + tagsOf(ev, "a").length, "mint")}`,
   sub: ev.content,
 }));
+registerRow([30019], (ev) => {
+  const c = jsonContent(ev);
+  const merchants = Array.isArray(c.merchants) ? c.merchants.length : 0;
+  return { name: oneLine(c.name), sub: [plural(merchants, "merchant"), oneLine(c.about)].filter(Boolean).join(" · ") };
+});
+registerRow([33863], (ev) => {
+  const goal = oneLine(tagOf(ev, "goal"));
+  return {
+    name: titleOf(ev),
+    sub: [goal && `${Number(goal).toLocaleString()} sats to raise`, summaryOf(ev) || ev.content]
+      .filter(Boolean).join(" · "),
+  };
+});

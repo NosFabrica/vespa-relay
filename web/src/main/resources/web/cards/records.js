@@ -1,12 +1,13 @@
-// Records of what somebody did or saw: a workout and the exercise it was built from, a bird
-// sighting and the life list it goes into. None is defined by a merged NIP, all four are lax by
-// construction — every tag optional, units guessed at where they are missing — so nothing here
-// computes a value the publisher did not state.
+// Records of what somebody did, saw or kept: a workout and the exercise it was built from, a
+// bird sighting and the life list it goes into, a road condition, a memory-card block. None is
+// defined by a merged NIP, all of them are lax by construction — every tag optional, units
+// guessed at where they are missing — so nothing here computes a value the publisher did not
+// state.
 
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, chipRow, extLink, safeUrl,
-  tagOf, tagsOf, oneLine, fmtDuration, plural,
+  tagOf, tagsOf, oneLine, fmtDuration, fmtTs, plural,
 } from "./base.js";
 
 // ---- 1301 / 33401, the workouts --------------------------------------------
@@ -134,10 +135,56 @@ function birdexCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/**
+ * The roadstr vocabulary, as codes in a `t` tag. Anything outside it still draws: this is an
+ * app's own list, not a closed protocol, and an unknown condition is still a report.
+ */
+const ROAD_EVENTS = new Set(["police", "speed_camera", "traffic_jam", "accident", "road_closure",
+  "construction", "hazard", "road_condition", "pothole", "fog", "ice", "animal", "other"]);
+
+/** 1315 — a road report: what was seen, and where, at whatever precision was published. */
+function roadReportCard(ev, opts) {
+  const type = oneLine(tagOf(ev, "t"));
+  const where = [oneLine(tagOf(ev, "lat")), oneLine(tagOf(ev, "lon"))].filter(Boolean).join(", ");
+  const inner =
+    (type
+      ? `<div class="pill-row"><span class="status-pill lead">${esc(clip(type.replace(/_/g, " "), 24))}</span></div>`
+      : "") +
+    bodyHtml(opts, summaryOf(ev), 200, true) +
+    bodyHtml(opts, ev.content, 300);
+  return shell(ev, opts, inner, [
+    ["where", where ? `<span class="mono">${esc(clip(where, 40))}</span>` : null],
+    ["geohash", tagOf(ev, "g") ? `<span class="mono">${esc(clip(tagOf(ev, "g"), 24))}</span>` : null],
+    // A report is only about now: NIP-40 gives it a window and the type decides how long it means anything.
+    ["expires", tagOf(ev, "expiration") ? esc(clip(fmtTs(tagOf(ev, "expiration")), 60)) : null],
+  ]);
+}
+
+/**
+ * 38192 — one 8 KiB block of a PlayStation 1 memory card, hex in `content`. The hex is not shown:
+ * eight thousand characters of it say nothing a reader can use, so the card is what the block IS.
+ */
+function ps1SaveCard(ev, opts) {
+  const inner =
+    // The `d` is a card-and-block address, so the game's own filename beats titleOf's `d` fallback.
+    titleHtml(opts, tagOf(ev, "title") || oneLine(tagOf(ev, "filename")) || titleOf(ev), 140) +
+    `<div class="result-body muted">one memory-card block</div>`;
+  return shell(ev, opts, inner, [
+    ["file", tagOf(ev, "filename") ? `<span class="mono">${esc(clip(tagOf(ev, "filename"), 40))}</span>` : null],
+    ["card", tagOf(ev, "m") ? `<span class="mono">${esc(clip(tagOf(ev, "m"), 40))}</span>` : null],
+    ["block", tagOf(ev, "block") ? esc(clip(tagOf(ev, "block"), 12)) : null],
+    ["region", tagOf(ev, "region") ? esc(clip(tagOf(ev, "region"), 24)) : null],
+    ["in a chain", tagOf(ev, "state") ? esc(clip(tagOf(ev, "state"), 24)) : null],
+    ["hash", tagOf(ev, "x") ? `<span class="mono">${esc(clip(tagOf(ev, "x"), 20))}</span>` : null],
+  ]);
+}
+
 register([1301], workoutCard);
 register([33401], exerciseCard);
 register([2473], birdCard);
 register([12473], birdexCard);
+register([1315], roadReportCard);
+register([38192], ps1SaveCard);
 
 registerRow([1301], (ev) => ({
   name: titleOf(ev) || oneLine(tagOf(ev, "type")) || "a workout",
@@ -159,3 +206,12 @@ registerRow([12473], (ev) => {
     sub: species.slice(0, 6).map((s) => s.name).join(", "),
   };
 });
+registerRow([1315], (ev) => ({
+  name: oneLine(tagOf(ev, "t")).replace(/_/g, " ") || "a road report",
+  sub: summaryOf(ev) || ev.content,
+}));
+registerRow([38192], (ev) => ({
+  name: tagOf(ev, "title") || oneLine(tagOf(ev, "filename")) || titleOf(ev) || "a memory-card block",
+  sub: [oneLine(tagOf(ev, "region")), oneLine(tagOf(ev, "block")) && `block ${oneLine(tagOf(ev, "block"))}`]
+    .filter(Boolean).join(" · "),
+}));

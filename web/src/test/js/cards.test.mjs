@@ -172,6 +172,37 @@ const FIXTURES = [
   [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
                      ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
 
+  // ---- the last of the mirrored kinds --------------------------------------
+  [62,    ev(62, [["relay", "wss://a.example"], ["relay", "wss://b.example"]], "please forget me"), "2 relays"],
+  [1010,  ev(1010, [["e", eid], ["summary", "fixed a typo"]], "the corrected note"), "edits"],
+  [1312,  ev(1312, [["a", `30311:${pk}:mine`, "", "root"], ["a", `30311:${pk2}:theirs`, "", "mention"]],
+                   "go watch them"), "raids"],
+  [1313,  ev(1313, [["a", `30311:${pk2}:show`], ["p", pk2], ["r", "https://x/clip.mp4"],
+                    ["title", "The best bit"]], "he did it again"), "The best bit"],
+  [1315,  ev(1315, [["t", "speed_camera"], ["g", "u2mw"], ["lat", "48.1485965"], ["lon", "17.1077477"],
+                    ["expiration", String(now + 604800)], ["alt", "Speed camera reported"]], "northbound"), "speed camera"],
+  [5050,  ev(5050, [["i", "summarise this", "text"], ["param", "model", "llama-3"],
+                    ["output", "text/plain"], ["bid", "21000"], ["p", pk2]]), "asks for text"],
+  [5100,  ev(5100, [["i", "a cat in a hat", "text"], ["param", "size", "1024x1024"]]), "asks for an image"],
+  [5250,  ev(5250, [["i", eid, "event"], ["output", "audio/mpeg"]]), "asks for speech"],
+  [5302,  ev(5302, [["i", "relays", "text"], ["relays", "wss://a.example"]]), "asks to search content"],
+  [5303,  ev(5303, [["i", "alice", "text"]]), "asks to search people"],
+  [6969,  ev(6969, [["poll_option", "0", "Yes"], ["poll_option", "1", "No"],
+                    ["value_minimum", "21000"], ["value_maximum", "2100000"],
+                    ["closed_at", String(now + 3600)]], "Should we?"), "21 to 2,100 sats a vote"],
+  [9002,  ev(9002, [["h", "chan"], ["name", "The Room"], ["about", "what it is for"], ["t", "nostr"]]), "The Room"],
+  [30019, ev(30019, [["d", "mkt"]], JSON.stringify({ name: "The Market", about: "things for sats",
+            ui: { banner: "https://x/b.jpg" }, merchants: [pk2, pk] })), "2 merchants"],
+  [30385, ev(30385, [["d", "isbn:9780316769488"], ["rank", "72"], ["reaction_cnt", "9"]]), "isbn:9780316769488"],
+  [30817, ev(30817, [["d", "nip-99"], ["title", "NIP-99"], ["summary", "classified listings"]],
+                    "# NIP-99\n\nThe body of the NIP."), "The body of the NIP."],
+  [33863, ev(33863, [["d", "fund"], ["title", "The Fundraiser"], ["goal", "2100000"],
+                     ["deadline", String(now + 86400)], ["w", "bc1qexampleaddress"],
+                     ["banner", "https://x/b.jpg"], ["t", "freedom"]], "help us out"), "2,100,000 sats to raise"],
+  [38192, ev(38192, [["d", "card1-3"], ["m", "card1"], ["block", "3"], ["filename", "BASLUS-00594"],
+                     ["region", "NTSC"], ["state", "first"], ["x", "ab".repeat(32)]], "ff".repeat(100)),
+                     "one memory-card block"],
+
   // ---- attestations ---------------------------------------------------------
   [31871, ev(31871, [["d", "att-1"], ["e", eid], ["s", "valid"], ["valid_from", String(now)],
                      ["valid_to", String(now + 86400)], ["request", `31872:${pk2}:req-1`]],
@@ -405,6 +436,11 @@ const ROW_SAYS = [
   [2003, "The Release · 2 files · 667.6 MB"], [1301, "Morning run · 5.2 km · 00:32:10 · ↑ 45 m · 320 kcal · 148 bpm"],
   [12473, "2 species · Icterus galbula, Cardinalis cardinalis"],
   [30296, "The Cave · you wake in the dark · 2 ways on"], [40100, "room canvas"],
+  // The last of them: an ask, an edit, a raid, a job, a target.
+  [62, "asks to be erased from 2 relays"], [1010, "edits a note · fixed a typo"],
+  [5050, "asks for text"], [6969, "Should we? · 2 choices · 21 to 2,100 sats a vote"],
+  [9002, "edits this room to The Room"], [30385, "scores isbn:9780316769488 · rank 72"],
+  [33863, "The Fundraiser · 2,100,000 sats to raise"], [1315, "speed camera"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];

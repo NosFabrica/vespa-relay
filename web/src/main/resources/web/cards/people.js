@@ -1,7 +1,7 @@
 // The graph family: who somebody follows, which relays they read, and this
 // relay's own working kinds, 10040 observer declarations and 30382 score cards.
 
-import { esc, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import {
@@ -63,8 +63,9 @@ function observerCard(ev, opts) {
 }
 
 /**
- * 30382/30383/30384 — NIP-85 assertions. One renderer; the subject is resolved by kind, not by
- * shape, since an event id is hex too.
+ * 30382/30383/30384/30385 — NIP-85 assertions. One renderer; the subject is resolved by kind,
+ * not by shape, since an event id is hex too — and a 30385's subject is a NIP-73 external
+ * identifier, which is nobody's key however it happens to be spelled.
  */
 function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
@@ -81,6 +82,7 @@ function scoreCard(ev, opts) {
 /** The thing an assertion is about, named the way its kind defines it. */
 function subjectLinkFor(kind, subject) {
   if (!subject) return "(no subject)";
+  if (kind === 30385) return `<span class="mono">${esc(clip(subject, 80))}</span>`;
   if (kind === 30383 && /^[0-9a-f]{64}$/.test(subject)) {
     return `<a class="mono" href="${noteHref(subject)}">${esc(subjectName(kind, subject))}</a>`;
   }
@@ -94,6 +96,7 @@ function subjectLinkFor(kind, subject) {
 /** The same subject as words alone, for a row: a name, else a short npub, never hex. */
 function subjectName(kind, subject) {
   if (!subject) return "(no subject)";
+  if (kind === 30385) return subject;                  // an external id reads as itself
   if (kind === 30384) return shortAddr(subject);       // an address is never bare hex
   if (!/^[0-9a-f]{64}$/.test(subject)) return subject;
   return kind === 30383 ? shortNote(subject) : displayName(profiles.get(subject)) || shortNpub(subject);
@@ -106,7 +109,7 @@ registerPeopleGrid([3, 30000, 39089, 39092]);
 register([10002], relayListCard);
 register([30002], relaySetCard);
 register([10040], observerCard);
-register([30382, 30383, 30384], scoreCard);
+register([30382, 30383, 30384, 30385], scoreCard);
 
 // Every card here counts something and none has a title, so the count is the row's line.
 registerRow([3], (ev) => ({ sub: `follows ${plural(peopleOf(ev).length, "person", "people")}` }));
@@ -122,7 +125,7 @@ registerRow([30002], (ev) => ({
 registerRow([10040], (ev) => ({ sub: `trusts ${plural(dimensionsOf(ev).length, "score dimension")}` }));
 // An assertion's `d` is its subject and its `rank` the verdict: the card's two facts, in the row's
 // two lines.
-registerRow([30382, 30383, 30384], (ev) => ({
+registerRow([30382, 30383, 30384, 30385], (ev) => ({
   name: `scores ${subjectName(ev.kind, tagOf(ev, "d"))}`,
   sub: tagOf(ev, "rank") ? `rank ${tagOf(ev, "rank")}` : "",
 }));

@@ -1,8 +1,53 @@
-// The time family: live streams and calendar events. A 30311's status is a pill beside the badge.
+// The time family: live streams and calendar events, plus the two things a stream throws off —
+// a raid that sends its audience somewhere else, and a clip cut out of it. A 30311's status is a
+// pill beside the badge.
 
-import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
-import { register, registerRow, shell, bodyHtml, addrHref, extLink, tagOf, tagsOf, clipIf, fmtTs, plural } from "./base.js";
+import {
+  register, registerRow, shell, titleHtml, bodyHtml, personLink, addrHref, extLink, videoEmbed,
+  tagOf, tagsOf, tagsWhere, clipIf, fmtTs, plural,
+} from "./base.js";
+
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** A 30311 address as a link, or its short form when it cannot be encoded. */
+function streamLink(addr) {
+  if (!addr) return null;
+  const href = addrHref(addr);
+  return href ? `<a href="${href}">${esc(clip(shortAddr(addr), 60))}</a>` : `<span class="mono">${esc(clip(shortAddr(addr), 60))}</span>`;
+}
+
+/** The `a` tag carrying one NIP-10 marker: a raid names its source `root` and its target `mention`. */
+const markedAddr = (ev, marker) =>
+  (tagsWhere(ev, (name, t) => name === "a" && String(t[3] || "") === marker)[0] || [])[1] || null;
+
+/**
+ * 1312 — a raid: a streamer handing their audience to another stream. Both ends are `a` tags and
+ * only the marker tells them apart, so a raid with no markers says who it came from and no more.
+ */
+function raidCard(ev, opts) {
+  const to = markedAddr(ev, "mention");
+  const from = markedAddr(ev, "root");
+  const inner =
+    `<div class="result-body">raids ${streamLink(to) || "another stream"}</div>` +
+    bodyHtml(opts, ev.content, 300);
+  return shell(ev, opts, inner, [["from", streamLink(from)]]);
+}
+
+/** 1313 — a clip cut from a stream: the video itself, and the stream it came out of. */
+function clipCard(ev, opts) {
+  const host = tagOf(ev, "p");
+  const inner =
+    titleHtml(opts, titleOf(ev), 140) +
+    (opts && opts.full ? videoEmbed(tagOf(ev, "r")) : "") +
+    bodyHtml(opts, ev.content || summaryOf(ev), 300);
+  return shell(ev, opts, inner, [
+    ["from", streamLink(tagOf(ev, "a"))],
+    ["host", HEX64.test(host || "") ? personLink(host) : null],
+    ["video", extLink(tagOf(ev, "r"))],
+  ]);
+}
 
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
@@ -65,6 +110,8 @@ function rsvpCard(ev, opts) {
 
 // 30312/30313 are NIP-53's rooms and conference events: the same vocabulary as a live event.
 register([30311, 30312, 30313], liveCard);
+register([1312], raidCard);
+register([1313], clipCard);
 register([31922, 31923], calendarEventCard);
 register([31924], calendarCard);
 register([31925], rsvpCard);
@@ -85,3 +132,9 @@ registerRow([31925], (ev) => ({
   name: tagOf(ev, "status") ? `rsvp: ${tagOf(ev, "status")}` : "rsvp",
   sub: ev.content,
 }));
+// A raid is about where it sends people; a clip, about what it shows.
+registerRow([1312], (ev) => ({
+  name: `raids ${shortAddr(markedAddr(ev, "mention") || "") || "another stream"}`,
+  sub: ev.content,
+}));
+registerRow([1313], (ev) => ({ name: titleOf(ev), sub: ev.content || summaryOf(ev) }));

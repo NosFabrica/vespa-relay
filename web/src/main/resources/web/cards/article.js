@@ -257,7 +257,8 @@ function mergeRequestCard(ev, opts) {
 }
 
 // 30041 is a publication section: a title over prose, which is an article here.
-register([30023, 30024, 30818, 30041], articleCard);
+// 30817 is a NIP's own text, published on nostr: a titled document, which is this card.
+register([30023, 30024, 30818, 30041, 30817], articleCard);
 register([30004], curationCard);
 register([30040], publicationCard);
 register([30045], shelfCard);
@@ -267,7 +268,7 @@ register([818], mergeRequestCard);
 registerNamedPeople([818], (ev) => [askedOf(ev)].filter(Boolean));
 
 // Most articles carry no `summary`, so the row's second line is the same excerpt the card shows.
-registerRow([30023, 30024, 30818, 30041], (ev) => ({
+registerRow([30023, 30024, 30818, 30041, 30817], (ev) => ({
   name: titleOf(ev),
   sub: summaryOf(ev) || mdExcerpt(ev.content, titleOf(ev)),
 }));

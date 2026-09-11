@@ -111,6 +111,17 @@ export const fmtDuration = (secs) => {
     : `${Math.floor(n / 60)}:${two(n % 60)}`;
 };
 
+/**
+ * A player for one video url. `data-src`, never `src`: app.js promotes it when the card comes
+ * within a screen, and a url this page would not follow gets no player rather than a dead frame.
+ */
+export const videoEmbed = (url) => {
+  const safe = safeUrl(url);
+  return safe
+    ? `<div class="embed"><video controls playsinline preload="none" data-src="${esc(safe)}" onerror="this.parentElement.remove()"></video></div>`
+    : "";
+};
+
 /** A player for one audio file. A url this page would not follow gets none rather than a dead control. */
 export const audioEmbed = (url) => {
   const safe = safeUrl(url);
