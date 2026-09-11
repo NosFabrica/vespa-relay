@@ -605,7 +605,51 @@ quartz = "a8e8778265"
 # c11472eb18 with no `->`:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-vespaEventStore = "c11472eb18"
+# A REFUSED PROBE NO LONGER BUYS A CORPUS (#137), AND THE PROBE IS GONE (#138).
+#
+# A partial answer used to be swallowed into the same `false` a dense tie group
+# returns, and both went to the document-API scan -- a visit with NO INDEX
+# behind it, whose cost is the corpus whatever the filter says. Measured on
+# staging: 7.1s of visiting found 4 of 8,765 matches that one indexed query
+# answered completely in 6ms. A full scan takes ~17.9 minutes and at ~24/hour
+# was holding ~7.3 of 16 cores with NO USERS on the cluster.
+#
+# #138 then removed the predicting probe outright. The cursor loop MEETS the
+# boundary group it was guessing about and asks for it with a bound, so the
+# measurement replaces the guess for a query that was going to be issued anyway
+# -- one probe per walk saved, plus the exact-count query it paid on every tie,
+# on walks that were 79.3% of all engine time.
+#
+# And a refusal now WAITS (four asks over 4.2s) and then THROWS, instead of
+# falling back to the scan. It is safe to throw because the walk cannot be
+# refused for size: `buildIdTime` ranks `unranked`, and `event.sd` declares
+# match-phase on `recency`/`recency_gated` alone. Confirmed twice against a real
+# Vespa -- 120,000 matches at 100% coverage upstream, 100,000 hits with no
+# degradation here, same shape. What is left to be refused for is a node
+# redistributing, which clears on its own.
+#
+# WHAT THAT THROW MEANS FOR US, checked because it crosses the repo boundary:
+# `StoreWindowIndex.entriesFor` does not catch, so a PartialAnswer reaches
+# `guardedVisit`, which records VisitAborts.Reason.FAILED and retries on the
+# next roster pass. One visit aborts, nothing crashes, and it shows up in
+# `abortedFailed`.
+#
+# READ AFTER DEPLOY: `walk.ties.dense` (the only thing that still reaches the
+# scan), `walk.scan` beside it, and `walk.refused.<degradation>` -- which names
+# the state that keeps reaching this walk. `walk.cursor.decide` is GONE; nothing
+# books it.
+#
+# DIRECTION: c11472eb18 is a strict ancestor of this.
+#   git merge-base --is-ancestor c11472eb18 c79d2fdb2d   # verified
+#
+# LEXICOGRAPHIC: 'c79d…' > 'c114…', so this sorts ABOVE the pin it replaces --
+# the SAFE direction. Quartz is untouched by the range (a8e8778265 both sides),
+# and no eventstore or quartz line may carry a `->`:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# THE GATE AT THIS COMMIT: 20 of 21 ITs ran against a real Vespa, 0 failures.
+# The skip is StagingCorpusIT, which needs a STAGING_CORPUS export.
+vespaEventStore = "c79d2fdb2d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
