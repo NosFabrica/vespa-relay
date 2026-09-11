@@ -25,10 +25,12 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -87,6 +89,54 @@ class AuditScheduleTest {
             ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1), null, null, scope, null, null),
             refusedIds = RefusedIds.disabled(),
         )
+    }
+
+    /**
+     * THE ROW MUST READ THE KEY THE POOL WRITES.
+     *
+     * Coverage is keyed by `(stream, filter-json, relay)`. The re-fetch row used
+     * to look it up under the BAND'S WINDOWED filter while `catchUpBand` records
+     * under the stream's own — so every lookup missed and every re-fetch row on
+     * every banded stream reported `neverRun`, including asks whose coverage was
+     * sitting right there. On staging that read as "no re-fetch has ever
+     * completed on any stream", which was not true and was alarming enough to
+     * chase. A status page that asks a different question than the writer
+     * answered reports a catastrophe it invented.
+     */
+    @Test
+    fun `a banded re-fetch row sees coverage the pool actually recorded`() {
+        val month = 30L * 86_400
+        val tiers = listOf(SyncTier(maxAgeSeconds = month, everySeconds = week), SyncTier(maxAgeSeconds = null, everySeconds = week))
+        val s =
+            stream("content").copy(
+                negentropySyncThePastSeconds = null,
+                refetchTiers = tiers,
+            )
+        val bands = SyncBands(null, perStream = tiers.associate { SyncTier.keyFor(s.name, tiers, it) to it.everySeconds })
+        // REAL CLOCK for the band data, not this class's fixed `now`, which is in
+        // the future: quartz refuses to band an implausible timestamp and the
+        // record is a silent no-op, so the row then reports exactly the bug this
+        // test exists to catch and passes for the wrong reason.
+        val walked = System.currentTimeMillis() / 1000
+        bands.record(
+            SyncTier.keyFor(s.name, tiers, tiers[0]),
+            a,
+            s.filter,
+            walked - month,
+            walked,
+            paged = true,
+            observedByKind = s.filter.kinds!!.associateWith { SyncCoverage.Span(walked - month, walked) },
+        )
+
+        val rows = AuditSchedule(listOf(s), bands, null).rows(roster(a to ask(s)), walked)
+        val recent = rows["content"]!!.first { it.job.contains("tier:$month") }
+
+        assertEquals(0, recent.neverRun, "the pass the pool recorded must be visible to the row that reports it")
+        assertEquals(1, recent.waiting + recent.due, "and the ask counted as scheduled, not as never run")
+
+        // The other band genuinely has nothing, and must still say so.
+        val tail = rows["content"]!!.first { it.job.contains("tier:all") }
+        assertEquals(1, tail.neverRun, "a band with no pass behind it is still neverRun")
     }
 
     @Test
