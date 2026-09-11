@@ -101,6 +101,22 @@ export const imetas = (ev) => tagsOf(ev, "imeta").map((t) => {
   return m;
 });
 
+/** Seconds as 0:42, or null when the value is not a count of them. */
+export const fmtDuration = (secs) => {
+  const n = Math.round(Number(secs));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const two = (x) => String(x).padStart(2, "0");
+  return n >= 3600
+    ? `${Math.floor(n / 3600)}:${two(Math.floor(n / 60) % 60)}:${two(n % 60)}`
+    : `${Math.floor(n / 60)}:${two(n % 60)}`;
+};
+
+/** A player for one audio file. A url this page would not follow gets none rather than a dead control. */
+export const audioEmbed = (url) => {
+  const safe = safeUrl(url);
+  return safe ? `<div class="embed"><audio controls preload="metadata" src="${esc(safe)}"></audio></div>` : "";
+};
+
 /**
  * A byte count as a size a reader takes in at a glance, or null when the value is not a number —
  * `size` is published as a string, and a publisher who put something else there has not said how

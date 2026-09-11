@@ -4,7 +4,7 @@
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink,
-  relayRows, imetas, tagOf, tagsOf, topicsOf, clipIf, fmtBytes, plural,
+  relayRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, fmtBytes, fmtDuration, plural,
 } from "./base.js";
 
 /** The file a single-file card is about: its first imeta, read whole, never fields across several. */
@@ -93,16 +93,6 @@ function frameStyle(dim, opts) {
   return ` style="aspect-ratio: ${w} / ${h}; max-width: min(100%, ${cap})"`;
 }
 
-/** Seconds as 0:42. */
-const fmtDuration = (secs) => {
-  const n = Math.round(Number(secs));
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const two = (x) => String(x).padStart(2, "0");
-  return n >= 3600
-    ? `${Math.floor(n / 3600)}:${two(Math.floor(n / 60) % 60)}:${two(n % 60)}`
-    : `${Math.floor(n / 60)}:${two(n % 60)}`;
-};
-
 /** 1063 — file metadata, with the file itself when it is an image. */
 function fileCard(ev, opts) {
   const url = tagOf(ev, "url");
@@ -125,7 +115,7 @@ function audioCard(ev, opts) {
   const url = fieldOf(fileOf(ev), ev, "url");
   const inner =
     replyLine(ev) +
-    (opts && opts.full && url ? `<div class="embed"><audio controls preload="metadata" src="${esc(url)}"></audio></div>` : "") +
+    (opts && opts.full ? audioEmbed(url) : "") +
     bodyHtml(opts, ev.content || titleOf(ev), 300);
   return shell(ev, opts, inner);
 }

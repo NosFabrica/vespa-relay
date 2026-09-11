@@ -172,6 +172,35 @@ const FIXTURES = [
   [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
                      ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
 
+  // ---- podcasts and music -------------------------------------------------
+  [10154, ev(10154, [["title", "The Show"], ["description", "a podcast about relays"],
+                     ["image", "https://x/show.jpg"], ["website", "https://show.example"],
+                     ["p", pk2, "host"]]), "claims"],
+  [54,    ev(54, [["title", "Episode One"], ["description", "the first one"],
+                  ["audio", "https://x/ep1.mp3", "audio/mpeg"]], "the show notes"), "<audio"],
+  [30054, ev(30054, [["d", "ep2"], ["title", "Episode Two"], ["description", "the second"],
+                     ["audio", "https://x/ep2.mp3"], ["season", "2"], ["episode", "14"],
+                     ["duration", "3600"], ["transcript", "https://x/ep2.vtt"], ["t", "nostr"]],
+                     "more notes"), "S2 E14"],
+  [30055, ev(30055, [["d", "tr"], ["title", "The Trailer"], ["url", "https://x/tr.mp3"],
+                     ["pubdate", "Tue, 01 Sep 2026 10:00:00 GMT"], ["length", "123456"],
+                     ["type", "audio/mpeg"]]), "120.6 KB"],
+  [31337, ev(31337, [["d", "trk"], ["subject", "A Live Set"], ["media", "https://x/set.mp3"],
+                     ["c", "dj set"], ["cover", "https://x/cover.jpg"], ["p", pk2]]), "A Live Set"],
+  [36787, ev(36787, [["d", "song"], ["title", "The Song"], ["artist", "The Band"], ["album", "The Album"],
+                     ["url", "https://x/song.mp3"], ["duration", "212"], ["released", "1979"],
+                     ["explicit", "true"], ["track_number", "3"]], "a song"), "The Band — The Album"],
+  [34139, ev(34139, [["d", "mix"], ["title", "The Mix"], ["a", `36787:${pk}:song`],
+                     ["a", `30023:${pk}:not-a-track`], ["private", "true"]]), "1 track"],
+  // ---- messages and forums -------------------------------------------------
+  [14,    ev(14, [["p", pk2], ["subject", "about the thing"]], "the message body"), "the message body"],
+  [24,    ev(24, [["p", pk2]], "a message in the open"), "a message in the open"],
+  [3302,  ev(3302, [["e", eid], ["h", "chan"]], "the corrected text"), "edits"],
+  [40002, ev(40002, [["h", "chan"], ["broadcast", "1"], ["p", pk2]], "a line in the channel"), "broadcast"],
+  [45001, ev(45001, [["h", "chan"], ["p", pk2]], "the opening post"), "the opening post"],
+  [45003, ev(45003, [["h", "chan"], ["e", eid, "", "root"]], "a reply in the thread"), "in reply to"],
+  [48106, ev(48106, [["h", "chan"]], "be excellent to each other"), "be excellent to each other"],
+
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
@@ -273,6 +302,12 @@ const ROW_SAYS = [
   [32176, "A Big File · video/mp4 · 120.6 KB"],
   // A review says what it reviewed, then the score; a rating, what it rated.
   [31987, "relay.example · 4★"], [34259, "rated book 4.5★"],
+  // An episode says where it sits in the show before what it is about.
+  [30054, "Episode Two · S2 E14 · 1:00:00"], [36787, "The Song · The Band — The Album · 3:32"],
+  [34139, "The Mix · 1 track"], [10154, "The Show · a podcast about relays"],
+  // A message leads with its text, or with the subject that stands over it.
+  [14, "about the thing · the message body"], [45001, "the opening post"],
+  [3302, "edits a message · the corrected text"], [48106, "room guidelines"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
