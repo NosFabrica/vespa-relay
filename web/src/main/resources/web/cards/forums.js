@@ -9,6 +9,7 @@
 // | 40002 | a Buzz stream message | a line in a channel, maybe a broadcast |
 // | 45001 | a Buzz forum post | the root of a thread |
 // | 45003 | a Buzz forum comment | a reply inside one |
+// | 40100 | a Buzz canvas | the room's shared markdown document |
 // | 48106 | Buzz huddle guidelines | the rules the room's agents are steered by |
 //
 // The room itself needs nothing here: every one of these scopes with NIP-29's `h`, which the
@@ -60,10 +61,16 @@ function chatEditCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 48106 — a room's guidelines: a document, not a line of chat, so it reads as one. */
-function guidelinesCard(ev, opts) {
+/** What a room document is, per kind; both are markdown in `content` scoped by an `h`. */
+const DOCUMENT_ROLE = {
+  40100: "the shared document of this room",
+  48106: "the rules this room's agents are steered by",
+};
+
+/** 40100 / 48106 — a document, not a line of chat, so it reads as one. */
+function roomDocumentCard(ev, opts) {
   const inner =
-    `<div class="result-body muted">the rules this room's agents are steered by</div>` +
+    `<div class="result-body muted">${esc(DOCUMENT_ROLE[ev.kind] || "a room document")}</div>` +
     bodyHtml(opts, ev.content, 600);
   return shell(ev, opts, inner);
 }
@@ -71,7 +78,7 @@ function guidelinesCard(ev, opts) {
 register([24, 40002, 45001], messageCard);
 register([14, 45003], replyingMessageCard);
 register([3302], chatEditCard);
-register([48106], guidelinesCard);
+register([40100, 48106], roomDocumentCard);
 
 // A message's line IS its text; a subject, where one exists, leads and the text follows.
 const messageRow = (ev) => {
@@ -84,4 +91,5 @@ registerRow([14, 24, 40002, 45001, 45003], (ev) => {
   return { ...row, sub: row.sub || (named ? `names ${plural(named, "person", "people")}` : "") };
 });
 registerRow([3302], (ev) => ({ name: "edits a message", sub: ev.content }));
+registerRow([40100], (ev) => ({ name: "room canvas", sub: ev.content }));
 registerRow([48106], (ev) => ({ name: "room guidelines", sub: ev.content }));

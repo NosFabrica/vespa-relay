@@ -172,6 +172,53 @@ const FIXTURES = [
   [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
                      ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
 
+  // ---- attestations ---------------------------------------------------------
+  [31871, ev(31871, [["d", "att-1"], ["e", eid], ["s", "valid"], ["valid_from", String(now)],
+                     ["valid_to", String(now + 86400)], ["request", `31872:${pk2}:req-1`]],
+                     "This is Frank's new npub."), "status-pill lead open"],
+  [31872, ev(31872, [["d", "req-1"], ["p", pk2], ["e", eid], ["cashu_token", "cashuAeyJ0b2tlbiI"]],
+                     "please check this key"), "asks for an attestation"],
+  [11871, ev(11871, [["k", "31871"], ["k", "30023"]], "I check keys and articles"), "attests 2 kinds"],
+  [31873, ev(31873, [["d", "rec-1"], ["p", pk2], ["k", "31871"]], "they are quick"), "recommends"],
+  // ---- the file headers, which describe bytes that live somewhere else ------
+  [1065,  ev(1065, [["e", eid], ["m", "image/png"], ["size", "123456"], ["dim", "800x600"],
+                    ["x", "ab".repeat(32)], ["image", "https://x/preview.png"], ["service", "nostr.build"],
+                    ["summary", "a diagram"]]), "120.6 KB"],
+  [1163,  ev(1163, [["url", "https://x/gallery.jpg"], ["m", "image/jpeg"], ["dim", "1024x768"],
+                    ["e", eid]], "from the trip"), "https://x/gallery.jpg"],
+  [1808,  ev(1808, [["title", "The Take"], ["stream_url", "https://x/take.mp3"],
+                    ["download_url", "https://x/take.wav"], ["waveform", "[1,2,3]"]], "a rough cut"), "<audio"],
+  [2003,  ev(2003, [["title", "The Release"], ["btih", "ab".repeat(20)],
+                    ["file", "release.iso", "700000000"], ["file", "README", "1024"],
+                    ["tracker", "udp://tracker.example:451"], ["t", "linux"]], "seed it"), "2 files"],
+  [2004,  ev(2004, [["e", eid, "", "root"]], "thanks for seeding"), "in reply to"],
+  [40100, ev(40100, [["h", "chan"]], "# The plan\n\nwrite it down"), "the shared document of this room"],
+  // ---- an interactive story --------------------------------------------------
+  [30296, ev(30296, [["d", "story"], ["title", "The Cave"], ["summary", "you wake in the dark"],
+                     ["option", "Light a match", `30297:${pk}:match`],
+                     ["option", "Feel for a wall", `30297:${pk}:wall`]],
+                     "It is dark."), "2 ways on"],
+  [30297, ev(30297, [["d", "match"], ["title", "The Match"],
+                     ["option", "Walk on", `30297:${pk}:walk`]], "The flame catches."), "Walk on"],
+  [30298, ev(30298, [["d", "state"], ["title", "The Cave"], ["status", "reading"],
+                     ["A", `30296:${pk}:story`], ["a", `30297:${pk}:match`]]), "status-pill"],
+  // ---- static websites, which are napplet manifests by another name ---------
+  [15128, ev(15128, [["title", "My Site"], ["path", "/index.html", "ab".repeat(32)],
+                     ["server", "https://blossom.example"]]), "the default website for this key"],
+  [35128, ev(35128, [["d", "notes"], ["title", "Notes Site"], ["path", "/index.html", "ab".repeat(32)],
+                     ["source", "https://git.example/site"]]), "a named website"],
+  // ---- what somebody did or saw ---------------------------------------------
+  [1301,  ev(1301, [["title", "Morning run"], ["type", "run"], ["distance", "5.2", "km"],
+                    ["duration", "00:32:10"], ["calories", "320"], ["avg_heart_rate", "148"],
+                    ["elevation_gain", "45", "m"], ["source", "RUNSTR"]], "felt good"), "5.2 km · 00:32:10"],
+  [33401, ev(33401, [["d", "squat"], ["title", "Back Squat"], ["equipment", "barbell"],
+                     ["difficulty", "intermediate"], ["format", "weight", "reps"]],
+                     "keep the bar over midfoot"), "barbell · intermediate"],
+  [2473,  ev(2473, [["n", "Porphyrio martinica"], ["i", "https://www.wikidata.org/entity/Q27074644"],
+                    ["g", "dhwtsz"], ["alt", "Bird detection: Purple Gallinule"]]), "Porphyrio martinica"],
+  [12473, ev(12473, [["n", "Icterus galbula"], ["i", "https://www.wikidata.org/entity/Q805774"],
+                     ["n", "Cardinalis cardinalis"], ["alt", "Birdex: 2 species"]]), "2 species"],
+
   // ---- the payments beyond NIP-57 ------------------------------------------
   // 8333 counts SATS in the same `amount` tag NIP-57 counts millisats in; the fixtures
   // pin both, since reading one as the other is a thousandfold error on a payment.
@@ -353,6 +400,11 @@ const ROW_SAYS = [
   [38000, "recommends 2 mints"],
   [10100, "Helper · assistant · online"], [30176, "The Desk · 2 personas"],
   [30620, "Nightly digest · 4 lines"], [5129, "Notes · one pinned build · 2 files"],
+  // A verdict, a life list, a run: each row leads with the fact its kind exists to carry.
+  [31871, "attests: valid"], [11871, "attests 2 kinds · attestation, article"],
+  [2003, "The Release · 2 files · 667.6 MB"], [1301, "Morning run · 5.2 km · 00:32:10 · ↑ 45 m · 320 kcal · 148 bpm"],
+  [12473, "2 species · Icterus galbula, Cardinalis cardinalis"],
+  [30296, "The Cave · you wake in the dark · 2 ways on"], [40100, "room canvas"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];

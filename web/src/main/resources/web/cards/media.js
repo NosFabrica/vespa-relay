@@ -1,11 +1,16 @@
 // The media family. The media itself is on the card at both depths, because here the file
-// is the event. URLs come from NIP-92 imeta first, then the legacy url/image tags.
+// is the event. URLs come from NIP-92 imeta first, then the legacy url/image tags. The file
+// headers at the end of this file describe bytes that live somewhere else — in a sibling event
+// (1065), on a server (1163, 1808) or in a swarm (2003) — so what they can show is a preview
+// and a promise, never the thing itself.
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
-  register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink,
-  relayRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, fmtBytes, fmtDuration, plural,
+  register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref,
+  extLink, relayRows, refRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, noteHref,
+  fmtBytes, fmtDuration, plural,
 } from "./base.js";
+import { shortNote } from "../shared/nip19.js";
 
 /** The file a single-file card is about: its first imeta, read whole, never fields across several. */
 const EMPTY = Object.freeze(Object.create(null));
@@ -176,6 +181,98 @@ function pieceIndexCard(ev, opts) {
   ]);
 }
 
+/** The file facts these headers share, in the order a reader wants them. */
+const fileFacts = (ev) => [
+  ["type", tagOf(ev, "m") ? esc(clip(tagOf(ev, "m"), 40)) : null],
+  ["size", fmtBytes(tagOf(ev, "size"))],
+  ["dimensions", tagOf(ev, "dim") ? esc(clip(tagOf(ev, "dim"), 24)) : null],
+  ["hash", tagOf(ev, "x") ? `<span class="mono">${esc(clip(tagOf(ev, "x"), 20))}</span>` : null],
+];
+
+/**
+ * 1065 — a NIP-95 file header. The bytes are not here: they are in a sibling kind-1064 event
+ * this one names, which is why the card shows the preview image the header carries rather than
+ * the file, and links the event that holds it.
+ */
+function fileStorageCard(ev, opts) {
+  const preview = tagOf(ev, "image", "thumb");
+  const data = tagsOf(ev, "e").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const full = opts && opts.full;
+  const inner =
+    (full && preview ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url: preview })) : "") +
+    titleHtml(opts, titleOf(ev), 140) +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 300, true) +
+    refRows(data.map((id) => ({ kind: "e", value: id })), opts);
+  return shell(ev, opts, inner, [
+    ...fileFacts(ev),
+    ["stored by", tagOf(ev, "service") ? esc(clip(tagOf(ev, "service"), 60)) : null],
+  ]);
+}
+
+/** 1163 — a gallery entry: a picture the author pinned to their profile, and where it came from. */
+function galleryCard(ev, opts) {
+  const url = tagOf(ev, "url") || tagOf(ev, "image");
+  const from = tagsOf(ev, "e").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const inner =
+    (url ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url, alt: tagOf(ev, "alt") })) : "") +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 200) +
+    (from ? `<div class="result-body">from <a class="mono" href="${noteHref(from)}">${esc(shortNote(from))}</a></div>` : "");
+  return shell(ev, opts, inner, fileFacts(ev));
+}
+
+/** 1808 — an audio header: a track that streams from one url and downloads from another. */
+function audioHeaderCard(ev, opts) {
+  const stream = tagOf(ev, "stream_url");
+  const download = tagOf(ev, "download_url");
+  const inner =
+    titleHtml(opts, titleOf(ev), 140) +
+    (opts && opts.full ? audioEmbed(stream || download) : "") +
+    bodyHtml(opts, ev.content, 300);
+  return shell(ev, opts, inner, [
+    ["stream", extLink(stream)],
+    ["download", extLink(download)],
+  ]);
+}
+
+/** What a torrent ships: `["file", <name>, <bytes>]`, one per file. */
+const torrentFiles = (ev) => tagsOf(ev, "file").filter((t) => t[1]).map((t) => ({ name: t[1], bytes: t[2] }));
+
+/** The whole torrent's size: every file's byte count, where the publisher gave one. */
+const torrentBytes = (ev) => torrentFiles(ev).reduce((sum, f) => {
+  const n = Number(f.bytes);
+  return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+}, 0);
+
+/**
+ * 2003 — a torrent. The swarm is reached by a `magnet:` link, which is not a scheme this page
+ * will put in an href, so the info hash is shown as the thing to copy instead.
+ */
+function torrentCard(ev, opts) {
+  const files = torrentFiles(ev);
+  const bytes = torrentBytes(ev);
+  const trackers = tagsOf(ev, "tracker").map((t) => t[1]).filter(Boolean);
+  const shown = opts && opts.full ? files : files.slice(0, 6);
+  const more = files.length - shown.length;
+  const inner =
+    titleHtml(opts, titleOf(ev), 140) +
+    `<div class="result-body">${esc(plural(files.length, "file"))}${bytes ? ` · ${esc(fmtBytes(bytes))}` : ""}</div>` +
+    bodyHtml(opts, ev.content, 300) +
+    (shown.length
+      ? `<ul class="ref-list">${shown.map((f) => `<li>${esc(clip(f.name, 90))}${fmtBytes(f.bytes) ? ` <span class="muted-note">${esc(fmtBytes(f.bytes))}</span>` : ""}</li>`).join("")}` +
+        `${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`
+      : "") +
+    chipRow(topicsOf(ev), opts, hashtagHref);
+  return shell(ev, opts, inner, [
+    ["info hash", tagOf(ev, "btih", "x") ? `<span class="mono">${esc(clip(tagOf(ev, "btih", "x"), 40))}</span>` : null],
+    ["trackers", trackers.length ? String(trackers.length) : null],
+  ]);
+}
+
+/** 2004 — a comment on a torrent: a note whose parent is the torrent it answers. */
+function torrentCommentCard(ev, opts) {
+  return shell(ev, opts, replyLine(ev) + bodyHtml(opts, ev.content, 400));
+}
+
 register([20], pictureCard);
 register([21, 22, 34235, 34236], videoCard);
 register([1063], fileCard);
@@ -184,6 +281,11 @@ register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
 register([32176], pieceIndexCard);
+register([1065], fileStorageCard);
+register([1163], galleryCard);
+register([1808], audioHeaderCard);
+register([2003], torrentCard);
+register([2004], torrentCommentCard);
 
 /** The title, else the caption; cards.js drops a sub that repeats the name. */
 const captionRow = (ev) => {
@@ -219,3 +321,17 @@ registerRow([32176], (ev) => ({
   name: titleOf(ev),
   sub: [tagOf(ev, "type"), fmtBytes(tagOf(ev, "size")), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
 }));
+registerRow([1065], (ev) => ({
+  name: titleOf(ev) || summaryOf(ev) || ev.content,
+  sub: [tagOf(ev, "m"), fmtBytes(tagOf(ev, "size")), tagOf(ev, "service")].filter(Boolean).join(" · "),
+}));
+registerRow([1163], (ev) => ({
+  name: summaryOf(ev) || ev.content || tagOf(ev, "url"),
+  sub: [tagOf(ev, "m"), fmtBytes(tagOf(ev, "size"))].filter(Boolean).join(" · "),
+}));
+registerRow([1808], (ev) => ({ name: titleOf(ev), sub: ev.content }));
+registerRow([2003], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(torrentFiles(ev).length, "file"), fmtBytes(torrentBytes(ev)), ev.content].filter(Boolean).join(" · "),
+}));
+registerRow([2004], (ev) => ({ name: ev.content }));

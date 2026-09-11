@@ -9,6 +9,7 @@
 // | 30177 | a managed agent | keyed by the AGENT's pubkey, so the `d` is a person |
 // | 30620 | a workflow | its `d` is a uuid and its content is YAML |
 // | 5129 / 15129 / 35129 | a napplet | a pinned build, an author's default, a named one |
+// | 15128 / 35128 | a static website | the same manifest, for a site rather than an applet |
 //
 // Five of these carry JSON in `content`, and it is a stranger's JSON from a schema its own
 // authors call loose: every field read here goes through [text] or [list], so a name that
@@ -112,6 +113,8 @@ const NAPPLET_ROLE = {
   5129: "one pinned build",
   15129: "the default napplet for this key",
   35129: "a named napplet",
+  15128: "the default website for this key",
+  35128: "a named website",
 };
 
 /** 5129 / 15129 / 35129 — a napplet manifest: the files it is made of, and where they are served. */
@@ -137,7 +140,7 @@ register([30175], personaCard);
 register([30176], teamCard);
 register([30177], managedAgentCard);
 register([30620], workflowCard);
-register([5129, 15129, 35129], nappletCard);
+register([5129, 15129, 35129, 15128, 35128], nappletCard);
 // The agent a 30177 runs is named by its `d`, which no scan of `p` tags reaches.
 registerNamedPeople([30177], (ev) => [agentKey(ev)].filter(Boolean));
 
@@ -171,7 +174,7 @@ registerRow([30620], (ev) => ({
   name: tagOf(ev, "name") || tagOf(ev, "d"),
   sub: plural(String(ev.content || "").split("\n").filter((l) => l.trim()).length, "line"),
 }));
-registerRow([5129, 15129, 35129], (ev) => ({
+registerRow([5129, 15129, 35129, 15128, 35128], (ev) => ({
   name: titleOf(ev),
   sub: [NAPPLET_ROLE[ev.kind], plural(pathsOf(ev).length, "file"), summaryOf(ev)].filter(Boolean).join(" · "),
 }));
