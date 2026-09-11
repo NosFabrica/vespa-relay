@@ -172,6 +172,45 @@ const FIXTURES = [
   [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
                      ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
 
+  // ---- the payments beyond NIP-57 ------------------------------------------
+  // 8333 counts SATS in the same `amount` tag NIP-57 counts millisats in; the fixtures
+  // pin both, since reading one as the other is a thousandfold error on a payment.
+  [8333,  ev(8333, [["p", pk2], ["e", eid], ["amount", "2100"], ["i", "f".repeat(64)],
+                    ["block", "870000"]], "for the article"), "2,100 sats"],
+  [9321,  ev(9321, [["p", pk2], ["e", eid], ["u", "https://mint.example"],
+                    ["proof", JSON.stringify({ amount: 8, secret: "s", C: "c" })],
+                    ["proof", JSON.stringify({ amount: 13, secret: "s", C: "c" })]], "ecash"), "21 sats"],
+  [9736,  ev(9736, [["p", pk2], ["e", eid], ["amount", "21000"], ["offer", "lno1pg" + "q".repeat(40)],
+                    ["P", pk], ["proof", "lnp1x"],
+                    ["description", JSON.stringify({ pubkey: pk, content: "for the show", tags: [] })]]), "21 sats"],
+  [9737,  ev(9737, [["p", pk2], ["amount", "21000"], ["offer", "lno1pg"], ["zap_id", "abc"]],
+                    "here it comes"), "intends to zap"],
+  [38383, ev(38383, [["d", "ord"], ["k", "sell"], ["s", "pending"], ["amt", "100000"],
+                     ["fa", "50"], ["f", "EUR"], ["pm", "SEPA", "Revolut"], ["name", "Alice"],
+                     ["y", "mostro"], ["premium", "2"]]), "sell 100,000 sats for 50 EUR"],
+  [38000, ev(38000, [["d", "38172"], ["k", "38172"], ["u", "https://mint.example"],
+                     ["a", `38172:${pk}:mint`]], "the ones I use"), "2 mints"],
+  // ---- agents, workflows and napplets --------------------------------------
+  [10100, ev(10100, [], JSON.stringify({ display_name: "Helper", agent_type: "assistant",
+            status: "online", capabilities: ["search", "summarise"], channel_ids: ["a", "b"],
+            channel_add_policy: "owner-only" })), "in 2 rooms"],
+  [30175, ev(30175, [["d", "researcher"]], JSON.stringify({ display_name: "The Researcher",
+            system_prompt: "You dig for sources.", model: "claude-opus-5", provider: "anthropic",
+            respond_to: "mentions", parallelism: 2 })), "You dig for sources."],
+  [30176, ev(30176, [["d", "team-1"]], JSON.stringify({ name: "The Desk", description: "who covers what",
+            instructions: "check sources twice", persona_ids: ["researcher", "editor"] })), "2 personas"],
+  [30177, ev(30177, [["d", pk2]], JSON.stringify({ name: "Desk Bot", persona_id: "researcher",
+            model: "claude-opus-5", parallelism: 1, respond_to: "anyone" })), "runs as"],
+  [30620, ev(30620, [["d", "wf-1"], ["h", "chan"], ["name", "Nightly digest"]],
+            "on:\n  schedule: nightly\nsteps:\n  - summarise\n"), "codeblock"],
+  [5129,  ev(5129, [["title", "Notes"], ["description", "a tiny notes app"],
+                    ["path", "/index.html", "ab".repeat(32)], ["path", "/app.js", "cd".repeat(32)],
+                    ["x", "ef".repeat(32)], ["server", "https://blossom.example"],
+                    ["requires", "nip07"]]), "2 files"],
+  [15129, ev(15129, [["title", "My Napplet"], ["path", "/index.html", "ab".repeat(32)]]), "the default napplet for this key"],
+  [35129, ev(35129, [["d", "notes"], ["title", "Named Notes"], ["path", "/index.html", "ab".repeat(32)],
+                     ["source", "https://git.example/notes"]]), "a named napplet"],
+
   // ---- podcasts and music -------------------------------------------------
   [10154, ev(10154, [["title", "The Show"], ["description", "a podcast about relays"],
                      ["image", "https://x/show.jpg"], ["website", "https://show.example"],
@@ -308,6 +347,12 @@ const ROW_SAYS = [
   // A message leads with its text, or with the subject that stands over it.
   [14, "about the thing · the message body"], [45001, "the opening post"],
   [3302, "edits a message · the corrected text"], [48106, "room guidelines"],
+  // Each payment in the unit its own kind counts in, and the verb its own NIP uses.
+  [8333, "paid onchain 2,100 sats"], [9321, "nutzapped 21 sats"], [9736, "zapped 21 sats"],
+  [9737, "intends to zap 21 sats"], [38383, "sell 100,000 sats for 50 EUR · pending"],
+  [38000, "recommends 2 mints"],
+  [10100, "Helper · assistant · online"], [30176, "The Desk · 2 personas"],
+  [30620, "Nightly digest · 4 lines"], [5129, "Notes · one pinned build · 2 files"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];

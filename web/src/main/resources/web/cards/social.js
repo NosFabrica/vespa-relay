@@ -1,12 +1,15 @@
-// The reactive kinds: reactions, reposts, zaps, comments, approvals, reports, labels and
-// deletions. Their content is a fragment, so every card leads with the relation and links the target.
+// The reactive kinds: reactions, reposts, zaps and the other payments, comments, approvals,
+// reports, labels and deletions. Their content is a fragment, so every card leads with the
+// relation and links the target.
 
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
-  chipRow, markHref, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink, plural, satsOf,
+  chipRow, markHref, tagOf, tagsOf, tagsWhere, jsonContent, oneLine, fmtTs, extLink, plural, satsOf,
 } from "./base.js";
+
+const HEX64 = /^[0-9a-f]{64}$/;
 
 /** The event a reactive kind points at: `e` by id, `a` by address, in that order. */
 function targetLink(ev) {
@@ -62,38 +65,100 @@ function repostCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** The zap request a receipt carries, stringified, in its `description` tag. */
+/** The request (9734) or the intent (9737) a receipt carries, stringified, in its `description` tag. */
 function zapRequest(ev) {
   try { return JSON.parse(tagOf(ev, "description") || "{}") || {}; } catch (e) { return {}; }
 }
-/** What the receipt is worth: the outer `amount` tag, else the request's own. */
+/** What the receipt is worth: the outer `amount` tag, else the request's own. Millisats, both. */
 const zapSats = (ev, req) =>
   satsOf(tagOf(ev, "amount") || ((req.tags || []).find((t) => Array.isArray(t) && t[0] === "amount") || [])[1]);
 
-/** 9735 — a zap receipt. The zapper and the comment are in the nested request, not this event. */
+/**
+ * Who paid: NIP-B1 names the payer in `P` on a publicly-attributed zap, and NIP-57 leaves it to
+ * be read off the request it carries. A zap nobody signed for names nobody.
+ */
+const payerOf = (ev, req) => {
+  const declared = tagOf(ev, "P");
+  if (HEX64.test(declared || "")) return declared;
+  return HEX64.test(req.pubkey || "") ? req.pubkey : null;
+};
+
+/** 9735 / 9736 — a settled zap. The zapper and the comment are in the nested request, not this event. */
 function zapCard(ev, opts) {
   const req = zapRequest(ev);
   const sats = zapSats(ev, req);
   const to = tagOf(ev, "p");
-  const from = req.pubkey && /^[0-9a-f]{64}$/.test(req.pubkey) ? req.pubkey : null;
+  const from = payerOf(ev, req);
   const target = targetLink(ev);
   const comment = typeof req.content === "string" ? req.content : "";
   const inner =
-    `<div class="result-body">${from ? `${personLink(from)} ` : ""}zapped${to && /^[0-9a-f]{64}$/.test(to) ? ` ${personLink(to)}` : ""}${target ? ` on ${target}` : ""}</div>` +
+    `<div class="result-body">${from ? `${personLink(from)} ` : ""}zapped${to && HEX64.test(to) ? ` ${personLink(to)}` : ""}${target ? ` on ${target}` : ""}</div>` +
     (sats ? `<div class="price-line">${esc(sats)} sats</div>` : "") +
     bodyHtml(opts, comment, 300);
-  return shell(ev, opts, inner);
+  // A BOLT12 zap is paid against an offer rather than an invoice, so the offer is what it cites.
+  return shell(ev, opts, inner, [["offer", monoValue(tagOf(ev, "offer"))]]);
 }
 
-/** 9734 — the zap request itself. */
+/** 9734 / 9737 — the ask before the payment: NIP-57 calls it a request, NIP-B1 a signed intent. */
 function zapRequestCard(ev, opts) {
   const sats = satsOf(tagOf(ev, "amount"));
   const to = tagOf(ev, "p");
   const inner =
-    `<div class="result-body">asks to zap${to && /^[0-9a-f]{64}$/.test(to) ? ` ${personLink(to)}` : ""}</div>` +
+    `<div class="result-body">${ev.kind === 9737 ? "intends to zap" : "asks to zap"}${to && HEX64.test(to) ? ` ${personLink(to)}` : ""}</div>` +
     (sats ? `<div class="price-line">${esc(sats)} sats</div>` : "") +
     bodyHtml(opts, ev.content, 300);
-  return shell(ev, opts, inner);
+  return shell(ev, opts, inner, [["offer", monoValue(tagOf(ev, "offer"))]]);
+}
+
+/** A long opaque value — an offer, a txid, a hash — as something a reader can see is there. */
+const monoValue = (v) => (v ? `<span class="mono">${esc(clip(String(v), 40))}</span>` : null);
+
+/**
+ * A nutzap's value: the `amount` of every cashu proof it carries, since the kind has no amount
+ * tag at all. A proof this page cannot read counts nothing rather than guessing.
+ */
+function nutzapSats(ev) {
+  let total = 0;
+  for (const t of tagsOf(ev, "proof")) {
+    try {
+      const n = Number(JSON.parse(t[1]).amount);
+      if (Number.isFinite(n) && n > 0) total += n;
+    } catch (e) { /* not a proof this page can read */ }
+  }
+  return total > 0 ? total.toLocaleString() : null;
+}
+
+/**
+ * What a payment is worth, in the unit ITS OWN kind counts in — the one thing these kinds
+ * disagree about, and the way to be wrong by a factor of a thousand:
+ *
+ * - 9734/9735/9736/9737 carry millisats in `amount` (NIP-57 and NIP-B1 alike), so `satsOf`.
+ * - 8333 carries SATS in the same tag name: NIP-BC counts the on-chain unit.
+ * - 9321 carries no amount at all — it is the sum of its cashu proofs.
+ */
+function paidSats(ev) {
+  if (ev.kind === 9321) return nutzapSats(ev);
+  const n = Number(tagOf(ev, "amount"));
+  return Number.isFinite(n) && n > 0 ? Math.round(n).toLocaleString() : null;
+}
+
+/** What the sum is denominated in: a nutzap says so, and everything else here is sats. */
+const unitOf = (ev) => (ev.kind === 9321 ? oneLine(tagOf(ev, "unit")) || "sats" : "sats");
+
+/** 8333 / 9321 — a payment that settled somewhere other than Lightning: on-chain, or in ecash. */
+function paymentCard(ev, opts) {
+  const sats = paidSats(ev);
+  const to = tagOf(ev, "p");
+  const target = targetLink(ev);
+  const verb = ev.kind === 8333 ? "paid onchain" : "nutzapped";
+  const inner =
+    `<div class="result-body">${verb}${to && HEX64.test(to) ? ` ${personLink(to)}` : ""}${target ? ` on ${target}` : ""}</div>` +
+    (sats ? `<div class="price-line">${esc(sats)} ${esc(clip(unitOf(ev), 16))}</div>` : "") +
+    bodyHtml(opts, ev.content, 300);
+  return shell(ev, opts, inner, ev.kind === 8333
+    // The sender's own claim until someone checks the chain, which is why the txid is on the card.
+    ? [["txid", monoValue(tagOf(ev, "i"))], ["block", tagOf(ev, "block") ? esc(clip(tagOf(ev, "block"), 40)) : null]]
+    : [["mint", extLink(tagOf(ev, "u"))], ["proofs", tagsOf(ev, "proof").length ? String(tagsOf(ev, "proof").length) : null]]);
 }
 
 /** 1111 — a NIP-22 comment. The parent leads as a person; the root is a row only when it differs. */
@@ -237,8 +302,9 @@ function statusCard(ev, opts) {
 
 register([7, 17], reactionCard);
 register([6, 16], repostCard);
-register([9735], zapCard);
-register([9734], zapRequestCard);
+register([9735, 9736], zapCard);
+register([9734, 9737], zapRequestCard);
+register([8333, 9321], paymentCard);
 register([1111], commentCard);
 register([1068], pollCard);
 register([1018], pollResponseCard);
@@ -257,14 +323,20 @@ registerRow([7, 17], (ev) => {
   return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)}${targetNoun(ev)}` };
 });
 registerRow([6, 16], (ev) => ({ name: quotedText(ev) || `reposted${targetNoun(ev)}` }));
-registerRow([9735], (ev) => {
+registerRow([9735, 9736], (ev) => {
   const req = zapRequest(ev);
   const sats = zapSats(ev, req);
   return { name: sats ? `zapped ${sats} sats` : "zapped", sub: typeof req.content === "string" ? req.content : "" };
 });
-registerRow([9734], (ev) => {
+registerRow([9734, 9737], (ev) => {
   const sats = satsOf(tagOf(ev, "amount"));
-  return { name: sats ? `asks to zap ${sats} sats` : "asks to zap", sub: ev.content };
+  const verb = ev.kind === 9737 ? "intends to zap" : "asks to zap";
+  return { name: sats ? `${verb} ${sats} sats` : verb, sub: ev.content };
+});
+registerRow([8333, 9321], (ev) => {
+  const sats = paidSats(ev);
+  const verb = ev.kind === 8333 ? "paid onchain" : "nutzapped";
+  return { name: sats ? `${verb} ${sats} ${unitOf(ev)}` : verb, sub: ev.content };
 });
 registerRow([1111], (ev) => ({ name: ev.content }));
 registerRow([1068], (ev) => ({ name: ev.content, sub: plural(pollOptions(ev).length, "choice") }));
