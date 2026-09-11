@@ -1,10 +1,10 @@
 // The media family. The media itself is on the card at both depths, because here the file
 // is the event. URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
-import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink,
-  imetas, tagOf, tagsOf, clipIf, plural,
+  relayRows, imetas, tagOf, tagsOf, topicsOf, clipIf, fmtBytes, plural,
 } from "./base.js";
 
 /** The file a single-file card is about: its first imeta, read whole, never fields across several. */
@@ -12,17 +12,6 @@ const EMPTY = Object.freeze(Object.create(null));
 const fileOf = (ev) => imetas(ev)[0] || EMPTY;
 /** An imeta field, else the same field as a top-level tag. */
 const fieldOf = (m, ev, name) => m[name] || tagOf(ev, name);
-/** The event's topics as `#` chips, each once, case-insensitively. */
-function topics(ev) {
-  const seen = new Set(), out = [];
-  for (const t of tagsOf(ev, "t")) {
-    const v = String(t[1] || "").replace(/^#+/, "").trim();
-    if (!v || seen.has(v.toLowerCase())) continue;
-    seen.add(v.toLowerCase());
-    out.push(`#${v}`);
-  }
-  return out;
-}
 
 /** The author's text, then the media's description, and last the NIP-31 `alt`. */
 const captionOf = (ev, media) =>
@@ -39,7 +28,7 @@ function pictureCard(ev, opts) {
     titleHtml(opts, title, 140) +
     (shown.length === 1 ? mediaFrame(frameStyle(shown[0].dim, opts), pictureImg(shown[0])) : pictureGrid(shown, opts)) +
     bodyHtml(opts, caption === title ? "" : caption, 300) +
-    chipRow(topics(ev), opts, hashtagHref);
+    chipRow(topicsOf(ev), opts, hashtagHref);
   return shell(ev, opts, inner);
 }
 
@@ -69,7 +58,7 @@ function videoCard(ev, opts) {
     titleHtml(opts, title, 140) +
     (url ? videoFrame(m, ev, url, opts) : "") +
     bodyHtml(opts, caption === title ? "" : caption, 300) +
-    chipRow(topics(ev), opts, hashtagHref);
+    chipRow(topicsOf(ev), opts, hashtagHref);
   return shell(ev, opts, inner, opts && opts.full
     ? [["url", extLink(url)], ["duration", esc(fmtDuration(fieldOf(m, ev, "duration")))], ["size", fmtBytes(fieldOf(m, ev, "size"))]]
     : []);
@@ -112,14 +101,6 @@ const fmtDuration = (secs) => {
   return n >= 3600
     ? `${Math.floor(n / 3600)}:${two(Math.floor(n / 60) % 60)}:${two(n % 60)}`
     : `${Math.floor(n / 60)}:${two(n % 60)}`;
-};
-
-const fmtBytes = (n) => {
-  n = Number(n);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
 /** 1063 — file metadata, with the file itself when it is an image. */
@@ -175,6 +156,36 @@ function emojiPackCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/**
+ * 32176 — a Blossom piece index: one file, the chunks it is split into, and the servers holding
+ * them. Reassembling the pieces is a download client's job, so what this card offers is the
+ * whole-file url (`r`) the publisher may have included beside them.
+ *
+ * `size` is published as a string and treated as one: it is a byte count in every event seen,
+ * but a publisher who wrote something else there has not said how big the file is, and guessing
+ * units would be inventing one.
+ */
+function pieceIndexCard(ev, opts) {
+  const size = tagOf(ev, "size");
+  const hash = tagOf(ev, "x");
+  const pieces = tagsOf(ev, "b").filter((t) => t[1]);
+  const servers = tagsOf(ev, "blossom").map((t) => t[1]).filter(Boolean);
+  const img = imageOf(ev);
+  const full = opts && opts.full;
+  const inner =
+    titleHtml(opts, titleOf(ev), 140) +
+    (full && img ? mediaFrame("", pictureImg({ url: img })) : "") +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 300, true) +
+    `<div class="result-body">${esc(plural(pieces.length, "piece"))}</div>` +
+    (full && servers.length ? relayRows(servers.map((url) => ({ url })), opts) : "");
+  return shell(ev, opts, inner, [
+    ["file", extLink(tagOf(ev, "r"))],
+    ["type", tagOf(ev, "type") ? esc(tagOf(ev, "type")) : null],
+    ["size", fmtBytes(size) || (size ? esc(clip(size, 40)) : null)],
+    ["hash", hash ? `<span class="mono">${esc(clip(hash, 20))}</span>` : null],
+  ]);
+}
+
 register([20], pictureCard);
 register([21, 22, 34235, 34236], videoCard);
 register([1063], fileCard);
@@ -182,6 +193,7 @@ register([1063], fileCard);
 register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
+register([32176], pieceIndexCard);
 
 /** The title, else the caption; cards.js drops a sub that repeats the name. */
 const captionRow = (ev) => {
@@ -211,4 +223,9 @@ registerRow([30005], (ev) => ({
 registerRow([30030], (ev) => ({
   name: titleOf(ev),
   sub: [plural(emojiOf(ev).length, "emoji", "emoji"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
+// A file is what it is and how big: the pieces are the kind's business, not the reader's first line.
+registerRow([32176], (ev) => ({
+  name: titleOf(ev),
+  sub: [tagOf(ev, "type"), fmtBytes(tagOf(ev, "size")), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
 }));

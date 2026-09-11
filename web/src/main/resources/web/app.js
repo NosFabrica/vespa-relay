@@ -38,7 +38,7 @@ const KIND_TABS = [
   { label: "Everything", slug: "all", kinds: null },
   { label: "People", slug: "people", kinds: [0] },
   { label: "Notes", slug: "notes", kinds: [1, 11, 1111] },
-  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818, 30040, 30041] },
+  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818, 30040, 30041, 30045, 30142] },
   { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 1986, 1222, 34235, 34236] },
   { label: "Code & git", slug: "code", kinds: [1337, 1617, 1618, 1621, 30617] },
   { label: "Live", slug: "live", kinds: [30311, 30312, 30313, 31922, 31923, 31924] },

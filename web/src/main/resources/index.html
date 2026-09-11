@@ -39,6 +39,7 @@
 <link rel="modulepreload" href="./web/cards/apps.js" />
 <link rel="modulepreload" href="./web/cards/article.js" />
 <link rel="modulepreload" href="./web/cards/base.js" />
+<link rel="modulepreload" href="./web/cards/citations.js" />
 <link rel="modulepreload" href="./web/cards/code.js" />
 <link rel="modulepreload" href="./web/cards/generic.js" />
 <link rel="modulepreload" href="./web/cards/lists.js" />
@@ -48,6 +49,7 @@
 <link rel="modulepreload" href="./web/cards/note.js" />
 <link rel="modulepreload" href="./web/cards/people.js" />
 <link rel="modulepreload" href="./web/cards/profile.js" />
+<link rel="modulepreload" href="./web/cards/ratings.js" />
 <link rel="modulepreload" href="./web/cards/relays.js" />
 <link rel="modulepreload" href="./web/cards/trust.js" />
 <link rel="modulepreload" href="./web/provenance.js" />
@@ -1217,6 +1219,11 @@
   .pill-row { margin: 0 0 4px; }
   .pill-row .status-pill:first-child { margin-left: 0; }
   .price-line { margin: 2px 0 6px; font-size: 15px; font-weight: 650; }
+  /* A score out of five: the glyphs place it at a glance, the number is what was
+     actually published, since a half star cannot be drawn in a character. */
+  .stars { display: inline-flex; align-items: baseline; gap: 5px; vertical-align: middle; }
+  .stars .star-glyphs { color: var(--warn); font-size: 14px; letter-spacing: 1px; }
+  .stars .star-n { color: var(--muted); font-size: 12.5px; font-weight: 650; }
   .rank-big { margin: 2px 0; font-size: 28px; font-weight: 700; color: var(--accent); }
   /* what a list points at: e tags to notes, a tags to addressable entities */
   .ref-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }

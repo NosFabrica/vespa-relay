@@ -14,6 +14,7 @@ import "./cards/people.js";
 import "./cards/social.js";
 import "./cards/lists.js";
 import "./cards/article.js";
+import "./cards/citations.js";
 import "./cards/media.js";
 import "./cards/code.js";
 import "./cards/live.js";
@@ -21,6 +22,7 @@ import "./cards/market.js";
 import "./cards/apps.js";
 import "./cards/relays.js";
 import "./cards/trust.js";
+import "./cards/ratings.js";
 
 /**
  * One event to one card. `opts.full` is the permalink depth; without it the card is a

@@ -148,6 +148,30 @@ const FIXTURES = [
   [1244,  ev(1244, [["imeta", "url https://x/reply.mp3"]]), "<audio"],
   [30040, ev(30040, [["title", "The Book"], ["author", "Alice"], ["a", `30041:${pk}:ch1`]]), "1 section"],
   [30041, ev(30041, [["title", "Chapter One"]], "the chapter text"), "the chapter text"],
+  // ---- the citation kinds, one per sort of source -------------------------
+  [31,    ev(31, [["u", "https://src.example/paper"], ["title", "A Page Worth Citing"],
+                  ["accessed_on", "2026-08-01"]], "why it matters here"), "A Page Worth Citing"],
+  [32,    ev(32, [["title", "Chapter Two"], ["author", "Ursula Franklin"], ["published_in", "The Real World", "vol 2"],
+                  ["page_range", "31-48"], ["doi", "10.1000/xyz"]]), "The Real World vol 2"],
+  [33,    ev(33, [["llm", "claude-opus-5"], ["accessed_on", "2026-08-02"]], "what is a relay?"), "what is a relay?"],
+  // ---- the library kinds ---------------------------------------------------
+  [818,   ev(818, [["a", `30818:${pk2}:wiki-page`], ["p", pk2], ["e", eid, "", "source"],
+                   ["e", "a".repeat(64)]], "I fixed the second paragraph"), "asks"],
+  [30045, ev(30045, [["d", "shelf"], ["title", "My Shelf"], ["a", `30040:${pk}:book`, "The Book"]]), "1 item"],
+  [30142, ev(30142, [["d", "lesson"], ["name", "Intro to Nostr"], ["description", "a first course"],
+                     ["author", "Alice"], ["inLanguage", "de"], ["about:prefLabel:de", "Informatik"],
+                     ["about:prefLabel:en", "Computer science"], ["learningResourceType:prefLabel:de", "Arbeitsmaterial"],
+                     ["encoding:contentUrl", "https://x/course.pdf"], ["encoding:contentSize", "123456"]],
+                     "the lesson itself"), "Informatik"],
+  [32176, ev(32176, [["d", "piece-index"], ["title", "A Big File"], ["size", "123456"], ["type", "video/mp4"],
+                     ["r", "https://blossom.example/abc.mp4"], ["x", "ab".repeat(32)],
+                     ["b", "cd".repeat(32), "1024"], ["blossom", "https://blossom.example"]]), "1 piece"],
+  // ---- the ratings ---------------------------------------------------------
+  [31987, ev(31987, [["d", "wss://relay.example"], ["rating", "0.8"], ["rating", "1", "speed"]],
+                     "fast, and it keeps what I send it"), "★★★★☆"],
+  [34259, ev(34259, [["d", `books:30040:${pk}:book`], ["m", "books"], ["rating", "0.9"],
+                     ["a", `30040:${pk}:book`], ["p", pk2], ["k", "30040"]], "worth the evening"), "rated"],
+
   [30166, ev(30166, [["d", "wss://relay.example"], ["N", "50"], ["N", "65"], ["s", "strfry"]],
             JSON.stringify({ name: "Example Relay", description: "a relay" })), "NIP-50"],
   [10166, ev(10166, [["frequency", "3600"], ["c", "open"], ["k", "10002"]]), "every 1h"],
@@ -243,6 +267,12 @@ const ROW_SAYS = [
   [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
   [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
   [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
+  // A citation leads with the source, not with the note about it.
+  [32, "Chapter Two · Ursula Franklin · The Real World vol 2"], [33, "claude-opus-5 · what is a relay?"],
+  [818, "asks to merge into wiki-page"], [30045, "My Shelf · 1 item"], [30142, "Intro to Nostr · Alice"],
+  [32176, "A Big File · video/mp4 · 120.6 KB"],
+  // A review says what it reviewed, then the score; a rating, what it rated.
+  [31987, "relay.example · 4★"], [34259, "rated book 4.5★"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];

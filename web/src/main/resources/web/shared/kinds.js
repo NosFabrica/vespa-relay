@@ -5,8 +5,12 @@
 const KIND_LABELS = {
   0: "profile", 1: "note", 3: "follows", 5: "deletion", 6: "repost", 7: "reaction",
   8: "badge award", 9: "chat", 11: "thread", 16: "repost", 17: "reaction",
-  20: "picture", 21: "video", 22: "short video", 40: "channel", 41: "channel",
-  42: "chat", 1018: "poll vote", 1063: "file", 1068: "poll", 1111: "comment",
+  20: "picture", 21: "video", 22: "short video",
+  // The citation kinds, one per sort of source cited.
+  31: "web citation", 32: "print citation", 33: "prompt citation",
+  40: "channel", 41: "channel",
+  42: "chat", 818: "merge request",
+  1018: "poll vote", 1063: "file", 1068: "poll", 1111: "comment",
   1222: "voice", 1244: "voice reply", 1311: "live chat", 1337: "code",
   1617: "patch", 1618: "pull request", 1619: "pr update", 1621: "issue",
   1622: "git reply", 1630: "git status", 1631: "git status", 1632: "git status",
@@ -28,7 +32,8 @@ const KIND_LABELS = {
   30004: "curation", 30005: "video set", 30006: "picture set", 30007: "mute set",
   30008: "badge set", 30009: "badge", 30015: "interest set", 30017: "stall",
   30018: "product", 30020: "auction", 30023: "article", 30024: "draft",
-  30030: "emoji pack", 30040: "publication", 30041: "section", 30063: "release",
+  30030: "emoji pack", 30040: "publication", 30041: "section",
+  30045: "bookshelf", 30063: "release", 30142: "learning resource",
   30166: "relay", 30267: "app set", 30311: "live", 30312: "room",
   30313: "conference", 30315: "status", 30382: "score", 30383: "event score",
   30384: "entry score", 30402: "listing", 30403: "draft listing",
@@ -36,6 +41,7 @@ const KIND_LABELS = {
   30392: "trusted people", 30393: "trusted events", 30394: "trusted articles",
   30395: "trusted identifiers",
   30617: "repository", 30618: "repo state", 30818: "wiki", 31890: "feed",
+  31987: "relay review", 32176: "blossom file", 34259: "rating",
   // The NIP-29 group itself; its siblings (39001-39005) have no renderer, so no name here.
   39000: "group",
   31922: "date", 31923: "event", 31924: "calendar", 31925: "rsvp",
@@ -52,9 +58,11 @@ export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a
 const KIND_TONES = {
   people: [0, 3, 10002, 10040, 10166, 30000, 30002, 30166, 30382, 30383, 30384, 30392, 30393, 30394, 30395, 39089, 39092],
   note: [1, 9, 11, 40, 41, 42, 1111, 1311, 9802, 34550, 39000],
-  social: [5, 6, 7, 8, 16, 17, 1018, 1068, 1984, 1985, 4550, 9734, 9735, 30315],
-  article: [30004, 30023, 30024, 30040, 30041, 30818],
-  media: [20, 21, 22, 1063, 1222, 1244, 1986, 30005, 30006, 30030, 34235, 34236],
+  // A rating is a judgement of something else, like a reaction or a report.
+  social: [5, 6, 7, 8, 16, 17, 1018, 1068, 1984, 1985, 4550, 9734, 9735, 30315, 31987, 34259],
+  // A citation and a merge request are about a written work, so they read with the long form.
+  article: [31, 32, 33, 818, 30004, 30023, 30024, 30040, 30041, 30045, 30142, 30818],
+  media: [20, 21, 22, 1063, 1222, 1244, 1986, 30005, 30006, 30030, 32176, 34235, 34236],
   code: [1337, 1617, 1618, 1619, 1621, 1622, 1630, 1631, 1632, 1633, 30063, 30617, 30618],
   live: [30311, 30312, 30313, 31922, 31923, 31924, 31925],
   market: [9041, 30009, 30017, 30018, 30020, 30402, 30403],

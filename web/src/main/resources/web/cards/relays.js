@@ -2,9 +2,7 @@
 // are tags; the NIP-11 document in `content` is the only place a human-written name lives.
 
 import { esc } from "../shared/format.js";
-import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, jsonContent, tagOf, tagsOf } from "./base.js";
-
-const hostOf = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
+import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, hostOf, jsonContent, tagOf, tagsOf } from "./base.js";
 
 /** Seconds as a period a person reads: "30m", "6h", "1d". */
 const everyN = (secs) => {
