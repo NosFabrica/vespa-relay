@@ -167,6 +167,27 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `a band negentropy cannot walk survives a reboot, per band and per relay`() {
+        val f = tempFile()
+        val at = now()
+        val c = SyncBands(f)
+        assertFalse(c.cannotReconcile(mirror, relay, profiles, "tier:all", at), "nothing measured is not a verdict")
+        repeat(SyncBands.STRIKES_BEFORE_IMPOSSIBLE) { c.noteCannotReconcile(mirror, relay, profiles, "tier:all", "declined the NEG-OPEN", at) }
+        assertTrue(c.cannotReconcile(mirror, relay, profiles, "tier:all", at))
+        // The state is the BAND's: a relay refusing one band says nothing about another, and
+        // a band read under the wrong key is how a written record goes missing.
+        assertFalse(c.cannotReconcile(mirror, relay, profiles, "tier:2592000", at), "one band's verdict leaked onto another")
+        assertFalse(c.cannotReconcile(mirror, other, profiles, "tier:all", at), "one relay's verdict leaked onto another")
+
+        c.flush()
+        val rebooted = SyncBands(f)
+        assertTrue(rebooted.cannotReconcile(mirror, relay, profiles, "tier:all", at), "the verdict must ride the band file")
+        assertEquals("declined the NEG-OPEN", rebooted.cannotReconcileWhy(mirror, relay, profiles, "tier:all", at))
+        assertEquals(mapOf((mirror to relay.url) to "declined the NEG-OPEN"), rebooted.cannotReconcileByUnit(at))
+        f.delete()
+    }
+
+    @Test
     fun `an ask that never had a verified pass is due on its first visit`() {
         // fullAt = 0 is quartz's never.
         assertTrue(SyncBands.auditDue(fullAt = 0L, now = 1_000_000, negentropySyncThePastSeconds = 604_800))

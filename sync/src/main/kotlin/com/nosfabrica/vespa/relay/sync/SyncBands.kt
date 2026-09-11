@@ -31,6 +31,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -85,6 +87,22 @@ class SyncBands(
 
     private val verified = ConcurrentHashMap<VerifiedKey, Long>()
 
+    /**
+     * A band negentropy CANNOT verify, whatever the clock says: the relay would not open a
+     * NEG-OPEN for this ask. Neither complete nor incomplete — those both describe a walk that
+     * happened, and this one cannot. The re-fetch plane covers the band meanwhile.
+     */
+    data class CannotReconcile(
+        /** First windows refused in a row. `UNAVAILABLE` is also a failed dial, so one is not a verdict. */
+        val strikes: Int,
+        /** When the last was measured, so the verdict lapses and the band is tried again. */
+        val at: Long,
+        /** What the relay, or the transport, said. */
+        val why: String,
+    )
+
+    private val cannot = ConcurrentHashMap<VerifiedKey, CannotReconcile>()
+
     /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
 
@@ -138,6 +156,77 @@ class SyncBands(
         if (period == NEVER) return null
         val fullAt = band(stream, url, filter)?.fullAt ?: 0L
         return if (fullAt <= 0L) null else fullAt + period
+    }
+
+    /**
+     * One sweep of this band whose first window never reconciled. Returns the strikes so far;
+     * the band only reads as impossible once they reach [STRIKES_BEFORE_IMPOSSIBLE].
+     */
+    fun noteCannotReconcile(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        band: String,
+        why: String,
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Int {
+        val key = VerifiedKey(stream, filter.toJson(), url.url, band)
+        val after = cannot.compute(key) { _, was -> CannotReconcile((was?.strikes ?: 0) + 1, at, why) }!!
+        dirty = true
+        return after.strikes
+    }
+
+    /** A window reconciled: the band is ordinary work again, whatever the last attempts looked like. */
+    fun clearCannotReconcile(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        band: String,
+    ) {
+        if (cannot.remove(VerifiedKey(stream, filter.toJson(), url.url, band)) != null) dirty = true
+    }
+
+    /**
+     * Whether negentropy cannot verify this band right now. Lapses on its own, so a relay that
+     * gains NIP-77 — or was merely unreachable for an hour — is tried again without an operator.
+     */
+    fun cannotReconcile(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        band: String = "",
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Boolean {
+        val state = cannot[VerifiedKey(stream, filter.toJson(), url.url, band)] ?: return false
+        if (state.strikes < STRIKES_BEFORE_IMPOSSIBLE) return false
+        return at - state.at < CANNOT_RECONCILE_TTL_SECONDS
+    }
+
+    /**
+     * Every (stream, relay) with at least one band negentropy cannot walk, to what the relay
+     * said about it. Built in one pass: a per-row lookup would scan this map once per roster
+     * row, and the roster is thousands of rows wide.
+     */
+    fun cannotReconcileByUnit(at: Long = System.currentTimeMillis() / 1000): Map<Pair<String, String>, String> {
+        val out = HashMap<Pair<String, String>, String>()
+        cannot.forEach { (key, state) ->
+            if (state.strikes < STRIKES_BEFORE_IMPOSSIBLE) return@forEach
+            if (at - state.at >= CANNOT_RECONCILE_TTL_SECONDS) return@forEach
+            out[key.stream to key.relay] = state.why
+        }
+        return out
+    }
+
+    /** What the relay said, for a band that reads as impossible; null for any other band. */
+    fun cannotReconcileWhy(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        band: String = "",
+        at: Long = System.currentTimeMillis() / 1000,
+    ): String? {
+        if (!cannotReconcile(stream, url, filter, band, at)) return null
+        return cannot[VerifiedKey(stream, filter.toJson(), url.url, band)]?.why
     }
 
     /** When this ask's history was last verified by a completed reconcile, or null before its first. */
@@ -330,6 +419,18 @@ class SyncBands(
                     }
                     return@forEach
                 }
+                if (streamOrFlatKey == CANNOT_RECONCILE) {
+                    o.forEach { (stream, byBand) ->
+                        byBand.jsonObject.forEach { (band, byFilter) ->
+                            byFilter.jsonObject.forEach { (filter, byRelay) ->
+                                byRelay.jsonObject.forEach { (relay, entry) ->
+                                    cannotOf(entry.jsonObject)?.let { cannot[VerifiedKey(stream, filter, relay, band)] = it }
+                                }
+                            }
+                        }
+                    }
+                    return@forEach
+                }
                 // Told apart by shape: a filter is serialised JSON and can never be named `min`.
                 if (o["min"] != null) {
                     pruned++
@@ -454,6 +555,7 @@ class SyncBands(
                 )
             }
             putBandClocks()
+            putCannotReconcile()
         }
 
     /**
@@ -479,6 +581,52 @@ class SyncBands(
                                     buildJsonObject {
                                         ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
                                             put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, it.value) } })
+                                        }
+                                    },
+                                )
+                            }
+                        },
+                    )
+                }
+            },
+        )
+    }
+
+    /** One impossible band, as it is written. */
+    private fun cannotOf(c: CannotReconcile): JsonObject =
+        buildJsonObject {
+            put("strikes", c.strikes)
+            put("at", c.at)
+            put("why", c.why)
+        }
+
+    /** One impossible band read back, or null for an entry too damaged to stand for one. */
+    private fun cannotOf(o: JsonObject): CannotReconcile? {
+        val strikes = o["strikes"]?.jsonPrimitive?.intOrNull ?: return null
+        val at = o["at"]?.jsonPrimitive?.longOrNull ?: return null
+        return CannotReconcile(strikes, at, o["why"]?.jsonPrimitive?.contentOrNull ?: "")
+    }
+
+    /**
+     * The bands negentropy cannot walk, in the same stream/band/filter/relay nesting as the
+     * clocks. Written apart from the coverage so a band with no coverage at all — which is
+     * exactly what one of these is — still has somewhere to say so.
+     */
+    private fun JsonObjectBuilder.putCannotReconcile() {
+        if (cannot.isEmpty()) return
+        put(
+            CANNOT_RECONCILE,
+            buildJsonObject {
+                cannot.entries.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
+                    put(
+                        stream,
+                        buildJsonObject {
+                            ofStream.groupBy { it.key.band }.forEach { (band, ofBand) ->
+                                put(
+                                    band,
+                                    buildJsonObject {
+                                        ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
+                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, cannotOf(it.value)) } })
                                         }
                                     },
                                 )
@@ -537,6 +685,20 @@ class SyncBands(
          * reaches us as a stream name, so it can never collide with one.
          */
         private const val BAND_CLOCKS = "#bandClocks"
+
+        /** Where the impossible bands are written, beside [BAND_CLOCKS] and out of the url namespace. */
+        private const val CANNOT_RECONCILE = "#cannotReconcile"
+
+        /**
+         * First windows a band must lose in a row before it reads as impossible. More than one
+         * because quartz raises the same `UNAVAILABLE` for no NIP-77, a failed dial and a
+         * mid-reconcile silence, and cannot tell them apart — a relay without NIP-77 usually
+         * just ignores the NEG-OPEN and goes quiet. A first-window failure costs no window work.
+         */
+        const val STRIKES_BEFORE_IMPOSSIBLE = 3
+
+        /** How long that reading stands before the band is swept again. */
+        const val CANNOT_RECONCILE_TTL_SECONDS = 7L * 24 * 60 * 60
 
         /** `SYNC_STATE_FILE`, unset for in-memory. [streams] are the only source of a re-fetch period. */
         fun fromEnv(

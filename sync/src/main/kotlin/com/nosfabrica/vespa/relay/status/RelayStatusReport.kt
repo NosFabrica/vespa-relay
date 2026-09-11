@@ -49,6 +49,11 @@ object RelayStatusReport {
         /** The monitor's NIP-77 verdict; null when unmeasured. */
         val speaksNegentropy: Boolean? = null,
         /**
+         * Why the sweeps stopped asking this relay for negentropy, which is a different question
+         * from [speaksNegentropy]: the monitor probes a sliver, the sweep asks the real filter.
+         */
+        val negentropyRefusedWhy: String? = null,
+        /**
          * False only where this deployment runs a monitor and it holds no current verdict about
          * this relay. True where one stands, and true throughout a deployment that measures nothing.
          */
@@ -134,6 +139,7 @@ object RelayStatusReport {
                             if (r.fault) put("fault", true)
                             if (r.unwatched) put("unwatched", true)
                             r.speaksNegentropy?.let { put("negentropy", it) }
+                            r.negentropyRefusedWhy?.let { put("negentropyRefusedFor", it) }
                             r.kindCap?.let { put("kindCap", it) }
                             r.verifiedAt?.let { put("verifiedAgoSec", (nowSeconds - it).coerceAtLeast(0)) }
                             if (r.visiting) put("visiting", true)
@@ -158,6 +164,7 @@ object RelayStatusReport {
         val freshness: String,
         val fault: Boolean,
         val speaksNegentropy: Boolean?,
+        val negentropyRefusedWhy: String?,
         val unwatched: Boolean,
         val kindCap: Int?,
         val asks: Int,
@@ -200,6 +207,7 @@ object RelayStatusReport {
             // A tailed pair is never stale whatever its age: its present arrives live.
             fault = status == REFUSED || status == NOT_STARTED || (behind != null && behind >= STALE_SEC && !unit.live),
             speaksNegentropy = unit.speaksNegentropy,
+            negentropyRefusedWhy = unit.negentropyRefusedWhy,
             unwatched = !unit.watched,
             kindCap = unit.kindCap,
             asks = unit.askKeys.size,

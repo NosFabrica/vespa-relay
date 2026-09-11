@@ -78,6 +78,12 @@ class StreamPhases {
         val neverRun: Int,
         /** Asks inside their period. */
         val waiting: Int,
+        /**
+         * Asks this job CANNOT run: the relay will not open negentropy for them. Neither done
+         * nor pending, and not part of [neverRun] — a backlog that nothing can ever drain reads
+         * as work outstanding and is not.
+         */
+        val cannotRun: Int = 0,
         /** Seconds until the nearest waiting ask comes due, or null when none is waiting. */
         val nextInSec: Long?,
     )

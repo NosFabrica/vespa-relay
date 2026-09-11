@@ -239,6 +239,9 @@ internal class VisitPool(
      */
     internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
         val snapshot = currentRoster
+        // One pass for the whole table; the same question asked per row would scan the map
+        // thousands of times.
+        val cannotReconcile = bands.cannotReconcileByUnit()
         val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
@@ -253,6 +256,9 @@ internal class VisitPool(
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
                         speaksNegentropy = snapshot.speaksNegentropy[url],
+                        // Any band of this unit that negentropy cannot walk; the per-band split
+                        // is on the stream's schedule rows, which is where a band is the subject.
+                        negentropyRefusedWhy = cannotReconcile[stream to url.url],
                         watched = snapshot.watches(url, stream),
                         kindCap = widths.capFor(url),
                         abortReason = abort?.reason?.says,
@@ -363,6 +369,15 @@ internal class VisitPool(
     /** Windows an audit could not read and did not claim. */
     private val auditsRefusedWindows = AtomicLong()
 
+    /** Bands that read as impossible: the relay will not open negentropy for that ask. */
+    private val auditsCannotRun = AtomicLong()
+
+    /**
+     * Retraction audits, which ride the same clock and the same pool but are not sweeps. Counted
+     * apart: summed into `negentropyRuns` they made 7 finished sweeps read as 37.
+     */
+    private val retractionsRun = AtomicLong()
+
     fun start() {
         if (streams.isEmpty()) return
         warnOnSocketBudget(streams)
@@ -387,6 +402,8 @@ internal class VisitPool(
                 Processors.Count("negentropyRuns", auditsRun.get()),
                 Processors.Count("negentropySkipped", auditsSkipped.get()),
                 Processors.Count("negentropyRefused", auditsRefusedWindows.get()),
+                Processors.Count("negentropyCannotRun", auditsCannotRun.get()),
+                Processors.Count("retractionRuns", retractionsRun.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
                 Processors.Count("liveEvicted", evictedTails.get()),
                 Processors.Count("poolReceived", poolReceived.get()),
@@ -836,6 +853,25 @@ internal class VisitPool(
             }
         auditsRun.incrementAndGet()
         auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
+        // The band's third state. `complete` and the ordinary incomplete both describe a walk
+        // that happened; this one could not start, so the band is neither — and saying so is
+        // what keeps it out of the backlog it can never leave.
+        if (!outcome.negentropyUsable) {
+            val why = outcome.failure?.detail ?: "the relay would not open negentropy"
+            val strikes = bands.noteCannotReconcile(stream.name, url, ask.filter, band, why, auditStarted)
+            if (strikes == SyncBands.STRIKES_BEFORE_IMPOSSIBLE) {
+                auditsCannotRun.incrementAndGet()
+                System.err.println(
+                    "router: audit ${stream.name}${if (band.isEmpty()) "" else " [$band]"} ${url.url} — the relay refused" +
+                        " to open negentropy $strikes time(s) in a row ($why); this band is neither verified nor" +
+                        " outstanding — negentropy CANNOT do it. Re-fetching covers it; re-tried in" +
+                        " ${SyncBands.CANNOT_RECONCILE_TTL_SECONDS / 86_400}d.",
+                )
+            }
+        } else if (outcome.reconciledWindows > 0) {
+            // A window did reconcile, so the band is ordinary work again whatever it looked like before.
+            bands.clearCannotReconcile(stream.name, url, ask.filter, band)
+        }
         if (outcome.complete) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
             bands.record(
@@ -851,7 +887,15 @@ internal class VisitPool(
         }
         System.err.println(
             "router: audit ${stream.name}${if (band.isEmpty()) "" else " [$band]"} ${url.url} — $received event(s) recovered, " +
-                (if (outcome.complete) "history verified" else "incomplete (negentropy usable: ${outcome.negentropyUsable})") +
+                (
+                    if (outcome.complete) {
+                        "history verified"
+                    } else if (outcome.negentropyUsable) {
+                        "incomplete"
+                    } else {
+                        "incomplete — the relay would not open negentropy (${outcome.failure?.detail?.take(80)})"
+                    }
+                ) +
                 (if (outcome.refusedWindows > 0) ", ${outcome.refusedWindows} window(s) REFUSED and not claimed" else "") +
                 ", last verified ${verifiedBefore?.let { "${auditStarted - it}s ago" } ?: "never"}",
         )
@@ -898,7 +942,7 @@ internal class VisitPool(
             sharedAuthors,
             onActivity = { ongoingVisit.lastActivityMs = System.currentTimeMillis() },
         ) { arrived(url, ongoingVisit) }
-        auditsRun.incrementAndGet()
+        retractionsRun.incrementAndGet()
     }
 
     /**
