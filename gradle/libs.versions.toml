@@ -717,14 +717,50 @@ quartz = "a8e8778265"
 # measured before it shipped -- it is upstream of the instrument -- so this is
 # the check that settles it after.
 #
-# DIRECTION: 369a3f8e1c is a strict ancestor of this.
-#   git merge-base --is-ancestor 369a3f8e1c 6747f3ad4f   # verified
+# AND #144 ANSWERED IT, from the other end. The check above asked whether
+# halving converges; the real question was why an `unranked` walk was being cut
+# at all, when `event.sd` declares `match-phase` on `recency`/`recency_gated`
+# alone. The answer is that the cut was never the schema's: Vespa activates
+# match-phase degradation on ANY query whose primary sort key is a single-value
+# numeric fast-search attribute -- `created_at` -- on EVERY profile, `unranked`
+# included (`sorting.degrading`, default true, docs.vespa.ai). It is a SORTING
+# optimisation, which is why no rank profile exempts it and why four passes
+# over this path looked for it in the wrong place, this repo's comments
+# included ("it cannot be refused for size" is now corrected in the store).
 #
-# LEXICOGRAPHIC: '6747…' > '369a…', so this sorts ABOVE the pin it replaces --
-# the SAFE direction. Quartz untouched by the range (a8e8778265 both sides), and
-# no eventstore or quartz line may carry a `->`.
+# The A/B, one query shape, only the flag varying (store PR #144, staging
+# 2026-09-12):
 #
-vespaEventStore = "6747f3ad4f"
+#   30d                            coverage   3%, cut
+#   30d, sorting.degrading=false   coverage 100%, 12.8M matches
+#
+# WHAT THIS RELAY WAS PAYING, measured on the sync pod before the bump:
+# `unranked/kinds,since,until match-phase x16325 REFUSED` -- the id walk's
+# exact shape -- and `walk.scan calls=2345 mean=22min`, 864 hours of
+# document-store fallback, with both content nodes at 17.3 cores and no users.
+# #141's halving stays, as insurance against a serving query profile or a Vespa
+# release that turns the degrader back on; it is no longer the hot path.
+#
+# STILL ON THE DEGRADER BY DECISION: client recall. `requireComplete` throws on
+# `unranked`, so a deep-past REQ errors in 0.03s today rather than answering in
+# 4.05s. #144 leaves that alone and asks for its own measurement of what
+# clients would then pay; this bump does not change it either way.
+#
+# DIRECTION: 6747f3ad4f is a strict ancestor of this.
+#   git merge-base --is-ancestor 6747f3ad4f bb25c8b15c   # verified
+#
+# LEXICOGRAPHIC: 'bb25…' > '6747…', so this sorts ABOVE the pin it replaces --
+# the SAFE direction. Quartz untouched by the range (a8e8778265 both sides, and
+# bb25c8b15c's own toml names it), and no eventstore or quartz line may carry
+# a `->`. Resolved graph checked after the bump: every store and engine line
+# reads bb25c8b15c, every quartz line a8e8778265, zero arrows.
+#
+# NOT GATED BY THE STORE'S INTEGRATION SUITE: Docker was down on the pinning
+# machine, and that suite reports BUILD SUCCESSFUL in six seconds with every
+# test skipped when it is. #144 carries its own staging A/B above and a mock
+# that reproduces the degrader; the gate is still owed.
+#
+vespaEventStore = "bb25c8b15c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
