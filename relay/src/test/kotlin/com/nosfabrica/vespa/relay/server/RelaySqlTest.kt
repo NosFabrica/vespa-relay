@@ -84,6 +84,11 @@ class RelaySqlTest {
                 val rows = awaitMessage(out) { it.startsWith("""["SQL-ROWS","q2"""") }
                 for (a in authors) assertTrue("""["${a.pubKey}",2]""" in rows, "every author's notes, lens or not: $rows")
                 assertTrue(rows.endsWith(""","done"]"""), rows)
+
+                // Math functions, answered by the store's pushdown: 6 notes over 3 authors.
+                session.receive("""["SQL","q3","SELECT sqrt(count(*) * 6), pow(2, count(DISTINCT pubkey)), floor(log10(1000)) FROM events WHERE kind = 1"]""")
+                val math = awaitMessage(out) { it.startsWith("""["SQL-ROWS","q3"""") }
+                assertTrue("""[[6.0,8.0,3.0]]""" in math, math)
             } finally {
                 session.close()
                 server.close()
