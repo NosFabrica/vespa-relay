@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.relay.monitor.MonitorEngine
 import com.nosfabrica.vespa.relay.monitor.MonitorStatus
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
+import com.nosfabrica.vespa.relay.peers.RelaySqlEventStore
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
@@ -60,6 +61,7 @@ import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
@@ -103,13 +105,32 @@ class SyncEngine(
     private val progress: SyncProgress = SyncProgress(),
     /** Installed on this engine's scope, so every store call made from a coroutine of ours books itself. */
     private val storeCalls: StoreCalls = StoreCalls(),
+    /**
+     * The relay serving [store], when this process reads through it (`SYNC_READ_RELAY_DIAL`):
+     * every read of both planes goes to it as SQL over the websocket, and [store] only takes
+     * writes. Null reads [store] directly.
+     */
+    readRelay: NormalizedRelayUrl? = null,
+    /** Where [readRelay]'s socket actually dials; see [PeerClient]'s `dialAt`. */
+    readRelayDial: String? = null,
 ) : AutoCloseable {
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
     /** The websocket client, socket budget, Tor and NIP-42, shared with the monitor plane. */
-    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec)
+    private val peers =
+        PeerClient(
+            scope,
+            signer,
+            torSettings,
+            wireLogMode,
+            config.connectionTimeoutSec,
+            dialAt = if (readRelay != null && readRelayDial != null) mapOf(readRelay to readRelayDial) else emptyMap(),
+        )
     private val client = peers.client
+
+    /** What every subsystem reads and writes through: [store] itself, or [store] read through its relay. */
+    private val reads: IEventStore = readRelay?.let { RelaySqlEventStore(client, it, store) } ?: store
     private val tor = peers.tor
 
     /** VirtualMachineErrors seen by the uncaught handler; the health line reports the process as damaged. */
@@ -125,8 +146,8 @@ class SyncEngine(
     /** The streams on the pool, retracting ones included. */
     private val visitStreams = config.streams.filter { VisitPool.ridesThePool(it) }
 
-    /** Relays we hold a live subscription on; a discovery sync must not drop their sockets. */
-    private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
+    /** Relays we hold a live subscription on; a discovery sync must not drop their sockets. Our own relay too, when reads ride it. */
+    private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet() + listOfNotNull(readRelay)
 
     private val phases = StreamPhases()
 
@@ -140,8 +161,19 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, IngestTuning(config.ingestConcurrency, config.ingestBatch), audit, servingPressure, scope, knownIds, newestVersions, refusals)
-    private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
+    private val ingest =
+        IngestPipeline(
+            reads,
+            IngestTuning(config.ingestConcurrency, config.ingestBatch),
+            audit,
+            servingPressure,
+            scope,
+            // Through the relay, the two gates read there too; direct, the caller's engine reads.
+            (reads as? RelaySqlEventStore)?.let { it::existingIds } ?: knownIds,
+            (reads as? RelaySqlEventStore)?.let { it::newestVersions } ?: newestVersions,
+            refusals,
+        )
+    private val healer = Healer(client, reads, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */
     private val complaints = ClientRelayComplaints(client)
@@ -155,7 +187,7 @@ class SyncEngine(
     /** The window chunker. */
     private val pager =
         NegentropyPager(
-            StoreWindowIndex(store),
+            StoreWindowIndex(reads),
             ClientWindowSync(client, widths, refused = refusedIds),
             sweepState,
             NegPageTuning(
@@ -173,7 +205,7 @@ class SyncEngine(
     /** The monitor plane, on its own clock, writing the verdicts the roster selects on. */
     private val monitor =
         MonitorEngine(
-            store = store,
+            store = reads,
             settings = config.monitor,
             // The monitor's own declaration, handed over whole. Nothing here derives it from the
             // mirror's streams: the two planes name their relays independently.
@@ -195,10 +227,10 @@ class SyncEngine(
         )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
-    private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
+    private val retraction = RetractionAudit(client, reads, bands, ingest, refusedIds)
 
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
-    private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
+    private val verdicts = signer?.let { RelayVerdictRecord(reads, it) }
 
     /** The rotating pool, inert when no stream rides it. */
     private val visitPool =
@@ -215,7 +247,7 @@ class SyncEngine(
             scope = scope,
             rosterBuilder =
                 RosterBuilder(
-                    store = store,
+                    store = reads,
                     streams = visitStreams,
                     bands = bands,
                     foldedAway = monitor::foldedAway,
@@ -233,7 +265,7 @@ class SyncEngine(
             widths = widths,
         )
 
-    private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
+    private val upPush = UpstreamPush(client, reads, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
     fun start(): SyncEngine {

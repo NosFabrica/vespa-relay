@@ -113,7 +113,26 @@ app = "0.1.0"
 # no `->` left anywhere, in every module that names it (all six: `:web` takes
 # quartz without the store):
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "a8e8778265"
+#
+# 7510b3d10a = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
+# bumped FOR the store below, which answers quartz's new Nostr SQL profile
+# (`nipXXSql`): relays get SQL / FETCH / SQL-CLOSE, and NostrRelayServer now
+# hands RelayServerBase the store's SQL engine. Clients get FilterSql and
+# `sqlQuery` / `sqlCount` / `sqlIdsAndTimes`, which RelaySqlEventStore reads
+# the store through; the pushdown fetches a join's second side by the first
+# side's keys, and answers id listings (every NIP-77 snapshot read over SQL)
+# with the store's id walk, no documents. Filter, SearchQuery and the store interface's existing
+# members are unchanged; IEventStore only gains defaulted `sqlBackend()` /
+# `sql(...)`. Quartz stopped linking jackson-module-kotlin, so kotlin-reflect
+# no longer arrives transitively (`:monitor`'s one reflective test declares it).
+#
+# DIRECTION: a8e8778265 is a strict ancestor of this.
+#   git merge-base --is-ancestor a8e8778265 7510b3d10a   # verified
+#
+# LEXICOGRAPHIC: '7510…' < 'a8e8…', so this sorts BELOW the pin it replaces;
+# `force(libs.quartz)` settles it, and the store pinned below names this exact
+# string in its own toml.
+quartz = "7510b3d10a"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -760,7 +779,26 @@ quartz = "a8e8778265"
 # test skipped when it is. #144 carries its own staging A/B above and a mock
 # that reproduces the degrader; the gate is still owed.
 #
-vespaEventStore = "bb25c8b15c"
+#
+# 6d2006270a = store branch claude/sql-pushdown, two commits over bb25c8b15c:
+# NostrSemanticsStore answers the SQL profile through a Vespa-shaped pushdown
+# backend (engine counts, countByAuthor and the tag_index grouping for the
+# native shapes; visitIds walks for the rest; unselective scans refused). It
+# moves no row and asks for no reindex. An id listing is the visitIds walk
+# alone. It is what the relay's SQL runs on,
+# and so what the mirror and the monitor read through (SYNC_READ_RELAY_DIAL).
+#
+# DIRECTION: bb25c8b15c is a strict ancestor of this.
+#   git merge-base --is-ancestor bb25c8b15c 6d2006270a   # verified
+#
+# LEXICOGRAPHIC: '6d20…' < 'bb25…', BELOW the pin it replaces; every module
+# names the store through this one alias, so nothing is there to conflict.
+#
+# GATED on a real Vespa: the store's whole integration suite passes at this
+# commit (`:benchmark:test -Pintegration`, 22 tests, 0 failed), including the
+# new SqlParityIT (the SQL profile against SQLite, 29/29 queries, id walks and
+# join propagation included) and VespaParityIT (127/127).
+vespaEventStore = "6d2006270a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

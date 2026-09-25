@@ -48,6 +48,7 @@ import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
+import com.vitorpamplona.quartz.nipXXSql.SqlEngine
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
@@ -104,6 +105,9 @@ class NostrRelayServer(
         negentropySettings = negentropySettings,
         listener = searchGate.listening(listener),
         limits = limits,
+        // SQL reads the store underneath the lens; its gate is the REQ policy above, so a
+        // signed-in connection (the mirror's, the monitor's) gets the raw corpus.
+        sql = SqlEngine.forStore(store),
     ) {
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
@@ -115,6 +119,7 @@ class NostrRelayServer(
 
     override fun close() {
         closeConnections()
+        closeSql()
         ingest.close()
         scope.cancel()
     }

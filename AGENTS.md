@@ -143,7 +143,8 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
+  peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42, dialAt), RelaySockets,
+                              RelaySqlEventStore (both planes' reads as SQL through our own relay, SYNC_READ_RELAY_DIAL),
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)

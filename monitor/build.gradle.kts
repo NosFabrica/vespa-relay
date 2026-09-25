@@ -18,6 +18,8 @@ dependencies {
     // api, so the graph says where the dependency is used.
     implementation(libs.okhttp)
     testImplementation(kotlin("test"))
+    // RelayDocumentTest reads members reflectively; quartz stopped carrying kotlin-reflect in with jackson-module-kotlin.
+    testImplementation(kotlin("reflect"))
     // Tests only: this plane produces a document and renders nothing, so :web is not on
     // its compile classpath. MonitorStatusTest serves the shared page over the document.
     testImplementation(project(":web"))

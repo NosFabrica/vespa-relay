@@ -79,6 +79,17 @@ object RelayDiscovery {
                 it.tag != null && it.tag.length == 1 && it.urlIndex == 1 && it.where.isEmpty() && it.bindings.isEmpty()
             }
 
+    /**
+     * The store's distinct-first-value roll-up of a single-letter tag, when it has one: the
+     * engine's `tag_index` grouping directly, or the same grouping asked of the relay as SQL.
+     */
+    private fun tagRollUp(store: IEventStore): (suspend (Filter, String) -> Set<String>)? =
+        when (store) {
+            is VespaEventStore -> { filter, tag -> store.store.distinctTagValues(filter, tag, unconditional = true) }
+            is RelaySqlEventStore -> store::distinctTagValues
+            else -> null
+        }
+
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
         store: IEventStore,
@@ -101,13 +112,12 @@ object RelayDiscovery {
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
             // One indexed walk per source answering every select it carries, never the store's
             // tags projection, whose cost is the corpus rather than the answer.
-            val aggregate = if (aggregable(dynamic, source)) (store as? VespaEventStore)?.store else null
+            val aggregate = if (aggregable(dynamic, source)) tagRollUp(store) else null
             val stillPaged = if (aggregate != null) emptyList() else source.selects
             if (aggregate != null) {
                 // The urls come back raw, so they take the same `normalize` the paged path applies.
                 for (select in source.selects) {
-                    aggregate
-                        .distinctTagValues(bounded, select.tag!!, unconditional = true)
+                    aggregate(bounded, select.tag!!)
                         .forEach { raw -> normalize(raw, allowOnion)?.let { found += it } }
                 }
             }

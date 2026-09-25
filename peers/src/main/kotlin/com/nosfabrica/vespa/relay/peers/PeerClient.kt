@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CoroutineScope
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import java.time.Duration
 
@@ -51,6 +52,12 @@ class PeerClient(
     wireLogMode: String = "",
     /** How long a dial may take before it is a failure. */
     connectionTimeoutSec: Long = 10,
+    /**
+     * Relays reached at another address than their url: the websocket dials the value, while
+     * the url (and so the NIP-42 `relay` tag) stays the key. How the mirror reaches its own
+     * relay over the compose network under the public url the relay authenticates.
+     */
+    private val dialAt: Map<NormalizedRelayUrl, String> = emptyMap(),
 ) : AutoCloseable {
     // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.
     private val okhttp =
@@ -82,8 +89,26 @@ class PeerClient(
     /** The Tor client, when there is one, and which urls it takes. */
     val tor = torSettings?.let { TorTransport(it, okhttp) }
 
+    /** One client per redirected url, rewriting the handshake's address. */
+    private val redirected =
+        dialAt.mapValues { (_, address) ->
+            // OkHttp sees a websocket handshake as http(s); the path and query stay the dialled address's.
+            val target = address.replaceFirst(Regex("^ws", RegexOption.IGNORE_CASE), "http").toHttpUrl()
+            okhttp
+                .newBuilder()
+                .addInterceptor { chain ->
+                    chain.proceed(
+                        chain
+                            .request()
+                            .newBuilder()
+                            .url(target)
+                            .build(),
+                    )
+                }.build()
+        }
+
     /** The OkHttp client that can reach [url], for dials outside quartz's websocket path. */
-    fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
+    fun httpFor(url: NormalizedRelayUrl): OkHttpClient = redirected[url] ?: tor?.clientFor(url) ?: okhttp
 
     val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope)
 

@@ -344,6 +344,10 @@ services:
       # read latency on GET /pressure and this process throttles ingest on it.
       # Unset it to mirror at full speed regardless of readers.
       SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
+      # Where the mirror and the monitor dial the relay to READ the store, as SQL over its
+      # websocket (signed in with RELAY_NSEC, under RELAY_URL). Writes still go to Vespa.
+      # Unset it to read Vespa directly, as before.
+      SYNC_READ_RELAY_DIAL: ${SYNC_READ_RELAY_DIAL-ws://relay:7777/}
       # Mean read latency (ms) above which ingest starts yielding.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       # How often (seconds) up/both streams re-reconcile to push new local events.

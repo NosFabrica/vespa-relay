@@ -65,6 +65,12 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
                           why RelaySockets can refcount across them
     RelaySockets.kt       who is still using this socket: one refcount across
                           every stream and every probe pass
+    RelaySqlEventStore.kt the store as both planes read it when
+                          SYNC_READ_RELAY_DIAL is set: every read goes to our
+                          own relay as SQL over its websocket (SQL, not REQ: a
+                          signed-in REQ is ranked through the lens), every write
+                          still to Vespa. Also the ingest gates' and the relay-
+                          list roll-up's SQL
     RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
                           the mirror reads. The contract between the planes
     Verdict.kt            …and the label vocabulary they are written in. In

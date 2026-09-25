@@ -227,6 +227,30 @@ fun main() {
         System.err.println("router: SYNC_PRESSURE_URL unset — ingest will not yield to relay reads")
     }
 
+    // Both planes read the store through the relay, as SQL over its websocket, when told where
+    // to dial it. The relay url stays the socket's name, so the NIP-42 exchange names it.
+    val readRelayDial = env["SYNC_READ_RELAY_DIAL"]?.trim()?.takeIf { it.isNotEmpty() }
+    val readRelay =
+        when {
+            readRelayDial == null -> {
+                System.err.println("router: SYNC_READ_RELAY_DIAL unset — reads go to Vespa directly")
+                null
+            }
+
+            identity == null -> {
+                System.err.println(
+                    "router: SYNC_READ_RELAY_DIAL is set but RELAY_NSEC is not — the relay answers SQL to a signed-in " +
+                        "connection only, so reads go to Vespa directly",
+                )
+                null
+            }
+
+            else -> {
+                System.err.println("router: reads go to ${relayUrl.url} as SQL, dialled at $readRelayDial; writes go to Vespa")
+                relayUrl
+            }
+        }
+
     val engine =
         SyncEngine(
             store,
@@ -252,6 +276,8 @@ fun main() {
                         docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
                     }
             },
+            readRelay = readRelay,
+            readRelayDial = readRelayDial,
         )
     // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
     // exactly the state they exist to show.
