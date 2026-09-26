@@ -114,7 +114,7 @@ app = "0.1.0"
 # quartz without the store):
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# 61e47f5215 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
+# 8066ee7bf6 = amethyst branch claude/nostr-relay-sql-cursor-0615uh @ 2026-09-25,
 # bumped FOR the store below, which answers quartz's new Nostr SQL profile
 # (`nipXXSql`): relays get SQL / FETCH / SQL-CLOSE, and NostrRelayServer now
 # hands RelayServerBase the store's SQL engine. Clients get FilterSql and
@@ -122,18 +122,20 @@ app = "0.1.0"
 # the store through; the pushdown fetches a join's second side by the first
 # side's keys, and answers id listings (every NIP-77 snapshot read over SQL)
 # with the store's id walk, no documents; and SQLite's math functions (sqrt,
-# pow, ln/log, floor/ceil/trunc, sign, mod, trigonometry) in the profile. Filter, SearchQuery and the store interface's existing
+# pow, ln/log, floor/ceil/trunc, sign, mod, trigonometry) in the profile; and
+# positional tags columns t0..t4 = tag[0..4] (formerly name, value, v2..v4),
+# which RelaySqlEventStore's SQL uses. Filter, SearchQuery and the store interface's existing
 # members are unchanged; IEventStore only gains defaulted `sqlBackend()` /
 # `sql(...)`. Quartz stopped linking jackson-module-kotlin, so kotlin-reflect
 # no longer arrives transitively (`:monitor`'s one reflective test declares it).
 #
 # DIRECTION: a8e8778265 is a strict ancestor of this.
-#   git merge-base --is-ancestor a8e8778265 61e47f5215   # verified
+#   git merge-base --is-ancestor a8e8778265 8066ee7bf6   # verified
 #
-# LEXICOGRAPHIC: '61e4…' < 'a8e8…', so this sorts BELOW the pin it replaces;
+# LEXICOGRAPHIC: '8066…' < 'a8e8…', so this sorts BELOW the pin it replaces;
 # `force(libs.quartz)` settles it, and the store pinned below names this exact
 # string in its own toml.
-quartz = "61e47f5215"
+quartz = "8066ee7bf6"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -781,7 +783,7 @@ quartz = "61e47f5215"
 # that reproduces the degrader; the gate is still owed.
 #
 #
-# b53647ea37 = store branch claude/sql-pushdown, three commits over bb25c8b15c:
+# b79a7f3e66 = store branch claude/sql-pushdown, four commits over bb25c8b15c:
 # NostrSemanticsStore answers the SQL profile through a Vespa-shaped pushdown
 # backend (engine counts, countByAuthor and the tag_index grouping for the
 # native shapes; visitIds walks for the rest; unselective scans refused). It
@@ -790,16 +792,16 @@ quartz = "61e47f5215"
 # and so what the mirror and the monitor read through (SYNC_READ_RELAY_DIAL).
 #
 # DIRECTION: bb25c8b15c is a strict ancestor of this.
-#   git merge-base --is-ancestor bb25c8b15c b53647ea37   # verified
+#   git merge-base --is-ancestor bb25c8b15c b79a7f3e66   # verified
 #
-# LEXICOGRAPHIC: 'b536…' < 'bb25…', BELOW the pin it replaces; every module
+# LEXICOGRAPHIC: 'b79a…' < 'bb25…', BELOW the pin it replaces; every module
 # names the store through this one alias, so nothing is there to conflict.
 #
 # GATED on a real Vespa: the store's whole integration suite passes at this
 # commit's parent (`:benchmark:test -Pintegration`, 22 tests, 0 failed),
 # including VespaParityIT (127/127); SqlParityIT (the SQL profile against
 # SQLite: id walks, join propagation and math functions) is 30/30 here.
-vespaEventStore = "b53647ea37"
+vespaEventStore = "b79a7f3e66"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

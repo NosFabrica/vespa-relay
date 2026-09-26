@@ -166,7 +166,7 @@ class RelaySqlEventStore(
         val out = HashSet<String>()
         client.sqlStream(
             readRelay,
-            "SELECT DISTINCT t.value FROM tags t WHERE t.name = ? AND t.value <> ''" + where.joinToString("") { " AND $it" },
+            "SELECT DISTINCT t.t1 FROM tags t WHERE t.t0 = ? AND t.t1 <> ''" + where.joinToString("") { " AND $it" },
             listOf<Any?>(tagName) + args,
             idleTimeoutMs = idleTimeoutMs,
         ) { out.add(it[0] as String) }
@@ -183,7 +183,7 @@ class RelaySqlEventStore(
         tagged.forEachIndexed { i, (name, values) ->
             val x = "x$i"
             val (bounds, boundArgs) = eventConditions(x, filter)
-            val inner = listOf("$x.name = ? AND $x.value IN (${marks(values)})") + bounds
+            val inner = listOf("$x.t0 = ? AND $x.t1 IN (${marks(values)})") + bounds
             conditions += "t.event_id IN (SELECT $x.event_id FROM tags $x WHERE ${inner.joinToString(" AND ")})"
             args.add(name)
             args.addAll(values)
