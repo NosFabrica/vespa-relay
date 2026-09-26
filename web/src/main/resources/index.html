@@ -1221,6 +1221,8 @@
   .status-pill.open { background: var(--add); color: var(--accent-fg); }
   .status-pill.merged { background: var(--accent); color: var(--accent-fg); }
   .status-pill.closed { background: var(--del); color: var(--accent-fg); }
+  /* A NIP-53 room only some people may enter. */
+  .status-pill.private { background: var(--warn); color: #fff; }
   /* A pill that leads its line, rather than trailing a title. */
   .status-pill.lead { margin-left: 0; margin-right: 4px; }
   /* The row a card falls back to when it has pills but no title. */

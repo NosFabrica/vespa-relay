@@ -6,7 +6,7 @@ import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, addrHref, extLink,
-  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, hostOf, oneLine,
+  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, hostOf, oneLine, multiTag,
   tagOf, tagsOf, tagsWhere, clipIf, fmtTs, plural,
 } from "./base.js";
 
@@ -58,13 +58,21 @@ function clipCard(ev, opts) {
   ]);
 }
 
-/** The title with the event's `status` as a pill beside it. */
+/**
+ * The NIP-53 statuses a pill has a tone for: live events, conferences (planned/live/ended) and
+ * rooms (open/private/closed). Any other word is still shown, in the neutral pill; a stranger's
+ * value never becomes a class name.
+ */
+const STATUS_TONE = { live: "live", open: "open", closed: "closed", ended: "closed", private: "private" };
+const statusPill = (status, lead = false) =>
+  `<span class="status-pill${lead ? " lead" : ""}${STATUS_TONE[status] ? ` ${STATUS_TONE[status]}` : ""}">${esc(clip(status, 24))}</span>`;
+
+/** The title with the event's `status` as a pill beside it; with no title, the pill leads its own row. */
 function statusTitle(ev, opts) {
-  const status = (tagOf(ev, "status") || "").toLowerCase();
+  const status = oneLine(tagOf(ev, "status")).toLowerCase();
   const title = titleOf(ev);
-  return title
-    ? `<h2 class="result-title">${esc(clipIf(opts, title, 140))}${status ? ` <span class="status-pill ${esc(status)}">${esc(status)}</span>` : ""}</h2>`
-    : "";
+  if (!title) return status ? `<div class="pill-row">${statusPill(status, true)}</div>` : "";
+  return `<h2 class="result-title">${esc(clipIf(opts, title, 140))}${status ? ` ${statusPill(status)}` : ""}</h2>`;
 }
 
 /** 30311 — a live event: status, the stream, who is watching. */
@@ -85,20 +93,27 @@ function liveCard(ev, opts) {
 
 /**
  * A 30312 `p`'s role. NIP-53 puts it after the relay hint (`["p", pk, relay, role]`); some
- * clients write it in the hint's slot (`["p", pk, "owner"]`), which no relay url looks like.
+ * clients write it in the hint's slot (`["p", pk, "owner"]`), taken as a role only when it is a
+ * plain word, since a hint may come without its scheme.
  */
-const roleOf = (t) => oneLine(t[3]) || (t[2] && !/^wss?:\/\//i.test(t[2]) ? oneLine(t[2]) : "");
+const ROLE_WORD = /^[a-z][a-z _-]{0,29}$/i;
+const roleOf = (t) => oneLine(t[3]) || (ROLE_WORD.test(oneLine(t[2])) ? oneLine(t[2]) : "");
 
-/** The people a room lists, each once with the first role given. The byline is already the author. */
+/**
+ * The people a room lists, each once, with the first role any of their tags gives. The author
+ * is left to the byline unless the room gives them a role, which only this list can say.
+ */
 function roomPeople(ev) {
-  const seen = new Map();
+  const roles = new Map();
   for (const t of tagsOf(ev, "p")) {
-    if (HEX64.test(t[1] || "") && t[1] !== ev.pubkey && !seen.has(t[1])) seen.set(t[1], roleOf(t));
+    if (!HEX64.test(t[1] || "")) continue;
+    if (!roles.get(t[1])) roles.set(t[1], roleOf(t));
   }
-  return [...seen].map(([pk, role]) => ({ pk, role }));
+  return [...roles].filter(([pk, role]) => pk !== ev.pubkey || role).map(([pk, role]) => ({ pk, role }));
 }
 const ROOM_PEOPLE = { preview: 3, full: 24 };
-const roomPeopleShown = (ev, opts) => roomPeople(ev).slice(0, opts && opts.full ? ROOM_PEOPLE.full : ROOM_PEOPLE.preview);
+const roomCap = (opts) => (opts && opts.full ? ROOM_PEOPLE.full : ROOM_PEOPLE.preview);
+const ROOM_RELAYS = { preview: 3, full: 24 };
 
 /**
  * 30312 — a room: a standing place to meet rather than one broadcast. Its name is the `room`
@@ -107,25 +122,26 @@ const roomPeopleShown = (ev, opts) => roomPeople(ev).slice(0, opts && opts.full 
 function roomCard(ev, opts) {
   const full = opts && opts.full;
   const img = imageOf(ev);
-  const all = roomPeople(ev);
-  const shown = roomPeopleShown(ev, opts);
-  const more = all.length - shown.length;
+  const people = roomPeople(ev);
+  const shown = people.slice(0, roomCap(opts));
   const person = (p) => personLink(p.pk) + (p.role ? ` <span class="muted-note">${esc(clip(p.role, 30))}</span>` : "");
-  const relays = tagsOf(ev, "relays").flatMap((t) => t.slice(1)).filter((v) => typeof v === "string" && v.trim());
+  const relays = [...new Set(multiTag(ev, "relays").map((r) => hostOf(oneLine(r))).filter(Boolean))];
+  const relaysShown = relays.slice(0, full ? ROOM_RELAYS.full : ROOM_RELAYS.preview);
+  const andMore = (all, some) => (all.length > some.length ? ` and ${all.length - some.length} more` : "");
   const inner =
     (full ? coverBanner(img) : "") +
     `<div class="result-main"><div class="text">` +
     statusTitle(ev, opts) +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300) +
-    (shown.length
-      ? `<div class="meta-line">with ${shown.map(person).join(", ")}${more > 0 ? ` and ${more} more` : ""}</div>`
-      : "") +
     chipRow(topicsOf(ev), opts, hashtagHref) +
     `</div>${full ? "" : coverThumb(img)}</div>`;
   return shell(ev, opts, inner, [
     ["join", extLink(tagOf(ev, "service"))],
+    ["people", shown.length ? shown.map(person).join(", ") + andMore(people, shown) : null],
     ["endpoint", full ? extLink(tagOf(ev, "endpoint")) : null],
-    ["relays", relays.length ? relays.map((r) => `<span class="mono">${esc(hostOf(r.trim()))}</span>`).join(" · ") : null],
+    ["relays", relaysShown.length
+      ? relaysShown.map((r) => `<span class="mono">${esc(clip(r, 60))}</span>`).join(" · ") + andMore(relays, relaysShown)
+      : null],
   ]);
 }
 
@@ -173,7 +189,7 @@ function rsvpCard(ev, opts) {
 // A 30313 conference event shares a live event's vocabulary; a 30312 room does not.
 register([30311, 30313], liveCard);
 register([30312], roomCard);
-registerNamedPeople([30312], (ev, opts) => roomPeopleShown(ev, opts).map((p) => p.pk));
+registerNamedPeople([30312], (ev, opts) => roomPeople(ev).slice(0, roomCap(opts)).map((p) => p.pk));
 register([1312], raidCard);
 register([1313], clipCard);
 register([31922, 31923], calendarEventCard);

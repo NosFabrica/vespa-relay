@@ -76,6 +76,8 @@ const HEX64 = /^[0-9a-f]{64}$/;
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry: a hint-fetched event is rendered before anything has verified its tags.
 export const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === name);
+/** Every value of every tag with this name; `["clone", <url>, <url>]` and repeats alike. */
+export const multiTag = (ev, name) => tagsOf(ev, name).flatMap((t) => t.slice(1)).filter((v) => typeof v === "string" && v);
 export const tagOf = (ev, ...names) => {
   for (const name of names) {
     for (const t of (ev && ev.tags) || []) if (Array.isArray(t) && t[0] === name && t[1]) return t[1];

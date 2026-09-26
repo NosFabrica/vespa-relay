@@ -1388,6 +1388,23 @@ for (const full of [false, true]) {
   assert(!html.includes("<img"), "an empty `image` draws no broken picture");
 }
 assert(namedPubkeys(room, { full: true }).includes(pk2), "the speaker's profile is loaded before the card draws");
+assert(card(room).includes('muted-note">owner<'), "the author's role in the room shows, though the byline already names them");
+const pk3 = "c".repeat(64), pk4 = "d".repeat(64);
+const cast = card(ev(30312, [["room", "R"], ["p", pk3, "moderator"], ["p", pk4], ["p", pk4, "wss://r.example", "Host"],
+  ["p", pk2, "relay.damus.io"]]), { full: true });
+assert(cast.includes(`${shortNpub(pk3)}</a> <span class="muted-note">moderator<`), "a role written in the hint's slot is read");
+assert(cast.includes(`${shortNpub(pk4)}</a> <span class="muted-note">Host<`), "a later tag's role fills an earlier empty one");
+assert(!cast.includes("relay.damus.io"), "a relay hint without its scheme is not a role");
+// Status: shown without a title, toned only from the known words, and never a class of its own.
+assert(card(ev(30312, [["d", "0123456789abcdef0123"], ["status", "closed"]])).includes('class="status-pill lead closed"'),
+  "an untitled room still says it is closed");
+const odd = card(ev(30312, [["room", "R"], ["status", "lead " + "x".repeat(100)]]));
+assert(odd.includes('class="status-pill">lead x') && !odd.includes("x".repeat(30)), "an unknown status is a neutral, clipped pill");
+assert(card(ev(30312, [["room", "R"], ["status", "lead"]])).includes('class="status-pill">lead<'), "…whose word never picks a class");
+const manyRelays = ev(30312, [["room", "R"], ["relays", ...Array.from({ length: 10 }, (_, i) => `wss://r${i}.example`), "wss://r0.example/"]]);
+assert(card(manyRelays).includes("r2.example") && !card(manyRelays).includes("r3.example") && card(manyRelays).includes("and 7 more"),
+  "the preview lists a few relays, each once");
+assert(card(manyRelays, { full: true }).includes("r9.example"), "…and the permalink all of them");
 assert.strictEqual(rowOf(room).name, "LFO", "the row names the room too");
 const pictured = ev(30312, [["room", "R"], ["image", "https://x/room.jpg"]]);
 assert(card(pictured).includes('class="thumb cover"') && card(pictured, { full: true }).includes('class="embed"'),
