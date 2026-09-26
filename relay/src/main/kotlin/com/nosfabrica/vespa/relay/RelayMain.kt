@@ -64,6 +64,7 @@ import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
@@ -136,6 +137,8 @@ fun main() {
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
+    // Parsed with the other settings so a bad value refuses the boot before the schema deploy.
+    val providerRefresh = providerRefreshSeconds(env)
     val requireReadLens = requireReadLensFromEnv(env)
     if (!requireReadLens) {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
@@ -206,6 +209,7 @@ fun main() {
             autoDeploy = false,
             configUrl = configUrl,
             writers = STORE_WRITERS,
+            providerRefreshSeconds = providerRefresh,
             searchExpansion = searchExpansion,
             slowQueryThresholdMillis = slowReadMs,
         )

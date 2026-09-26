@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.store
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class StoreTopologyTest {
     @Test
@@ -35,5 +36,22 @@ class StoreTopologyTest {
             "SINGLE_WRITER is false with the sync process running, and SHARED only bounds the window — " +
                 "a covered event admitted inside it is stored and served, and nothing repairs it afterwards",
         )
+    }
+
+    @Test
+    fun `the provider pass refreshes every minute unless told otherwise`() {
+        assertEquals(60L, providerRefreshSeconds(emptyMap()), "the window docs/configuration.md promises")
+        assertEquals(60L, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to " ")))
+        assertEquals(15L, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "15")))
+        assertEquals(0L, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "0")), "0 is off, not an error")
+    }
+
+    @Test
+    fun `a provider refresh that does not parse stops the boot`() {
+        assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "1m")) }
+        assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "-5")) }
+        // Would overflow the store's `* 1000` into a negative interval, which it reads as "off".
+        assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "9223372036854775")) }
+        assertEquals(MAX_PROVIDER_REFRESH_SECONDS, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to MAX_PROVIDER_REFRESH_SECONDS.toString())))
     }
 }

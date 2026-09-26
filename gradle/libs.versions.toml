@@ -760,7 +760,37 @@ quartz = "a8e8778265"
 # test skipped when it is. #144 carries its own staging A/B above and a mock
 # that reproduces the degrader; the gate is still owed.
 #
-vespaEventStore = "bb25c8b15c"
+# faa18dfba1 = vespa-eventstore main @ 2026-09-26, the merge of PR #146 (two
+# commits over bb25c8b15c; its tree is the 1c0bfbd2df this PR first pinned):
+# the kind-10040 provider pass gets a bounded age
+# (NosFabrica/vespa-eventstore#145, #243 here). Until now each process's pass
+# learned only from 10040s written through its own store, so a list the sync
+# mirrored in reached the relay's lenses and Trusted List gate only at the
+# relay's next restart or socket-written 10040 -- nine days on staging, where
+# 24 of 47 recent observers resolved no lens and got EMPTY ranked pages. The
+# store now rebuilds the pass every `providerRefreshSeconds` under any topology
+# but SINGLE_WRITER (both processes pass TRUST_PROVIDER_REFRESH_SECONDS, default
+# 60), keeps the old pass when a rebuild fails or reads nothing, and walks a
+# signer whose cards THIS process skipped as unnamed once a pass names it --
+# so the sync projects cards for a service first named on the relay's socket,
+# and neither process re-walks a service the other already walked.
+#
+# DEPLOYMENT: a restart of BOTH processes; no schema change, nothing re-derived.
+# WHAT IT DOES NOT REPAIR: cards the sync skipped BEFORE this deploy. The skip
+# memory starts empty at boot, so those stay unprojected; the boot reconcile
+# samples each service's oldest cards and is not guaranteed to find them. The
+# exact repair is the store's `rebuildTrust()`, which this relay does not
+# expose yet.
+#
+# DIRECTION: bb25c8b15c is a strict ancestor of this.
+#   git merge-base --is-ancestor bb25c8b15c faa18dfba1   # verified
+#
+# LEXICOGRAPHIC: 'faa1...' > 'bb25...' ('f' > 'b'), so this sorts ABOVE the pin
+# it replaces -- the safe direction, though nothing else in the graph names
+# vespa-eventstore (see the e1ecd7f23e note). The proof stays the resolved
+# graph -- every eventstore line reads faa18dfba1 with no `->`.
+#
+vespaEventStore = "faa18dfba1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

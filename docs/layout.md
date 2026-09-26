@@ -166,7 +166,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         not be fixed from this side and are why it moved: the
                         reader's enrolment needed a TTL because a relay cannot
                         see the sync process feeding 10040s into the same index
-                        from another JVM, and placing a subject by the
+                        from another JVM (the store's pass had the same hole
+                        until store `226db24694` gave it one:
+                        TRUST_PROVIDER_REFRESH_SECONDS), and placing a subject by the
                         confidence its pointer expressed needs the pointer's
                         RELEVANCE, which `IEventStore` does not expose. What
                         stays here is the budget — `SEARCH_EXPAND_*`, handed to

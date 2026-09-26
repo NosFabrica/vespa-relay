@@ -55,7 +55,14 @@ in the order the question is actually asked:
 - **Can people search** — provider lists resolving to a service that carries
   cells. An observer whose own providers resolve to an unprojected service gets
   an **empty** ranked page, and the page says so: the gate failing closed is
-  correct, the projection is what is incomplete.
+  correct, the projection is what is incomplete. So does an observer whose
+  provider list has not reached this process's **provider pass** yet — one the
+  router mirrored in since the last refresh — and this panel cannot see that:
+  its counts come from the last reconcile. So the panel also says how long ago
+  this process last read the provider lists (`providerPassAgeSecs` on
+  `/trust.json`); it runs up to the interval (`TRUST_PROVIDER_REFRESH_SECONDS`,
+  60) plus one read, and the panel flags it past twice that. The router's own
+  age is the `trust.providers.age.secs` gauge on its pulse.
 - **What is being repaired** — live phases, with a fraction and an ETA only
   where a denominator exists.
 - **Why reads come back short** — degraded reads by profile, shape and flags,
@@ -65,7 +72,10 @@ in the order the question is actually asked:
 - **Explain one pubkey** — over `GET /trust/explain/{pubkey}`. A pubkey is
   public and the relay already serves what it holds about one over NIP-01, so
   this reveals nothing the protocol does not: the answer describes the
-  projection, not the person.
+  projection, not the person. The lens it reports is the **cached** one every
+  read uses (`pass=` is its age); when that disagrees with the reader's stored
+  kind-10040 the line says so, rather than blaming their list with "names no
+  30382 service" as it did before store `226db24694`.
 
 **Never measured is not zero**, and the page says which — an unmeasured coverage
 drawn as 0% reads as an outage when it means no reconcile has finished. Charted

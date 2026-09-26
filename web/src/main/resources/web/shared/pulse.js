@@ -199,6 +199,7 @@ export const GAUGE_LABELS = {
   "lock.held": "store mutexes held",
   "trust.pending.subjects": "subjects waiting to be re-derived",
   "trust.pending.services": "score services waiting to be re-derived",
+  "trust.providers.age.secs": "seconds since this process re-read the kind-10040 lists (-1: none cached yet)",
 };
 
 /**
