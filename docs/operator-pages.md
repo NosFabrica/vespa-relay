@@ -58,8 +58,11 @@ in the order the question is actually asked:
   correct, the projection is what is incomplete. So does an observer whose
   provider list has not reached this process's **provider pass** yet — one the
   router mirrored in since the last refresh — and this panel cannot see that:
-  its counts come from the last reconcile. `providerPassAgeSecs` is the pass's
-  age; it should stay under `TRUST_PROVIDER_REFRESH_SECONDS` (60).
+  its counts come from the last reconcile. So the panel also says how long ago
+  this process last read the provider lists (`providerPassAgeSecs` on
+  `/trust.json`); it runs up to the interval (`TRUST_PROVIDER_REFRESH_SECONDS`,
+  60) plus one read, and the panel flags it past twice that. The router's own
+  age is the `trust.providers.age.secs` gauge on its pulse.
 - **What is being repaired** — live phases, with a fraction and an ETA only
   where a denominator exists.
 - **Why reads come back short** — degraded reads by profile, shape and flags,

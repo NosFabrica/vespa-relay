@@ -33,7 +33,7 @@ codebase forbids.
 | `VESPA_QUERY_FANOUT` | concurrent queries the store issues per bulk operation. Higher makes ingest faster; lower leaves more of the engine for the people searching | `4` |
 | `JAVA_TOOL_OPTIONS` / `RELAY_JAVA_TOOL_OPTIONS` / `SYNC_JAVA_TOOL_OPTIONS` | each JVM's own flags, in practice its heap. The bare name reaches **both** containers under compose; the prefixed spellings override per process — the two JVMs are sized 2× apart, so an absolute `-Xmx` tuned for the sync's reconcile heap would kill the smaller relay container. For the sync process this is what decides whether a large reconcile finishes or dies with `OutOfMemoryError`. The percentage is of the container's own mem limit, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
 | `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
-| `TRUST_PROVIDER_REFRESH_SECONDS` | how often **each** process rebuilds the store's kind-10040 provider pass — the cache every observer's rank lens and Trusted List gate read. The relay needs it so a list the router mirrored in applies to searches; the router needs it so cards it mirrors for a service first named on the relay's socket get projected. One read of every stored 10040 per tick. `0` restores the old behaviour, where a list another process stored applied only at this process's next restart or own 10040 write — see [Search: the subject travels with the pointer](#search-the-subject-travels-with-the-pointer) | `60` |
+| `TRUST_PROVIDER_REFRESH_SECONDS` | how often **each** process rebuilds the store's kind-10040 provider pass — the cache every observer's rank lens and Trusted List gate read. The relay needs it so a list the router mirrored in applies to searches; the router needs it so cards it mirrors for a service first named on the relay's socket get projected. One read of every stored 10040 per tick. At most `86400`; a bad value stops the boot before the schema deploy. `0` restores the old behaviour, where a list another process stored applied only at this process's next restart or own 10040 write — see [Search: the subject travels with the pointer](#search-the-subject-travels-with-the-pointer) | `60` |
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
@@ -309,8 +309,10 @@ the router mirrored in could wait days. An observer missing from the pass
 resolves no lens, and under the observer gate that is an **empty** ranked page,
 not an unranked one (NosFabrica/vespa-relay#243, where search-staging had 24 of
 47 recent observers in that state). `providerPassAgeSecs` on `/trust.json` is
-the pass's age; well above the interval means refreshes are failing (the
-pulse's background line says why).
+the pass's age, measured from when its read was issued, so it runs up to the
+interval plus one read; well above that means refreshes are failing, and the
+`store-background[relay|sync]` log line (every `STORE_METRICS_LOG_SECONDS`)
+says why.
 
 **A subject must still match the REQ.** It is added only when it matches at
 least one of the subscription's own filters with the `search` field taken out of

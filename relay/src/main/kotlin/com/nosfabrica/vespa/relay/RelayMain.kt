@@ -137,6 +137,8 @@ fun main() {
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
+    // Parsed with the other settings so a bad value refuses the boot before the schema deploy.
+    val providerRefresh = providerRefreshSeconds(env)
     val requireReadLens = requireReadLensFromEnv(env)
     if (!requireReadLens) {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
@@ -207,7 +209,7 @@ fun main() {
             autoDeploy = false,
             configUrl = configUrl,
             writers = STORE_WRITERS,
-            providerRefreshSeconds = providerRefreshSeconds(env),
+            providerRefreshSeconds = providerRefresh,
             searchExpansion = searchExpansion,
             slowQueryThresholdMillis = slowReadMs,
         )

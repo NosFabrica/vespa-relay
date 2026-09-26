@@ -29,6 +29,9 @@ import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
  */
 val STORE_WRITERS: WriterTopology = WriterTopology.SHARED_STRICT
 
+/** A day: a longer window is a list that waits a day to apply, which `0` already says more honestly. */
+const val MAX_PROVIDER_REFRESH_SECONDS: Long = 86_400L
+
 /** The variable [providerRefreshSeconds] reads — one name for both processes, so compose hands it to each. */
 const val PROVIDER_REFRESH_ENV = "TRUST_PROVIDER_REFRESH_SECONDS"
 
@@ -42,11 +45,16 @@ const val PROVIDER_REFRESH_ENV = "TRUST_PROVIDER_REFRESH_SECONDS"
  *
  * Defaults to the store's 60 s, which is the window docs/configuration.md promises. Each tick is one
  * read of every stored 10040 (hundreds). `0` turns it off and brings the old behaviour back: a list
- * applies only when this process writes a 10040 itself or restarts. A value that does not parse, or
- * is negative, stops the boot rather than quietly falling back.
+ * applies only when this process writes a 10040 itself or restarts. A value that does not parse, is
+ * negative, or exceeds a day stops the boot rather than quietly falling back — the bound also keeps
+ * the store's seconds-to-millis conversion from overflowing into a negative interval, which it reads
+ * as "off".
  */
 fun providerRefreshSeconds(env: Map<String, String>): Long =
     env[PROVIDER_REFRESH_ENV]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-        it.toLongOrNull()?.takeIf { n -> n >= 0 }
-            ?: error("$PROVIDER_REFRESH_ENV='$it' is not a number of seconds. Use 0 to turn the refresh off, or unset it for the default.")
+        it.toLongOrNull()?.takeIf { n -> n in 0..MAX_PROVIDER_REFRESH_SECONDS }
+            ?: error(
+                "$PROVIDER_REFRESH_ENV='$it' is not a number of seconds up to $MAX_PROVIDER_REFRESH_SECONDS. " +
+                    "Use 0 to turn the refresh off, or unset it for the default.",
+            )
     } ?: (DEFAULT_PROVIDER_REFRESH_MILLIS / 1000)

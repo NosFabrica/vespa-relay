@@ -50,5 +50,8 @@ class StoreTopologyTest {
     fun `a provider refresh that does not parse stops the boot`() {
         assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "1m")) }
         assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "-5")) }
+        // Would overflow the store's `* 1000` into a negative interval, which it reads as "off".
+        assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "9223372036854775")) }
+        assertEquals(MAX_PROVIDER_REFRESH_SECONDS, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to MAX_PROVIDER_REFRESH_SECONDS.toString())))
     }
 }

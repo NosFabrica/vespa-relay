@@ -49,9 +49,37 @@ function card(title, sub) {
   return c;
 }
 
+/**
+ * How old the relay's copy of the kind-10040 lists is. Every observer's lens and Trusted List gate
+ * read it, and a list the router mirrored in applies only once it is re-read (every
+ * TRUST_PROVIDER_REFRESH_SECONDS, 60 by default). Drawn before the coverage gate below because it is
+ * known whether or not a reconcile ever ran — and because it is the one staleness the reconcile's
+ * numbers cannot show.
+ */
+function providerPass(c, d) {
+  if (d.providerPassAgeSecs === undefined) return;
+  if (d.providerPassAgeSecs === null) {
+    c.appendChild(el("p", "why", "Provider lists: not read yet — the first observer search reads them."));
+    return;
+  }
+  const age = d.providerPassAgeSecs;
+  // Twice the default interval: the age runs from when a read was ISSUED, so just before a tick it
+  // is the interval plus that read's own time.
+  const stale = age > 120;
+  c.appendChild(
+    el(
+      "p",
+      stale ? "err" : "why",
+      `Provider lists last read ${fmt(age)}s ago.` +
+        (stale ? " Well past the refresh interval: refreshes are failing, so lists the router mirrored in are not applying (see the store-background log line)." : ""),
+    ),
+  );
+}
+
 /** The headline: can people search, and how sure are we. */
 function coverage(d) {
   const c = card("Can people search?", d.measured ? `measured ${ago(d.measuredAtMs)}` : "never measured");
+  providerPass(c, d);
   if (!d.measured) {
     // Said, not drawn: an unmeasured coverage rendered as 0% reads as an
     // outage, and a reconcile that has not run yet is not an outage.

@@ -117,6 +117,9 @@ fun main() {
         )
     }
 
+    // Parsed before the schema deploy and its retries, so a bad value refuses the boot at once.
+    val providerRefresh = providerRefreshSeconds(env)
+
     val identity = RelayIdentity.fromEnv { env[it] }
     if (identity != null) {
         System.err.println("sync identity: ${identity.pubKey.take(12)}… (NIP-42 auth, NIP-66 monitor)")
@@ -183,7 +186,7 @@ fun main() {
             autoDeploy = false,
             configUrl = configUrl,
             writers = STORE_WRITERS,
-            providerRefreshSeconds = providerRefreshSeconds(env),
+            providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
         )
     // When the counters start; the page states every total as cumulative over this window.

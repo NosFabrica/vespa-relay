@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.pulse
 
 import com.nosfabrica.vespa.eventstore.TrustHealth
 import com.nosfabrica.vespa.eventstore.engine.metrics.DegradedReads
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
@@ -72,6 +73,13 @@ class TrustDocumentTest {
         assertEquals(360L, d["lensesTotal"]!!.jsonPrimitive.long)
         assertEquals(233L, d["servicesProjected"]!!.jsonPrimitive.long)
         assertEquals(1060L, d["servicesNamed"]!!.jsonPrimitive.long)
+    }
+
+    /** The pass's age travels as a number, and as JSON null — not 0 — while nothing is cached. */
+    @Test
+    fun `the provider pass age is a number, or null when nothing is cached`() {
+        assertEquals(42L, TrustDocument.of(health(measuredAt = 0), emptyList(), "test", providerPassAgeSecs = 42)["providerPassAgeSecs"]!!.jsonPrimitive.long)
+        assertEquals(JsonNull, TrustDocument.of(health(measuredAt = 0), emptyList(), "test")["providerPassAgeSecs"])
     }
 
     /** A step without a denominator must reach the page as 0, so it can say "not known" rather than draw 0%. */
