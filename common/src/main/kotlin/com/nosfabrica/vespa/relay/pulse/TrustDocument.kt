@@ -45,13 +45,21 @@ object TrustDocument {
     fun reader(
         store: VespaEventStore,
         scope: String,
-    ): () -> JsonObject = { of(store.trustHealth(), DegradedReads.snapshot(), scope) }
+    ): () -> JsonObject = { of(store.trustHealth(), DegradedReads.snapshot(), scope, providerPassAgeSecs = store.trustProviderAgeSecs()) }
 
     fun of(
         health: TrustHealth,
         degraded: List<DegradedReads.Reading>,
         scope: String,
         nowMillis: Long = System.currentTimeMillis(),
+        /**
+         * How old this process's kind-10040 pass is — the cache every observer
+         * lens and Trusted List gate reads. It refreshes every
+         * `TRUST_PROVIDER_REFRESH_SECONDS`; well above that means refreshes are
+         * failing and lists the other process stored are not applying here.
+         * Null (sent as JSON null) while no pass is cached.
+         */
+        providerPassAgeSecs: Long? = null,
     ): JsonObject =
         buildJsonObject {
             put("schema", SCHEMA)
@@ -65,6 +73,7 @@ object TrustDocument {
             put("servicesProjected", health.servicesProjected)
             put("lensesTotal", health.lensesTotal)
             put("lensesResolvable", health.lensesResolvable)
+            put("providerPassAgeSecs", providerPassAgeSecs)
             putJsonArray("steps") {
                 health.steps.forEach { s ->
                     add(

@@ -169,6 +169,11 @@ services:
       # Set false to skip it and leave ranked search unsettled until a
       # reconcile is run some other way.
       TRUST_RECONCILE_ON_START: ${TRUST_RECONCILE_ON_START:-}
+      # How often this process re-reads the stored kind-10040s (default 60 s)
+      # — the cache every observer's rank lens and Trusted List gate read. The
+      # sync process writes most of them, and this is how they reach searches
+      # here. Set on BOTH services; 0 turns it off.
+      TRUST_PROVIDER_REFRESH_SECONDS: ${TRUST_PROVIDER_REFRESH_SECONDS:-}
       # Re-derive every event's search fields once, in the background. Needed
       # after a store upgrade that changes which kinds are searchable, how they
       # are decomposed, or that adds FED search fields — those are written at
@@ -310,6 +315,11 @@ services:
       # judged against: a vanish request naming this url (or ALL_RELAYS) sweeps
       # its author's history here, one naming some other relay is stored inert.
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # The relay's note: how often this process re-reads the stored
+      # kind-10040s. Here it is what projects cards for a service first named
+      # in a list published on the relay's socket, which this process's writes
+      # never see. Default 60 s.
+      TRUST_PROVIDER_REFRESH_SECONDS: ${TRUST_PROVIDER_REFRESH_SECONDS:-}
       # The streams to mirror. The profile is the on-switch, so this defaults
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
       # which local file is mounted there.

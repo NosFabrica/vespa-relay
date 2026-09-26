@@ -44,6 +44,7 @@ import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.SweepState
@@ -182,6 +183,7 @@ fun main() {
             autoDeploy = false,
             configUrl = configUrl,
             writers = STORE_WRITERS,
+            providerRefreshSeconds = providerRefreshSeconds(env),
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
         )
     // When the counters start; the page states every total as cumulative over this window.

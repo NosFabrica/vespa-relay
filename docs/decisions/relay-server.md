@@ -137,7 +137,10 @@ queries-per-second.
 **The reference expansion moved into the store.** It lived here as an
 `IEventStore` decorator until store `a9ce0d254c`. The reader's enrolment had
 to be cached with a TTL, because a relay cannot see the sync process feeding
-10040s into the same index from another JVM, and placing a subject by the
+10040s into the same index from another JVM. The move did not close that by
+itself: the store's pass was invalidated only by its own process's writes, so
+the TTL was simply lost until store `226db24694` bounded the pass's age
+(`TRUST_PROVIDER_REFRESH_SECONDS`, #243). Placing a subject by the
 confidence its pointer expressed needs the pointer's relevance, which
 `IEventStore` does not expose. What this relay owns is the budget. A cap
 `coerceAtLeast(0)` once turned `-1` into a cap of zero, the feature on and

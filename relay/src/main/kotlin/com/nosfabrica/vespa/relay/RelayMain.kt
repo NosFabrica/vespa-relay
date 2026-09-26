@@ -64,6 +64,7 @@ import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
@@ -206,6 +207,7 @@ fun main() {
             autoDeploy = false,
             configUrl = configUrl,
             writers = STORE_WRITERS,
+            providerRefreshSeconds = providerRefreshSeconds(env),
             searchExpansion = searchExpansion,
             slowQueryThresholdMillis = slowReadMs,
         )

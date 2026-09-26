@@ -760,7 +760,36 @@ quartz = "a8e8778265"
 # test skipped when it is. #144 carries its own staging A/B above and a mock
 # that reproduces the degrader; the gate is still owed.
 #
-vespaEventStore = "bb25c8b15c"
+# 226db24694 = vespa-eventstore claude/github-issue-145-n9y8nw, one commit over
+# bb25c8b15c: the kind-10040 provider pass gets a bounded age
+# (NosFabrica/vespa-eventstore#145, #243 here). Until now each process's pass
+# learned only from 10040s written through its own store, so a list the sync
+# mirrored in reached the relay's lenses and Trusted List gate only at the
+# relay's next restart or socket-written 10040 -- nine days on staging, where
+# 24 of 47 recent observers resolved no lens and got EMPTY ranked pages. The
+# store now rebuilds the pass every `providerRefreshSeconds` under any topology
+# but SINGLE_WRITER (both processes pass TRUST_PROVIDER_REFRESH_SECONDS, default
+# 60), keeps the old pass when a rebuild fails or reads nothing, and walks a
+# service a foreign 10040 named so the sync projects cards it skipped.
+#
+# DEPLOYMENT: a restart of BOTH processes; no schema change, nothing re-derived.
+# The first refresh after boot may queue walks for services the other process
+# named since the last rebuild -- on the sync that is the fix for the cards it
+# skipped, and it shows up as trust.queued.services.
+#
+# DIRECTION: bb25c8b15c is a strict ancestor of this.
+#   git merge-base --is-ancestor bb25c8b15c 226db24694   # verified
+#
+# LEXICOGRAPHIC: '226d...' < 'bb25...' ('2' < 'b'), so this sorts BELOW the pin
+# it replaces -- the direction that would lose a conflict. It costs nothing:
+# nothing else in the graph names vespa-eventstore (see the e1ecd7f23e note).
+# The proof stays the resolved graph -- every eventstore line reads 226db24694
+# with no `->`.
+#
+# A BRANCH COMMIT, not yet main: re-pin to the merge commit once the store PR
+# lands, so the pin never names history main does not carry.
+#
+vespaEventStore = "226db24694"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

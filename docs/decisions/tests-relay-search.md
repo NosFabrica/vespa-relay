@@ -29,7 +29,10 @@ reader's enrolled signers only. `a search for the external-id family spends the
 companion recall and nothing more` pins that shape, not a count: every query
 carries the terms, the declaration companions name nobody the reader did not
 enrol, and no lookup follows the page. The 10040 pass is paid on the write
-path, not per REQ.
+path and on the refresh interval, not per REQ. The cross-process half — a list
+the router stores reaching the relay's pass — is pinned in the store, by
+vespa-eventstore's `ProviderRefresherTest` (two stores over one index); a relay
+test with one store cannot show it.
 
 **The doubling-store case moved with the expansion.** That the expansion
 refuses to emit a row twice even when the store hands the same row back twice
