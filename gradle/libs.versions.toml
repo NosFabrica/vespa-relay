@@ -760,7 +760,7 @@ quartz = "a8e8778265"
 # test skipped when it is. #144 carries its own staging A/B above and a mock
 # that reproduces the degrader; the gate is still owed.
 #
-# 226db24694 = vespa-eventstore claude/github-issue-145-n9y8nw, one commit over
+# 1c0bfbd2df = vespa-eventstore claude/github-issue-145-n9y8nw, two commits over
 # bb25c8b15c: the kind-10040 provider pass gets a bounded age
 # (NosFabrica/vespa-eventstore#145, #243 here). Until now each process's pass
 # learned only from 10040s written through its own store, so a list the sync
@@ -770,26 +770,30 @@ quartz = "a8e8778265"
 # store now rebuilds the pass every `providerRefreshSeconds` under any topology
 # but SINGLE_WRITER (both processes pass TRUST_PROVIDER_REFRESH_SECONDS, default
 # 60), keeps the old pass when a rebuild fails or reads nothing, and walks a
-# service a foreign 10040 named so the sync projects cards it skipped.
+# signer whose cards THIS process skipped as unnamed once a pass names it --
+# so the sync projects cards for a service first named on the relay's socket,
+# and neither process re-walks a service the other already walked.
 #
 # DEPLOYMENT: a restart of BOTH processes; no schema change, nothing re-derived.
-# The first refresh after boot may queue walks for services the other process
-# named since the last rebuild -- on the sync that is the fix for the cards it
-# skipped, and it shows up as trust.queued.services.
+# WHAT IT DOES NOT REPAIR: cards the sync skipped BEFORE this deploy. The skip
+# memory starts empty at boot, so those stay unprojected; the boot reconcile
+# samples each service's oldest cards and is not guaranteed to find them. The
+# exact repair is the store's `rebuildTrust()`, which this relay does not
+# expose yet.
 #
 # DIRECTION: bb25c8b15c is a strict ancestor of this.
-#   git merge-base --is-ancestor bb25c8b15c 226db24694   # verified
+#   git merge-base --is-ancestor bb25c8b15c 1c0bfbd2df   # verified
 #
-# LEXICOGRAPHIC: '226d...' < 'bb25...' ('2' < 'b'), so this sorts BELOW the pin
+# LEXICOGRAPHIC: '1c0b...' < 'bb25...' ('1' < 'b'), so this sorts BELOW the pin
 # it replaces -- the direction that would lose a conflict. It costs nothing:
 # nothing else in the graph names vespa-eventstore (see the e1ecd7f23e note).
-# The proof stays the resolved graph -- every eventstore line reads 226db24694
+# The proof stays the resolved graph -- every eventstore line reads 1c0bfbd2df
 # with no `->`.
 #
 # A BRANCH COMMIT, not yet main: re-pin to the merge commit once the store PR
 # lands, so the pin never names history main does not carry.
 #
-vespaEventStore = "226db24694"
+vespaEventStore = "1c0bfbd2df"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
