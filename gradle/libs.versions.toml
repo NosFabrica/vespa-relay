@@ -135,7 +135,16 @@ app = "0.1.0"
 # LEXICOGRAPHIC: '8066…' < 'a8e8…', so this sorts BELOW the pin it replaces;
 # `force(libs.quartz)` settles it, and the store pinned below names this exact
 # string in its own toml.
-quartz = "8066ee7bf6"
+#
+# c05aefbc08 (2026-09-26) replaces it: the SQL profile became NIP-FF, the Nostr
+# Query Language (NQL). The relay serves `NQL` (one answer per query, capped by
+# RelayLimits.maxNqlRows) through NqlEngine.forStore; `closeSql()` is gone.
+# RelaySqlEventStore reads through nqlQuery / nqlCount / nqlIdsAndTimes, which page
+# past the cap; an event whose tags NQL can't show whole (past tag[4]) is fetched
+# with a REQ by id. Nothing on the write path, search or Filter moved.
+#   git merge-base --is-ancestor 8066ee7bf6 c05aefbc08   # verified
+# LEXICOGRAPHIC: 'c05a…' > '8066…', so it sorts ABOVE the pin it replaces.
+quartz = "c05aefbc08"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -801,7 +810,12 @@ quartz = "8066ee7bf6"
 # commit's parent (`:benchmark:test -Pintegration`, 22 tests, 0 failed),
 # including VespaParityIT (127/127); SqlParityIT (the SQL profile against
 # SQLite: id walks, join propagation and math functions) is 30/30 here.
-vespaEventStore = "b79a7f3e66"
+#
+# d96494eeba (2026-09-26) replaces it: same store code, built on Quartz c05aefbc08
+# (NQL); its tests speak NQL. Its whole suite passes, integration included (711
+# tests), and SqlParityIT is 31/31 on a real Vespa.
+#   git merge-base --is-ancestor b79a7f3e66 d96494eeba   # verified
+vespaEventStore = "d96494eeba"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

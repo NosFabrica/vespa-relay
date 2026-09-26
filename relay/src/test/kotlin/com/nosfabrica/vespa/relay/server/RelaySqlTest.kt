@@ -33,7 +33,7 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * SQL on the serving relay: gated like a REQ (the read lens wants a signed-in connection), and
+ * NQL (NIP-FF) on the serving relay: gated like a REQ (the read lens wants a signed-in connection), and
  * answered from the store underneath the lens, which is what lets the mirror and the monitor
  * read the raw corpus through it.
  */
@@ -59,7 +59,7 @@ class RelaySqlTest {
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             try {
-                session.receive("""["SQL","q1","SELECT count(*) FROM events"]""")
+                session.receive("""["NQL","q1","SELECT count(*) AS n FROM events"]""")
                 val closed = awaitMessage(out) { it.startsWith("""["CLOSED","q1"""") }
                 assertTrue("auth-required:" in closed, closed)
             } finally {
@@ -80,15 +80,17 @@ class RelaySqlTest {
                 session.receive("""["AUTH",${auth.toJson()}]""")
                 awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
 
-                session.receive("""["SQL","q2","SELECT pubkey, count(*) FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY pubkey"]""")
-                val rows = awaitMessage(out) { it.startsWith("""["SQL-ROWS","q2"""") }
+                session.receive("""["NQL","q2","SELECT pubkey, count(*) AS n FROM events WHERE kind = 1 GROUP BY pubkey ORDER BY pubkey"]""")
+                val rows = awaitMessage(out) { it.startsWith("""["NQL","q2"""") }
                 for (a in authors) assertTrue("""["${a.pubKey}",2]""" in rows, "every author's notes, lens or not: $rows")
-                assertTrue(rows.endsWith(""","done"]"""), rows)
+                assertTrue(""""truncated":false""" in rows, rows)
 
-                // Math functions, answered by the store's pushdown: 6 notes over 3 authors.
-                session.receive("""["SQL","q3","SELECT sqrt(count(*) * 6), pow(2, count(DISTINCT pubkey)), floor(log10(1000)) FROM events WHERE kind = 1"]""")
-                val math = awaitMessage(out) { it.startsWith("""["SQL-ROWS","q3"""") }
-                assertTrue("""[[6.0,8.0,3.0]]""" in math, math)
+                // Math functions, run by Quartz's interpreter over the store: 6 notes over 3 authors.
+                session.receive(
+                    """["NQL","q3","SELECT sqrt(count(*) * 6) AS a, pow(2, count(DISTINCT pubkey)) AS b, floor(log10(1000)) AS c FROM events WHERE kind = 1"]""",
+                )
+                val math = awaitMessage(out) { it.startsWith("""["NQL","q3"""") }
+                assertTrue(""""rows":[[6.0,8.0,3.0]]""" in math, math)
             } finally {
                 session.close()
                 server.close()
