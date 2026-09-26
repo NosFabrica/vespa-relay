@@ -397,6 +397,14 @@ export const safeUrl = (u) => {
   } catch (e) { return null; }
 };
 
+/** A cover, at the depth it belongs to: a banner on the permalink, a thumb beside the text in the list. */
+export const coverBanner = (img) => (img
+  ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>`
+  : "");
+export const coverThumb = (img) => (img
+  ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
+  : "");
+
 /** The one external link. An unlinkable url renders as its own text rather than disappearing. */
 export const extLink = (url, label) => {
   if (!url) return null;

@@ -139,7 +139,7 @@ const FIXTURES = [
   [1632,  ev(1632, [["e", eid]], "wontfix"), "status-pill lead closed"],
   [1633,  ev(1633, [["e", eid]], "not ready"), "status-pill lead draft"],
   [30618, ev(30618, [["d", "repo"], ["refs/heads/master", "abc1234"], ["HEAD", "ref: refs/heads/master"]]), "1 branch"],
-  [30312, ev(30312, [["title", "The room"], ["status", "open"]]), "The room"],
+  [30312, ev(30312, [["d", "x7k2p9"], ["room", "The room"], ["status", "open"], ["service", "https://meet.example/r"]]), "The room"],
   [30313, ev(30313, [["title", "The conference"], ["start", String(now + 86400)]]), "The conference"],
   [31925, ev(31925, [["a", `31923:${pk}:meetup`], ["status", "accepted"]]), "status-pill accepted"],
   [30403, ev(30403, [["title", "Draft bike"], ["price", "100", "EUR"]]), "100 EUR"],
@@ -1368,5 +1368,29 @@ for (const mark of ["#", "**", "](", "1. "]) {
   assert(!markedRow.sub.includes(mark), `the row's summary showed markdown \`${mark}\` instead of the prose under it`);
 }
 assert(markedRow.sub.startsWith("A relay that accepts every event from everybody"), "…and the prose is what follows it");
+
+// A NIP-53 room names itself in `room`, never `title`, and its `d` is a slug that only looks like
+// a name. This is a real hivetalk event's shape: an empty `image`, a trailing space in `room` and
+// `service`, and the owner's role written in the relay hint's slot.
+const room = ev(30312, [
+  ["d", "22hfsq5j6v"], ["room", "LFO "], ["summary", "A safer way into the website.\n"], ["image", ""],
+  ["service", "https://honey.hivetalk.org/meet/LFO "], ["p", pk, "owner"], ["p", pk2, "", "Speaker"],
+  ["status", "private"], ["t", "hivetalk"], ["relays", "wss://hrelay7.exe.xyz"],
+]);
+for (const full of [false, true]) {
+  const html = card(room, { full });
+  assert(html.includes('<h2 class="result-title">LFO <span class="status-pill private">'), `the room's own name leads (full=${full})`);
+  assert(!html.includes("22hfsq5j6v"), "the d slug is not the title");
+  assert(html.includes("A safer way into the website."), "the summary is the body");
+  assert(html.includes('href="https://honey.hivetalk.org/meet/LFO"'), "the service url is how a reader joins");
+  assert(html.includes("hrelay7.exe.xyz") && html.includes(">#hivetalk<"), "relays and topics show");
+  assert(html.includes(npub(pk2)) && html.includes("Speaker"), "a listed speaker shows with their role");
+  assert(!html.includes("<img"), "an empty `image` draws no broken picture");
+}
+assert(namedPubkeys(room, { full: true }).includes(pk2), "the speaker's profile is loaded before the card draws");
+assert.strictEqual(rowOf(room).name, "LFO", "the row names the room too");
+const pictured = ev(30312, [["room", "R"], ["image", "https://x/room.jpg"]]);
+assert(card(pictured).includes('class="thumb cover"') && card(pictured, { full: true }).includes('class="embed"'),
+  "a room's image is a thumb in the list and a banner on the permalink");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);

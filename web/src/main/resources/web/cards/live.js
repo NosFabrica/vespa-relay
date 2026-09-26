@@ -5,7 +5,8 @@
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
 import {
-  register, registerRow, shell, titleHtml, bodyHtml, personLink, addrHref, extLink, videoEmbed,
+  register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, addrHref, extLink,
+  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, hostOf, oneLine,
   tagOf, tagsOf, tagsWhere, clipIf, fmtTs, plural,
 } from "./base.js";
 
@@ -57,14 +58,21 @@ function clipCard(ev, opts) {
   ]);
 }
 
+/** The title with the event's `status` as a pill beside it. */
+function statusTitle(ev, opts) {
+  const status = (tagOf(ev, "status") || "").toLowerCase();
+  const title = titleOf(ev);
+  return title
+    ? `<h2 class="result-title">${esc(clipIf(opts, title, 140))}${status ? ` <span class="status-pill ${esc(status)}">${esc(status)}</span>` : ""}</h2>`
+    : "";
+}
+
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
-  const status = (tagOf(ev, "status") || "").toLowerCase();
-  const img = imageOf(ev);
   const full = opts && opts.full;
   const inner =
-    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
-    `${titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}${status ? ` <span class="status-pill ${esc(status)}">${esc(status)}</span>` : ""}</h2>` : ""}` +
+    (full ? coverBanner(imageOf(ev)) : "") +
+    statusTitle(ev, opts) +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300);
   const participants = tagOf(ev, "current_participants");
   return shell(ev, opts, inner, [
@@ -72,6 +80,52 @@ function liveCard(ev, opts) {
     ["recording", extLink(tagOf(ev, "recording"))],
     ["starts", tagOf(ev, "starts") ? esc(fmtTs(tagOf(ev, "starts"))) : null],
     ["watching", participants ? esc(participants) : null],
+  ]);
+}
+
+/**
+ * A 30312 `p`'s role. NIP-53 puts it after the relay hint (`["p", pk, relay, role]`); some
+ * clients write it in the hint's slot (`["p", pk, "owner"]`), which no relay url looks like.
+ */
+const roleOf = (t) => oneLine(t[3]) || (t[2] && !/^wss?:\/\//i.test(t[2]) ? oneLine(t[2]) : "");
+
+/** The people a room lists, each once with the first role given. The byline is already the author. */
+function roomPeople(ev) {
+  const seen = new Map();
+  for (const t of tagsOf(ev, "p")) {
+    if (HEX64.test(t[1] || "") && t[1] !== ev.pubkey && !seen.has(t[1])) seen.set(t[1], roleOf(t));
+  }
+  return [...seen].map(([pk, role]) => ({ pk, role }));
+}
+const ROOM_PEOPLE = { preview: 3, full: 24 };
+const roomPeopleShown = (ev, opts) => roomPeople(ev).slice(0, opts && opts.full ? ROOM_PEOPLE.full : ROOM_PEOPLE.preview);
+
+/**
+ * 30312 — a room: a standing place to meet rather than one broadcast. Its name is the `room`
+ * tag (titleOf reads it), and what a reader wants from it is the `service` url that joins it.
+ */
+function roomCard(ev, opts) {
+  const full = opts && opts.full;
+  const img = imageOf(ev);
+  const all = roomPeople(ev);
+  const shown = roomPeopleShown(ev, opts);
+  const more = all.length - shown.length;
+  const person = (p) => personLink(p.pk) + (p.role ? ` <span class="muted-note">${esc(clip(p.role, 30))}</span>` : "");
+  const relays = tagsOf(ev, "relays").flatMap((t) => t.slice(1)).filter((v) => typeof v === "string" && v.trim());
+  const inner =
+    (full ? coverBanner(img) : "") +
+    `<div class="result-main"><div class="text">` +
+    statusTitle(ev, opts) +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 300) +
+    (shown.length
+      ? `<div class="meta-line">with ${shown.map(person).join(", ")}${more > 0 ? ` and ${more} more` : ""}</div>`
+      : "") +
+    chipRow(topicsOf(ev), opts, hashtagHref) +
+    `</div>${full ? "" : coverThumb(img)}</div>`;
+  return shell(ev, opts, inner, [
+    ["join", extLink(tagOf(ev, "service"))],
+    ["endpoint", full ? extLink(tagOf(ev, "endpoint")) : null],
+    ["relays", relays.length ? relays.map((r) => `<span class="mono">${esc(hostOf(r.trim()))}</span>`).join(" · ") : null],
   ]);
 }
 
@@ -116,8 +170,10 @@ function rsvpCard(ev, opts) {
   ]);
 }
 
-// 30312/30313 are NIP-53's rooms and conference events: the same vocabulary as a live event.
-register([30311, 30312, 30313], liveCard);
+// A 30313 conference event shares a live event's vocabulary; a 30312 room does not.
+register([30311, 30313], liveCard);
+register([30312], roomCard);
+registerNamedPeople([30312], (ev, opts) => roomPeopleShown(ev, opts).map((p) => p.pk));
 register([1312], raidCard);
 register([1313], clipCard);
 register([31922, 31923], calendarEventCard);
