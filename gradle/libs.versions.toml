@@ -144,7 +144,17 @@ app = "0.1.0"
 # with a REQ by id. Nothing on the write path, search or Filter moved.
 #   git merge-base --is-ancestor 8066ee7bf6 c05aefbc08   # verified
 # LEXICOGRAPHIC: 'c05a…' > '8066…', so it sorts ABOVE the pin it replaces.
-quartz = "c05aefbc08"
+#
+# 25e949d07d (2026-09-26) replaces it: NIP-FF gained `events.d`, an addressable
+# event's identifier (first `d` value, '' without one, NULL for other kinds), so a
+# provider's NIP-85 cards page by `d` off the addressable index. Quartz's SQLite
+# store now sets `d_tag` by kind (unknown addressable kinds supersede; schema v6
+# migrates), and `d = ?` counts as a selective condition. Nothing here reads
+# `events` by position, so no query changes.
+#   git merge-base --is-ancestor c05aefbc08 25e949d07d   # verified
+# LEXICOGRAPHIC: '25e9…' < 'c05a…', BELOW the pin it replaces; `force(libs.quartz)`
+# settles it, and the store pinned below names this exact string in its own toml.
+quartz = "25e949d07d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -815,7 +825,12 @@ quartz = "c05aefbc08"
 # (NQL); its tests speak NQL. Its whole suite passes, integration included (711
 # tests), and SqlParityIT is 31/31 on a real Vespa.
 #   git merge-base --is-ancestor b79a7f3e66 d96494eeba   # verified
-vespaEventStore = "d96494eeba"
+#
+# a97f024605 (2026-09-26) replaces it: same store code, built on Quartz 25e949d07d
+# (NQL `events.d`); SqlConformanceTest covers `d`. Its whole suite passes,
+# integration included (19 suites on a real Vespa, SqlParityIT among them).
+#   git merge-base --is-ancestor d96494eeba a97f024605   # verified
+vespaEventStore = "a97f024605"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
