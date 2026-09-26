@@ -34,6 +34,9 @@ const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 export const titleOf = (ev) => {
   const named = firstTag(ev, "title", "name", "subject");
   if (named) return named;
+  // A NIP-53 room names itself in `room`; its `d` is a slug that only looks like a name.
+  const room = ev && ev.kind === 30312 ? firstTag(ev, "room") : null;
+  if (room && room.trim()) return room.trim();
   const d = firstTag(ev, "d");
   return d && !OPAQUE_D.test(d) ? d : null;
 };

@@ -7,19 +7,12 @@ import { esc, clip, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/for
 import { shortAddr, shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, refRows, chipRow,
+  coverBanner, coverThumb,
   hashtagHref, personLink, extLink, noteHref, addrHref, tagOf, tagsOf, tagsWhere, topicsOf, oneLine,
   clipIf, fmtTs, fmtBytes, plural,
 } from "./base.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
-
-/** The cover, at the depth it belongs to: a banner on the permalink, a landscape thumb in the list. */
-const coverBanner = (img) => (img
-  ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>`
-  : "");
-const coverThumb = (img) => (img
-  ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
-  : "");
 
 /**
  * An article: cover, title, summary in preview, the whole body on the permalink.

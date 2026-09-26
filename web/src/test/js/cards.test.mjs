@@ -139,7 +139,7 @@ const FIXTURES = [
   [1632,  ev(1632, [["e", eid]], "wontfix"), "status-pill lead closed"],
   [1633,  ev(1633, [["e", eid]], "not ready"), "status-pill lead draft"],
   [30618, ev(30618, [["d", "repo"], ["refs/heads/master", "abc1234"], ["HEAD", "ref: refs/heads/master"]]), "1 branch"],
-  [30312, ev(30312, [["title", "The room"], ["status", "open"]]), "The room"],
+  [30312, ev(30312, [["d", "x7k2p9"], ["room", "The room"], ["status", "open"], ["service", "https://meet.example/r"]]), "The room"],
   [30313, ev(30313, [["title", "The conference"], ["start", String(now + 86400)]]), "The conference"],
   [31925, ev(31925, [["a", `31923:${pk}:meetup`], ["status", "accepted"]]), "status-pill accepted"],
   [30403, ev(30403, [["title", "Draft bike"], ["price", "100", "EUR"]]), "100 EUR"],
@@ -1368,5 +1368,46 @@ for (const mark of ["#", "**", "](", "1. "]) {
   assert(!markedRow.sub.includes(mark), `the row's summary showed markdown \`${mark}\` instead of the prose under it`);
 }
 assert(markedRow.sub.startsWith("A relay that accepts every event from everybody"), "…and the prose is what follows it");
+
+// A NIP-53 room names itself in `room`, never `title`, and its `d` is a slug that only looks like
+// a name. This is a real hivetalk event's shape: an empty `image`, a trailing space in `room` and
+// `service`, and the owner's role written in the relay hint's slot.
+const room = ev(30312, [
+  ["d", "22hfsq5j6v"], ["room", "LFO "], ["summary", "A safer way into the website.\n"], ["image", ""],
+  ["service", "https://honey.hivetalk.org/meet/LFO "], ["p", pk, "owner"], ["p", pk2, "", "Speaker"],
+  ["status", "private"], ["t", "hivetalk"], ["relays", "wss://hrelay7.exe.xyz"],
+]);
+for (const full of [false, true]) {
+  const html = card(room, { full });
+  assert(html.includes('<h2 class="result-title">LFO <span class="status-pill private">'), `the room's own name leads (full=${full})`);
+  assert(!html.includes("22hfsq5j6v"), "the d slug is not the title");
+  assert(html.includes("A safer way into the website."), "the summary is the body");
+  assert(html.includes('href="https://honey.hivetalk.org/meet/LFO"'), "the service url is how a reader joins");
+  assert(html.includes("hrelay7.exe.xyz") && html.includes(">#hivetalk<"), "relays and topics show");
+  assert(html.includes(npub(pk2)) && html.includes("Speaker"), "a listed speaker shows with their role");
+  assert(!html.includes("<img"), "an empty `image` draws no broken picture");
+}
+assert(namedPubkeys(room, { full: true }).includes(pk2), "the speaker's profile is loaded before the card draws");
+assert(card(room).includes('muted-note">owner<'), "the author's role in the room shows, though the byline already names them");
+const pk3 = "c".repeat(64), pk4 = "d".repeat(64);
+const cast = card(ev(30312, [["room", "R"], ["p", pk3, "moderator"], ["p", pk4], ["p", pk4, "wss://r.example", "Host"],
+  ["p", pk2, "relay.damus.io"]]), { full: true });
+assert(cast.includes(`${shortNpub(pk3)}</a> <span class="muted-note">moderator<`), "a role written in the hint's slot is read");
+assert(cast.includes(`${shortNpub(pk4)}</a> <span class="muted-note">Host<`), "a later tag's role fills an earlier empty one");
+assert(!cast.includes("relay.damus.io"), "a relay hint without its scheme is not a role");
+// Status: shown without a title, toned only from the known words, and never a class of its own.
+assert(card(ev(30312, [["d", "0123456789abcdef0123"], ["status", "closed"]])).includes('class="status-pill lead closed"'),
+  "an untitled room still says it is closed");
+const odd = card(ev(30312, [["room", "R"], ["status", "lead " + "x".repeat(100)]]));
+assert(odd.includes('class="status-pill">lead x') && !odd.includes("x".repeat(30)), "an unknown status is a neutral, clipped pill");
+assert(card(ev(30312, [["room", "R"], ["status", "lead"]])).includes('class="status-pill">lead<'), "…whose word never picks a class");
+const manyRelays = ev(30312, [["room", "R"], ["relays", ...Array.from({ length: 10 }, (_, i) => `wss://r${i}.example`), "wss://r0.example/"]]);
+assert(card(manyRelays).includes("r2.example") && !card(manyRelays).includes("r3.example") && card(manyRelays).includes("and 7 more"),
+  "the preview lists a few relays, each once");
+assert(card(manyRelays, { full: true }).includes("r9.example"), "…and the permalink all of them");
+assert.strictEqual(rowOf(room).name, "LFO", "the row names the room too");
+const pictured = ev(30312, [["room", "R"], ["image", "https://x/room.jpg"]]);
+assert(card(pictured).includes('class="thumb cover"') && card(pictured, { full: true }).includes('class="embed"'),
+  "a room's image is a thumb in the list and a banner on the permalink");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);

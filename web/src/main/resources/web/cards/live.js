@@ -5,7 +5,8 @@
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
 import {
-  register, registerRow, shell, titleHtml, bodyHtml, personLink, addrHref, extLink, videoEmbed,
+  register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, addrHref, extLink,
+  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, hostOf, oneLine, multiTag,
   tagOf, tagsOf, tagsWhere, clipIf, fmtTs, plural,
 } from "./base.js";
 
@@ -57,14 +58,29 @@ function clipCard(ev, opts) {
   ]);
 }
 
+/**
+ * The NIP-53 statuses a pill has a tone for: live events, conferences (planned/live/ended) and
+ * rooms (open/private/closed). Any other word is still shown, in the neutral pill; a stranger's
+ * value never becomes a class name.
+ */
+const STATUS_TONE = { live: "live", open: "open", closed: "closed", ended: "closed", private: "private" };
+const statusPill = (status, lead = false) =>
+  `<span class="status-pill${lead ? " lead" : ""}${STATUS_TONE[status] ? ` ${STATUS_TONE[status]}` : ""}">${esc(clip(status, 24))}</span>`;
+
+/** The title with the event's `status` as a pill beside it; with no title, the pill leads its own row. */
+function statusTitle(ev, opts) {
+  const status = oneLine(tagOf(ev, "status")).toLowerCase();
+  const title = titleOf(ev);
+  if (!title) return status ? `<div class="pill-row">${statusPill(status, true)}</div>` : "";
+  return `<h2 class="result-title">${esc(clipIf(opts, title, 140))}${status ? ` ${statusPill(status)}` : ""}</h2>`;
+}
+
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
-  const status = (tagOf(ev, "status") || "").toLowerCase();
-  const img = imageOf(ev);
   const full = opts && opts.full;
   const inner =
-    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
-    `${titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}${status ? ` <span class="status-pill ${esc(status)}">${esc(status)}</span>` : ""}</h2>` : ""}` +
+    (full ? coverBanner(imageOf(ev)) : "") +
+    statusTitle(ev, opts) +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300);
   const participants = tagOf(ev, "current_participants");
   return shell(ev, opts, inner, [
@@ -72,6 +88,60 @@ function liveCard(ev, opts) {
     ["recording", extLink(tagOf(ev, "recording"))],
     ["starts", tagOf(ev, "starts") ? esc(fmtTs(tagOf(ev, "starts"))) : null],
     ["watching", participants ? esc(participants) : null],
+  ]);
+}
+
+/**
+ * A 30312 `p`'s role. NIP-53 puts it after the relay hint (`["p", pk, relay, role]`); some
+ * clients write it in the hint's slot (`["p", pk, "owner"]`), taken as a role only when it is a
+ * plain word, since a hint may come without its scheme.
+ */
+const ROLE_WORD = /^[a-z][a-z _-]{0,29}$/i;
+const roleOf = (t) => oneLine(t[3]) || (ROLE_WORD.test(oneLine(t[2])) ? oneLine(t[2]) : "");
+
+/**
+ * The people a room lists, each once, with the first role any of their tags gives. The author
+ * is left to the byline unless the room gives them a role, which only this list can say.
+ */
+function roomPeople(ev) {
+  const roles = new Map();
+  for (const t of tagsOf(ev, "p")) {
+    if (!HEX64.test(t[1] || "")) continue;
+    if (!roles.get(t[1])) roles.set(t[1], roleOf(t));
+  }
+  return [...roles].filter(([pk, role]) => pk !== ev.pubkey || role).map(([pk, role]) => ({ pk, role }));
+}
+const ROOM_PEOPLE = { preview: 3, full: 24 };
+const roomCap = (opts) => (opts && opts.full ? ROOM_PEOPLE.full : ROOM_PEOPLE.preview);
+const ROOM_RELAYS = { preview: 3, full: 24 };
+
+/**
+ * 30312 — a room: a standing place to meet rather than one broadcast. Its name is the `room`
+ * tag (titleOf reads it), and what a reader wants from it is the `service` url that joins it.
+ */
+function roomCard(ev, opts) {
+  const full = opts && opts.full;
+  const img = imageOf(ev);
+  const people = roomPeople(ev);
+  const shown = people.slice(0, roomCap(opts));
+  const person = (p) => personLink(p.pk) + (p.role ? ` <span class="muted-note">${esc(clip(p.role, 30))}</span>` : "");
+  const relays = [...new Set(multiTag(ev, "relays").map((r) => hostOf(oneLine(r))).filter(Boolean))];
+  const relaysShown = relays.slice(0, full ? ROOM_RELAYS.full : ROOM_RELAYS.preview);
+  const andMore = (all, some) => (all.length > some.length ? ` and ${all.length - some.length} more` : "");
+  const inner =
+    (full ? coverBanner(img) : "") +
+    `<div class="result-main"><div class="text">` +
+    statusTitle(ev, opts) +
+    bodyHtml(opts, summaryOf(ev) || ev.content, 300) +
+    chipRow(topicsOf(ev), opts, hashtagHref) +
+    `</div>${full ? "" : coverThumb(img)}</div>`;
+  return shell(ev, opts, inner, [
+    ["join", extLink(tagOf(ev, "service"))],
+    ["people", shown.length ? shown.map(person).join(", ") + andMore(people, shown) : null],
+    ["endpoint", full ? extLink(tagOf(ev, "endpoint")) : null],
+    ["relays", relaysShown.length
+      ? relaysShown.map((r) => `<span class="mono">${esc(clip(r, 60))}</span>`).join(" · ") + andMore(relays, relaysShown)
+      : null],
   ]);
 }
 
@@ -116,8 +186,10 @@ function rsvpCard(ev, opts) {
   ]);
 }
 
-// 30312/30313 are NIP-53's rooms and conference events: the same vocabulary as a live event.
-register([30311, 30312, 30313], liveCard);
+// A 30313 conference event shares a live event's vocabulary; a 30312 room does not.
+register([30311, 30313], liveCard);
+register([30312], roomCard);
+registerNamedPeople([30312], (ev, opts) => roomPeople(ev).slice(0, roomCap(opts)).map((p) => p.pk));
 register([1312], raidCard);
 register([1313], clipCard);
 register([31922, 31923], calendarEventCard);

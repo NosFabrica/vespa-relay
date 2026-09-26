@@ -6,13 +6,10 @@ import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
-  tagOf, tagsOf, tagsWhere, clipIf, chipRow, hashtagHref, uniquePubkeys, plural,
+  tagOf, tagsOf, tagsWhere, multiTag, clipIf, chipRow, hashtagHref, uniquePubkeys, plural,
 } from "./base.js";
 
 // ---- what a git event belongs to ------------------------------------------
-
-/** Every value of every tag with this name; `["clone", <url>, <url>]` and repeats alike. */
-const multiTag = (ev, name) => tagsOf(ev, name).flatMap((t) => t.slice(1)).filter((v) => typeof v === "string" && v);
 
 /**
  * The 30617 address this event belongs to. Matched on the kind prefix, not the first `a`:
