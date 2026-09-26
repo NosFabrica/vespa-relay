@@ -760,8 +760,9 @@ quartz = "a8e8778265"
 # test skipped when it is. #144 carries its own staging A/B above and a mock
 # that reproduces the degrader; the gate is still owed.
 #
-# 1c0bfbd2df = vespa-eventstore claude/github-issue-145-n9y8nw, two commits over
-# bb25c8b15c: the kind-10040 provider pass gets a bounded age
+# faa18dfba1 = vespa-eventstore main @ 2026-09-26, the merge of PR #146 (two
+# commits over bb25c8b15c; its tree is the 1c0bfbd2df this PR first pinned):
+# the kind-10040 provider pass gets a bounded age
 # (NosFabrica/vespa-eventstore#145, #243 here). Until now each process's pass
 # learned only from 10040s written through its own store, so a list the sync
 # mirrored in reached the relay's lenses and Trusted List gate only at the
@@ -782,18 +783,14 @@ quartz = "a8e8778265"
 # expose yet.
 #
 # DIRECTION: bb25c8b15c is a strict ancestor of this.
-#   git merge-base --is-ancestor bb25c8b15c 1c0bfbd2df   # verified
+#   git merge-base --is-ancestor bb25c8b15c faa18dfba1   # verified
 #
-# LEXICOGRAPHIC: '1c0b...' < 'bb25...' ('1' < 'b'), so this sorts BELOW the pin
-# it replaces -- the direction that would lose a conflict. It costs nothing:
-# nothing else in the graph names vespa-eventstore (see the e1ecd7f23e note).
-# The proof stays the resolved graph -- every eventstore line reads 1c0bfbd2df
-# with no `->`.
+# LEXICOGRAPHIC: 'faa1...' > 'bb25...' ('f' > 'b'), so this sorts ABOVE the pin
+# it replaces -- the safe direction, though nothing else in the graph names
+# vespa-eventstore (see the e1ecd7f23e note). The proof stays the resolved
+# graph -- every eventstore line reads faa18dfba1 with no `->`.
 #
-# A BRANCH COMMIT, not yet main: re-pin to the merge commit once the store PR
-# lands, so the pin never names history main does not carry.
-#
-vespaEventStore = "1c0bfbd2df"
+vespaEventStore = "faa18dfba1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
