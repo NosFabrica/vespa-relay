@@ -29,6 +29,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RelayConfigTest {
@@ -226,5 +228,39 @@ class RelayConfigTest {
     fun `expiration sweep interval defaults to an hour`() {
         assertEquals(3_600L, expirationSweepSecondsFromEnv(emptyMap()))
         assertEquals(60L, expirationSweepSecondsFromEnv(mapOf("EXPIRATION_SWEEP_SECONDS" to "60")))
+    }
+
+    @Test
+    fun `HTTP reads are on by default with their caps`() {
+        val reads = assertNotNull(httpReadsFromEnv(emptyMap()) { listOf("https://relay.example") })
+        assertEquals(2, reads.gate.perClient)
+        assertEquals(64, reads.gate.total)
+        assertEquals(30_000L, reads.deadlineMs)
+        assertNull(reads.clientHeader)
+        assertEquals(listOf("https://relay.example/req"), reads.urlsFor("/req"))
+    }
+
+    @Test
+    fun `HTTP reads take their caps from the env and turn off only when told`() {
+        val reads =
+            assertNotNull(
+                httpReadsFromEnv(
+                    mapOf(
+                        "HTTP_READS" to "true",
+                        "HTTP_READS_PER_CLIENT" to "0",
+                        "HTTP_READS_TOTAL" to "not-a-number",
+                        "HTTP_READ_DEADLINE_SECONDS" to "5",
+                        "HTTP_READ_CLIENT_HEADER" to " X-Forwarded-For ",
+                    ),
+                ) { emptyList() },
+            )
+        assertEquals(0, reads.gate.perClient)
+        assertEquals(64, reads.gate.total)
+        assertEquals(5_000L, reads.deadlineMs)
+        assertEquals("X-Forwarded-For", reads.clientHeader)
+
+        assertNull(httpReadsFromEnv(mapOf("HTTP_READS" to "false")) { emptyList() })
+        // A typo must not quietly publish, or quietly withdraw, an endpoint.
+        assertFailsWith<IllegalStateException> { httpReadsFromEnv(mapOf("HTTP_READS" to "flase")) { emptyList() } }
     }
 }

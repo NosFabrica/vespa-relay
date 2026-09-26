@@ -223,6 +223,59 @@ key nobody has scored is an empty answer rather than an error — the quieter
 failure of the two. Until the router learns to declare, peer a gated relay by
 turning the gate off there, or by giving the mirroring key a real lens.
 
+## Reads over HTTP (`POST /req`, `POST /count`)
+
+| var | meaning | default |
+|---|---|---|
+| `HTTP_READS` | serve one REQ or COUNT per HTTP request, beside the websocket. `false`/`0`/`no`/`off` removes both routes; anything else that is not a boolean stops the boot | on |
+| `HTTP_READS_PER_CLIENT` | HTTP reads one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
+| `HTTP_READS_TOTAL` | HTTP reads the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
+| `HTTP_READ_DEADLINE_SECONDS` | how long one read may take, first byte to last | `30` |
+| `HTTP_READ_CLIENT_HEADER` | the header a fronting proxy names the client in, e.g. `X-Forwarded-For`; its **last** entry is used, the one your proxy appended. Unset keys the per-client cap on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
+
+The request body is what follows `"REQ","<subid>",` on the socket: one filter
+object, or an array of them. The answer is the relay's own NIP-01 frames as
+`application/x-ndjson`, one per line, under the subscription id `http`:
+
+```
+$ curl -N --compressed -X POST https://relay.example/req -d '{"kinds":[1],"limit":2,"search":"include:spam"}'
+["EVENT","http",{"id":"…",…}]
+["EVENT","http",{"id":"…",…}]
+["EOSE","http"]
+```
+
+It is the websocket's REQ with the live tail cut off: the same session, limits,
+policies and store answer it, and the response ends at `EOSE` (a COUNT at its
+`COUNT` frame). Lines go out as the store produces them, so a client can act on
+the first event before the last one is found; gzip is applied by the route
+itself and flushed with every batch, so asking for it costs no latency.
+
+**Status.** The status waits for the first frame. A read the relay refuses
+before sending anything is an HTTP error whose body is the one `CLOSED` frame,
+its NIP-01 prefix picking the code: `auth-required:` is `401` (with
+`WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
+`429`, `error:` `500`, anything else `400`; a body that is not filters is `400`,
+one over `MAX_MESSAGE_LENGTH` is `413`, and no frame within the deadline is
+`503`. Once events are flowing the status is `200` and can no longer change, so
+a failure after that is a last `CLOSED` line, a deadline passed mid-answer
+included. **A body that does not end on `EOSE`, `COUNT` or `CLOSED` was cut
+off**, not finished.
+
+**Who reads.** The lens rules are [Reads before AUTH](#reads-before-auth)'s:
+`observer:` or `include:spam` in the filter, or a NIP-98 `Authorization: Nostr …`
+header, whose pubkey then ranks the read exactly as a NIP-42 AUTH would on the
+socket. The token's `u` is `RELAY_HTTP_URL` (or the http form of `RELAY_URL`,
+or of the `.onion` address) plus `/req` or `/count`, its `method` is `POST`, and
+it must carry the body's `payload` hash — a token authorizes one query, once.
+
+**Limits.** The per-connection search gate (`SEARCH_CONCURRENCY_PER_CONNECTION`)
+cannot hold here, because every request is its own connection; the two caps
+above stand in for it. A client that reads slower than the store answers is cut
+off at the websocket's bound (8,192 frames waiting) with a `CLOSED` line.
+Browsers may call it from any origin; the CORS rules are the ones every route on
+this port shares. Behind nginx, `X-Accel-Buffering: no` on the response keeps
+the proxy from holding lines back; another buffering proxy needs the same off.
+
 ## Search: the subject travels with the pointer
 
 | var | meaning | default |
@@ -416,7 +469,7 @@ catch-up are untouched.
 |---|---|---|
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
-| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
+| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP reads](#reads-over-http-post-req-post-count) | derived from `RELAY_URL` |
 
 ## Serving over Tor (a `.onion` endpoint)
 

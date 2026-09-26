@@ -135,6 +135,13 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
+      # POST /req and /count. Behind a proxy, set the client header or every
+      # caller shares one address's cap.
+      HTTP_READS: ${HTTP_READS:-}
+      HTTP_READS_PER_CLIENT: ${HTTP_READS_PER_CLIENT:-}
+      HTTP_READS_TOTAL: ${HTTP_READS_TOTAL:-}
+      HTTP_READ_DEADLINE_SECONDS: ${HTTP_READ_DEADLINE_SECONDS:-}
+      HTTP_READ_CLIENT_HEADER: ${HTTP_READ_CLIENT_HEADER:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The SECOND address the same relay answers at, when the `onion` profile

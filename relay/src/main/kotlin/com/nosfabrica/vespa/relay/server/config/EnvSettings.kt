@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.server.config
 
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.PubKeys
+import com.nosfabrica.vespa.relay.server.HttpReadGate
+import com.nosfabrica.vespa.relay.server.HttpReads
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
@@ -121,6 +123,33 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
  * `SearchGate`. 0 turns the gate off; unparseable is the default, not off.
  */
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
+
+/**
+ * `HTTP_READS` and its caps, or null when the switch is off. [origins] are the addresses a NIP-98
+ * token may name. An unparseable switch stops the boot; unparseable caps are the default.
+ */
+fun httpReadsFromEnv(
+    env: Map<String, String>,
+    origins: () -> List<String>,
+): HttpReads? {
+    val on =
+        when (val raw = env["HTTP_READS"]?.trim()?.lowercase()) {
+            null, "", "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> error("HTTP_READS='$raw' is not a boolean. Use false to turn POST /req and POST /count off.")
+        }
+    if (!on) return null
+    return HttpReads(
+        gate =
+            HttpReadGate(
+                perClient = env.intOr("HTTP_READS_PER_CLIENT", HttpReadGate.DEFAULT_PER_CLIENT)!!.coerceAtLeast(0),
+                total = env.intOr("HTTP_READS_TOTAL", HttpReadGate.DEFAULT_TOTAL)!!.coerceAtLeast(0),
+            ),
+        deadlineMs = env.longOr("HTTP_READ_DEADLINE_SECONDS", HttpReads.DEFAULT_DEADLINE_SECONDS)!!.coerceAtLeast(1) * 1000,
+        origins = origins,
+        clientHeader = env["HTTP_READ_CLIENT_HEADER"]?.trim()?.takeIf { it.isNotEmpty() },
+    )
+}
 
 /** `REJECT_FUTURE_SECONDS`; 0 (the default) disables the check. */
 fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env["REJECT_FUTURE_SECONDS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0

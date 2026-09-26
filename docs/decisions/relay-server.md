@@ -2,7 +2,7 @@
 
 The history behind `relay/.../RelayMain.kt`, the `server/` package (HttpServer,
 NostrRelayServer, the NIP-42 and lens policies, TrustNotice, SearchGate,
-BanListFile, RelayIcon, Nip86Route, RelayWebSocket) and `config/`
+BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpReads, HttpReadGate) and `config/`
 (RelayAddresses, EnvSettings, PubKeys), moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -206,3 +206,39 @@ name reaches compose (an `environment:` mapping, a `ports:` entry, a
 map is short on purpose, because every entry is a claim that setting the
 variable under compose should do nothing, and an exemption for a deleted setting
 is checked for the same reason.
+
+**An HTTP read is a websocket session that ends at EOSE.** `POST /req` builds
+the REQ frame and hands it to `RelayServerBase.serve`, the same entry the
+socket uses, rather than calling the store: every limit, policy, the raw-frame
+path and the pressure sample come with it, and a later quartz change reaches
+both transports at once. The body is re-serialized from parsed JSON before it
+is spliced in, so it can only ever be filters. The answer is the frames
+themselves, one per line, because a client then parses HTTP and the socket
+the same way, and the last line says whether the answer finished (`EOSE`) or
+was cut (`CLOSED`) — a bare array of events cannot tell a dropped connection
+from an empty tail. The status waits for the first frame so a refusal is still
+an HTTP error; after that it cannot change.
+
+**NIP-98 is vouched in beside the session, not written into it.** Quartz
+records an identity only from a NIP-42 AUTH, which needs a challenge round
+trip a single request does not have. `VouchedReaders` holds the verified key
+per connection id for as long as `serveAs` runs, and the two readers of
+identity on the read path — `LensRequiredPolicy` and `ObserverBackend` — ask it
+instead of `authenticatedUsers` alone. The write-side policies read no identity,
+so nothing else needed it. The verifier is its own instance, so the public
+endpoint cannot flood the admin rpc's replay cache, and the token must bind the
+body's hash: it authorizes one query, once.
+
+**The HTTP route gzips its own stream.** Ktor's Compression plugin holds output
+until its deflater buffer fills, which measured as the first line arriving with
+the last one; the route suppresses the plugin for its 200 and sync-flushes a
+`GZIPOutputStream` at each flush point, so a compressed line is a delivered one.
+Flush points are "nothing else waiting", so a store page leaves as one write.
+
+**HTTP reads are capped per address and in all, and refused rather than
+queued.** `SearchGate` holds one ranked read per connection, which HTTP defeats
+by opening a connection per request. A queued request would hold a socket and
+spend its deadline waiting, so the gate answers `429` (the address) or `503`
+(the relay) at once. Behind a proxy every client is the proxy, so the address
+comes from `HTTP_READ_CLIENT_HEADER` when set, its last entry because that is
+the one the proxy wrote.
