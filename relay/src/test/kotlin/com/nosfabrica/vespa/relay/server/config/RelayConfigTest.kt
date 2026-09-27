@@ -29,6 +29,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RelayConfigTest {
@@ -226,5 +228,49 @@ class RelayConfigTest {
     fun `expiration sweep interval defaults to an hour`() {
         assertEquals(3_600L, expirationSweepSecondsFromEnv(emptyMap()))
         assertEquals(60L, expirationSweepSecondsFromEnv(mapOf("EXPIRATION_SWEEP_SECONDS" to "60")))
+    }
+
+    @Test
+    fun `HTTP commands are on by default with their caps`() {
+        val relay = assertNotNull(httpRelayFromEnv(emptyMap()) { listOf("https://relay.example") })
+        assertEquals(2, relay.gate.perClient)
+        assertEquals(64, relay.gate.total)
+        assertEquals(30_000L, relay.deadlineMs)
+        assertNull(relay.clients.header)
+        assertEquals(listOf("https://relay.example"), relay.origins())
+    }
+
+    @Test
+    fun `HTTP commands take their settings from the env and refuse what does not parse`() {
+        val relay =
+            assertNotNull(
+                httpRelayFromEnv(
+                    mapOf(
+                        "HTTP_RELAY" to "true",
+                        "HTTP_RELAY_PER_CLIENT" to "0",
+                        "HTTP_RELAY_DEADLINE_SECONDS" to "5",
+                        "HTTP_RELAY_CLIENT_HEADER" to " X-Forwarded-For ",
+                        "HTTP_RELAY_TRUSTED_PROXIES" to "172.16.0.0/12, 127.0.0.1",
+                    ),
+                ) { emptyList() },
+            )
+        assertEquals(0, relay.gate.perClient)
+        assertEquals(5_000L, relay.deadlineMs)
+        assertEquals("X-Forwarded-For", relay.clients.header)
+        assertEquals(2, relay.clients.trustedProxies.size)
+
+        assertNull(httpRelayFromEnv(mapOf("HTTP_RELAY" to "false")) { emptyList() })
+        val refused =
+            listOf(
+                mapOf("HTTP_RELAY" to "flase"),
+                mapOf("HTTP_RELAY_TOTAL" to "6x"),
+                mapOf("HTTP_RELAY_PER_CLIENT" to "-1"),
+                mapOf("HTTP_RELAY_DEADLINE_SECONDS" to "99999999999999999"),
+                mapOf("HTTP_RELAY_DEADLINE_SECONDS" to "0"),
+                mapOf("HTTP_RELAY_CLIENT_HEADER" to "X-Forwarded-For"),
+                mapOf("HTTP_RELAY_TRUSTED_PROXIES" to "10.0.0.0/8"),
+                mapOf("HTTP_RELAY_CLIENT_HEADER" to "X-Real-IP", "HTTP_RELAY_TRUSTED_PROXIES" to "proxy.internal"),
+            )
+        for (env in refused) assertFailsWith<IllegalStateException>("$env") { httpRelayFromEnv(env) { emptyList() } }
     }
 }

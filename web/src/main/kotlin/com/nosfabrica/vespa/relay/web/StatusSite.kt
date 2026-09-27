@@ -55,6 +55,9 @@ fun Application.installPageDefaults() {
         allowMethod(HttpMethod.Post)
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
+        // NIP-FE's back-off and auth-scheme hints; neither is CORS-safelisted, so a page cannot read them otherwise.
+        exposeHeader(HttpHeaders.RetryAfter)
+        exposeHeader(HttpHeaders.WWWAuthenticate)
     }
 }
 

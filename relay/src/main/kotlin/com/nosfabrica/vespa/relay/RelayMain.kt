@@ -52,6 +52,7 @@ import com.nosfabrica.vespa.relay.server.config.allowPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.denyKindsFromEnv
 import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
+import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
@@ -142,6 +143,18 @@ fun main() {
     val requireReadLens = requireReadLensFromEnv(env)
     if (!requireReadLens) {
         System.err.println("relay: REQUIRE_READ_LENS=false — anonymous reads are answered unranked, over the whole corpus")
+    }
+
+    // The same origin NIP-86 signs against, and each address the relay also answers at. Parsed here,
+    // with the other settings, so a bad value refuses the boot before the schema deploy.
+    val relayHttpUrl = env["RELAY_HTTP_URL"] ?: relayUrlRaw.httpFromWs()
+    val httpRelay = httpRelayFromEnv(env) { listOf(relayHttpUrl) + addresses.alternates().map { it.url.httpFromWs() } }
+    if (httpRelay == null) {
+        env.keys
+            .filter { it.startsWith("HTTP_RELAY_") && !env[it].isNullOrBlank() }
+            .sorted()
+            .takeIf { it.isNotEmpty() }
+            ?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
     }
 
     val searchExpansion = searchExpansionFromEnv(env)
@@ -298,7 +311,7 @@ fun main() {
             Nip86Admin(
                 banStore = it,
                 adminPubkeys = adminPubkeys,
-                relayHttpUrl = env["RELAY_HTTP_URL"] ?: relayUrlRaw.httpFromWs(),
+                relayHttpUrl = relayHttpUrl,
                 // Banning a source also drops what it already published.
                 purge = { filter -> store.delete(filter) },
             )
@@ -378,6 +391,7 @@ fun main() {
         trustExplain = { key -> TrustDocument.explain(store, key) },
         statsJson = statsSnapshot,
         selfIconUrl = ownIconUrl,
+        httpRelay = httpRelay,
     )
 }
 

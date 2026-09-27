@@ -2,7 +2,7 @@
 
 The history behind `relay/.../RelayMain.kt`, the `server/` package (HttpServer,
 NostrRelayServer, the NIP-42 and lens policies, TrustNotice, SearchGate,
-BanListFile, RelayIcon, Nip86Route, RelayWebSocket) and `config/`
+BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpRelayGate) and `config/`
 (RelayAddresses, EnvSettings, PubKeys), moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -206,3 +206,96 @@ name reaches compose (an `environment:` mapping, a `ports:` entry, a
 map is short on purpose, because every entry is a claim that setting the
 variable under compose should do nothing, and an exemption for a deleted setting
 is checked for the same reason.
+
+**An HTTP command is a websocket session that ends at its answer.** The body
+is the client frame itself, and the handler hands it to `RelayServerBase.serve`,
+the same entry the socket uses, rather than calling the store: every limit,
+policy, the raw-frame path and the pressure sample come with it, and a later
+quartz change reaches both transports at once. The frame is parsed once, to
+refuse what HTTP does not carry (AUTH, CLOSE, NEG-*) and to know what ends the
+answer, then run with its text, so the policies that judge the wire text still
+see it. The answer is the frames
+themselves, one per line, because a client then parses HTTP and the socket
+the same way, and the last line says whether the answer finished (`EOSE`) or
+was cut (`CLOSED`) — a bare array of events cannot tell a dropped connection
+from an empty tail. The status waits for the first frame so a refusal is still
+an HTTP error; after that it cannot change.
+
+**NIP-98 signs the session in, after the policy chain votes.** A NIP-42 AUTH
+needs a challenge round trip a single request does not have, so quartz's
+handler proves the key from the `Authorization` header and records it with
+`RelaySession.authenticateByTransport`, which asks every policy's
+`acceptTransportIdentity` first. Everything in this relay's stack has no
+objection by default except `MultiAddressAuthPolicy`, whose quartz parent
+refuses until it opts in: it overrides `authorizeTransport` to accept, and sends
+no post-login notice, since over HTTP a NOTICE would end the answer. The key is
+then in `authenticatedUsers` exactly as after AUTH, which is what
+`LensRequiredPolicy` and `ObserverBackend` read. The token must bind the body's
+hash, so it authorizes one command.
+
+**NIP-98 tokens are not single-use over HTTP.** The admin rpc remembers every
+token it accepts and refuses a second use; the HTTP commands do not. That
+memory is one process's, so behind a load balancer it holds per instance only,
+against NIP-FE's premise that any instance answers any request; and the body's
+hash already limits a captured token to repeating the command it signs, inside
+its 60-second window. What that leaves is re-running a gated read for a minute,
+which is what NIP-98 servers generally accept.
+
+**The HTTP route gzips its own stream.** Ktor's Compression plugin holds output
+until its deflater buffer fills, which measured as the first line arriving with
+the last one; the route suppresses the plugin for its 200 and sync-flushes a
+`GZIPOutputStream` at each flush point, so a compressed line is a delivered one.
+Flush points are "nothing else waiting", so a store page leaves as one write.
+
+**HTTP commands are capped per address and in all, and refused rather than
+queued.** `SearchGate` holds one ranked read per connection, which HTTP defeats
+by opening a connection per request. A queued request would hold a socket and
+spend its deadline waiting, so the gate answers `429` (the address) or `503`
+(the relay) at once. Behind a proxy every client is the proxy, so the address
+comes from `HTTP_RELAY_CLIENT_HEADER`, read only when the socket's peer is one
+of `HTTP_RELAY_TRUSTED_PROXIES`: from anyone else the header is the client's
+own claim, and honouring it let one client take every slot by naming a new
+address per request. Its last entry, across every line of it, because that is
+the one the proxy wrote. The gate runs before NIP-98 is verified, since the
+verifier spends the token and a refused request would otherwise burn it.
+
+**The deadline is checked between frames and never interrupts a write.**
+Cancelling a write mid-way could leave half a line, or with gzip send buffered
+bytes twice (measured: the stream broke with `invalid block type`). A reader
+that has stopped reading is bounded instead by a hard stop five seconds past
+the deadline, which drops the connection rather than finishing it.
+
+**No negentropy over HTTP.** It was served for a while as `/neg`, one NIP-77
+round per request carrying its filter: the responder keeps no state between
+rounds but its sealed snapshot, so nothing needed holding. Removed, as upstream
+NIP-FE (nostr-protocol/nips#2484) removed it: a stateless round rebuilds or
+re-finds that snapshot every round, on a relay that takes writes between them,
+where the websocket builds it once per sync; and a mirror peering over HTTP gains
+nothing the socket does not already give it. Reconciliation stays on the socket.
+
+**The gzip stream is handed on at 64 KB, not only at flushes.** The route
+flushes when no frame is waiting, which in a burst is never; compressed output
+sat in the sink's own buffer and a reader that stopped reading left the whole
+answer in the heap (measured: 12 MB accepted with nothing read). Draining
+past the threshold puts the gzip path under the socket's backpressure like the
+plain one.
+
+**The HTTP commands run on quartz's handler.** They began here, standing in for
+what quartz did not expose: frames recognised by their text, a NIP-98 key riding
+beside the session in a side table, a body re-serialized into a frame string.
+The engine half landed upstream (amethyst #4212, its review fixes #4214): a typed
+`SessionSink`, `authenticateByTransport`, and the transport-neutral
+`HttpRelayHandler`, which this relay now calls. `HttpRelayRoutes` keeps only the
+host's part: the bounded body read, the gate, the headers and the gzip sink.
+
+**One URL, whole frames.** NIP-FE began here as three paths (`/req`, `/count`,
+`/event`) taking the command's arguments, with the subscription id stripped from
+every answer frame. The published text (NostrHub, kind 30817,
+`d=nip-fe-nostr-over-http`) dropped all of it: a request is a POST to the relay's
+URL carrying the frame a client would send on the socket, id and all, and the
+answer is the socket's frames unchanged. A client reuses its NIP-01 parser as it
+is, the relay feeds the body to its socket handler, and nothing is rewritten on
+the way out. NIP-86 already answered POSTs to `/`, so the two share the route,
+told apart by NIP-86's `application/nostr+json+rpc`; with the commands off, every
+POST is the rpc's, as before.
+

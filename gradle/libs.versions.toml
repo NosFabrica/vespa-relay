@@ -31,89 +31,51 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# a8e8778265 = amethyst main @ 2026-09-10 (PR #4069). MOVED BECAUSE THE STORE
-# ASKED, the same way cecc3287b2 and b10be95a6e were: the store pinned below
-# names this exact string in its own libs.versions.toml, and `force(libs.quartz)`
-# means THIS line — not the store's — decides which jar every module compiles
-# and runs against. Left at cecc3287b2 while only the store pin moved, the
-# ELEVEN kinds this range makes searchable would still not parse as
-# `SearchableEvent`, `SearchExtractors` would keep deriving nothing from them,
-# and the whole reason for taking the store bump would silently not exist.
+# fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
+# quartz/ moves in nipFERelayOverHttp, RelaySession, NIP-49 and a new Bech32Transcription, the
+# rest is app, geode and translations). MOVED FOR THIS RELAY: NIP-FE was simplified to the text at
+# https://nostrhub.io (kind 30817, d=nip-fe-nostr-over-http), and quartz's handler follows it:
 #
-# The range is 220 commits over 202 files, and unlike the last two it is
-# UPSTREAM'S OWN work rather than an ask from this side. The protocol surface
-# this relay serves does not move: nothing under `nip01Core/relay/server`
-# (RelayServerBase, RelaySession, SessionBackend, IngestQueue, the policies),
-# nothing under `nip01Core/relay/client` (the negentropy accessories the router
-# drives), and none of `Filter`, `SearchQuery`, `SearchFieldExtractor`,
-# `IndexableFields`, `IEventStore` — byte-identical, all of them. Four files in
-# `nip01Core/` and `nip50Search/` move at all, and one of those four is a new
-# file (`EventSearchMatcher`, an in-memory NIP-50 matcher for a client with no
-# index — nothing here calls it; this relay's search is the engine's). What the
-# range does carry for this repo:
+#   ONE ENDPOINT, WHOLE FRAMES. A request is a POST to the relay's URL whose body is one client
+#     frame as sent on the socket (`["REQ","q1",{...}]`, COUNT or EVENT), and the answer is the
+#     socket's own frames, subscription id included. /req, /count, /event and the id stripping are
+#     gone; HttpRelayRequest has no command, HttpRelayCommand no paths.
+#   ONE PARSE. The handler parses the frame once (fromJsonToCommand) to refuse what HTTP does not
+#     carry and to know what ends the answer, and hands text and command to the new
+#     RelaySession.receive(text, parsed), which still runs acceptMessage on the text.
+#   REFUSALS BEFORE A COMMAND RUNS ARE A NOTICE LINE (400/413/429/503); a refused NIP-98 token is
+#     the command's own refusal (CLOSED for REQ/COUNT, OK false for EVENT), 401.
+#   NIP-86 SHARES THE URL, told apart by `Content-Type: application/nostr+json+rpc`; this relay's
+#     relayPosts does the split, geode's KtorRelay the same.
+#   The client side (HttpRelayClient, HttpRelayTransport, OkHttpRelayTransport) is new and unused here.
 #
-#   THE SEARCHABLE SET MOVES, for the first time in three bumps: 133 -> 144 kind
-#     values (130 -> 141 classes). The eleven are the citation trio (31/32/33),
-#     the wiki merge request (818), the publication pair (30040/30041), the
-#     library family (30045/30142/32176) and the two ratings kinds
-#     (31987/34259). `SearchFieldExtractor` gained NO branch for any of them, so
-#     all eleven fall through its `is SearchableEvent ->` catch-all with the
-#     whole `indexableContent()` in the BODY role — the same 236x title discount
-#     the previous two bumps FIXED for nineteen other kinds, and it takes the
-#     same fix, one branch each, upstream. A RANKING gap, on kinds this corpus
-#     has almost none of; the store's own README footnote carries the list and
-#     the second half of it (a field a kind never joins into
-#     `indexableContent()` is not indexed at all — a citation's `author` and
-#     `doi`, a relay review's `relay` url, a learning resource's schema.org
-#     facets).
+# THE STORE MOVED WITH IT (vespa-eventstore #153, 9522ee0768 below), for the graph's sake only:
+# neither its store nor engine jar references a class in any package the range touches (scanned),
+# so e62745df71 ran on this jar too, with the arrow below.
 #
-#   SearchableEvent grew a READ path: `forEachIndexableField(visitor)` hands the
-#     same fields over one at a time without building the joined string, for
-#     Amethyst's per-keystroke scan of its whole cache. Both it and
-#     `indexableSeparator()` are DEFAULTED, every override in the range
-#     re-expresses a join that already existed (upstream's
-#     `IndexableContentGoldenTest` is what pins that), and the store only ever
-#     calls the WRITE path. So: nothing to implement here, and no column moves.
+# DIRECTION: a53cafd577 is a strict ancestor of this.
+#   git merge-base --is-ancestor a53cafd577 fcd76d2075   # verified
 #
-#   FilterMatcher was rewritten to allocate NOTHING — the per-key `toSet()`, the
-#     `tagsAll` tag walk and the stdlib `any` iterators are gone, replaced by
-#     in-place loops over the same data; upstream's
-#     `FilterMatcherEquivalenceTest` pins the semantics. Free here, and not
-#     nothing: `Filter.match(event)` is the router's per-event live-tail
-#     predicate (VisitPool's three arms, SyncEngine's stream fan-out,
-#     RetractionAudit), so this is allocation taken off the hottest loop the
-#     sync side runs.
-#
-#   MetadataEvent overrides the new read path and declares its `" "` separator.
-#     Write path unchanged, so kind 0 indexes exactly what it did.
-#
-#   And outside those two packages, EventFactory + KindNames wire FIFTEEN new
-#     classes. Eleven are the searchable ones above; the other four are wired
-#     but not searchable — external reaction (17), wiki merge acceptance (819),
-#     wiki redirect (30819) and the DVM heartbeat (11998). KindNames names all
-#     fifteen, which is what the `/stats.json` kind rollup prints instead of a
-#     bare number.
-#
-# NO RE-FEED for anything already indexed, unlike the two bumps before it: no
-# `indexableContent()` body moved in the range, so every kind already stored
-# derives the same words onto the same columns. What the eleven new kinds need
-# is a RECALL repair rather than a ranking backfill, and it is the store pin
-# below that carries the procedure.
-#
-# DIRECTION: cecc3287b2 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates).
-#   git merge-base --is-ancestor cecc3287b2 a8e8778265   # verified
-#
-# LEXICOGRAPHIC: 'a8e8…' < 'cecc…' ('a' < 'c'), so this sorts BELOW the pin it
-# replaces — the direction that LOSES a conflict, the opposite of the last bump.
-# It costs nothing, and for once not because no conflict is possible: quartz is
-# the dependency two parts of the graph DO both name, and every module's
-# `resolutionStrategy { force(libs.quartz) }` is what settles it, not ordering.
-# The proof stays the resolved graph — every quartz line reads a8e8778265 with
-# no `->` left anywhere, in every module that names it (all six: `:web` takes
-# quartz without the store):
+# LEXICOGRAPHIC: 'fcd7…' > 'a53c…' ('f' > 'a'), and `force(libs.quartz)` settles it regardless.
+# NO ARROW: with the store on 9522ee0768 every quartz line in all six modules reads fcd76d2075. For
+# one commit (e6a71f2) the store still named a53cafd577 and five modules carried
+# `quartz:a53cafd577 -> fcd76d2075`, an arrow TO the pin, which #153 cleared.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "a8e8778265"
+#
+# Prev a53cafd577 (2026-09-27, #4214: NIP-FE's review fixes; the relay's HTTP commands moved onto
+# quartz's HttpRelayHandler, NIP-98 signing the session in through authenticateByTransport and the
+# policy chain, MultiAddressAuthPolicy overriding authorizeTransport).
+# Prev ec16988e3a (2026-09-27, #4222: a stale replaceable is `replaced:` / OK
+# false again, which this relay's store had never left; #4215 re-derives three
+# kinds' search fields, see docs/migrations.md).
+# Prev 28bf170f92 (2026-09-26, PR #4212: NIP-FE's engine half, SessionSink and
+# receive(Command); 110 event classes renamed to their NIP names, which moved the
+# store pin with it; the engine acks `duplicate:` with OK true; 142 -> 150
+# searchable kinds; jackson-module-kotlin, and with it kotlin-reflect, left the
+# classpath).
+# Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
+# note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
+quartz = "fcd76d2075"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -790,7 +752,102 @@ quartz = "a8e8778265"
 # vespa-eventstore (see the e1ecd7f23e note). The proof stays the resolved
 # graph -- every eventstore line reads faa18dfba1 with no `->`.
 #
-vespaEventStore = "faa18dfba1"
+# ebb09fa0d4 = vespa-eventstore PR #150's head (branch claude/quartz-28bf170f92),
+# pinned BEFORE its merge because the quartz pin above cannot move without it and
+# JitPack builds a branch commit as readily as a merged one; move this to #150's
+# merge commit when it lands (same tree). The whole change is quartz 28bf170f92:
+# the five renamed classes the store names, kotlin-reflect declared by the two
+# tests that read members by reflection, and the pin note that records the
+# searchable-set growth (142 -> 150, recall forward-only until
+# reindexFullTextSearch) and the OK-true duplicate. No schema change, nothing
+# re-derived; deploying it is a restart of both processes.
+#
+# GATED: the store's `./gradlew build` (696 tests) and its integration suite
+# against a real Vespa (21 tests: 20 passed, StagingCorpusIT skipped by design,
+# 0 failures, VespaParityIT / RankRegressionIT / ObserverGateIT / OrphanSweepIT
+# among them), and this relay's full build + archTest run against that tree
+# (1249 tests, 0 failures) before either pin moved.
+#
+# DIRECTION: faa18dfba1 is a strict ancestor of this.
+#   git merge-base --is-ancestor faa18dfba1 ebb09fa0d4   # verified
+#
+# LEXICOGRAPHIC: 'ebb0...' < 'faa1...' ('e' < 'f'), so this sorts BELOW the pin it
+# replaces -- the losing direction, and harmless here: nothing else in the graph
+# names vespa-eventstore. The proof stays the resolved graph -- every eventstore
+# line reads ebb09fa0d4 with no `->`.
+#
+# 748dc5b8c6 = vespa-eventstore main @ 2026-09-27, the merge of PR #151. It
+# SUPERSEDES #150, the branch the previous pin was: #151 did the same quartz
+# 28bf170f92 bump on its own branch, took two audit rounds, then moved on to
+# ec16988e3a, and #150 never merged. So the previous pin is not an ancestor;
+# its base is.
+#   git merge-base --is-ancestor faa18dfba1 748dc5b8c6   # verified (#150's base)
+#
+# WHAT THIS RELAY GETS over ebb09fa0d4:
+#
+#   THE SAME RENAMES and the same kotlin-reflect for the two reflective tests,
+#     written independently; no store API this relay calls changes shape.
+#   A STALE REPLACEABLE STAYS `replaced:` / OK false. The branch had briefly
+#     followed quartz 28bf170f92 into SUPERSEDED (OK true), then went back
+#     (f7eeeaf) when quartz #4222 did; the net answer is what ebb09fa0d4 gave.
+#   MEDIA FOLLOW PACKS EXPAND (661f0ab): a reader's own kind 39092 now splices its
+#     members into a search the way a 30000 or 39089 does, under the same
+#     DECLARATIONS gate; a stranger's stays an ordinary hit. No stored data moves.
+#   QUARTZ #4215's three re-derived kinds (the quartz note above): the store's
+#     SearchExtractors takes them from the jar, so the re-feed is this relay's to
+#     run. event.sd and services.xml are untouched, so AUTO_DEPLOY has a no-op
+#     and nothing restarts for config.
+#
+# DEPLOYMENT: a restart of both processes, then one boot with
+# REINDEX_FTS_ON_START=true (docs/migrations.md).
+#
+# GATED HERE: this relay's full build + archTest on both new pins (1247 tests,
+# 0 failures; RelayProtocolTest's declaration-kind set gains 39092, the one
+# behaviour change a test here can see), and the resolved graph of all six
+# modules: every quartz line ec16988e3a, every eventstore line 748dc5b8c6, zero
+# arrows.
+# And the store at 748dc5b8c6 itself: `./gradlew build` (719 tests, 1 skipped,
+# 0 failures) and its integration suite against a real Vespa in Docker
+# (`TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration`:
+# 21 tests, 20 passed, StagingCorpusIT skipped by design, 0 failures, VespaParityIT
+# / RankRegressionIT / ObserverGateIT / OrphanSweepIT among them), read off the
+# result XML.
+#
+# LEXICOGRAPHIC: '748d…' < 'ebb0…' ('7' < 'e'), so this sorts BELOW the pin it
+# replaces -- the losing direction, and harmless here: nothing else in the graph
+# names vespa-eventstore. The proof stays the resolved graph -- every eventstore
+# line reads 748dc5b8c6 with no `->`.
+#
+# e62745df71 = vespa-eventstore main @ 2026-09-27, the merge of PR #152 (one commit over
+# 748dc5b8c6, same tree as its head df62335): the store's own quartz pin moves ec16988e3a ->
+# a53cafd577 to match the one above, and nothing else. No store code, no schema, nothing
+# re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor 748dc5b8c6 e62745df71   # verified
+#
+# GATED: the store at #152's head -- `./gradlew build` (719 tests, 1 skipped, 0 failures)
+# and its integration suite against a real Vespa in Docker (21 tests, 20 passed,
+# StagingCorpusIT skipped by design, 0 failures) -- and this relay's full build + archTest
+# on both pins with every quartz line a53cafd577 and every eventstore line e62745df71, zero
+# arrows.
+#
+# LEXICOGRAPHIC: 'e627…' > '748d…' ('e' > '7'), so this sorts ABOVE the pin it
+# replaces -- the safe direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+# 9522ee0768 = vespa-eventstore main @ 2026-09-27, the merge of PR #153 (one commit over
+# e62745df71, same tree as its head 48f537b): the store's own quartz pin moves a53cafd577 ->
+# fcd76d2075 to match the one above, and its pin note gets back three history lines #152 dropped.
+# No store code, no schema, nothing re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor e62745df71 9522ee0768   # verified
+#
+# GATED: the store at #153's head -- `./gradlew build` (719 tests, 1 skipped, 0 failures) and its
+# integration suite against a real Vespa in Docker (21 tests, 20 passed, StagingCorpusIT skipped by
+# design, 0 failures) -- and this relay's full build + archTest on both pins, every quartz line
+# fcd76d2075 and every eventstore line 9522ee0768, zero arrows.
+#
+# LEXICOGRAPHIC: '9522…' < 'e627…' ('9' < 'e'), so this sorts BELOW the pin it replaces -- the
+# losing direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+vespaEventStore = "9522ee0768"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

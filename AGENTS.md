@@ -169,7 +169,8 @@ relay/…/relay/
                               serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
-                              (RELAY_ICON), RelayWebSocket, Nip86Route, BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
+                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route,
+                              BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
                               StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
@@ -180,7 +181,8 @@ web/…/relay/web/
   resources/stats.html        the one status page; web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
-relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off staging
+relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off staging; nipfe-e2e.mjs
+                              drives NIP-FE against a running relay, every answer checked against its socket
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 ```
 

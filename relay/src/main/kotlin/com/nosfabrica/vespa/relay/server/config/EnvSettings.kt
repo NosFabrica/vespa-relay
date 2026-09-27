@@ -22,6 +22,10 @@ package com.nosfabrica.vespa.relay.server.config
 
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.PubKeys
+import com.nosfabrica.vespa.relay.server.Cidr
+import com.nosfabrica.vespa.relay.server.ClientAddresses
+import com.nosfabrica.vespa.relay.server.HttpRelay
+import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
@@ -121,6 +125,58 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
  * `SearchGate`. 0 turns the gate off; unparseable is the default, not off.
  */
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
+
+/**
+ * `HTTP_RELAY` and its settings, or null when the switch is off. [origins] are the addresses a NIP-98
+ * token may name. Anything set that does not parse stops the boot: each of these is a limit.
+ */
+fun httpRelayFromEnv(
+    env: Map<String, String>,
+    origins: () -> List<String>,
+): HttpRelay? {
+    val on =
+        when (val raw = env["HTTP_RELAY"]?.trim()?.lowercase()) {
+            null, "", "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> error("HTTP_RELAY='$raw' is not a boolean. Use false to turn NIP-FE's commands over HTTP off.")
+        }
+    if (!on) return null
+    val header = env["HTTP_RELAY_CLIENT_HEADER"]?.trim()?.takeIf { it.isNotEmpty() }
+    val proxies =
+        env["HTTP_RELAY_TRUSTED_PROXIES"]
+            ?.split(',', ' ', '\n')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.map { Cidr.parse(it) ?: error("HTTP_RELAY_TRUSTED_PROXIES: '$it' is not an address or block (10.0.0.0/8, ::1/128).") }
+            .orEmpty()
+    // Either alone is a header nobody may set, or trust in a header nobody names.
+    if ((header == null) != proxies.isEmpty()) {
+        error("HTTP_RELAY_CLIENT_HEADER and HTTP_RELAY_TRUSTED_PROXIES go together: the header is read only from those proxies.")
+    }
+    return HttpRelay(
+        gate =
+            HttpRelayGate(
+                perClient = env.strictInt("HTTP_RELAY_PER_CLIENT", HttpRelayGate.DEFAULT_PER_CLIENT, 0..Int.MAX_VALUE),
+                total = env.strictInt("HTTP_RELAY_TOTAL", HttpRelayGate.DEFAULT_TOTAL, 0..Int.MAX_VALUE),
+            ),
+        deadlineMs = env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt(), 1..MAX_DEADLINE_SECONDS) * 1000L,
+        origins = origins,
+        clients = ClientAddresses(header, proxies),
+    )
+}
+
+/** An hour: an answer still running past that is a stuck one, not a slow one. */
+private const val MAX_DEADLINE_SECONDS = 3_600
+
+/** [key] as an int within [range], [default] when unset; anything else stops the boot. */
+private fun Map<String, String>.strictInt(
+    key: String,
+    default: Int,
+    range: IntRange,
+): Int {
+    val raw = this[key]?.trim()?.takeIf { it.isNotEmpty() } ?: return default
+    return raw.toIntOrNull()?.takeIf { it in range } ?: error("$key='$raw' is not a whole number in ${range.first}..${range.last}.")
+}
 
 /** `REJECT_FUTURE_SECONDS`; 0 (the default) disables the check. */
 fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env["REJECT_FUTURE_SECONDS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0

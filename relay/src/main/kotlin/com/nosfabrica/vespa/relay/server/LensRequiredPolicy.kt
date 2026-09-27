@@ -36,7 +36,7 @@ import com.vitorpamplona.quartz.utils.Hex
 /**
  * Every read says whose eyes it is read through: an unauthenticated REQ or COUNT is answered only
  * if every filter names a lens (`observer:<64-hex>`) or waives one (`include:spam`), because a
- * subscription's filters are ORed. NIP-77 passes through the same gate.
+ * subscription's filters are ORed. NIP-77 passes through the same gate. A NIP-98 read counts as signed in.
  */
 class LensRequiredPolicy : PassThroughPolicy() {
     /** This connection's context; `@Volatile` because the REQ can land on another coroutine. */
@@ -72,7 +72,7 @@ class LensRequiredPolicy : PassThroughPolicy() {
         internal val NO_LENS =
             AUTH_REQUIRED.format(
                 "this relay answers through a web of trust and has no house observer to lend you. " +
-                    "Sign in (NIP-42), or name whose trust ranks this read with the NIP-50 `observer:<64-hex pubkey>` " +
+                    "Sign in (NIP-42 on the socket, NIP-98 over HTTP), or name whose trust ranks this read with the NIP-50 `observer:<64-hex pubkey>` " +
                     "token, or ask for the whole corpus unranked with `include:spam`.",
             )
     }

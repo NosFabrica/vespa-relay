@@ -135,6 +135,14 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
+      # NIP-FE: a client frame POSTed to the relay's URL. Behind a proxy, set the client
+      # header and the proxy's addresses, or every caller shares one cap.
+      HTTP_RELAY: ${HTTP_RELAY:-}
+      HTTP_RELAY_PER_CLIENT: ${HTTP_RELAY_PER_CLIENT:-}
+      HTTP_RELAY_TOTAL: ${HTTP_RELAY_TOTAL:-}
+      HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
+      HTTP_RELAY_CLIENT_HEADER: ${HTTP_RELAY_CLIENT_HEADER:-}
+      HTTP_RELAY_TRUSTED_PROXIES: ${HTTP_RELAY_TRUSTED_PROXIES:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The SECOND address the same relay answers at, when the `onion` profile
