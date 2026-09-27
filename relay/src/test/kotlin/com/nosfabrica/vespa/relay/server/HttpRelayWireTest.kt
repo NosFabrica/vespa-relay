@@ -39,14 +39,10 @@ class HttpRelayWireTest {
         assertEquals("""["REQ","http",{"kinds":[1]}]""", frame(HttpCommand.REQ, """{"kinds":[1]}"""))
         assertEquals("""["COUNT","http",{"kinds":[1]},{"ids":[]}]""", frame(HttpCommand.COUNT, """[{"kinds":[1]},{"ids":[]}]"""))
         assertEquals("""["EVENT",{"id":"x"}]""", frame(HttpCommand.EVENT, """{"id":"x"}"""))
-        assertEquals("""["NEG-OPEN","http",{"kinds":[1]},"61"]""", frame(HttpCommand.NEG, """[{"kinds":[1]},"61"]"""))
         for (bad in listOf("", "[]", "[1]", """[{"kinds":[1]},"x"]""", "null", "\"REQ\"", "{", """{"a":1} trailing""")) {
             assertNull(frame(HttpCommand.REQ, bad), "'$bad' is not filters")
         }
         for (bad in listOf("[]", """[{"id":"x"}]""", "1")) assertNull(frame(HttpCommand.EVENT, bad), "'$bad' is not one event")
-        for (bad in listOf("""{"kinds":[1]}""", """[{"kinds":[1]}]""", """["61",{"kinds":[1]}]""", """[{"kinds":[1]},61]""", """[{},"61","x"]""")) {
-            assertNull(frame(HttpCommand.NEG, bad), "'$bad' is not one round")
-        }
     }
 
     @Test
@@ -55,7 +51,6 @@ class HttpRelayWireTest {
         assertFalse(HttpCommand.REQ.ends("""["EVENT",{}]"""))
         assertTrue(HttpCommand.EVENT.ends("""["OK","x",true,""]"""))
         assertFalse(HttpCommand.EVENT.ends("""["EOSE"]"""))
-        assertTrue(HttpCommand.NEG.ends("""["NEG-ERR","blocked: too many"]"""))
         assertTrue(HttpCommand.COUNT.ends("""["NOTICE","too big"]"""))
     }
 
@@ -65,7 +60,6 @@ class HttpRelayWireTest {
         assertEquals(HttpStatusCode.OK, statusOf("""["OK","x",true,"duplicate: have it"]"""))
         assertEquals(HttpStatusCode.BadRequest, statusOf("""["OK","x",false,"invalid: bad signature"]"""))
         assertEquals(HttpStatusCode.Forbidden, statusOf("""["OK","x",false,"blocked: banned"]"""))
-        assertEquals(HttpStatusCode.Forbidden, statusOf("""["NEG-ERR","blocked: too many query results"]"""))
         assertEquals(HttpStatusCode.Unauthorized, statusOf("""["CLOSED","auth-required: sign"]"""))
         assertEquals(HttpStatusCode.BadRequest, statusOf("""["NOTICE","error: could not parse message"]"""))
     }
@@ -87,7 +81,6 @@ class HttpRelayWireTest {
         assertEquals("""["EOSE"]""", withoutSubId("""["EOSE","http"]"""))
         assertEquals("""["CLOSED","error: x"]""", withoutSubId("""["CLOSED","http","error: x"]"""))
         assertEquals("""["COUNT",{"count":2}]""", withoutSubId("""["COUNT","http",{"count":2}]"""))
-        assertEquals("""["NEG-MSG","61"]""", withoutSubId("""["NEG-MSG","http","61"]"""))
         // Frames without a subscription id pass untouched, even when their text happens to read "http".
         assertEquals("""["NOTICE","http"]""", withoutSubId("""["NOTICE","http"]"""))
         assertEquals("""["OK","abc",true,""]""", withoutSubId("""["OK","abc",true,""]"""))

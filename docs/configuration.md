@@ -223,11 +223,11 @@ key nobody has scored is an empty answer rather than an error — the quieter
 failure of the two. Until the router learns to declare, peer a gated relay by
 turning the gate off there, or by giving the mirroring key a real lens.
 
-## Commands over HTTP (`POST /req`, `/count`, `/event`, `/neg`)
+## Commands over HTTP (`POST /req`, `/count`, `/event`)
 
 | var | meaning | default |
 |---|---|---|
-| `HTTP_RELAY` | answer one client command per HTTP request, beside the websocket. `false`/`0`/`no`/`off` removes all four routes; anything else that is not a boolean stops the boot | on |
+| `HTTP_RELAY` | answer one client command per HTTP request, beside the websocket. `false`/`0`/`no`/`off` removes all three routes; anything else that is not a boolean stops the boot | on |
 | `HTTP_RELAY_PER_CLIENT` | commands one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
 | `HTTP_RELAY_TOTAL` | commands the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
 | `HTTP_RELAY_DEADLINE_SECONDS` | how long one answer may run, first byte to last, `1`–`3600` | `30` |
@@ -241,7 +241,6 @@ subscription id on the socket (a lone object where the command takes one):
 | `/req` | a filter, or an array of filters | `EOSE` (a REQ with its live tail cut off) |
 | `/count` | a filter, or an array of filters | `COUNT` |
 | `/event` | one signed event | `OK` |
-| `/neg` | `[filter, "<hex NIP-77 message>"]` — one reconciliation round | `NEG-MSG` |
 
 The answer is the relay's own frames as `application/x-ndjson`, one per line,
 without a subscription id (there is only ever one per request):
@@ -259,17 +258,13 @@ out as the store produces them, so a client can act on the first event before
 the last one is found; gzip is applied by the route itself and flushed with
 every batch, so asking for it costs no latency.
 
-**Negentropy is stateless, and an extension.** `/neg` is not in NIP-FE; this
-relay (like Amethyst's quartz) serves it beside the four the NIP names. NIP-77's responder keeps nothing between rounds but
-the snapshot it reconciles against, and the relay already caches that snapshot
-per filter, so each `/neg` round carries its filter and the current message and
-the relay answers the next message. There is no `NEG-CLOSE` and no session to
-lose: rounds may land on any instance behind a load balancer. A round is gated
-exactly as a `NEG-OPEN` is, lens and `NEG_MAX_SYNC_EVENTS` cap included.
+**No negentropy over HTTP.** NIP-77 reconciliation stays on the websocket,
+where a session keeps its snapshot across rounds; see
+[the decision](decisions/relay-server.md).
 
 **Status.** The status waits for the first frame. An answer the relay refuses
 before sending anything is an HTTP error whose body is that one frame — a
-`CLOSED`, a `NEG-ERR`, an `OK` with `false`, or a `NOTICE` for a command that
+`CLOSED`, an `OK` with `false`, or a `NOTICE` for a command that
 never ran — its NIP-01 prefix picking the code: `auth-required:` is `401` (with
 `WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
 `429`, `error:` `500`, anything else `400`. An `OK` for a `duplicate:` is `200`:
@@ -496,7 +491,7 @@ catch-up are untouched.
 |---|---|---|
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
-| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-post-req-count-event-neg) | derived from `RELAY_URL` |
+| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-post-req-count-event) | derived from `RELAY_URL` |
 
 ## Serving over Tor (a `.onion` endpoint)
 

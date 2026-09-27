@@ -97,7 +97,7 @@ fun serveRelay(
     onInfoChanged: (Nip11RelayInformation) -> Unit = {},
     // The icon this relay serves itself, compared against the doc's icon to tell "no override".
     selfIconUrl: String? = null,
-    // When set, POST /req, /count, /event and /neg answer one command without a socket.
+    // When set, POST /req, /count and /event answer one command without a socket.
     httpRelay: HttpRelay? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {

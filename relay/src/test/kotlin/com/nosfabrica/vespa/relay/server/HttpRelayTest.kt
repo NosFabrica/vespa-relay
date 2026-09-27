@@ -25,8 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
-import com.vitorpamplona.negentropy.Negentropy
-import com.vitorpamplona.negentropy.storage.StorageVector
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.toHexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -50,7 +48,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/** The four HTTP commands over a real Netty server: one command, the relay's own frames, nothing left open. */
+/** The three HTTP commands over a real Netty server: one command, the relay's own frames, nothing left open. */
 class HttpRelayTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val origin = "https://relay.example"
@@ -450,54 +448,6 @@ class HttpRelayTest {
             assertTrue(ok.startsWith("""["OK","${forged.id}",false,"invalid:"""), ok)
             for (bad in listOf("[]", """[${real.toJson()}]""", "\"x\"")) {
                 assertEquals(400, post("$base/event", bad).status, "'$bad' is not one event")
-            }
-        }
-    }
-
-    @Test
-    fun `negentropy over HTTP reconciles in stateless rounds`() {
-        val shared = (1..40).map { alice.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "shared $it") }
-        val onlyRelay = (1..15).map { alice.sign<Event>(1_700_001_000L + it, 1, emptyArray(), "relay $it") }
-        val onlyClient = (1..10).map { alice.sign<Event>(1_700_002_000L + it, 1, emptyArray(), "client $it") }
-        publish(*(shared + onlyRelay).toTypedArray())
-
-        val mine = StorageVector().apply { (shared + onlyClient).forEach { insert(it.createdAt, it.id) } }.also { it.seal() }
-        val negentropy = Negentropy(mine, 0)
-        var message = negentropy.initiate().toHexKey()
-        val have = mutableSetOf<String>()
-        val need = mutableSetOf<String>()
-        val filter = """{"kinds":[1],"search":"include:spam"}"""
-        serving { base ->
-            var rounds = 0
-            while (true) {
-                check(++rounds < 20) { "no convergence" }
-                val response = post("$base/neg", """[$filter,"$message"]""")
-                assertEquals(200, response.status, response.body)
-                val frame = response.lines.single()
-                assertTrue(frame.startsWith("""["NEG-MSG",""""), frame)
-                val reply = frame.substringAfter("""["NEG-MSG","""").substringBefore('"')
-                val result = negentropy.reconcile(reply.hexToByteArray())
-                have += result.sendIds.map { it.toHexString() }
-                need += result.needIds.map { it.toHexString() }
-                message = result.msg?.toHexKey() ?: break
-            }
-        }
-        assertEquals(onlyClient.map { it.id }.toSet(), have, "what the client holds and the relay lacks")
-        assertEquals(onlyRelay.map { it.id }.toSet(), need, "what the relay holds and the client lacks")
-    }
-
-    @Test
-    fun `negentropy over HTTP is lens-gated like a REQ and refuses a malformed round`() {
-        serving { base ->
-            val message = Negentropy(StorageVector().also { it.seal() }, 0).initiate().toHexKey()
-            val unlensed = post("$base/neg", """[{"kinds":[1]},"$message"]""")
-            assertEquals(401, unlensed.status, unlensed.body)
-            assertTrue(unlensed.lines.single().startsWith("""["NEG-ERR","auth-required:"""), unlensed.body)
-
-            val garbage = post("$base/neg", """[{"kinds":[1],"search":"include:spam"},"zz"]""")
-            assertEquals(400, garbage.status, garbage.body)
-            for (bad in listOf("""{"kinds":[1]}""", """[{"kinds":[1]}]""", """["$message",{"kinds":[1]}]""")) {
-                assertEquals(400, post("$base/neg", bad).status, "'$bad' is not a round")
             }
         }
     }

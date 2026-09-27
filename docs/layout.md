@@ -232,7 +232,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
-    HttpRelayRoutes.kt  POST /req, /count, /event, /neg: one command per request,
+    HttpRelayRoutes.kt  POST /req, /count, /event: one command per request,
                         run on its own quartz session so every limit and
                         policy the socket has applies, streamed as NDJSON
                         frames and cut at the command's answer. A NIP-98

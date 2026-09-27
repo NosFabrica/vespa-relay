@@ -41,9 +41,6 @@ internal enum class HttpCommand(
     REQ("/req", setOf("EOSE", "CLOSED", "NOTICE")),
     COUNT("/count", setOf("COUNT", "CLOSED", "NOTICE")),
     EVENT("/event", setOf("OK", "NOTICE")),
-
-    /** One NIP-77 round: `[filter, message]`. The server holds no session; each round carries its filter. */
-    NEG("/neg", setOf("NEG-MSG", "NEG-ERR", "NOTICE")),
     ;
 
     /** The client frame [body] stands for, or null when [body] is not this command's arguments. */
@@ -52,14 +49,12 @@ internal enum class HttpCommand(
             when (this) {
                 REQ, COUNT -> filters(body)
                 EVENT -> (body as? JsonObject)?.let(::listOf)
-                NEG -> negRound(body)
             } ?: return null
         val head =
             when (this) {
                 REQ -> listOf(JsonPrimitive("REQ"), JsonPrimitive(HTTP_SUB_ID))
                 COUNT -> listOf(JsonPrimitive("COUNT"), JsonPrimitive(HTTP_SUB_ID))
                 EVENT -> listOf(JsonPrimitive("EVENT"))
-                NEG -> listOf(JsonPrimitive("NEG-OPEN"), JsonPrimitive(HTTP_SUB_ID))
             }
         return JsonArray(head + args).toString()
     }
@@ -72,7 +67,7 @@ internal enum class HttpCommand(
 internal const val HTTP_SUB_ID = "http"
 
 /** The frames that carry a subscription id in the engine. */
-private val SUBSCRIPTION_FRAMES = setOf("EVENT", "EOSE", "CLOSED", "COUNT", "NEG-MSG", "NEG-ERR")
+private val SUBSCRIPTION_FRAMES = setOf("EVENT", "EOSE", "CLOSED", "COUNT")
 
 private const val SUB_ID_FIELD = ",\"$HTTP_SUB_ID\""
 
@@ -93,11 +88,6 @@ private fun filters(body: JsonElement): List<JsonElement>? =
         is JsonObject -> listOf(body)
         is JsonArray -> body.takeIf { it.isNotEmpty() && it.all { f -> f is JsonObject } }
         else -> null
-    }
-
-private fun negRound(body: JsonElement): List<JsonElement>? =
-    (body as? JsonArray)?.takeIf {
-        it.size == 2 && it[0] is JsonObject && (it[1] as? JsonPrimitive)?.isString == true
     }
 
 /** The body as JSON, or null when it does not parse. */
@@ -121,7 +111,7 @@ internal fun verbOf(frame: String): String {
  */
 internal fun statusOf(frame: String): HttpStatusCode =
     when (verbOf(frame)) {
-        "CLOSED", "NEG-ERR" -> statusFor(stringAt(frame, 1))
+        "CLOSED" -> statusFor(stringAt(frame, 1))
 
         // A duplicate is already stored, which is what the caller asked for, whichever flag the store set.
         "OK" -> if (okAccepted(frame) || stringAt(frame, 3).startsWith("duplicate:")) HttpStatusCode.OK else statusFor(stringAt(frame, 3))

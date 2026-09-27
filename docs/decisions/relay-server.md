@@ -253,13 +253,13 @@ bytes twice (measured: the stream broke with `invalid block type`). A reader
 that has stopped reading is bounded instead by a hard stop five seconds past
 the deadline, which drops the connection rather than finishing it.
 
-**Negentropy over HTTP holds no session.** The NIP-77 responder's only state is
-`isInitiator`, false on a relay, so a round is `reconcile(message)` against a
-sealed snapshot, and `sealedNegentropyStorage` already caches that per filter.
-Each `/neg` round therefore carries its filter; the relay keeps nothing between
-rounds, needs no `NEG-CLOSE`, and any instance behind a load balancer can answer
-any round. The cost is the snapshot rebuild when the cache misses between two
-rounds, which is the cost of a fresh `NEG-OPEN` on the socket too.
+**No negentropy over HTTP.** It was served for a while as `/neg`, one NIP-77
+round per request carrying its filter: the responder keeps no state between
+rounds but its sealed snapshot, so nothing needed holding. Removed, as upstream
+NIP-FE (nostr-protocol/nips#2484) removed it: a stateless round rebuilds or
+re-finds that snapshot every round, on a relay that takes writes between them,
+where the websocket builds it once per sync; and a mirror peering over HTTP gains
+nothing the socket does not already give it. Reconciliation stays on the socket.
 
 **The gzip stream is handed on at 64 KB, not only at flushes.** The route
 flushes when no frame is waiting, which in a burst is never; compressed output
@@ -284,6 +284,4 @@ settled NIP-FE's frames as `["EVENT",{…}]`, `["EOSE"]`: a request is its own
 connection with exactly one command, so the id says nothing. The engine still
 runs the command under `http` inside, and the route takes it back out of each
 frame as it leaves, by verb (only the frames that carry one), so a NOTICE whose
-text happens to read `http` is never touched. `/neg` stays: NIP-FE dropped it,
-and this relay and Amethyst's quartz serve it as an extension, answered the same
-way (`["NEG-MSG","<hex>"]`).
+text happens to read `http` is never touched.

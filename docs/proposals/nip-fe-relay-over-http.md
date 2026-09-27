@@ -1,7 +1,6 @@
 <!--
-The text of nostr-protocol/nips#2484 (NIP-FE draft), as proposed upstream, followed by the one
-extension this relay serves beyond it. Upstream is the source of truth for everything above the
-"Extension" section; update this copy when the PR moves.
+The text of nostr-protocol/nips#2484 (NIP-FE draft), as proposed upstream. Upstream is the source
+of truth; update this copy when the PR moves.
 -->
 
 NIP-FE
@@ -18,9 +17,8 @@ answer, in the relay's own [NIP-01](https://github.com/nostr-protocol/nips/blob/
 no live subscription, no connection state, no session to resume.
 
 This serves clients that want an answer rather than a connection — scripts,
-serverless functions, crawlers, a page that renders one query — and it makes
-[NIP-77](https://github.com/nostr-protocol/nips/blob/master/77.md) reconciliation stateless, so any relay instance behind a load balancer
-can answer any round of it.
+serverless functions, crawlers, a page that renders one query — and any relay
+instance behind a load balancer can answer any request.
 
 ## Endpoints
 
@@ -44,8 +42,8 @@ A relay that serves this NIP lists `FE` in its [NIP-11](https://github.com/nostr
 ## Answers
 
 The response body is `application/x-ndjson`: one relay-to-client frame per
-line, exactly as the relay would send it on the websocket (NIP-01, NIP-45,
-NIP-77). The relay picks the subscription id; clients MUST ignore it.
+line, as the relay would send it on the websocket (NIP-01, NIP-45) but without
+the subscription id, which a single request does not need.
 
 ```
 POST /req   {"kinds":[1],"limit":2}
@@ -71,9 +69,9 @@ The status is decided by the first frame of the answer.
 
 | first frame                                           | status |
 |-------------------------------------------------------|--------|
-| `EVENT`, `EOSE`, `COUNT`, `NEG-MSG`, `OK` with `true` | `200`  |
+| `EVENT`, `EOSE`, `COUNT`, `OK` with `true`            | `200`  |
 | `OK` with `false` and a `duplicate:` reason           | `200`  |
-| a refusal (`CLOSED`, `NEG-ERR`, `OK` with `false`) prefixed `auth-required:` | `401`, with `WWW-Authenticate: Nostr` |
+| a refusal (`CLOSED`, `OK` with `false`) prefixed `auth-required:` | `401`, with `WWW-Authenticate: Nostr` |
 | … prefixed `restricted:` or `blocked:`                | `403`  |
 | … prefixed `rate-limited:`                            | `429`, with `Retry-After` |
 | … prefixed `error:`                                   | `500`  |
@@ -116,17 +114,3 @@ A relay that compresses a streamed answer SHOULD flush the compressor each
 time it flushes frames (a gzip sync flush), or compression holds back the lines
 streaming exists to deliver. A relay behind a buffering reverse proxy SHOULD
 disable its buffering for these responses (`X-Accel-Buffering: no` for nginx).
-
-
-## Extension: `/neg` (served by this relay and Amethyst's quartz, not part of NIP-FE)
-
-`POST /neg` carries one [NIP-77](https://github.com/nostr-protocol/nips/blob/master/77.md) round:
-the body is `[<filter>, "<hex message>"]` and the answer is one `["NEG-MSG","<hex>"]` or
-`["NEG-ERR","<reason>"]` line, status as the table above. A NIP-77 responder holds no state
-between rounds except the set it reconciles against, so every round carries its filter and the
-client's current message; the client feeds the reply into its own reconciliation and posts the
-result, with the same filter, until its side produces no message. There is no `NEG-CLOSE`, and
-rounds may reach different instances. The relay caches the matching set per filter between rounds;
-if the set changes between rounds, each range is reconciled against the set as it was when that
-range was last compared, so an event arriving mid-sync can be missed until the next sync, as with a
-websocket session whose snapshot predates it.

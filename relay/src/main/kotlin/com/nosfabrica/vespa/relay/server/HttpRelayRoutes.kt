@@ -72,10 +72,10 @@ class HttpRelay(
 }
 
 /**
- * `POST /req`, `/count`, `/event` and `/neg`: one client command per request, answered by the same
- * session, policies and store as the websocket, as the relay's own frames without their subscription
- * id, one per line, ending on the command's answer (EOSE, COUNT, OK, NEG-MSG, or a refusal). No
- * subscription outlives the request. `/neg` is this relay's extension to NIP-FE.
+ * `POST /req`, `/count` and `/event`: one client command per request, answered by the same session,
+ * policies and store as the websocket, as the relay's own frames without their subscription id, one
+ * per line, ending on the command's answer (EOSE, COUNT, OK, or a refusal). No subscription outlives
+ * the request.
  */
 fun Route.httpRelayRoutes(
     relay: NostrRelayServer,

@@ -138,7 +138,7 @@ fun httpRelayFromEnv(
         when (val raw = env["HTTP_RELAY"]?.trim()?.lowercase()) {
             null, "", "true", "1", "yes", "on" -> true
             "false", "0", "no", "off" -> false
-            else -> error("HTTP_RELAY='$raw' is not a boolean. Use false to turn POST /req, /count, /event and /neg off.")
+            else -> error("HTTP_RELAY='$raw' is not a boolean. Use false to turn POST /req, /count and /event off.")
         }
     if (!on) return null
     val header = env["HTTP_RELAY_CLIENT_HEADER"]?.trim()?.takeIf { it.isNotEmpty() }
