@@ -272,9 +272,9 @@ plain one.
 Three parts of the route stand in for what quartz does not expose: frames are
 recognised by their text, a NIP-98 key rides beside the session in
 `VouchedReaders`, and a body is spliced into a frame string for the session to
-parse again. `docs/proposals/quartz-nip-xx-relay-over-http.patch` (a
-`git am` onto the pinned a8e8778265, verified there with its own tests) gives
+parse again. `docs/proposals/quartz-nip-fe-relay-over-http.patch` (a
+`git am` onto amethyst main, which also applies to the pinned a8e8778265) gives
 the session a typed `SessionSink`, identities proved before connect, and
 `receive(Command)`, and carries the transport-neutral handler; the wire format
-is `docs/proposals/nip-xx-relay-over-http.md`. Once it lands and the pin moves,
+is `docs/proposals/nip-fe-relay-over-http.md`. Once it lands and the pin moves,
 `HttpRelayRoutes` keeps only the Ktor response, the gate and the gzip sink.

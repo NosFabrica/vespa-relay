@@ -1,4 +1,4 @@
-NIP-XX
+NIP-FE
 ======
 
 Relay Commands over HTTP
@@ -34,7 +34,7 @@ subscription id on the websocket, or the lone object where the command takes
 one. Relays SHOULD NOT require a `Content-Type`, so a browser can send these
 without a CORS preflight when it carries no `Authorization`.
 
-A relay that serves this NIP lists `XX` in its NIP-11 `supported_nips`.
+A relay that serves this NIP lists `FE` in its NIP-11 `supported_nips`.
 
 ## Answers
 

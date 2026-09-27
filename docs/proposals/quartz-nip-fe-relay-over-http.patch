@@ -1,13 +1,13 @@
-From 85158a97a76a020d28f50d138c34bf639ad15871 Mon Sep 17 00:00:00 2001
+From 33930154e9f3013fb91bc6d18c15b14f3c142eee Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 27 Sep 2026 01:03:18 +0000
-Subject: [PATCH] quartz: NIP-XX relay commands over HTTP, and the engine seams
- it needs
+Subject: [PATCH] feat(quartz): NIP-FE relay commands over HTTP, and the engine
+ seams it needs
 
 A relay can now answer one client command per HTTP request (POST /req,
 /count, /event, /neg) with its own NIP-01 frames, one per line, ending
 on the command's answer, through the same session, policies and backend
-as its websocket. The spec draft is NIP-XX, "Relay Commands over HTTP".
+as its websocket. The spec draft is NIP-FE, "Relay Commands over HTTP".
 
 Engine (nip01Core/relay/server), source- and binary-compatible:
 
@@ -25,7 +25,7 @@ Engine (nip01Core/relay/server), source- and binary-compatible:
 - RelaySession.receive(Command): dispatch an already-parsed command. The
   string overload parses and calls it; acceptMessage still guards text.
 
-NIP-XX (nipXXRelayOverHttp), common code, no HTTP library:
+NIP-FE (nipFERelayOverHttp), common code, no HTTP library:
 
 - HttpRelayCommand: the four paths, each body parsed into its typed
   Command through a JSON tree (so a body can only ever be arguments),
@@ -48,24 +48,27 @@ Not in this change: backpressure from the socket into the backend. The
 store callbacks cannot suspend, so a reader more than maxQueuedFrames
 behind is cut with a CLOSED line, the websocket's bound.
 
-Verified against the a8e8778265 jar with the patched classes shadowing
-it: HttpRelayHandlerTest (13 cases, fake in-memory SessionBackend), and
-every call the rest of the jar makes into RelaySession/RelayServerBase
-still links.
+Verified with :quartz:jvmTest (HttpRelayHandlerTest, 13 cases over a fake
+in-memory SessionBackend), and earlier against the a8e8778265 jar that
+vespa-relay pins, where every call the rest of the jar makes into
+RelaySession/RelayServerBase still links.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016jDNhr6a3J4VC5TaG3Yd48
 ---
  .../nip01Core/relay/server/RelayServerBase.kt |  26 +-
  .../nip01Core/relay/server/RelaySession.kt    |  42 ++-
  .../nip01Core/relay/server/SessionSink.kt     |  54 +++
- .../nipXXRelayOverHttp/HttpRelayCommand.kt    | 139 +++++++
- .../nipXXRelayOverHttp/HttpRelayHandler.kt    | 291 ++++++++++++++
- .../nipXXRelayOverHttp/HttpRelayStatus.kt     |  65 ++++
+ .../nipFERelayOverHttp/HttpRelayCommand.kt    | 139 +++++++
+ .../nipFERelayOverHttp/HttpRelayHandler.kt    | 291 ++++++++++++++
+ .../nipFERelayOverHttp/HttpRelayStatus.kt     |  65 ++++
  .../HttpRelayHandlerTest.kt                   | 354 ++++++++++++++++++
  7 files changed, 961 insertions(+), 10 deletions(-)
  create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/SessionSink.kt
- create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayCommand.kt
- create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandler.kt
- create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayStatus.kt
- create mode 100644 quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandlerTest.kt
+ create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayCommand.kt
+ create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
+ create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayStatus.kt
+ create mode 100644 quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt
 
 diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelayServerBase.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelayServerBase.kt
 index 7423b08..f1449f0 100644
@@ -127,7 +130,7 @@ index 7423b08..f1449f0 100644
              incoming(session)
          } finally {
 diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelaySession.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelaySession.kt
-index 9520dd9..1690759 100644
+index 33a01e0..68793aa 100644
 --- a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelaySession.kt
 +++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/RelaySession.kt
 @@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
@@ -138,7 +141,7 @@ index 9520dd9..1690759 100644
  import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.CountCmd
  import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.EventCmd
  import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
-@@ -66,7 +67,8 @@ class RelaySession(
+@@ -67,7 +68,8 @@ class RelaySession(
      private val store: SessionBackend,
      val policy: IRelayPolicy,
      private val scope: CoroutineScope,
@@ -148,13 +151,13 @@ index 9520dd9..1690759 100644
      private val onClose: (RelaySession) -> Unit,
      negentropySettings: NegentropySettings = NegentropySettings.Default,
      /**
-@@ -76,7 +78,26 @@ class RelaySession(
+@@ -77,7 +79,26 @@ class RelaySession(
       * open/close of the same connection. Defaults to a fresh monotonic id.
       */
      val id: Long = nextConnectionId(),
 +    /**
 +     * Identities the transport proved before the session existed — a
-+     * NIP-98 header on an HTTP command (NIP-XX), say — recorded exactly as
++     * NIP-98 header on an HTTP command (NIP-FE), say — recorded exactly as
 +     * a NIP-42 AUTH would record them. The policy's `accept(AuthCmd)` and
 +     * `onAuthenticated` are not consulted: there is no AUTH event, and the
 +     * transport, not the engine, did the verifying.
@@ -175,7 +178,7 @@ index 9520dd9..1690759 100644
      private val subscriptions = LargeCache<String, Job>()
  
      /**
-@@ -94,7 +115,7 @@ class RelaySession(
+@@ -95,7 +116,7 @@ class RelaySession(
       * the copy costs nothing on the hot path.
       */
      @Volatile
@@ -184,7 +187,7 @@ index 9520dd9..1690759 100644
  
      /**
       * The per-connection scope. Handed to the [policy] at connect (so gating
-@@ -132,10 +153,7 @@ class RelaySession(
+@@ -133,10 +154,7 @@ class RelaySession(
  
      fun send(message: Message) {
          try {
@@ -196,7 +199,7 @@ index 9520dd9..1690759 100644
          } catch (e: Exception) {
              Log.w("ClientSession") { "Failed to send to ${e.message}" }
          }
-@@ -144,7 +162,7 @@ class RelaySession(
+@@ -145,7 +163,7 @@ class RelaySession(
      /** [send] for frames that are already wire-format JSON (the raw REQ path). */
      private fun sendRaw(json: String) {
          try {
@@ -205,7 +208,7 @@ index 9520dd9..1690759 100644
          } catch (e: Exception) {
              Log.w("ClientSession") { "Failed to send to ${e.message}" }
          }
-@@ -174,6 +192,16 @@ class RelaySession(
+@@ -175,6 +193,16 @@ class RelaySession(
                  return
              }
  
@@ -214,7 +217,7 @@ index 9520dd9..1690759 100644
 +
 +    /**
 +     * Dispatches an already-parsed command, for a transport that parsed and
-+     * sized it itself (NIP-XX's HTTP bodies). [IRelayPolicy.acceptMessage]
++     * sized it itself (NIP-FE's HTTP bodies). [IRelayPolicy.acceptMessage]
 +     * is not run here — it judges wire text — so such a caller applies the
 +     * message-length limit before calling.
 +     */
@@ -282,11 +285,11 @@ index 0000000..fa44c56
 +            }
 +    }
 +}
-diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayCommand.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayCommand.kt
+diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayCommand.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayCommand.kt
 new file mode 100644
-index 0000000..8b41736
+index 0000000..304735b
 --- /dev/null
-+++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayCommand.kt
++++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayCommand.kt
 @@ -0,0 +1,139 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
@@ -308,7 +311,7 @@ index 0000000..8b41736
 + * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 + * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 + */
-+package com.vitorpamplona.quartz.nipXXRelayOverHttp
++package com.vitorpamplona.quartz.nipFERelayOverHttp
 +
 +import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
@@ -332,7 +335,7 @@ index 0000000..8b41736
 +import kotlinx.serialization.json.JsonPrimitive
 +
 +/**
-+ * NIP-XX: the client commands HTTP carries, one path each. A body is the
++ * NIP-FE: the client commands HTTP carries, one path each. A body is the
 + * command's arguments after its subscription id (a lone object where the
 + * command takes one); the answer ends on the first frame [ends] accepts.
 + *
@@ -427,11 +430,11 @@ index 0000000..8b41736
 +        fun forPath(path: String): HttpRelayCommand? = entries.firstOrNull { it.path == path }
 +    }
 +}
-diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandler.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandler.kt
+diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
 new file mode 100644
-index 0000000..580dfc3
+index 0000000..0683189
 --- /dev/null
-+++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandler.kt
++++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
 @@ -0,0 +1,291 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
@@ -453,7 +456,7 @@ index 0000000..580dfc3
 + * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 + * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 + */
-+package com.vitorpamplona.quartz.nipXXRelayOverHttp
++package com.vitorpamplona.quartz.nipFERelayOverHttp
 +
 +import com.vitorpamplona.quartz.nip01Core.core.HexKey
 +import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
@@ -475,7 +478,7 @@ index 0000000..580dfc3
 +import kotlin.io.encoding.ExperimentalEncodingApi
 +import kotlin.time.TimeSource
 +
-+/** One NIP-XX request as the handler needs it. The host routes by [HttpRelayCommand.path] and bounds the body while reading it. */
++/** One NIP-FE request as the handler needs it. The host routes by [HttpRelayCommand.path] and bounds the body while reading it. */
 +class HttpRelayRequest(
 +    val command: HttpRelayCommand,
 +    /** The `Authorization` header as sent, or null. */
@@ -516,7 +519,7 @@ index 0000000..580dfc3
 +class HttpRelayReaderStalled : Exception("the client stopped reading the answer")
 +
 +/**
-+ * NIP-XX: one relay command per HTTP request, run on its own [RelayServerBase]
++ * NIP-FE: one relay command per HTTP request, run on its own [RelayServerBase]
 + * session, so every limit and policy the socket applies applies here, and
 + * answered with the relay's own frames up to the command's answer. Nothing
 + * outlives the request. Admission (how many requests a client may run) is the
@@ -724,11 +727,11 @@ index 0000000..580dfc3
 +        const val DEFAULT_TAIL_GRACE_MS = 5_000L
 +    }
 +}
-diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayStatus.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayStatus.kt
+diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayStatus.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayStatus.kt
 new file mode 100644
-index 0000000..a3d63aa
+index 0000000..41f8fb6
 --- /dev/null
-+++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayStatus.kt
++++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayStatus.kt
 @@ -0,0 +1,65 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
@@ -750,7 +753,7 @@ index 0000000..a3d63aa
 + * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 + * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 + */
-+package com.vitorpamplona.quartz.nipXXRelayOverHttp
++package com.vitorpamplona.quartz.nipFERelayOverHttp
 +
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
@@ -759,7 +762,7 @@ index 0000000..a3d63aa
 +import com.vitorpamplona.quartz.nip77Negentropy.NegErrMessage
 +
 +/**
-+ * NIP-XX status codes. The status of an answer is decided by its first
++ * NIP-FE status codes. The status of an answer is decided by its first
 + * frame: an accepting one is 200 and the answer may stream; a refusal's
 + * NIP-01 machine-readable prefix picks the code. After the first frame is
 + * out the status cannot change, so later failures are frames.
@@ -795,11 +798,11 @@ index 0000000..a3d63aa
 +            else -> BAD_REQUEST
 +        }
 +}
-diff --git a/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandlerTest.kt b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandlerTest.kt
+diff --git a/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt
 new file mode 100644
-index 0000000..eac107b
+index 0000000..b24af6d
 --- /dev/null
-+++ b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipXXRelayOverHttp/HttpRelayHandlerTest.kt
++++ b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt
 @@ -0,0 +1,354 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
@@ -821,7 +824,7 @@ index 0000000..eac107b
 + * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 + * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 + */
-+package com.vitorpamplona.quartz.nipXXRelayOverHttp
++package com.vitorpamplona.quartz.nipFERelayOverHttp
 +
 +import com.vitorpamplona.negentropy.Negentropy
 +import com.vitorpamplona.negentropy.storage.StorageVector
@@ -854,7 +857,7 @@ index 0000000..eac107b
 +import kotlin.test.assertFailsWith
 +import kotlin.test.assertTrue
 +
-+/** NIP-XX's handler over a relay engine and an in-memory backend: status, lines, auth, and negentropy rounds. */
++/** NIP-FE's handler over a relay engine and an in-memory backend: status, lines, auth, and negentropy rounds. */
 +class HttpRelayHandlerTest {
 +    /** Everything the backend holds; a filter naming [STALLED_KIND] never answers, one naming [TRICKLE_KIND] never ends. */
 +    private class MemoryBackend : SessionBackend {

@@ -300,7 +300,7 @@ nginx, `X-Accel-Buffering: no` on the response keeps the proxy from holding
 lines back; another buffering proxy needs the same off.
 
 The wire format is written up as a NIP draft in
-[proposals/nip-xx-relay-over-http.md](proposals/nip-xx-relay-over-http.md).
+[proposals/nip-fe-relay-over-http.md](proposals/nip-fe-relay-over-http.md).
 
 ## Search: the subject travels with the pointer
 
