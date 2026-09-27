@@ -65,11 +65,10 @@ app = "0.1.0"
 # replaces, and it would LOSE to the store's own `ec16988e3a` in a conflict --
 # `force(libs.quartz)` in every module is what settles it.
 #
-# ONE ARROW, ON PURPOSE, the first bump here to carry one: every module but :web
-# resolves `quartz:ec16988e3a -> a53cafd577`, the store's request forced onto this
-# pin. It points TO the pin, so the pin took; the gate's point (docs/traps.md) is
-# an arrow AWAY from it. Every other quartz line reads a53cafd577. The store moves
-# its own quartz on its next bump, which clears the arrow.
+# NO ARROW: the store moved with it (vespa-eventstore #152, e62745df71 below), so every
+# quartz line in all six modules reads a53cafd577. For one commit (504f38d) the store still
+# named ec16988e3a and five modules carried `quartz:ec16988e3a -> a53cafd577`; that arrow
+# pointed TO the pin, and #152 is what cleared it.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # GATED HERE: full build + archTest on this pin (1242 tests, 0 failures: the five
@@ -828,7 +827,22 @@ quartz = "a53cafd577"
 # names vespa-eventstore. The proof stays the resolved graph -- every eventstore
 # line reads 748dc5b8c6 with no `->`.
 #
-vespaEventStore = "748dc5b8c6"
+# e62745df71 = vespa-eventstore main @ 2026-09-27, the merge of PR #152 (one commit over
+# 748dc5b8c6, same tree as its head df62335): the store's own quartz pin moves ec16988e3a ->
+# a53cafd577 to match the one above, and nothing else. No store code, no schema, nothing
+# re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor 748dc5b8c6 e62745df71   # verified
+#
+# GATED: the store at #152's head -- `./gradlew build` (719 tests, 1 skipped, 0 failures)
+# and its integration suite against a real Vespa in Docker (21 tests, 20 passed,
+# StagingCorpusIT skipped by design, 0 failures) -- and this relay's full build + archTest
+# on both pins with every quartz line a53cafd577 and every eventstore line e62745df71, zero
+# arrows.
+#
+# LEXICOGRAPHIC: 'e627…' > '748d…' ('e' > '7'), so this sorts ABOVE the pin it
+# replaces -- the safe direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+vespaEventStore = "e62745df71"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
