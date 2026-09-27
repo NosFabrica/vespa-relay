@@ -231,7 +231,7 @@ turning the gate off there, or by giving the mirroring key a real lens.
 | `HTTP_RELAY_PER_CLIENT` | commands one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
 | `HTTP_RELAY_TOTAL` | commands the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
 | `HTTP_RELAY_DEADLINE_SECONDS` | how long one answer may run, first byte to last, `1`–`3600` | `30` |
-| `HTTP_RELAY_CLIENT_HEADER` / `HTTP_RELAY_TRUSTED_PROXIES` | behind a reverse proxy: the header it names the client in (e.g. `X-Forwarded-For`) and the addresses or blocks it connects from (e.g. `172.16.0.0/12`). The header is read only on a request whose socket peer is one of those proxies, and then its **last** entry across every line of it, the one the proxy appended. Set both or neither; without them the per-client cap is keyed on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
+| `HTTP_RELAY_CLIENT_HEADER` / `HTTP_RELAY_TRUSTED_PROXIES` | behind a reverse proxy: the header it names the client in (e.g. `X-Forwarded-For`) and the addresses or blocks it connects from (e.g. `172.16.0.0/12`). The header is read only on a request whose socket peer is one of those proxies, and then right to left across every line of it, skipping entries that are themselves in those blocks: the nearest address no trusted hop vouches for is the client, so a balancer in front of nginx is listed too. An IPv6 client counts as its /64. Set both or neither; without them the per-client cap is keyed on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
 
 A command is a `POST` to the relay's own URL (`/`, where the websocket and the
 NIP-11 document live) whose body is one client frame exactly as it would go on
@@ -273,9 +273,11 @@ never ran — its NIP-01 prefix picking the code: `auth-required:` is `401` (wit
 `WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
 `429`, `error:` `500`, anything else `400`. An `OK` for a `duplicate:` is `200`:
 the event is stored, which is what was asked. A request refused before its
-command runs is one `NOTICE` line: a body that is not one `REQ`, `COUNT` or
-`EVENT` frame is `400`, one over `MAX_MESSAGE_LENGTH` `413`, the gate's refusals
-`429`/`503`, and no frame within the deadline `503`. Once a REQ's events are flowing the status is `200` and can no
+command runs is one `NOTICE` line: the gate's refusals `429`/`503` (the gate
+admits a request before its body is read, so a refused one uploads nothing), a
+body that does not arrive within 10 seconds `408`, one that is not one `REQ`,
+`COUNT` or `EVENT` frame `400`, one over `MAX_MESSAGE_LENGTH` `413`, and no frame
+within the deadline `503`. Once a REQ's events are flowing the status is `200` and can no
 longer change, so a failure after that is a last `CLOSED` line, a deadline
 passed mid-answer included. **A body that does not end on its command's answer
 frame or a refusal was cut off**, not finished.
@@ -500,6 +502,11 @@ catch-up are untouched.
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-nip-fe) | derived from `RELAY_URL` |
+
+A call is a `POST /` with `Content-Type: application/nostr+json+rpc`, as NIP-86
+has it. The [HTTP commands](#commands-over-http-nip-fe) answer every other POST
+to `/`, so with them on (the default) an admin tool that leaves the type off gets
+a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
 
 ## Serving over Tor (a `.onion` endpoint)
 

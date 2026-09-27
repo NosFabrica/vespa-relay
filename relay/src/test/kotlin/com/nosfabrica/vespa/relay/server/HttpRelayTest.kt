@@ -103,6 +103,7 @@ class HttpRelayTest {
         clients: ClientAddresses = ClientAddresses(),
         commands: Boolean = true,
         admin: Nip86Admin? = null,
+        bodyTimeoutMs: Long = HttpRelay.DEFAULT_BODY_TIMEOUT_MS,
         block: (base: String) -> Unit,
     ) {
         val server =
@@ -110,7 +111,7 @@ class HttpRelayTest {
                 relay = relay,
                 port = 0,
                 nip11 = Nip11Info(),
-                httpRelay = if (commands) HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients) else null,
+                httpRelay = if (commands) HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients, bodyTimeoutMs = bodyTimeoutMs) else null,
                 admin = admin,
                 wait = false,
             )
@@ -167,12 +168,14 @@ class HttpRelayTest {
         authorization: String? = null,
         forwardedFor: List<String> = emptyList(),
         contentType: String? = null,
+        from: String? = null,
     ): Answer {
         val request =
             HttpRequest
                 .newBuilder(URI(url))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .apply { contentType?.let { header("Content-Type", it) } }
+                .apply { from?.let { header("Origin", it) } }
                 .apply { authorization?.let { header("Authorization", it) } }
                 .apply { forwardedFor.forEach { header("X-Forwarded-For", it) } }
                 .build()
@@ -440,6 +443,65 @@ class HttpRelayTest {
 
             stalled.join()
             assertEquals(200, post(base, req(quick), forwardedFor = listOf("10.0.0.1")).status, "the slot frees when the command ends")
+        }
+    }
+
+    @Test
+    fun `behind two trusted proxies the client is the address before them`() {
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        val twoHops = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!, Cidr.parse("10.0.0.0/8")!!))
+        val stall = req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}""")
+        val quick = req("""{"kinds":[1],"search":"include:spam"}""")
+        serving(gate = gate, deadlineMs = 3_000, clients = twoHops) { base ->
+            // The load balancer (10.0.0.5) appended the client; nginx (the socket's peer) appended the balancer.
+            val stalled = Thread { post(base, stall, forwardedFor = listOf("203.0.113.5, 10.0.0.5")) }.also { it.start() }
+            awaitInFlight(gate, 1)
+            assertEquals(200, post(base, quick, forwardedFor = listOf("198.51.100.7, 10.0.0.5")).status, "another client behind the same balancer")
+            assertEquals(429, post(base, quick, forwardedFor = listOf("203.0.113.5, 10.0.0.5")).status, "the same client is still the same")
+            stalled.join()
+        }
+    }
+
+    @Test
+    fun `an IPv6 client is one client across its 64`() {
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        val viaProxy = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!))
+        val quick = req("""{"kinds":[1],"search":"include:spam"}""")
+        serving(gate = gate, deadlineMs = 3_000, clients = viaProxy) { base ->
+            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}"""), forwardedFor = listOf("2001:db8:1:2::1")) }.also { it.start() }
+            awaitInFlight(gate, 1)
+            assertEquals(429, post(base, quick, forwardedFor = listOf("2001:db8:1:2::abcd")).status, "a fresh address in the same /64 is the same client")
+            assertEquals(200, post(base, quick, forwardedFor = listOf("2001:db8:1:3::1")).status, "the next /64 is another")
+            stalled.join()
+        }
+    }
+
+    @Test
+    fun `a slow upload holds its client's slot and is dropped at the body timeout`() {
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        serving(gate = gate, bodyTimeoutMs = 700) { base ->
+            java.net.Socket("127.0.0.1", URI(base).port).use { socket ->
+                socket.soTimeout = 10_000
+                // Promises 200 bytes and sends 10: admitted first, then the upload trickles.
+                socket.getOutputStream().apply { write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 200\r\n\r\n[\"REQ\",\"q\"".encodeToByteArray()) }.flush()
+                awaitInFlight(gate, 1)
+                val busy = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
+                assertEquals(429, busy.status, "the upload holds the slot, so it counts against the cap: ${busy.body}")
+                val input = java.io.BufferedInputStream(socket.getInputStream())
+                val head = generateSequence { readLine(input) }.takeWhile { it.isNotEmpty() }.toList()
+                assertTrue(head.first().contains(" 408 "), head.toString())
+            }
+            assertEquals(200, post(base, req("""{"kinds":[1],"search":"include:spam"}""")).status, "and frees it at the timeout")
+        }
+    }
+
+    @Test
+    fun `a cross-origin page can read the back-off and auth hints`() {
+        serving { base ->
+            val unlensed = post(base, req("""{"kinds":[1]}"""), from = "https://app.example")
+            assertEquals(401, unlensed.status)
+            val exposed = unlensed.header("Access-Control-Expose-Headers").orEmpty()
+            assertTrue("WWW-Authenticate" in exposed && "Retry-After" in exposed, "exposed: '$exposed'")
         }
     }
 

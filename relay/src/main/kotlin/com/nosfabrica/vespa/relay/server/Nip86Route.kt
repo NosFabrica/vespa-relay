@@ -28,12 +28,8 @@ import com.vitorpamplona.quartz.nip98HttpAuth.Nip98AuthVerifier
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.contentLength
-import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
-import io.ktor.utils.io.readRemaining
-import kotlinx.io.readByteArray
 
 /**
  * The NIP-86 configuration. [banStore] is shared with the server's BanListPolicy; [purge] removes
@@ -68,17 +64,13 @@ fun nip86Answer(
     return ret@{ call ->
         val auth = call.request.headers["Authorization"]
         // Bounded before buffering: NIP-98 binds the token to the body's sha256, so the handler can
-        // only check size after reading. The +1 read catches a lying Content-Length and chunked uploads.
+        // only check size after reading.
         val max = Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES
-        if ((call.request.contentLength() ?: 0) > max) {
-            call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
-            return@ret
-        }
-        val body = call.receiveChannel().readRemaining(max + 1L).readByteArray()
-        if (body.size > max) {
-            call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
-            return@ret
-        }
+        val body =
+            call.receiveBounded(max.toLong()) ?: run {
+                call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
+                return@ret
+            }
         when (val result = handler.handle(auth, body)) {
             is Nip86HttpHandler.Response.Ok -> {
                 call.respondText(result.json, rpcType, HttpStatusCode.OK)

@@ -43,6 +43,8 @@ import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.io.readByteArray
 import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPOutputStream
@@ -57,18 +59,18 @@ class HttpRelay(
     val deadlineMs: Long,
     val origins: () -> List<String>,
     val clients: ClientAddresses = ClientAddresses(),
+    /** How long an admitted request may take to upload its body; a trickle holds its gate slot no longer. */
+    val bodyTimeoutMs: Long = DEFAULT_BODY_TIMEOUT_MS,
 ) {
     companion object {
         const val DEFAULT_DEADLINE_SECONDS = 30L
+        const val DEFAULT_BODY_TIMEOUT_MS = 10_000L
     }
 }
 
 /**
- * NIP-FE, a `POST` to the relay's URL whose body is one `REQ`, `COUNT` or `EVENT` frame as a client
- * sends it on the socket: quartz's [HttpRelayHandler] runs it on its own session of [relay], with
- * the same policies and store as the websocket, and answers with the socket's own frames, one per
- * line, ending on the command's answer. What is left here is the host's part: the bounded body read,
- * the per-client gate, the headers, and a gzip that flushes with every line.
+ * NIP-FE's host half: quartz's [HttpRelayHandler] runs the posted frame on a session of [relay];
+ * this admits it, reads the body, and writes the answer with its headers and a line-flushed gzip.
  */
 fun httpRelayAnswer(
     relay: NostrRelayServer,
@@ -111,9 +113,16 @@ private suspend fun ApplicationCall.answer(
 ) {
     // The engine counts characters and a UTF-8 character is up to three bytes, so the handler says how much to read.
     val cap = handler.maxBodyBytes ?: (defaultMaxMessageLength * 3L)
-    val body = receiveBounded(cap) ?: return respondNotice("invalid: the body exceeds $cap bytes", HttpStatusCode.PayloadTooLarge)
-    // The gate first: a request it refuses never reaches the NIP-98 check or a session.
+    // The gate first, before the upload: a refused request neither buffers its body nor reaches the NIP-98 check.
     settings.gate.through(settings.clients.of(this), refused = { respondBusy(it, settings.gate) }) {
+        val body =
+            try {
+                withTimeout(settings.bodyTimeoutMs) { receiveBounded(cap) }
+                    ?: return@through respondNotice("invalid: the body exceeds $cap bytes", HttpStatusCode.PayloadTooLarge)
+            } catch (_: TimeoutCancellationException) {
+                response.header(HttpHeaders.Connection, "close")
+                return@through respondNotice("invalid: the body did not arrive within ${settings.bodyTimeoutMs / 1000.0}s", HttpStatusCode.RequestTimeout)
+            }
         try {
             handler.handle(HttpRelayRequest(request.headers[HttpHeaders.Authorization], body), KtorAnswer(this))
         } catch (_: HttpRelayReaderStalled) {
@@ -133,8 +142,13 @@ private class KtorAnswer(
 
     override suspend fun stream(lines: suspend HttpRelayLines.() -> Unit) =
         call.streaming { sink ->
-            sink.lines()
-            sink.finish()
+            try {
+                sink.lines()
+                sink.finish()
+            } finally {
+                // A reader that stalled, or a cancelled write, still frees the native deflater.
+                sink.release()
+            }
         }
 }
 
@@ -180,6 +194,11 @@ private class LineSink(
         zip?.close()
         drainPending()
         out.flush()
+    }
+
+    /** Frees the deflater of an answer that did not [finish]; idempotent, and writes nothing to the socket. */
+    fun release() {
+        zip?.close()
     }
 
     // Taken before the write suspends: a write cancelled mid-way must not send these bytes twice.
@@ -258,9 +277,9 @@ internal fun acceptsGzip(header: String?): Boolean {
 }
 
 /**
- * Where a request came from, for the gate: the socket's peer, unless that peer is one of
- * [trustedProxies], in which case the last entry of [header] across every line of it, the one that
- * proxy appended. A header from anyone else is the client's own claim and is not read.
+ * Where a request came from, for the gate: the nearest address in [header] that is not one of
+ * [trustedProxies], read right to left while the hop that added it is trusted; the socket's peer
+ * when that is not a trusted proxy. An IPv6 client is keyed by its /64, which one subscriber holds.
  */
 class ClientAddresses(
     val header: String? = null,
@@ -268,15 +287,26 @@ class ClientAddresses(
 ) {
     fun of(call: ApplicationCall): String {
         val peer = call.request.origin.remoteAddress
-        val name = header ?: return peer
-        if (trustedProxies.none { it.contains(peer) }) return peer
-        return call.request.headers
-            .getAll(name)
-            .orEmpty()
-            .joinToString(",")
-            .substringAfterLast(',')
-            .trim()
-            .ifEmpty { peer }
+        val name = header ?: return key(peer)
+        if (!trusted(peer)) return key(peer)
+        val hops =
+            call.request.headers
+                .getAll(name)
+                .orEmpty()
+                .flatMap { it.split(',') }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+        return key(hops.lastOrNull { !trusted(it) } ?: hops.firstOrNull() ?: peer)
+    }
+
+    private fun trusted(address: String): Boolean {
+        val bytes = Cidr.literalBytes(address) ?: return false
+        return trustedProxies.any { it.contains(bytes) }
+    }
+
+    private fun key(address: String): String {
+        val bytes = Cidr.literalBytes(address)?.takeIf { it.size == 16 } ?: return address
+        return bytes.copyOf(8).joinToString("", postfix = "::/64") { "%02x".format(it) }
     }
 }
 
@@ -285,8 +315,10 @@ class Cidr private constructor(
     private val network: ByteArray,
     private val prefix: Int,
 ) {
-    fun contains(address: String): Boolean {
-        val bytes = literalBytes(address) ?: return false
+    fun contains(address: String): Boolean = literalBytes(address)?.let(::contains) ?: false
+
+    /** [contains] over an address already parsed, so a caller matching many blocks parses it once. */
+    fun contains(bytes: ByteArray): Boolean {
         if (bytes.size != network.size) return false
         val whole = prefix / 8
         for (i in 0 until whole) if (bytes[i] != network[i]) return false
@@ -310,7 +342,7 @@ class Cidr private constructor(
         }
 
         /** An address literal's bytes. IPv4 is parsed here, so a malformed one is never sent to DNS as a name. */
-        private fun literalBytes(address: String): ByteArray? {
+        internal fun literalBytes(address: String): ByteArray? {
             val bare = address.removePrefix("[").removeSuffix("]")
             if (':' in bare) {
                 return runCatching {
