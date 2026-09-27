@@ -31,55 +31,43 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 28bf170f92 = amethyst main @ 2026-09-26 (PR #4212 merged). MOVED FOR THIS
-# RELAY: #4212 is NIP-FE's engine half — `SessionSink` (a session's frames typed
-# where the engine has the type), `RelaySession.receive(Command)`, and the
-# transport-neutral `nipFERelayOverHttp` handler this relay's own HTTP routes are
-# the working copy of. Nothing here calls the handler yet: its review fixes are
-# amethyst#4214, and this relay moves onto it when that lands.
+# ec16988e3a = amethyst main @ 2026-09-27, the merge of #4222 (28 commits over
+# 28bf170f92; quartz/ moves in two PRs, the rest is app code). MOVED WITH THE
+# STORE: vespa-eventstore main (748dc5b8c6, below) names this string, and
+# `force(libs.quartz)` would otherwise run that store on a jar it was not built on.
 #
-# The range is 958 commits. What it carries for this repo:
+# What it carries for this repo:
 #
-#   110 EVENT CLASSES RENAMED to their NIP names, no alias left (6d2c37c346). Two
-#     are named here: DeletionEvent -> DeletionRequestEvent (IngestPipeline's
-#     deletion-batch split) and ContactCardEvent -> UserAssertionEvent
-#     (TrustNotice). The store names them too, on its write path, which is why the
-#     store pin below moves in the same commit: a store built on a8e8778265 dies
-#     with NoClassDefFoundError on its first insert under this jar.
+#   A STALE REPLACEABLE IS `replaced:` / OK false AGAIN (#4222). 28bf170f92 had
+#     made quartz's SQLite store answer it SUPERSEDED (`duplicate:`, which the
+#     engine acks OK true); #4222 reverts that, and SUPERSEDED survives only as a
+#     @Deprecated constant. THIS RELAY SEES NO CHANGE: its store never followed
+#     (it answered `replaced:` at the old pin too), and nothing here names
+#     SUPERSEDED. The ingest pipeline and RefusalSink keep matching
+#     PREFIX_REPLACED.
 #
-#   THE RELAY ENGINE ANSWERS `duplicate:` WITH OK TRUE (5b846d64d6, NIP-01), where
-#     it answered false. A client resending an event this relay already holds now
-#     gets `OK true`, not a rejection it surfaces; a superseded replaceable is still
-#     `OK false replaced:` (the store's reason; quartz's SQLite store now says
-#     `duplicate:` there).
+#   THREE KINDS ARE INDEXED DIFFERENTLY (#4215, SearchFieldExtractor + WebVttText):
+#     decentralized lists (9998/9999/39998/39999) get their own roles, text tracks
+#     (39307) index their cue words instead of the raw WebVTT, and a release's
+#     notes (30063) become its body. Derived on put, so a stored corpus keeps the
+#     old fields until a re-feed: docs/migrations.md, "three kinds re-derived".
 #
-#   NOTHING ELSE under nip01Core/relay/server moves but #4212 itself; Filter,
-#     FilterMatcher, SearchQuery, IEventStore, the negentropy code and NIP-98 have
-#     no changed line. The client accessories the router drives gain
-#     `INostrClient.ensureInPool` (defaulted) and a longer publish path in
-#     NostrClientPublishExt; no call site here changes.
+#   NOTHING ELSE under quartz/ moves: no line in nip01Core/relay, Filter,
+#     FilterMatcher, IEventStore, the negentropy code or NIP-98.
 #
-#   The searchable set grows 142 -> 150 kinds (geocaching, Tapestry decentralized
-#     lists, NIP-71 text tracks); the store pin's note carries what that means for
-#     recall.
+# DIRECTION: 28bf170f92 is a strict ancestor of this.
+#   git merge-base --is-ancestor 28bf170f92 ec16988e3a   # verified
 #
-#   Quartz dropped jackson-module-kotlin for jackson-databind, so kotlin-reflect no
-#     longer arrives through it; the one test here that reads members by
-#     reflection still has it from elsewhere on the classpath.
-#
-# DIRECTION: a8e8778265 is a strict ancestor of this.
-#   git merge-base --is-ancestor a8e8778265 28bf170f92   # verified
-#
-# LEXICOGRAPHIC: '28bf…' < 'a8e8…' ('2' < 'a'), so this sorts BELOW the pin it
-# replaces — the direction that LOSES a conflict. Quartz is the dependency two
-# parts of the graph do both name (the store's own toml names this same string
-# now), and `force(libs.quartz)` in every module is what settles it. Resolved
-# graph checked: every quartz line reads 28bf170f92, zero arrows.
+# LEXICOGRAPHIC: 'ec16…' > '28bf…' ('e' > '2'), so this sorts ABOVE the pin it
+# replaces -- the safe direction; `force(libs.quartz)` settles it regardless.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
-# Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
-# note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "28bf170f92"
+# Prev 28bf170f92 (2026-09-26, PR #4212: NIP-FE's engine half, SessionSink and
+# receive(Command); 110 event classes renamed to their NIP names, which moved the
+# store pin with it; the engine acks `duplicate:` with OK true; 142 -> 150
+# searchable kinds; jackson-module-kotlin, and with it kotlin-reflect, left the
+# classpath).
+quartz = "ec16988e3a"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -780,7 +768,43 @@ quartz = "28bf170f92"
 # names vespa-eventstore. The proof stays the resolved graph -- every eventstore
 # line reads ebb09fa0d4 with no `->`.
 #
-vespaEventStore = "ebb09fa0d4"
+# 748dc5b8c6 = vespa-eventstore main @ 2026-09-27, the merge of PR #151. It
+# SUPERSEDES #150, the branch the previous pin was: #151 did the same quartz
+# 28bf170f92 bump on its own branch, took two audit rounds, then moved on to
+# ec16988e3a, and #150 never merged. So the previous pin is not an ancestor;
+# its base is.
+#   git merge-base --is-ancestor faa18dfba1 748dc5b8c6   # verified (#150's base)
+#
+# WHAT THIS RELAY GETS over ebb09fa0d4:
+#
+#   THE SAME RENAMES and the same kotlin-reflect for the two reflective tests,
+#     written independently; no store API this relay calls changes shape.
+#   A STALE REPLACEABLE STAYS `replaced:` / OK false. The branch had briefly
+#     followed quartz 28bf170f92 into SUPERSEDED (OK true), then went back
+#     (f7eeeaf) when quartz #4222 did; the net answer is what ebb09fa0d4 gave.
+#   MEDIA FOLLOW PACKS EXPAND (661f0ab): a reader's own kind 39092 now splices its
+#     members into a search the way a 30000 or 39089 does, under the same
+#     DECLARATIONS gate; a stranger's stays an ordinary hit. No stored data moves.
+#   QUARTZ #4215's three re-derived kinds (the quartz note above): the store's
+#     SearchExtractors takes them from the jar, so the re-feed is this relay's to
+#     run. event.sd and services.xml are untouched, so AUTO_DEPLOY has a no-op
+#     and nothing restarts for config.
+#
+# DEPLOYMENT: a restart of both processes, then one boot with
+# REINDEX_FTS_ON_START=true (docs/migrations.md).
+#
+# GATED HERE: this relay's full build + archTest on both new pins (1247 tests,
+# 0 failures; RelayProtocolTest's declaration-kind set gains 39092, the one
+# behaviour change a test here can see), and the resolved graph of all six
+# modules: every quartz line ec16988e3a, every eventstore line 748dc5b8c6, zero
+# arrows.
+#
+# LEXICOGRAPHIC: '748d…' < 'ebb0…' ('7' < 'e'), so this sorts BELOW the pin it
+# replaces -- the losing direction, and harmless here: nothing else in the graph
+# names vespa-eventstore. The proof stays the resolved graph -- every eventstore
+# line reads 748dc5b8c6 with no `->`.
+#
+vespaEventStore = "748dc5b8c6"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

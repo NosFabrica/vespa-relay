@@ -348,6 +348,32 @@ is still not indexed at all, so it cannot be searched for after this walk
 either. Both halves are upstream's to close, one branch per kind; the
 `vespaEventStore` note in `gradle/libs.versions.toml` carries the detail.
 
+## Migration: three kinds re-derived (quartz `ec16988e3a`, store `748dc5b8c6`)
+
+Quartz #4215 changed what `SearchFieldExtractor` takes from three kinds, and the
+store derives its `search_*` columns from it on `put`:
+
+- **Decentralized lists** (9998 / 9999 / 39998 / 39999): names and titles move
+  to the title role, descriptions and comments to the secondary one, and the
+  `t` values stop being indexed twice. A **ranking** change.
+- **Text tracks** (39307): the cue words are indexed, not the raw WebVTT, so
+  timing lines, cue settings, ids and `NOTE` / `STYLE` blocks no longer match.
+  **Recall and ranking.**
+- **Releases** (30063): the release notes become the body. A **recall** change:
+  a release could not be found by what changed in it before.
+
+**The schema does not move**: `event.sd` and `services.xml` are untouched, so
+`configChangeActions` should come back empty. Read it anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true`, then turn it back off. These are
+**fed** fields, so this is the tool: the drift check re-puts exactly the
+documents of these kinds whose extracted columns changed, and every other
+document is visited and left alone. New writes are correct on arrival. A
+Vespa reindex is the wrong tool, as in every entry above.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

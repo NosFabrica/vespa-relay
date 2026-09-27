@@ -203,7 +203,7 @@ class RelayProtocolTest {
 
                 // The companion may only name declaration kinds signed by someone this reader enrolled; the
                 // authors line is what holds the gate. 30385 and 30395 are absent because their members are NIP-73 external ids.
-                val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089)
+                val declarationKinds = setOf(30382, 30383, 30384, 30392, 30393, 30394, 30000, 39089, 39092)
 
                 // Selected by shape, not position: the companion goes out with the caller's query, so which the
                 // index records last is a scheduling detail. Every kinded query is checked so no ordering hides one.
