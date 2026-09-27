@@ -225,9 +225,16 @@ trip a single request does not have. `VouchedReaders` holds the verified key
 per connection id for as long as `serveAs` runs, and the two readers of
 identity on the read path — `LensRequiredPolicy` and `ObserverBackend` — ask it
 instead of `authenticatedUsers` alone. The write-side policies read no identity,
-so nothing else needed it. The verifier is its own instance, so the public
-endpoint cannot flood the admin rpc's replay cache, and the token must bind the
-body's hash: it authorizes one query, once.
+so nothing else needed it. The token must bind the body's hash, so it
+authorizes one command.
+
+**NIP-98 tokens are not single-use over HTTP.** The admin rpc remembers every
+token it accepts and refuses a second use; the HTTP commands do not. That
+memory is one process's, so behind a load balancer it holds per instance only,
+against NIP-FE's premise that any instance answers any request; and the body's
+hash already limits a captured token to repeating the command it signs, inside
+its 60-second window. What that leaves is re-running a gated read for a minute,
+which is what NIP-98 servers generally accept.
 
 **The HTTP route gzips its own stream.** Ktor's Compression plugin holds output
 until its deflater buffer fills, which measured as the first line arriving with

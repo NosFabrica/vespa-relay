@@ -280,8 +280,10 @@ frame or a refusal was cut off**, not finished.
 header, whose pubkey then ranks the read exactly as a NIP-42 AUTH would on the
 socket. The token's `u` is `RELAY_HTTP_URL` (or the http form of `RELAY_URL`,
 or of the `.onion` address) plus the command's path, its `method` is `POST`,
-and it must carry the body's `payload` hash — a token authorizes one command,
-once. A request the gate refuses does not spend it. An `Authorization` in any
+and it must carry the body's `payload` hash — a token authorizes one command.
+It is not single-use: inside its 60-second window it may repeat that command,
+since a request can land on any instance and no one instance can remember every
+token spent. An `Authorization` in any
 other scheme (a proxy's `Basic`, a client's `Bearer`) is not addressed to the
 relay and is ignored.
 

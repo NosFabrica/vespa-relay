@@ -60,8 +60,6 @@ class HttpRelay(
     val deadlineMs: Long,
     val origins: () -> List<String>,
     val clients: ClientAddresses = ClientAddresses(),
-    // Its own replay cache: public endpoints must not be able to evict the admin rpc's.
-    val verifier: Nip98AuthVerifier = Nip98AuthVerifier(),
 ) {
     /** The `u` values a token for [path] may carry. */
     fun urlsFor(path: String): List<String> = origins().map { it.trimEnd('/') + path }
@@ -333,7 +331,8 @@ private sealed interface Proof {
 
 /**
  * A NIP-98 header, checked against the address it names when that is one of ours, so a token signed
- * at the .onion verifies there too. The token must bind the body's hash: it authorizes one command.
+ * at the .onion verifies there too. The token must bind the body's hash: it authorizes one command,
+ * and may repeat it inside its window.
  * Another scheme (a proxy's Basic auth, a client's Bearer) is not addressed to us and is ignored.
  */
 private suspend fun ApplicationCall.readerOf(
@@ -346,7 +345,11 @@ private suspend fun ApplicationCall.readerOf(
     val token = Nip98AuthVerifier.SCHEME + header.substring(Nip98AuthVerifier.SCHEME.length).trim()
     val accepted = settings.urlsFor(path)
     val url = claimedUrl(token)?.takeIf { it in accepted } ?: accepted.firstOrNull() ?: return Proof.Refused("this relay names no url to sign")
-    return when (val r = settings.verifier.verify(token, "POST", url, body)) {
+    // A fresh verifier per request, so a token is not single-use: a request may land on any
+    // instance, which one process's memory of spent tokens cannot follow, and the body's hash already
+    // limits a captured token to the one command it signs, inside its window. Becomes
+    // Nip98AuthVerifier(rejectReplays = false) once the quartz pin carries it.
+    return when (val r = Nip98AuthVerifier().verify(token, "POST", url, body)) {
         is Nip98AuthVerifier.Result.Verified -> Proof.Signed(r.pubkey)
         is Nip98AuthVerifier.Result.Malformed -> Proof.Refused("NIP-98 ${r.reason}")
         is Nip98AuthVerifier.Result.Missing -> Proof.Anonymous

@@ -259,7 +259,7 @@ class HttpRelayTest {
     }
 
     @Test
-    fun `a token for another url, another body, or a second use is refused`() {
+    fun `a token for another url or another body is refused, and one may be sent again`() {
         serving { base ->
             val body = """{"kinds":[1]}"""
             val elsewhere = post("$base/req", body, token("/req", body, at = "https://other.example"))
@@ -270,11 +270,10 @@ class HttpRelayTest {
             assertEquals(401, otherBody.status, otherBody.body)
             assertTrue("payload" in otherBody.body, otherBody.body)
 
-            val once = token("/req", body)
-            assertEquals(200, post("$base/req", body, once).status)
-            val replayed = post("$base/req", body, once)
-            assertEquals(401, replayed.status, replayed.body)
-            assertTrue("replay" in replayed.body, replayed.body)
+            val signed = token("/req", body)
+            assertEquals(200, post("$base/req", body, signed).status)
+            val again = post("$base/req", body, signed)
+            assertEquals(200, again.status, "any instance may answer it, so none remembers it: ${again.body}")
         }
     }
 
