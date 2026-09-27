@@ -42,7 +42,8 @@ import kotlin.test.fail
 
 /**
  * The splice, the gate and the placement against a real engine and a production corpus, read back
- * over the wire; only a kind-10040 enrolment is synthesized. Selected by `-DitVespa=<url>` and
+ * over the wire. The Trusted List enrolment is a real reader's 10040 when production holds one; the
+ * cases that need a reader of their own sign a 10040. Selected by `-DitVespa=<url>` and
  * `-DitCorpus=<dir>`, a corpus written by `relay/tools/fetch-corpus.mjs`.
  */
 class ProductionCorpusIT {
@@ -109,17 +110,17 @@ class ProductionCorpusIT {
     // ------------------------------------------------------------------
 
     @Test
-    fun `the Trusted List kinds carry both real lists and squatters, and the corpus needs two relays to see it`() {
+    fun `the Trusted List kinds are the tapestry relay's real lists, each carrying a metric`() {
         skip()?.let { return println(it) }
         val inRange = corpus.filter { it.kind in 30392..30395 }
         val titled = inRange.filter { e -> e.tags.any { it.size > 1 && it[0] == "title" && it[1].isNotBlank() } }
         val untitled = inRange - titled.toSet()
         println("PRODUCTION-IT kinds 30392-30395: ${inRange.size} events — ${titled.size} titled, ${untitled.size} untitled")
 
-        // The search relay holds only squatters on these kinds; the titled family lives on the
-        // tapestry relay, so the corpus needs both.
+        // The titled family lives on the tapestry relay, so the corpus needs it beside the search relay.
+        // The search relay held untitled squatters on these kinds until 2026-09 and holds none now; the
+        // hashtag case below reads them when a corpus has them and says so when it does not.
         assertTrue(titled.size > 100, "expected the tapestry relay's Trusted Lists in the corpus, got ${titled.size}")
-        assertTrue(untitled.size > 10, "expected the search relay's squatters too, got ${untitled.size}")
         assertTrue(
             titled.all { e -> e.tags.any { it.size > 1 && it[0] == "metric" } },
             "a Tapestry list carries a `metric`; these do not look like the family",
@@ -333,19 +334,37 @@ class ProductionCorpusIT {
         val members: List<Event>,
     )
 
+    /** The newest 10040 per author: it is replaceable, and a merge of two relays hands back both versions. */
+    private val currentProviderLists: Collection<TrustProviderListEvent> by lazy {
+        corpus
+            .filterIsInstance<TrustProviderListEvent>()
+            .groupBy { it.pubKey }
+            .values
+            .map { v -> v.maxBy { it.createdAt } }
+    }
+
+    /**
+     * A real reader whose current 10040 delegates [publisher]'s Trusted Lists: a bare `30392` entry
+     * naming it. `30382:rank` and the other scored dimensions open 30382 alone.
+     */
+    private fun realEnroller(publisher: String): String? =
+        currentProviderLists
+            .firstOrNull { list -> list.tags.any { it.size > 1 && it[0] == "30392" && it[1] == publisher } }
+            ?.pubKey
+
     @Test
-    fun `no reader currently enrols the Trusted List publisher, so the enrolment is the one thing synthesized`() {
+    fun `a real reader enrols a Trusted List publisher, so the splice needs nothing synthesized`() {
         skip()?.let { return println(it) }
         val signers = corpus.filter { it.kind == 30392 && it.tags.any { t -> t.size > 1 && t[0] == "metric" } }.map { it.pubKey }.toSet()
-        // Kind 10040 is replaceable, so only the newest version per author counts; a merge of two relays
-        // hands back both.
-        val current = corpus.filterIsInstance<TrustProviderListEvent>().groupBy { it.pubKey }.mapValues { (_, v) -> v.maxBy { it.createdAt } }
-        val enrolling = current.values.filter { it.tags.serviceProviders().any { p -> p.pubkey in signers } }
-        println("PRODUCTION-IT ${current.size} current provider lists; ${enrolling.size} of them enrol a Trusted List publisher")
-        assertEquals(
-            emptyList(),
-            enrolling.map { it.id },
-            "somebody's current 10040 now enrols the list publisher — the case below can drop its synthetic enrolment",
+        val enrolling = signers.mapNotNull { publisher -> realEnroller(publisher)?.let { publisher to it } }
+        println(
+            "PRODUCTION-IT ${currentProviderLists.size} current provider lists; Trusted List publishers enrolled by a real reader: " +
+                enrolling.joinToString { (publisher, reader) -> "${publisher.take(12)} by ${reader.take(12)}" },
+        )
+        // No reader did until 2026-09, and the splice case synthesized one; it now reads as the real one.
+        assertTrue(
+            enrolling.isNotEmpty(),
+            "no current 10040 delegates a Trusted List publisher any more — the splice case falls back to a synthetic enrolment",
         )
     }
 
@@ -355,22 +374,27 @@ class ProductionCorpusIT {
             val chain = realList() ?: return@withRelay println("PRODUCTION-IT no titled list with usable member profiles")
             println("PRODUCTION-IT list ${chain.list.id.take(12)} \"${chain.title}\" by ${chain.list.pubKey.take(12)}, ${chain.members.size} member profiles held")
 
-            // The one synthetic event: no current 10040 enrols this publisher.
-            val reader = NostrSignerSync()
-            val enrolment =
-                reader.sign<Event>(
-                    1_700_000_000L,
-                    10040,
-                    // The bare-kind entry is what delegates a Trusted List; `30382:rank` opens 30382 alone.
-                    arrayOf(arrayOf("30392", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
-                    "",
-                )
-            store.batchInsert(listOf(enrolment))
+            // A real reader's 10040 when production has one; otherwise the one synthetic event.
+            val observer =
+                realEnroller(chain.list.pubKey)?.also { println("PRODUCTION-IT reading as the real enroller ${it.take(12)}") }
+                    ?: NostrSignerSync().let { reader ->
+                        println("PRODUCTION-IT no real reader enrols ${chain.list.pubKey.take(12)}; synthesizing the enrolment")
+                        val enrolment =
+                            reader.sign<Event>(
+                                1_700_000_000L,
+                                10040,
+                                // The bare-kind entry is what delegates a Trusted List; `30382:rank` opens 30382 alone.
+                                arrayOf(arrayOf("30392", chain.list.pubKey, "wss://tapestry.brainstorm.world/relay")),
+                                "",
+                            )
+                        store.batchInsert(listOf(enrolment))
+                        reader.pubKey
+                    }
 
             val relay = NostrRelayServer(store, relayUrl)
             val plain = plainRelay()
             try {
-                val filter = """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:${reader.pubKey}"}"""
+                val filter = """{"kinds":[0,30392],"search":"${chain.title} include:spam observer:$observer"}"""
 
                 // The control first: without the expansion, none of these profiles is reachable at all.
                 val without = page(plain, "plain", filter)
