@@ -73,8 +73,9 @@ class HttpRelay(
 
 /**
  * `POST /req`, `/count`, `/event` and `/neg`: one client command per request, answered by the same
- * session, policies and store as the websocket, as the relay's own frames, one per line, ending on
- * the command's answer (EOSE, COUNT, OK, NEG-MSG, or a refusal). No subscription outlives the request.
+ * session, policies and store as the websocket, as the relay's own frames without their subscription
+ * id, one per line, ending on the command's answer (EOSE, COUNT, OK, NEG-MSG, or a refusal). No
+ * subscription outlives the request. `/neg` is this relay's extension to NIP-FE.
  */
 fun Route.httpRelayRoutes(
     relay: NostrRelayServer,
@@ -135,8 +136,9 @@ private suspend fun ApplicationCall.exchange(
     val frames = Channel<String>(MAX_BUFFERED_FRAMES)
     val ended = CompletableDeferred<Unit>()
     // Called on the store's coroutines and cannot suspend, so a frame that does not fit ends the answer.
-    val send: (String) -> Unit = send@{ out ->
-        if (verbOf(out) == AUTH_VERB) return@send
+    val send: (String) -> Unit = send@{ raw ->
+        if (verbOf(raw) == AUTH_VERB) return@send
+        val out = withoutSubId(raw)
         val sent = frames.trySend(out)
         when {
             sent.isClosed -> {}

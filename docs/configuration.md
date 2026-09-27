@@ -244,13 +244,13 @@ subscription id on the socket (a lone object where the command takes one):
 | `/neg` | `[filter, "<hex NIP-77 message>"]` — one reconciliation round | `NEG-MSG` |
 
 The answer is the relay's own frames as `application/x-ndjson`, one per line,
-under the subscription id `http`:
+without a subscription id (there is only ever one per request):
 
 ```
 $ curl -N --compressed -X POST https://relay.example/req -d '{"kinds":[1],"limit":2,"search":"include:spam"}'
-["EVENT","http",{"id":"…",…}]
-["EVENT","http",{"id":"…",…}]
-["EOSE","http"]
+["EVENT",{"id":"…",…}]
+["EVENT",{"id":"…",…}]
+["EOSE"]
 ```
 
 Every command runs on its own connection to the same session, limits, policies
@@ -259,7 +259,8 @@ out as the store produces them, so a client can act on the first event before
 the last one is found; gzip is applied by the route itself and flushed with
 every batch, so asking for it costs no latency.
 
-**Negentropy is stateless.** NIP-77's responder keeps nothing between rounds but
+**Negentropy is stateless, and an extension.** `/neg` is not in NIP-FE; this
+relay (like Amethyst's quartz) serves it beside the four the NIP names. NIP-77's responder keeps nothing between rounds but
 the snapshot it reconciles against, and the relay already caches that snapshot
 per filter, so each `/neg` round carries its filter and the current message and
 the relay answers the next message. There is no `NEG-CLOSE` and no session to

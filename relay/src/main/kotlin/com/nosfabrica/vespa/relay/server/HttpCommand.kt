@@ -68,8 +68,25 @@ internal enum class HttpCommand(
     fun ends(frame: String): Boolean = verbOf(frame) in answers
 }
 
-/** The subscription id every HTTP command runs under; each request is its own connection. */
+/** The subscription id every HTTP command runs under inside the engine; NIP-FE answers carry none. */
 internal const val HTTP_SUB_ID = "http"
+
+/** The frames that carry a subscription id in the engine. */
+private val SUBSCRIPTION_FRAMES = setOf("EVENT", "EOSE", "CLOSED", "COUNT", "NEG-MSG", "NEG-ERR")
+
+private const val SUB_ID_FIELD = ",\"$HTTP_SUB_ID\""
+
+/**
+ * [frame] as NIP-FE sends it, the engine's `"http"` subscription id taken out:
+ * `["EVENT","http",{…}]` → `["EVENT",{…}]`, `["EOSE","http"]` → `["EOSE"]`. Other frames pass as they are.
+ */
+internal fun withoutSubId(frame: String): String {
+    val verb = verbOf(frame)
+    if (verb !in SUBSCRIPTION_FRAMES) return frame
+    val at = verb.length + 3
+    if (!frame.startsWith(SUB_ID_FIELD, at)) return frame
+    return frame.substring(0, at) + frame.substring(at + SUB_ID_FIELD.length)
+}
 
 private fun filters(body: JsonElement): List<JsonElement>? =
     when (body) {
@@ -99,12 +116,12 @@ internal fun verbOf(frame: String): String {
 }
 
 /**
- * The status [frame] gives an answer that opens with it: an accepting frame is 200 and the answer
+ * The status [frame] (a NIP-FE frame, subscription id already out) gives an answer that opens with it: an accepting frame is 200 and the answer
  * streams; a refusal's NIP-01 prefix picks the code, and a NOTICE is a command that never ran.
  */
 internal fun statusOf(frame: String): HttpStatusCode =
     when (verbOf(frame)) {
-        "CLOSED", "NEG-ERR" -> statusFor(stringAt(frame, 2))
+        "CLOSED", "NEG-ERR" -> statusFor(stringAt(frame, 1))
 
         // A duplicate is already stored, which is what the caller asked for, whichever flag the store set.
         "OK" -> if (okAccepted(frame) || stringAt(frame, 3).startsWith("duplicate:")) HttpStatusCode.OK else statusFor(stringAt(frame, 3))
@@ -124,7 +141,7 @@ internal fun statusFor(reason: String): HttpStatusCode =
         else -> HttpStatusCode.BadRequest
     }
 
-internal fun closedFrame(reason: String): String = JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(HTTP_SUB_ID), JsonPrimitive(reason))).toString()
+internal fun closedFrame(reason: String): String = JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(reason))).toString()
 
 private fun parsedFrame(frame: String): JsonArray? = runCatching { Json.parseToJsonElement(frame) as? JsonArray }.getOrNull()
 

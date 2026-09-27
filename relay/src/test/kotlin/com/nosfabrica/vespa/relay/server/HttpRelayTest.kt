@@ -198,9 +198,9 @@ class HttpRelayTest {
             assertEquals(200, response.status, response.body)
             assertEquals("application/x-ndjson", response.header("Content-Type")!!.substringBefore(';'))
             val lines = response.lines
-            assertEquals("""["EOSE","http"]""", lines.last(), "the answer ends on its EOSE: $lines")
+            assertEquals("""["EOSE"]""", lines.last(), "the answer ends on its EOSE: $lines")
             val events = lines.dropLast(1)
-            assertTrue(events.all { it.startsWith("""["EVENT","http",""") }, "every other line is an EVENT frame: $lines")
+            assertTrue(events.all { it.startsWith("""["EVENT",""") }, "every other line is an EVENT frame: $lines")
             assertEquals(setOf(first.id, second.id), events.map { l -> listOf(first, second).first { it.id in l }.id }.toSet())
         }
     }
@@ -225,7 +225,7 @@ class HttpRelayTest {
             assertEquals(200, response.status, response.body)
             val lines = response.lines
             assertEquals(1, lines.size, response.body)
-            assertTrue(lines.single().startsWith("""["COUNT","http",""") && "\"count\":2" in lines.single(), response.body)
+            assertTrue(lines.single().startsWith("""["COUNT",""") && "\"count\":2" in lines.single(), response.body)
         }
     }
 
@@ -235,7 +235,7 @@ class HttpRelayTest {
             val response = post("$base/req", """{"kinds":[1]}""")
             assertEquals(401, response.status)
             assertEquals("Nostr", response.header("WWW-Authenticate"))
-            assertTrue(response.lines.single().startsWith("""["CLOSED","http","auth-required:"""), response.body)
+            assertTrue(response.lines.single().startsWith("""["CLOSED","auth-required:"""), response.body)
         }
     }
 
@@ -246,7 +246,7 @@ class HttpRelayTest {
             val body = """{"kinds":[1],"search":"hello"}"""
             val response = post("$base/req", body, token("/req", body))
             assertEquals(200, response.status, response.body)
-            assertEquals("""["EOSE","http"]""", response.lines.last())
+            assertEquals("""["EOSE"]""", response.lines.last())
             assertEquals(listOf<String?>(alice.pubKey), index.observers.distinct(), "the signer is the lens")
         }
     }
@@ -286,7 +286,7 @@ class HttpRelayTest {
             for (bad in listOf("", "not json", "[]", "[1,2]", "\"kinds\"", """["REQ","x",{}]""")) {
                 val response = post("$base/req", bad)
                 assertEquals(400, response.status, "'$bad' -> ${response.body}")
-                assertTrue(response.lines.single().startsWith("""["CLOSED","http","invalid:"""), response.body)
+                assertTrue(response.lines.single().startsWith("""["CLOSED","invalid:"""), response.body)
             }
             val huge = """{"search":"include:spam ${"x".repeat(300_000)}"}"""
             assertEquals(413, post("$base/req", huge).status)
@@ -300,7 +300,7 @@ class HttpRelayTest {
             val filters = (1..25).joinToString(",", "[", "]") { """{"kinds":[$it],"search":"include:spam"}""" }
             val response = post("$base/req", filters)
             assertEquals(400, response.status, response.body)
-            assertEquals("""["CLOSED","http","invalid: too many filters (max 20)"]""", response.lines.single())
+            assertEquals("""["CLOSED","invalid: too many filters (max 20)"]""", response.lines.single())
         }
     }
 
@@ -312,7 +312,7 @@ class HttpRelayTest {
             val response = post("$base/req", """{"kinds":[1,$TRICKLE_KIND],"search":"include:spam"}""")
             assertEquals(200, response.status, response.body)
             assertTrue(first.id in response.lines.first(), "the event went out before the store finished: ${response.body}")
-            assertTrue(response.lines.last().startsWith("""["CLOSED","http","error: the answer ran past"""), response.body)
+            assertTrue(response.lines.last().startsWith("""["CLOSED","error: the answer ran past"""), response.body)
             assertEquals(2, response.lines.size, response.body)
         }
     }
@@ -346,7 +346,7 @@ class HttpRelayTest {
                 }
                 val endMs = System.currentTimeMillis() - startedMs
                 val lines = text.toString().lines().filter { it.isNotEmpty() }
-                assertTrue(lines.first().startsWith("""["EVENT","http","""), lines.toString())
+                assertTrue(lines.first().startsWith("""["EVENT","""), lines.toString())
                 assertTrue(lines.last().startsWith("""["CLOSED""""), lines.toString())
                 val first = assertNotNull(firstLineMs)
                 assertTrue(first < 1_000 && endMs >= 2_000, "gzip=$gzip: first line at ${first}ms, end at ${endMs}ms")
@@ -376,7 +376,7 @@ class HttpRelayTest {
 
             val refused = post("$base/req", quick, forwardedFor = listOf("10.0.0.7, 10.0.0.1"))
             assertEquals(429, refused.status, refused.body)
-            assertTrue(refused.lines.single().startsWith("""["CLOSED","http","rate-limited:"""), refused.body)
+            assertTrue(refused.lines.single().startsWith("""["CLOSED","rate-limited:"""), refused.body)
             assertEquals(200, post("$base/req", quick, forwardedFor = listOf("10.0.0.2")).status, "another address has its own share")
 
             stalled.join()
@@ -474,8 +474,8 @@ class HttpRelayTest {
                 val response = post("$base/neg", """[$filter,"$message"]""")
                 assertEquals(200, response.status, response.body)
                 val frame = response.lines.single()
-                assertTrue(frame.startsWith("""["NEG-MSG","http",""""), frame)
-                val reply = frame.substringAfter("""["NEG-MSG","http","""").substringBefore('"')
+                assertTrue(frame.startsWith("""["NEG-MSG",""""), frame)
+                val reply = frame.substringAfter("""["NEG-MSG","""").substringBefore('"')
                 val result = negentropy.reconcile(reply.hexToByteArray())
                 have += result.sendIds.map { it.toHexString() }
                 need += result.needIds.map { it.toHexString() }
@@ -492,7 +492,7 @@ class HttpRelayTest {
             val message = Negentropy(StorageVector().also { it.seal() }, 0).initiate().toHexKey()
             val unlensed = post("$base/neg", """[{"kinds":[1]},"$message"]""")
             assertEquals(401, unlensed.status, unlensed.body)
-            assertTrue(unlensed.lines.single().startsWith("""["NEG-ERR","http","auth-required:"""), unlensed.body)
+            assertTrue(unlensed.lines.single().startsWith("""["NEG-ERR","auth-required:"""), unlensed.body)
 
             val garbage = post("$base/neg", """[{"kinds":[1],"search":"include:spam"},"zz"]""")
             assertEquals(400, garbage.status, garbage.body)
@@ -549,8 +549,8 @@ class HttpRelayTest {
                         // Tens of megabytes cannot fit the socket's buffers, so a relay that is still writing is waiting on it.
                         assertEquals(1, gate.inFlight, "gzip=$gzip: the relay finished an answer nobody read, so it holds it in memory")
                     }
-                assertEquals("""["EOSE","http"]""", lines.last(), "gzip=$gzip")
-                assertEquals(big.size, lines.count { it.startsWith("""["EVENT","http",""") && it.endsWith("}]") }, "gzip=$gzip")
+                assertEquals("""["EOSE"]""", lines.last(), "gzip=$gzip")
+                assertEquals(big.size, lines.count { it.startsWith("""["EVENT",""") && it.endsWith("}]") }, "gzip=$gzip")
             }
         }
     }
@@ -563,8 +563,8 @@ class HttpRelayTest {
             // The socket fills, the relay's writes block, and the deadline passes during one.
             val lines = postStalled(base, """{"kinds":[1],"search":"include:spam"}""", gzip = true) { Thread.sleep(2_000) }
             assertTrue(lines.size < big.size, "the deadline must have cut the answer: ${lines.size} lines")
-            assertTrue(lines.dropLast(1).all { it.startsWith("""["EVENT","http",""") && it.endsWith("}]") }, "every line before the last is a whole frame")
-            assertTrue(lines.last().startsWith("""["CLOSED","http","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")
+            assertTrue(lines.dropLast(1).all { it.startsWith("""["EVENT",""") && it.endsWith("}]") }, "every line before the last is a whole frame")
+            assertTrue(lines.last().startsWith("""["CLOSED","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")
         }
     }
 

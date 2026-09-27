@@ -51,22 +51,22 @@ class HttpRelayWireTest {
 
     @Test
     fun `each command's answer ends on its own frames`() {
-        assertTrue(HttpCommand.REQ.ends("""["EOSE","http"]"""))
-        assertFalse(HttpCommand.REQ.ends("""["EVENT","http",{}]"""))
+        assertTrue(HttpCommand.REQ.ends("""["EOSE"]"""))
+        assertFalse(HttpCommand.REQ.ends("""["EVENT",{}]"""))
         assertTrue(HttpCommand.EVENT.ends("""["OK","x",true,""]"""))
-        assertFalse(HttpCommand.EVENT.ends("""["EOSE","http"]"""))
-        assertTrue(HttpCommand.NEG.ends("""["NEG-ERR","http","blocked: too many"]"""))
+        assertFalse(HttpCommand.EVENT.ends("""["EOSE"]"""))
+        assertTrue(HttpCommand.NEG.ends("""["NEG-ERR","blocked: too many"]"""))
         assertTrue(HttpCommand.COUNT.ends("""["NOTICE","too big"]"""))
     }
 
     @Test
     fun `the first frame decides the status`() {
-        assertEquals(HttpStatusCode.OK, statusOf("""["EVENT","http",{}]"""))
+        assertEquals(HttpStatusCode.OK, statusOf("""["EVENT",{}]"""))
         assertEquals(HttpStatusCode.OK, statusOf("""["OK","x",true,"duplicate: have it"]"""))
         assertEquals(HttpStatusCode.BadRequest, statusOf("""["OK","x",false,"invalid: bad signature"]"""))
         assertEquals(HttpStatusCode.Forbidden, statusOf("""["OK","x",false,"blocked: banned"]"""))
-        assertEquals(HttpStatusCode.Forbidden, statusOf("""["NEG-ERR","http","blocked: too many query results"]"""))
-        assertEquals(HttpStatusCode.Unauthorized, statusOf("""["CLOSED","http","auth-required: sign"]"""))
+        assertEquals(HttpStatusCode.Forbidden, statusOf("""["NEG-ERR","blocked: too many query results"]"""))
+        assertEquals(HttpStatusCode.Unauthorized, statusOf("""["CLOSED","auth-required: sign"]"""))
         assertEquals(HttpStatusCode.BadRequest, statusOf("""["NOTICE","error: could not parse message"]"""))
     }
 
@@ -79,6 +79,18 @@ class HttpRelayWireTest {
         assertEquals(HttpStatusCode.InternalServerError, statusFor("error: store failed"))
         assertEquals(HttpStatusCode.BadRequest, statusFor("invalid: too many filters"))
         assertEquals(HttpStatusCode.BadRequest, statusFor("no prefix at all"))
+    }
+
+    @Test
+    fun `answers leave without their subscription id`() {
+        assertEquals("""["EVENT",{"id":"x"}]""", withoutSubId("""["EVENT","http",{"id":"x"}]"""))
+        assertEquals("""["EOSE"]""", withoutSubId("""["EOSE","http"]"""))
+        assertEquals("""["CLOSED","error: x"]""", withoutSubId("""["CLOSED","http","error: x"]"""))
+        assertEquals("""["COUNT",{"count":2}]""", withoutSubId("""["COUNT","http",{"count":2}]"""))
+        assertEquals("""["NEG-MSG","61"]""", withoutSubId("""["NEG-MSG","http","61"]"""))
+        // Frames without a subscription id pass untouched, even when their text happens to read "http".
+        assertEquals("""["NOTICE","http"]""", withoutSubId("""["NOTICE","http"]"""))
+        assertEquals("""["OK","abc",true,""]""", withoutSubId("""["OK","abc",true,""]"""))
     }
 
     @Test
@@ -111,6 +123,6 @@ class HttpRelayWireTest {
 
     @Test
     fun `a CLOSED frame escapes its reason`() {
-        assertEquals("""["CLOSED","http","error: a \"quoted\" reason"]""", closedFrame("error: a \"quoted\" reason"))
+        assertEquals("""["CLOSED","error: a \"quoted\" reason"]""", closedFrame("error: a \"quoted\" reason"))
     }
 }

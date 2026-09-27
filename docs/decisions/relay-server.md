@@ -278,3 +278,12 @@ the session a typed `SessionSink`, identities proved before connect, and
 `receive(Command)`, and carries the transport-neutral handler; the wire format
 is `docs/proposals/nip-fe-relay-over-http.md`. Once it lands and the pin moves,
 `HttpRelayRoutes` keeps only the Ktor response, the gate and the gzip sink.
+
+**HTTP answers carry no subscription id.** Upstream (nostr-protocol/nips#2484)
+settled NIP-FE's frames as `["EVENT",{…}]`, `["EOSE"]`: a request is its own
+connection with exactly one command, so the id says nothing. The engine still
+runs the command under `http` inside, and the route takes it back out of each
+frame as it leaves, by verb (only the frames that carry one), so a NOTICE whose
+text happens to read `http` is never touched. `/neg` stays: NIP-FE dropped it,
+and this relay and Amethyst's quartz serve it as an extension, answered the same
+way (`["NEG-MSG","<hex>"]`).
