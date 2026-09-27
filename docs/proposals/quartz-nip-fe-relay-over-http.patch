@@ -1,4 +1,4 @@
-From 33930154e9f3013fb91bc6d18c15b14f3c142eee Mon Sep 17 00:00:00 2001
+From 6c12a96ed657806140240bcc1b4cdb45c7d7fa4e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 27 Sep 2026 01:03:18 +0000
 Subject: [PATCH] feat(quartz): NIP-FE relay commands over HTTP, and the engine
@@ -57,13 +57,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016jDNhr6a3J4VC5TaG3Yd48
 ---
  .../nip01Core/relay/server/RelayServerBase.kt |  26 +-
- .../nip01Core/relay/server/RelaySession.kt    |  42 ++-
+ .../nip01Core/relay/server/RelaySession.kt    |  42 +-
  .../nip01Core/relay/server/SessionSink.kt     |  54 +++
  .../nipFERelayOverHttp/HttpRelayCommand.kt    | 139 +++++++
- .../nipFERelayOverHttp/HttpRelayHandler.kt    | 291 ++++++++++++++
+ .../nipFERelayOverHttp/HttpRelayHandler.kt    | 295 ++++++++++++++
  .../nipFERelayOverHttp/HttpRelayStatus.kt     |  65 ++++
- .../HttpRelayHandlerTest.kt                   | 354 ++++++++++++++++++
- 7 files changed, 961 insertions(+), 10 deletions(-)
+ .../HttpRelayHandlerTest.kt                   | 363 ++++++++++++++++++
+ 7 files changed, 974 insertions(+), 10 deletions(-)
  create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nip01Core/relay/server/SessionSink.kt
  create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayCommand.kt
  create mode 100644 quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
@@ -432,10 +432,10 @@ index 0000000..304735b
 +}
 diff --git a/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
 new file mode 100644
-index 0000000..0683189
+index 0000000..e28f868
 --- /dev/null
 +++ b/quartz/src/commonMain/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandler.kt
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,295 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
 + *
@@ -713,7 +713,11 @@ index 0000000..0683189
 +    private fun claimedUrl(token: String): String? =
 +        runCatching {
 +            val json = Base64.decode(token.removePrefix(Nip98AuthVerifier.SCHEME).trim()).decodeToString()
-+            OptimizedJsonMapper.fromJson(json).tags.firstOrNull { it.size > 1 && it[0] == "u" }?.get(1)
++            OptimizedJsonMapper
++                .fromJson(json)
++                .tags
++                .firstOrNull { it.size > 1 && it[0] == "u" }
++                ?.get(1)
 +        }.getOrNull()
 +
 +    private fun closed(reason: String) = ClosedMessage(HttpRelayCommand.SUB_ID, reason).toJson()
@@ -800,10 +804,10 @@ index 0000000..41f8fb6
 +}
 diff --git a/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt
 new file mode 100644
-index 0000000..b24af6d
+index 0000000..e6837eb
 --- /dev/null
 +++ b/quartz/src/jvmTest/kotlin/com/vitorpamplona/quartz/nipFERelayOverHttp/HttpRelayHandlerTest.kt
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,363 @@
 +/*
 + * Copyright (c) 2025 Vitor Pamplona
 + *
@@ -830,7 +834,6 @@ index 0000000..b24af6d
 +import com.vitorpamplona.negentropy.storage.StorageVector
 +import com.vitorpamplona.quartz.nip01Core.core.Event
 +import com.vitorpamplona.quartz.nip01Core.core.toHexKey
-+import com.vitorpamplona.quartz.nip01Core.crypto.verify
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 +import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
@@ -987,7 +990,13 @@ index 0000000..b24af6d
 +        assertEquals(200, answer.status)
 +        assertTrue(answer.streamed)
 +        assertEquals("""["EOSE","http"]""", answer.lines.last())
-+        assertEquals(setOf(a.id, b.id), answer.lines.dropLast(1).map { l -> listOf(a, b).first { it.id in l }.id }.toSet())
++        assertEquals(
++            setOf(a.id, b.id),
++            answer.lines
++                .dropLast(1)
++                .map { l -> listOf(a, b).first { it.id in l }.id }
++                .toSet(),
++        )
 +    }
 +
 +    @Test
@@ -1086,7 +1095,11 @@ index 0000000..b24af6d
 +            // A fresh handler each round: nothing on the server side carries over.
 +            val answer = handler().ask(HttpRelayCommand.NEG, """[{"kinds":[1]},"$message"]""")
 +            assertEquals(200, answer.status, answer.lines.toString())
-+            val reply = answer.lines.single().substringAfter("""["NEG-MSG","http","""").substringBefore('"')
++            val reply =
++                answer.lines
++                    .single()
++                    .substringAfter("""["NEG-MSG","http","""")
++                    .substringBefore('"')
 +            val result = client.reconcile(reply.hexToByteArray())
 +            have += result.sendIds.map { it.toHexString() }
 +            need += result.needIds.map { it.toHexString() }
