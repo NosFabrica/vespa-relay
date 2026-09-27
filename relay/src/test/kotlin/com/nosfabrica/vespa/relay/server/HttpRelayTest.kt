@@ -25,7 +25,10 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.vitorpamplona.negentropy.Negentropy
+import com.vitorpamplona.negentropy.storage.StorageVector
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.toHexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -47,8 +50,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/** `POST /req` and `POST /count` over a real Netty server: one read, the relay's own frames, no live tail. */
-class HttpReadsTest {
+/** The four HTTP commands over a real Netty server: one command, the relay's own frames, nothing left open. */
+class HttpRelayTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val origin = "https://relay.example"
     private val onion = "http://${"n".repeat(56)}.onion"
@@ -96,9 +99,9 @@ class HttpReadsTest {
     private val client = HttpClient.newHttpClient()
 
     private fun serving(
-        gate: HttpReadGate = HttpReadGate(0, 0),
+        gate: HttpRelayGate = HttpRelayGate(0, 0),
         deadlineMs: Long = 10_000,
-        clientHeader: String? = null,
+        clients: ClientAddresses = ClientAddresses(),
         block: (base: String) -> Unit,
     ) {
         val server =
@@ -106,7 +109,7 @@ class HttpReadsTest {
                 relay = relay,
                 port = 0,
                 nip11 = Nip11Info(),
-                httpReads = HttpReads(gate, deadlineMs, origins = { listOf(origin, onion) }, clientHeader = clientHeader),
+                httpRelay = HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients),
                 wait = false,
             )
         try {
@@ -160,7 +163,7 @@ class HttpReadsTest {
         url: String,
         body: String,
         authorization: String? = null,
-        forwardedFor: String? = null,
+        forwardedFor: List<String> = emptyList(),
     ): Answer {
         val request =
             HttpRequest
@@ -168,7 +171,7 @@ class HttpReadsTest {
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .header("Content-Type", "application/json")
                 .apply { authorization?.let { header("Authorization", it) } }
-                .apply { forwardedFor?.let { header("X-Forwarded-For", it) } }
+                .apply { forwardedFor.forEach { header("X-Forwarded-For", it) } }
                 .build()
         val raw = client.send(request, HttpResponse.BodyHandlers.ofString())
         return Answer(raw.statusCode(), raw.headers(), raw.body())
@@ -364,23 +367,236 @@ class HttpReadsTest {
     fun `a client over its share is refused while another client is served`() {
         val stall = """{"kinds":[$STALLED_KIND],"search":"include:spam"}"""
         val quick = """{"kinds":[1],"search":"include:spam"}"""
-        val gate = HttpReadGate(perClient = 1, total = 0)
-        serving(gate = gate, deadlineMs = 3_000, clientHeader = "X-Forwarded-For") { base ->
-            // The proxy's own hop is the last entry; what the client wrote before it is not trusted.
-            val stalled = Thread { post("$base/req", stall, forwardedFor = "10.0.0.9, 10.0.0.1") }.also { it.start() }
-            val deadline = System.currentTimeMillis() + 5_000
-            while (gate.inFlight < 1) {
-                if (System.currentTimeMillis() > deadline) fail("the stalled read never took its slot")
-                Thread.sleep(10)
-            }
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        val viaProxy = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!))
+        serving(gate = gate, deadlineMs = 3_000, clients = viaProxy) { base ->
+            // The proxy's own hop is the last entry across every line; what the client wrote before it is its own claim.
+            val stalled = Thread { post("$base/req", stall, forwardedFor = listOf("10.0.0.9", "10.0.0.1")) }.also { it.start() }
+            awaitInFlight(gate, 1)
 
-            val refused = post("$base/req", quick, forwardedFor = "10.0.0.1")
+            val refused = post("$base/req", quick, forwardedFor = listOf("10.0.0.7, 10.0.0.1"))
             assertEquals(429, refused.status, refused.body)
             assertTrue(refused.lines.single().startsWith("""["CLOSED","http","rate-limited:"""), refused.body)
-            assertEquals(200, post("$base/req", quick, forwardedFor = "10.0.0.2").status, "another address has its own share")
+            assertEquals(200, post("$base/req", quick, forwardedFor = listOf("10.0.0.2")).status, "another address has its own share")
 
             stalled.join()
-            assertEquals(200, post("$base/req", quick, forwardedFor = "10.0.0.1").status, "the slot frees when the read ends")
+            assertEquals(200, post("$base/req", quick, forwardedFor = listOf("10.0.0.1")).status, "the slot frees when the command ends")
+        }
+    }
+
+    @Test
+    fun `a forwarded-for header from a peer that is not a trusted proxy is ignored`() {
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        val trustsElsewhere = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("10.9.9.9")!!))
+        serving(gate = gate, deadlineMs = 3_000, clients = trustsElsewhere) { base ->
+            val stalled = Thread { post("$base/req", """{"kinds":[$STALLED_KIND],"search":"include:spam"}""", forwardedFor = listOf("10.0.0.1")) }.also { it.start() }
+            awaitInFlight(gate, 1)
+            val spoofed = post("$base/req", """{"kinds":[1],"search":"include:spam"}""", forwardedFor = listOf("10.0.0.2"))
+            assertEquals(429, spoofed.status, "a made-up address is still the socket's peer: ${spoofed.body}")
+            stalled.join()
+        }
+    }
+
+    @Test
+    fun `a refusal at the gate does not spend the caller's token`() {
+        val gate = HttpRelayGate(perClient = 1, total = 0)
+        serving(gate = gate, deadlineMs = 3_000) { base ->
+            val stalled = Thread { post("$base/req", """{"kinds":[$STALLED_KIND],"search":"include:spam"}""") }.also { it.start() }
+            awaitInFlight(gate, 1)
+            val body = """{"kinds":[1]}"""
+            val signed = token("/req", body)
+            assertEquals(429, post("$base/req", body, signed).status)
+            stalled.join()
+            val retried = post("$base/req", body, signed)
+            assertEquals(200, retried.status, "the same token, once the slot is free: ${retried.body}")
+        }
+    }
+
+    @Test
+    fun `an Authorization header in another scheme is not addressed to the relay`() {
+        publish(note("basic"))
+        serving { base ->
+            val response = post("$base/req", """{"kinds":[1],"search":"include:spam"}""", authorization = "Basic dXNlcjpwYXNz")
+            assertEquals(200, response.status, response.body)
+            val unlensed = post("$base/req", """{"kinds":[1]}""", authorization = "Bearer abc")
+            assertEquals(401, unlensed.status, "and it signs nobody in: ${unlensed.body}")
+        }
+    }
+
+    @Test
+    fun `an event posted over HTTP is answered with its OK and then served`() {
+        val posted = note("posted over http")
+        serving { base ->
+            val response = post("$base/event", posted.toJson())
+            assertEquals(200, response.status, response.body)
+            assertEquals("""["OK","${posted.id}",true,""]""", response.lines.single())
+
+            val again = post("$base/event", posted.toJson())
+            assertEquals(200, again.status, "a duplicate is still accepted: ${again.body}")
+
+            val read = post("$base/req", """{"ids":["${posted.id}"],"search":"include:spam"}""")
+            assertTrue(posted.id in read.lines.first(), read.body)
+        }
+    }
+
+    @Test
+    fun `a forged event is refused with the relay's OK and its status`() {
+        val real = note("genuine")
+        val forged = Event(real.id, real.pubKey, real.createdAt, real.kind, real.tags, "tampered", real.sig)
+        serving { base ->
+            val response = post("$base/event", forged.toJson())
+            assertEquals(400, response.status, response.body)
+            val ok = response.lines.single()
+            assertTrue(ok.startsWith("""["OK","${forged.id}",false,"invalid:"""), ok)
+            for (bad in listOf("[]", """[${real.toJson()}]""", "\"x\"")) {
+                assertEquals(400, post("$base/event", bad).status, "'$bad' is not one event")
+            }
+        }
+    }
+
+    @Test
+    fun `negentropy over HTTP reconciles in stateless rounds`() {
+        val shared = (1..40).map { alice.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "shared $it") }
+        val onlyRelay = (1..15).map { alice.sign<Event>(1_700_001_000L + it, 1, emptyArray(), "relay $it") }
+        val onlyClient = (1..10).map { alice.sign<Event>(1_700_002_000L + it, 1, emptyArray(), "client $it") }
+        publish(*(shared + onlyRelay).toTypedArray())
+
+        val mine = StorageVector().apply { (shared + onlyClient).forEach { insert(it.createdAt, it.id) } }.also { it.seal() }
+        val negentropy = Negentropy(mine, 0)
+        var message = negentropy.initiate().toHexKey()
+        val have = mutableSetOf<String>()
+        val need = mutableSetOf<String>()
+        val filter = """{"kinds":[1],"search":"include:spam"}"""
+        serving { base ->
+            var rounds = 0
+            while (true) {
+                check(++rounds < 20) { "no convergence" }
+                val response = post("$base/neg", """[$filter,"$message"]""")
+                assertEquals(200, response.status, response.body)
+                val frame = response.lines.single()
+                assertTrue(frame.startsWith("""["NEG-MSG","http",""""), frame)
+                val reply = frame.substringAfter("""["NEG-MSG","http","""").substringBefore('"')
+                val result = negentropy.reconcile(reply.hexToByteArray())
+                have += result.sendIds.map { it.toHexString() }
+                need += result.needIds.map { it.toHexString() }
+                message = result.msg?.toHexKey() ?: break
+            }
+        }
+        assertEquals(onlyClient.map { it.id }.toSet(), have, "what the client holds and the relay lacks")
+        assertEquals(onlyRelay.map { it.id }.toSet(), need, "what the relay holds and the client lacks")
+    }
+
+    @Test
+    fun `negentropy over HTTP is lens-gated like a REQ and refuses a malformed round`() {
+        serving { base ->
+            val message = Negentropy(StorageVector().also { it.seal() }, 0).initiate().toHexKey()
+            val unlensed = post("$base/neg", """[{"kinds":[1]},"$message"]""")
+            assertEquals(401, unlensed.status, unlensed.body)
+            assertTrue(unlensed.lines.single().startsWith("""["NEG-ERR","http","auth-required:"""), unlensed.body)
+
+            val garbage = post("$base/neg", """[{"kinds":[1],"search":"include:spam"},"zz"]""")
+            assertEquals(400, garbage.status, garbage.body)
+            for (bad in listOf("""{"kinds":[1]}""", """[{"kinds":[1]}]""", """["$message",{"kinds":[1]}]""")) {
+                assertEquals(400, post("$base/neg", bad).status, "'$bad' is not a round")
+            }
+        }
+    }
+
+    /** [n] notes of random content: it does not compress, so the answer really is megabytes on the wire. */
+    private fun bigNotes(n: Int): List<Event> {
+        val random = java.security.SecureRandom()
+        return (1..n).map { i -> alice.sign<Event>(1_700_000_000L + i, 1, emptyArray(), ByteArray(4096).also(random::nextBytes).toHexKey()) }
+    }
+
+    /**
+     * POSTs [body] on a raw socket with a small window and reads nothing until [whileStalled] returns:
+     * java.net.http reads a body eagerly and is never a slow reader. Answers the decoded lines.
+     */
+    private fun postStalled(
+        base: String,
+        body: String,
+        gzip: Boolean,
+        whileStalled: () -> Unit,
+    ): List<String> =
+        java.net.Socket().use { socket ->
+            socket.receiveBufferSize = 16 * 1024
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", URI(base).port), 5_000)
+            socket.soTimeout = 30_000
+            val request =
+                "POST /req HTTP/1.1\r\nHost: 127.0.0.1\r\n" + (if (gzip) "Accept-Encoding: gzip\r\n" else "") +
+                    "Content-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+            socket.getOutputStream().apply { write(request.encodeToByteArray()) }.flush()
+            whileStalled()
+            val input = java.io.BufferedInputStream(socket.getInputStream())
+            val head = generateSequence { readLine(input) }.takeWhile { it.isNotEmpty() }.toList()
+            assertTrue(head.first().contains(" 200 "), head.toString())
+            assertEquals(gzip, head.any { it.equals("Content-Encoding: gzip", ignoreCase = true) }, head.toString())
+            val bytes = unchunked(input)
+            val text = if (gzip) GZIPInputStream(bytes.inputStream()).use { it.readBytes() } else bytes
+            text.decodeToString().lines().filter { it.isNotEmpty() }
+        }
+
+    @Test
+    fun `a reader that stops reading holds the relay's writes, not its heap`() {
+        val big = bigNotes(4000)
+        publish(*big.toTypedArray())
+        val gate = HttpRelayGate(0, 0)
+        serving(gate = gate, deadlineMs = 30_000) { base ->
+            for (gzip in listOf(false, true)) {
+                val lines =
+                    postStalled(base, """{"kinds":[1],"search":"include:spam"}""", gzip) {
+                        Thread.sleep(2_500)
+                        // Tens of megabytes cannot fit the socket's buffers, so a relay that is still writing is waiting on it.
+                        assertEquals(1, gate.inFlight, "gzip=$gzip: the relay finished an answer nobody read, so it holds it in memory")
+                    }
+                assertEquals("""["EOSE","http"]""", lines.last(), "gzip=$gzip")
+                assertEquals(big.size, lines.count { it.startsWith("""["EVENT","http",""") && it.endsWith("}]") }, "gzip=$gzip")
+            }
+        }
+    }
+
+    @Test
+    fun `a gzip answer past its deadline while writes are blocked still decodes to its CLOSED line`() {
+        val big = bigNotes(4000)
+        publish(*big.toTypedArray())
+        serving(deadlineMs = 1_000) { base ->
+            // The socket fills, the relay's writes block, and the deadline passes during one.
+            val lines = postStalled(base, """{"kinds":[1],"search":"include:spam"}""", gzip = true) { Thread.sleep(2_000) }
+            assertTrue(lines.size < big.size, "the deadline must have cut the answer: ${lines.size} lines")
+            assertTrue(lines.dropLast(1).all { it.startsWith("""["EVENT","http",""") && it.endsWith("}]") }, "every line before the last is a whole frame")
+            assertTrue(lines.last().startsWith("""["CLOSED","http","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")
+        }
+    }
+
+    /** One CRLF-terminated line of an HTTP head or chunk header. */
+    private fun readLine(input: java.io.InputStream): String {
+        val line = StringBuilder()
+        while (true) {
+            val c = input.read()
+            if (c < 0 || c == '\n'.code) return line.toString().trimEnd('\r')
+            line.append(c.toChar())
+        }
+    }
+
+    /** A chunked body, reassembled. */
+    private fun unchunked(input: java.io.InputStream): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val size = readLine(input).substringBefore(';').trim().toInt(16)
+            if (size == 0) return out.toByteArray()
+            out.write(input.readNBytes(size))
+            readLine(input)
+        }
+    }
+
+    private fun awaitInFlight(
+        gate: HttpRelayGate,
+        n: Int,
+    ) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (gate.inFlight < n) {
+            if (System.currentTimeMillis() > deadline) fail("the stalled command never took its slot")
+            Thread.sleep(10)
         }
     }
 

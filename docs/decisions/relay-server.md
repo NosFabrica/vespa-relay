@@ -2,7 +2,7 @@
 
 The history behind `relay/.../RelayMain.kt`, the `server/` package (HttpServer,
 NostrRelayServer, the NIP-42 and lens policies, TrustNotice, SearchGate,
-BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpReads, HttpReadGate) and `config/`
+BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpCommand, HttpRelayGate) and `config/`
 (RelayAddresses, EnvSettings, PubKeys), moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -207,8 +207,8 @@ map is short on purpose, because every entry is a claim that setting the
 variable under compose should do nothing, and an exemption for a deleted setting
 is checked for the same reason.
 
-**An HTTP read is a websocket session that ends at EOSE.** `POST /req` builds
-the REQ frame and hands it to `RelayServerBase.serve`, the same entry the
+**An HTTP command is a websocket session that ends at its answer.** Each
+route builds the client frame and hands it to `RelayServerBase.serve`, the same entry the
 socket uses, rather than calling the store: every limit, policy, the raw-frame
 path and the pressure sample come with it, and a later quartz change reaches
 both transports at once. The body is re-serialized from parsed JSON before it
@@ -235,10 +235,46 @@ the last one; the route suppresses the plugin for its 200 and sync-flushes a
 `GZIPOutputStream` at each flush point, so a compressed line is a delivered one.
 Flush points are "nothing else waiting", so a store page leaves as one write.
 
-**HTTP reads are capped per address and in all, and refused rather than
+**HTTP commands are capped per address and in all, and refused rather than
 queued.** `SearchGate` holds one ranked read per connection, which HTTP defeats
 by opening a connection per request. A queued request would hold a socket and
 spend its deadline waiting, so the gate answers `429` (the address) or `503`
 (the relay) at once. Behind a proxy every client is the proxy, so the address
-comes from `HTTP_READ_CLIENT_HEADER` when set, its last entry because that is
-the one the proxy wrote.
+comes from `HTTP_RELAY_CLIENT_HEADER`, read only when the socket's peer is one
+of `HTTP_RELAY_TRUSTED_PROXIES`: from anyone else the header is the client's
+own claim, and honouring it let one client take every slot by naming a new
+address per request. Its last entry, across every line of it, because that is
+the one the proxy wrote. The gate runs before NIP-98 is verified, since the
+verifier spends the token and a refused request would otherwise burn it.
+
+**The deadline is checked between frames and never interrupts a write.**
+Cancelling a write mid-way could leave half a line, or with gzip send buffered
+bytes twice (measured: the stream broke with `invalid block type`). A reader
+that has stopped reading is bounded instead by a hard stop five seconds past
+the deadline, which drops the connection rather than finishing it.
+
+**Negentropy over HTTP holds no session.** The NIP-77 responder's only state is
+`isInitiator`, false on a relay, so a round is `reconcile(message)` against a
+sealed snapshot, and `sealedNegentropyStorage` already caches that per filter.
+Each `/neg` round therefore carries its filter; the relay keeps nothing between
+rounds, needs no `NEG-CLOSE`, and any instance behind a load balancer can answer
+any round. The cost is the snapshot rebuild when the cache misses between two
+rounds, which is the cost of a fresh `NEG-OPEN` on the socket too.
+
+**The gzip stream is handed on at 64 KB, not only at flushes.** The route
+flushes when no frame is waiting, which in a burst is never; compressed output
+sat in the sink's own buffer and a reader that stopped reading left the whole
+answer in the heap (measured: 12 MB accepted with nothing read). Draining
+past the threshold puts the gzip path under the socket's backpressure like the
+plain one.
+
+**The HTTP commands' engine seams belong in quartz, drafted as a patch.**
+Three parts of the route stand in for what quartz does not expose: frames are
+recognised by their text, a NIP-98 key rides beside the session in
+`VouchedReaders`, and a body is spliced into a frame string for the session to
+parse again. `docs/proposals/quartz-nip-xx-relay-over-http.patch` (a
+`git am` onto the pinned a8e8778265, verified there with its own tests) gives
+the session a typed `SessionSink`, identities proved before connect, and
+`receive(Command)`, and carries the transport-neutral handler; the wire format
+is `docs/proposals/nip-xx-relay-over-http.md`. Once it lands and the pin moves,
+`HttpRelayRoutes` keeps only the Ktor response, the gate and the gzip sink.

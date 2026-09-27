@@ -169,7 +169,7 @@ relay/…/relay/
                               serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
-                              (RELAY_ICON), RelayWebSocket, HttpReads + HttpReadGate (HTTP_READS*: POST /req, /count), Nip86Route,
+                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes + HttpCommand + HttpRelayGate (HTTP_RELAY*: POST /req, /count, /event, /neg), Nip86Route,
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /

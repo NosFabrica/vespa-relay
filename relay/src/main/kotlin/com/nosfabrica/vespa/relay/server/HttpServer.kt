@@ -70,7 +70,7 @@ data class Nip11Info(
 
 /**
  * The whole relay on [port]: the websocket and the NIP-11 doc on `/`, the landing page and its
- * modules, the stats pages, `/pressure`, the HTTP reads when [httpReads] is set, and the NIP-86 RPC
+ * modules, the stats pages, `/pressure`, the HTTP commands when [httpRelay] is set, and the NIP-86 RPC
  * on `POST /` when [admin] is set.
  * With [wait] (the default) this blocks until the server stops.
  */
@@ -97,8 +97,8 @@ fun serveRelay(
     onInfoChanged: (Nip11RelayInformation) -> Unit = {},
     // The icon this relay serves itself, compared against the doc's icon to tell "no override".
     selfIconUrl: String? = null,
-    // When set, POST /req and POST /count answer one read without a socket.
-    httpReads: HttpReads? = null,
+    // When set, POST /req, /count, /event and /neg answer one command without a socket.
+    httpRelay: HttpRelay? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
@@ -176,7 +176,7 @@ fun serveRelay(
             }
             corpusStats(stats, statsJson)
             trustHealth(trust, trustJson, trustExplain)
-            httpReads?.let { httpReadRoutes(relay, it) }
+            httpRelay?.let { httpRelayRoutes(relay, it) }
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)

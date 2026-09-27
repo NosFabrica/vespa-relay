@@ -223,19 +223,28 @@ key nobody has scored is an empty answer rather than an error — the quieter
 failure of the two. Until the router learns to declare, peer a gated relay by
 turning the gate off there, or by giving the mirroring key a real lens.
 
-## Reads over HTTP (`POST /req`, `POST /count`)
+## Commands over HTTP (`POST /req`, `/count`, `/event`, `/neg`)
 
 | var | meaning | default |
 |---|---|---|
-| `HTTP_READS` | serve one REQ or COUNT per HTTP request, beside the websocket. `false`/`0`/`no`/`off` removes both routes; anything else that is not a boolean stops the boot | on |
-| `HTTP_READS_PER_CLIENT` | HTTP reads one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
-| `HTTP_READS_TOTAL` | HTTP reads the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
-| `HTTP_READ_DEADLINE_SECONDS` | how long one read may take, first byte to last | `30` |
-| `HTTP_READ_CLIENT_HEADER` | the header a fronting proxy names the client in, e.g. `X-Forwarded-For`; its **last** entry is used, the one your proxy appended. Unset keys the per-client cap on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
+| `HTTP_RELAY` | answer one client command per HTTP request, beside the websocket. `false`/`0`/`no`/`off` removes all four routes; anything else that is not a boolean stops the boot | on |
+| `HTTP_RELAY_PER_CLIENT` | commands one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
+| `HTTP_RELAY_TOTAL` | commands the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
+| `HTTP_RELAY_DEADLINE_SECONDS` | how long one answer may run, first byte to last, `1`–`3600` | `30` |
+| `HTTP_RELAY_CLIENT_HEADER` / `HTTP_RELAY_TRUSTED_PROXIES` | behind a reverse proxy: the header it names the client in (e.g. `X-Forwarded-For`) and the addresses or blocks it connects from (e.g. `172.16.0.0/12`). The header is read only on a request whose socket peer is one of those proxies, and then its **last** entry across every line of it, the one the proxy appended. Set both or neither; without them the per-client cap is keyed on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
 
-The request body is what follows `"REQ","<subid>",` on the socket: one filter
-object, or an array of them. The answer is the relay's own NIP-01 frames as
-`application/x-ndjson`, one per line, under the subscription id `http`:
+Each command has its own path, and its body is what follows the command's
+subscription id on the socket (a lone object where the command takes one):
+
+| path | body | the answer ends on |
+|---|---|---|
+| `/req` | a filter, or an array of filters | `EOSE` (a REQ with its live tail cut off) |
+| `/count` | a filter, or an array of filters | `COUNT` |
+| `/event` | one signed event | `OK` |
+| `/neg` | `[filter, "<hex NIP-77 message>"]` — one reconciliation round | `NEG-MSG` |
+
+The answer is the relay's own frames as `application/x-ndjson`, one per line,
+under the subscription id `http`:
 
 ```
 $ curl -N --compressed -X POST https://relay.example/req -d '{"kinds":[1],"limit":2,"search":"include:spam"}'
@@ -244,37 +253,54 @@ $ curl -N --compressed -X POST https://relay.example/req -d '{"kinds":[1],"limit
 ["EOSE","http"]
 ```
 
-It is the websocket's REQ with the live tail cut off: the same session, limits,
-policies and store answer it, and the response ends at `EOSE` (a COUNT at its
-`COUNT` frame). Lines go out as the store produces them, so a client can act on
-the first event before the last one is found; gzip is applied by the route
-itself and flushed with every batch, so asking for it costs no latency.
+Every command runs on its own connection to the same session, limits, policies
+and store the websocket uses, and nothing outlives the request. A REQ's lines go
+out as the store produces them, so a client can act on the first event before
+the last one is found; gzip is applied by the route itself and flushed with
+every batch, so asking for it costs no latency.
 
-**Status.** The status waits for the first frame. A read the relay refuses
-before sending anything is an HTTP error whose body is the one `CLOSED` frame,
-its NIP-01 prefix picking the code: `auth-required:` is `401` (with
+**Negentropy is stateless.** NIP-77's responder keeps nothing between rounds but
+the snapshot it reconciles against, and the relay already caches that snapshot
+per filter, so each `/neg` round carries its filter and the current message and
+the relay answers the next message. There is no `NEG-CLOSE` and no session to
+lose: rounds may land on any instance behind a load balancer. A round is gated
+exactly as a `NEG-OPEN` is, lens and `NEG_MAX_SYNC_EVENTS` cap included.
+
+**Status.** The status waits for the first frame. An answer the relay refuses
+before sending anything is an HTTP error whose body is that one frame — a
+`CLOSED`, a `NEG-ERR`, an `OK` with `false`, or a `NOTICE` for a command that
+never ran — its NIP-01 prefix picking the code: `auth-required:` is `401` (with
 `WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
-`429`, `error:` `500`, anything else `400`; a body that is not filters is `400`,
-one over `MAX_MESSAGE_LENGTH` is `413`, and no frame within the deadline is
-`503`. Once events are flowing the status is `200` and can no longer change, so
-a failure after that is a last `CLOSED` line, a deadline passed mid-answer
-included. **A body that does not end on `EOSE`, `COUNT` or `CLOSED` was cut
-off**, not finished.
+`429`, `error:` `500`, anything else `400`. An `OK` for a `duplicate:` is `200`:
+the event is stored, which is what was asked. A body that is not the command's
+arguments is `400`, one over `MAX_MESSAGE_LENGTH` `413`, and no frame within the
+deadline `503`. Once a REQ's events are flowing the status is `200` and can no
+longer change, so a failure after that is a last `CLOSED` line, a deadline
+passed mid-answer included. **A body that does not end on its command's answer
+frame or a refusal was cut off**, not finished.
 
-**Who reads.** The lens rules are [Reads before AUTH](#reads-before-auth)'s:
+**Who acts.** The lens rules are [Reads before AUTH](#reads-before-auth)'s:
 `observer:` or `include:spam` in the filter, or a NIP-98 `Authorization: Nostr …`
 header, whose pubkey then ranks the read exactly as a NIP-42 AUTH would on the
 socket. The token's `u` is `RELAY_HTTP_URL` (or the http form of `RELAY_URL`,
-or of the `.onion` address) plus `/req` or `/count`, its `method` is `POST`, and
-it must carry the body's `payload` hash — a token authorizes one query, once.
+or of the `.onion` address) plus the command's path, its `method` is `POST`,
+and it must carry the body's `payload` hash — a token authorizes one command,
+once. A request the gate refuses does not spend it. An `Authorization` in any
+other scheme (a proxy's `Basic`, a client's `Bearer`) is not addressed to the
+relay and is ignored.
 
 **Limits.** The per-connection search gate (`SEARCH_CONCURRENCY_PER_CONNECTION`)
 cannot hold here, because every request is its own connection; the two caps
-above stand in for it. A client that reads slower than the store answers is cut
-off at the websocket's bound (8,192 frames waiting) with a `CLOSED` line.
-Browsers may call it from any origin; the CORS rules are the ones every route on
-this port shares. Behind nginx, `X-Accel-Buffering: no` on the response keeps
-the proxy from holding lines back; another buffering proxy needs the same off.
+above stand in for it. A reader slower than the network holds the relay's
+writes, not its memory; one more than the websocket's bound (8,192 frames)
+behind the store is cut off with a `CLOSED` line, and one that stops reading
+altogether is dropped five seconds past the deadline. Browsers may call it from
+any origin; the CORS rules are the ones every route on this port shares. Behind
+nginx, `X-Accel-Buffering: no` on the response keeps the proxy from holding
+lines back; another buffering proxy needs the same off.
+
+The wire format is written up as a NIP draft in
+[proposals/nip-xx-relay-over-http.md](proposals/nip-xx-relay-over-http.md).
 
 ## Search: the subject travels with the pointer
 
@@ -469,7 +495,7 @@ catch-up are untouched.
 |---|---|---|
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
-| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP reads](#reads-over-http-post-req-post-count) | derived from `RELAY_URL` |
+| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-post-req-count-event-neg) | derived from `RELAY_URL` |
 
 ## Serving over Tor (a `.onion` endpoint)
 

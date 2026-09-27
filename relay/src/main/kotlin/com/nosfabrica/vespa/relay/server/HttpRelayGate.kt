@@ -21,16 +21,16 @@
 package com.nosfabrica.vespa.relay.server
 
 /**
- * How many HTTP reads may run at once, per client address and in all. Refuses rather than queues:
+ * How many HTTP commands may run at once, per client address and in all. Refuses rather than queues:
  * a queued request holds a socket and a deadline for nothing, and a refusal tells the client to back off.
  */
-class HttpReadGate(
-    /** Reads one client address may run at once. 0 lifts the per-client cap. */
+class HttpRelayGate(
+    /** Commands one client address may run at once. 0 lifts the per-client cap. */
     val perClient: Int,
-    /** Reads the whole relay may run at once. 0 lifts the total cap. */
+    /** Commands the whole relay may run at once. 0 lifts the total cap. */
     val total: Int,
 ) {
-    /** Why [through] did not run a read. */
+    /** Why [through] did not run a command. */
     enum class Refusal { CLIENT_BUSY, RELAY_BUSY }
 
     private val byClient = HashMap<String, Int>()
@@ -50,7 +50,7 @@ class HttpReadGate(
         }
     }
 
-    /** Reads running right now. */
+    /** Commands running right now. */
     val inFlight: Int
         @Synchronized get() = running
 

@@ -27,15 +27,47 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The HTTP reads' small decisions: which body is filters, which prefix is which status, who takes gzip. */
-class HttpReadsWireTest {
+/** The HTTP commands' small decisions: which body is which command, which frame is which status, who takes gzip. */
+class HttpRelayWireTest {
+    private fun frame(
+        command: HttpCommand,
+        body: String,
+    ) = parseBody(body.encodeToByteArray())?.let(command::frame)
+
     @Test
-    fun `a body is one filter or a non-empty array of them`() {
-        assertEquals(1, parseFilters("""{"kinds":[1]}""".encodeToByteArray())?.size)
-        assertEquals(2, parseFilters("""[{"kinds":[1]},{"ids":[]}]""".encodeToByteArray())?.size)
+    fun `each command takes its own arguments and nothing else`() {
+        assertEquals("""["REQ","http",{"kinds":[1]}]""", frame(HttpCommand.REQ, """{"kinds":[1]}"""))
+        assertEquals("""["COUNT","http",{"kinds":[1]},{"ids":[]}]""", frame(HttpCommand.COUNT, """[{"kinds":[1]},{"ids":[]}]"""))
+        assertEquals("""["EVENT",{"id":"x"}]""", frame(HttpCommand.EVENT, """{"id":"x"}"""))
+        assertEquals("""["NEG-OPEN","http",{"kinds":[1]},"61"]""", frame(HttpCommand.NEG, """[{"kinds":[1]},"61"]"""))
         for (bad in listOf("", "[]", "[1]", """[{"kinds":[1]},"x"]""", "null", "\"REQ\"", "{", """{"a":1} trailing""")) {
-            assertNull(parseFilters(bad.encodeToByteArray()), "'$bad' is not filters")
+            assertNull(frame(HttpCommand.REQ, bad), "'$bad' is not filters")
         }
+        for (bad in listOf("[]", """[{"id":"x"}]""", "1")) assertNull(frame(HttpCommand.EVENT, bad), "'$bad' is not one event")
+        for (bad in listOf("""{"kinds":[1]}""", """[{"kinds":[1]}]""", """["61",{"kinds":[1]}]""", """[{"kinds":[1]},61]""", """[{},"61","x"]""")) {
+            assertNull(frame(HttpCommand.NEG, bad), "'$bad' is not one round")
+        }
+    }
+
+    @Test
+    fun `each command's answer ends on its own frames`() {
+        assertTrue(HttpCommand.REQ.ends("""["EOSE","http"]"""))
+        assertFalse(HttpCommand.REQ.ends("""["EVENT","http",{}]"""))
+        assertTrue(HttpCommand.EVENT.ends("""["OK","x",true,""]"""))
+        assertFalse(HttpCommand.EVENT.ends("""["EOSE","http"]"""))
+        assertTrue(HttpCommand.NEG.ends("""["NEG-ERR","http","blocked: too many"]"""))
+        assertTrue(HttpCommand.COUNT.ends("""["NOTICE","too big"]"""))
+    }
+
+    @Test
+    fun `the first frame decides the status`() {
+        assertEquals(HttpStatusCode.OK, statusOf("""["EVENT","http",{}]"""))
+        assertEquals(HttpStatusCode.OK, statusOf("""["OK","x",true,"duplicate: have it"]"""))
+        assertEquals(HttpStatusCode.BadRequest, statusOf("""["OK","x",false,"invalid: bad signature"]"""))
+        assertEquals(HttpStatusCode.Forbidden, statusOf("""["OK","x",false,"blocked: banned"]"""))
+        assertEquals(HttpStatusCode.Forbidden, statusOf("""["NEG-ERR","http","blocked: too many query results"]"""))
+        assertEquals(HttpStatusCode.Unauthorized, statusOf("""["CLOSED","http","auth-required: sign"]"""))
+        assertEquals(HttpStatusCode.BadRequest, statusOf("""["NOTICE","error: could not parse message"]"""))
     }
 
     @Test
@@ -58,7 +90,23 @@ class HttpReadsWireTest {
         assertFalse(acceptsGzip(null))
         assertFalse(acceptsGzip("deflate, br"))
         assertFalse(acceptsGzip("gzip;q=0"))
-        assertFalse(acceptsGzip("gzip; q=0.0"))
+        assertFalse(acceptsGzip("gzip; Q=0.0"))
+        assertFalse(acceptsGzip("gzip;q=0, *"), "a named coding decides over the wildcard")
+        assertFalse(acceptsGzip("*;q=0"))
+    }
+
+    @Test
+    fun `an address block matches its own addresses and never resolves a name`() {
+        val block = Cidr.parse("172.16.0.0/12")!!
+        assertTrue(block.contains("172.20.1.2"))
+        assertFalse(block.contains("172.32.0.1"))
+        assertTrue(Cidr.parse("10.0.0.1")!!.contains("10.0.0.1"))
+        assertFalse(Cidr.parse("10.0.0.1")!!.contains("10.0.0.2"))
+        assertTrue(Cidr.parse("::1/128")!!.contains("0:0:0:0:0:0:0:1"))
+        assertFalse(Cidr.parse("::1/128")!!.contains("127.0.0.1"))
+        assertTrue(Cidr.parse("0.0.0.0/0")!!.contains("8.8.8.8"))
+        for (bad in listOf("example.com", "999.1.1.1", "10.0.0.0/33", "10.0.0/8", "", "10.0.0.0/x")) assertNull(Cidr.parse(bad), "'$bad'")
+        assertFalse(block.contains("localhost"), "a name is not an address")
     }
 
     @Test

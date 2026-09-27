@@ -231,36 +231,46 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `HTTP reads are on by default with their caps`() {
-        val reads = assertNotNull(httpReadsFromEnv(emptyMap()) { listOf("https://relay.example") })
-        assertEquals(2, reads.gate.perClient)
-        assertEquals(64, reads.gate.total)
-        assertEquals(30_000L, reads.deadlineMs)
-        assertNull(reads.clientHeader)
-        assertEquals(listOf("https://relay.example/req"), reads.urlsFor("/req"))
+    fun `HTTP commands are on by default with their caps`() {
+        val relay = assertNotNull(httpRelayFromEnv(emptyMap()) { listOf("https://relay.example") })
+        assertEquals(2, relay.gate.perClient)
+        assertEquals(64, relay.gate.total)
+        assertEquals(30_000L, relay.deadlineMs)
+        assertNull(relay.clients.header)
+        assertEquals(listOf("https://relay.example/req"), relay.urlsFor("/req"))
     }
 
     @Test
-    fun `HTTP reads take their caps from the env and turn off only when told`() {
-        val reads =
+    fun `HTTP commands take their settings from the env and refuse what does not parse`() {
+        val relay =
             assertNotNull(
-                httpReadsFromEnv(
+                httpRelayFromEnv(
                     mapOf(
-                        "HTTP_READS" to "true",
-                        "HTTP_READS_PER_CLIENT" to "0",
-                        "HTTP_READS_TOTAL" to "not-a-number",
-                        "HTTP_READ_DEADLINE_SECONDS" to "5",
-                        "HTTP_READ_CLIENT_HEADER" to " X-Forwarded-For ",
+                        "HTTP_RELAY" to "true",
+                        "HTTP_RELAY_PER_CLIENT" to "0",
+                        "HTTP_RELAY_DEADLINE_SECONDS" to "5",
+                        "HTTP_RELAY_CLIENT_HEADER" to " X-Forwarded-For ",
+                        "HTTP_RELAY_TRUSTED_PROXIES" to "172.16.0.0/12, 127.0.0.1",
                     ),
                 ) { emptyList() },
             )
-        assertEquals(0, reads.gate.perClient)
-        assertEquals(64, reads.gate.total)
-        assertEquals(5_000L, reads.deadlineMs)
-        assertEquals("X-Forwarded-For", reads.clientHeader)
+        assertEquals(0, relay.gate.perClient)
+        assertEquals(5_000L, relay.deadlineMs)
+        assertEquals("X-Forwarded-For", relay.clients.header)
+        assertEquals(2, relay.clients.trustedProxies.size)
 
-        assertNull(httpReadsFromEnv(mapOf("HTTP_READS" to "false")) { emptyList() })
-        // A typo must not quietly publish, or quietly withdraw, an endpoint.
-        assertFailsWith<IllegalStateException> { httpReadsFromEnv(mapOf("HTTP_READS" to "flase")) { emptyList() } }
+        assertNull(httpRelayFromEnv(mapOf("HTTP_RELAY" to "false")) { emptyList() })
+        val refused =
+            listOf(
+                mapOf("HTTP_RELAY" to "flase"),
+                mapOf("HTTP_RELAY_TOTAL" to "6x"),
+                mapOf("HTTP_RELAY_PER_CLIENT" to "-1"),
+                mapOf("HTTP_RELAY_DEADLINE_SECONDS" to "99999999999999999"),
+                mapOf("HTTP_RELAY_DEADLINE_SECONDS" to "0"),
+                mapOf("HTTP_RELAY_CLIENT_HEADER" to "X-Forwarded-For"),
+                mapOf("HTTP_RELAY_TRUSTED_PROXIES" to "10.0.0.0/8"),
+                mapOf("HTTP_RELAY_CLIENT_HEADER" to "X-Real-IP", "HTTP_RELAY_TRUSTED_PROXIES" to "proxy.internal"),
+            )
+        for (env in refused) assertFailsWith<IllegalStateException>("$env") { httpRelayFromEnv(env) { emptyList() } }
     }
 }

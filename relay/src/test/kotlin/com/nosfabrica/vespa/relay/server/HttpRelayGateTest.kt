@@ -27,20 +27,20 @@ import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class HttpReadGateTest {
+class HttpRelayGateTest {
     /** Holds a slot for [client] until [release] completes; answers how the gate decided. */
     private fun kotlinx.coroutines.CoroutineScope.hold(
-        gate: HttpReadGate,
+        gate: HttpRelayGate,
         client: String,
         release: CompletableDeferred<Unit>,
     ) = async { gate.through(client, refused = { it.name }) { release.await().let { "ran" } } }
 
-    private suspend fun HttpReadGate.tryOnce(client: String) = through(client, refused = { it.name }) { "ran" }
+    private suspend fun HttpRelayGate.tryOnce(client: String) = through(client, refused = { it.name }) { "ran" }
 
     @Test
     fun `one client is capped at its share and the relay at its total`() =
         runBlocking {
-            val gate = HttpReadGate(perClient = 2, total = 3)
+            val gate = HttpRelayGate(perClient = 2, total = 3)
             val release = CompletableDeferred<Unit>()
             val held = listOf(hold(gate, "a", release), hold(gate, "a", release), hold(gate, "b", release))
             while (gate.inFlight < 3) yield()
@@ -57,7 +57,7 @@ class HttpReadGateTest {
     @Test
     fun `zero lifts a cap`() =
         runBlocking {
-            val gate = HttpReadGate(perClient = 0, total = 0)
+            val gate = HttpRelayGate(perClient = 0, total = 0)
             val release = CompletableDeferred<Unit>()
             val held = (1..10).map { hold(gate, "a", release) }
             while (gate.inFlight < 10) yield()
@@ -69,7 +69,7 @@ class HttpReadGateTest {
     @Test
     fun `a read that throws still frees its slot`() =
         runBlocking {
-            val gate = HttpReadGate(perClient = 1, total = 1)
+            val gate = HttpRelayGate(perClient = 1, total = 1)
             runCatching { gate.through("a", refused = { "refused" }) { error("boom") } }
             assertEquals("ran", gate.tryOnce("a"))
         }
