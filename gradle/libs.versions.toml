@@ -798,6 +798,12 @@ quartz = "ec16988e3a"
 # behaviour change a test here can see), and the resolved graph of all six
 # modules: every quartz line ec16988e3a, every eventstore line 748dc5b8c6, zero
 # arrows.
+# And the store at 748dc5b8c6 itself: `./gradlew build` (719 tests, 1 skipped,
+# 0 failures) and its integration suite against a real Vespa in Docker
+# (`TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration`:
+# 21 tests, 20 passed, StagingCorpusIT skipped by design, 0 failures, VespaParityIT
+# / RankRegressionIT / ObserverGateIT / OrphanSweepIT among them), read off the
+# result XML.
 #
 # LEXICOGRAPHIC: '748d…' < 'ebb0…' ('7' < 'e'), so this sorts BELOW the pin it
 # replaces -- the losing direction, and harmless here: nothing else in the graph
