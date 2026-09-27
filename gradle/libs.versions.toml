@@ -49,16 +49,17 @@ app = "0.1.0"
 #     relayPosts does the split, geode's KtorRelay the same.
 #   The client side (HttpRelayClient, HttpRelayTransport, OkHttpRelayTransport) is new and unused here.
 #
-# NO STORE MOVE NEEDED FOR THE CODE: vespa-eventstore e62745df71 names a53cafd577, and neither its
-# store nor engine jar references a class in any package the range touches (scanned). The store's
-# own pin moving to this string is what clears the arrow below.
+# THE STORE MOVED WITH IT (vespa-eventstore #153, 9522ee0768 below), for the graph's sake only:
+# neither its store nor engine jar references a class in any package the range touches (scanned),
+# so e62745df71 ran on this jar too, with the arrow below.
 #
 # DIRECTION: a53cafd577 is a strict ancestor of this.
 #   git merge-base --is-ancestor a53cafd577 fcd76d2075   # verified
 #
-# LEXICOGRAPHIC: 'fcd7…' > 'a53c…' ('f' > 'a'): this would also WIN a conflict with the store's
-# a53cafd577, and `force(libs.quartz)` settles it regardless. Until the store names this string,
-# the resolved graph carries `quartz:a53cafd577 -> fcd76d2075` -- an arrow TO the pin.
+# LEXICOGRAPHIC: 'fcd7…' > 'a53c…' ('f' > 'a'), and `force(libs.quartz)` settles it regardless.
+# NO ARROW: with the store on 9522ee0768 every quartz line in all six modules reads fcd76d2075. For
+# one commit (e6a71f2) the store still named a53cafd577 and five modules carried
+# `quartz:a53cafd577 -> fcd76d2075`, an arrow TO the pin, which #153 cleared.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # Prev a53cafd577 (2026-09-27, #4214: NIP-FE's review fixes; the relay's HTTP commands moved onto
@@ -832,7 +833,21 @@ quartz = "fcd76d2075"
 # LEXICOGRAPHIC: 'e627…' > '748d…' ('e' > '7'), so this sorts ABOVE the pin it
 # replaces -- the safe direction, and moot: nothing else in the graph names vespa-eventstore.
 #
-vespaEventStore = "e62745df71"
+# 9522ee0768 = vespa-eventstore main @ 2026-09-27, the merge of PR #153 (one commit over
+# e62745df71, same tree as its head 48f537b): the store's own quartz pin moves a53cafd577 ->
+# fcd76d2075 to match the one above, and its pin note gets back three history lines #152 dropped.
+# No store code, no schema, nothing re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor e62745df71 9522ee0768   # verified
+#
+# GATED: the store at #153's head -- `./gradlew build` (719 tests, 1 skipped, 0 failures) and its
+# integration suite against a real Vespa in Docker (21 tests, 20 passed, StagingCorpusIT skipped by
+# design, 0 failures) -- and this relay's full build + archTest on both pins, every quartz line
+# fcd76d2075 and every eventstore line 9522ee0768, zero arrows.
+#
+# LEXICOGRAPHIC: '9522…' < 'e627…' ('9' < 'e'), so this sorts BELOW the pin it replaces -- the
+# losing direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+vespaEventStore = "9522ee0768"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
