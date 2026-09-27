@@ -207,13 +207,14 @@ map is short on purpose, because every entry is a claim that setting the
 variable under compose should do nothing, and an exemption for a deleted setting
 is checked for the same reason.
 
-**An HTTP command is a websocket session that ends at its answer.** Each
-route hands the client frame to `RelayServerBase.serve`, the same entry the
-socket uses, rather than calling the store: every limit, policy, the raw-frame
-path and the pressure sample come with it, and a later quartz change reaches
-both transports at once. The body is spliced into the frame as sent and parsed
-once, by the engine, as socket text is: the verb and subscription id come first
-and one value is read, so a body cannot turn into another command. The answer is the frames
+**An HTTP command is a websocket session that ends at its answer.** The body
+is the client frame itself, and the handler hands it to `RelayServerBase.serve`,
+the same entry the socket uses, rather than calling the store: every limit,
+policy, the raw-frame path and the pressure sample come with it, and a later
+quartz change reaches both transports at once. The frame is parsed once, to
+refuse what HTTP does not carry (AUTH, CLOSE, NEG-*) and to know what ends the
+answer, then run with its text, so the policies that judge the wire text still
+see it. The answer is the frames
 themselves, one per line, because a client then parses HTTP and the socket
 the same way, and the last line says whether the answer finished (`EOSE`) or
 was cut (`CLOSED`) — a bare array of events cannot tell a dropped connection
@@ -287,9 +288,14 @@ The engine half landed upstream (amethyst #4212, its review fixes #4214): a type
 `HttpRelayHandler`, which this relay now calls. `HttpRelayRoutes` keeps only the
 host's part: the bounded body read, the gate, the headers and the gzip sink.
 
-**HTTP answers carry no subscription id.** Upstream (nostr-protocol/nips#2484)
-settled NIP-FE's frames as `["EVENT",{…}]`, `["EOSE"]`: a request is its own
-connection with exactly one command, so the id says nothing. The engine still
-runs the command under `http` inside, and the handler takes it back out of each
-frame as it leaves, by verb (only the frames that carry one), so a NOTICE whose
-text happens to read `http` is never touched.
+**One URL, whole frames.** NIP-FE began here as three paths (`/req`, `/count`,
+`/event`) taking the command's arguments, with the subscription id stripped from
+every answer frame. The published text (NostrHub, kind 30817,
+`d=nip-fe-nostr-over-http`) dropped all of it: a request is a POST to the relay's
+URL carrying the frame a client would send on the socket, id and all, and the
+answer is the socket's frames unchanged. A client reuses its NIP-01 parser as it
+is, the relay feeds the body to its socket handler, and nothing is rewritten on
+the way out. NIP-86 already answered POSTs to `/`, so the two share the route,
+told apart by NIP-86's `application/nostr+json+rpc`; with the commands off, every
+POST is the rpc's, as before.
+

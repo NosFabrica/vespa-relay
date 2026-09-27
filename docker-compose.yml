@@ -135,7 +135,7 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
-      # POST /req, /count and /event. Behind a proxy, set the client
+      # NIP-FE: a client frame POSTed to the relay's URL. Behind a proxy, set the client
       # header and the proxy's addresses, or every caller shares one cap.
       HTTP_RELAY: ${HTTP_RELAY:-}
       HTTP_RELAY_PER_CLIENT: ${HTTP_RELAY_PER_CLIENT:-}

@@ -27,12 +27,11 @@ import com.vitorpamplona.quartz.nip86RelayManagement.server.Nip86Server
 import com.vitorpamplona.quartz.nip98HttpAuth.Nip98AuthVerifier
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.post
 import io.ktor.utils.io.readRemaining
 import kotlinx.io.readByteArray
 
@@ -48,13 +47,14 @@ class Nip86Admin(
 )
 
 /**
- * The NIP-86 admin RPC on `POST /`. Parsing, NIP-98 auth and dispatch are quartz's
- * [Nip86HttpHandler]; this maps its result onto HTTP status codes. Doc changes flow into [info].
+ * The NIP-86 admin RPC, answered on `POST /` beside NIP-FE's commands ([relayPosts]). Parsing,
+ * NIP-98 auth and dispatch are quartz's [Nip86HttpHandler]; this maps its result onto HTTP status
+ * codes. Doc changes flow into [info].
  */
-fun Route.nip86Admin(
+fun nip86Answer(
     admin: Nip86Admin,
     info: Nip86Server.InfoHolder,
-) {
+): suspend (ApplicationCall) -> Unit {
     val server =
         Nip86Server(
             admin.banStore,
@@ -65,19 +65,19 @@ fun Route.nip86Admin(
     val handler = Nip86HttpHandler(server, admin.relayHttpUrl, Nip98AuthVerifier(), Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES)
     val rpcType = ContentType.parse(Nip86HttpHandler.CONTENT_TYPE)
 
-    post("/") {
+    return ret@{ call ->
         val auth = call.request.headers["Authorization"]
         // Bounded before buffering: NIP-98 binds the token to the body's sha256, so the handler can
         // only check size after reading. The +1 read catches a lying Content-Length and chunked uploads.
         val max = Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES
         if ((call.request.contentLength() ?: 0) > max) {
             call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
-            return@post
+            return@ret
         }
         val body = call.receiveChannel().readRemaining(max + 1L).readByteArray()
         if (body.size > max) {
             call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
-            return@post
+            return@ret
         }
         when (val result = handler.handle(auth, body)) {
             is Nip86HttpHandler.Response.Ok -> {

@@ -21,15 +21,13 @@
 package com.nosfabrica.vespa.relay.server
 
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The host side's small decisions: who takes gzip, which address a proxy vouches for, how a refusal made
- * here is written. Which body is which command and which frame is which status are quartz's
- * (HttpRelayHandlerTest there).
+ * The host side's small decisions: who takes gzip and which address a proxy vouches for. Which body is
+ * which command and which frame is which status are quartz's (HttpRelayHandlerTest there).
  */
 class HttpRelayWireTest {
     @Test
@@ -58,10 +56,5 @@ class HttpRelayWireTest {
         assertTrue(Cidr.parse("0.0.0.0/0")!!.contains("8.8.8.8"))
         for (bad in listOf("example.com", "999.1.1.1", "10.0.0.0/33", "10.0.0/8", "", "10.0.0.0/x")) assertNull(Cidr.parse(bad), "'$bad'")
         assertFalse(block.contains("localhost"), "a name is not an address")
-    }
-
-    @Test
-    fun `a CLOSED frame escapes its reason`() {
-        assertEquals("""["CLOSED","error: a \"quoted\" reason"]""", closedFrame("error: a \"quoted\" reason"))
     }
 }

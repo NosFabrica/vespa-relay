@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayCommand
+import com.vitorpamplona.quartz.nip86RelayManagement.server.Nip86HttpHandler
 import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayHandler
 import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayLines
 import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayReaderStalled
@@ -35,6 +35,7 @@ import io.ktor.server.plugins.origin
 import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
@@ -43,14 +44,12 @@ import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.writeFully
 import kotlinx.io.readByteArray
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
 import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPOutputStream
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * The HTTP command endpoints' settings. [origins] are the prefixes a NIP-98 `u` may carry, asked per
+ * The HTTP command endpoint's settings. [origins] are the URLs a NIP-98 `u` may name, asked per
  * request because the hidden service can come up after the server did; never derived from the request.
  */
 class HttpRelay(
@@ -65,20 +64,40 @@ class HttpRelay(
 }
 
 /**
- * `POST /req`, `/count` and `/event` (NIP-FE): quartz's [HttpRelayHandler] runs each command on its
- * own session of [relay], with the same policies and store as the websocket, and answers with the
- * relay's frames without their subscription id, one per line, ending on the command's answer. What
- * is left here is the host's part: the bounded body read, the per-client gate, the headers, and a
- * gzip that flushes with every line.
+ * NIP-FE, a `POST` to the relay's URL whose body is one `REQ`, `COUNT` or `EVENT` frame as a client
+ * sends it on the socket: quartz's [HttpRelayHandler] runs it on its own session of [relay], with
+ * the same policies and store as the websocket, and answers with the socket's own frames, one per
+ * line, ending on the command's answer. What is left here is the host's part: the bounded body read,
+ * the per-client gate, the headers, and a gzip that flushes with every line.
  */
-fun Route.httpRelayRoutes(
+fun httpRelayAnswer(
     relay: NostrRelayServer,
     settings: HttpRelay,
-) {
+): suspend (ApplicationCall) -> Unit {
     val handler = HttpRelayHandler(relay, settings.origins, settings.deadlineMs.milliseconds)
-    for (command in HttpRelayCommand.entries) {
-        post(command.path) { call.answer(handler, settings, command) }
+    return { call -> call.answer(handler, settings) }
+}
+
+/**
+ * `POST /`, the relay's URL, shared as NIP-FE shares it: NIP-86's `application/nostr+json+rpc` is
+ * the admin [rpc], anything else a [commands] frame (a command needs no `Content-Type`). With the
+ * commands off every POST is the rpc's, as before NIP-FE; with the rpc off, one typed for it is a 404.
+ */
+fun Route.relayPosts(
+    commands: (suspend (ApplicationCall) -> Unit)?,
+    rpc: (suspend (ApplicationCall) -> Unit)?,
+) {
+    if (commands == null && rpc == null) return
+    post("/") {
+        val answer = if (commands != null && !call.isNip86Call()) commands else rpc
+        if (answer == null) call.respond(HttpStatusCode.NotFound) else answer(call)
     }
+}
+
+/** Compared as text: parsing would throw on a malformed header, and a command needs none. */
+private fun ApplicationCall.isNip86Call(): Boolean {
+    val type = request.headers[HttpHeaders.ContentType] ?: return false
+    return type.substringBefore(';').trim().equals(Nip86HttpHandler.CONTENT_TYPE, ignoreCase = true)
 }
 
 /** Compressed bytes held back between flushes before they are handed to the socket anyway. */
@@ -89,15 +108,14 @@ internal val NDJSON: ContentType = ContentType.parse("application/x-ndjson")
 private suspend fun ApplicationCall.answer(
     handler: HttpRelayHandler,
     settings: HttpRelay,
-    command: HttpRelayCommand,
 ) {
     // The engine counts characters and a UTF-8 character is up to three bytes, so the handler says how much to read.
     val cap = handler.maxBodyBytes ?: (defaultMaxMessageLength * 3L)
-    val body = receiveBounded(cap) ?: return respondClosed("invalid: the body exceeds $cap bytes", HttpStatusCode.PayloadTooLarge)
+    val body = receiveBounded(cap) ?: return respondNotice("invalid: the body exceeds $cap bytes", HttpStatusCode.PayloadTooLarge)
     // The gate first: a request it refuses never reaches the NIP-98 check or a session.
     settings.gate.through(settings.clients.of(this), refused = { respondBusy(it, settings.gate) }) {
         try {
-            handler.handle(HttpRelayRequest(command, request.headers[HttpHeaders.Authorization], body), KtorAnswer(this))
+            handler.handle(HttpRelayRequest(request.headers[HttpHeaders.Authorization], body), KtorAnswer(this))
         } catch (_: HttpRelayReaderStalled) {
             // The client stopped reading; its connection is dropped with the answer unfinished.
         }
@@ -183,26 +201,24 @@ private suspend fun ApplicationCall.respondFrames(
     respondText(frame + "\n", NDJSON, status)
 }
 
-private suspend fun ApplicationCall.respondClosed(
+/** A refusal before any command runs is one NOTICE line, as NIP-FE has it. */
+private suspend fun ApplicationCall.respondNotice(
     reason: String,
     status: HttpStatusCode,
-) = respondFrames(closedFrame(reason), status)
+) = respondFrames(HttpRelayHandler.notice(reason), status)
 
 private suspend fun ApplicationCall.respondBusy(
     refusal: HttpRelayGate.Refusal,
     gate: HttpRelayGate,
 ) = when (refusal) {
     HttpRelayGate.Refusal.CLIENT_BUSY -> {
-        respondClosed("rate-limited: ${gate.perClient} HTTP commands are already running from this address", HttpStatusCode.TooManyRequests)
+        respondNotice("rate-limited: ${gate.perClient} HTTP commands are already running from this address", HttpStatusCode.TooManyRequests)
     }
 
     HttpRelayGate.Refusal.RELAY_BUSY -> {
-        respondClosed("rate-limited: the relay is running its limit of ${gate.total} HTTP commands", HttpStatusCode.ServiceUnavailable)
+        respondNotice("rate-limited: the relay is running its limit of ${gate.total} HTTP commands", HttpStatusCode.ServiceUnavailable)
     }
 }
-
-/** A NIP-FE refusal line, `["CLOSED","<reason>"]`, for the answers made here rather than by the handler. */
-internal fun closedFrame(reason: String): String = JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(reason))).toString()
 
 /** The body, or null when it is over [max]. The +1 read catches a lying Content-Length and chunked uploads. */
 internal suspend fun ApplicationCall.receiveBounded(max: Long): ByteArray? {

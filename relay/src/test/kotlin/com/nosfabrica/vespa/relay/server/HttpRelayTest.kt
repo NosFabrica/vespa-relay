@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import com.vitorpamplona.quartz.nip98HttpAuth.HTTPAuthorizationEvent
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
@@ -48,7 +49,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/** The three HTTP commands over a real Netty server: one command, the relay's own frames, nothing left open. */
+/** NIP-FE over a real Netty server: one client frame posted to the relay's URL, the socket's own frames back, nothing left open. */
 class HttpRelayTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val origin = "https://relay.example"
@@ -100,6 +101,8 @@ class HttpRelayTest {
         gate: HttpRelayGate = HttpRelayGate(0, 0),
         deadlineMs: Long = 10_000,
         clients: ClientAddresses = ClientAddresses(),
+        commands: Boolean = true,
+        admin: Nip86Admin? = null,
         block: (base: String) -> Unit,
     ) {
         val server =
@@ -107,7 +110,8 @@ class HttpRelayTest {
                 relay = relay,
                 port = 0,
                 nip11 = Nip11Info(),
-                httpRelay = HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients),
+                httpRelay = if (commands) HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients) else null,
+                admin = admin,
                 wait = false,
             )
         try {
@@ -162,12 +166,13 @@ class HttpRelayTest {
         body: String,
         authorization: String? = null,
         forwardedFor: List<String> = emptyList(),
+        contentType: String? = null,
     ): Answer {
         val request =
             HttpRequest
                 .newBuilder(URI(url))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                .header("Content-Type", "application/json")
+                .apply { contentType?.let { header("Content-Type", it) } }
                 .apply { authorization?.let { header("Authorization", it) } }
                 .apply { forwardedFor.forEach { header("X-Forwarded-For", it) } }
                 .build()
@@ -175,16 +180,22 @@ class HttpRelayTest {
         return Answer(raw.statusCode(), raw.headers(), raw.body())
     }
 
-    /** A NIP-98 token for [body] at [path], signed against [at]. */
+    /** A NIP-98 token for [body], signed at the relay's URL [at]. */
     private fun token(
-        path: String,
         body: String,
         at: String = origin,
         by: NostrSignerSync = alice,
     ): String =
         by
-            .sign(HTTPAuthorizationEvent.build(at + path, "POST", body.encodeToByteArray(), System.currentTimeMillis() / 1000) {})
+            .sign(HTTPAuthorizationEvent.build(at, "POST", body.encodeToByteArray(), System.currentTimeMillis() / 1000) {})
             .toAuthToken()
+
+    /** The REQ frame for [filters], one filter or a JSON array of them, under the id [SUB]. */
+    private fun req(filters: String) = """["REQ","$SUB",${filters.trim().removeSurrounding("[", "]")}]"""
+
+    private fun count(filters: String) = """["COUNT","$SUB",${filters.trim().removeSurrounding("[", "]")}]"""
+
+    private fun event(json: String) = """["EVENT",$json]"""
 
     @Test
     fun `a REQ answers the stored events and ends at EOSE`() {
@@ -192,11 +203,11 @@ class HttpRelayTest {
         val second = note("second")
         publish(first, second)
         serving { base ->
-            val response = post("$base/req", """{"kinds":[1],"search":"include:spam"}""")
+            val response = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
             assertEquals(200, response.status, response.body)
             assertEquals("application/x-ndjson", response.header("Content-Type")!!.substringBefore(';'))
             val lines = response.lines
-            assertEquals("""["EOSE"]""", lines.last(), "the answer ends on its EOSE: $lines")
+            assertEquals("""["EOSE","$SUB"]""", lines.last(), "the answer ends on its EOSE: $lines")
             val events = lines.dropLast(1)
             assertTrue(events.all { it.startsWith("""["EVENT",""") }, "every other line is an EVENT frame: $lines")
             assertEquals(setOf(first.id, second.id), events.map { l -> listOf(first, second).first { it.id in l }.id }.toSet())
@@ -208,7 +219,7 @@ class HttpRelayTest {
         val first = note("first")
         publish(first)
         serving { base ->
-            val response = post("$base/req", """[{"ids":["${first.id}"],"search":"include:spam"},{"kinds":[30000],"search":"include:spam"}]""")
+            val response = post(base, req("""[{"ids":["${first.id}"],"search":"include:spam"},{"kinds":[30000],"search":"include:spam"}]"""))
             assertEquals(200, response.status, response.body)
             assertEquals(2, response.lines.size, response.body)
             assertTrue(first.id in response.lines.first())
@@ -219,7 +230,7 @@ class HttpRelayTest {
     fun `a COUNT answers one COUNT frame`() {
         publish(note("a"), note("b"))
         serving { base ->
-            val response = post("$base/count", """{"kinds":[1],"search":"include:spam"}""")
+            val response = post(base, count("""{"kinds":[1],"search":"include:spam"}"""))
             assertEquals(200, response.status, response.body)
             val lines = response.lines
             assertEquals(1, lines.size, response.body)
@@ -230,10 +241,10 @@ class HttpRelayTest {
     @Test
     fun `an anonymous read with no lens is told to sign`() {
         serving { base ->
-            val response = post("$base/req", """{"kinds":[1]}""")
+            val response = post(base, req("""{"kinds":[1]}"""))
             assertEquals(401, response.status)
             assertEquals("Nostr", response.header("WWW-Authenticate"))
-            assertTrue(response.lines.single().startsWith("""["CLOSED","auth-required:"""), response.body)
+            assertTrue(response.lines.single().startsWith("""["CLOSED","$SUB","auth-required:"""), response.body)
         }
     }
 
@@ -242,9 +253,9 @@ class HttpRelayTest {
         publish(note("hello world"))
         serving { base ->
             val body = """{"kinds":[1],"search":"hello"}"""
-            val response = post("$base/req", body, token("/req", body))
+            val response = post(base, req(body), token(req(body)))
             assertEquals(200, response.status, response.body)
-            assertEquals("""["EOSE"]""", response.lines.last())
+            assertEquals("""["EOSE","$SUB"]""", response.lines.last())
             assertEquals(listOf<String?>(alice.pubKey), index.observers.distinct(), "the signer is the lens")
         }
     }
@@ -253,7 +264,7 @@ class HttpRelayTest {
     fun `a token signed at the onion address verifies there`() {
         serving { base ->
             val body = """{"kinds":[1]}"""
-            val response = post("$base/req", body, token("/req", body, at = onion))
+            val response = post(base, req(body), token(req(body), at = onion))
             assertEquals(200, response.status, response.body)
         }
     }
@@ -262,39 +273,82 @@ class HttpRelayTest {
     fun `a token for another url or another body is refused, and one may be sent again`() {
         serving { base ->
             val body = """{"kinds":[1]}"""
-            val elsewhere = post("$base/req", body, token("/req", body, at = "https://other.example"))
+            val elsewhere = post(base, req(body), token(req(body), at = "https://other.example"))
             assertEquals(401, elsewhere.status, elsewhere.body)
             assertTrue("url mismatch" in elsewhere.body, elsewhere.body)
 
-            val otherBody = post("$base/req", """{"kinds":[0]}""", token("/req", body))
+            val otherBody = post(base, req("""{"kinds":[0]}"""), token(req(body)))
             assertEquals(401, otherBody.status, otherBody.body)
             assertTrue("payload" in otherBody.body, otherBody.body)
 
-            val signed = token("/req", body)
-            assertEquals(200, post("$base/req", body, signed).status)
-            val again = post("$base/req", body, signed)
+            val signed = token(req(body))
+            assertEquals(200, post(base, req(body), signed).status)
+            val again = post(base, req(body), signed)
             assertEquals(200, again.status, "any instance may answer it, so none remembers it: ${again.body}")
         }
     }
 
     @Test
-    fun `a body that is not filters is a 400 and one over the message cap a 413`() {
+    fun `a body that is not one REQ, COUNT or EVENT frame is a 400 NOTICE and one over the message cap a 413`() {
         serving { base ->
-            // Not even the right JSON type: refused before any session opens.
-            for (bad in listOf("", "not json", "[]", "\"kinds\"")) {
-                val response = post("$base/req", bad)
+            // Refused before any session opens: not a frame, a bare filter (NIP-FE's old body), or a
+            // command HTTP does not carry.
+            for (bad in listOf("", "not json", "[]", "\"REQ\"", """{"kinds":[1]}""", """["REQ","q",1]""", """["CLOSE","q"]""", """["AUTH",{}]""")) {
+                val response = post(base, bad)
                 assertEquals(400, response.status, "'$bad' -> ${response.body}")
-                assertTrue(response.lines.single().startsWith("""["CLOSED","invalid:"""), response.body)
+                assertTrue(response.lines.single().startsWith("""["NOTICE","invalid:"""), response.body)
             }
-            // The right type with an inside the engine cannot read: its own NOTICE, the command never ran. A
-            // body spelling another command is only a REQ whose filters do not parse.
-            for (bad in listOf("[1,2]", """["REQ","x",{}]""")) {
-                val response = post("$base/req", bad)
-                assertEquals(400, response.status, "'$bad' -> ${response.body}")
-                assertTrue(response.lines.single().startsWith("""["NOTICE","""), response.body)
-            }
-            val huge = """{"search":"include:spam ${"x".repeat(300_000)}"}"""
-            assertEquals(413, post("$base/req", huge).status)
+            val huge = req("""{"search":"include:spam ${"x".repeat(300_000)}"}""")
+            val tooBig = post(base, huge)
+            assertEquals(413, tooBig.status)
+            assertTrue(tooBig.lines.single().startsWith("""["NOTICE","invalid:"""), tooBig.body)
+        }
+    }
+
+    @Test
+    fun `the subscription id is the client's, and every frame carries it back`() {
+        val first = note("picked")
+        publish(first)
+        serving { base ->
+            val response = post(base, """["REQ","mine-42",{"ids":["${first.id}"],"search":"include:spam"}]""")
+            assertEquals(200, response.status, response.body)
+            assertTrue(response.lines.first().startsWith("""["EVENT","mine-42",{"""), response.body)
+            assertEquals("""["EOSE","mine-42"]""", response.lines.last())
+            val counted = post(base, """["COUNT","c7",{"ids":["${first.id}"],"search":"include:spam"}]""")
+            assertTrue(counted.lines.single().startsWith("""["COUNT","c7",{"""), counted.body)
+        }
+    }
+
+    @Test
+    fun `a command needs no Content-Type, and a NIP-86 one on the relay URL is not a command`() {
+        serving { base ->
+            val bare = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
+            assertEquals(200, bare.status, "no Content-Type at all: ${bare.body}")
+            val typed = post(base, req("""{"kinds":[1],"search":"include:spam"}"""), contentType = "text/plain;charset=UTF-8")
+            assertEquals(200, typed.status, "a browser's no-preflight type: ${typed.body}")
+            // This server mounts no admin rpc, so the call finds nothing rather than being run as a frame.
+            val rpc = post(base, """{"method":"supportedmethods","params":[]}""", contentType = "application/nostr+json+rpc")
+            assertEquals(404, rpc.status, rpc.body)
+        }
+    }
+
+    private fun admin() = Nip86Admin(BanStore(), setOf(alice.pubKey), origin, purge = {})
+
+    @Test
+    fun `the relay URL's POST is NIP-86 for its Content-Type and a command for any other`() {
+        serving(admin = admin()) { base ->
+            val rpc = post(base, """{"method":"supportedmethods","params":[]}""", contentType = "application/nostr+json+rpc; charset=utf-8")
+            assertEquals(401, rpc.status, "the admin rpc answered it, asking for its own NIP-98: ${rpc.body}")
+            assertEquals("Missing NIP-98 Authorization", rpc.body)
+            val command = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
+            assertEquals(200, command.status, command.body)
+            assertEquals("""["EOSE","$SUB"]""", command.lines.last())
+        }
+        // With the commands off every POST is the rpc's, as it was before NIP-FE.
+        serving(commands = false, admin = admin()) { base ->
+            val frame = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
+            assertEquals(401, frame.status, frame.body)
+            assertEquals("Missing NIP-98 Authorization", frame.body)
         }
     }
 
@@ -303,9 +357,9 @@ class HttpRelayTest {
         serving { base ->
             // Over MAX_FILTERS: quartz's LimitsPolicy, reached through the same session as the websocket.
             val filters = (1..25).joinToString(",", "[", "]") { """{"kinds":[$it],"search":"include:spam"}""" }
-            val response = post("$base/req", filters)
+            val response = post(base, req(filters))
             assertEquals(400, response.status, response.body)
-            assertEquals("""["CLOSED","invalid: too many filters (max 20)"]""", response.lines.single())
+            assertEquals("""["CLOSED","$SUB","invalid: too many filters (max 20)"]""", response.lines.single())
         }
     }
 
@@ -314,10 +368,10 @@ class HttpRelayTest {
         val first = note("found")
         publish(first)
         serving(deadlineMs = 1_500) { base ->
-            val response = post("$base/req", """{"kinds":[1,$TRICKLE_KIND],"search":"include:spam"}""")
+            val response = post(base, req("""{"kinds":[1,$TRICKLE_KIND],"search":"include:spam"}"""))
             assertEquals(200, response.status, response.body)
             assertTrue(first.id in response.lines.first(), "the event went out before the store finished: ${response.body}")
-            assertTrue(response.lines.last().startsWith("""["CLOSED","error: the answer ran past"""), response.body)
+            assertTrue(response.lines.last().startsWith("""["CLOSED","$SUB","error: the answer ran past"""), response.body)
             assertEquals(2, response.lines.size, response.body)
         }
     }
@@ -329,8 +383,8 @@ class HttpRelayTest {
             for (gzip in listOf(false, true)) {
                 val request =
                     HttpRequest
-                        .newBuilder(URI("$base/req"))
-                        .POST(HttpRequest.BodyPublishers.ofString("""{"kinds":[1,$TRICKLE_KIND],"search":"include:spam"}"""))
+                        .newBuilder(URI(base))
+                        .POST(HttpRequest.BodyPublishers.ofString(req("""{"kinds":[1,$TRICKLE_KIND],"search":"include:spam"}""")))
                         .apply { if (gzip) header("Accept-Encoding", "gzip") }
                         .build()
                 val startedMs = System.currentTimeMillis()
@@ -362,7 +416,7 @@ class HttpRelayTest {
     @Test
     fun `a read that finds nothing before the deadline is a 503`() {
         serving(deadlineMs = 1_000) { base ->
-            val response = post("$base/req", """{"kinds":[$STALLED_KIND],"search":"include:spam"}""")
+            val response = post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}"""))
             assertEquals(503, response.status, response.body)
             assertEquals("1", response.header("Retry-After"))
         }
@@ -376,16 +430,16 @@ class HttpRelayTest {
         val viaProxy = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!))
         serving(gate = gate, deadlineMs = 3_000, clients = viaProxy) { base ->
             // The proxy's own hop is the last entry across every line; what the client wrote before it is its own claim.
-            val stalled = Thread { post("$base/req", stall, forwardedFor = listOf("10.0.0.9", "10.0.0.1")) }.also { it.start() }
+            val stalled = Thread { post(base, req(stall), forwardedFor = listOf("10.0.0.9", "10.0.0.1")) }.also { it.start() }
             awaitInFlight(gate, 1)
 
-            val refused = post("$base/req", quick, forwardedFor = listOf("10.0.0.7, 10.0.0.1"))
+            val refused = post(base, req(quick), forwardedFor = listOf("10.0.0.7, 10.0.0.1"))
             assertEquals(429, refused.status, refused.body)
-            assertTrue(refused.lines.single().startsWith("""["CLOSED","rate-limited:"""), refused.body)
-            assertEquals(200, post("$base/req", quick, forwardedFor = listOf("10.0.0.2")).status, "another address has its own share")
+            assertTrue(refused.lines.single().startsWith("""["NOTICE","rate-limited:"""), refused.body)
+            assertEquals(200, post(base, req(quick), forwardedFor = listOf("10.0.0.2")).status, "another address has its own share")
 
             stalled.join()
-            assertEquals(200, post("$base/req", quick, forwardedFor = listOf("10.0.0.1")).status, "the slot frees when the command ends")
+            assertEquals(200, post(base, req(quick), forwardedFor = listOf("10.0.0.1")).status, "the slot frees when the command ends")
         }
     }
 
@@ -394,9 +448,9 @@ class HttpRelayTest {
         val gate = HttpRelayGate(perClient = 1, total = 0)
         val trustsElsewhere = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("10.9.9.9")!!))
         serving(gate = gate, deadlineMs = 3_000, clients = trustsElsewhere) { base ->
-            val stalled = Thread { post("$base/req", """{"kinds":[$STALLED_KIND],"search":"include:spam"}""", forwardedFor = listOf("10.0.0.1")) }.also { it.start() }
+            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}"""), forwardedFor = listOf("10.0.0.1")) }.also { it.start() }
             awaitInFlight(gate, 1)
-            val spoofed = post("$base/req", """{"kinds":[1],"search":"include:spam"}""", forwardedFor = listOf("10.0.0.2"))
+            val spoofed = post(base, req("""{"kinds":[1],"search":"include:spam"}"""), forwardedFor = listOf("10.0.0.2"))
             assertEquals(429, spoofed.status, "a made-up address is still the socket's peer: ${spoofed.body}")
             stalled.join()
         }
@@ -406,13 +460,13 @@ class HttpRelayTest {
     fun `a refusal at the gate does not spend the caller's token`() {
         val gate = HttpRelayGate(perClient = 1, total = 0)
         serving(gate = gate, deadlineMs = 3_000) { base ->
-            val stalled = Thread { post("$base/req", """{"kinds":[$STALLED_KIND],"search":"include:spam"}""") }.also { it.start() }
+            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}""")) }.also { it.start() }
             awaitInFlight(gate, 1)
             val body = """{"kinds":[1]}"""
-            val signed = token("/req", body)
-            assertEquals(429, post("$base/req", body, signed).status)
+            val signed = token(req(body))
+            assertEquals(429, post(base, req(body), signed).status)
             stalled.join()
-            val retried = post("$base/req", body, signed)
+            val retried = post(base, req(body), signed)
             assertEquals(200, retried.status, "the same token, once the slot is free: ${retried.body}")
         }
     }
@@ -421,9 +475,9 @@ class HttpRelayTest {
     fun `an Authorization header in another scheme is not addressed to the relay`() {
         publish(note("basic"))
         serving { base ->
-            val response = post("$base/req", """{"kinds":[1],"search":"include:spam"}""", authorization = "Basic dXNlcjpwYXNz")
+            val response = post(base, req("""{"kinds":[1],"search":"include:spam"}"""), authorization = "Basic dXNlcjpwYXNz")
             assertEquals(200, response.status, response.body)
-            val unlensed = post("$base/req", """{"kinds":[1]}""", authorization = "Bearer abc")
+            val unlensed = post(base, req("""{"kinds":[1]}"""), authorization = "Bearer abc")
             assertEquals(401, unlensed.status, "and it signs nobody in: ${unlensed.body}")
         }
     }
@@ -432,14 +486,14 @@ class HttpRelayTest {
     fun `an event posted over HTTP is answered with its OK and then served`() {
         val posted = note("posted over http")
         serving { base ->
-            val response = post("$base/event", posted.toJson())
+            val response = post(base, event(posted.toJson()))
             assertEquals(200, response.status, response.body)
             assertEquals("""["OK","${posted.id}",true,""]""", response.lines.single())
 
-            val again = post("$base/event", posted.toJson())
+            val again = post(base, event(posted.toJson()))
             assertEquals(200, again.status, "a duplicate is still accepted: ${again.body}")
 
-            val read = post("$base/req", """{"ids":["${posted.id}"],"search":"include:spam"}""")
+            val read = post(base, req("""{"ids":["${posted.id}"],"search":"include:spam"}"""))
             assertTrue(posted.id in read.lines.first(), read.body)
         }
     }
@@ -449,12 +503,12 @@ class HttpRelayTest {
         val real = note("genuine")
         val forged = Event(real.id, real.pubKey, real.createdAt, real.kind, real.tags, "tampered", real.sig)
         serving { base ->
-            val response = post("$base/event", forged.toJson())
+            val response = post(base, event(forged.toJson()))
             assertEquals(400, response.status, response.body)
             val ok = response.lines.single()
             assertTrue(ok.startsWith("""["OK","${forged.id}",false,"invalid:"""), ok)
-            for (bad in listOf("[]", """[${real.toJson()}]""", "\"x\"")) {
-                assertEquals(400, post("$base/event", bad).status, "'$bad' is not one event")
+            for (bad in listOf("""["EVENT"]""", """["EVENT",[${real.toJson()}]]""", """["EVENT","x"]""")) {
+                assertEquals(400, post(base, bad).status, "'$bad' is not one event")
             }
         }
     }
@@ -480,7 +534,7 @@ class HttpRelayTest {
             socket.connect(java.net.InetSocketAddress("127.0.0.1", URI(base).port), 5_000)
             socket.soTimeout = 30_000
             val request =
-                "POST /req HTTP/1.1\r\nHost: 127.0.0.1\r\n" + (if (gzip) "Accept-Encoding: gzip\r\n" else "") +
+                "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n" + (if (gzip) "Accept-Encoding: gzip\r\n" else "") +
                     "Content-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
             socket.getOutputStream().apply { write(request.encodeToByteArray()) }.flush()
             whileStalled()
@@ -501,12 +555,12 @@ class HttpRelayTest {
         serving(gate = gate, deadlineMs = 30_000) { base ->
             for (gzip in listOf(false, true)) {
                 val lines =
-                    postStalled(base, """{"kinds":[1],"search":"include:spam"}""", gzip) {
+                    postStalled(base, req("""{"kinds":[1],"search":"include:spam"}"""), gzip) {
                         Thread.sleep(2_500)
                         // Tens of megabytes cannot fit the socket's buffers, so a relay that is still writing is waiting on it.
                         assertEquals(1, gate.inFlight, "gzip=$gzip: the relay finished an answer nobody read, so it holds it in memory")
                     }
-                assertEquals("""["EOSE"]""", lines.last(), "gzip=$gzip")
+                assertEquals("""["EOSE","$SUB"]""", lines.last(), "gzip=$gzip")
                 assertEquals(big.size, lines.count { it.startsWith("""["EVENT",""") && it.endsWith("}]") }, "gzip=$gzip")
             }
         }
@@ -518,10 +572,10 @@ class HttpRelayTest {
         publish(*big.toTypedArray())
         serving(deadlineMs = 1_000) { base ->
             // The socket fills, the relay's writes block, and the deadline passes during one.
-            val lines = postStalled(base, """{"kinds":[1],"search":"include:spam"}""", gzip = true) { Thread.sleep(2_000) }
+            val lines = postStalled(base, req("""{"kinds":[1],"search":"include:spam"}"""), gzip = true) { Thread.sleep(2_000) }
             assertTrue(lines.size < big.size, "the deadline must have cut the answer: ${lines.size} lines")
             assertTrue(lines.dropLast(1).all { it.startsWith("""["EVENT",""") && it.endsWith("}]") }, "every line before the last is a whole frame")
-            assertTrue(lines.last().startsWith("""["CLOSED","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")
+            assertTrue(lines.last().startsWith("""["CLOSED","$SUB","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")
         }
     }
 
@@ -558,6 +612,8 @@ class HttpRelayTest {
     }
 
     private companion object {
+        /** The subscription id every test REQ and COUNT picks. */
+        const val SUB = "q"
         const val STALLED_KIND = 7
         const val TRICKLE_KIND = 8
     }

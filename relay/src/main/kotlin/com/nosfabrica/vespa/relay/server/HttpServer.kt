@@ -97,7 +97,7 @@ fun serveRelay(
     onInfoChanged: (Nip11RelayInformation) -> Unit = {},
     // The icon this relay serves itself, compared against the doc's icon to tell "no override".
     selfIconUrl: String? = null,
-    // When set, POST /req, /count and /event answer one command without a socket.
+    // When set, a POST to the relay's URL answers one command frame without a socket (NIP-FE).
     httpRelay: HttpRelay? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
@@ -176,8 +176,7 @@ fun serveRelay(
             }
             corpusStats(stats, statsJson)
             trustHealth(trust, trustJson, trustExplain)
-            httpRelay?.let { httpRelayRoutes(relay, it) }
-            admin?.let { nip86Admin(it, info) }
+            relayPosts(commands = httpRelay?.let { httpRelayAnswer(relay, it) }, rpc = admin?.let { nip86Answer(it, info) })
         }
     }.start(wait = wait)
 }
