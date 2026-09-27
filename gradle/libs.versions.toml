@@ -154,7 +154,13 @@ app = "0.1.0"
 #   git merge-base --is-ancestor c05aefbc08 25e949d07d   # verified
 # LEXICOGRAPHIC: '25e9…' < 'c05a…', BELOW the pin it replaces; `force(libs.quartz)`
 # settles it, and the store pinned below names this exact string in its own toml.
-quartz = "25e949d07d"
+#
+# 2b987a06cc (2026-09-27) replaces it: NQL keyset pages by `events.d` can be read
+# in `d` order by the store (`SqlStoreBackend.eventsInDOrder`), and a `tags` source
+# joined to loaded events reads their tags instead of fetching again.
+#   git merge-base --is-ancestor 25e949d07d 2b987a06cc   # verified
+# LEXICOGRAPHIC: '2b98…' > '25e9…', ABOVE the pin it replaces.
+quartz = "2b987a06cc"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -830,7 +836,16 @@ quartz = "25e949d07d"
 # (NQL `events.d`); SqlConformanceTest covers `d`. Its whole suite passes,
 # integration included (19 suites on a real Vespa, SqlParityIT among them).
 #   git merge-base --is-ancestor d96494eeba a97f024605   # verified
-vespaEventStore = "a97f024605"
+#
+# f277eabe64 (2026-09-27) replaces it: a `d_tag` attribute and the opt-in
+# `dOrderedReads` (VespaEventStore.open), which reads NQL keyset pages by `d` as
+# one sorted engine read: 20k NIP-85 cards 42.6 s -> 1.4 s, 300k in 41.5 s on a
+# real Vespa. OFF here, deliberately: documents fed before `d_tag` lack it, so
+# turn it on only after the cluster is re-fed. The schema itself only lands
+# where the store deploys it (`deployIfAbsent` never redeploys a serving one).
+# Its whole suite passes, integration included (SqlParityIT, VespaParityIT).
+#   git merge-base --is-ancestor a97f024605 f277eabe64   # verified
+vespaEventStore = "f277eabe64"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
