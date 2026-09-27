@@ -347,8 +347,8 @@ private suspend fun ApplicationCall.readerOf(
     val url = claimedUrl(token)?.takeIf { it in accepted } ?: accepted.firstOrNull() ?: return Proof.Refused("this relay names no url to sign")
     // A fresh verifier per request, so a token is not single-use: a request may land on any
     // instance, which one process's memory of spent tokens cannot follow, and the body's hash already
-    // limits a captured token to the one command it signs, inside its window. Becomes
-    // Nip98AuthVerifier(rejectReplays = false) once the quartz pin carries it.
+    // limits a captured token to the one command it signs, inside its window. Quartz's NIP-FE
+    // handler does the same; the verifier itself stays single-use for the admin rpc.
     return when (val r = Nip98AuthVerifier().verify(token, "POST", url, body)) {
         is Nip98AuthVerifier.Result.Verified -> Proof.Signed(r.pubkey)
         is Nip98AuthVerifier.Result.Malformed -> Proof.Refused("NIP-98 ${r.reason}")
