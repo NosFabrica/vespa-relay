@@ -30,7 +30,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.serviceProviders
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -107,7 +107,7 @@ class TrustNotice(
          */
         internal fun scoreCardFilter(services: List<HexKey>) =
             Filter(
-                kinds = listOf(ContactCardEvent.KIND),
+                kinds = listOf(UserAssertionEvent.KIND),
                 authors = services,
                 limit = 1,
             )

@@ -30,7 +30,7 @@ import com.vitorpamplona.quartz.nip32Labeling.LabelEvent
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.serviceProviders
-import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.util.Collections
@@ -223,7 +223,7 @@ class ProductionCorpusIT {
     @Test
     fun `production contact cards carry no indexable text, so no card can be a search hit`() {
         skip()?.let { return println(it) }
-        val cards = corpus.filterIsInstance<ContactCardEvent>()
+        val cards = corpus.filterIsInstance<UserAssertionEvent>()
         assertTrue(cards.size > 100, "expected a real sample of kind 30382, got ${cards.size}")
 
         // Production cards are pure metrics and index the empty string, so the assertion half of the

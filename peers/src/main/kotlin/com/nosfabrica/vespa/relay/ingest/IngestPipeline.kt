@@ -38,7 +38,7 @@ import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
-import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -392,7 +392,7 @@ class IngestPipeline(
     private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
         // A batch carrying a deletion or a vanish goes to the store whole: an event's fate there
         // depends on its position among the others. Keyed on the kind, not the type.
-        if (batch.any { it.event.kind == DeletionEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
+        if (batch.any { it.event.kind == DeletionRequestEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
 
         // Winner per address, by first appearance so the batch keeps its order.
         val keys = arrayOfNulls<Pair<Int, String>>(batch.size)

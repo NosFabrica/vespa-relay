@@ -35,7 +35,7 @@ import kotlin.test.fail
 
 /**
  * `t` tags reach the search index on a 30382 Contact Card and on no other NIP-85 kind, because
- * only `ContactCardEvent` is a `SearchableEvent` upstream. Driven over the wire so `EventFactory`
+ * only `UserAssertionEvent` is a `SearchableEvent` upstream. Driven over the wire so `EventFactory`
  * does the typing.
  */
 class AssertionTopicSearchTest {

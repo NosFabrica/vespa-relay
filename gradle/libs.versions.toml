@@ -31,89 +31,55 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# a8e8778265 = amethyst main @ 2026-09-10 (PR #4069). MOVED BECAUSE THE STORE
-# ASKED, the same way cecc3287b2 and b10be95a6e were: the store pinned below
-# names this exact string in its own libs.versions.toml, and `force(libs.quartz)`
-# means THIS line — not the store's — decides which jar every module compiles
-# and runs against. Left at cecc3287b2 while only the store pin moved, the
-# ELEVEN kinds this range makes searchable would still not parse as
-# `SearchableEvent`, `SearchExtractors` would keep deriving nothing from them,
-# and the whole reason for taking the store bump would silently not exist.
+# 28bf170f92 = amethyst main @ 2026-09-26 (PR #4212 merged). MOVED FOR THIS
+# RELAY: #4212 is NIP-FE's engine half — `SessionSink` (a session's frames typed
+# where the engine has the type), `RelaySession.receive(Command)`, and the
+# transport-neutral `nipFERelayOverHttp` handler this relay's own HTTP routes are
+# the working copy of. Nothing here calls the handler yet: its review fixes are
+# amethyst#4214, and this relay moves onto it when that lands.
 #
-# The range is 220 commits over 202 files, and unlike the last two it is
-# UPSTREAM'S OWN work rather than an ask from this side. The protocol surface
-# this relay serves does not move: nothing under `nip01Core/relay/server`
-# (RelayServerBase, RelaySession, SessionBackend, IngestQueue, the policies),
-# nothing under `nip01Core/relay/client` (the negentropy accessories the router
-# drives), and none of `Filter`, `SearchQuery`, `SearchFieldExtractor`,
-# `IndexableFields`, `IEventStore` — byte-identical, all of them. Four files in
-# `nip01Core/` and `nip50Search/` move at all, and one of those four is a new
-# file (`EventSearchMatcher`, an in-memory NIP-50 matcher for a client with no
-# index — nothing here calls it; this relay's search is the engine's). What the
-# range does carry for this repo:
+# The range is 958 commits. What it carries for this repo:
 #
-#   THE SEARCHABLE SET MOVES, for the first time in three bumps: 133 -> 144 kind
-#     values (130 -> 141 classes). The eleven are the citation trio (31/32/33),
-#     the wiki merge request (818), the publication pair (30040/30041), the
-#     library family (30045/30142/32176) and the two ratings kinds
-#     (31987/34259). `SearchFieldExtractor` gained NO branch for any of them, so
-#     all eleven fall through its `is SearchableEvent ->` catch-all with the
-#     whole `indexableContent()` in the BODY role — the same 236x title discount
-#     the previous two bumps FIXED for nineteen other kinds, and it takes the
-#     same fix, one branch each, upstream. A RANKING gap, on kinds this corpus
-#     has almost none of; the store's own README footnote carries the list and
-#     the second half of it (a field a kind never joins into
-#     `indexableContent()` is not indexed at all — a citation's `author` and
-#     `doi`, a relay review's `relay` url, a learning resource's schema.org
-#     facets).
+#   110 EVENT CLASSES RENAMED to their NIP names, no alias left (6d2c37c346). Two
+#     are named here: DeletionEvent -> DeletionRequestEvent (IngestPipeline's
+#     deletion-batch split) and ContactCardEvent -> UserAssertionEvent
+#     (TrustNotice). The store names them too, on its write path, which is why the
+#     store pin below moves in the same commit: a store built on a8e8778265 dies
+#     with NoClassDefFoundError on its first insert under this jar.
 #
-#   SearchableEvent grew a READ path: `forEachIndexableField(visitor)` hands the
-#     same fields over one at a time without building the joined string, for
-#     Amethyst's per-keystroke scan of its whole cache. Both it and
-#     `indexableSeparator()` are DEFAULTED, every override in the range
-#     re-expresses a join that already existed (upstream's
-#     `IndexableContentGoldenTest` is what pins that), and the store only ever
-#     calls the WRITE path. So: nothing to implement here, and no column moves.
+#   THE RELAY ENGINE ANSWERS `duplicate:` WITH OK TRUE (5b846d64d6, NIP-01), where
+#     it answered false. A client resending an event this relay already holds now
+#     gets `OK true`, not a rejection it surfaces; a superseded replaceable is still
+#     `OK false replaced:` (the store's reason; quartz's SQLite store now says
+#     `duplicate:` there).
 #
-#   FilterMatcher was rewritten to allocate NOTHING — the per-key `toSet()`, the
-#     `tagsAll` tag walk and the stdlib `any` iterators are gone, replaced by
-#     in-place loops over the same data; upstream's
-#     `FilterMatcherEquivalenceTest` pins the semantics. Free here, and not
-#     nothing: `Filter.match(event)` is the router's per-event live-tail
-#     predicate (VisitPool's three arms, SyncEngine's stream fan-out,
-#     RetractionAudit), so this is allocation taken off the hottest loop the
-#     sync side runs.
+#   NOTHING ELSE under nip01Core/relay/server moves but #4212 itself; Filter,
+#     FilterMatcher, SearchQuery, IEventStore, the negentropy code and NIP-98 have
+#     no changed line. The client accessories the router drives gain
+#     `INostrClient.ensureInPool` (defaulted) and a longer publish path in
+#     NostrClientPublishExt; no call site here changes.
 #
-#   MetadataEvent overrides the new read path and declares its `" "` separator.
-#     Write path unchanged, so kind 0 indexes exactly what it did.
+#   The searchable set grows 142 -> 150 kinds (geocaching, Tapestry decentralized
+#     lists, NIP-71 text tracks); the store pin's note carries what that means for
+#     recall.
 #
-#   And outside those two packages, EventFactory + KindNames wire FIFTEEN new
-#     classes. Eleven are the searchable ones above; the other four are wired
-#     but not searchable — external reaction (17), wiki merge acceptance (819),
-#     wiki redirect (30819) and the DVM heartbeat (11998). KindNames names all
-#     fifteen, which is what the `/stats.json` kind rollup prints instead of a
-#     bare number.
+#   Quartz dropped jackson-module-kotlin for jackson-databind, so kotlin-reflect no
+#     longer arrives through it; the one test here that reads members by
+#     reflection still has it from elsewhere on the classpath.
 #
-# NO RE-FEED for anything already indexed, unlike the two bumps before it: no
-# `indexableContent()` body moved in the range, so every kind already stored
-# derives the same words onto the same columns. What the eleven new kinds need
-# is a RECALL repair rather than a ranking backfill, and it is the store pin
-# below that carries the procedure.
+# DIRECTION: a8e8778265 is a strict ancestor of this.
+#   git merge-base --is-ancestor a8e8778265 28bf170f92   # verified
 #
-# DIRECTION: cecc3287b2 is a strict ancestor of this (`git merge-base
-# --is-ancestor`, not the dates).
-#   git merge-base --is-ancestor cecc3287b2 a8e8778265   # verified
-#
-# LEXICOGRAPHIC: 'a8e8…' < 'cecc…' ('a' < 'c'), so this sorts BELOW the pin it
-# replaces — the direction that LOSES a conflict, the opposite of the last bump.
-# It costs nothing, and for once not because no conflict is possible: quartz is
-# the dependency two parts of the graph DO both name, and every module's
-# `resolutionStrategy { force(libs.quartz) }` is what settles it, not ordering.
-# The proof stays the resolved graph — every quartz line reads a8e8778265 with
-# no `->` left anywhere, in every module that names it (all six: `:web` takes
-# quartz without the store):
+# LEXICOGRAPHIC: '28bf…' < 'a8e8…' ('2' < 'a'), so this sorts BELOW the pin it
+# replaces — the direction that LOSES a conflict. Quartz is the dependency two
+# parts of the graph do both name (the store's own toml names this same string
+# now), and `force(libs.quartz)` in every module is what settles it. Resolved
+# graph checked: every quartz line reads 28bf170f92, zero arrows.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "a8e8778265"
+#
+# Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
+# note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
+quartz = "28bf170f92"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -790,7 +756,31 @@ quartz = "a8e8778265"
 # vespa-eventstore (see the e1ecd7f23e note). The proof stays the resolved
 # graph -- every eventstore line reads faa18dfba1 with no `->`.
 #
-vespaEventStore = "faa18dfba1"
+# ebb09fa0d4 = vespa-eventstore PR #150's head (branch claude/quartz-28bf170f92),
+# pinned BEFORE its merge because the quartz pin above cannot move without it and
+# JitPack builds a branch commit as readily as a merged one; move this to #150's
+# merge commit when it lands (same tree). The whole change is quartz 28bf170f92:
+# the five renamed classes the store names, kotlin-reflect declared by the two
+# tests that read members by reflection, and the pin note that records the
+# searchable-set growth (142 -> 150, recall forward-only until
+# reindexFullTextSearch) and the OK-true duplicate. No schema change, nothing
+# re-derived; deploying it is a restart of both processes.
+#
+# GATED: the store's `./gradlew build` (696 tests) and its integration suite
+# against a real Vespa (21 tests: 20 passed, StagingCorpusIT skipped by design,
+# 0 failures, VespaParityIT / RankRegressionIT / ObserverGateIT / OrphanSweepIT
+# among them), and this relay's full build + archTest run against that tree
+# (1249 tests, 0 failures) before either pin moved.
+#
+# DIRECTION: faa18dfba1 is a strict ancestor of this.
+#   git merge-base --is-ancestor faa18dfba1 ebb09fa0d4   # verified
+#
+# LEXICOGRAPHIC: 'ebb0...' < 'faa1...' ('e' < 'f'), so this sorts BELOW the pin it
+# replaces -- the losing direction, and harmless here: nothing else in the graph
+# names vespa-eventstore. The proof stays the resolved graph -- every eventstore
+# line reads ebb09fa0d4 with no `->`.
+#
+vespaEventStore = "ebb09fa0d4"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
