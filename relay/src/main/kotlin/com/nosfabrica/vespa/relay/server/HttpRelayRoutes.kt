@@ -20,10 +20,12 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
-import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
-import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
-import com.vitorpamplona.quartz.nip98HttpAuth.Nip98AuthVerifier
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayCommand
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayHandler
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayLines
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayReaderStalled
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayRequest
+import com.vitorpamplona.quartz.nipFERelayOverHttp.HttpRelayResponse
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -40,16 +42,12 @@ import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.readByteArray
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.ByteArrayOutputStream
-import java.util.Base64
 import java.util.zip.GZIPOutputStream
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * The HTTP command endpoints' settings. [origins] are the prefixes a NIP-98 `u` may carry, asked per
@@ -61,172 +59,65 @@ class HttpRelay(
     val origins: () -> List<String>,
     val clients: ClientAddresses = ClientAddresses(),
 ) {
-    /** The `u` values a token for [path] may carry. */
-    fun urlsFor(path: String): List<String> = origins().map { it.trimEnd('/') + path }
-
     companion object {
         const val DEFAULT_DEADLINE_SECONDS = 30L
     }
 }
 
 /**
- * `POST /req`, `/count` and `/event`: one client command per request, answered by the same session,
- * policies and store as the websocket, as the relay's own frames without their subscription id, one
- * per line, ending on the command's answer (EOSE, COUNT, OK, or a refusal). No subscription outlives
- * the request.
+ * `POST /req`, `/count` and `/event` (NIP-FE): quartz's [HttpRelayHandler] runs each command on its
+ * own session of [relay], with the same policies and store as the websocket, and answers with the
+ * relay's frames without their subscription id, one per line, ending on the command's answer. What
+ * is left here is the host's part: the bounded body read, the per-client gate, the headers, and a
+ * gzip that flushes with every line.
  */
 fun Route.httpRelayRoutes(
     relay: NostrRelayServer,
     settings: HttpRelay,
 ) {
-    for (command in HttpCommand.entries) {
-        post(command.path) { call.answer(relay, settings, command) }
+    val handler = HttpRelayHandler(relay, settings.origins, settings.deadlineMs.milliseconds)
+    for (command in HttpRelayCommand.entries) {
+        post(command.path) { call.answer(handler, settings, command) }
     }
 }
-
-/** Frames queued ahead of a slow reader before the answer is cut short, as on the websocket. */
-private const val MAX_BUFFERED_FRAMES = 8192
-
-/** How long past the deadline the last line and the stream's end may take; a reader slower than this is dropped. */
-private const val TAIL_GRACE_MS = 5_000L
 
 /** Compressed bytes held back between flushes before they are handed to the socket anyway. */
 private const val PENDING_LIMIT = 64 * 1024
 
-/** The challenge every connection opens with; an HTTP command proves its key by NIP-98 instead. */
-private const val AUTH_VERB = "AUTH"
-
 internal val NDJSON: ContentType = ContentType.parse("application/x-ndjson")
 
 private suspend fun ApplicationCall.answer(
-    relay: NostrRelayServer,
+    handler: HttpRelayHandler,
     settings: HttpRelay,
-    command: HttpCommand,
+    command: HttpRelayCommand,
 ) {
-    val max = relay.limits?.maxMessageLength ?: defaultMaxMessageLength
-    val body = receiveBounded(max) ?: return respondClosed("invalid: the body exceeds $max bytes", HttpStatusCode.PayloadTooLarge)
-    val frame =
-        parseBody(body)?.let(command::frame)
-            ?: return respondClosed("invalid: the body is not this command's arguments; see docs/configuration.md")
-    // The engine measures the whole frame, so the cap is checked on what it will see.
-    if (frame.length > max) return respondClosed("invalid: the command exceeds $max characters", HttpStatusCode.PayloadTooLarge)
-    // The gate first: a token verified for a request the gate then refuses would be spent for nothing.
+    // The engine counts characters and a UTF-8 character is up to three bytes, so the handler says how much to read.
+    val cap = handler.maxBodyBytes ?: (defaultMaxMessageLength * 3L)
+    val body = receiveBounded(cap) ?: return respondClosed("invalid: the body exceeds $cap bytes", HttpStatusCode.PayloadTooLarge)
+    // The gate first: a request it refuses never reaches the NIP-98 check or a session.
     settings.gate.through(settings.clients.of(this), refused = { respondBusy(it, settings.gate) }) {
-        when (val proof = readerOf(settings, command.path, body)) {
-            is Proof.Refused -> respondClosed(MachineReadablePrefix.AUTH_REQUIRED.format(proof.reason))
-            is Proof.Anonymous -> exchange(relay, settings.deadlineMs, command, null, frame)
-            is Proof.Signed -> exchange(relay, settings.deadlineMs, command, proof.pubkey, frame)
+        try {
+            handler.handle(HttpRelayRequest(command, request.headers[HttpHeaders.Authorization], body), KtorAnswer(this))
+        } catch (_: HttpRelayReaderStalled) {
+            // The client stopped reading; its connection is dropped with the answer unfinished.
         }
     }
 }
 
-/**
- * Runs [frame] on its own connection and streams what it sends. The status waits for the first
- * frame, so a refusal is an HTTP error; after that an error can only be a frame.
- */
-private suspend fun ApplicationCall.exchange(
-    relay: NostrRelayServer,
-    deadlineMs: Long,
-    command: HttpCommand,
-    reader: HexKey?,
-    frame: String,
-) = coroutineScope {
-    val frames = Channel<String>(MAX_BUFFERED_FRAMES)
-    val ended = CompletableDeferred<Unit>()
-    // Called on the store's coroutines and cannot suspend, so a frame that does not fit ends the answer.
-    val send: (String) -> Unit = send@{ raw ->
-        if (verbOf(raw) == AUTH_VERB) return@send
-        val out = withoutSubId(raw)
-        val sent = frames.trySend(out)
-        when {
-            sent.isClosed -> {}
+/** The handler's answer, written through Ktor: a single frame with its status, or a 200 stream. */
+private class KtorAnswer(
+    private val call: ApplicationCall,
+) : HttpRelayResponse {
+    override suspend fun single(
+        status: Int,
+        frame: String,
+    ) = call.respondFrames(frame, HttpStatusCode.fromValue(status))
 
-            sent.isFailure -> {
-                frames.close()
-                ended.complete(Unit)
-            }
-
-            command.ends(out) -> {
-                frames.close()
-                ended.complete(Unit)
-            }
+    override suspend fun stream(lines: suspend HttpRelayLines.() -> Unit) =
+        call.streaming { sink ->
+            sink.lines()
+            sink.finish()
         }
-    }
-    val session =
-        launch {
-            relay.serveAs(reader, send) {
-                it.receive(frame)
-                ended.await()
-            }
-        }
-    val startedNs = System.nanoTime()
-
-    fun remainingMs() = (deadlineMs - (System.nanoTime() - startedNs) / 1_000_000).coerceAtLeast(0)
-    try {
-        val first = withTimeoutOrNull(deadlineMs) { frames.receiveCatching().getOrNull() }
-        val status = first?.let(::statusOf)
-        when {
-            first == null -> {
-                respondClosed("error: no answer within ${deadlineMs / 1000}s", HttpStatusCode.ServiceUnavailable)
-            }
-
-            status != HttpStatusCode.OK -> {
-                respondFrames(first, status ?: HttpStatusCode.InternalServerError)
-            }
-
-            else -> {
-                streaming { sink ->
-                    // The deadline is read between frames and never interrupts a write, so every line
-                    // leaves whole; a reader that stops reading altogether is dropped at the hard stop.
-                    withTimeout(remainingMs() + TAIL_GRACE_MS) {
-                        when (sink.drain(first, frames, command, startedNs + deadlineMs * 1_000_000)) {
-                            Ending.ANSWERED -> {}
-
-                            Ending.DEADLINE -> {
-                                sink.write(closedFrame("error: the answer ran past ${deadlineMs / 1000}s"))
-                            }
-
-                            Ending.CUT -> {
-                                sink.write(closedFrame("error: slow reader, over $MAX_BUFFERED_FRAMES frames waiting"))
-                            }
-                        }
-                        sink.finish()
-                    }
-                }
-            }
-        }
-    } finally {
-        session.cancel()
-    }
-}
-
-/** How a streamed answer stopped: at its answer frame, at the deadline, or cut because the reader fell behind. */
-private enum class Ending { ANSWERED, DEADLINE, CUT }
-
-/**
- * Writes [first] and what follows up to the command's answer, flushing whenever nothing is waiting so
- * a burst leaves as one write. Stops at the answer: a live event queued behind it is not part of it.
- */
-private suspend fun LineSink.drain(
-    first: String,
-    frames: Channel<String>,
-    command: HttpCommand,
-    deadlineNs: Long,
-): Ending {
-    var frame = first
-    while (true) {
-        write(frame)
-        if (command.ends(frame)) return Ending.ANSWERED
-        frame = frames.tryReceive().getOrNull() ?: run {
-            flush()
-            val leftMs = (deadlineNs - System.nanoTime()) / 1_000_000
-            if (leftMs <= 0) return Ending.DEADLINE
-            val next = withTimeoutOrNull(leftMs) { frames.receiveCatching() } ?: return Ending.DEADLINE
-            // Closed with no answer frame in it: the send side gave up on this reader.
-            next.getOrNull() ?: return Ending.CUT
-        }
-        if (System.nanoTime() >= deadlineNs) return Ending.DEADLINE
-    }
 }
 
 /**
@@ -248,11 +139,11 @@ private suspend fun ApplicationCall.streaming(producer: suspend (LineSink) -> Un
 private class LineSink(
     private val out: ByteWriteChannel,
     gzip: Boolean,
-) {
+) : HttpRelayLines {
     private val pending = ByteArrayOutputStream()
     private val zip = if (gzip) GZIPOutputStream(pending, true) else null
 
-    suspend fun write(frame: String) {
+    override suspend fun line(frame: String) {
         val bytes = (frame + "\n").encodeToByteArray()
         if (zip == null) return out.writeFully(bytes)
         zip.write(bytes)
@@ -260,7 +151,7 @@ private class LineSink(
         if (pending.size() >= PENDING_LIMIT) drainPending()
     }
 
-    suspend fun flush() {
+    override suspend fun flush() {
         zip?.flush()
         drainPending()
         out.flush()
@@ -294,7 +185,7 @@ private suspend fun ApplicationCall.respondFrames(
 
 private suspend fun ApplicationCall.respondClosed(
     reason: String,
-    status: HttpStatusCode = statusFor(reason),
+    status: HttpStatusCode,
 ) = respondFrames(closedFrame(reason), status)
 
 private suspend fun ApplicationCall.respondBusy(
@@ -302,7 +193,7 @@ private suspend fun ApplicationCall.respondBusy(
     gate: HttpRelayGate,
 ) = when (refusal) {
     HttpRelayGate.Refusal.CLIENT_BUSY -> {
-        respondClosed("rate-limited: ${gate.perClient} HTTP commands are already running from this address")
+        respondClosed("rate-limited: ${gate.perClient} HTTP commands are already running from this address", HttpStatusCode.TooManyRequests)
     }
 
     HttpRelayGate.Refusal.RELAY_BUSY -> {
@@ -310,68 +201,45 @@ private suspend fun ApplicationCall.respondBusy(
     }
 }
 
+/** A NIP-FE refusal line, `["CLOSED","<reason>"]`, for the answers made here rather than by the handler. */
+internal fun closedFrame(reason: String): String = JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(reason))).toString()
+
 /** The body, or null when it is over [max]. The +1 read catches a lying Content-Length and chunked uploads. */
-internal suspend fun ApplicationCall.receiveBounded(max: Int): ByteArray? {
+internal suspend fun ApplicationCall.receiveBounded(max: Long): ByteArray? {
     if ((request.contentLength() ?: 0) > max) return null
-    return receiveChannel().readRemaining(max + 1L).readByteArray().takeIf { it.size <= max }
+    return receiveChannel().readRemaining(max + 1).readByteArray().takeIf { it.size <= max }
 }
-
-/** Who a request acts as. */
-private sealed interface Proof {
-    data object Anonymous : Proof
-
-    class Signed(
-        val pubkey: HexKey,
-    ) : Proof
-
-    class Refused(
-        val reason: String,
-    ) : Proof
-}
-
-/**
- * A NIP-98 header, checked against the address it names when that is one of ours, so a token signed
- * at the .onion verifies there too. The token must bind the body's hash: it authorizes one command,
- * and may repeat it inside its window.
- * Another scheme (a proxy's Basic auth, a client's Bearer) is not addressed to us and is ignored.
- */
-private suspend fun ApplicationCall.readerOf(
-    settings: HttpRelay,
-    path: String,
-    body: ByteArray,
-): Proof {
-    val header = request.headers[HttpHeaders.Authorization]?.trim().orEmpty()
-    if (!header.regionMatches(0, Nip98AuthVerifier.SCHEME, 0, Nip98AuthVerifier.SCHEME.length, ignoreCase = true)) return Proof.Anonymous
-    val token = Nip98AuthVerifier.SCHEME + header.substring(Nip98AuthVerifier.SCHEME.length).trim()
-    val accepted = settings.urlsFor(path)
-    val url = claimedUrl(token)?.takeIf { it in accepted } ?: accepted.firstOrNull() ?: return Proof.Refused("this relay names no url to sign")
-    // A fresh verifier per request, so a token is not single-use: a request may land on any
-    // instance, which one process's memory of spent tokens cannot follow, and the body's hash already
-    // limits a captured token to the one command it signs, inside its window. Quartz's NIP-FE
-    // handler does the same; the verifier itself stays single-use for the admin rpc.
-    return when (val r = Nip98AuthVerifier().verify(token, "POST", url, body)) {
-        is Nip98AuthVerifier.Result.Verified -> Proof.Signed(r.pubkey)
-        is Nip98AuthVerifier.Result.Malformed -> Proof.Refused("NIP-98 ${r.reason}")
-        is Nip98AuthVerifier.Result.Missing -> Proof.Anonymous
-    }
-}
-
-/** The `u` tag of a NIP-98 token, or null when it does not decode; the verifier reports why. */
-private fun claimedUrl(token: String): String? =
-    runCatching {
-        val json = Base64.getDecoder().decode(token.removePrefix(Nip98AuthVerifier.SCHEME).trim()).decodeToString()
-        OptimizedJsonMapper
-            .fromJson(json)
-            .tags
-            .firstOrNull { it.size > 1 && it[0] == "u" }
-            ?.get(1)
-    }.getOrNull()
 
 /** Unset limits are the defaults', so the body cap and the engine's cap never disagree. */
 private val defaultMaxMessageLength: Int =
     com.nosfabrica.vespa.relay.server.config
         .defaultRelayLimits()
         .maxMessageLength ?: 262_144
+
+/**
+ * Whether an `Accept-Encoding` admits gzip. A `gzip` entry decides on its own; `*` speaks only for
+ * codings the header does not name (RFC 9110 12.5.3).
+ */
+internal fun acceptsGzip(header: String?): Boolean {
+    val weights =
+        header
+            .orEmpty()
+            .split(',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .associate { entry ->
+                val parts = entry.split(';').map { it.trim() }
+                val q =
+                    parts
+                        .drop(1)
+                        .firstOrNull { it.startsWith("q=", ignoreCase = true) }
+                        ?.substring(2)
+                        ?.toDoubleOrNull() ?: 1.0
+                parts[0].lowercase() to q
+            }
+    val q = weights["gzip"] ?: weights["*"] ?: return false
+    return q > 0
+}
 
 /**
  * Where a request came from, for the gate: the socket's peer, unless that peer is one of

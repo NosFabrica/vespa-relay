@@ -24,14 +24,12 @@ import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.CountResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerBase
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
-import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
@@ -53,7 +51,6 @@ import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -88,8 +85,6 @@ class NostrRelayServer(
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
     // A default parameter so the gate exists before the super constructor takes it as the listener.
     private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
-    // Likewise, so the lens policy the super constructor builds can read it.
-    private val readers: VouchedReaders = VouchedReaders(),
 ) : RelayServerBase(
         // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
@@ -99,7 +94,7 @@ class NostrRelayServer(
                     if (pubkeyAllow.isNotEmpty() || pubkeyDeny.isNotEmpty()) PubkeyAllowDenyPolicy(pubkeyAllow, pubkeyDeny) else null,
                     if (kindAllow.isNotEmpty() || kindDeny.isNotEmpty()) KindAllowDenyPolicy(kindAllow, kindDeny) else null,
                     if (rejectFutureSeconds > 0) RejectFutureEventsPolicy(rejectFutureSeconds) else null,
-                    if (requireReadLens) LensRequiredPolicy(readers) else null,
+                    if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
                 ).toTypedArray<IRelayPolicy>(),
@@ -113,53 +108,15 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, readers)
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate)
 
     /** Connections holding a search lane right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
-
-    /**
-     * [serve] on behalf of [reader], a key the caller proved outside NIP-42 (a NIP-98 header). The
-     * connection reads through that lens exactly as if it had sent AUTH; null is anonymous.
-     */
-    suspend fun serveAs(
-        reader: HexKey?,
-        send: (String) -> Unit,
-        incoming: suspend (RelaySession) -> Unit,
-    ) = serve(send) { session ->
-        reader?.let { readers.vouch(session.id, it) }
-        try {
-            incoming(session)
-        } finally {
-            readers.forget(session.id)
-        }
-    }
 
     override fun close() {
         closeConnections()
         ingest.close()
         scope.cancel()
-    }
-}
-
-/**
- * Who each connection reads as: its NIP-42 identities, plus a key [NostrRelayServer.serveAs]
- * vouched for. Quartz records only NIP-42 on the session, so this is the one place a read asks.
- */
-class VouchedReaders {
-    private val byConnection = ConcurrentHashMap<Long, HexKey>()
-
-    fun of(ctx: RequestContext): Set<HexKey> = byConnection[ctx.connectionId]?.let { ctx.authenticatedUsers + it } ?: ctx.authenticatedUsers
-
-    internal fun vouch(
-        connectionId: Long,
-        pubkey: HexKey,
-    ) {
-        byConnection[connectionId] = pubkey
-    }
-
-    internal fun forget(connectionId: Long) {
-        byConnection.remove(connectionId)
     }
 }
 
@@ -178,7 +135,6 @@ internal class ObserverBackend(
     private val pressure: ServingPressure? = null,
     /** Taken inside the timed span: a read queued behind a previous search took that long for the client. */
     private val gate: SearchGate = SearchGate(0),
-    private val readers: VouchedReaders = VouchedReaders(),
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
@@ -224,7 +180,7 @@ internal class ObserverBackend(
         ctx: RequestContext,
         block: suspend () -> T,
     ): T {
-        val observer = readers.of(ctx).firstOrNull()
+        val observer = ctx.authenticatedUsers.firstOrNull()
         observer?.let { onObserver?.invoke(it) }
         if (observer == null) return block()
         return withContext(StoreQueryContext(setOf(observer))) { block() }

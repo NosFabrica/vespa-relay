@@ -232,17 +232,13 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
-    HttpRelayRoutes.kt  POST /req, /count, /event: one command per request,
-                        run on its own quartz session so every limit and
-                        policy the socket has applies, streamed as NDJSON
-                        frames and cut at the command's answer. A NIP-98
-                        header is the HTTP spelling of AUTH:
-                        NostrRelayServer.serveAs vouches the key into
-                        VouchedReaders, which the lens policy and
-                        ObserverBackend ask instead of the session alone.
+    HttpRelayRoutes.kt  POST /req, /count, /event (NIP-FE): the host half of
+                        quartz's HttpRelayHandler, which runs each command on
+                        its own session so every limit and policy the socket
+                        has applies, decides the status and cuts the answer at
+                        the command's last frame. Here: the bounded body read,
+                        the gate, the headers, the sync-flushed gzip sink.
                         ClientAddresses and Cidr key the gate behind a proxy
-    HttpCommand.kt      the four commands: which body is whose arguments, which
-                        frame ends each answer, which status a frame gives
     HttpRelayGate.kt    HTTP_RELAY_PER_CLIENT / HTTP_RELAY_TOTAL — the search
                         gate is per connection, and here every request is one
     Nip86Route.kt       the management API

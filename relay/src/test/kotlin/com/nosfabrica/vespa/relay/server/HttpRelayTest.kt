@@ -280,10 +280,18 @@ class HttpRelayTest {
     @Test
     fun `a body that is not filters is a 400 and one over the message cap a 413`() {
         serving { base ->
-            for (bad in listOf("", "not json", "[]", "[1,2]", "\"kinds\"", """["REQ","x",{}]""")) {
+            // Not even the right JSON type: refused before any session opens.
+            for (bad in listOf("", "not json", "[]", "\"kinds\"")) {
                 val response = post("$base/req", bad)
                 assertEquals(400, response.status, "'$bad' -> ${response.body}")
                 assertTrue(response.lines.single().startsWith("""["CLOSED","invalid:"""), response.body)
+            }
+            // The right type with an inside the engine cannot read: its own NOTICE, the command never ran. A
+            // body spelling another command is only a REQ whose filters do not parse.
+            for (bad in listOf("[1,2]", """["REQ","x",{}]""")) {
+                val response = post("$base/req", bad)
+                assertEquals(400, response.status, "'$bad' -> ${response.body}")
+                assertTrue(response.lines.single().startsWith("""["NOTICE","""), response.body)
             }
             val huge = """{"search":"include:spam ${"x".repeat(300_000)}"}"""
             assertEquals(413, post("$base/req", huge).status)

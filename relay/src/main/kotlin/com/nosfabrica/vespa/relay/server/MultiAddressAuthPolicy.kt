@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.AuthCmd
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -81,6 +82,12 @@ class MultiAddressAuthPolicy(
             println("auth: post-login notice failed for ${event.pubKey.take(8)}…: ${e.message}")
         }
     }
+
+    /**
+     * A key a NIP-98 header proved (NIP-FE) signs the session in as a NIP-42 AUTH would. No notice:
+     * over HTTP a NOTICE frame would end the answer, and a one-command session has no later line for it.
+     */
+    override suspend fun authorizeTransport(pubkey: HexKey): String? = null
 
     override fun accept(cmd: AuthCmd): PolicyResult<AuthCmd> {
         val event = cmd.event

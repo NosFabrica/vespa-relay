@@ -31,43 +31,61 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# ec16988e3a = amethyst main @ 2026-09-27, the merge of #4222 (28 commits over
-# 28bf170f92; quartz/ moves in two PRs, the rest is app code). MOVED WITH THE
-# STORE: vespa-eventstore main (748dc5b8c6, below) names this string, and
-# `force(libs.quartz)` would otherwise run that store on a jar it was not built on.
+# a53cafd577 = amethyst main @ 2026-09-27, the merge of #4214 (NIP-FE's review
+# fixes, two commits over ec16988e3a with a translations sync). MOVED FOR THIS
+# RELAY: its HTTP commands now run on quartz's HttpRelayHandler, and
+# HttpRelayRoutes keeps only the host's part (body read, gate, headers, gzip).
 #
-# What it carries for this repo:
+# What it carries for this repo, all under nipFERelayOverHttp and
+# nip01Core/relay/server:
 #
-#   A STALE REPLACEABLE IS `replaced:` / OK false AGAIN (#4222). 28bf170f92 had
-#     made quartz's SQLite store answer it SUPERSEDED (`duplicate:`, which the
-#     engine acks OK true); #4222 reverts that, and SUPERSEDED survives only as a
-#     @Deprecated constant. THIS RELAY SEES NO CHANGE: its store never followed
-#     (it answered `replaced:` at the old pin too), and nothing here names
-#     SUPERSEDED. The ingest pipeline and RefusalSink keep matching
-#     PREFIX_REPLACED.
+#   NIP-98 SIGNS THE SESSION IN THROUGH THE POLICY CHAIN.
+#     RelaySession.authenticateByTransport asks IRelayPolicy.acceptTransportIdentity,
+#     which REFUSES by default; PassThroughPolicy and the verify policies accept,
+#     and FullAuthPolicy (so OptionalAuthPolicy, so MultiAddressAuthPolicy here)
+#     asks authorizeTransport, which refuses until overridden. MultiAddressAuthPolicy
+#     overrides it; without that every NIP-98 read here would be a 403. The key
+#     lands in authenticatedUsers, so VouchedReaders and serveAs are gone.
+#   FRAMES WITHOUT A SUBSCRIPTION ID, /neg gone, and a NIP-98 token that is not
+#     single-use (a fresh verifier per request): what this relay already served,
+#     now from quartz.
+#   A BODY IS SPLICED, NOT RE-SERIALIZED: the engine parses it once, and a body
+#     of the right outer type that the engine cannot read is its NOTICE (400),
+#     where this relay's kotlinx pre-parse answered CLOSED (400). Same status.
 #
-#   THREE KINDS ARE INDEXED DIFFERENTLY (#4215, SearchFieldExtractor + WebVttText):
-#     decentralized lists (9998/9999/39998/39999) get their own roles, text tracks
-#     (39307) index their cue words instead of the raw WebVTT, and a release's
-#     notes (30063) become its body. Derived on put, so a stored corpus keeps the
-#     old fields until a re-feed: docs/migrations.md, "three kinds re-derived".
+# NO STORE MOVE: vespa-eventstore 748dc5b8c6 names ec16988e3a, and
+# `force(libs.quartz)` runs it on this jar. Safe because the range touches only
+# nipFERelayOverHttp and nip01Core/relay/server, and neither store nor engine jar
+# references either package (scanned: no class names them).
 #
-#   NOTHING ELSE under quartz/ moves: no line in nip01Core/relay, Filter,
-#     FilterMatcher, IEventStore, the negentropy code or NIP-98.
+# DIRECTION: ec16988e3a is a strict ancestor of this.
+#   git merge-base --is-ancestor ec16988e3a a53cafd577   # verified
 #
-# DIRECTION: 28bf170f92 is a strict ancestor of this.
-#   git merge-base --is-ancestor 28bf170f92 ec16988e3a   # verified
+# LEXICOGRAPHIC: 'a53c…' < 'ec16…' ('a' < 'e'), so this sorts BELOW the pin it
+# replaces, and it would LOSE to the store's own `ec16988e3a` in a conflict --
+# `force(libs.quartz)` in every module is what settles it.
 #
-# LEXICOGRAPHIC: 'ec16…' > '28bf…' ('e' > '2'), so this sorts ABOVE the pin it
-# replaces -- the safe direction; `force(libs.quartz)` settles it regardless.
+# ONE ARROW, ON PURPOSE, the first bump here to carry one: every module but :web
+# resolves `quartz:ec16988e3a -> a53cafd577`, the store's request forced onto this
+# pin. It points TO the pin, so the pin took; the gate's point (docs/traps.md) is
+# an arrow AWAY from it. Every other quartz line reads a53cafd577. The store moves
+# its own quartz on its next bump, which clears the arrow.
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
+# GATED HERE: full build + archTest on this pin (1242 tests, 0 failures: the five
+# HttpRelayWireTest cases for body/frame/status now live in quartz's
+# HttpRelayHandlerTest), and a mutation check: MultiAddressAuthPolicy without its
+# authorizeTransport override fails four NIP-98 tests with 403 `restricted:`.
+#
+# Prev ec16988e3a (2026-09-27, #4222: a stale replaceable is `replaced:` / OK
+# false again, which this relay's store had never left; #4215 re-derives three
+# kinds' search fields, see docs/migrations.md).
 # Prev 28bf170f92 (2026-09-26, PR #4212: NIP-FE's engine half, SessionSink and
 # receive(Command); 110 event classes renamed to their NIP names, which moved the
 # store pin with it; the engine acks `duplicate:` with OK true; 142 -> 150
 # searchable kinds; jackson-module-kotlin, and with it kotlin-reflect, left the
 # classpath).
-quartz = "ec16988e3a"
+quartz = "a53cafd577"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the

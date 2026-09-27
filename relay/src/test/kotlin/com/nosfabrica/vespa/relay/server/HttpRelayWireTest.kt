@@ -20,72 +20,18 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import io.ktor.http.HttpStatusCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The HTTP commands' small decisions: which body is which command, which frame is which status, who takes gzip. */
+/**
+ * The host side's small decisions: who takes gzip, which address a proxy vouches for, how a refusal made
+ * here is written. Which body is which command and which frame is which status are quartz's
+ * (HttpRelayHandlerTest there).
+ */
 class HttpRelayWireTest {
-    private fun frame(
-        command: HttpCommand,
-        body: String,
-    ) = parseBody(body.encodeToByteArray())?.let(command::frame)
-
-    @Test
-    fun `each command takes its own arguments and nothing else`() {
-        assertEquals("""["REQ","http",{"kinds":[1]}]""", frame(HttpCommand.REQ, """{"kinds":[1]}"""))
-        assertEquals("""["COUNT","http",{"kinds":[1]},{"ids":[]}]""", frame(HttpCommand.COUNT, """[{"kinds":[1]},{"ids":[]}]"""))
-        assertEquals("""["EVENT",{"id":"x"}]""", frame(HttpCommand.EVENT, """{"id":"x"}"""))
-        for (bad in listOf("", "[]", "[1]", """[{"kinds":[1]},"x"]""", "null", "\"REQ\"", "{", """{"a":1} trailing""")) {
-            assertNull(frame(HttpCommand.REQ, bad), "'$bad' is not filters")
-        }
-        for (bad in listOf("[]", """[{"id":"x"}]""", "1")) assertNull(frame(HttpCommand.EVENT, bad), "'$bad' is not one event")
-    }
-
-    @Test
-    fun `each command's answer ends on its own frames`() {
-        assertTrue(HttpCommand.REQ.ends("""["EOSE"]"""))
-        assertFalse(HttpCommand.REQ.ends("""["EVENT",{}]"""))
-        assertTrue(HttpCommand.EVENT.ends("""["OK","x",true,""]"""))
-        assertFalse(HttpCommand.EVENT.ends("""["EOSE"]"""))
-        assertTrue(HttpCommand.COUNT.ends("""["NOTICE","too big"]"""))
-    }
-
-    @Test
-    fun `the first frame decides the status`() {
-        assertEquals(HttpStatusCode.OK, statusOf("""["EVENT",{}]"""))
-        assertEquals(HttpStatusCode.OK, statusOf("""["OK","x",true,"duplicate: have it"]"""))
-        assertEquals(HttpStatusCode.BadRequest, statusOf("""["OK","x",false,"invalid: bad signature"]"""))
-        assertEquals(HttpStatusCode.Forbidden, statusOf("""["OK","x",false,"blocked: banned"]"""))
-        assertEquals(HttpStatusCode.Unauthorized, statusOf("""["CLOSED","auth-required: sign"]"""))
-        assertEquals(HttpStatusCode.BadRequest, statusOf("""["NOTICE","error: could not parse message"]"""))
-    }
-
-    @Test
-    fun `a refusal's machine-readable prefix picks the status`() {
-        assertEquals(HttpStatusCode.Unauthorized, statusFor("auth-required: sign in"))
-        assertEquals(HttpStatusCode.Forbidden, statusFor("restricted: not for you"))
-        assertEquals(HttpStatusCode.Forbidden, statusFor("blocked: banned"))
-        assertEquals(HttpStatusCode.TooManyRequests, statusFor("rate-limited: slow down"))
-        assertEquals(HttpStatusCode.InternalServerError, statusFor("error: store failed"))
-        assertEquals(HttpStatusCode.BadRequest, statusFor("invalid: too many filters"))
-        assertEquals(HttpStatusCode.BadRequest, statusFor("no prefix at all"))
-    }
-
-    @Test
-    fun `answers leave without their subscription id`() {
-        assertEquals("""["EVENT",{"id":"x"}]""", withoutSubId("""["EVENT","http",{"id":"x"}]"""))
-        assertEquals("""["EOSE"]""", withoutSubId("""["EOSE","http"]"""))
-        assertEquals("""["CLOSED","error: x"]""", withoutSubId("""["CLOSED","http","error: x"]"""))
-        assertEquals("""["COUNT",{"count":2}]""", withoutSubId("""["COUNT","http",{"count":2}]"""))
-        // Frames without a subscription id pass untouched, even when their text happens to read "http".
-        assertEquals("""["NOTICE","http"]""", withoutSubId("""["NOTICE","http"]"""))
-        assertEquals("""["OK","abc",true,""]""", withoutSubId("""["OK","abc",true,""]"""))
-    }
-
     @Test
     fun `gzip is taken when named or wildcarded, and not at q=0`() {
         assertTrue(acceptsGzip("gzip"))

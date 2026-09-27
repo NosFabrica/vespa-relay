@@ -237,7 +237,7 @@ class RelayConfigTest {
         assertEquals(64, relay.gate.total)
         assertEquals(30_000L, relay.deadlineMs)
         assertNull(relay.clients.header)
-        assertEquals(listOf("https://relay.example/req"), relay.urlsFor("/req"))
+        assertEquals(listOf("https://relay.example"), relay.origins())
     }
 
     @Test

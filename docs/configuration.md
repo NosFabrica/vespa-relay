@@ -269,7 +269,8 @@ never ran — its NIP-01 prefix picking the code: `auth-required:` is `401` (wit
 `WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
 `429`, `error:` `500`, anything else `400`. An `OK` for a `duplicate:` is `200`:
 the event is stored, which is what was asked. A body that is not the command's
-arguments is `400`, one over `MAX_MESSAGE_LENGTH` `413`, and no frame within the
+arguments is `400` (a `CLOSED` when it is not even the right JSON type, else the
+engine's own `NOTICE`, as on the socket), one over `MAX_MESSAGE_LENGTH` `413`, and no frame within the
 deadline `503`. Once a REQ's events are flowing the status is `200` and can no
 longer change, so a failure after that is a last `CLOSED` line, a deadline
 passed mid-answer included. **A body that does not end on its command's answer

@@ -2,7 +2,7 @@
 
 The history behind `relay/.../RelayMain.kt`, the `server/` package (HttpServer,
 NostrRelayServer, the NIP-42 and lens policies, TrustNotice, SearchGate,
-BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpCommand, HttpRelayGate) and `config/`
+BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpRelayGate) and `config/`
 (RelayAddresses, EnvSettings, PubKeys), moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -208,25 +208,29 @@ variable under compose should do nothing, and an exemption for a deleted setting
 is checked for the same reason.
 
 **An HTTP command is a websocket session that ends at its answer.** Each
-route builds the client frame and hands it to `RelayServerBase.serve`, the same entry the
+route hands the client frame to `RelayServerBase.serve`, the same entry the
 socket uses, rather than calling the store: every limit, policy, the raw-frame
 path and the pressure sample come with it, and a later quartz change reaches
-both transports at once. The body is re-serialized from parsed JSON before it
-is spliced in, so it can only ever be filters. The answer is the frames
+both transports at once. The body is spliced into the frame as sent and parsed
+once, by the engine, as socket text is: the verb and subscription id come first
+and one value is read, so a body cannot turn into another command. The answer is the frames
 themselves, one per line, because a client then parses HTTP and the socket
 the same way, and the last line says whether the answer finished (`EOSE`) or
 was cut (`CLOSED`) — a bare array of events cannot tell a dropped connection
 from an empty tail. The status waits for the first frame so a refusal is still
 an HTTP error; after that it cannot change.
 
-**NIP-98 is vouched in beside the session, not written into it.** Quartz
-records an identity only from a NIP-42 AUTH, which needs a challenge round
-trip a single request does not have. `VouchedReaders` holds the verified key
-per connection id for as long as `serveAs` runs, and the two readers of
-identity on the read path — `LensRequiredPolicy` and `ObserverBackend` — ask it
-instead of `authenticatedUsers` alone. The write-side policies read no identity,
-so nothing else needed it. The token must bind the body's hash, so it
-authorizes one command.
+**NIP-98 signs the session in, after the policy chain votes.** A NIP-42 AUTH
+needs a challenge round trip a single request does not have, so quartz's
+handler proves the key from the `Authorization` header and records it with
+`RelaySession.authenticateByTransport`, which asks every policy's
+`acceptTransportIdentity` first. Everything in this relay's stack has no
+objection by default except `MultiAddressAuthPolicy`, whose quartz parent
+refuses until it opts in: it overrides `authorizeTransport` to accept, and sends
+no post-login notice, since over HTTP a NOTICE would end the answer. The key is
+then in `authenticatedUsers` exactly as after AUTH, which is what
+`LensRequiredPolicy` and `ObserverBackend` read. The token must bind the body's
+hash, so it authorizes one command.
 
 **NIP-98 tokens are not single-use over HTTP.** The admin rpc remembers every
 token it accepts and refuses a second use; the HTTP commands do not. That
@@ -275,20 +279,17 @@ answer in the heap (measured: 12 MB accepted with nothing read). Draining
 past the threshold puts the gzip path under the socket's backpressure like the
 plain one.
 
-**The HTTP commands' engine seams belong in quartz, drafted as a patch.**
-Three parts of the route stand in for what quartz does not expose: frames are
-recognised by their text, a NIP-98 key rides beside the session in
-`VouchedReaders`, and a body is spliced into a frame string for the session to
-parse again. `docs/proposals/quartz-nip-fe-relay-over-http.patch` (a
-`git am` onto amethyst main, which also applies to the pinned a8e8778265) gives
-the session a typed `SessionSink`, identities proved before connect, and
-`receive(Command)`, and carries the transport-neutral handler; the wire format
-is `docs/proposals/nip-fe-relay-over-http.md`. Once it lands and the pin moves,
-`HttpRelayRoutes` keeps only the Ktor response, the gate and the gzip sink.
+**The HTTP commands run on quartz's handler.** They began here, standing in for
+what quartz did not expose: frames recognised by their text, a NIP-98 key riding
+beside the session in a side table, a body re-serialized into a frame string.
+The engine half landed upstream (amethyst #4212, its review fixes #4214): a typed
+`SessionSink`, `authenticateByTransport`, and the transport-neutral
+`HttpRelayHandler`, which this relay now calls. `HttpRelayRoutes` keeps only the
+host's part: the bounded body read, the gate, the headers and the gzip sink.
 
 **HTTP answers carry no subscription id.** Upstream (nostr-protocol/nips#2484)
 settled NIP-FE's frames as `["EVENT",{…}]`, `["EOSE"]`: a request is its own
 connection with exactly one command, so the id says nothing. The engine still
-runs the command under `http` inside, and the route takes it back out of each
+runs the command under `http` inside, and the handler takes it back out of each
 frame as it leaves, by verb (only the frames that carry one), so a NOTICE whose
 text happens to read `http` is never touched.

@@ -38,9 +38,7 @@ import com.vitorpamplona.quartz.utils.Hex
  * if every filter names a lens (`observer:<64-hex>`) or waives one (`include:spam`), because a
  * subscription's filters are ORed. NIP-77 passes through the same gate. A NIP-98 read counts as signed in.
  */
-class LensRequiredPolicy(
-    private val readers: VouchedReaders = VouchedReaders(),
-) : PassThroughPolicy() {
+class LensRequiredPolicy : PassThroughPolicy() {
     /** This connection's context; `@Volatile` because the REQ can land on another coroutine. */
     @Volatile
     private var scope: RequestContext? = null
@@ -62,7 +60,7 @@ class LensRequiredPolicy(
     ): PolicyResult<T> =
         when {
             // Signed in: the connection's own pubkey is the lens, applied by ObserverBackend.
-            scope?.let(readers::of)?.isNotEmpty() == true -> PolicyResult.Accepted(cmd)
+            scope?.authenticatedUsers?.isNotEmpty() == true -> PolicyResult.Accepted(cmd)
 
             filters.all(Filter::declaresLens) -> PolicyResult.Accepted(cmd)
 
