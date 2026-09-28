@@ -31,10 +31,10 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# cba4a2d990 = the head of vitorpamplona/amethyst#4243 (branch claude/relaxed-bohr-4h9lp3), pinned
-# BEFORE its merge, as ebb09fa0d4 once was for the store: two fixes this relay's contract IT
-# (RelayContractIT) found, over amethyst main 77cb10e (42 commits over fcd76d2075). Move the pin to
-# the merge commit when it lands (same tree).
+# bf2fefc621 = amethyst main @ 2026-09-28, the merge of vitorpamplona/amethyst#4243 — SAME TREE as
+# its head cba4a2d990, which this pin held before the merge (`git diff cba4a2d990 bf2fefc621` is
+# empty; the merge's parents are 77cb10e and cba4a2d990). Two fixes this relay's contract IT
+# (RelayContractIT) found, over amethyst main 77cb10e (42 commits over fcd76d2075):
 #
 #   NIP-62 MATCHES THE URL A CLIENT WRITES. RelayTag.shouldVanishFrom compared the tag to
 #     RELAY_URL's normalized form as a STRING, so `["relay","wss://host"]` never matched
@@ -51,14 +51,16 @@ app = "0.1.0"
 # relay does not serve. No searchable kind's indexableContent moves (the diff has none), so
 # nothing is re-derived and no re-feed is owed.
 #
-# DIRECTION: fcd76d2075 is a strict ancestor of this.
-#   git merge-base --is-ancestor fcd76d2075 cba4a2d990   # verified
+# DIRECTION: fcd76d2075 and cba4a2d990 are both strict ancestors of this.
+#   git merge-base --is-ancestor fcd76d2075 bf2fefc621   # verified
+#   git merge-base --is-ancestor cba4a2d990 bf2fefc621   # verified
 #
 # ONE ARROW, TO THE PIN: the store (ff54c9beb1 -> dfd8226ad0 below) still names fcd76d2075, so
-# its modules carry `quartz:fcd76d2075 -> cba4a2d990`; `force(libs.quartz)` settles it and the
-# store calls nothing the range changes (full build, archTest and the contract IT on this pin).
+# its modules carry `quartz:fcd76d2075 -> bf2fefc621`; `force(libs.quartz)` settles it and the
+# store calls nothing the range changes (full build, archTest and the contract IT ran on the
+# identical tree as cba4a2d990).
 #
-# LEXICOGRAPHIC: 'cba4…' < 'fcd7…' ('c' < 'f'): the losing direction, moot under force().
+# LEXICOGRAPHIC: 'bf2f…' < 'fcd7…' ('b' < 'f'): the losing direction, moot under force().
 #
 # Prev fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
 # quartz/ moves in nipFERelayOverHttp, RelaySession, NIP-49 and a new Bech32Transcription, the
@@ -104,7 +106,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "cba4a2d990"
+quartz = "bf2fefc621"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -922,8 +924,8 @@ quartz = "cba4a2d990"
 # No schema change (event.sd untouched: recency_gated_exact already exists), nothing to re-feed.
 #   git merge-base --is-ancestor ff54c9beb1 dfd8226ad0   # verified
 #
-# GATED, on this pin with quartz cba4a2d990: this relay's full build + archTest (262 relay tests,
-# LiveGateDeliveryTest among them); the store's `./gradlew build` and its integration suite (23
+# GATED, on this pin with quartz cba4a2d990 (the tree bf2fefc621 merged): this relay's full
+# build + archTest (262 relay tests, LiveGateDeliveryTest among them); the store's `./gradlew build` and its integration suite (23
 # tests, StagingCorpusIT skipped by design, 0 failures; FilterMatrixIT 10,305 cases, 0 failing);
 # and RelayContractIT over the wire against a relay built from both pins: 8,189 checks, 0 failing
 # (5 on ff54c9beb1 + fcd76d2075, 1,741 on 9522ee0768).
