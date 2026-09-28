@@ -78,6 +78,7 @@ node web/src/test/browser/pager.probe.mjs        # the pager against a fake WebS
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i                  # does a relay serve what it was asked; -DcomplianceUrls='wss://a,wss://b'
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i  # does the abort sampler fire; wants a busy relay
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
+./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)
 ./gradlew :sync:test --tests '*UnpageableLegLiveProbe*' -DunpageableProbe=true --rerun -i                   # the mirror's catch-up leg through quartz's own pager; -DunpageableLegs='wss://a=<coveredTo>,wss://b=<coveredTo>'
 ./gradlew :monitor:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i                    # pins that the client has a NIP-42 responder; -DauthGatedUrl='wss://relay.example'
 D=$(mktemp -d)                                                                                              # the band file at production scale, charted before and after

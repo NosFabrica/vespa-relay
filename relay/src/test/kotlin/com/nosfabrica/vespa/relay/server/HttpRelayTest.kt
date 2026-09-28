@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.toHexKey
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -68,7 +69,8 @@ class HttpRelayTest {
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
             if (query.kinds?.contains(STALLED_KIND) == true) awaitCancellation()
-            if (query.search != null || query.ranking != null) observers += query.observer
+            // RANK_UNRANKED is the store's own existence probes (the write path's guards), not a read.
+            if ((query.search != null || query.ranking != null) && query.ranking != EventYql.RANK_UNRANKED) observers += query.observer
             return inner.search(query)
         }
 

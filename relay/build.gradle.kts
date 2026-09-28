@@ -78,4 +78,5 @@ tasks.test {
     System.getProperty("searchExpansionBench")?.let { systemProperty("searchExpansionBench", it) }
     System.getProperty("itVespa")?.let { systemProperty("itVespa", it) }
     System.getProperty("itCorpus")?.let { systemProperty("itCorpus", it) }
+    System.getProperty("itRelay")?.let { systemProperty("itRelay", it) }
 }

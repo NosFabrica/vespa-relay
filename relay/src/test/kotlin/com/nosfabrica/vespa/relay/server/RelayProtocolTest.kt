@@ -67,7 +67,8 @@ class RelayProtocolTest {
         override suspend fun remove(id: String) = inner.remove(id)
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
-            if (query.search != null || query.ranking != null) {
+            // RANK_UNRANKED is the store's own existence probes (the write path's guards), not a read.
+            if ((query.search != null || query.ranking != null) && query.ranking != EventYql.RANK_UNRANKED) {
                 searchObservers += query.observer
                 searchQueries += query
             }

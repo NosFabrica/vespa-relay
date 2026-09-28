@@ -161,7 +161,7 @@ reason.
 | var | meaning | default |
 |---|---|---|
 | `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block | sane defaults |
-| `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning (`NEG_MAX_SYNC_EVENTS` caps how many ids one reconciliation walks) | strfry-parity |
+| `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning. `NEG_MAX_SYNC_EVENTS` is the ONE bound on a reconciliation: how many ids it walks before answering NEG-ERR `blocked: too many query results`. `DEFAULT_LIMIT` / `MAX_LIMIT` size a REQ's page and never reach a NEG-OPEN, so keep this far above them | strfry-parity (1,000,000) |
 
 ## Access control
 

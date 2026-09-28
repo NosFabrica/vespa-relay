@@ -31,7 +31,38 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
+# bf2fefc621 = amethyst main @ 2026-09-28, the merge of vitorpamplona/amethyst#4243 — SAME TREE as
+# its head cba4a2d990, which this pin held before the merge (`git diff cba4a2d990 bf2fefc621` is
+# empty; the merge's parents are 77cb10e and cba4a2d990). Two fixes this relay's contract IT
+# (RelayContractIT) found, over amethyst main 77cb10e (42 commits over fcd76d2075):
+#
+#   NIP-62 MATCHES THE URL A CLIENT WRITES. RelayTag.shouldVanishFrom compared the tag to
+#     RELAY_URL's normalized form as a STRING, so `["relay","wss://host"]` never matched
+#     `wss://host/`: OK true, nothing deleted, the "vanished" events republishable. Now compared
+#     as NormalizedRelayUrl.
+#   A NIP-77 RECONCILE IS NOT A REQ PAGE. NEG-OPEN ran through the REQ policy hook, so
+#     LimitsPolicy stamped DEFAULT_LIMIT on it and a reconcile covered the newest 500 ids of its
+#     filter and called that the set. IRelayPolicy.accept(NegOpenCmd) now runs the REQ rules by
+#     default (LensRequiredPolicy governs NEG-OPEN unchanged) and LimitsPolicy leaves the page
+#     limits out: NEG_MAX_SYNC_EVENTS (1,000,000) is the one bound, answered with NEG-ERR.
+#
+# THE REST OF THE RANGE, for this relay: relay-server additions (EOSE completeness hints,
+# EventCommandHandler, RelaySession for them, #4238's kind-not-allowed narrowing) and NIP work the
+# relay does not serve. No searchable kind's indexableContent moves (the diff has none), so
+# nothing is re-derived and no re-feed is owed.
+#
+# DIRECTION: fcd76d2075 and cba4a2d990 are both strict ancestors of this.
+#   git merge-base --is-ancestor fcd76d2075 bf2fefc621   # verified
+#   git merge-base --is-ancestor cba4a2d990 bf2fefc621   # verified
+#
+# ONE ARROW, TO THE PIN: the store (ff54c9beb1 -> 5379e572dc below) still names fcd76d2075, so
+# its modules carry `quartz:fcd76d2075 -> bf2fefc621`; `force(libs.quartz)` settles it and the
+# store calls nothing the range changes (full build, archTest and the contract IT ran on the
+# identical tree as cba4a2d990).
+#
+# LEXICOGRAPHIC: 'bf2f…' < 'fcd7…' ('b' < 'f'): the losing direction, moot under force().
+#
+# Prev fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
 # quartz/ moves in nipFERelayOverHttp, RelaySession, NIP-49 and a new Bech32Transcription, the
 # rest is app, geode and translations). MOVED FOR THIS RELAY: NIP-FE was simplified to the text at
 # https://nostrhub.io (kind 30817, d=nip-fe-nostr-over-http), and quartz's handler follows it:
@@ -75,7 +106,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "fcd76d2075"
+quartz = "bf2fefc621"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -847,7 +878,71 @@ quartz = "fcd76d2075"
 # LEXICOGRAPHIC: '9522…' < 'e627…' ('9' < 'e'), so this sorts BELOW the pin it replaces -- the
 # losing direction, and moot: nothing else in the graph names vespa-eventstore.
 #
-vespaEventStore = "9522ee0768"
+# ff54c9beb1 = vespa-eventstore main @ 2026-09-27, the merge of PR #148 (one commit over
+# 9522ee0768, b87910c): A GATED COUNT NOW GATES. At 9522ee0768 a ranked count asked Vespa for
+# `hits=0`, and Vespa 8.731 answers that without running first-phase ranking at all, so
+# `rank-score-drop-limit` never fired and `totalCount` came back UNGATED. A term-less COUNT through
+# an observer (`observer:<hex>`, with or without `filter:rank:gte:N`) therefore answered the
+# whole match set whatever the lens or floor. Measured on staging (2026-09-28, since=1790468839):
+# 963,042 with the observer alone, 963,042 at gte:50, 963,043 at gte:90, against 964,435 under
+# `include:spam`; kind 1 alone 410,344 gated vs 410,345 unranked. A count with terms was gated
+# only partly (the store's note: 3,714 vs 2,676 served). The store now asks for one hit, which
+# forces the ranking pass the gate lives in, for one document summary. No schema, no quartz
+# move, nothing re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor 9522ee0768 ff54c9beb1   # verified
+#
+# GATED: vespa-eventstore's FilterMatrixIT (its branch claude/relaxed-bohr-4h9lp3, 14043ec) -- 10,305
+# REQ+COUNT pairs through `open()` against an in-test oracle: NIP-01 shapes x token / NIP-42 / lens-
+# less observers x every `filter:rank` / `include:spam` form x `sort:` x term / phrase / exclusion.
+# On Vespa 8.754.14: ff54c9beb1 0 failing; 9522ee0768 1,890 failing, every one a COUNT over the
+# page its own REQ served, membership never wrong. So an AUTHENTICATED plain COUNT was ungated too
+# (kind 1 through the connection's lens: COUNT 42, served 30), not only the `observer:` token form.
+# And this relay's full build + archTest on the new pin: every quartz line fcd76d2075, every eventstore
+# line ff54c9beb1, zero arrows.
+#
+# NOT main's head: 0dea23e (#147, #149) adds the speculative recency strategies on top (~2.8k
+# lines, a new default read plan). That is its own bump, not a count fix.
+#
+# LEXICOGRAPHIC: 'ff54…' > '9522…' ('f' > '9'), so this sorts ABOVE the pin it replaces -- the
+# safe direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+# 5379e572dc = vespa-eventstore main @ 2026-09-28, the merge of #155 — SAME TREE as its head
+# 6b9a1a8d3b, which this pin held before the merge (`git diff 6b9a1a8d3b 5379e572dc` is empty; the
+# merge's parents are 81f2286 and 6b9a1a8d3b), over eventstore main 81f2286. The head had moved
+# from dfd8226ad0 to fix an audit of the PR: one
+# gating rule (EventYql.gateFloor) for the page, the walk, the snapshot and LiveGate; LiveGate checks
+# a searching rule's TEXT (quartz's Filter.match ignores `search`, so an ungated search filter
+# vouched for a gated sibling's below-floor events, and a live "pizza" subscription streamed every
+# note); a limit'd walk takes a cut tie group's lowest ids; a limit'd trust sort snapshots as its
+# ranked REQ. Being over main 81f2286, this bump also brings #147 / #149 (the speculative
+# recency strategies ff54c9beb1 deliberately left out: VESPA_RECENCY_STRATEGY, default
+# `speculative`, `match_phase` the escape hatch) and #154 (recency pages resolved from ids, each
+# document read once). Its internal existence probes now stamp RANK_UNRANKED, which is why
+# RelayProtocolTest's and HttpRelayTest's recording indexes skip that profile. Three commits of its own:
+#
+#   FilterMatrixIT (14043ec): 10,305 REQ+COUNT(+snapshot) cases through open() against an oracle.
+#   A NIP-77 SNAPSHOT IS THE SET ITS REQ SERVES (80433e7): a limit'd filter walked one bounded
+#     search page (25 of 28 in the contract IT), and an `observer:` NEG-OPEN ran its gate with no
+#     lens resolved and reconciled NOTHING (0 of 20). Now every termless snapshot walks, through
+#     the resolved lens: the engine's id walk runs a lensed query on recency_gated_exact.
+#   LiveGate (e6bccf8): the observer gate for events after EOSE, which ObserverBackend now holds
+#     live deliveries to — a signed-in feed no longer streams an author its replay dropped.
+#
+# No schema change (event.sd untouched: recency_gated_exact already exists), nothing to re-feed.
+#   git merge-base --is-ancestor ff54c9beb1 5379e572dc   # verified
+#   git merge-base --is-ancestor 6b9a1a8d3b 5379e572dc   # verified
+#
+# GATED, on this pin (6b9a1a8d3b, the same tree) with quartz bf2fefc621: this relay's full build +
+# archTest (262 relay tests, LiveGateDeliveryTest among them); the store's `./gradlew build`, its
+# integration suite (23 tests, 0 failures), and FilterMatrixIT with its LIVE and LIMIT'D SNAPSHOT
+# columns (10,305 cases, 0 failing; 6,222 failing on dfd8226ad0); and RelayContractIT over the wire
+# against a relay built from both pins: 8,191 checks, 0 failing (5 on ff54c9beb1 + fcd76d2075,
+# 1,741 on 9522ee0768).
+#
+# LEXICOGRAPHIC: '5379…' < 'ff54…': the losing direction, moot — nothing else names the store.
+#
+# Prev ff54c9beb1:
+vespaEventStore = "5379e572dc"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
