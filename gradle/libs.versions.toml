@@ -55,7 +55,7 @@ app = "0.1.0"
 #   git merge-base --is-ancestor fcd76d2075 bf2fefc621   # verified
 #   git merge-base --is-ancestor cba4a2d990 bf2fefc621   # verified
 #
-# ONE ARROW, TO THE PIN: the store (ff54c9beb1 -> 6b9a1a8d3b below) still names fcd76d2075, so
+# ONE ARROW, TO THE PIN: the store (ff54c9beb1 -> 5379e572dc below) still names fcd76d2075, so
 # its modules carry `quartz:fcd76d2075 -> bf2fefc621`; `force(libs.quartz)` settles it and the
 # store calls nothing the range changes (full build, archTest and the contract IT ran on the
 # identical tree as cba4a2d990).
@@ -906,13 +906,15 @@ quartz = "bf2fefc621"
 # LEXICOGRAPHIC: 'ff54…' > '9522…' ('f' > '9'), so this sorts ABOVE the pin it replaces -- the
 # safe direction, and moot: nothing else in the graph names vespa-eventstore.
 #
-# 6b9a1a8d3b = vespa-eventstore PR #155's head (branch claude/relaxed-bohr-4h9lp3), pinned before its
-# merge, over eventstore main 81f2286. The head moved from dfd8226ad0 to fix an audit of the PR: one
+# 5379e572dc = vespa-eventstore main @ 2026-09-28, the merge of #155 — SAME TREE as its head
+# 6b9a1a8d3b, which this pin held before the merge (`git diff 6b9a1a8d3b 5379e572dc` is empty; the
+# merge's parents are 81f2286 and 6b9a1a8d3b), over eventstore main 81f2286. The head had moved
+# from dfd8226ad0 to fix an audit of the PR: one
 # gating rule (EventYql.gateFloor) for the page, the walk, the snapshot and LiveGate; LiveGate checks
 # a searching rule's TEXT (quartz's Filter.match ignores `search`, so an ungated search filter
 # vouched for a gated sibling's below-floor events, and a live "pizza" subscription streamed every
 # note); a limit'd walk takes a cut tie group's lowest ids; a limit'd trust sort snapshots as its
-# ranked REQ. The earlier head's range, for the record: — so this bump also brings #147 / #149 (the speculative
+# ranked REQ. Being over main 81f2286, this bump also brings #147 / #149 (the speculative
 # recency strategies ff54c9beb1 deliberately left out: VESPA_RECENCY_STRATEGY, default
 # `speculative`, `match_phase` the escape hatch) and #154 (recency pages resolved from ids, each
 # document read once). Its internal existence probes now stamp RANK_UNRANKED, which is why
@@ -927,18 +929,20 @@ quartz = "bf2fefc621"
 #     live deliveries to — a signed-in feed no longer streams an author its replay dropped.
 #
 # No schema change (event.sd untouched: recency_gated_exact already exists), nothing to re-feed.
-#   git merge-base --is-ancestor ff54c9beb1 6b9a1a8d3b   # verified
+#   git merge-base --is-ancestor ff54c9beb1 5379e572dc   # verified
+#   git merge-base --is-ancestor 6b9a1a8d3b 5379e572dc   # verified
 #
-# GATED, on this pin with quartz bf2fefc621: this relay's full build + archTest (262 relay tests,
-# LiveGateDeliveryTest among them); the store's `./gradlew build`, and FilterMatrixIT with its LIVE
-# and LIMIT'D SNAPSHOT columns (10,305 cases, 0 failing; 6,222 failing on dfd8226ad0); and
-# RelayContractIT over the wire against a relay built from both pins: 8,191 checks, 0 failing
-# (5 on ff54c9beb1 + fcd76d2075, 1,741 on 9522ee0768).
+# GATED, on this pin (6b9a1a8d3b, the same tree) with quartz bf2fefc621: this relay's full build +
+# archTest (262 relay tests, LiveGateDeliveryTest among them); the store's `./gradlew build`, its
+# integration suite (23 tests, 0 failures), and FilterMatrixIT with its LIVE and LIMIT'D SNAPSHOT
+# columns (10,305 cases, 0 failing; 6,222 failing on dfd8226ad0); and RelayContractIT over the wire
+# against a relay built from both pins: 8,191 checks, 0 failing (5 on ff54c9beb1 + fcd76d2075,
+# 1,741 on 9522ee0768).
 #
-# LEXICOGRAPHIC: '6b9a…' < 'ff54…': the losing direction, moot — nothing else names the store.
+# LEXICOGRAPHIC: '5379…' < 'ff54…': the losing direction, moot — nothing else names the store.
 #
 # Prev ff54c9beb1:
-vespaEventStore = "6b9a1a8d3b"
+vespaEventStore = "5379e572dc"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
