@@ -847,7 +847,35 @@ quartz = "fcd76d2075"
 # LEXICOGRAPHIC: '9522…' < 'e627…' ('9' < 'e'), so this sorts BELOW the pin it replaces -- the
 # losing direction, and moot: nothing else in the graph names vespa-eventstore.
 #
-vespaEventStore = "9522ee0768"
+# ff54c9beb1 = vespa-eventstore main @ 2026-09-27, the merge of PR #148 (one commit over
+# 9522ee0768, b87910c): A GATED COUNT NOW GATES. At 9522ee0768 a ranked count asked Vespa for
+# `hits=0`, and Vespa 8.731 answers that without running first-phase ranking at all, so
+# `rank-score-drop-limit` never fired and `totalCount` came back UNGATED. A term-less COUNT through
+# an observer (`observer:<hex>`, with or without `filter:rank:gte:N`) therefore answered the
+# whole match set whatever the lens or floor. Measured on staging (2026-09-28, since=1790468839):
+# 963,042 with the observer alone, 963,042 at gte:50, 963,043 at gte:90, against 964,435 under
+# `include:spam`; kind 1 alone 410,344 gated vs 410,345 unranked. A count with terms was gated
+# only partly (the store's note: 3,714 vs 2,676 served). The store now asks for one hit, which
+# forces the ranking pass the gate lives in, for one document summary. No schema, no quartz
+# move, nothing re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor 9522ee0768 ff54c9beb1   # verified
+#
+# GATED: vespa-eventstore's FilterMatrixIT (its branch claude/relaxed-bohr-4h9lp3, 14043ec) -- 10,305
+# REQ+COUNT pairs through `open()` against an in-test oracle: NIP-01 shapes x token / NIP-42 / lens-
+# less observers x every `filter:rank` / `include:spam` form x `sort:` x term / phrase / exclusion.
+# On Vespa 8.754.14: ff54c9beb1 0 failing; 9522ee0768 1,890 failing, every one a COUNT over the
+# page its own REQ served, membership never wrong. So an AUTHENTICATED plain COUNT was ungated too
+# (kind 1 through the connection's lens: COUNT 42, served 30), not only the `observer:` token form.
+# And this relay's full build + archTest on the new pin: every quartz line fcd76d2075, every eventstore
+# line ff54c9beb1, zero arrows.
+#
+# NOT main's head: 0dea23e (#147, #149) adds the speculative recency strategies on top (~2.8k
+# lines, a new default read plan). That is its own bump, not a count fix.
+#
+# LEXICOGRAPHIC: 'ff54…' > '9522…' ('f' > '9'), so this sorts ABOVE the pin it replaces -- the
+# safe direction, and moot: nothing else in the graph names vespa-eventstore.
+#
+vespaEventStore = "ff54c9beb1"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
