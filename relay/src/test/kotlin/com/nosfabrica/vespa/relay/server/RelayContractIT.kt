@@ -106,6 +106,9 @@ import kotlin.test.assertTrue
  *  - store dfd8226ad0, quartz cba4a2d990: 0 failing — vitorpamplona/amethyst#4243 and
  *    NosFabrica/vespa-eventstore#155, with ObserverBackend holding live deliveries to the store's
  *    LiveGate.
+ *  - store 6b9a1a8d3b, quartz bf2fefc621 (the merge of #4243): 0 of 8,191 failing — the two
+ *    checks added since, a gated feed beside an ungated search filter, are the case #155's audit
+ *    found: the search filter vouched for below-floor events the gated one was there to drop.
  */
 class RelayContractIT {
     private val relay = System.getProperty("itRelay")
@@ -395,6 +398,27 @@ class RelayContractIT {
         anon.close(open)
         authO.close(gated)
         fx.extra += listOf(trusted, untrusted)
+
+        // Many filters, one gated: an ungated SEARCH beside a gated plain filter vouches only
+        // for what its words match — quartz's in-memory match ignores `search`, and used to let
+        // the search filter admit a below-floor note the plain filter was there to drop.
+        val later = nowSecs()
+        val mixed =
+            authO.subscribe(
+                listOf(
+                    Filter(kinds = listOf(1), authors = fx.authorKeys, since = later - 5, search = "quokka sort:text"),
+                    Filter(kinds = listOf(1), authors = fx.authorKeys, since = later - 5),
+                ),
+            )
+        val offTopic = fx.authors[5].sign<Event>(later, 1, emptyArray(), "a below-floor author says hello")
+        val onTopic = fx.authors[5].sign<Event>(later, 1, emptyArray(), "a below-floor quokka sighting")
+        anon.publish(offTopic)
+        anon.publish(onTopic)
+        val mixedGot = authO.drain(mixed, 3_000)
+        report.check("a gated sibling filter is not bypassed by an ungated search filter", offTopic.id !in mixedGot) { "the below-floor note matched only the gated filter and was delivered" }
+        report.check("the ungated search filter still streams what its words match", onTopic.id in mixedGot) { "got ${mixedGot.size}" }
+        authO.close(mixed)
+        fx.extra += listOf(offTopic, onTopic)
     }
 
     // ---- "A search answers with what its hits are about" ------------------------------------------
