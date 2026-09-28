@@ -31,7 +31,36 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
+# cba4a2d990 = the head of vitorpamplona/amethyst#4243 (branch claude/relaxed-bohr-4h9lp3), pinned
+# BEFORE its merge, as ebb09fa0d4 once was for the store: two fixes this relay's contract IT
+# (RelayContractIT) found, over amethyst main 77cb10e (42 commits over fcd76d2075). Move the pin to
+# the merge commit when it lands (same tree).
+#
+#   NIP-62 MATCHES THE URL A CLIENT WRITES. RelayTag.shouldVanishFrom compared the tag to
+#     RELAY_URL's normalized form as a STRING, so `["relay","wss://host"]` never matched
+#     `wss://host/`: OK true, nothing deleted, the "vanished" events republishable. Now compared
+#     as NormalizedRelayUrl.
+#   A NIP-77 RECONCILE IS NOT A REQ PAGE. NEG-OPEN ran through the REQ policy hook, so
+#     LimitsPolicy stamped DEFAULT_LIMIT on it and a reconcile covered the newest 500 ids of its
+#     filter and called that the set. IRelayPolicy.accept(NegOpenCmd) now runs the REQ rules by
+#     default (LensRequiredPolicy governs NEG-OPEN unchanged) and LimitsPolicy leaves the page
+#     limits out: NEG_MAX_SYNC_EVENTS (1,000,000) is the one bound, answered with NEG-ERR.
+#
+# THE REST OF THE RANGE, for this relay: relay-server additions (EOSE completeness hints,
+# EventCommandHandler, RelaySession for them, #4238's kind-not-allowed narrowing) and NIP work the
+# relay does not serve. No searchable kind's indexableContent moves (the diff has none), so
+# nothing is re-derived and no re-feed is owed.
+#
+# DIRECTION: fcd76d2075 is a strict ancestor of this.
+#   git merge-base --is-ancestor fcd76d2075 cba4a2d990   # verified
+#
+# ONE ARROW, TO THE PIN: the store (ff54c9beb1 -> dfd8226ad0 below) still names fcd76d2075, so
+# its modules carry `quartz:fcd76d2075 -> cba4a2d990`; `force(libs.quartz)` settles it and the
+# store calls nothing the range changes (full build, archTest and the contract IT on this pin).
+#
+# LEXICOGRAPHIC: 'cba4…' < 'fcd7…' ('c' < 'f'): the losing direction, moot under force().
+#
+# Prev fcd76d2075 = amethyst main @ 2026-09-27, the merge of #4231 (39 commits over a53cafd577;
 # quartz/ moves in nipFERelayOverHttp, RelaySession, NIP-49 and a new Bech32Transcription, the
 # rest is app, geode and translations). MOVED FOR THIS RELAY: NIP-FE was simplified to the text at
 # https://nostrhub.io (kind 30817, d=nip-fe-nostr-over-http), and quartz's handler follows it:
@@ -75,7 +104,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "fcd76d2075"
+quartz = "cba4a2d990"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -875,7 +904,34 @@ quartz = "fcd76d2075"
 # LEXICOGRAPHIC: 'ff54…' > '9522…' ('f' > '9'), so this sorts ABOVE the pin it replaces -- the
 # safe direction, and moot: nothing else in the graph names vespa-eventstore.
 #
-vespaEventStore = "ff54c9beb1"
+# dfd8226ad0 = vespa-eventstore PR #155's head (branch claude/relaxed-bohr-4h9lp3), pinned before its
+# merge, over eventstore main 81f2286 — so this bump also brings #147 / #149 (the speculative
+# recency strategies ff54c9beb1 deliberately left out: VESPA_RECENCY_STRATEGY, default
+# `speculative`, `match_phase` the escape hatch) and #154 (recency pages resolved from ids, each
+# document read once). Its internal existence probes now stamp RANK_UNRANKED, which is why
+# RelayProtocolTest's and HttpRelayTest's recording indexes skip that profile. Three commits of its own:
+#
+#   FilterMatrixIT (14043ec): 10,305 REQ+COUNT(+snapshot) cases through open() against an oracle.
+#   A NIP-77 SNAPSHOT IS THE SET ITS REQ SERVES (80433e7): a limit'd filter walked one bounded
+#     search page (25 of 28 in the contract IT), and an `observer:` NEG-OPEN ran its gate with no
+#     lens resolved and reconciled NOTHING (0 of 20). Now every termless snapshot walks, through
+#     the resolved lens: the engine's id walk runs a lensed query on recency_gated_exact.
+#   LiveGate (e6bccf8): the observer gate for events after EOSE, which ObserverBackend now holds
+#     live deliveries to — a signed-in feed no longer streams an author its replay dropped.
+#
+# No schema change (event.sd untouched: recency_gated_exact already exists), nothing to re-feed.
+#   git merge-base --is-ancestor ff54c9beb1 dfd8226ad0   # verified
+#
+# GATED, on this pin with quartz cba4a2d990: this relay's full build + archTest (262 relay tests,
+# LiveGateDeliveryTest among them); the store's `./gradlew build` and its integration suite (23
+# tests, StagingCorpusIT skipped by design, 0 failures; FilterMatrixIT 10,305 cases, 0 failing);
+# and RelayContractIT over the wire against a relay built from both pins: 8,189 checks, 0 failing
+# (5 on ff54c9beb1 + fcd76d2075, 1,741 on 9522ee0768).
+#
+# LEXICOGRAPHIC: 'dfd8…' < 'ff54…': the losing direction, moot — nothing else names the store.
+#
+# Prev ff54c9beb1:
+vespaEventStore = "dfd8226ad0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

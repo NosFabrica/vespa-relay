@@ -94,20 +94,18 @@ import kotlin.test.assertTrue
  * Failures are collected and printed as one table rather than thrown at the first: the point is
  * the whole contract's state.
  *
- * MEASURED 2026-09-28 (Vespa 8.754.14, 8,189 checks). Store pin ff54c9beb1: 5 failing. Store pin
- * 9522ee0768: 1,741 failing, the same 5 plus 1,735 matrix COUNTs over the gated page — the bug
- * that pin bump fixed. The 5 fail on BOTH, so they are gaps the contract had before it, not
- * regressions of it:
+ * MEASURED 2026-09-28 (Vespa 8.754.14, 8,189 checks), one relay per pin set:
  *
- *  - NIP-77 reconciles at most `default_limit` ids per filter: quartz's LimitsPolicy stamps the
- *    REQ default on a NEG-OPEN's filters, and the store's snapshot takes any limit'd filter down
- *    the search path instead of the full visit.
- *  - A NEG-OPEN declared with `observer:` reconciles NOTHING: the store's snapshot parses the
- *    token but never resolves it to a lens, so the gate reads an empty tensor ("trusts nobody").
- *  - Live delivery is not trust-gated: an AUTH'd plain feed streams a below-floor author's new
- *    event, although the stored page it opened with dropped that author.
- *  - NIP-62 matches the vanish's `relay` tag only in its normalized form (trailing slash): the
- *    `ws://host:port` a client writes is accepted with OK true and deletes nothing.
+ *  - store 9522ee0768, quartz fcd76d2075: 1,741 failing — 1,735 matrix COUNTs over the gated page
+ *    (vespa-eventstore #148), plus the five below.
+ *  - store ff54c9beb1, quartz fcd76d2075: 5 failing — gaps the contract had before either bump:
+ *    NIP-77 capped at `default_limit` (quartz's LimitsPolicy stamped the REQ page limit on
+ *    NEG-OPEN); an `observer:` NEG-OPEN reconciling nothing (the store's snapshot never resolved
+ *    the lens); live delivery not trust-gated; NIP-62 honouring only the trailing-slash url
+ *    (quartz compared the tag as a string).
+ *  - store dfd8226ad0, quartz cba4a2d990: 0 failing — vitorpamplona/amethyst#4243 and
+ *    NosFabrica/vespa-eventstore#155, with ObserverBackend holding live deliveries to the store's
+ *    LiveGate.
  */
 class RelayContractIT {
     private val relay = System.getProperty("itRelay")

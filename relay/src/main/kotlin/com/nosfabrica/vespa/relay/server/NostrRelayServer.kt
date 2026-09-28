@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.LiveGate
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -50,6 +53,8 @@ import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 
@@ -108,7 +113,7 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate)
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store))
 
     /** Connections holding a search lane right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
@@ -135,13 +140,19 @@ internal class ObserverBackend(
     private val pressure: ServingPressure? = null,
     /** Taken inside the timed span: a read queued behind a previous search took that long for the client. */
     private val gate: SearchGate = SearchGate(0),
+    /**
+     * The store's observer gate for LIVE events (see [LiveGate]); null for a store that has none.
+     * The stored replay is gated in the engine; events arriving after EOSE are matched in memory
+     * by quartz and would otherwise stream a below-floor author the replay just dropped.
+     */
+    private val liveGates: (suspend (List<Filter>) -> LiveGate?)? = null,
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> inner.query(ctx, filters, onEach, eose) } }
+    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> gatedLive(filters) { admit -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } } }
 
     override suspend fun queryRaw(
         ctx: RequestContext,
@@ -149,7 +160,11 @@ internal class ObserverBackend(
         onEachStored: (RawEvent) -> Unit,
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> inner.queryRaw(ctx, filters, onEachStored, onEachLive, eose) } }
+    ) = ranked(ctx) {
+        gate.through(ctx, filters, timedEose(onEose)) { eose ->
+            gatedLive(filters) { admit -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) }
+        }
+    }
 
     override suspend fun count(
         ctx: RequestContext,
@@ -186,6 +201,32 @@ internal class ObserverBackend(
         return withContext(StoreQueryContext(setOf(observer))) { block() }
     }
 
+    /**
+     * Runs a subscription with its live deliveries held to [LiveGate] — built inside [ranked], so the
+     * connection's observer is the one the gate reads. [block] receives `admit(event) { send }`.
+     *
+     * Quartz calls a live delivery on the ingest drain, which must not wait: a known author is a map
+     * lookup, and a cold one is read in a child of this subscription and delivered only once it
+     * clears the floor — never delivered first and judged after. A read that fails drops the event
+     * (the gate fails closed) and leaves the subscription alone. An ungated subscription has no gate
+     * and pays nothing.
+     */
+    private suspend fun gatedLive(
+        filters: List<Filter>,
+        block: suspend (admit: (Event, () -> Unit) -> Unit) -> Unit,
+    ) {
+        val live = liveGates?.invoke(filters) ?: return block { _, send -> send() }
+        coroutineScope {
+            block { event, send ->
+                when (live.admitsNow(event)) {
+                    true -> send()
+                    false -> Unit
+                    null -> launch { if (runCatching { live.admits(event) }.getOrDefault(false)) send() }
+                }
+            }
+        }
+    }
+
     /** Starts the clock now; the returned EOSE records the replay span once. */
     private fun timedEose(onEose: () -> Unit): () -> Unit {
         if (pressure == null) return onEose
@@ -206,3 +247,11 @@ internal class ObserverBackend(
         }
     }
 }
+
+/** The live gate of the store behind [store], when it is this repo's store; null for any other. */
+private fun liveGatesOf(store: IEventStore): (suspend (List<Filter>) -> LiveGate?)? =
+    when (store) {
+        is VespaEventStore -> store.store::liveGate
+        is NostrSemanticsStore -> store::liveGate
+        else -> null
+    }
