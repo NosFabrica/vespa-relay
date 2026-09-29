@@ -951,7 +951,9 @@ vespaEventStore = "0ea5bb08a6"
 #
 # The Neo4j graph projection (github.com/vitorpamplona/neo4j-eventstore), pinned by commit like
 # the store. Driver-only: the Neo4j server (GPLv3) is a separate process, never linked.
-neo4jEventstore = "8b12f6c0f2"
+# f78520a3b5 — schema 1.1: report edges carry `scope` (user-wide vs content) and `report_raw`
+# (the type as written), with relationship indexes. Prev 8b12f6c0f2.
+neo4jEventstore = "f78520a3b5"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
