@@ -83,6 +83,10 @@ services:
     depends_on:
       vespa:
         condition: service_healthy
+      # Only when the `graph` profile runs it; ignored otherwise.
+      neo4j:
+        condition: service_healthy
+        required: false
     environment:
       # Heap is MaxRAMPercentage of mem_limit above — the percentage reads the
       # cgroup, and without a limit it reads the HOST, sizing the heap against
@@ -91,6 +95,17 @@ services:
       # sync's reconcile heap would silently retune the serving relay too.
       JAVA_TOOL_OPTIONS: ${RELAY_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
+      # The Neo4j graph projection (docs/configuration.md, "Graph projection"). Off unless
+      # GRAPH_PROJECTION=on, which also needs the `graph` profile (or an external NEO4J_URL).
+      GRAPH_PROJECTION: ${GRAPH_PROJECTION:-off}
+      NEO4J_URL: ${NEO4J_URL:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      GRAPH_QUEUE: ${GRAPH_QUEUE:-}
+      GRAPH_EXCLUDE_KINDS: ${GRAPH_EXCLUDE_KINDS:-}
+      GRAPH_TAG_NODES: ${GRAPH_TAG_NODES:-}
+      GRAPH_CYPHER: ${GRAPH_CYPHER:-off}
+      GRAPH_RECONCILE_SECONDS: ${GRAPH_RECONCILE_SECONDS:-}
       RELAY_PORT: 7777
       # Migration tripwires, not settings: the relay refuses to boot when a
       # stream config is still aimed at it (the mirror is the sync service
@@ -295,6 +310,10 @@ services:
     depends_on:
       vespa:
         condition: service_healthy
+      # Only when the `graph` profile runs it; ignored otherwise.
+      neo4j:
+        condition: service_healthy
+        required: false
       # Started (not healthy — the relay has no healthcheck): lets the relay's
       # boot deploy usually land first and the /pressure feed come up close to
       # ingest. Ordering is best-effort either way; SyncMain retries a lost
@@ -315,6 +334,15 @@ services:
       # sizing story belongs to.
       JAVA_TOOL_OPTIONS: ${SYNC_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
+      # The Neo4j graph projection (docs/configuration.md, "Graph projection"). Off unless
+      # GRAPH_PROJECTION=on, which also needs the `graph` profile (or an external NEO4J_URL).
+      GRAPH_PROJECTION: ${GRAPH_PROJECTION:-off}
+      NEO4J_URL: ${NEO4J_URL:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      GRAPH_QUEUE: ${GRAPH_QUEUE:-}
+      GRAPH_EXCLUDE_KINDS: ${GRAPH_EXCLUDE_KINDS:-}
+      GRAPH_TAG_NODES: ${GRAPH_TAG_NODES:-}
       # Deploy the bundled schema on boot (default true) — this process is the
       # one whose writes a drifted schema silently discards.
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
@@ -614,8 +642,40 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # The Neo4j graph projection's store (neo4j-eventstore): off by default, `--profile graph`.
+  # A projection of Vespa — rebuildable from it at any time — queried only through the relay's
+  # POST /graph/cypher. At production scale it wants its own host (hundreds of GB); this service
+  # is for development and small deployments. Community edition: GPLv3, a separate process.
+  neo4j:
+    image: neo4j:2026.09-community
+    container_name: neo4j
+    hostname: neo4j
+    profiles: ["graph"]
+    mem_limit: ${NEO4J_MEM_LIMIT:-8g}
+    ports:
+      # LOOPBACK ONLY: Bolt writes the graph and 7474 is the admin browser.
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-change-me-please}
+      # What the relay refuses to serve Cypher without (neo4j-eventstore spec §8.2): no file
+      # reads through LOAD CSV, and no plugins (none are installed in this image by default).
+      NEO4J_dbms_security_allow__csv__import__from__file__urls: "false"
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-4g}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-2g}
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   vespa_var:
+  neo4j_data:
   # The hidden service's key directory, and the one file the relay reads out of
   # it. Two volumes on purpose: the address is public and the key is not, and
   # only the address is mounted into the internet-facing container.

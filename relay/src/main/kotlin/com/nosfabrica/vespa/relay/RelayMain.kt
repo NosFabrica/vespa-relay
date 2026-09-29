@@ -21,6 +21,10 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.relay.graph.GraphSettings
+import com.nosfabrica.vespa.relay.graph.VespaSource
+import com.nosfabrica.vespa.relay.graph.asIndexObserver
+import com.nosfabrica.vespa.relay.graph.openGraphProjection
 import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
@@ -43,6 +47,7 @@ import com.nosfabrica.vespa.relay.pulse.pulsePublic
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
+import com.nosfabrica.vespa.relay.server.GraphRouting
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
@@ -215,6 +220,10 @@ fun main() {
             PulseGuard(Nip98AdminGate(pulseAdmins(adminPubkeys, "PULSE_PORT", public = pulseIsPublic), pulsePublicUrl(env, "PULSE_PUBLIC_URL", pulsePort)))
         }
 
+    // Opened before the store, which takes its observer at open; off unless GRAPH_PROJECTION=on.
+    val graphSettings = GraphSettings.fromEnv(env)
+    val graphSource = VespaSource()
+    val graph = graphSettings?.let { openGraphProjection(it, graphSource, reconciles = true) }
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -225,7 +234,9 @@ fun main() {
             providerRefreshSeconds = providerRefresh,
             searchExpansion = searchExpansion,
             slowQueryThresholdMillis = slowReadMs,
+            observers = listOfNotNull(graph?.asIndexObserver()),
         )
+    graphSource.bind(store)
     // When the counters start: the pulse page states its totals over this window, which opens
     // with the store, not with the process.
     val storeOpenedAt = System.currentTimeMillis()
@@ -237,6 +248,10 @@ fun main() {
     }
     env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
+    }
+    if (graph != null && graphSettings != null) {
+        graph.reconcileLoop.start(maintenanceScope, graphSettings.reconcileEverySeconds) { e -> System.err.println("graph: reconcile failed: ${e.message}") }
+        println("graph: projecting into ${graphSettings.url} (cypher: ${graphSettings.cypher.name.lowercase()})")
     }
     // Seeded from the state file so a restart serves the last document until the first rollup.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
@@ -356,6 +371,7 @@ fun main() {
             sweeper.close()
             relay.close()
             store.close()
+            graph?.close()
         },
     )
 
@@ -392,6 +408,7 @@ fun main() {
         statsJson = statsSnapshot,
         selfIconUrl = ownIconUrl,
         httpRelay = httpRelay,
+        graph = graph?.let { GraphRouting(it, graphSettings!!.cypher, adminPubkeys, relayHttpUrl) },
     )
 }
 

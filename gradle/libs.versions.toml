@@ -942,7 +942,14 @@ quartz = "bf2fefc621"
 # LEXICOGRAPHIC: '5379…' < 'ff54…': the losing direction, moot — nothing else names the store.
 #
 # Prev ff54c9beb1:
-vespaEventStore = "5379e572dc"
+vespaEventStore = "bebbf90493"
+# bebbf90493 — 5379e572dc + the IndexObserver hook (open(observers = …)) and the read-only
+# EngineReads.visitIds / visitDocsPage walks, for the Neo4j graph projection. With observers
+# empty nothing is installed: the store is byte-identical to the previous pin. Prev 5379e572dc.
+#
+# The Neo4j graph projection (github.com/vitorpamplona/neo4j-eventstore), pinned by commit like
+# the store. Driver-only: the Neo4j server (GPLv3) is a separate process, never linked.
+neo4jEventstore = "f9c4350607"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -964,6 +971,7 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # capitalized `NosFabrica` entry for this commit permanently caches a failed
 # infra build. Same repo, same artifacts — different cache key.
 vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+neo4j-eventstore-projection = { module = "com.github.vitorpamplona.neo4j-eventstore:projection", version.ref = "neo4jEventstore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

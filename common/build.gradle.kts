@@ -13,6 +13,8 @@ dependencies {
     // api: both appear in this module's signatures.
     api(libs.quartz)
     api(libs.vespa.eventstore.store)
+    // The Neo4j graph projection: its settings and wiring live in `graph/`, used by both processes.
+    api(libs.neo4j.eventstore.projection)
     // The pulse document is built here, above the store and below Ktor: :web
     // owns the route and deliberately does not depend on this module.
     api(libs.kotlinx.serialization.json)

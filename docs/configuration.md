@@ -508,6 +508,36 @@ has it. The [HTTP commands](#commands-over-http-nip-fe) answer every other POST
 to `/`, so with them on (the default) an admin tool that leaves the type off gets
 a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
 
+## Graph projection (Neo4j, `POST /graph/cypher`)
+
+An optional Neo4j graph of everything the store holds: events, users and addresses as nodes,
+every reference as a typed relationship, queried with read-only Cypher. It is a **projection**:
+both processes report every stored and removed event to it, the relay process reconciles it
+against Vespa, and it can be rebuilt from Vespa at any time. The schema is
+[neo4j-eventstore's docs/schema.md](https://github.com/vitorpamplona/neo4j-eventstore/blob/main/docs/schema.md).
+
+| var | meaning | default |
+|---|---|---|
+| `GRAPH_PROJECTION` | `on` projects into Neo4j (both processes); a bad value stops the boot | `off` |
+| `NEO4J_URL` / `NEO4J_USER` / `NEO4J_PASSWORD` / `NEO4J_DATABASE` | the Neo4j server (Bolt). The password is required when on | `bolt://neo4j:7687` / `neo4j` / — / `neo4j` |
+| `GRAPH_CYPHER` | who may `POST /graph/cypher`: `off`, `admin` (NIP-98 from `RELAY_ADMIN_PUBKEYS`), `auth` (any NIP-98 signer), `public`. The token is verified with the request body | `off` |
+| `GRAPH_RECONCILE_SECONDS` | the relay's reconcile tick: dropped deliveries, the last 2 h, then one day of the full sweep | `300` |
+| `GRAPH_CURSOR_FILE` | where the full sweep remembers its position | `/var/lib/vespa-relay/graph-cursor.txt` |
+| `GRAPH_QUEUE` | the feed's queue, in batches; a full queue drops and marks the hour for the reconciler, never blocking a write | `10000` |
+| `GRAPH_EXCLUDE_KINDS` | kinds not projected (comma-separated) | none |
+| `GRAPH_TAG_NODES` | single-letter tags that become `:Tag` nodes | `t,i,k,l,L,r,g` |
+
+`GET /graph/schema` (labels and relationship types with counts, the role table) and
+`GET /graph/health.json` (queue, drops, reconcile) are public when the projection is on.
+
+**There are no query limits yet**: no timeout, row or memory cap. Keep `GRAPH_CYPHER` at
+`admin` until they exist. The Neo4j server must have `LOAD CSV` file access off and no plugins —
+the relay refuses to start otherwise (the compose `neo4j` service is set up that way). Direct
+messages are projected too, so their sender and recipient are queryable.
+
+Local: `docker compose --profile graph up` with `GRAPH_PROJECTION=on` and `NEO4J_PASSWORD` set.
+First load of a large corpus: bulk-import instead of replaying (neo4j-eventstore `graphDump`).
+
 ## Serving over Tor (a `.onion` endpoint)
 
 The relay can answer on a Tor hidden service as well as on its clearnet url —

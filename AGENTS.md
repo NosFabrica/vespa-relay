@@ -364,6 +364,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.
 - Quartz/amethyst is multiplatform: no commas in backticked test names, no `java.util` in shared code.
+- The Neo4j graph is a projection of Vespa: never write to it directly, and never trust it over Vespa — the reconciler removes what Vespa does not hold.
 
 ## Operations
 

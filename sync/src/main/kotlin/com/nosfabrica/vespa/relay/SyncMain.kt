@@ -24,6 +24,10 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.graph.GraphSettings
+import com.nosfabrica.vespa.relay.graph.VespaSource
+import com.nosfabrica.vespa.relay.graph.asIndexObserver
+import com.nosfabrica.vespa.relay.graph.openGraphProjection
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
@@ -179,6 +183,9 @@ fun main() {
                 ),
             )
         }
+    // The sync process only FEEDS the graph projection; the relay process reconciles and serves it.
+    val graphSource = VespaSource()
+    val graph = GraphSettings.fromEnv(env)?.let { openGraphProjection(it, graphSource, reconciles = false) }
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -188,7 +195,9 @@ fun main() {
             writers = STORE_WRITERS,
             providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
+            observers = listOfNotNull(graph?.asIndexObserver()),
         )
+    graphSource.bind(store)
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -367,6 +376,7 @@ fun main() {
             bands.close()
             sweepState.close()
             store.close()
+            graph?.close()
         },
     )
 

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.graph.CypherAccess
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.nosfabrica.vespa.relay.web.IconedPage
@@ -30,6 +31,7 @@ import com.nosfabrica.vespa.relay.web.installPageDefaults
 import com.nosfabrica.vespa.relay.web.respondPage
 import com.nosfabrica.vespa.relay.web.statsDocument
 import com.nosfabrica.vespa.relay.web.webModules
+import com.vitorpamplona.neo4j.eventstore.GraphProjection
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
@@ -99,6 +101,8 @@ fun serveRelay(
     selfIconUrl: String? = null,
     // When set, a POST to the relay's URL answers one command frame without a socket (NIP-FE).
     httpRelay: HttpRelay? = null,
+    // When set, the Neo4j graph projection's /graph/* routes (see GraphRoutes.kt).
+    graph: GraphRouting? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
@@ -176,10 +180,19 @@ fun serveRelay(
             }
             corpusStats(stats, statsJson)
             trustHealth(trust, trustJson, trustExplain)
+            graph?.let { graphRoutes(it.projection, it.access, it.admins, it.publicUrl) }
             relayPosts(commands = httpRelay?.let { httpRelayAnswer(relay, it) }, rpc = admin?.let { nip86Answer(it, info) })
         }
     }.start(wait = wait)
 }
+
+/** The graph projection and who may query it, for [serveRelay]. */
+class GraphRouting(
+    val projection: GraphProjection,
+    val access: CypherAccess,
+    val admins: Set<String>,
+    val publicUrl: String,
+)
 
 /** Spelled as the Tor Project spells it; readers compare case-insensitively. */
 private const val ONION_LOCATION = "Onion-Location"
