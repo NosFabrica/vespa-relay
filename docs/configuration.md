@@ -521,14 +521,17 @@ against Vespa, and it can be rebuilt from Vespa at any time. The schema is
 | `GRAPH_PROJECTION` | `on` projects into Neo4j (both processes); a bad value stops the boot | `off` |
 | `NEO4J_URL` / `NEO4J_USER` / `NEO4J_PASSWORD` / `NEO4J_DATABASE` | the Neo4j server (Bolt). The password is required when on | `bolt://neo4j:7687` / `neo4j` / — / `neo4j` |
 | `GRAPH_CYPHER` | who may `POST /graph/cypher`: `off`, `admin` (NIP-98 from `RELAY_ADMIN_PUBKEYS`), `auth` (any NIP-98 signer), `public`. The token is verified with the request body | `off` |
-| `GRAPH_RECONCILE_SECONDS` | the relay's reconcile tick: dropped deliveries, the last 2 h, then one day of the full sweep | `300` |
-| `GRAPH_CURSOR_FILE` | where the full sweep remembers its position | `/var/lib/vespa-relay/graph-cursor.txt` |
-| `GRAPH_QUEUE` | the feed's queue, in batches; a full queue drops and marks the hour for the reconciler, never blocking a write | `10000` |
+| `GRAPH_RECONCILE_SECONDS` | the reconcile tick. The relay repairs dropped deliveries, re-diffs the last 2 h, advances the full sweep by up to 250k ids and sweeps the removal fence; the sync process only repairs its own dropped deliveries. At least 1 | `300` |
+| `GRAPH_CURSOR_FILE` | where the full sweep remembers its position. Its directory also holds `graph-dirty-relay.txt` / `graph-dirty-sync.txt`: each process's owed repairs, saved on shutdown and loaded at boot | `/var/lib/vespa-relay/graph-cursor.txt` |
+| `GRAPH_QUEUE` | the feed's queue, in events and removal ids (not calls: one sync batch is thousands). A full queue drops and marks the hour for the reconciler, never blocking a write. At least 1 | `100000` |
 | `GRAPH_EXCLUDE_KINDS` | kinds not projected (comma-separated) | none |
 | `GRAPH_TAG_NODES` | single-letter tags that become `:Tag` nodes | `t,i,k,l,L,r,g` |
 
-`GET /graph/schema` (labels and relationship types with counts, the role table) and
+`GET /graph/schema` (labels and relationship types with counts, the role table; cached 30 s) and
 `GET /graph/health.json` (queue, drops, reconcile) are public when the projection is on.
+`POST /graph/cypher` bodies are capped at 1 MiB, and a gated endpoint answers `401` before
+reading a body that carries no token. Results hydrate from the store as the relay serves it: a
+NIP-40-expired event comes back as `{"id", "stored": false}`.
 
 **There are no query limits yet**: no timeout, row or memory cap. Keep `GRAPH_CYPHER` at
 `admin` until they exist. The Neo4j server must have `LOAD CSV` file access off and no plugins —

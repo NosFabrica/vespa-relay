@@ -40,15 +40,32 @@ class VespaSource : SourceOfTruth {
 
     private fun engine() = (store ?: error("the graph source was read before the store opened")).engine
 
+    // The reconciler's sweep asks for Long.MIN_VALUE..Long.MAX_VALUE at its edges: those are the
+    // store's OPEN bounds (null), which its walk handles — its window arithmetic would overflow on
+    // the extremes, and a null `until` is what keeps events dated past the clock in the walk.
     override suspend fun visitIds(
         since: Long,
         until: Long,
         onPage: suspend (List<IdAndTime>) -> Boolean,
-    ) = engine().visitIds(EventQuery(since = since, until = until)) { refs -> onPage(refs.map { IdAndTime(it.createdAt, it.id) }) }
+    ) = engine().visitIds(
+        EventQuery(since = since.takeIf { it != Long.MIN_VALUE }, until = until.takeIf { it != Long.MAX_VALUE }),
+    ) { refs -> onPage(refs.map { IdAndTime(it.createdAt, it.id) }) }
 
-    override suspend fun fetch(ids: List<String>): List<Event> {
+    override suspend fun fetch(ids: List<String>): List<Event> = fetch(ids, notExpiredAt = null)
+
+    /**
+     * What callers' Cypher results are filled from: like [fetch], minus NIP-40-expired events —
+     * the relay never serves those, so the graph endpoint must not either. (The graph still
+     * holds them: it mirrors what is stored, and the reconciler must see everything.)
+     */
+    suspend fun fetchServable(ids: List<String>): List<Event> = fetch(ids, notExpiredAt = System.currentTimeMillis() / 1000)
+
+    private suspend fun fetch(
+        ids: List<String>,
+        notExpiredAt: Long?,
+    ): List<Event> {
         if (ids.isEmpty()) return emptyList()
-        return engine().search(EventQuery(ids = ids)).map { d ->
+        return engine().search(EventQuery(ids = ids, notExpiredAt = notExpiredAt)).map { d ->
             Event(d.id, d.pubkey, d.createdAt, d.kind, d.tags.map { it.toTypedArray() }.toTypedArray(), d.content, d.sig)
         }
     }

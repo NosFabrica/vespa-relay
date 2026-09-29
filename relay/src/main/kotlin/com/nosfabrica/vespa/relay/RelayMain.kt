@@ -21,10 +21,12 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.relay.graph.GraphRole
 import com.nosfabrica.vespa.relay.graph.GraphSettings
 import com.nosfabrica.vespa.relay.graph.VespaSource
 import com.nosfabrica.vespa.relay.graph.asIndexObserver
 import com.nosfabrica.vespa.relay.graph.openGraphProjection
+import com.nosfabrica.vespa.relay.graph.startGraphRepairs
 import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
@@ -223,7 +225,7 @@ fun main() {
     // Opened before the store, which takes its observer at open; off unless GRAPH_PROJECTION=on.
     val graphSettings = GraphSettings.fromEnv(env)
     val graphSource = VespaSource()
-    val graph = graphSettings?.let { openGraphProjection(it, graphSource, reconciles = true) }
+    val graph = graphSettings?.let { openGraphProjection(it, graphSource, GraphRole.RELAY) }
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -250,7 +252,7 @@ fun main() {
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
     }
     if (graph != null && graphSettings != null) {
-        graph.reconcileLoop.start(maintenanceScope, graphSettings.reconcileEverySeconds) { e -> System.err.println("graph: reconcile failed: ${e.message}") }
+        graph.startGraphRepairs(graphSettings, GraphRole.RELAY, maintenanceScope)
         println("graph: projecting into ${graphSettings.url} (cypher: ${graphSettings.cypher.name.lowercase()})")
     }
     // Seeded from the state file so a restart serves the last document until the first rollup.

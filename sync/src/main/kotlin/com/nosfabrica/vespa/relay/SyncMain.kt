@@ -24,10 +24,12 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.graph.GraphRole
 import com.nosfabrica.vespa.relay.graph.GraphSettings
 import com.nosfabrica.vespa.relay.graph.VespaSource
 import com.nosfabrica.vespa.relay.graph.asIndexObserver
 import com.nosfabrica.vespa.relay.graph.openGraphProjection
+import com.nosfabrica.vespa.relay.graph.startGraphRepairs
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
@@ -61,6 +63,10 @@ import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 // Enough attempts to outlast the relay's own boot deploy.
 private const val DEPLOY_ATTEMPTS = 5
@@ -183,9 +189,11 @@ fun main() {
                 ),
             )
         }
-    // The sync process only FEEDS the graph projection; the relay process reconciles and serves it.
+    // The sync process FEEDS the graph projection and repairs only its own dropped deliveries;
+    // the relay process runs the full reconcile and serves it.
     val graphSource = VespaSource()
-    val graph = GraphSettings.fromEnv(env)?.let { openGraphProjection(it, graphSource, reconciles = false) }
+    val graphSettings = GraphSettings.fromEnv(env)
+    val graph = graphSettings?.let { openGraphProjection(it, graphSource, GraphRole.SYNC) }
     val store =
         VespaEventStore.open(
             vespaUrl,
@@ -198,6 +206,8 @@ fun main() {
             observers = listOfNotNull(graph?.asIndexObserver()),
         )
     graphSource.bind(store)
+    val graphScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    if (graph != null && graphSettings != null) graph.startGraphRepairs(graphSettings, GraphRole.SYNC, graphScope)
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -376,6 +386,7 @@ fun main() {
             bands.close()
             sweepState.close()
             store.close()
+            graphScope.cancel()
             graph?.close()
         },
     )

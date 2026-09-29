@@ -62,4 +62,22 @@ class GraphSettingsTest {
         assertEquals(setOf(4, 1059), s.excludedKinds)
         assertEquals(setOf("t", "i"), s.tagNodes)
     }
+
+    @Test
+    fun blankTagNodesMeansTheDefaultListNotNone() {
+        // docker-compose passes `GRAPH_TAG_NODES: ${GRAPH_TAG_NODES:-}` — an empty string.
+        val s = GraphSettings.fromEnv(mapOf("GRAPH_PROJECTION" to "on", "NEO4J_PASSWORD" to "x", "GRAPH_TAG_NODES" to ""))!!
+        assertNull(s.tagNodes)
+    }
+
+    @Test
+    fun aQueueOrTickBelowOneStopsTheBoot() {
+        for (key in listOf("GRAPH_QUEUE", "GRAPH_RECONCILE_SECONDS")) {
+            for (bad in listOf("0", "-1")) {
+                assertFailsWith<IllegalArgumentException>("$key=$bad") {
+                    GraphSettings.fromEnv(mapOf("GRAPH_PROJECTION" to "on", "NEO4J_PASSWORD" to "x", key to bad))
+                }
+            }
+        }
+    }
 }

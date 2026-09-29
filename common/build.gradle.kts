@@ -18,6 +18,8 @@ dependencies {
     // The pulse document is built here, above the store and below Ktor: :web
     // owns the route and deliberately does not depend on this module.
     api(libs.kotlinx.serialization.json)
+    // graph/GraphWiring starts the reconcile loop in a caller's scope.
+    api(libs.kotlinx.coroutines)
     testImplementation(kotlin("test"))
 }
 

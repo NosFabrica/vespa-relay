@@ -51,16 +51,21 @@ data class GraphSettings(
                 else -> error("GRAPH_PROJECTION='$on' is not on or off")
             }
 
+            // At least 1: a queue of 0 would drop everything, and a tick of 0 would spin on Vespa.
             fun num(
                 key: String,
                 default: Long,
-            ): Long = env[key]?.trim()?.takeIf { it.isNotEmpty() }?.let { it.toLongOrNull() ?: error("$key='$it' is not a number") } ?: default
+            ): Long {
+                val value = env[key]?.trim()?.takeIf { it.isNotEmpty() }?.let { it.toLongOrNull() ?: error("$key='$it' is not a number") } ?: default
+                require(value >= 1) { "$key=$value must be at least 1" }
+                return value
+            }
             return GraphSettings(
                 url = env["NEO4J_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: "bolt://neo4j:7687",
                 user = env["NEO4J_USER"]?.trim()?.takeIf { it.isNotEmpty() } ?: "neo4j",
                 password = env["NEO4J_PASSWORD"]?.takeIf { it.isNotEmpty() } ?: error("GRAPH_PROJECTION=on needs NEO4J_PASSWORD"),
                 database = env["NEO4J_DATABASE"]?.trim()?.takeIf { it.isNotEmpty() } ?: "neo4j",
-                queueCapacity = num("GRAPH_QUEUE", 10_000).toInt(),
+                queueCapacity = num("GRAPH_QUEUE", 100_000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                 cursorFile = File(env["GRAPH_CURSOR_FILE"]?.trim()?.takeIf { it.isNotEmpty() } ?: "/var/lib/vespa-relay/graph-cursor.txt"),
                 reconcileEverySeconds = num("GRAPH_RECONCILE_SECONDS", 300),
                 cypher =
@@ -74,8 +79,11 @@ data class GraphSettings(
                         ?.map {
                             it.toIntOrNull() ?: error("GRAPH_EXCLUDE_KINDS has '$it', not a kind")
                         }?.toSet() ?: emptySet(),
+                // Blank is UNSET (the default list), as for every other key: compose passes
+                // `${GRAPH_TAG_NODES:-}`, and reading that as "no tag nodes" silently dropped them all.
                 tagNodes =
                     env["GRAPH_TAG_NODES"]
+                        ?.takeIf { it.isNotBlank() }
                         ?.split(',')
                         ?.map { it.trim() }
                         ?.filter { it.isNotEmpty() }
