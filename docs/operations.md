@@ -4,7 +4,7 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 
 ## A live deployment to pull from
 
-**`https://search-staging.brainstorm.world/`** runs this code against a real
+**`https://search.brainstorm.world/`** runs this code against a real
 corpus with the router on. It is reachable from here, it answers anonymously,
 and it is the cheapest way to get production-shaped input into a local test —
 reach for it before inventing a fixture, because the things a fixture gets
@@ -31,15 +31,15 @@ looks like) are exactly what it can hand you.
   anything reading a 10040 for enrolment must take every dimension rather than
   filtering to `rank` the way TrustNotice does for its own narrower question.
 
-- **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
+- **the relay** — `wss://search.brainstorm.world/`. NIPs 1, 9, 11, 40,
   42, 45, 50, 62, 77, 86; `auth_required` is false, and still false now that
   reads DECLARE A LENS (`LensRequiredPolicy`): both ways past that gate are
   unsigned. Ignoring the AUTH challenge it sends still costs only the ranking
   lens — but an undeclared read is no longer answered at all, so an anonymous
   probe carries `observer:<64-hex>` or `include:spam` on every filter, plain
-  NIP-01 ones included. **A `CLOSED … auth-required:` from staging is that
+  NIP-01 ones included. **A `CLOSED … auth-required:` from it is that
   gate, not a broken relay**; a bare `["REQ","s",{"kinds":[1],"limit":5}]` is
-  the shape that gets it. (Staging runs deployed code, so check what it
+  the shape that gets it. (It runs deployed code, so check what it
   actually does before concluding a local change is wrong: `auth-required`
   means the gate has shipped there, an answer means it has not yet.)
 - **`wss://tapestry.brainstorm.world/relay` — where the Trusted Lists actually
@@ -95,7 +95,7 @@ plain-node rule as `web/src/test/js`:
 ```js
 // node probe.mjs — search, ranked through that observer
 const KEY = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c";
-const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+const ws = new WebSocket("wss://search.brainstorm.world/");
 ws.onopen = () => ws.send(JSON.stringify(
   ["REQ", "s", { kinds: [1], search: `bitcoin observer:${KEY} sort:rank`, limit: 5 }]));
 ws.onmessage = (e) => console.log(JSON.parse(e.data));
@@ -127,10 +127,10 @@ To fill a local store rather than read one, point a router stream at it: it
 speaks NIP-77, so a narrow filter reconciles rather than downloads.
 
 ```hocon
-streams { staging {
+streams { brainstorm {
     dir = "down"
     # A LENS IN BOTH SENSES. `kinds` keeps it off the corpus; the `search`
-    # token is what staging's own read gate wants — without it every REQ comes
+    # token is what the relay's own read gate wants — without it every REQ comes
     # back `CLOSED … auth-required:` and the stream mirrors nothing while
     # looking perfectly healthy (measured: 125k events in the window, 0
     # recovered, `0 ev/s`, and the only sign of it a NOTICE in the wire log).
@@ -138,7 +138,7 @@ streams { staging {
     # Neither has a default, and a visit stream needs both.
     negentropySyncThePastSeconds = 604800
     refetchThePastSeconds = 2592000
-    urls = [ "wss://search-staging.brainstorm.world" ]
+    urls = [ "wss://search.brainstorm.world" ]
 } }
 ```
 

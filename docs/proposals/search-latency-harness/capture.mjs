@@ -1,11 +1,11 @@
-// Read-only capture from staging: pages a kind newest-first on `until`,
+// Read-only capture from the live relay: pages a kind newest-first on `until`,
 // writes NDJSON. usage: node capture.mjs <kinds csv> <target count> <outfile> [extra filter json]
 const [kindsCsv, targetStr, out, extraJson] = process.argv.slice(2);
 const kinds = kindsCsv.split(",").map(Number);
 const target = Number(targetStr);
 const extra = extraJson ? JSON.parse(extraJson) : {};
 const fs = await import("node:fs");
-const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+const ws = new WebSocket("wss://search.brainstorm.world/");
 const seen = new Set();
 let until = process.env.START_UNTIL ? Number(process.env.START_UNTIL) : null, total = 0, page = 0, t0 = Date.now(), buf = [], cur = [];
 const fd = fs.openSync(out, "w");

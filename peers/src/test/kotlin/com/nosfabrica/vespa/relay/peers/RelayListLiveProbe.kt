@@ -50,7 +50,7 @@ import kotlin.test.Test
  */
 class RelayListLiveProbe {
     private val enabled = System.getProperty("liveListProbe") == "true"
-    private val source = System.getProperty("liveListRelay") ?: "wss://search-staging.brainstorm.world"
+    private val source = System.getProperty("liveListRelay") ?: "wss://search.brainstorm.world"
     private val vespa = System.getProperty("liveListVespa") ?: "http://localhost:8080"
     private val kind = System.getProperty("liveListKind")?.toIntOrNull() ?: 10040
 

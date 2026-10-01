@@ -349,7 +349,7 @@ class AbortCensusLiveProbe {
         private const val DEFAULT_MINUTES = 8L
 
         /** The deployment's own relay, where the real relay lists come from. */
-        private const val SEED_RELAY = "wss://search-staging.brainstorm.world"
+        private const val SEED_RELAY = "wss://search.brainstorm.world"
 
         /** Urls per `#r` ask: few round trips, still served. */
         private const val SEED_CHUNK = 20

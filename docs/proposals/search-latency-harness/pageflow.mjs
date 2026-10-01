@@ -3,7 +3,7 @@
 // preload (limit 160) once the first page lands. Every ask is a full ranked search.
 const KEY = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c";
 const word = process.argv[2] || "bitcoin"; const gapMs = Number(process.argv[3] || 200);
-const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+const ws = new WebSocket("wss://search.brainstorm.world/");
 const T0 = performance.now(); const t = () => (performance.now() - T0).toFixed(0).padStart(6) + "ms";
 const open = new Map(); let n = 0;
 function req(label, filter) { const id = "s" + n++; open.set(id, { label, t0: performance.now(), count: 0 }); ws.send(JSON.stringify(["REQ", id, filter])); console.log(t(), "REQ ", label); return id; }

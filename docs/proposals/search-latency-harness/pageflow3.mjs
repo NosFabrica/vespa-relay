@@ -3,7 +3,7 @@
 // the same text and CLOSING one for any other. Same word and cadence as before.
 const KEY = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c";
 const word = process.argv[2] || "bitcoin"; const gapMs = Number(process.argv[3] || 200); const DEBOUNCE = 250;
-const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+const ws = new WebSocket("wss://search.brainstorm.world/");
 const T0 = performance.now(); const t = () => (performance.now() - T0).toFixed(0).padStart(6) + "ms";
 const open = new Map(); let n = 0, inflight = null, queued = null, typed = "", entered = false, timer = null;
 const f = (text, limit) => ({ kinds: [1, 11, 1111], search: `${text} observer:${KEY}`, limit });

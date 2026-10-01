@@ -27,7 +27,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 
 const DIR = process.argv[2] || "/tmp/obs";
 const OBSERVER = process.argv[3];
-const RELAY = process.argv[4] || "wss://search-staging.brainstorm.world/";
+const RELAY = process.argv[4] || "wss://search.brainstorm.world/";
 if (!OBSERVER || !/^[0-9a-f]{64}$/.test(OBSERVER)) {
   console.error("usage: fetch-observer-corpus.mjs <dir> <observer-hex> [relay]");
   process.exit(1);

@@ -3,7 +3,8 @@
 Plain node, no dependencies, the way `web/src/test/js` is written. They ran
 against a local single-node Vespa holding a read-only capture of staging
 (`capture.mjs`, `capture_cards.mjs`, fed with the store's `exportLoad`), and
-against `wss://search-staging.brainstorm.world/` for the wire measurements.
+against `wss://search-staging.brainstorm.world/` for the wire measurements;
+the scripts now point at `wss://search.brainstorm.world/`.
 
 - `pageflow.mjs` / `pageflow3.mjs` — the page's REQ sequence for one typed
   word, before and after the change (staging).
