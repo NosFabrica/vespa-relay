@@ -11,7 +11,7 @@ for (const f of inputs) {
 const list = [...authors];
 console.error(`${list.length} distinct authors`);
 const fd = fs.openSync(out, "w");
-const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+const ws = new WebSocket("wss://search.brainstorm.world/");
 let i = 0, got = 0, cur = [], t0 = Date.now();
 const BATCH = 500, PAR = 4;
 let inflight = 0, nextId = 0; const pending = new Map();

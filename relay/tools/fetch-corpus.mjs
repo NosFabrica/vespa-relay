@@ -12,8 +12,8 @@
 // to put a shell tool where shell tools go, not to poke a hole in the rule.
 //
 // The corpus is NOT committed. These are other people's public events, they
-// are megabytes, and AGENTS.md's rule is to reach for staging rather than
-// invent a fixture — so the repo carries the fetch and staging carries the
+// are megabytes, and AGENTS.md's rule is to reach for the live relay rather than
+// invent a fixture — so the repo carries the fetch and the relay carries the
 // data. Everything here is an anonymous read declaring `include:spam`, which
 // is what LensRequiredPolicy requires of one.
 //
@@ -24,14 +24,14 @@
 // trust chain instead of a synthesized one.
 //
 //   node fetch-corpus.mjs /tmp/corpus \
-//       wss://search-staging.brainstorm.world/ wss://tapestry.brainstorm.world/relay
+//       wss://search.brainstorm.world/ wss://tapestry.brainstorm.world/relay
 //   ./gradlew :relay:test --tests '*ProductionCorpusIT*' \
 //       -DitVespa=http://localhost:8080 -DitCorpus=/tmp/corpus
 import { mkdirSync, writeFileSync } from "node:fs";
 
 const DIR = process.argv[2] || "/tmp/corpus";
 const RELAYS = process.argv.slice(3);
-if (RELAYS.length === 0) RELAYS.push("wss://search-staging.brainstorm.world/", "wss://tapestry.brainstorm.world/relay");
+if (RELAYS.length === 0) RELAYS.push("wss://search.brainstorm.world/", "wss://tapestry.brainstorm.world/relay");
 // `include:spam` waives the ranking lens the search relay requires of an
 // anonymous read (LensRequiredPolicy). NIP-50 says a relay SHOULD ignore
 // extensions it does not support — but "ignore the token" and "ignore the

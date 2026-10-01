@@ -182,7 +182,7 @@ web/…/relay/web/
   resources/stats.html        the one status page; web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
-relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off staging; nipfe-e2e.mjs
+relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 ```
@@ -372,7 +372,7 @@ and a client-only Tor, and (`--profile onion`) a second Tor that is the relay's
 own hidden service; one store throughout. Both processes deploy the bundled
 Vespa schema on every boot (`AUTO_DEPLOY`). Two levers delete data,
 `SWEEP_ORPHAN_SCORES_ON_START` and a stream's `deleteMissing`; both default to
-a dry run. `https://search-staging.brainstorm.world/` runs this code against a
+a dry run. `https://search.brainstorm.world/` runs this code against a
 real corpus with the router on and answers anonymously: reach for it before
 inventing a fixture; read it, never publish to it. An anonymous read there
 carries `observer:<64-hex>` or `include:spam` (a `CLOSED … auth-required:` is
