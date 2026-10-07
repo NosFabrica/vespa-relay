@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
+import com.nosfabrica.vespa.relay.maintenance.parseReindexKinds
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
@@ -232,8 +233,12 @@ fun main() {
 
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
     val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Parsed whether or not the walk runs, so a bad value fails this boot rather than the one that migrates.
+    val reindexKinds = parseReindexKinds(env["REINDEX_FTS_KINDS"])
     if (env["REINDEX_FTS_ON_START"]?.toBooleanStrictOrNull() == true) {
-        launchFtsReindex(maintenanceScope, store, env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt")
+        launchFtsReindex(maintenanceScope, store, env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt", reindexKinds)
+    } else if (reindexKinds != null) {
+        System.err.println("relay: REINDEX_FTS_KINDS is set but REINDEX_FTS_ON_START is not true — no reindex runs")
     }
     env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)

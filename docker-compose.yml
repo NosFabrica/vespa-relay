@@ -189,6 +189,9 @@ services:
       # cannot. Walks the whole corpus; leave off except for the one boot that
       # performs the migration.
       REINDEX_FTS_ON_START: ${REINDEX_FTS_ON_START:-}
+      # Scopes the walk above to these kinds (docs/migrations.md lists them per
+      # store bump) instead of the whole corpus. Unset walks everything.
+      REINDEX_FTS_KINDS: ${REINDEX_FTS_KINDS:-}
       # DELETE kind-30382 cards from services no stored 10040 names. A by-kind
       # 30382 sync pulls every service publishing on an upstream — 87 on
       # nip85.nosfabrica.com against the handful our 10040s actually name — and

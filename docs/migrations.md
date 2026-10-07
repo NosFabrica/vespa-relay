@@ -400,10 +400,11 @@ One boot with `REINDEX_FTS_ON_START=true`, then turn it back off. These are
 **fed** fields, so this is the tool, as in the entry above. New writes are
 correct on arrival.
 
-The store now has a kind-scoped walk, `reindexFullTextSearch(kinds)`, which
-visits only these kinds server-side; `REINDEX_FTS_ON_START` does not use it
-and walks the whole corpus, reaching the same documents at the cost of every
-other one. The 66 kinds, for the scoped call:
+Set `REINDEX_FTS_KINDS` to the 66 kinds below on that same boot. It runs the
+store's kind-scoped walk, `reindexFullTextSearch(kinds)`, which visits only
+these kinds server-side. Without it, `REINDEX_FTS_ON_START` walks the whole
+corpus (445M events on staging) to reach the same documents. The list pastes
+as written; remove both settings once the log reads `fts: reindex complete`.
 
 ```
 5, 14, 15, 20, 21, 22, 31, 32, 33, 43, 44, 62, 64, 1022, 1065, 5901, 8002,
