@@ -109,6 +109,7 @@ import kotlin.test.assertTrue
  *  - store 6b9a1a8d3b, quartz bf2fefc621 (the merge of #4243): 0 of 8,191 failing — the two
  *    checks added since, a gated feed beside an ungated search filter, are the case #155's audit
  *    found: the search filter vouched for below-floor events the gated one was there to drop.
+ *  - store 14d8c7eeed, quartz 68268da413 (2026-10-07, Vespa 8.763.13): 0 of 8,191 failing.
  */
 class RelayContractIT {
     private val relay = System.getProperty("itRelay")

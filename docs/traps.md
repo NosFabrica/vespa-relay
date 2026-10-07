@@ -216,7 +216,7 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 - **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
   `com.github.nosfabrica` are separate cache entries for the same repo; one
   can permanently hold a failed infra build while the other serves fine. The
-  store coordinate uses lowercase for this reason — check the other spelling
+  store coordinate's spelling is chosen per pin for this reason — check the other spelling
   before concluding a commit "doesn't build".
 - **A deploy activates the package; it does not restart anything.** A store bump
   can change the bundled `services.xml` without changing a line of Kotlin, and
