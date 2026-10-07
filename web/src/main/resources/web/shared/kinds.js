@@ -69,6 +69,22 @@ const KIND_LABELS = {
   // The Buzz rooms: a stream line, a forum thread, a shared document and the rules.
   40002: "stream chat", 40100: "canvas", 45001: "forum post", 45003: "forum reply",
   48106: "guidelines",
+  // The rest of the Buzz workspace: what a room says about itself, its jobs and its documents.
+  40003: "message edit", 40006: "scheduled message", 40007: "reminder", 40008: "diff",
+  40099: "room event", 40901: "room summary", 42000: "feedback",
+  43001: "job request", 43002: "job accepted", 43003: "job progress", 43004: "job result",
+  43005: "job cancelled", 43006: "job error", 45010: "artifact",
+  46030: "approval", 46031: "denial", 30178: "team catalog", 30621: "project",
+  8002: "identity archived", 8003: "identity restored", 9035: "archive request", 9036: "restore request",
+  // Moderation and membership elsewhere: NIP-28 channels, NIP-29 groups, NIP-43 relays.
+  43: "hidden message", 44: "muted user", 9007: "group created", 9021: "join request",
+  9022: "leave request", 39003: "group roles", 33534: "relay role",
+  // Chess, an encrypted file, a bid answered, an on-chain inscription, an MCP server, 3D shapes.
+  64: "chess game", 30066: "chess move", 30068: "draw offer", 15: "encrypted file",
+  1022: "bid answer", 5901: "inscription job", 11316: "mcp server",
+  11333: "avatar", 33331: "3d object",
+  // Tapestry's decentralized lists: a header anyone can add items to, and the items.
+  9998: "open list", 39998: "open list", 9999: "list item", 39999: "list item",
 };
 export const kindLabel = (k) => KIND_LABELS[k] || `kind ${k}`;
 
@@ -79,26 +95,28 @@ export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a
 const KIND_TONES = {
   people: [0, 3, 10002, 10040, 10166, 11871, 30000, 30002, 30166, 30382, 30383, 30384, 30385, 30392,
     30393, 30394, 30395, 31871, 31872, 31873, 39089, 39092],
-  note: [1, 9, 11, 14, 24, 40, 41, 42, 1111, 1311, 3302, 9802, 34550, 39000,
-    40002, 40100, 45001, 45003, 48106],
+  note: [1, 9, 11, 14, 24, 40, 41, 42, 1111, 1311, 3302, 9802, 34550, 39000, 40002, 40100, 45001,
+    45003, 48106, 40003, 40006, 40007, 40099, 40901, 45010],
   // A rating is a judgement of something else, like a reaction or a report.
-  social: [5, 6, 7, 8, 16, 17, 62, 1010, 1018, 1068, 1984, 1985, 4550, 6969, 8333, 9002, 9321,
-    9734, 9735, 9736, 9737, 30315, 31987, 34259],
+  social: [5, 6, 7, 8, 16, 17, 62, 1010, 1018, 1068, 1984, 1985, 4550, 6969, 8333, 9002, 9321, 9734,
+    9735, 9736, 9737, 30315, 31987, 34259, 43, 44, 9007, 9021, 9022, 39003, 33534, 8002, 8003, 9035,
+    9036, 42000, 46030, 46031],
   // A citation and a merge request are about a written work, so they read with the long form.
-  article: [31, 32, 33, 818, 30004, 30023, 30024, 30040, 30041, 30045, 30142, 30296, 30297,
-    30298, 30817, 30818],
-  media: [20, 21, 22, 54, 1063, 1065, 1163, 1222, 1244, 1808, 1986, 2003, 2004, 10154, 30005,
-    30006, 30030, 30054, 30055, 31337, 32176, 34139, 34235, 34236, 36787],
-  code: [1337, 1617, 1618, 1619, 1621, 1622, 1630, 1631, 1632, 1633, 30063, 30617, 30618],
+  article: [31, 32, 33, 818, 30004, 30023, 30024, 30040, 30041, 30045, 30142, 30296, 30297, 30298,
+    30817, 30818],
+  media: [20, 21, 22, 54, 1063, 1065, 1163, 1222, 1244, 1808, 1986, 2003, 2004, 10154, 30005, 30006,
+    30030, 30054, 30055, 31337, 32176, 34139, 34235, 34236, 36787, 15, 11333, 33331],
+  code: [1337, 1617, 1618, 1619, 1621, 1622, 1630, 1631, 1632, 1633, 30063, 30617, 30618, 40008,
+    30621],
   live: [1312, 1313, 30311, 30312, 30313, 31922, 31923, 31924, 31925],
-  market: [9041, 30009, 30017, 30018, 30019, 30020, 30402, 30403, 33863, 38000, 38383],
-  apps: [5050, 5100, 5129, 5250, 5302, 5303, 10100, 15128, 15129, 30175, 30176, 30177, 30620,
-    31890, 31989, 31990, 32267, 35128, 35129],
+  market: [9041, 30009, 30017, 30018, 30019, 30020, 30402, 30403, 33863, 38000, 38383, 1022],
+  apps: [5050, 5100, 5129, 5250, 5302, 5303, 10100, 15128, 15129, 30175, 30176, 30177, 30620, 31890,
+    31989, 31990, 32267, 35128, 35129, 5901, 11316, 30178, 43001, 43002, 43003, 43004, 43005, 43006],
   // What somebody did or saw, logged: a workout, an exercise, a sighting, a life list.
-  record: [1301, 1315, 2473, 12473, 33401, 38192],
-  list: [10000, 10001, 10003, 10004, 10005, 10006, 10007, 10008, 10009, 10011,
-    10012, 10013, 10015, 10017, 10018, 10020, 10030, 10050, 10054, 10063, 10064,
-    10096, 10101, 10102, 30001, 30003, 30007, 30008, 30015, 30267, 39701],
+  record: [1301, 1315, 2473, 12473, 33401, 38192, 64, 30066, 30068],
+  list: [10000, 10001, 10003, 10004, 10005, 10006, 10007, 10008, 10009, 10011, 10012, 10013, 10015,
+    10017, 10018, 10020, 10030, 10050, 10054, 10063, 10064, 10096, 10101, 10102, 30001, 30003,
+    30007, 30008, 30015, 30267, 39701, 9998, 9999, 39998, 39999],
 };
 const TONE_OF = {};
 for (const [tone, kinds] of Object.entries(KIND_TONES)) for (const k of kinds) TONE_OF[k] = tone;

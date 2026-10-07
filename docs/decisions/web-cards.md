@@ -134,3 +134,28 @@ check and rendered as "250 USD / ".
 **A draft is its published twin's card.** 30403 carries a 30402's tags and
 30020 a product's JSON plus a starting bid; a draft rendering as "kind 30403"
 beside a listing was the registry's gap, not the event's.
+
+**Every kind the store can find has a card.** Quartz `68268da413` made 42 more kinds
+searchable, and 38 of them fell to the generic floor: a "kind 43001" badge over a title tag
+the kind never writes, or over raw JSON (a room's system message, a NIP-28 `{"reason"}`).
+The bump and the cards land together, one card per vocabulary, each written from quartz's own
+reader for the kind, so the page shows what the index matched: a chess game's PGN headers, a
+moderation act's reason, a job step's text. Three families are new files (chess.js,
+moderation.js, declists.js); the rest joined the family whose shape they share.
+
+**38000 is decided per event, in quartz's order.** Three unrelated apps publish on it, plus
+`d`-only spam. The card once drew every one as "recommends 0 mints". `kind38000()` mirrors
+EventFactory: a mint `k` (or, with no `k`, a mint `u` / `a`) is a recommendation, an
+`election` a ballot, a `market` or two outcomes a prediction market, and the rest says it is
+none of them. The badge follows through `registerBadge`, and so does the entity page's title.
+
+**A key on the event is not a thing to show.** A NIP-17 file header (15) carries its
+`decryption-key`, and a NIP-29 join request (9021) its invite `code`. Both are public once
+they reach a relay, but the card draws neither: what it says is that the file is encrypted
+and that the request came with a code. The raw event is still behind the json toggle.
+
+**A system message is a sentence, not its JSON.** A Buzz 40099 is `{"type": "member_removed",
+"actor": …, "target": …}`; the card says "<actor> removed <target>" with both names loaded
+(`registerNamedPeople`), and the row says the same thing with short npubs. An unknown `type`
+is said as its code, with underscores turned into spaces, not dropped.
+

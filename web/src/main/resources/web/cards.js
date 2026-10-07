@@ -30,6 +30,9 @@ import "./cards/attest.js";
 import "./cards/story.js";
 import "./cards/records.js";
 import "./cards/dvm.js";
+import "./cards/chess.js";
+import "./cards/moderation.js";
+import "./cards/declists.js";
 
 /**
  * One event to one card. `opts.full` is the permalink depth; without it the card is a

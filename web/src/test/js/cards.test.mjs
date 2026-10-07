@@ -327,6 +327,54 @@ const FIXTURES = [
   [30393, ev(30393, [["d", "tl-notes"], ["title", "Worth Reading"], ["e", eid]]), "1 event"],
   [30394, ev(30394, [["d", "tl-articles"], ["title", "Long Reads"], ["a", `30023:${pk}:essay`]]), "1 article"],
   [30395, ev(30395, [["d", "tl-ids"], ["title", "Known Books"], ["i", "isbn:9780316769488"]]), "1 identifier"],
+  // ---- the kinds quartz 68268da413 made searchable, and the lists d792ebc4bf gave a text tier ----
+  [15,    ev(15, [["file-type", "image/jpeg"], ["encryption-algorithm", "aes-gcm"], ["decryption-key", "SECRETKEY"],
+                  ["size", "123456"], ["summary", "the receipt"], ["p", pk2]], "https://files.example/blob"), "an encrypted image/jpeg"],
+  [43,    ev(43, [["e", "a".repeat(64), "", "root"], ["e", eid]], JSON.stringify({ reason: "off topic" })), "off topic"],
+  [44,    ev(44, [["e", "a".repeat(64), "", "root"], ["p", pk2]], "spamming the room"), "mutes"],
+  [64,    ev(64, [], '[Event "Casual Game"]\n[White "Alice"]\n[Black "Bob"]\n[Result "1-0"]\n[Opening "Italian Game"]\n\n1. e4 e5 2. Nf3 Nc6 1-0'), "Alice vs Bob"],
+  [1022,  ev(1022, [["e", eid], ["e", "a".repeat(64)], ["p", pk2]], JSON.stringify({ status: "accepted", message: "you are in the lead" })), "accepted"],
+  [5901,  ev(5901, [["i", "gm forever", "text"]]), "asks to inscribe a message on-chain"],
+  [8002,  ev(8002, [["p", pk2], ["consent", "owner", pk], ["e", eid], ["reason", "retired bot"]]), "archived"],
+  [8003,  ev(8003, [["p", pk2], ["consent", "admin", pk], ["e", eid]]), "restored"],
+  [9007,  ev(9007, [["h", "garden"], ["name", "The Garden"], ["about", "plants and people"]]), "The Garden"],
+  [9021,  ev(9021, [["h", "garden"], ["code", "INVITE123"]], "I grow tomatoes"), "asks to join"],
+  [9022,  ev(9022, [["h", "garden"]], "moving on"), "asks to leave"],
+  [9035,  ev(9035, [["p", pk2], ["reason", "duplicate account"], ["replaced-by", pk]]), "asks to archive"],
+  [9036,  ev(9036, [["p", pk2], ["reason", "back again"]]), "asks to restore"],
+  [9998,  ev(9998, [["names", "dog name", "dog names"], ["description", "names people give dogs"], ["required", "t"]]), "dog names"],
+  [9999,  ev(9999, [["z", "dog"], ["t", "Fido"], ["comments", "a classic"]]), "Fido"],
+  [11316, ev(11316, [["name", "Weather MCP"], ["about", "forecasts over nostr"], ["support_encryption"]],
+                   JSON.stringify({ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "weather", version: "1.2.0" } })), "Weather MCP"],
+  [11333, ev(11333, [["name", "Blocky"]], JSON.stringify({ v: 2, vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces: [[0, 1, 2]], mode: "solid" })), "a cyberspace avatar"],
+  [30066, ev(30066, [["d", "g1-12"], ["game_id", "g1"], ["move_number", "12"], ["san", "Nf3"], ["p", pk2]], "developing"), "move 12: Nf3"],
+  [30068, ev(30068, [["d", "g1"], ["p", pk2]], "shall we call it?"), "offers a draw"],
+  [30178, ev(30178, [["d", "desk"]], JSON.stringify({ v: 1, name: "The Desk", description: "who covers what",
+                   members: [{ member_key: "a", display_name: "Researcher", model: "m1" }, { member_key: "b", display_name: "Editor" }] })), "2 members"],
+  [30621, ev(30621, [["d", "relay"], ["name", "Relay Project"], ["description", "the relay and its tools"],
+                   ["a", `30617:${pk}:vespa-relay`], ["buzz-visibility", "listed"]]), "1 repository"],
+  [33331, ev(33331, [["d", "chair"], ["name", "Chair"]], JSON.stringify({ v: 2, vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], faces: [[0, 1, 2], [0, 2, 3]], mode: "solid" })), "4 vertices"],
+  [33534, ev(33534, [["d", "moderator"], ["label", "Moderator"], ["description", "keeps the peace"], ["order", "2"]]), "keeps the peace"],
+  [39003, ev(39003, [["d", "garden"], ["role", "gardener", "tends the beds"], ["role", "visitor"]]), "tends the beds"],
+  [39998, ev(39998, [["d", "books"], ["titles", "Book", "Books"], ["names", "book", "books"], ["recommended", "author", "who wrote it"]]), "Books"],
+  [39999, ev(39999, [["d", "dune"], ["z", `39998:${pk2}:books`], ["name", "Dune"], ["author", "Frank Herbert"]]), "Dune"],
+  [40003, ev(40003, [["h", "chan"], ["e", eid]], "the corrected line"), "the corrected line"],
+  [40006, ev(40006, [["h", "chan"]], "post this at noon"), "scheduled"],
+  [40007, ev(40007, [["h", "chan"], ["p", pk2], ["e", eid]], "don't forget the review"), "reminds 1 person"],
+  [40008, ev(40008, [["h", "chan"], ["repo", "https://git.example/relay"], ["commit", "abcdef1234567"], ["file", "a.kt"],
+                   ["description", "fix the off-by-one"]], "diff --git a/a.kt b/a.kt\n--- a/a.kt\n+++ b/a.kt\n@@ -1 +1 @@\n-old\n+new"), "fix the off-by-one"],
+  [40099, ev(40099, [["h", "chan"]], JSON.stringify({ type: "topic_changed", actor: pk2, topic: "launch week" })), "launch week"],
+  [40901, ev(40901, [["h", "chan"]], JSON.stringify({ name: "general", about: "everything else", member_count: 12, message_count: 340 })), "12 members"],
+  [42000, ev(42000, [["category", "bug"]], "the search box loses focus"), "the search box loses focus"],
+  [43001, ev(43001, [["h", "chan"], ["p", pk2]], "summarise yesterday"), "summarise yesterday"],
+  [43002, ev(43002, [["h", "chan"], ["e", eid], ["p", pk2]]), "accepts job"],
+  [43003, ev(43003, [["h", "chan"], ["e", eid], ["status", "running"]], "halfway"), "running"],
+  [43004, ev(43004, [["h", "chan"], ["e", eid], ["p", pk2], ["status", "success"]], "here is the summary"), "delivers job"],
+  [43005, ev(43005, [["h", "chan"], ["e", eid]], "no longer needed"), "cancels job"],
+  [43006, ev(43006, [["h", "chan"], ["e", eid], ["p", pk2], ["status", "error"]], "the model timed out"), "the model timed out"],
+  [45010, ev(45010, [["d", "spec"], ["h", "chan"], ["title", "Launch Plan"], ["type", "doc"], ["op", "create"], ["ar", "1"]], "step one: ship"), "Launch Plan"],
+  [46030, ev(46030, [["d", "f00dbabe"]], "looks good"), "approves a workflow step"],
+  [46031, ev(46031, [["d", "f00dbabe"]], "not yet"), "denies a workflow step"],
 ];
 
 // Every registered kind has a fixture, and every fixture targets a registered kind.
@@ -441,6 +489,16 @@ const ROW_SAYS = [
   [5050, "asks for text"], [6969, "Should we? · 2 choices · 21,000 to 2,100,000 sats a vote"],
   [9002, "edits this room to The Room"], [30385, "scores isbn:9780316769488 · rank 72"],
   [33863, "The Fundraiser · 2,100,000 sats to raise"], [1315, "speed camera"],
+  // The kinds the 68268da413 search set brought: each row says the act, then its text.
+  [43, "hides 1 message · off topic"], [44, "mutes 1 person · spamming the room"],
+  [64, "Alice vs Bob · 1-0 · Casual Game"], [1022, "bid accepted · you are in the lead"],
+  [9007, "creates The Garden · plants and people"], [9035, "asks to archive an identity · duplicate account"],
+  [9998, "dog names · names people give dogs"], [9999, "Fido · on dog · a classic"],
+  [30066, "plays move 12: Nf3 · developing"], [30178, "The Desk · 2 members · Researcher, Editor"],
+  [30621, "Relay Project · the relay and its tools · 1 repository"], [39003, "2 roles in a group · gardener, visitor"],
+  [40008, "fix the off-by-one · a.kt · abcdef1"], [40901, "general · everything else"],
+  [43003, "reports progress on a job · running · halfway"], [11316, "Weather MCP · forecasts over nostr"],
+  [33331, "Chair · 4 vertices · 2 faces"], [15, "the receipt · image/jpeg · 120.6 KB"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
@@ -1409,5 +1467,74 @@ assert.strictEqual(rowOf(room).name, "LFO", "the row names the room too");
 const pictured = ev(30312, [["room", "R"], ["image", "https://x/room.jpg"]]);
 assert(card(pictured).includes('class="thumb cover"') && card(pictured, { full: true }).includes('class="embed"'),
   "a room's image is a thumb in the list and a banner on the permalink");
+
+// ---- kind 38000 is three apps, and the 68268da413 search set ----------------
+//
+// Quartz splits 38000 by tags (a mint recommendation, a BAO market, a ballot, or nothing it
+// knows); the card and the badge follow the same split, so a market never reads "recommends 0 mints".
+const badgeOf = (html) => (/class="kind-badge"[^>]*>([^<]*)</.exec(html) || [])[1];
+const market = ev(38000, [["d", "m1"], ["market", "m1"], ["title", "Will it rain on Friday?"],
+  ["outcome", "yes", "Yes"], ["outcome", "no", "No"], ["end", String(now + 86400)], ["network", "demo"]]);
+assert.strictEqual(badgeOf(card(market)), "prediction market", "a 38000 with a `market` is a prediction market");
+assert(card(market, { full: true }).includes("Will it rain on Friday?") && card(market, { full: true }).includes(">Yes<"),
+  "…its question and its outcomes are the card");
+assert(!card(market, { full: true }).includes("recommends"), "…and it is never drawn as a mint recommendation");
+assert.strictEqual(rowOf(market).name, "Will it rain on Friday?");
+// The BAO shape with no `market` tag: two outcomes are enough, and the details may sit in `data`.
+const dataMarket = ev(38000, [["d", "m2"], ["data", JSON.stringify({ question: "Rate cut?", outcomes: [{ id: "y", label: "Cut" }, "Hold"] })],
+  ["outcome", "y"], ["outcome", "n"]]);
+assert.strictEqual(badgeOf(card(dataMarket)), "prediction market");
+assert(card(dataMarket, { full: true }).includes("Rate cut?"), "a `data` tag's JSON is read for the question");
+const resolved = ev(38000, [["market", "m3"], ["title", "Q"], ["resolution", "yes"]]);
+assert(card(resolved, { full: true }).includes("resolved: <b>yes</b>") && rowOf(resolved).sub === "resolved: yes",
+  "a resolved market says how it settled");
+const ballot = ev(38000, [["d", "b1"], ["election", "Board 2026"]],
+  JSON.stringify({ responses: [{ question_id: "chair", value: "Ana" }, { question_id: "budget", value: true }], proof_hash: "abc123" }));
+assert.strictEqual(badgeOf(card(ballot)), "ballot", "a 38000 with an `election` is a ballot");
+assert(card(ballot, { full: true }).includes("Board 2026") && card(ballot, { full: true }).includes("<dt>chair</dt><dd>Ana</dd>"),
+  "…naming its election and its answers");
+assert.strictEqual(badgeOf(card(ev(38000, [["d", "sybil test vote 7"]]))), "mint list",
+  "spam keeps the kind's own label: the namer has nothing better to say");
+assert(card(ev(38000, [["d", "sybil test vote 7"]])).includes("no app this page knows"), "…and the card does not pretend it is a recommendation");
+// A `k` naming another kind is not a recommendation, whatever else the event carries.
+assert.strictEqual(badgeOf(card(ev(38000, [["k", "1"], ["u", "https://x"], ["election", "E"]]))), "ballot",
+  "a non-mint `k` rules the recommendation out before the ballot is checked");
+
+// A NIP-17 file's key is on the event, never on the page; nor is a NIP-29 invite code.
+const sealed = FIXTURES.find(([k]) => k === 15)[1];
+for (const opts of [undefined, { full: true }]) {
+  assert(!card(sealed, opts).replace(/<details[\s\S]*?<\/details>/g, "").includes("SECRETKEY"), "the decryption key is not drawn");
+  assert(!card(FIXTURES.find(([k]) => k === 9021)[1], opts).replace(/<details[\s\S]*?<\/details>/g, "").includes("INVITE123"),
+    "an invite code is not drawn");
+}
+
+// NIP-28 reasons are plain text or `{"reason": …}`, as quartz reads them; braces never reach the page.
+assert(card(ev(43, [["e", eid]], JSON.stringify({ reason: "spam" })), { full: true }).includes(">spam<"));
+assert(!card(ev(43, [["e", eid]], JSON.stringify({ other: 1 })), { full: true }).replace(/<details[\s\S]*?<\/details>/g, "").includes("{&quot;"),
+  "a JSON body with no reason says nothing rather than printing itself");
+assert(card(ev(43, [["e", "a".repeat(64), "", "root"], ["e", eid]])).includes(noteId(eid)) &&
+  !card(ev(43, [["e", "a".repeat(64), "", "root"], ["e", eid]])).includes(`href="/${noteId("a".repeat(64))}"`),
+  "a hide links the message it hides, not the channel it is scoped by");
+
+// A room narrates itself as a sentence, naming the people it is about, who must be loaded.
+const kicked = ev(40099, [["h", "chan"]], JSON.stringify({ type: "member_removed", actor: pk, target: pk2 }));
+assert(card(kicked, { full: true }).includes("removed") && namedPubkeys(kicked).includes(pk2),
+  "a removal names who was removed, and declares them");
+assert.strictEqual(rowOf(ev(40099, [], JSON.stringify({ type: "channel_auto_archived" }))).name, "the channel was archived for inactivity");
+assert(rowOf(ev(40099, [], JSON.stringify({ type: "ttl_changed", actor: pk2, ttl_seconds: 172800 }))).name.endsWith("set messages to expire after 2 days"));
+
+// PGN headers are read with their escapes; "?" is PGN for unknown and is not a name.
+const pgn = ev(64, [], '[White "O\\"Neil"]\n[Black "?"]\n[Site "?"]\n\n1. d4 *');
+assert.strictEqual(rowOf(pgn).name, `O"Neil vs ?`, "an escaped quote is a quote, and an unknown player is a question mark");
+assert(!card(pgn, { full: true }).includes("<dt>site</dt>"), "an unknown site is not a fact");
+
+// An artifact may be JSON; the list says so instead of printing it, the permalink draws it as code.
+const jsonArtifact = ev(45010, [["d", "x"], ["title", "Config"], ["op", "update"]], JSON.stringify({ a: 1 }));
+assert(card(jsonArtifact).includes("a JSON document") && card(jsonArtifact, { full: true }).includes('class="codeblock'),
+  "a JSON artifact is data at both depths");
+
+// A decentralized-list item links the list it adds to when the `z` is an address or an id.
+assert(card(ev(39999, [["z", `39998:${pk2}:books`], ["name", "Dune"]])).includes('href="/naddr1'), "an item links its list by address");
+assert(card(ev(9999, [["z", eid], ["t", "Rex"]])).includes(`href="/${noteId(eid)}"`), "…or by id");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);

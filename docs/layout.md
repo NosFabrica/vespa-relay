@@ -700,7 +700,10 @@ relay/src/main/resources/
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
                         FAILS if a kind registers without a fixture, a badge
-                        label or a family tone. Each family registers TWO
+                        label or a family tone. A kind number apps share (38000:
+                        a mint recommendation, a prediction market or a ballot)
+                        also registers a badge namer (`registerBadge`), so the
+                        badge says which one this event is. Each family registers TWO
                         renderings of its kinds: the card, and the one-line
                         type-ahead row the search field draws, whose registry
                         the same test holds to the card registry's key set. A

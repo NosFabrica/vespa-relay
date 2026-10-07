@@ -186,7 +186,17 @@ export const clipIf = (opts, s, n) => (opts && opts.full ? String(s || "").trim(
 export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 
 // ---- shared chrome --------------------------------------------------------
-export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
+export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(badgeLabel(ev))}</span>`;
+
+/**
+ * A badge decided by the event rather than the kind, for a kind number that unrelated apps
+ * share (38000 is a mint recommendation, a prediction market or a ballot, told apart by tags).
+ * The family that registers the renderer registers the namer; a kind without one, or a namer
+ * with nothing to say, falls back to the kind's own label.
+ */
+const BADGES = new Map(); // kind -> (ev) -> label | ""
+export const registerBadge = (kinds, fn) => { for (const k of kinds) BADGES.set(k, fn); };
+export const badgeLabel = (ev) => ((BADGES.get(ev.kind) || (() => ""))(ev)) || kindLabel(ev.kind);
 
 /** The provenance pills, or "" for a card that is here because the search matched it. */
 export function provHtml(ev, opts) {

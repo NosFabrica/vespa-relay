@@ -11,9 +11,8 @@ import { postedTo } from "./shared/groups.js";
 import { enrichGroupNames } from "./shared/groupnames.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
-import { kindLabel } from "./shared/kinds.js";
 import { nip19Parse, shortNpub } from "./shared/nip19.js";
-import { njumpFor, tagsWhere } from "./cards/base.js";
+import { njumpFor, tagsWhere, badgeLabel } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
 import { forgetProvenance } from "./provenance.js";
 import { loadRelated, relatedHtml } from "./related.js";
@@ -104,7 +103,7 @@ async function submitForIndexing(ev, host, my) {
 const FULL = { full: true };
 
 function titleFor(ev, parsed) {
-  const t = ev ? (titleOf(ev) || kindLabel(ev.kind)) : parsed ? parsed.type : "not found";
+  const t = ev ? (titleOf(ev) || badgeLabel(ev)) : parsed ? parsed.type : "not found";
   return `SearchOverTrust — ${t}`;
 }
 
