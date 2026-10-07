@@ -1493,8 +1493,17 @@ const ballot = ev(38000, [["d", "b1"], ["election", "Board 2026"]],
 assert.strictEqual(badgeOf(card(ballot)), "ballot", "a 38000 with an `election` is a ballot");
 assert(card(ballot, { full: true }).includes("Board 2026") && card(ballot, { full: true }).includes("<dt>chair</dt><dd>Ana</dd>"),
   "…naming its election and its answers");
-assert.strictEqual(badgeOf(card(ev(38000, [["d", "sybil test vote 7"]]))), "mint list",
-  "spam keeps the kind's own label: the namer has nothing better to say");
+assert.strictEqual(badgeOf(card(ev(38000, [["d", "sybil test vote 7"]]))), "kind 38000",
+  "spam is badged as the bare kind, not as a mint list it is not");
+// Quartz counts only tags with a value: two bare `outcome`s are not a market.
+assert.strictEqual(badgeOf(card(ev(38000, [["d", "x"], ["outcome"], ["outcome"]]))), "kind 38000");
+// …and reads `k` as an integer, so a zero-padded mint kind is still a recommendation.
+assert.strictEqual(badgeOf(card(ev(38000, [["k", "038172"], ["u", "https://mint.example"]]))), "mint list");
+// An id-only outcome tag takes the label the market's JSON gives that id.
+const idOnly = ev(38000, [["market", "m"], ["outcome", "y"], ["outcome", "n"],
+  ["data", JSON.stringify({ title: "Q", outcomes: [{ id: "y", label: "Yes" }, { id: "n", label: "No" }] })]]);
+assert(card(idOnly).includes(">Yes<") && card(idOnly).includes(">No<") && !card(idOnly).includes(">y<"),
+  "an outcome tag without a label reads the JSON's label for its id");
 assert(card(ev(38000, [["d", "sybil test vote 7"]])).includes("no app this page knows"), "…and the card does not pretend it is a recommendation");
 // A `k` naming another kind is not a recommendation, whatever else the event carries.
 assert.strictEqual(badgeOf(card(ev(38000, [["k", "1"], ["u", "https://x"], ["election", "E"]]))), "ballot",
@@ -1522,6 +1531,20 @@ assert(card(kicked, { full: true }).includes("removed") && namedPubkeys(kicked).
   "a removal names who was removed, and declares them");
 assert.strictEqual(rowOf(ev(40099, [], JSON.stringify({ type: "channel_auto_archived" }))).name, "the channel was archived for inactivity");
 assert(rowOf(ev(40099, [], JSON.stringify({ type: "ttl_changed", actor: pk2, ttl_seconds: 172800 }))).name.endsWith("set messages to expire after 2 days"));
+
+// A header value may hold `]`; the moves block must not then start with the header.
+const bracketed = card(ev(64, [], '[Event "Rated [blitz]"]\n[White "A"]\n\n1. e4 *'), { full: true });
+assert(bracketed.includes("1. e4") && !/<pre[^>]*>[^<]*\[Event/.test(bracketed), "every header line the reader parses is out of the movetext");
+// No `order` tag is no order, not order 0; and a roomless reminder's row says the room.
+assert(!card(ev(33534, [["d", "r"], ["label", "R"]]), { full: true }).includes("<dt>order</dt>"), "an absent order is not drawn as 0");
+assert.strictEqual(rowOf(ev(40007, [["h", "c"]], "x")).sub, "reminds the room", "the row and the card agree on who is reminded");
+// A lifetime is said in the largest unit that divides it, after rounding to the minute.
+for (const [secs, said] of [[3599, "1 hour"], [86399, "1 day"], [5400, "90 minutes"], [172800, "2 days"], [45, "45 seconds"]]) {
+  assert(rowOf(ev(40099, [], JSON.stringify({ type: "ttl_changed", ttl_seconds: secs }))).name.endsWith(said), `${secs}s reads "${said}"`);
+}
+// A team's instructions keep their line breaks at permalink depth.
+assert(card(ev(30178, [["d", "t"]], JSON.stringify({ v: 1, name: "T", instructions: "one\ntwo", members: [] })), { full: true }).includes("one\ntwo"),
+  "multi-line instructions are not folded onto one line");
 
 // PGN headers are read with their escapes; "?" is PGN for unknown and is not a name.
 const pgn = ev(64, [], '[White "O\\"Neil"]\n[Black "?"]\n[Site "?"]\n\n1. d4 *');

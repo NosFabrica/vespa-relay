@@ -11,7 +11,7 @@ import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
-  fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml,
+  fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson,
 } from "./base.js";
 import { shortNote } from "../shared/nip19.js";
 
@@ -187,19 +187,25 @@ function fundraiserCard(ev, opts) {
 
 // ---- kind 38000, three apps on one number ----------------------------------
 
-const MINT_KINDS = new Set(["38172", "38173"]);
-const nonBlank = (ev, name) => tagsOf(ev, name).some((t) => oneLine(t[1]));
+/** A tag value as quartz tests it: present (`size > 1`), as written, untrimmed. */
+const valuesOf = (ev, name) => tagsOf(ev, name).filter((t) => typeof t[1] === "string").map((t) => t[1]);
+const nonBlank = (ev, name) => valuesOf(ev, name).some((v) => v.trim());
+/** Kotlin's toIntOrNull: an optional sign and digits, nothing around them. */
+const intOf = (v) => (/^[+-]?\d+$/.test(v) ? Number(v) : null);
 
-/** Which 38000 this is, in quartz's order: a recommendation first, then a ballot, then a market. */
+/**
+ * Which 38000 this is, in quartz's order (EventFactory, isMintRecommendation, isBallot,
+ * isPredictionMarket): a recommendation first, then a ballot, then a market.
+ */
 export function kind38000(ev) {
-  const ks = tagsOf(ev, "k").map((t) => oneLine(t[1])).filter(Boolean);
-  if (ks.some((k) => MINT_KINDS.has(k))) return "mint";
-  if (!ks.length && (nonBlank(ev, "u") ||
-      tagsOf(ev, "a").some((t) => /^3817[23]:/.test(oneLine(t[1]))))) return "mint";
+  const ks = valuesOf(ev, "k");
+  if (ks.some((k) => intOf(k) === 38172 || intOf(k) === 38173)) return "mint";
+  if (!ks.some((k) => k.trim()) && (nonBlank(ev, "u") ||
+      valuesOf(ev, "a").some((v) => v.startsWith("38172:") || v.startsWith("38173:")))) return "mint";
   if (nonBlank(ev, "election")) return "ballot";
   if (nonBlank(ev, "market")) return "market";
-  const outcomes = tagsOf(ev, "outcome").length;
-  if (outcomes >= 2 || (tagsOf(ev, "type").length && tagsOf(ev, "end").length)) return "market";
+  const outcomes = valuesOf(ev, "outcome").length;
+  if (outcomes >= 2 || (valuesOf(ev, "type").length && valuesOf(ev, "end").length)) return "market";
   return "other";
 }
 
@@ -209,20 +215,29 @@ const objectOf = (s) => {
   try { const o = JSON.parse(s); return o && typeof o === "object" && !Array.isArray(o) ? o : null; } catch (e) { return null; }
 };
 
-/** A market's outcomes as labels: `["outcome", id, label]` tags first, else the JSON's list. */
+/** A JSON outcome list as `[id, label]` pairs: a bare string is both, an object its id and label. */
+const jsonOutcomes = (d) => (Array.isArray(d && d.outcomes) ? d.outcomes : []).map((o) =>
+  (typeof o === "string" ? [o, o] : o && typeof o === "object" ? [o.id || o.label || o.name, o.label || o.name] : []));
+
+/**
+ * A market's outcomes as labels: `["outcome", id, label]` tags first, else the JSON's list. A
+ * tag with no label takes the JSON's for the same id, so `["outcome", "y"]` beside
+ * `{id: "y", label: "Yes"}` reads "Yes", not the id.
+ */
 function outcomesOf(ev, details) {
+  const labelled = new Map();
+  for (const d of details) for (const [id, label] of jsonOutcomes(d)) {
+    if (oneLine(id) && oneLine(label) && !labelled.has(oneLine(id))) labelled.set(oneLine(id), oneLine(label));
+  }
   const seen = new Set(), out = [];
   const add = (id, label) => {
-    id = oneLine(id); label = oneLine(label) || id;
+    id = oneLine(id); label = oneLine(label) || labelled.get(id) || id;
     if (id && !seen.has(id) && out.length < 32) { seen.add(id); out.push(label); }
   };
   for (const t of tagsOf(ev, "outcome")) add(t[1], t[2]);
   if (!out.length) {
     for (const d of details) {
-      for (const o of Array.isArray(d && d.outcomes) ? d.outcomes : []) {
-        if (typeof o === "string") add(o, o);
-        else if (o && typeof o === "object") add(o.id || o.label || o.name, o.label || o.name);
-      }
+      for (const [id, label] of jsonOutcomes(d)) add(id, label);
       if (out.length) break;
     }
   }
@@ -350,7 +365,7 @@ const KIND_38000 = {
   },
   other: {
     card: (ev, opts) => unrecognized38000Card(ev, opts),
-    badge: "",
+    badge: "kind 38000",
     row: () => ({ name: "an unrecognized kind 38000 event" }),
   },
 };
@@ -364,7 +379,7 @@ function bidConfirmationOf(ev) {
 }
 
 /** The bidder a 1022 answers: its one `p`. */
-const bidderOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).find((pk) => HEX64.test(pk || "")) || null;
+const bidderOf = firstPerson;
 
 /**
  * 1022 — a NIP-15 merchant answering a bid: accepted, rejected, pending or the winner. The first

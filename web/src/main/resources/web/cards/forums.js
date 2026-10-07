@@ -133,10 +133,12 @@ const systemPeople = (ev) => {
 /** "2 days", "an hour": a channel's message lifetime in the unit a person would say it in. */
 const lifetime = (secs) => {
   if (!Number.isFinite(secs) || secs <= 0) return "";
+  // To the minute first, then the largest unit that divides it: 5400 is "90 minutes", not "2 hours".
+  const s = secs >= 60 ? Math.round(secs / 60) * 60 : Math.round(secs);
   for (const [unit, n] of [["day", 86400], ["hour", 3600], ["minute", 60]]) {
-    if (secs >= n) return plural(Math.round(secs / n), unit);
+    if (s % n === 0) return plural(s / n, unit);
   }
-  return plural(Math.round(secs), "second");
+  return plural(s, "second");
 };
 
 /**
@@ -256,7 +258,10 @@ registerRow([14, 24, 40002, 45001, 45003], (ev) => {
 });
 registerRow([3302, 40003], (ev) => ({ name: "edits a message", sub: ev.content }));
 registerRow([40006], (ev) => ({ name: ev.content || "a scheduled message", sub: ev.content ? "scheduled" : "" }));
-registerRow([40007], (ev) => ({ name: ev.content || "a reminder", sub: `reminds ${plural(mentionsOf(ev).length, "person", "people")}` }));
+registerRow([40007], (ev) => {
+  const who = mentionsOf(ev).length;
+  return { name: ev.content || "a reminder", sub: `reminds ${who ? plural(who, "person", "people") : "the room"}` };
+});
 registerRow([40099], (ev) => ({ name: systemSentence(systemPayload(ev), false) }));
 registerRow([40901], (ev) => {
   const c = jsonContent(ev);

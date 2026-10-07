@@ -86,8 +86,9 @@ function itemCard(ev, opts) {
   ];
   const declares = pairOf(ev, "names");
   const full = opts && opts.full;
+  const title = itemName(ev);
   const inner =
-    titleHtml(opts, itemName(ev) || (declares && declares.many), 140) +
+    titleHtml(opts, title || (declares && declares.many), 140) +
     (parents.length
       ? `<div class="result-body">${declares ? "declares a list in" : "adds to"} ${parents.slice(0, full ? 12 : 3).map(parentLink).join(", ")}` +
         `${parents.length > (full ? 12 : 3) ? ` <span class="muted-note">and ${parents.length - (full ? 12 : 3)} more</span>` : ""}</div>`
@@ -95,7 +96,7 @@ function itemCard(ev, opts) {
     bodyHtml(opts, tagOf(ev, "description"), 300) +
     bodyHtml(opts, tagOf(ev, "comments"), 300, true) +
     // The value that already titles the card is not repeated as a chip under it.
-    chipRow(stringsOf(ev).filter((v) => v !== itemName(ev)), opts) +
+    chipRow(stringsOf(ev).filter((v) => v !== title), opts) +
     faceStrip(people, full ? 24 : 12) +
     refRows(refs, opts);
   return shell(ev, opts, inner, declares ? rulesOf(ev).map(([rule, tags]) => [rule, esc(clip(tags.join(", "), 120))]) : []);

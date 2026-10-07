@@ -518,6 +518,9 @@ export const uniquePubkeys = (values) =>
 /** The distinct people a list holds — its `p` tags, deduped, hex only. */
 export const peopleOf = (ev) => uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
 
+/** The one person an event's first hex `p` names — a bidder, an opponent, a job's counterpart — or null. */
+export const firstPerson = (ev) => peopleOf(ev)[0] || null;
+
 /** Who a grid draws and how many it leaves out; when the list overruns, the last cell is the count. */
 export function gridCells(pubkeys, opts) {
   const cap = opts && opts.full ? PEOPLE_GRID.full : PEOPLE_GRID.preview;

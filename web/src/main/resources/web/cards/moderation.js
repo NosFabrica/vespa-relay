@@ -20,7 +20,7 @@ import { esc, clip } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, noteHref,
-  tagsOf, tagOf, oneLine, plural, uniquePubkeys,
+  tagsOf, tagOf, oneLine, plural, peopleOf, firstPerson,
 } from "./base.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -39,7 +39,6 @@ export function moderationReason(content) {
   } catch (e) { return s; }
 }
 
-const pubkeysOf = (ev) => uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
 const peopleLine = (pks, max) =>
   pks.slice(0, max).map(personLink).join(", ") + (pks.length > max ? ` <span class="muted-note">and ${pks.length - max} more</span>` : "");
 
@@ -64,7 +63,7 @@ function hideMessageCard(ev, opts) {
 
 /** 44 — a channel moderator muting people. */
 function muteUserCard(ev, opts) {
-  const pks = pubkeysOf(ev);
+  const pks = peopleOf(ev);
   const inner =
     `<div class="result-body">mutes ${pks.length ? peopleLine(pks, mutedShown(opts)) : "someone"}</div>` +
     bodyHtml(opts, moderationReason(ev.content), 300, true);
@@ -116,14 +115,15 @@ function groupRolesCard(ev, opts) {
 
 /** 33534 — a NIP-43 relay role: a label members can hold, and what it means. Its hue is not drawn. */
 function relayRoleCard(ev, opts) {
-  const order = Number(tagOf(ev, "order"));
+  // An absent `order` is no order: Number(null) would say 0.
+  const order = /^-?\d+$/.test(oneLine(tagOf(ev, "order"))) ? Number(oneLine(tagOf(ev, "order"))) : null;
   const inner =
     titleHtml(opts, tagOf(ev, "label") || tagOf(ev, "d"), 120) +
     `<div class="result-body muted">a role on this relay</div>` +
     bodyHtml(opts, tagOf(ev, "description"), 300);
   return shell(ev, opts, inner, [
     ["id", tagOf(ev, "d") ? `<span class="mono">${esc(clip(tagOf(ev, "d"), 40))}</span>` : null],
-    ["order", Number.isInteger(order) ? esc(order) : null],
+    ["order", order === null ? null : esc(order)],
   ]);
 }
 
@@ -138,7 +138,7 @@ const ARCHIVAL = {
 };
 
 /** The identity acted on: the first `p`. */
-const archivalTarget = (ev) => tagsOf(ev, "p").map((t) => t[1]).find((pk) => HEX64.test(pk || "")) || null;
+const archivalTarget = firstPerson;
 /** The identity that takes its place, from `replaced-by`. */
 const replacedBy = (ev) => (HEX64.test(tagOf(ev, "replaced-by") || "") ? tagOf(ev, "replaced-by") : null);
 
@@ -193,11 +193,11 @@ register(Object.keys(ARCHIVAL).map(Number), archivalCard);
 register([42000], feedbackCard);
 register([46030, 46031], approvalCard);
 // Everyone these cards write by name: the people muted, and the identities archived or named in their place.
-registerNamedPeople([44], (ev, opts) => pubkeysOf(ev).slice(0, mutedShown(opts)));
+registerNamedPeople([44], (ev, opts) => peopleOf(ev).slice(0, mutedShown(opts)));
 registerNamedPeople(Object.keys(ARCHIVAL).map(Number), (ev) => [archivalTarget(ev), replacedBy(ev)].filter(Boolean));
 
 registerRow([43], (ev) => ({ name: `hides ${plural(Math.max(1, hiddenOf(ev).length), "message")}`, sub: moderationReason(ev.content) }));
-registerRow([44], (ev) => ({ name: `mutes ${plural(Math.max(1, pubkeysOf(ev).length), "person", "people")}`, sub: moderationReason(ev.content) }));
+registerRow([44], (ev) => ({ name: `mutes ${plural(Math.max(1, peopleOf(ev).length), "person", "people")}`, sub: moderationReason(ev.content) }));
 registerRow([9007], (ev) => ({ name: tagOf(ev, "name") ? `creates ${tagOf(ev, "name")}` : "creates a group", sub: tagOf(ev, "about") }));
 registerRow([9021], (ev) => ({ name: "asks to join a group", sub: ev.content }));
 registerRow([9022], (ev) => ({ name: "asks to leave a group", sub: ev.content }));

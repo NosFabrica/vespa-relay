@@ -11,24 +11,25 @@
 
 import { esc, clip } from "../shared/format.js";
 import {
-  register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, tagOf, tagsOf,
-  oneLine,
+  register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, tagOf,
+  oneLine, firstPerson,
 } from "./base.js";
 import { codeBlock } from "./code.js";
 
-const HEX64 = /^[0-9a-f]{64}$/;
+/** One header line, `[Name "value"]`; the value may hold `]`, and `\"` / `\\` are escapes. */
+const HEADER = /^\s*\[([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]\s*$/gm;
 
 /** The PGN's tag pairs, `[Name "value"]`, first of each name. PGN escapes `"` and `\` with `\`. */
 export function pgnHeaders(pgn) {
   const out = Object.create(null);
-  for (const m of String(pgn || "").matchAll(/^\s*\[([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]\s*$/gm)) {
+  for (const m of String(pgn || "").matchAll(HEADER)) {
     if (!(m[1] in out)) out[m[1]] = m[2].replace(/\\(["\\])/g, "$1");
   }
   return out;
 }
 
-/** The movetext: everything after the header block, as written. */
-const movetextOf = (pgn) => String(pgn || "").replace(/^\s*\[[^\]\n]*\]\s*$/gm, "").trim();
+/** The movetext: what is left once the header lines [pgnHeaders] reads are taken out. */
+const movetextOf = (pgn) => String(pgn || "").replace(HEADER, "").trim();
 
 /** A header value worth showing: PGN writes "?" (and "????.??.??") for unknown. */
 const known = (v) => {
@@ -61,7 +62,7 @@ function gameCard(ev, opts) {
 }
 
 /** The opponent a live-chess event names: its one `p`. */
-const opponentOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).find((pk) => HEX64.test(pk || "")) || null;
+const opponentOf = firstPerson;
 
 /** "move 12: Nf3", or what of it the tags carry. */
 const moveLine = (ev) => {

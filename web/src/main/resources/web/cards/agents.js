@@ -22,6 +22,7 @@ import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow, relayRows,
   personLink, extLink, jsonContent, tagOf, tagsOf, oneLine, plural, noteHref, coverThumb, safeUrl,
+  firstPerson,
 } from "./base.js";
 import { shortNote } from "../shared/nip19.js";
 import { codeBlock } from "./code.js";
@@ -32,6 +33,8 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const text = (v) => oneLine(v);
 /** A list off a stranger's JSON: a non-array, and any entry that is not text, contributes nothing. */
 const list = (v) => (Array.isArray(v) ? v.map(oneLine).filter(Boolean) : []);
+/** Multi-line text off that JSON, newlines kept for a pre-wrap body, or "". */
+const prose = (v) => (typeof v === "string" ? v.trim() : "");
 /** A props value from that same JSON, already escaped, or null. */
 const fact = (v) => (text(v) ? esc(clip(text(v), 80)) : null);
 
@@ -121,7 +124,7 @@ function teamCatalogCard(ev, opts) {
     bodyHtml(opts, text(c.description), 300, true) +
     `<div class="result-body">${esc(plural(members.length, "member"))}</div>` +
     chipRow(names, opts) +
-    (full ? bodyHtml(opts, text(c.instructions), 0) : "") +
+    (full ? bodyHtml(opts, prose(c.instructions), 0) : "") +
     (full && members.length
       ? `<dl class="props">${members.map((m) => `<dt>${esc(clip(text(m.display_name) || text(m.member_key), 60))}</dt>` +
           `<dd>${esc(clip([text(m.model), text(m.provider)].filter(Boolean).join(" · ") || text(m.runtime) || "—", 80))}</dd>`).join("")}</dl>`
@@ -142,7 +145,7 @@ const JOB_STEP = {
 };
 
 /** A job event's counterpart: the one `p` — the worker asked, or the requester answered. */
-const jobPerson = (ev) => tagsOf(ev, "p").map((t) => t[1]).find((pk) => HEX64.test(pk || "")) || null;
+const jobPerson = firstPerson;
 
 /**
  * 43001…43006 — one step of a Buzz job. The request (43001) names the worker it asks; every
@@ -190,7 +193,7 @@ function cvmServerCard(ev, opts) {
     bodyHtml(opts, tagOf(ev, "about"), 300) +
     `</div>${pic ? coverThumb(pic) : ""}</div>` +
     chipRow([...caps, ...flags], opts) +
-    (opts && opts.full ? bodyHtml(opts, text(c.instructions), 0, true) : "");
+    (opts && opts.full ? bodyHtml(opts, prose(c.instructions), 0, true) : "");
   return shell(ev, opts, inner, [
     ["website", tagOf(ev, "website") ? extLink(tagOf(ev, "website")) : null],
     ["version", fact(info.version)],
