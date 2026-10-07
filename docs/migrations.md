@@ -405,6 +405,10 @@ store's kind-scoped walk, `reindexFullTextSearch(kinds)`, which visits only
 these kinds server-side. Without it, `REINDEX_FTS_ON_START` walks the whole
 corpus (445M events on staging) to reach the same documents. The list pastes
 as written; remove both settings once the log reads `fts: reindex complete`.
+Each page is visited under the store's write lock (vespa-eventstore#160), and a
+sparse kind selection scans longer to fill a page, so watch the Locks and
+Stages panels on `/pulse/` while it runs: a long hold delays this relay's own
+writes (client EVENTs, deletes, NIP-86), not the sync process's.
 
 ```
 5, 14, 15, 20, 21, 22, 31, 32, 33, 43, 44, 62, 64, 1022, 1065, 5901, 8002,

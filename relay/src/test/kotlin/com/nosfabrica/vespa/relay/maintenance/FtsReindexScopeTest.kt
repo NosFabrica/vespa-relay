@@ -50,6 +50,13 @@ class FtsReindexScopeTest {
         assertFailsWith<IllegalStateException> { parseReindexKinds("-1") }
     }
 
+    /** Separators alone parse to no kinds; the store refuses that scope on every page, so the boot must. */
+    @Test
+    fun `a value that names no kinds stops the boot`() {
+        assertContains(assertFailsWith<IllegalStateException> { parseReindexKinds(",") }.message!!, "names no kinds")
+        assertFailsWith<IllegalStateException> { parseReindexKinds(" , \n ,") }
+    }
+
     @Test
     fun `a cursor round-trips with its scope`() {
         val kinds = listOf(5, 14, 38000)

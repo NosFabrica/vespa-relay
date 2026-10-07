@@ -52,13 +52,15 @@ fun launchFtsReindex(
         val what = if (kinds == null) "the whole corpus" else "${kinds.size} kind(s)"
         println("fts: reindexing $what in the background — search results may be incomplete until it finishes")
         var total = 0L
-        var pages = 0
+        var lastLineMs = startedMs
         val saved =
             runCatching {
                 File(cursorFile)
                     .takeIf { it.isFile }
                     ?.readText()
                     ?.let(::decodeFtsCursor)
+            }.onFailure { e ->
+                System.err.println("fts: the saved cursor in $cursorFile is unreadable (${e.message?.take(80)}) — starting over")
             }.getOrNull()
         var cursor: String? = resumableCursor(saved, kinds)
         if (cursor != null) {
@@ -101,8 +103,12 @@ fun launchFtsReindex(
                     Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 }
                 total += progress.processedThisBatch
-                if (++pages % 50 == 0) {
-                    val secs = (System.currentTimeMillis() - startedMs) / 1000
+                // On wall time, not pages: a scoped walk is a few dozen sparse pages, each of which
+                // may take seconds, so a page count would leave it nearly silent.
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastLineMs >= FTS_PROGRESS_EVERY_MS) {
+                    lastLineMs = nowMs
+                    val secs = (nowMs - startedMs) / 1000
                     val rate = if (secs > 0) total / secs else 0
                     val pct = expected?.takeIf { it > 0 }?.let { " (${total * 100 / it}%)" } ?: ""
                     val eta =
@@ -124,15 +130,19 @@ fun launchFtsReindex(
             // Shutdown mid-walk: the cursor is saved and the next boot resumes.
             throw e
         } catch (e: Exception) {
-            System.err.println(
-                "fts: reindex FAILED after $total event(s): ${e.message}" +
-                    " — the cursor is saved, so restarting with REINDEX_FTS_ON_START resumes here",
-            )
+            val resume =
+                if (cursor != null) {
+                    "the cursor is saved, so restarting with REINDEX_FTS_ON_START resumes here"
+                } else {
+                    "no page completed, so a restart starts from the beginning"
+                }
+            System.err.println("fts: reindex FAILED after $total event(s): ${e.message} — $resume")
         }
     }
 }
 
 private const val FTS_PAGE_RETRIES = 5
+private const val FTS_PROGRESS_EVERY_MS = 60_000L
 
 /** A saved reindex position: the scope it was taken under (null = whole corpus) and the store's cursor. */
 internal data class FtsCursor(
@@ -184,6 +194,8 @@ private fun ftsScopeLabel(kinds: List<Int>?): String = if (kinds == null) "the w
 fun parseReindexKinds(raw: String?): List<Int>? {
     val text = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val tokens = text.split(',', ' ', '\n', '\t').map { it.trim() }.filter { it.isNotEmpty() }
+    // Separators alone are not "every kind": the store refuses an empty scope page by page.
+    if (tokens.isEmpty()) error("REINDEX_FTS_KINDS='$text' names no kinds. Unset it to reindex the whole corpus.")
     val kinds =
         tokens.map { token ->
             token.toIntOrNull()?.takeIf { it in 0..65535 }
