@@ -27,18 +27,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
 import java.io.File
+import java.io.Writer
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -459,35 +459,6 @@ class SyncBands(
         return pruned
     }
 
-    /** One band, as it is written. */
-    private fun bandOf(
-        band: SyncCoverage.Band,
-        verifiedAt: Long?,
-    ): JsonObject =
-        buildJsonObject {
-            // The outer edges across every kind, so a build without per-kind spans still parses it.
-            put("min", band.minCreatedAt)
-            put("max", band.maxCreatedAt)
-            put("complete", band.complete)
-            put("fullAt", band.fullAt)
-            verifiedAt?.let { put("verifiedAt", it) }
-            put(
-                "spans",
-                buildJsonObject {
-                    band.spans.forEach { (kind, span) ->
-                        put(
-                            kind.toString(),
-                            buildJsonObject {
-                                put("min", span.min)
-                                put("max", span.max)
-                                put("complete", span.complete)
-                            },
-                        )
-                    }
-                },
-            )
-        }
-
     /** One band as it is written, or null for an entry too damaged to restore. */
     private fun bandOf(o: JsonObject): SyncCoverage.Band? {
         val spans = runCatching { spansOf(o) }.getOrNull() ?: return null
@@ -526,37 +497,58 @@ class SyncBands(
 
     /** Every band this router holds, in the one shape [save] writes and the status page reads. */
     @Synchronized
-    internal fun snapshot(): JsonObject =
-        buildJsonObject {
-            coverageByStream.forEach { (stream, coverage) ->
-                val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
-                // Folded urls are skipped per entry, so a filter with every relay folded leaves no empty husk.
-                val skip = folded[stream].orEmpty()
-                coverage.export().forEach { (k, band) ->
-                    if (k.relay in skip) return@forEach
-                    byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
-                }
-                // A stream that has only asked holds no bands and gets no group.
-                if (byFilter.isEmpty()) return@forEach
-                put(
-                    stream,
-                    buildJsonObject {
-                        byFilter.forEach { (filter, byRelay) ->
-                            put(
-                                filter,
-                                buildJsonObject {
-                                    byRelay.forEach { (relay, band) ->
-                                        put(relay, bandOf(band, verified[VerifiedKey(stream, filter, relay)]))
-                                    }
-                                },
-                            )
-                        }
-                    },
-                )
+    internal fun snapshot(): JsonObject = TreeSink().also { writeTo(it) }.root()
+
+    /** The one walk over the map, for both [snapshot] and [save], so the file and the page cannot disagree. */
+    private fun writeTo(out: Sink) {
+        out.open()
+        coverageByStream.forEach { (stream, coverage) ->
+            val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
+            // Folded urls are skipped per entry, so a filter with every relay folded leaves no empty husk.
+            val skip = folded[stream].orEmpty()
+            coverage.export().forEach { (k, band) ->
+                if (k.relay in skip) return@forEach
+                byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
             }
-            putBandClocks()
-            putCannotReconcile()
+            // A stream that has only asked holds no bands and gets no group.
+            if (byFilter.isEmpty()) return@forEach
+            out.open(stream)
+            byFilter.forEach { (filter, byRelay) ->
+                out.open(filter)
+                byRelay.forEach { (relay, band) -> out.band(relay, band, verified[VerifiedKey(stream, filter, relay)]) }
+                out.close()
+            }
+            out.close()
         }
+        writeBandClocks(out)
+        writeCannotReconcile(out)
+        out.close()
+    }
+
+    /** One band, as it is written. */
+    private fun Sink.band(
+        relay: String,
+        band: SyncCoverage.Band,
+        verifiedAt: Long?,
+    ) {
+        open(relay)
+        // The outer edges across every kind, so a build without per-kind spans still parses it.
+        put("min", band.minCreatedAt)
+        put("max", band.maxCreatedAt)
+        put("complete", band.complete)
+        put("fullAt", band.fullAt)
+        verifiedAt?.let { put("verifiedAt", it) }
+        open("spans")
+        band.spans.forEach { (kind, span) ->
+            open(kind.toString())
+            put("min", span.min)
+            put("max", span.max)
+            put("complete", span.complete)
+            close()
+        }
+        close()
+        close()
+    }
 
     /**
      * The tiered audits' clocks, in a section of their own. A band records its coverage against
@@ -565,40 +557,50 @@ class SyncBands(
      * the way an untiered stream does. Without this, a band's schedule would be memory-only and
      * every restart would re-walk the oldest, most expensive band.
      */
-    private fun JsonObjectBuilder.putBandClocks() {
+    private fun writeBandClocks(out: Sink) {
         val banded = verified.entries.filter { it.key.band.isNotEmpty() }
         if (banded.isEmpty()) return
-        put(
-            BAND_CLOCKS,
-            buildJsonObject {
-                banded.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
-                    put(
-                        stream,
-                        buildJsonObject {
-                            ofStream.groupBy { it.key.band }.forEach { (band, ofBand) ->
-                                put(
-                                    band,
-                                    buildJsonObject {
-                                        ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
-                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, it.value) } })
-                                        }
-                                    },
-                                )
-                            }
-                        },
-                    )
-                }
-            },
-        )
+        out.byStreamBandFilter(BAND_CLOCKS, banded) { relay, ts -> out.put(relay, ts) }
     }
 
-    /** One impossible band, as it is written. */
-    private fun cannotOf(c: CannotReconcile): JsonObject =
-        buildJsonObject {
-            put("strikes", c.strikes)
-            put("at", c.at)
-            put("why", c.why)
+    /**
+     * The bands negentropy cannot walk, in the same stream/band/filter/relay nesting as the
+     * clocks. Written apart from the coverage so a band with no coverage at all — which is
+     * exactly what one of these is — still has somewhere to say so.
+     */
+    private fun writeCannotReconcile(out: Sink) {
+        if (cannot.isEmpty()) return
+        out.byStreamBandFilter(CANNOT_RECONCILE, cannot.entries) { relay, c ->
+            out.open(relay)
+            out.put("strikes", c.strikes.toLong())
+            out.put("at", c.at)
+            out.put("why", c.why)
+            out.close()
         }
+    }
+
+    /** A section nested stream, band, filter, relay, with [leaf] writing each relay's entry. */
+    private fun <V> Sink.byStreamBandFilter(
+        section: String,
+        entries: Collection<Map.Entry<VerifiedKey, V>>,
+        leaf: (relay: String, value: V) -> Unit,
+    ) {
+        open(section)
+        entries.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
+            open(stream)
+            ofStream.groupBy { it.key.band }.forEach { (band, ofBand) ->
+                open(band)
+                ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
+                    open(filter)
+                    ofFilter.forEach { leaf(it.key.relay, it.value) }
+                    close()
+                }
+                close()
+            }
+            close()
+        }
+        close()
+    }
 
     /** One impossible band read back, or null for an entry too damaged to stand for one. */
     private fun cannotOf(o: JsonObject): CannotReconcile? {
@@ -608,45 +610,16 @@ class SyncBands(
     }
 
     /**
-     * The bands negentropy cannot walk, in the same stream/band/filter/relay nesting as the
-     * clocks. Written apart from the coverage so a band with no coverage at all — which is
-     * exactly what one of these is — still has somewhere to say so.
+     * Persist via a temp file and an atomic move, so a reader never sees a half-written map.
+     * Streamed compact: the map is tens of MB, and a tree or a string of it costs the heap that much again.
      */
-    private fun JsonObjectBuilder.putCannotReconcile() {
-        if (cannot.isEmpty()) return
-        put(
-            CANNOT_RECONCILE,
-            buildJsonObject {
-                cannot.entries.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
-                    put(
-                        stream,
-                        buildJsonObject {
-                            ofStream.groupBy { it.key.band }.forEach { (band, ofBand) ->
-                                put(
-                                    band,
-                                    buildJsonObject {
-                                        ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
-                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, cannotOf(it.value)) } })
-                                        }
-                                    },
-                                )
-                            }
-                        },
-                    )
-                }
-            },
-        )
-    }
-
-    /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     @Synchronized
     private fun save(): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject = snapshot()
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.bufferedWriter(Charsets.UTF_8, WRITE_BUFFER).use { writeTo(StreamSink(it)) }
             // ATOMIC_MOVE asked for explicitly; without it the JVM may fall back to copy+delete.
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
@@ -658,9 +631,144 @@ class SyncBands(
         }.isSuccess
     }
 
+    /** Where [writeTo] sends the map. Keys are unique by construction, so neither sink checks. */
+    private interface Sink {
+        /** Opens an object, under [key] unless it is the root. */
+        fun open(key: String? = null)
+
+        fun close()
+
+        fun put(
+            key: String,
+            value: Long,
+        )
+
+        fun put(
+            key: String,
+            value: Boolean,
+        )
+
+        fun put(
+            key: String,
+            value: String,
+        )
+    }
+
+    /** Builds the [JsonObject] the status page reads. */
+    private class TreeSink : Sink {
+        private val stack = ArrayDeque<Pair<String?, LinkedHashMap<String, JsonElement>>>()
+        private var done: JsonObject? = null
+
+        fun root(): JsonObject = done!!
+
+        override fun open(key: String?) = stack.addLast(key to LinkedHashMap())
+
+        override fun close() {
+            val (key, members) = stack.removeLast()
+            val o = JsonObject(members)
+            if (stack.isEmpty()) done = o else stack.last().second[key!!] = o
+        }
+
+        override fun put(
+            key: String,
+            value: Long,
+        ) {
+            stack.last().second[key] = JsonPrimitive(value)
+        }
+
+        override fun put(
+            key: String,
+            value: Boolean,
+        ) {
+            stack.last().second[key] = JsonPrimitive(value)
+        }
+
+        override fun put(
+            key: String,
+            value: String,
+        ) {
+            stack.last().second[key] = JsonPrimitive(value)
+        }
+    }
+
+    /** Writes compact JSON as it goes, holding nothing but one flag per open object. */
+    private class StreamSink(
+        private val w: Writer,
+    ) : Sink {
+        /** Whether each open object already has a member, so the next one needs a comma. */
+        private val filled = ArrayDeque<Boolean>()
+
+        private val digits = CharArray(20)
+
+        private fun key(key: String) {
+            if (filled.last()) w.write(','.code)
+            filled[filled.lastIndex] = true
+            string(key)
+            w.write(':'.code)
+        }
+
+        /** Quoted as-is when nothing in it needs escaping, which is every member name and nearly every url. */
+        private fun string(s: String) {
+            if (s.any { it < ' ' || it == '"' || it == '\\' }) {
+                w.write(JsonPrimitive(s).toString())
+            } else {
+                w.write('"'.code)
+                w.write(s)
+                w.write('"'.code)
+            }
+        }
+
+        /** Digits into one reused buffer: a file is millions of numbers. */
+        private fun number(value: Long) {
+            if (value == Long.MIN_VALUE) return w.write(value.toString())
+            var v = if (value < 0) -value else value
+            var at = digits.size
+            do {
+                digits[--at] = '0' + (v % 10).toInt()
+                v /= 10
+            } while (v != 0L)
+            if (value < 0) w.write('-'.code)
+            w.write(digits, at, digits.size - at)
+        }
+
+        override fun open(key: String?) {
+            key?.let(::key)
+            w.write('{'.code)
+            filled.addLast(false)
+        }
+
+        override fun close() {
+            filled.removeLast()
+            w.write('}'.code)
+        }
+
+        override fun put(
+            key: String,
+            value: Long,
+        ) {
+            key(key)
+            number(value)
+        }
+
+        override fun put(
+            key: String,
+            value: Boolean,
+        ) {
+            key(key)
+            w.write(if (value) "true" else "false")
+        }
+
+        override fun put(
+            key: String,
+            value: String,
+        ) {
+            key(key)
+            string(value)
+        }
+    }
+
     companion object {
-        // Pretty-printed for a human reader.
-        private val json = Json { prettyPrint = true }
+        private const val WRITE_BUFFER = 1 shl 16
 
         /** The dueness rule as a predicate, for tests. A clock of zero is always due. */
         internal fun auditDue(

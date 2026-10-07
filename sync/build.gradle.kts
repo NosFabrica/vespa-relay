@@ -63,4 +63,6 @@ tasks.test {
     System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
     System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
     System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
+    // The prod-scale probes need a few GB of heap; unit tests must not. Opt in with -PtestHeap=6g.
+    providers.gradleProperty("testHeap").orNull?.let { maxHeapSize = it }
 }

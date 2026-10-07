@@ -485,6 +485,51 @@ class SyncBandsTest {
         f.delete()
     }
 
+    /** One of everything the file holds: per-kind spans, both clocks, an impossible band whose sentence needs escaping. */
+    private fun everySection(f: File): SyncBands {
+        val mixed = Filter(kinds = listOf(0, 30382))
+        return SyncBands(f).apply {
+            record(
+                mirror,
+                relay,
+                mixed,
+                null,
+                null,
+                paged = true,
+                observedByKind =
+                    mapOf(
+                        0 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L),
+                        30382 to SyncCoverage.Span(1_695_000_000L, 1_700_000_000L),
+                    ),
+                drained = true,
+            )
+            record(mirror, other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
+            record("$mirror#tier:all", relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+            record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_004_000L, band = "tier:all")
+            repeat(SyncBands.STRIKES_BEFORE_IMPOSSIBLE) { noteCannotReconcile(mirror, other, mixed, "tier:all", "said \"no\"\\\n\tthen hung up", 1_700_005_000L) }
+        }
+    }
+
+    @Test
+    fun `the file is written compact, and what it holds comes back unchanged`() {
+        val f = tempFile()
+        val held = everySection(f).apply { flush() }.snapshot()
+        val text = f.readText()
+        assertEquals(Json.encodeToString(JsonObject.serializer(), Json.parseToJsonElement(text).jsonObject), text, "no indentation: it was two thirds of the file")
+        assertEquals(held, Json.parseToJsonElement(text).jsonObject, "the file and the status page read one shape")
+        assertEquals(held, SyncBands(f).snapshot(), "coverage, both clocks and the impossible bands survive a reboot")
+        f.delete()
+    }
+
+    @Test
+    fun `a pretty-printed file from an earlier build still loads`() {
+        val f = tempFile()
+        val held = everySection(f).apply { flush() }.snapshot()
+        f.writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), held))
+        assertEquals(held, SyncBands(f).snapshot())
+        f.delete()
+    }
+
     @Test
     fun `two streams asking one relay the same filter keep their own bands`() {
         val f = tempFile()

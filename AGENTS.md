@@ -84,6 +84,7 @@ node web/src/test/browser/pager.probe.mjs        # the pager against a fake WebS
 D=$(mktemp -d)                                                                                              # the band file at production scale, charted before and after
 ./gradlew :sync:test --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
 ./gradlew :sync:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :sync:test --tests '*SyncBandsSaveCostProbe*' -DprodScaleProbe=true -PtestHeap=8g --rerun -i    # what one save and one load of a staging-sized band file cost
 
 # Probes that need a Vespa. A sandbox ships docker but no daemon; start one and wait for the config server.
 DOCKER_MIN_API_VERSION=1.24 dockerd > /tmp/dockerd.log 2>&1 &

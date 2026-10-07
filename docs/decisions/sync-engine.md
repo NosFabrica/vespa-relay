@@ -165,6 +165,19 @@ nothing widen the shared snapshot; `legs` not re-owing an older leg when the
 floor dropped) while this file's comments described them as solved. The key
 split at the first space was upstream's too (amethyst#3877).
 
+**The file is streamed compact, through the walk the status page reads.**
+After the 197-kind migration staging's file was 202 MB, two thirds of it
+indentation. Each 30-second save built the whole map as a `JsonObject` tree,
+printed it to one string, then wrote it. On a staging-shaped corpus
+(`SyncBandsSaveCostProbe`) that was 3.3 s and 2.27 GB allocated per save for a
+226 MB file. Writing compact JSON straight to the file, with no tree and no
+string, takes 1.2 s and 124 MB for a 75 MB file. Both builds read both
+layouts, so the change can be rolled back. `snapshot()` and `save()` share
+`writeTo`, so the page and the file can never disagree on the format. A new
+format (spans grouped by value) or one file per stream were considered and
+deferred. Either one breaks rollback and `migrate_sync_bands.py`. Splitting
+would also save little, because the hot content keys are most of the bytes.
+
 ## NegentropyPager
 
 **`WindowSync.page` says whether it was refused as its own fact.** It
