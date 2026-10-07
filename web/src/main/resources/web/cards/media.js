@@ -2,13 +2,14 @@
 // is the event. URLs come from NIP-92 imeta first, then the legacy url/image tags. The file
 // headers at the end of this file describe bytes that live somewhere else — in a sibling event
 // (1065), on a server (1163, 1808) or in a swarm (2003) — so what they can show is a preview
-// and a promise, never the thing itself.
+// and a promise, never the thing itself. A NIP-17 file (15) is the same promise, encrypted.
+// The cyberspace shapes (11333, 33331) are small 3D meshes in JSON, described, not drawn.
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref,
   extLink, relayRows, refRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, noteHref,
-  fmtBytes, fmtDuration, plural,
+  fmtBytes, fmtDuration, plural, faceStrip, jsonContent, oneLine,
 } from "./base.js";
 import { shortNote } from "../shared/nip19.js";
 
@@ -273,6 +274,51 @@ function torrentCommentCard(ev, opts) {
   return shell(ev, opts, replyLine(ev) + bodyHtml(opts, ev.content, 400));
 }
 
+/**
+ * 15 — a NIP-17 file message: the content is the url of an encrypted file and the tags are how
+ * to read it. Normally sealed inside a gift wrap; one that reached a public relay is drawn as
+ * what it says it is. The decryption key is in the tags and is never put on the page.
+ */
+function encryptedFileCard(ev, opts) {
+  const url = String(ev.content || "").trim();
+  const to = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk || ""));
+  const algo = tagOf(ev, "encryption-algorithm");
+  const inner =
+    `<div class="result-body">an encrypted ${esc(clip(tagOf(ev, "file-type") || "file", 40))}` +
+    `${algo ? ` <span class="muted-note">(${esc(clip(algo, 20))})</span>` : ""}</div>` +
+    bodyHtml(opts, tagOf(ev, "summary"), 300) +
+    faceStrip(to, opts && opts.full ? 24 : 12);
+  return shell(ev, opts, inner, [
+    ["file", url ? extLink(url, clip(url, 60)) : null],
+    ["size", fmtBytes(tagOf(ev, "size"))],
+    ["dimensions", tagOf(ev, "dim") ? esc(clip(tagOf(ev, "dim"), 24)) : null],
+    ["hash", tagOf(ev, "x") ? `<span class="mono">${esc(clip(tagOf(ev, "x"), 20))}</span>` : null],
+  ]);
+}
+
+/** A SNO mesh's size, off its JSON: how many vertices and faces, and how it is drawn. */
+function snoOf(ev) {
+  const c = jsonContent(ev);
+  const count = (v) => (Array.isArray(v) ? v.length : 0);
+  return { vertices: count(c.vertices), faces: count(c.faces), mode: oneLine(c.mode), name: oneLine(c.name) };
+}
+
+/**
+ * 11333 / 33331 — a cyberspace object (DECK-0003): a small triangle mesh on an integer lattice.
+ * The `name` tag is its only human text; the geometry is counted, not rendered. An avatar with
+ * no content is the default one.
+ */
+function snoCard(ev, opts) {
+  const m = snoOf(ev);
+  const blank = ev.kind === 11333 && !String(ev.content || "").trim();
+  const shape = blank ? "the default avatar"
+    : [m.vertices && plural(m.vertices, "vertex", "vertices"), m.faces && plural(m.faces, "face"), m.mode].filter(Boolean).join(" · ");
+  const inner =
+    titleHtml(opts, tagOf(ev, "name") || m.name, 120) +
+    `<div class="result-body muted">${esc(ev.kind === 11333 ? "a cyberspace avatar" : "a 3D object")}${shape ? ` · ${esc(shape)}` : ""}</div>`;
+  return shell(ev, opts, inner);
+}
+
 register([20], pictureCard);
 register([21, 22, 34235, 34236], videoCard);
 register([1063], fileCard);
@@ -284,6 +330,8 @@ register([32176], pieceIndexCard);
 register([1065], fileStorageCard);
 register([1163], galleryCard);
 register([1808], audioHeaderCard);
+register([15], encryptedFileCard);
+register([11333, 33331], snoCard);
 register([2003], torrentCard);
 register([2004], torrentCommentCard);
 
@@ -335,3 +383,14 @@ registerRow([2003], (ev) => ({
   sub: [plural(torrentFiles(ev).length, "file"), fmtBytes(torrentBytes(ev)), ev.content].filter(Boolean).join(" · "),
 }));
 registerRow([2004], (ev) => ({ name: ev.content }));
+registerRow([15], (ev) => ({
+  name: tagOf(ev, "summary") || `an encrypted ${tagOf(ev, "file-type") || "file"}`,
+  sub: [tagOf(ev, "file-type"), fmtBytes(tagOf(ev, "size"))].filter(Boolean).join(" · "),
+}));
+registerRow([11333, 33331], (ev) => {
+  const m = snoOf(ev);
+  return {
+    name: tagOf(ev, "name") || m.name || (ev.kind === 11333 ? "a cyberspace avatar" : "a 3D object"),
+    sub: [m.vertices && plural(m.vertices, "vertex", "vertices"), m.faces && plural(m.faces, "face")].filter(Boolean).join(" · "),
+  };
+});

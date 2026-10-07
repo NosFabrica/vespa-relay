@@ -1,4 +1,4 @@
-// NIP-90 job requests: somebody asking a data vending machine to do a piece of work. Five kinds
+// NIP-90 job requests: somebody asking a data vending machine to do a piece of work. Six kinds
 // here, one shape — what is asked differs, how it is asked does not:
 //
 //   `i`      the inputs, `["i", <value>, <type>, <relay>, <marker>]`, one per input
@@ -25,6 +25,7 @@ const ASKS = {
   5250: "asks for speech",
   5302: "asks to search content",
   5303: "asks to search people",
+  5901: "asks to inscribe a message on-chain",
 };
 
 /** The inputs, each with the type that says how to read it. */
@@ -72,10 +73,10 @@ function jobRequestCard(ev, opts) {
   ]);
 }
 
-register([5050, 5100, 5250, 5302, 5303], jobRequestCard);
+register([5050, 5100, 5250, 5302, 5303, 5901], jobRequestCard);
 
 // The ask leads; what was handed to the machine follows, since the content is often empty.
-registerRow([5050, 5100, 5250, 5302, 5303], (ev) => ({
+registerRow([5050, 5100, 5250, 5302, 5303, 5901], (ev) => ({
   name: ASKS[ev.kind] || "asks for a job",
   sub: [ev.content, inputsOf(ev).map((i) => i.value).join(" · ")].filter(Boolean).join(" · "),
 }));

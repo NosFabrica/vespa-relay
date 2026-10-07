@@ -31,7 +31,39 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# bf2fefc621 = amethyst main @ 2026-09-28, the merge of vitorpamplona/amethyst#4243 — SAME TREE as
+# 68268da413 = amethyst main @ 2026-10-06, THE STORE'S OWN PIN: vespa-eventstore 14d8c7eeed (below)
+# names it, and this line follows it so the graph carries one quartz. It is the hint-provider /
+# NIP-50 / tag-relationship series (amethyst 9c34a3bc..d0cbdaf0) plus its review follow-ups; not
+# amethyst's tip 3e8137ab4e, whose Crowdin-sync commits fail on JitPack (the store's note has the
+# detail). 515 commits over bf2fefc621, 134 of them touching quartz/.
+#
+# SCANNED PER PACKAGE THIS RELAY IMPORTS (47 of them, all six modules): the relay server, its
+# policies and backend, NIP-11, NIP-42, NIP-65, NIP-77, NIP-86, NIP-98 and NIP-FE have NO diff in
+# the range. What does move:
+#
+#   SEARCH DERIVATION. SearchFieldExtractor / SearchableKinds: 42 kinds become searchable and 19
+#     extract differently (the store's note lists both); DeletionRequestEvent (5) and
+#     RequestToVanishEvent (62) are SearchableEvents now, their reasons indexed — shouldVanishFrom
+#     is unchanged. EventFactory builds 31890 as FeedDefinitionEvent. All fed `search_*` columns:
+#     a re-feed is owed, docs/migrations.md ("66 kinds re-derived").
+#   Event.dTag() defers to AddressableEvent.dTag(). RouterRefusalSink, the one caller, asks it only
+#     for an addressable kind, where the two read the same `d` tag.
+#   RelayUrlNormalizer gains a STRICT normalizeHintOrNull for relay hints; normalizeOrNull, the
+#     lenient one every call site here uses (config, verdicts, relay lists), is unchanged.
+#   Client side, additive and unused here: RelayAuthenticator.reauthenticate(url), the pool's
+#     RelayReqRefusals. DeletionIndex's comparator stops comparing a pubkey to itself; unused here.
+#
+# DIRECTION: bf2fefc621 is a strict ancestor of this.
+#   git merge-base --is-ancestor bf2fefc621 68268da413   # verified
+#
+# NO ARROW: with the store on 14d8c7eeed every quartz line in all six modules reads 68268da413,
+# clearing the `quartz:fcd76d2075 -> bf2fefc621` the previous store pin carried.
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# LEXICOGRAPHIC: '6826…' < 'bf2f…' ('6' < 'b'): the losing direction, moot with no conflict left
+# and `force(libs.quartz)` regardless.
+#
+# Prev bf2fefc621 = amethyst main @ 2026-09-28, the merge of vitorpamplona/amethyst#4243 — SAME TREE as
 # its head cba4a2d990, which this pin held before the merge (`git diff cba4a2d990 bf2fefc621` is
 # empty; the merge's parents are 77cb10e and cba4a2d990). Two fixes this relay's contract IT
 # (RelayContractIT) found, over amethyst main 77cb10e (42 commits over fcd76d2075):
@@ -106,7 +138,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "bf2fefc621"
+quartz = "68268da413"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
@@ -941,8 +973,40 @@ quartz = "bf2fefc621"
 #
 # LEXICOGRAPHIC: '5379…' < 'ff54…': the losing direction, moot — nothing else names the store.
 #
-# Prev ff54c9beb1:
-vespaEventStore = "5379e572dc"
+# 14d8c7eeed = vespa-eventstore main @ 2026-10-06, the merge of #159, over the merges of #156
+# (gated-COUNT benchmark studies), #157 (live hostname in docs) and #158 — 20 commits over
+# 5379e572dc, none in event.sd or services.xml. It moves the store's quartz pin twice
+# (fcd76d2075 -> d792ebc4bf in #158 -> 68268da413 in #159), and the quartz line above follows
+# it. What it changes for this relay:
+#
+#   SEARCH FIELDS RE-DERIVED (#158, #159; quartz's SearchFieldExtractor). d792ebc4bf: 38000 split by
+#     tags (the d-only spam that is most of the kind stays addressable but is no longer searchable),
+#     decentralized lists (9998/9999/39998/39999) gain a text tier, 30267 indexes its title.
+#     68268da413: 42 kinds become searchable, 19 extract differently; 30030 stops indexing its
+#     NIP-44 ciphertext. Fed columns, so the repair is a re-feed: docs/migrations.md, "66 kinds
+#     re-derived". The store adds a kind-scoped reindexFullTextSearch(kinds) for exactly this;
+#     REINDEX_FTS_ON_START still runs the unscoped walk, which reaches the same documents.
+#   NIP-50 QUERIES VESPA USED TO REFUSE (#159). A phrase repeating a term six times in a row or
+#     eleven in all was an HTTP 400 for the whole REQ ("noooooooo" through the gram net, a quoted
+#     sentence, `-no-no-no-no-no-no`); a trailing `*` was a 400 ("bitcoin*"). Now cut, split into
+#     required pieces, or stripped. EMOJI ARE WORDS: Vespa indexes every So code point, so "⚡"
+#     finds notes and "-🔥" excludes, where both were dropped before; a lone U+FE0F is stripped.
+#     LiveGate judges streamed events by the same pieces, without allocating per word.
+#
+# No schema change, nothing to deploy beyond the relay's restart; the re-feed above is the step.
+#   git merge-base --is-ancestor 5379e572dc 14d8c7eeed   # verified
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,250 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line 14d8c7eeed in all
+# six modules, zero arrows; and RelayContractIT over the wire against a relay built from both pins
+# on Vespa 8.763.13: 8,191 checks, 0 failing. And the store at 14d8c7eeed itself: its integration
+# suite against a real Vespa in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design,
+# 0 failures), read off the result XML.
+#
+# LEXICOGRAPHIC: '14d8…' < '5379…': the losing direction, moot — nothing else names the store.
+#
+# Prev 5379e572dc, and ff54c9beb1 before it (both above).
+vespaEventStore = "14d8c7eeed"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -960,10 +1024,13 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # The event store, from JitPack. `store` is the IEventStore + open() front door + the
 # ObserverContext/OriginalFilters this relay stamps; it api-exposes the `vespa` engine
 # jar transitively (InMemoryEventIndex, EventYql — used by the relay's protocol test).
-# Lowercase group on purpose: JitPack caches builds per-spelling, and the
-# capitalized `NosFabrica` entry for this commit permanently caches a failed
-# infra build. Same repo, same artifacts — different cache key.
-vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+# The group's SPELLING is per pin: JitPack caches builds per spelling, and either
+# entry can permanently hold a failed infra build while the other serves fine.
+# Lowercase served the pins through 5379e572dc (the capitalized entry had failed);
+# for 14d8c7eeed it is the reverse — `nosfabrica` failed opening gradle-wrapper.jar,
+# `NosFabrica` built (its pom also names engine under `NosFabrica`). Same repo,
+# same artifacts — different cache key. On the next bump, check both spellings.
+vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

@@ -1,12 +1,21 @@
 // The marketplace family: NIP-99 listings keep everything in tags, NIP-15 stalls and
 // products keep a JSON content. Nothing is invented for a missing field. The two ends of a
 // trade are here too — a NIP-69 peer-to-peer order, and the mints a NIP-87 reader recommends.
+//
+// Kind 38000 is three vocabularies on one number: NIP-87's mint recommendation, BAO Markets'
+// prediction markets and an auditable-voting app's ballots, plus `d`-only spam. Quartz tells
+// them apart by tags (EventFactory), and so does [kind38000], in the same order, so a market is
+// never drawn as "recommends 0 mints".
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
-  register, registerRow, shell, bodyHtml, chipRow, relayRows, refRows, faceStrip, hashtagHref,
-  topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine, fmtTs, plural, satsOf,
+  register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
+  refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
+  fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson,
 } from "./base.js";
+import { shortNote } from "../shared/nip19.js";
+
+const HEX64 = /^[0-9a-f]{64}$/;
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
 const priceText = (amount, currency, period) => {
@@ -176,6 +185,222 @@ function fundraiserCard(ev, opts) {
   ]);
 }
 
+// ---- kind 38000, three apps on one number ----------------------------------
+
+/** A tag value as quartz tests it: present (`size > 1`), as written, untrimmed. */
+const valuesOf = (ev, name) => tagsOf(ev, name).filter((t) => typeof t[1] === "string").map((t) => t[1]);
+const nonBlank = (ev, name) => valuesOf(ev, name).some((v) => v.trim());
+/** Kotlin's toIntOrNull: an optional sign and digits, nothing around them. */
+const intOf = (v) => (/^[+-]?\d+$/.test(v) ? Number(v) : null);
+
+/**
+ * Which 38000 this is, in quartz's order (EventFactory, isMintRecommendation, isBallot,
+ * isPredictionMarket): a recommendation first, then a ballot, then a market.
+ */
+export function kind38000(ev) {
+  const ks = valuesOf(ev, "k");
+  if (ks.some((k) => intOf(k) === 38172 || intOf(k) === 38173)) return "mint";
+  if (!ks.some((k) => k.trim()) && (nonBlank(ev, "u") ||
+      valuesOf(ev, "a").some((v) => v.startsWith("38172:") || v.startsWith("38173:")))) return "mint";
+  if (nonBlank(ev, "election")) return "ballot";
+  if (nonBlank(ev, "market")) return "market";
+  const outcomes = valuesOf(ev, "outcome").length;
+  if (outcomes >= 2 || (valuesOf(ev, "type").length && valuesOf(ev, "end").length)) return "market";
+  return "other";
+}
+
+/** A JSON object off a stranger's string, or null: the market keeps its details in `data` or in `content`. */
+const objectOf = (s) => {
+  if (!/^\s*\{/.test(String(s || ""))) return null;
+  try { const o = JSON.parse(s); return o && typeof o === "object" && !Array.isArray(o) ? o : null; } catch (e) { return null; }
+};
+
+/** A JSON outcome list as `[id, label]` pairs: a bare string is both, an object its id and label. */
+const jsonOutcomes = (d) => (Array.isArray(d && d.outcomes) ? d.outcomes : []).map((o) =>
+  (typeof o === "string" ? [o, o] : o && typeof o === "object" ? [o.id || o.label || o.name, o.label || o.name] : []));
+
+/**
+ * A market's outcomes as labels: `["outcome", id, label]` tags first, else the JSON's list. A
+ * tag with no label takes the JSON's for the same id, so `["outcome", "y"]` beside
+ * `{id: "y", label: "Yes"}` reads "Yes", not the id.
+ */
+function outcomesOf(ev, details) {
+  const labelled = new Map();
+  for (const d of details) for (const [id, label] of jsonOutcomes(d)) {
+    if (oneLine(id) && oneLine(label) && !labelled.has(oneLine(id))) labelled.set(oneLine(id), oneLine(label));
+  }
+  const seen = new Set(), out = [];
+  const add = (id, label) => {
+    id = oneLine(id); label = oneLine(label) || labelled.get(id) || id;
+    if (id && !seen.has(id) && out.length < 32) { seen.add(id); out.push(label); }
+  };
+  for (const t of tagsOf(ev, "outcome")) add(t[1], t[2]);
+  if (!out.length) {
+    for (const d of details) {
+      for (const [id, label] of jsonOutcomes(d)) add(id, label);
+      if (out.length) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * A BAO prediction market, read the way quartz's PredictionMarketEvent reads it: a `data` tag's
+ * JSON wins, then the tags, then a JSON content. A content that is not JSON is the market's
+ * social post, shown only when no description supersedes it.
+ */
+function marketOf(ev) {
+  const data = objectOf(tagOf(ev, "data")) || {};
+  const body = objectOf(ev.content);
+  const c = body || {};
+  const pick = (...vals) => vals.map(oneLine).find(Boolean) || "";
+  const description = pick(data.description, c.description);
+  const text = String(ev.content || "").trim();
+  return {
+    title: pick(data.title, data.question, tagOf(ev, "title"), c.title, c.question),
+    description,
+    post: !description && !body && text && text !== "null" && !/^[[{]/.test(text) ? text : "",
+    outcomes: outcomesOf(ev, [data, c]),
+    resolution: pick(tagOf(ev, "resolution"), data.resolution, c.resolution),
+    cancelled: pick(tagOf(ev, "cancel_reason"), c.reason),
+    status: pick(tagOf(ev, "status"), tagOf(ev, "state"), tagOf(ev, "s"), data.status, c.status),
+    ends: pick(tagOf(ev, "end"), data.endDate, data.end, c.endDate, c.end),
+    category: pick(tagOf(ev, "category"), tagOf(ev, "c"), data.category, c.category),
+    network: pick(tagOf(ev, "network"), tagOf(ev, "n")),
+    source: pick(tagOf(ev, "resolution_source"), data.resolutionSource, c.resolutionSource),
+    minBet: satCount(pick(tagOf(ev, "min_bet"), data.minBetSats, c.minBetSats)),
+    maxBet: satCount(pick(tagOf(ev, "max_bet"), data.maxBetSats, c.maxBetSats)),
+    fee: pick(tagOf(ev, "fee_percent"), data.feePercent, c.feePercent),
+  };
+}
+
+/** 38000 (BAO Markets) — a question, the outcomes a bet can land on, and how it settles. */
+function predictionMarketCard(ev, opts) {
+  const m = marketOf(ev);
+  const pills = [
+    m.status ? `<span class="status-pill">${esc(clip(m.status, 24))}</span>` : "",
+    /^demo$/i.test(m.network) ? `<span class="status-pill">demo</span>` : "",
+  ].join("");
+  const bets = [m.minBet && `from ${m.minBet}`, m.maxBet && `to ${m.maxBet}`].filter(Boolean).join(" ");
+  const inner =
+    titleHtml(opts, m.title, 160) +
+    (pills ? `<div class="pill-row">${pills}</div>` : "") +
+    bodyHtml(opts, m.description || m.post, 400) +
+    chipRow(m.outcomes, opts) +
+    (m.resolution ? `<div class="result-body">resolved: <b>${esc(clip(m.resolution, 80))}</b></div>` : "") +
+    (m.cancelled ? `<div class="result-body muted">cancelled: ${esc(clip(m.cancelled, 200))}</div>` : "");
+  return shell(ev, opts, inner, [
+    ["closes", m.ends ? esc(fmtTs(m.ends)) : null],
+    ["category", m.category ? esc(clip(m.category, 40)) : null],
+    ["bets", bets ? `${esc(bets)} sats` : null],
+    ["fee", m.fee ? `${esc(clip(m.fee, 12))}%` : null],
+    ["settled by", m.source ? extLink(m.source, clip(m.source, 60)) : null],
+  ]);
+}
+
+/**
+ * A ballot's answers, `[question, choice]`, from whichever of the three shapes the voting app
+ * wrote: `responses` (question ids and values), a `ballot` map, or a lone `vote_choice`.
+ */
+function ballotAnswers(ev) {
+  const c = jsonContent(ev);
+  const scalar = (v) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? oneLine(String(v)) : "");
+  if (Array.isArray(c.responses)) {
+    return c.responses
+      .map((r) => (r && typeof r === "object" ? [scalar(r.question_id) || scalar(r.question), scalar(r.value)] : []))
+      .filter(([q, a]) => q && a);
+  }
+  if (c.ballot && typeof c.ballot === "object" && !Array.isArray(c.ballot)) {
+    return Object.entries(c.ballot).map(([q, a]) => [oneLine(q), scalar(a)]).filter(([q, a]) => q && a);
+  }
+  return scalar(c.vote_choice) ? [["Vote", scalar(c.vote_choice)]] : [];
+}
+
+/** 38000 (a voting app) — one cast ballot: the election it counts in, and what it says. */
+function ballotCard(ev, opts) {
+  const answers = ballotAnswers(ev);
+  const shown = opts && opts.full ? answers : answers.slice(0, 6);
+  const proof = oneLine(tagOf(ev, "proof-hash", "proof_hash") || jsonContent(ev).proof_hash);
+  const inner =
+    `<div class="result-body">casts a ballot in <b>${esc(clip(oneLine(tagOf(ev, "election")), 80))}</b></div>` +
+    (shown.length
+      ? `<dl class="props">${shown.map(([q, a]) => `<dt>${esc(clip(q, 60))}</dt><dd>${esc(clip(a, 120))}</dd>`).join("")}</dl>`
+      : "") +
+    (answers.length > shown.length ? `<div class="muted-note">…and ${answers.length - shown.length} more</div>` : "");
+  return shell(ev, opts, inner, [["proof", proof ? `<span class="mono">${esc(clip(proof, 24))}</span>` : null]]);
+}
+
+/**
+ * 38000, none of the three — mostly `d`-only "test votes". Quartz keeps it addressable and indexes
+ * nothing of it; the card says so rather than dressing it as a recommendation.
+ */
+function unrecognized38000Card(ev, opts) {
+  const inner =
+    `<div class="result-body muted">a kind 38000 event no app this page knows wrote</div>` +
+    bodyHtml(opts, String(ev.content || "").trim().startsWith("{") ? "" : ev.content, 200, true);
+  return shell(ev, opts, inner);
+}
+
+const KIND_38000 = {
+  mint: {
+    card: (ev, opts) => mintRecommendationCard(ev, opts),
+    badge: "mint list",
+    row: (ev) => ({ name: `recommends ${plural(tagsOf(ev, "u").length + tagsOf(ev, "a").length, "mint")}`, sub: ev.content }),
+  },
+  market: {
+    card: (ev, opts) => predictionMarketCard(ev, opts),
+    badge: "prediction market",
+    row: (ev) => {
+      const m = marketOf(ev);
+      return { name: m.title || "a prediction market", sub: m.resolution ? `resolved: ${m.resolution}` : m.outcomes.join(" · ") };
+    },
+  },
+  ballot: {
+    card: (ev, opts) => ballotCard(ev, opts),
+    badge: "ballot",
+    row: (ev) => ({
+      name: `casts a ballot in ${clip(oneLine(tagOf(ev, "election")), 60)}`,
+      sub: ballotAnswers(ev).map(([q, a]) => `${q}: ${a}`).join(" · "),
+    }),
+  },
+  other: {
+    card: (ev, opts) => unrecognized38000Card(ev, opts),
+    badge: "kind 38000",
+    row: () => ({ name: "an unrecognized kind 38000 event" }),
+  },
+};
+
+// ---- NIP-15's auction answer ------------------------------------------------
+
+/** A 1022's JSON body: `{status, message, duration_extension}`, each field only if it is text. */
+function bidConfirmationOf(ev) {
+  const c = jsonContent(ev);
+  return { status: oneLine(c.status), message: oneLine(c.message), extension: Number(c.duration_extension) };
+}
+
+/** The bidder a 1022 answers: its one `p`. */
+const bidderOf = firstPerson;
+
+/**
+ * 1022 — a NIP-15 merchant answering a bid: accepted, rejected, pending or the winner. The first
+ * `e` is the bid and the second the auction it was placed on.
+ */
+function bidConfirmationCard(ev, opts) {
+  const c = bidConfirmationOf(ev);
+  const [bid, auction] = tagsOf(ev, "e").map((t) => t[1]).filter((id) => HEX64.test(id || ""));
+  const bidder = bidderOf(ev);
+  const link = (id, noun) => (id ? `<a class="mono" href="${noteHref(id)}" title="${esc(noun)}">${esc(shortNote(id))}</a>` : esc(noun));
+  const ext = Number.isFinite(c.extension) && c.extension > 0 ? Math.round(c.extension) : 0;
+  const inner =
+    `<div class="result-body">answers ${link(bid, "a bid")}${bidder ? ` by ${personLink(bidder)}` : ""}` +
+    `${c.status ? `: <b>${esc(clip(c.status, 24))}</b>` : ""}</div>` +
+    bodyHtml(opts, c.message, 300);
+  return shell(ev, opts, inner, [
+    ["auction", auction ? link(auction, "the auction") : null],
+    ["extends by", ext ? `${esc(ext.toLocaleString())} s` : null],
+  ]);
+}
+
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
@@ -184,7 +409,10 @@ register([30009], badgeCard);
 register([38383], orderCard);
 register([30019], marketplaceCard);
 register([33863], fundraiserCard);
-register([38000], mintRecommendationCard);
+register([38000], (ev, opts) => KIND_38000[kind38000(ev)].card(ev, opts));
+register([1022], bidConfirmationCard);
+registerBadge([38000], (ev) => KIND_38000[kind38000(ev)].badge);
+registerNamedPeople([1022], (ev) => [bidderOf(ev)].filter(Boolean));
 
 // The price rides in the sub line, never the title.
 registerRow([30402, 30403], (ev) => {
@@ -220,10 +448,11 @@ registerRow([38383], (ev) => {
     sub: [oneLine(tagOf(ev, "s")), oneLine(tagOf(ev, "name")), oneLine(tagOf(ev, "y"))].filter(Boolean).join(" · "),
   };
 });
-registerRow([38000], (ev) => ({
-  name: `recommends ${plural(tagsOf(ev, "u").length + tagsOf(ev, "a").length, "mint")}`,
-  sub: ev.content,
-}));
+registerRow([38000], (ev) => KIND_38000[kind38000(ev)].row(ev));
+registerRow([1022], (ev) => {
+  const c = bidConfirmationOf(ev);
+  return { name: c.status ? `bid ${c.status}` : "answers a bid", sub: c.message };
+});
 registerRow([30019], (ev) => {
   const c = jsonContent(ev);
   const merchants = Array.isArray(c.merchants) ? c.merchants.length : 0;

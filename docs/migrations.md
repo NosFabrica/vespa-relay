@@ -374,6 +374,46 @@ documents of these kinds whose extracted columns changed, and every other
 document is visited and left alone. New writes are correct on arrival. A
 Vespa reindex is the wrong tool, as in every entry above.
 
+## Migration: 66 kinds re-derived (quartz `68268da413`, store `14d8c7eeed`)
+
+Two quartz moves ride in with this store bump, and the relay pinned neither
+in between, so both are owed at once. Each changes what `SearchFieldExtractor`
+takes from a known set of kinds:
+
+- **quartz `d792ebc4bf`** (store #158): kind **38000** is split by tags, and the
+  d-only spam that is most of the kind stops being searchable; decentralized
+  lists (**9998 / 9999 / 39998 / 39999**) gain a text tier; **30267** indexes
+  its title.
+- **quartz `68268da413`** (store #159): **42 kinds become searchable** —
+  deletion reasons (5) and vanish reasons (62) among them — and **19 extract
+  differently**, e.g. 14's subject becomes primary, 30030 emoji packs stop
+  indexing their NIP-44 ciphertext. The full list is in the store's
+  `libs.versions.toml` note at that pin. Mostly **recall**.
+
+**The schema does not move**: `event.sd` and `services.xml` are untouched, so
+`configChangeActions` should come back empty. Read it anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true`, then turn it back off. These are
+**fed** fields, so this is the tool, as in the entry above. New writes are
+correct on arrival.
+
+The store now has a kind-scoped walk, `reindexFullTextSearch(kinds)`, which
+visits only these kinds server-side; `REINDEX_FTS_ON_START` does not use it
+and walks the whole corpus, reaching the same documents at the cost of every
+other one. The 66 kinds, for the scoped call:
+
+```
+5, 14, 15, 20, 21, 22, 31, 32, 33, 43, 44, 62, 64, 1022, 1065, 5901, 8002,
+8003, 9007, 9021, 9022, 9035, 9036, 9802, 9998, 9999, 10003, 11316, 11333,
+30008, 30030, 30054, 30066, 30068, 30142, 30175, 30178, 30267, 30296, 30297,
+30621, 31890, 33331, 33534, 34235, 34236, 38000, 39003, 39998, 39999, 40003,
+40006, 40007, 40008, 40099, 40901, 42000, 43001, 43002, 43003, 43004, 43005,
+43006, 45010, 46030, 46031
+```
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

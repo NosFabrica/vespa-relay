@@ -10,6 +10,9 @@
 // | 30620 | a workflow | its `d` is a uuid and its content is YAML |
 // | 5129 / 15129 / 35129 | a napplet | a pinned build, an author's default, a named one |
 // | 15128 / 35128 | a static website | the same manifest, for a site rather than an applet |
+// | 30178 | a team catalog | a team shared whole: its members' prompts inline, not by id |
+// | 43001…43006 | a Buzz job | a request in a room, then its accept, progress, result, cancel or error |
+// | 11316 | a ContextVM server | an MCP server announcing itself over Nostr (CEP-6) |
 //
 // Five of these carry JSON in `content`, and it is a stranger's JSON from a schema its own
 // authors call loose: every field read here goes through [text] or [list], so a name that
@@ -18,8 +21,10 @@
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow, relayRows,
-  personLink, extLink, jsonContent, tagOf, tagsOf, oneLine, plural,
+  personLink, extLink, jsonContent, tagOf, tagsOf, oneLine, plural, noteHref, coverThumb, safeUrl,
+  firstPerson,
 } from "./base.js";
+import { shortNote } from "../shared/nip19.js";
 import { codeBlock } from "./code.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -28,6 +33,8 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const text = (v) => oneLine(v);
 /** A list off a stranger's JSON: a non-array, and any entry that is not text, contributes nothing. */
 const list = (v) => (Array.isArray(v) ? v.map(oneLine).filter(Boolean) : []);
+/** Multi-line text off that JSON, newlines kept for a pre-wrap body, or "". */
+const prose = (v) => (typeof v === "string" ? v.trim() : "");
 /** A props value from that same JSON, already escaped, or null. */
 const fact = (v) => (text(v) ? esc(clip(text(v), 80)) : null);
 
@@ -103,6 +110,97 @@ function workflowCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/**
+ * 30178 — a team catalog: the shareable form of a team, every member carried inline (name,
+ * model, system prompt) so a reader can adopt the team without the personas it was built from.
+ */
+function teamCatalogCard(ev, opts) {
+  const c = jsonContent(ev);
+  const members = Array.isArray(c.members) ? c.members.filter((m) => m && typeof m === "object") : [];
+  const names = members.map((m) => text(m.display_name)).filter(Boolean);
+  const full = opts && opts.full;
+  const inner =
+    titleHtml(opts, text(c.name) || tagOf(ev, "d"), 140) +
+    bodyHtml(opts, text(c.description), 300, true) +
+    `<div class="result-body">${esc(plural(members.length, "member"))}</div>` +
+    chipRow(names, opts) +
+    (full ? bodyHtml(opts, prose(c.instructions), 0) : "") +
+    (full && members.length
+      ? `<dl class="props">${members.map((m) => `<dt>${esc(clip(text(m.display_name) || text(m.member_key), 60))}</dt>` +
+          `<dd>${esc(clip([text(m.model), text(m.provider)].filter(Boolean).join(" · ") || text(m.runtime) || "—", 80))}</dd>`).join("")}</dl>`
+      : "");
+  return shell(ev, opts, inner);
+}
+
+// ---- a Buzz job, from ask to answer ----------------------------------------
+
+/** What each step of a job says it does, in the order a job goes through them. */
+const JOB_STEP = {
+  43001: "asks for a job",
+  43002: "accepts a job",
+  43003: "reports progress on a job",
+  43004: "delivers a job",
+  43005: "cancels a job",
+  43006: "fails a job",
+};
+
+/** A job event's counterpart: the one `p` — the worker asked, or the requester answered. */
+const jobPerson = firstPerson;
+
+/**
+ * 43001…43006 — one step of a Buzz job. The request (43001) names the worker it asks; every
+ * later step points at that request with an `e`, names the requester with a `p`, and carries
+ * its text in `content`: the ask, the result, the reason or the error.
+ */
+function jobCard(ev, opts) {
+  const request = ev.kind === 43001 ? null : tagsOf(ev, "e").map((t) => t[1]).find((id) => HEX64.test(id || ""));
+  const who = jobPerson(ev);
+  const status = oneLine(tagOf(ev, "status"));
+  const step = JOB_STEP[ev.kind] || "a job";
+  const verb = esc(step.replace(/ a job$/, ""));
+  const line = ev.kind === 43001
+    ? (who ? `asks ${personLink(who)} for a job` : esc(step))
+    : `${verb} ${request ? `job <a class="mono" href="${noteHref(request)}">${esc(shortNote(request))}</a>` : "a job"}` +
+      `${who ? ` for ${personLink(who)}` : ""}`;
+  const inner =
+    `<div class="result-body">${line}</div>` +
+    (status ? `<div class="pill-row"><span class="status-pill">${esc(clip(status, 24))}</span></div>` : "") +
+    bodyHtml(opts, ev.content, 500, ev.kind === 43005);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * 11316 — a ContextVM server's announcement: its name and blurb in tags, the transport features
+ * it supports as bare flag tags, and the MCP `initialize` result as JSON content.
+ */
+const CVM_FLAGS = {
+  support_encryption: "encrypted",
+  support_encryption_ephemeral: "ephemeral encryption",
+  support_oversized_transfer: "oversized transfer",
+  support_open_stream: "open stream",
+};
+
+function cvmServerCard(ev, opts) {
+  const c = jsonContent(ev);
+  const info = c.serverInfo && typeof c.serverInfo === "object" ? c.serverInfo : {};
+  const caps = c.capabilities && typeof c.capabilities === "object" && !Array.isArray(c.capabilities)
+    ? Object.keys(c.capabilities).map(oneLine).filter(Boolean) : [];
+  const flags = Object.entries(CVM_FLAGS).filter(([tag]) => tagsOf(ev, tag).length).map(([, label]) => label);
+  const pic = safeUrl(tagOf(ev, "picture"));
+  const inner =
+    `<div class="result-main"><div class="text">` +
+    titleHtml(opts, tagOf(ev, "name") || text(info.name), 140) +
+    bodyHtml(opts, tagOf(ev, "about"), 300) +
+    `</div>${pic ? coverThumb(pic) : ""}</div>` +
+    chipRow([...caps, ...flags], opts) +
+    (opts && opts.full ? bodyHtml(opts, prose(c.instructions), 0, true) : "");
+  return shell(ev, opts, inner, [
+    ["website", tagOf(ev, "website") ? extLink(tagOf(ev, "website")) : null],
+    ["version", fact(info.version)],
+    ["protocol", fact(c.protocolVersion)],
+  ]);
+}
+
 // ---- the napplets ----------------------------------------------------------
 
 /** What a manifest ships: one `["path", <path>, <hash>]` per file. */
@@ -141,6 +239,11 @@ register([30176], teamCard);
 register([30177], managedAgentCard);
 register([30620], workflowCard);
 register([5129, 15129, 35129, 15128, 35128], nappletCard);
+register([30178], teamCatalogCard);
+register(Object.keys(JOB_STEP).map(Number), jobCard);
+register([11316], cvmServerCard);
+// A job's counterpart is its one `p`, read here so the name the card writes is loaded.
+registerNamedPeople(Object.keys(JOB_STEP).map(Number), (ev) => [jobPerson(ev)].filter(Boolean));
 // The agent a 30177 runs is named by its `d`, which no scan of `p` tags reaches.
 registerNamedPeople([30177], (ev) => [agentKey(ev)].filter(Boolean));
 
@@ -177,4 +280,22 @@ registerRow([30620], (ev) => ({
 registerRow([5129, 15129, 35129, 15128, 35128], (ev) => ({
   name: titleOf(ev),
   sub: [NAPPLET_ROLE[ev.kind], plural(pathsOf(ev).length, "file"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
+registerRow([30178], (ev) => {
+  const c = jsonContent(ev);
+  const members = Array.isArray(c.members) ? c.members.filter((m) => m && typeof m === "object") : [];
+  return {
+    name: text(c.name) || tagOf(ev, "d"),
+    sub: [plural(members.length, "member"), members.map((m) => text(m.display_name)).filter(Boolean).join(", "), text(c.description)]
+      .filter(Boolean).join(" · "),
+  };
+});
+// A job's line is the step, then what it said: the ask, the answer or the error.
+registerRow(Object.keys(JOB_STEP).map(Number), (ev) => ({
+  name: JOB_STEP[ev.kind],
+  sub: [oneLine(tagOf(ev, "status")), ev.content].filter(Boolean).join(" · "),
+}));
+registerRow([11316], (ev) => ({
+  name: tagOf(ev, "name") || text((jsonContent(ev).serverInfo || {}).name) || "a ContextVM server",
+  sub: tagOf(ev, "about") || "",
 }));

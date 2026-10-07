@@ -186,7 +186,17 @@ export const clipIf = (opts, s, n) => (opts && opts.full ? String(s || "").trim(
 export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 
 // ---- shared chrome --------------------------------------------------------
-export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
+export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(badgeLabel(ev))}</span>`;
+
+/**
+ * A badge decided by the event rather than the kind, for a kind number that unrelated apps
+ * share (38000 is a mint recommendation, a prediction market or a ballot, told apart by tags).
+ * The family that registers the renderer registers the namer; a kind without one, or a namer
+ * with nothing to say, falls back to the kind's own label.
+ */
+const BADGES = new Map(); // kind -> (ev) -> label | ""
+export const registerBadge = (kinds, fn) => { for (const k of kinds) BADGES.set(k, fn); };
+export const badgeLabel = (ev) => ((BADGES.get(ev.kind) || (() => ""))(ev)) || kindLabel(ev.kind);
 
 /** The provenance pills, or "" for a card that is here because the search matched it. */
 export function provHtml(ev, opts) {
@@ -507,6 +517,9 @@ export const uniquePubkeys = (values) =>
 
 /** The distinct people a list holds — its `p` tags, deduped, hex only. */
 export const peopleOf = (ev) => uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
+
+/** The one person an event's first hex `p` names — a bidder, an opponent, a job's counterpart — or null. */
+export const firstPerson = (ev) => peopleOf(ev)[0] || null;
 
 /** Who a grid draws and how many it leaves out; when the list overruns, the last cell is the count. */
 export function gridCells(pubkeys, opts) {

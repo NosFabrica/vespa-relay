@@ -1,12 +1,14 @@
 // The code & git family: snippets and the whole of NIP-34. A patch's `content` is
 // `git format-patch` output and is parsed: subject, message, then only the diff in the
 // code block. Code is clipped by whole lines, and every git event leads with its repository.
+// Two Buzz kinds belong here for what they carry: a 40008 diff posted into a channel, and a
+// 30621 project, which is a named set of NIP-34 repositories.
 
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
-  tagOf, tagsOf, tagsWhere, multiTag, clipIf, chipRow, hashtagHref, uniquePubkeys, plural,
+  tagOf, tagsOf, tagsWhere, multiTag, clipIf, chipRow, hashtagHref, uniquePubkeys, plural, refRows,
 } from "./base.js";
 
 // ---- what a git event belongs to ------------------------------------------
@@ -355,6 +357,53 @@ function fileName(url) {
   } catch (e) { return clip(String(url), 60); }
 }
 
+/**
+ * 40008 — a Buzz diff message: a unified diff posted into a channel, with the commit it came
+ * from in tags (`repo`, `commit`, `file`, `branch` source→target, `pr`). Only the `description`
+ * is prose; the diff is drawn as one.
+ */
+function diffMessageCard(ev, opts) {
+  const lines = String(ev.content || "").split(/\r?\n/);
+  const st = readDiff(lines, opts && opts.full ? lines.length : CODE_LINES);
+  const isDiff = !!(st.files || st.add || st.del);
+  const file = tagOf(ev, "file");
+  const branch = tagsOf(ev, "branch").find((t) => t[1] && t[2]);
+  const truncated = tagOf(ev, "truncated") === "true";
+  const inner =
+    bodyHtml(opts, tagOf(ev, "description"), 300) +
+    (isDiff ? statLine(st) : "") +
+    codeBlock(opts, lines, { name: file, lang: tagOf(ev, "l"), classes: isDiff ? st.classes : null }) +
+    (truncated ? `<div class="muted-note">the diff was cut short where it was posted</div>` : "");
+  const repo = tagOf(ev, "repo");
+  const pr = Number(tagOf(ev, "pr"));
+  return shell(ev, opts, inner, [
+    ["repository", repo ? extLink(repo, clip(repo.replace(/^https?:\/\//, ""), 60)) : null],
+    ["commit", shortSha(tagOf(ev, "commit"))],
+    ["parent", opts && opts.full ? shortSha(tagOf(ev, "parent-commit")) : null],
+    ["branch", branch ? `${esc(clip(branch[1], 40))} → ${esc(clip(branch[2], 40))}` : null],
+    ["pull request", Number.isInteger(pr) && pr > 0 ? `#${esc(pr)}` : null],
+  ]);
+}
+
+/** A 30621's member repositories: its `a` tags that address a 30617, each once. */
+const projectRepos = (ev) =>
+  [...new Set(tagsOf(ev, "a").map((t) => t[1]).filter((v) => /^30617:[0-9a-f]{64}:./.test(String(v || ""))))];
+
+/**
+ * 30621 — a Buzz project: a slug (`d`), a name and description, the repositories it groups and
+ * the channel its work is discussed in. `buzz-visibility` says whether it is listed.
+ */
+function projectCard(ev, opts) {
+  const repos = projectRepos(ev);
+  const visibility = tagOf(ev, "buzz-visibility");
+  const inner =
+    titleWith(opts, tagOf(ev, "name") || tagOf(ev, "d"), visibility ? pill(clip(visibility, 20)) : "", 120) +
+    bodyHtml(opts, tagOf(ev, "description"), 400) +
+    `<div class="result-body muted">${esc(plural(repos.length, "repository", "repositories"))}</div>` +
+    refRows(repos.map((a) => ({ kind: "a", value: a, label: a.split(":").slice(2).join(":") })), opts);
+  return shell(ev, opts, inner, [["channel", tagOf(ev, "buzz-channel") ? `<span class="mono">${esc(clip(tagOf(ev, "buzz-channel"), 40))}</span>` : null]]);
+}
+
 register([1337], snippetCard);
 register([1617], patchCard);
 // 1618/1619 pull requests are a subject over prose, so they take the issue template.
@@ -363,6 +412,8 @@ register([1630, 1631, 1632, 1633], gitStatusCard);
 register([30617], repoCard);
 register([30618], repoStateCard);
 register([30063], releaseCard);
+register([40008], diffMessageCard);
+register([30621], projectCard);
 
 // The second line is the repository on every kind that names one.
 registerRow([1337], (ev) => ({
@@ -384,3 +435,12 @@ registerRow([30618], (ev) => {
   return { name: repoName(ev), sub: groups.join(" · ") || "no refs" };
 });
 registerRow([30063], (ev) => ({ name: releaseVersion(ev), sub: repoName(ev) || ev.content }));
+// A diff's line is what it says it changes, then where; the diff itself never reaches a row.
+registerRow([40008], (ev) => ({
+  name: tagOf(ev, "description") || tagOf(ev, "file") || "posts a diff",
+  sub: [tagOf(ev, "file"), /^[0-9a-f]{7,64}$/.test(tagOf(ev, "commit") || "") ? tagOf(ev, "commit").slice(0, 7) : ""].filter(Boolean).join(" · "),
+}));
+registerRow([30621], (ev) => ({
+  name: tagOf(ev, "name") || tagOf(ev, "d"),
+  sub: [tagOf(ev, "description"), plural(projectRepos(ev).length, "repository", "repositories")].filter(Boolean).join(" · "),
+}));
