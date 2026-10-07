@@ -999,7 +999,9 @@ quartz = "68268da413"
 # GATED, on this pin with quartz 68268da413: this relay's full build (1,250 tests, 2 skipped,
 # 0 failures) + archTest, every quartz line 68268da413 and every eventstore line 14d8c7eeed in all
 # six modules, zero arrows; and RelayContractIT over the wire against a relay built from both pins
-# on Vespa 8.763.13: 8,191 checks, 0 failing.
+# on Vespa 8.763.13: 8,191 checks, 0 failing. And the store at 14d8c7eeed itself: its integration
+# suite against a real Vespa in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design,
+# 0 failures), read off the result XML.
 #
 # LEXICOGRAPHIC: '14d8…' < '5379…': the losing direction, moot — nothing else names the store.
 #
