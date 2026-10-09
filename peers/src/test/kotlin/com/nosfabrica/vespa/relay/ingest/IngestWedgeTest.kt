@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -32,6 +34,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -107,6 +110,47 @@ class IngestWedgeTest {
             scope.cancel()
             pipeline.close()
         }
+
+    @Test
+    fun `a batch pass that throws costs its batch, never the worker`() =
+        runBlocking {
+            val scope = CoroutineScope(Job())
+            val pipeline =
+                IngestPipeline(
+                    NostrSemanticsStore(InMemoryEventIndex(), relayUrl),
+                    IngestTuning(concurrency = 1, batch = 1000),
+                    audit = null,
+                    servingPressure = null,
+                    scope = scope,
+                    refusals = FailsOnce(),
+                )
+            pipeline.start()
+            pipeline.submit(note(0), skipVerify = true)
+            settle("the failed batch to be counted") { pipeline.rejected.get() == 1L }
+            pipeline.submit(note(1), skipVerify = true)
+            settle("the next batch to be written") { pipeline.accepted.get() == 1L }
+
+            assertEquals(1, pipeline.workersRunning(), "the worker must outlive the fault")
+            assertTrue(pipeline.rejectionBreakdown().contains("ingest fault"), pipeline.rejectionBreakdown())
+            scope.cancel()
+            pipeline.close()
+        }
+
+    /** A sink whose first look at a batch overflows the stack, as a pathologically nested event can. */
+    private class FailsOnce : RefusalSink {
+        private val failed = AtomicBoolean(false)
+
+        override val tracksOrigins: Boolean
+            get() = if (failed.compareAndSet(false, true)) throw StackOverflowError() else false
+
+        override fun isSuppressed(event: Event) = false
+
+        override fun onRefused(
+            event: Event,
+            origin: IngestOrigin,
+            reason: String,
+        ) = Unit
+    }
 
     /** A store whose write suspends forever. */
     private class WedgedStore : IEventStore by NostrSemanticsStore(InMemoryEventIndex(), RelayUrlNormalizer.normalize("wss://here.example")) {

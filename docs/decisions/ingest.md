@@ -83,6 +83,27 @@ at 94% replaced-or-duplicate. Addressables stay the store's business: their
 version query is an (authors x d-tags) cross product, silently truncated where
 hits are capped, and a truncated answer here is a dropped event.
 
+**Only a verified event shadows another inside a batch.** Winners were first
+picked before verification, by id and by address: a forged kind 0 with a later
+`created_at` and a junk signature beat the genuine one, which was dropped and
+reported `replaced` to the refusal sink, and then the forgery failed its
+check, so the address lost its real version and the real id was on its way to
+suppression. A bad-signature copy arriving first likewise shadowed a good copy
+of the same id from another relay. Now each id's copies and each address's
+versions (newest first) are one contest, verified in that order until one
+passes; the rest drop unverified. The common case still costs one
+verification per contest, and the store-version probe still runs first, since
+the version it compares against is already verified.
+
+**A batch pass that throws loses its batch, not its worker.** The worker loop
+was guarded only by its caller, so a `StackOverflowError` from the parse audit
+on deeply nested content ended a worker for the life of the process, and every
+batch after it waited on the survivors. The pass now catches `Exception` and
+`StackOverflowError`, counts what it had not yet tallied as an `ingest fault`
+rejection, and continues; any other `Error` still ends the worker loudly.
+Refusal bookkeeping (the sink, the outcome loop) is caught on its own, because
+a throw there used to read as a failed write and rewrite an accepted batch.
+
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store
 refusal, and the fast path exists to stop the store producing it for the

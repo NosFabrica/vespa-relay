@@ -58,8 +58,8 @@ import java.util.concurrent.atomic.AtomicLongArray
 
 /**
  * The download-to-store pipeline every mirrored event funnels through: a bounded channel and
- * a pool of workers draining it in batches through [IEventStore.batchInsert], with duplicates
- * and superseded replaceables dropped before the signature check. A full channel suspends [submit].
+ * a pool of workers draining it in batches through [IEventStore.batchInsert]. Only a verified
+ * event may shadow another, in batch or in the store. A full channel suspends [submit].
  */
 class IngestPipeline(
     private val store: IEventStore,
@@ -241,53 +241,120 @@ class IngestPipeline(
             }
             // Around the whole pass: the only record that a worker is inside a store round trip.
             busySince.set(worker, System.currentTimeMillis())
+            // Events of this pass no counter has taken yet; what a fault loses.
+            var untallied = batch.size
             try {
-                val fresh = dropSuperseded(dropDuplicates(batch))
-                if (fresh.isEmpty()) continue
-                val valid = ArrayList<Event>(fresh.size)
-                val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
-                var verifyRejected = 0
-                IngestStats.timed("verify") {
-                    for (msg in fresh) {
-                        if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
-                            valid.add(msg.event)
-                            // A bad signature never reaches the sink: the same id can arrive signed elsewhere.
-                            origins?.put(msg.event.id, msg.origin)
-                        } else {
-                            verifyRejected++
-                        }
-                    }
-                }
-                if (verifyRejected > 0) {
-                    rejected.addAndGet(verifyRejected.toLong())
-                    badSignatures.addAndGet(verifyRejected.toLong())
-                }
+                val valid = admit(batch)
+                untallied = valid.size
                 if (valid.isEmpty()) continue
                 // Before the batch write, where a report raised in parallel has no single event.
-                audit?.let { for (event in valid) it.inspect(event) }
-                insertIsolating(valid, origins ?: emptyMap())
+                audit?.let { for (msg in valid) it.inspect(msg.event) }
+                val origins =
+                    if (refusals.tracksOrigins) valid.associateTo(HashMap(valid.size)) { it.event.id to it.origin } else emptyMap()
+                // The write tallies every event it is handed, through its own callbacks.
+                untallied = 0
+                insertIsolating(valid.map { it.event }, origins)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lostToFault(untallied, e)
+            } catch (e: StackOverflowError) {
+                // A pathological event costs its batch, never the worker; other Errors still end it.
+                lostToFault(untallied, e)
             } finally {
                 busySince.set(worker, 0)
             }
         }
     }
 
+    /** A batch pass threw; its untallied events are counted lost and the worker carries on. */
+    private fun lostToFault(
+        untallied: Int,
+        e: Throwable,
+    ) {
+        if (untallied > 0) {
+            rejected.addAndGet(untallied.toLong())
+            noteRejection("ingest fault: ${e.javaClass.simpleName}", untallied.toLong())
+        }
+        val signature = "fault ${e.javaClass.name}: ${e.message?.take(200)}"
+        if (poisonSeen.size < POISON_SAMPLE_LIMIT && poisonSeen.add(signature)) {
+            System.err.println("router: ingest batch pass FAILED, $untallied event(s) lost — ${e.javaClass.simpleName}: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+
     /**
-     * The batch minus everything we already hold, dropped before the signature check: in batch
-     * by id (ephemeral kinds exempt), then in the store via [knownIds] when the batch is wide
-     * enough to pay for the round trip. Safe on an unverified id: a dropped event is never stored.
+     * The batch's events worth writing, in batch order: duplicates, superseded replaceables and
+     * bad signatures dropped and tallied. Only a verified copy may shadow another, so a forged
+     * copy or a forged newer version never costs the batch a genuine event.
      */
-    private suspend fun dropDuplicates(batch: List<Inbound>): List<Inbound> {
-        val ids = HashSet<String>(batch.size)
-        val once = ArrayList<Inbound>(batch.size)
-        var dropped = 0
-        for (msg in batch) {
-            if (msg.event.kind.isEphemeral() || ids.add(msg.event.id)) once.add(msg) else dropped++
+    private suspend fun admit(batch: List<Inbound>): List<Inbound> {
+        val contests = dropSuperseded(batch, dropDuplicates(batch))
+        if (contests.isEmpty()) return emptyList()
+        val winners = ArrayList<Int>(contests.size)
+        val superseded = ArrayList<List<Int>>()
+        var badSigs = 0
+        var duplicates = 0
+        IngestStats.timed("verify") {
+            for (versions in contests) {
+                var won = false
+                for (copies in versions) {
+                    if (won) {
+                        superseded.add(copies)
+                        continue
+                    }
+                    for (i in copies) {
+                        val msg = batch[i]
+                        when {
+                            won -> {
+                                duplicates++
+                            }
+
+                            msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false) -> {
+                                winners.add(i)
+                                won = true
+                            }
+
+                            else -> {
+                                badSigs++
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (badSigs > 0) {
+            rejected.addAndGet(badSigs.toLong())
+            badSignatures.addAndGet(badSigs.toLong())
+        }
+        if (duplicates > 0) {
+            rejected.addAndGet(duplicates.toLong())
+            noteRejection(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
+        }
+        if (superseded.isNotEmpty()) reportSuperseded(batch, superseded)
+        winners.sort()
+        return winners.map { batch[it] }
+    }
+
+    /**
+     * The batch's copies of each event, as batch indices by arrival (ephemeral kinds each their
+     * own), minus every id the store already holds via [knownIds] when the batch is wide enough
+     * to pay for the round trip. Safe on an unverified id: a dropped event is never stored.
+     */
+    private suspend fun dropDuplicates(batch: List<Inbound>): List<List<Int>> {
+        val byId = HashMap<String, MutableList<Int>>(batch.size)
+        val copies = ArrayList<MutableList<Int>>(batch.size)
+        batch.forEachIndexed { i, msg ->
+            if (msg.event.kind.isEphemeral()) {
+                copies.add(mutableListOf(i))
+            } else {
+                byId.getOrPut(msg.event.id) { ArrayList<Int>(1).also { copies.add(it) } }.add(i)
+            }
         }
 
         val probe = knownIds
         // Trusted events skip verification, so they earn the probe nothing.
-        val verifiable = once.count { !it.skipVerify }
+        val verifiable = copies.count { !batch[it[0]].skipVerify }
         val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
         val stored =
             if (!probed) {
@@ -295,10 +362,10 @@ class IngestPipeline(
             } else {
                 try {
                     // One store call round the whole probe: the worker is suspended in the fan-out.
-                    storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(once.size)) {
+                    storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(copies.size)) {
                         IngestStats.timed("dedup.pre") {
-                            once
-                                .map { it.event.id }
+                            copies
+                                .map { batch[it[0]].event.id }
                                 .chunked(DEDUP_CHUNK)
                                 .mapBounded(QUERY_FANOUT) { probe!!(it) }
                                 .flatMapTo(HashSet()) { it }
@@ -313,10 +380,10 @@ class IngestPipeline(
                 }
             }
 
-        val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
-        // Only the probe teaches the gate; the in-batch pass is free.
-        if (probed) idGate.record(once.size, once.size - fresh.size)
-        dropped += once.size - fresh.size
+        val fresh = if (stored.isEmpty()) copies else copies.filter { batch[it[0]].event.id !in stored }
+        // Only the probe teaches the gate.
+        if (probed) idGate.record(copies.size, copies.size - fresh.size)
+        val dropped = copies.sumOf { it.size } - fresh.sumOf { it.size }
         if (dropped > 0) {
             rejected.addAndGet(dropped.toLong())
             // The store's own word, so duplicates dropped here and there tally on one line.
@@ -362,6 +429,7 @@ class IngestPipeline(
                 }
             }
         },
+        onOutcomesFailed = { _, e -> reportBookkeepingFailure("outcome bookkeeping", e) },
         onPoison = { event, e ->
             rejected.incrementAndGet()
             noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
@@ -382,76 +450,95 @@ class IngestPipeline(
         reason: String,
     ) {
         if (reason.startsWith(RejectionReason.PREFIX_REPLACED)) replacedRejects.incrementAndGet()
-        refusals.onRefused(event, origin, reason)
+        // Bookkeeping: a sink that throws must not cost the event's batch, which is already tallied.
+        try {
+            refusals.onRefused(event, origin, reason)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            reportBookkeepingFailure("refusal sink", e)
+        }
+    }
+
+    /** A failure in the refusal bookkeeping, logged once per distinct failure. */
+    private fun reportBookkeepingFailure(
+        where: String,
+        e: Throwable,
+    ) {
+        val signature = "$where ${e.javaClass.name}: ${e.message?.take(200)}"
+        if (poisonSeen.size >= POISON_SAMPLE_LIMIT || !poisonSeen.add(signature)) return
+        System.err.println("router: ingest $where FAILED — ${e.javaClass.simpleName}: ${e.message}; the counts stand, the refusal record is lost")
+        e.printStackTrace()
     }
 
     /**
-     * The batch minus every plain replaceable a newer version already beats, dropped before
-     * verification like a duplicate: in batch by address, then in the store via [newestVersions].
-     * Addressables stay the store's business. Read before the writer lock, so not exact.
+     * Each event's [copies] as one contest, except that every version of a plain replaceable's
+     * address joins one contest, newest first, minus those the store already beats via
+     * [newestVersions]. Addressables stay the store's business. Read before the writer lock, so not exact.
      */
-    private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
+    private suspend fun dropSuperseded(
+        batch: List<Inbound>,
+        copies: List<List<Int>>,
+    ): List<List<List<Int>>> {
         // A batch carrying a deletion or a vanish goes to the store whole: an event's fate there
         // depends on its position among the others. Keyed on the kind, not the type.
-        if (batch.any { it.event.kind == DeletionRequestEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
+        val carriesRetraction =
+            copies.any { batch[it[0]].event.kind.let { k -> k == DeletionRequestEvent.KIND || k == RequestToVanishEvent.KIND } }
+        if (carriesRetraction) return copies.map { listOf(it) }
 
-        // Winner per address, by first appearance so the batch keeps its order.
-        val keys = arrayOfNulls<Pair<Int, String>>(batch.size)
-        val winners = LinkedHashMap<Pair<Int, String>, Int>()
-        var candidates = 0
-        batch.forEachIndexed { i, msg ->
-            val e = msg.event
-            if (!e.kind.isReplaceable() || e.kind.isAddressable()) return@forEachIndexed
-            candidates++
-            val key = e.kind to e.pubKey
-            keys[i] = key
-            val held = winners[key]
-            if (held == null || beats(e, batch[held].event)) winners[key] = i
+        val contests = ArrayList<MutableList<List<Int>>>(copies.size)
+        val byAddress = HashMap<Pair<Int, String>, MutableList<List<Int>>>()
+        for (c in copies) {
+            val e = batch[c[0]].event
+            if (!e.kind.isReplaceable() || e.kind.isAddressable()) {
+                contests.add(mutableListOf(c))
+            } else {
+                byAddress.getOrPut(e.kind to e.pubKey) { ArrayList<List<Int>>(1).also { contests.add(it) } }.add(c)
+            }
         }
-        if (candidates == 0) return batch
-
-        val drop = BooleanArray(batch.size)
-        keys.forEachIndexed { i, key -> if (key != null && winners[key] != i) drop[i] = true }
-        var dropped = candidates - winners.size
+        if (byAddress.isEmpty()) return contests
+        // NIP-01 newest-wins, tie to the lower id.
+        val newestFirst = compareByDescending<List<Int>> { batch[it[0]].event.createdAt }.thenBy { batch[it[0]].event.id }
+        for (versions in byAddress.values) versions.sortWith(newestFirst)
 
         val probe = newestVersions
-        if (probe != null && winners.size >= PROBE_MIN_VERIFIABLE && versionGate.worthIt()) {
-            val stored = readNewestVersions(probe, winners.keys)
-            var beaten = 0
-            for ((key, i) in winners) {
-                val held = stored[key] ?: continue
-                // Strictly beaten only: an equal stamp and id is the same event.
-                if (held.createdAt > batch[i].event.createdAt ||
-                    (held.createdAt == batch[i].event.createdAt && held.id < batch[i].event.id)
-                ) {
-                    drop[i] = true
-                    beaten++
-                }
-            }
-            versionGate.record(winners.size, beaten)
-            dropped += beaten
+        if (probe == null || byAddress.size < PROBE_MIN_VERIFIABLE || !versionGate.worthIt()) return contests
+        val stored = readNewestVersions(probe, byAddress.keys)
+        val beaten = ArrayList<List<Int>>()
+        var beatenAddresses = 0
+        for ((key, versions) in byAddress) {
+            val held = stored[key] ?: continue
+            // Newest first, so whatever the stored version beats is a suffix.
+            val cut = versions.indexOfFirst { held.beats(batch[it[0]].event) }
+            if (cut < 0) continue
+            val lost = versions.subList(cut, versions.size)
+            beaten.addAll(lost)
+            lost.clear()
+            if (cut == 0) beatenAddresses++
         }
-
-        if (dropped == 0) return batch
-        noteRejection(RejectionReason.REPLACED.take(48), dropped.toLong())
-        rejected.addAndGet(dropped.toLong())
-        // The store never sees these, so the `replaced:` verdict is reported from here. `verifyId`
-        // binds the id to the content that earned it; an unchecked id would be attacker-chosen.
-        for (i in batch.indices) {
-            if (!drop[i]) continue
-            val msg = batch[i]
-            if (msg.event.verifyId()) reportRefusal(msg.event, msg.origin, RejectionReason.REPLACED)
-        }
-        return batch.filterIndexed { i, _ -> !drop[i] }
+        versionGate.record(byAddress.size, beatenAddresses)
+        // The stored version is verified, so these lose before any signature is checked.
+        if (beaten.isNotEmpty()) reportSuperseded(batch, beaten)
+        return contests.filter { it.isNotEmpty() }
     }
 
-    /** NIP-01 newest-wins, tie to the lower id. */
-    private fun beats(
-        candidate: Event,
-        incumbent: Event,
-    ): Boolean =
-        candidate.createdAt > incumbent.createdAt ||
-            (candidate.createdAt == incumbent.createdAt && candidate.id < incumbent.id)
+    /**
+     * Tally versions a verified one beats as `replaced:` and report each to the sink, since the
+     * store never sees them. `verifyId` binds the id to the content that earned it; an unchecked
+     * id would be attacker-chosen.
+     */
+    private fun reportSuperseded(
+        batch: List<Inbound>,
+        versions: List<List<Int>>,
+    ) {
+        val dropped = versions.sumOf { it.size }.toLong()
+        noteRejection(RejectionReason.REPLACED.take(48), dropped)
+        rejected.addAndGet(dropped)
+        for (copies in versions) {
+            val msg = copies.firstNotNullOfOrNull { i -> batch[i].takeIf { it.event.verifyId() } } ?: continue
+            reportRefusal(msg.event, msg.origin, RejectionReason.REPLACED)
+        }
+    }
 
     /** One query per kind per chunk of authors. */
     private suspend fun readNewestVersions(
@@ -649,7 +736,10 @@ class IngestPipeline(
 data class AddressVersion(
     val createdAt: Long,
     val id: String,
-)
+) {
+    /** Strictly: an equal stamp and id is the same event. */
+    fun beats(event: Event): Boolean = createdAt > event.createdAt || (createdAt == event.createdAt && id < event.id)
+}
 
 /** `ingestConcurrency` and `ingestBatch` from `sync.conf`. A type so a caller cannot swap them. */
 data class IngestTuning(

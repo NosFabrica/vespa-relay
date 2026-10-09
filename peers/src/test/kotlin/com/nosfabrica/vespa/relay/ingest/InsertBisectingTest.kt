@@ -74,6 +74,7 @@ class InsertBisectingTest {
                 events = events,
                 write = { writer.write(it) },
                 onOutcomes = { _, outcomes -> accepted += outcomes.size },
+                onOutcomesFailed = { _, t -> throw AssertionError("no bookkeeping failure expected", t) },
                 onPoison = { e, t -> poisoned.add(e to t) },
                 onGaveUp = { batch, _ -> gaveUp.add(batch.size) },
             )
@@ -169,10 +170,38 @@ class InsertBisectingTest {
                     events = events,
                     write = { throw CancellationException("shutting down") },
                     onOutcomes = { _, _ -> },
+                    onOutcomesFailed = { _, _ -> error("cancellation must not be reported as a bookkeeping failure") },
                     onPoison = { _, _ -> error("cancellation must not be reported as poison") },
                 )
             }
         }
+    }
+
+    @Test
+    fun `a failure counting the outcomes is not a failed write, so nothing is written twice`() {
+        // Read as a failed write, it split and rewrote a batch the store had already taken.
+        val events = (1..64).map(::event)
+        val writer = Writer(emptySet())
+        var counted = 0
+        val failures = mutableListOf<Int>()
+        val poisoned = mutableListOf<Event>()
+        runBlocking {
+            insertBisecting(
+                events = events,
+                write = { writer.write(it) },
+                onOutcomes = { _, outcomes ->
+                    counted += outcomes.size
+                    error("the refusal sink fell over")
+                },
+                onOutcomesFailed = { batch, _ -> failures.add(batch.size) },
+                onPoison = { e, _ -> poisoned.add(e) },
+            )
+        }
+
+        assertEquals(64, writer.eventsWritten, "each event written exactly once")
+        assertEquals(64, counted, "and its outcome counted exactly once")
+        assertEquals(listOf(64), failures, "the bookkeeping failure is reported, not swallowed")
+        assertTrue(poisoned.isEmpty(), "no event was bad")
     }
 
     @Test

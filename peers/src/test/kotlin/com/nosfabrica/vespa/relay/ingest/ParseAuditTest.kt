@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
+import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 import com.vitorpamplona.quartz.utils.LogSink
@@ -144,6 +146,28 @@ class ParseAuditTest {
         audit(dir).use { a ->
             a.inspect(metadata("1", """{"name":"alice","about":"hi"}"""))
             assertEquals(emptyList(), a.snapshot().map { it.normalizedMessage })
+        }
+    }
+
+    /** An event whose parse never bottoms out, as deeply nested content can. */
+    private class Bottomless :
+        Event("b".repeat(64), "a1".repeat(32), 1_700_000_000L, 1, emptyArray(), "", ""),
+        SearchableEvent {
+        override fun indexableContent(): String = descend(0)
+
+        private fun descend(depth: Int): String = descend(depth + 1) + depth
+    }
+
+    @Test
+    fun `a parse that overflows the stack is a finding, not a dead caller`() {
+        val dir = createTempDir()
+        audit(dir).use { a ->
+            a.inspect(Bottomless())
+            a.inspect(metadata("1", "[]"))
+
+            val tags = a.snapshot().map { it.tag }
+            assertContains(tags, "thrown:StackOverflowError")
+            assertEquals(2, tags.size, "the audit keeps inspecting after the overflow: $tags")
         }
     }
 

@@ -78,6 +78,9 @@ class ParseAudit(
             event.indexableContent()
         } catch (e: Exception) {
             record(ctx, "thrown:${e.javaClass.simpleName}", LogLevel.ERROR, e.message ?: "")
+        } catch (e: StackOverflowError) {
+            // Deeply nested content is a finding about the event, not a reason to lose the worker.
+            record(ctx, "thrown:${e.javaClass.simpleName}", LogLevel.ERROR, e.message ?: "")
         } finally {
             inFlight.remove()
         }
