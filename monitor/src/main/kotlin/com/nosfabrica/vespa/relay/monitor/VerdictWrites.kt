@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** What one batch of verdict writes came to. [resumeAt] is the url whose write tripped a limit, if one did. */
+/** What one batch of verdict writes came to. [resumeAt] is, when a limit stopped it, the earliest url not stored. */
 internal class VerdictWrites(
     val published: Int,
     val declined: Int,
@@ -60,7 +60,7 @@ internal suspend fun writeEach(
     var wedged = 0
     var lostMs = 0L
     var stoppedBy: String? = null
-    var stoppedAt: NormalizedRelayUrl? = null
+    val stored = BooleanArray(urls.size)
     // "In a row" by start order, so a slow write finishing after quick answers to later ones does not
     // read as a run: a wedge counts only while no write started after it has been answered.
     var lastAnswered = -1
@@ -93,9 +93,18 @@ internal suspend fun writeEach(
                         }
                     synchronized(lock) {
                         when (wrote) {
-                            true -> published++
-                            false -> declined++
-                            null -> wedged++
+                            true -> {
+                                published++
+                                stored[i] = true
+                            }
+
+                            false -> {
+                                declined++
+                            }
+
+                            null -> {
+                                wedged++
+                            }
                         }
                         if (wrote != null) {
                             lastAnswered = maxOf(lastAnswered, i)
@@ -111,8 +120,6 @@ internal suspend fun writeEach(
                                         lostMs >= wedgeBudgetMs -> "${lostMs / 1000}s of this batch was spent waiting on writes that never came back"
                                         else -> null
                                     }
-                                // At this url, not after it: the write that tripped the limit did not land.
-                                if (stoppedBy != null) stoppedAt = url
                             }
                         }
                     }
@@ -123,5 +130,7 @@ internal suspend fun writeEach(
             }
         }
     }
-    return VerdictWrites(published, declined, wedged, stoppedBy, stoppedAt)
+    // Completion order is not write order: writes started before the one that tripped the limit may not have landed.
+    val resumeAt = if (stoppedBy == null) null else urls.indices.firstOrNull { !stored[it] }?.let(urls::get)
+    return VerdictWrites(published, declined, wedged, stoppedBy, resumeAt)
 }

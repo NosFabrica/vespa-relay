@@ -404,3 +404,11 @@ NXDOMAIN for everything looks like. A small batch now withholds its pre-probe
 `dead` (and its `silent`) when more urls were proved gone than reached a
 server. The fast lane pays for it with a delay: those urls are graded by the
 sweep, whose batch is past the floor.
+
+**A stopped batch resumes at the earliest write that did not land.** The
+cursor was the write that tripped the limit, which with sixteen in flight is
+whichever wedged write happened to finish third, so writes started before it
+that never landed were skipped to the back of the rotation. `writeEach` now
+records which writes were stored and hands back the earliest one that was not
+(wedged, declined or never started). No write is launched once a limit has
+tripped; those already in flight may finish.

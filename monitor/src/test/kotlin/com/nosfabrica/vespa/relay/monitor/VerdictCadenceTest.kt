@@ -215,6 +215,8 @@ class VerdictCadenceTest {
             val urls = (0 until 12).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             val attempted = mutableListOf<String>()
+            // The store takes the first few writes and then stops answering.
+            val landing = AtomicInteger(LANDED_BEFORE_WEDGE)
             val recording =
                 object : IEventStore by store {
                     override suspend fun insert(event: Event) {
@@ -222,6 +224,7 @@ class VerdictCadenceTest {
                             .firstOrNull { it.firstOrNull() == "d" }
                             ?.getOrNull(1)
                             ?.let { synchronized(attempted) { attempted += it } }
+                        if (landing.getAndDecrement() > 0) return store.insert(event)
                         CompletableDeferred<Unit>().await()
                         error("unreachable")
                     }
@@ -245,17 +248,17 @@ class VerdictCadenceTest {
             withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val second = synchronized(attempted) { attempted.toList() }
 
-            assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
+            assertEquals(LANDED_BEFORE_WEDGE + FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, second.size)
-            // The write that tripped the limit did not land, so it is retried.
+            // None of the writes the wedge cut landed, so the next batch starts at the earliest of them.
             assertEquals(
-                first.last(),
+                first[LANDED_BEFORE_WEDGE],
                 second.first(),
-                "the next batch must pick up at the write the wedge stopped on: $first then $second",
+                "the next batch must pick up at the earliest write that did not land: $first then $second",
             )
             assertTrue(
-                first.dropLast(1).none { it in second },
-                "urls a wedged batch already wrote off must not be retried ahead of the ones it never reached: $first then $second",
+                first.take(LANDED_BEFORE_WEDGE).none { it in second },
+                "urls a wedged batch already stored must not be rewritten ahead of the ones it never stored: $first then $second",
             )
         }
 
@@ -270,6 +273,7 @@ class VerdictCadenceTest {
 
             // The write loop runs on whatever dispatcher the insert suspends onto, so a plain local is not safe.
             val wedged = AtomicBoolean(true)
+            val landing = AtomicInteger(LANDED_BEFORE_WEDGE)
             val recording =
                 object : IEventStore by store {
                     override suspend fun insert(event: Event) {
@@ -277,7 +281,7 @@ class VerdictCadenceTest {
                             .firstOrNull { it.firstOrNull() == "d" }
                             ?.getOrNull(1)
                             ?.let { synchronized(attempted) { attempted += it } }
-                        if (wedged.get()) {
+                        if (wedged.get() && landing.getAndDecrement() <= 0) {
                             CompletableDeferred<Unit>().await()
                             error("unreachable")
                         }
@@ -316,7 +320,7 @@ class VerdictCadenceTest {
             val sweptAgain = synchronized(attempted) { attempted.toList() }
 
             assertEquals(
-                sweptFirst.last(),
+                sweptFirst[LANDED_BEFORE_WEDGE],
                 sweptAgain.first(),
                 "a lane tick between two sweeps must not move the sweep's cursor: $sweptFirst then $sweptAgain",
             )
@@ -610,4 +614,9 @@ class VerdictCadenceTest {
                 Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
             ).flatMap { it.tags.toList() }
             .firstOrNull { it.firstOrNull() == name }
+
+    private companion object {
+        /** Writes a wedging store takes before it stops answering. */
+        const val LANDED_BEFORE_WEDGE = 4
+    }
 }

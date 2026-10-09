@@ -190,8 +190,8 @@ false forever of the ones at the back: the loop walked `outcomes`, a
 passes for a stable url set. Every cut batch therefore dropped the SAME tail,
 and a healthy relay whose url happened to hash late could never be re-graded
 however often the sweep ran. So
-the loop walks the urls in URL order and starts at the write the last batch's
-wedge stopped on (`FitnessPass.writeCursors`, in memory — a restart starts at
+the loop walks the urls in URL order and starts at the earliest write the last
+batch's wedge left unstored (`FitnessPass.writeCursors`, in memory — a restart starts at
 the top, which is the same guarantee from a different offset). What a wedge
 costs this pass is the next pass's head.
 
