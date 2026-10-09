@@ -848,6 +848,7 @@ internal class VisitPool(
         val auditStarted = now
         var received = 0
         ongoingVisit.stage = NEGENTROPY
+        val window = ask.filter.windowed(olderEdge, newerEdge, now)
         val outcome =
             pager.sweep(
                 // The cursor's identity. Band-qualified, or every band of a stream would resume
@@ -856,7 +857,7 @@ internal class VisitPool(
                 url,
                 // Shape stays the whole ask, so the cursor survives the window sliding with `now`.
                 ask.filter,
-                ask.filter.windowed(olderEdge, newerEdge, now),
+                window,
                 // A clean audit downloads nothing, so frames must count as activity.
                 onProgress = { _, _ -> ongoingVisit.lastActivityMs = System.currentTimeMillis() },
                 // The window's `since`: how far back the audit has got, like a paging cursor.
@@ -894,14 +895,13 @@ internal class VisitPool(
         }
         if (outcome.complete) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
-            bands.record(
+            bands.recordAudit(
                 stream.name,
                 url,
                 ask.filter,
-                observedMin = null,
-                observedMax = null,
-                paged = false,
-                reconciledThrough = auditStarted - pager.slackSeconds,
+                window,
+                reachesFloor = olderEdge == null,
+                verifiedAt = auditStarted - pager.slackSeconds,
                 band = band,
             )
         }

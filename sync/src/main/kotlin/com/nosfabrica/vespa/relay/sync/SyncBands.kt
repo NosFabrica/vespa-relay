@@ -340,6 +340,33 @@ class SyncBands(
         )
     }
 
+    /**
+     * A completed audit: its clock, and coverage only for ground it reconciled. A window short of
+     * the filter's floor claims none, since quartz's reconcile record would close the older leg.
+     */
+    fun recordAudit(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        /** The window the audit reconciled; its `until` caps what may be claimed. */
+        window: Filter,
+        /** The window starts at the filter's own floor, so everything below its `until` was reconciled. */
+        reachesFloor: Boolean,
+        verifiedAt: Long,
+        band: String = "",
+        now: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val through = minOf(window.until ?: verifiedAt, verifiedAt)
+        val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) }
+        // A held span starting above `through` would be joined to it across ground nobody walked.
+        val bridges = held != null && held.spans.values.any { it.min > through }
+        if (reachesFloor && !bridges) {
+            coverage(stream).record(url, filter, null, null, paged = false, reconciledThrough = through, observedByKind = null, drained = false)
+        }
+        verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = verifiedAt
+        dirty = true
+    }
+
     /** quartz's own staleness rule: past its period a band is replaced by the next record, not widened. */
     private fun isStale(
         stream: String,
