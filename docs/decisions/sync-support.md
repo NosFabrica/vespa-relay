@@ -20,8 +20,11 @@ twenty-event ask and cutting one costs a re-measure, not a truncated history.
 the revisit.** A stream with author-bound asks visits one relay once per bound
 author, and a relay answering each chunk with a full empty idle window cost
 `chunks * NEG_IDLE_MS`: measured at 5h00m on one url, of which 4h56m delivered
-nothing. `LEG_QUIET_GIVE_UP_MS` is reset by every event, so it cannot fire on
-a leg that is working.
+nothing. `LEG_QUIET_GIVE_UP_MS` is reset by every event and by every ask the
+relay reads to the end, so it cannot fire on a leg that is working. Events
+alone were not enough: a unit of hundreds of asks each answered with an empty
+EOSE read as silent, gave up at the same ask on every visit, and never
+reached its tail.
 
 **Three narrowings per visit.** A relay that states its limit is under it on
 the first retry; one that only says the ask was too wide is halved, and from a
@@ -227,3 +230,20 @@ that from the per-stream lists, so two places cannot disagree about it. The
 streams written are the ones this process is running, not every stream in the
 config; a stream with no `kinds` gets no `kinds` member, and `writtenAt` lets
 a reader spot a document that outlived its writer.
+
+**A heal pass ends on three silences in a row or two minutes, whichever comes
+first.** The drain runs inside a visit and holds its dial permit. 500 pushes
+at a 15-second OK timeout let one relay that never answered hold that permit
+for about two hours, and strikes only close a relay across two passes. What
+the pass did not try goes back on the queue. A push whose result came back
+with no entry for the relay is silence like a timeout and strikes too; it used
+to be skipped and never counted.
+
+**`auth-required:` ends the heal pass and closes nothing.** It was read as
+policy, which closed the relay for writes for the life of the process and
+suppressed the served id. The prefix asks for NIP-42, which the client
+answers, so the next pass is authenticated; `restricted:` and `blocked:` are
+the refusals that stay final.
+
+**A learned width is one `compute`.** Read, compare, then put let two
+refusals learned at once leave the wider cap last.

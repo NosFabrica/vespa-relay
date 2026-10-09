@@ -96,3 +96,16 @@ window later, having cost the relay a handshake and a REQ for nothing — per
 unit, per revisit, 96 at a time, for as long as the store is behind. Skipped
 like a refused dial permit and counted as `visitsHeldByIngest`; open tails stay
 open, since a tail that is not draining is honest backpressure.
+
+**A cut visit resumes where it stopped.** Restarting every visit at the first
+ask meant a unit cut at ask `k` never reached the asks after it. The next
+visit starts at the ask that gave up, or just past the one that was refused.
+
+**The tail offers an event only its author's asks.** Scope is re-derived per
+event, and a discovery unit holds one ask per bound author, so a full scan
+matched hundreds of filters that named someone else. Authors compare exactly,
+so the index finds what the scan did.
+
+**An eviction hands its permit over.** Releasing the evicted tail's permit and
+then asking for one let another worker's `trySpare` take it in between, so the
+eviction cost a tail and the evicting unit still had none.
