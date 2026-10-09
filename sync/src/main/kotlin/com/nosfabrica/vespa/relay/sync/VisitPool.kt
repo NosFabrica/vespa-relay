@@ -1023,7 +1023,7 @@ internal class VisitPool(
                 var healRetractions = false
                 for (ask in currentRoster.asks[url]
                     ?.get(key.stream)
-                    ?.asks
+                    ?.candidatesFor(event.pubKey)
                     .orEmpty()) {
                     if (!ask.filter.match(event)) continue
                     any = true

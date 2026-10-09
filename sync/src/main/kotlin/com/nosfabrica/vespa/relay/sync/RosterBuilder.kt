@@ -76,7 +76,29 @@ internal class RosterBuilder(
         val asks: List<Ask>,
         /** Each ask's filter as JSON, for change detection across rebuilds; [Filter] compares by reference. */
         val identity: Set<String>,
-    )
+    ) {
+        /** The asks binding each author; built on the first tail event, once per roster generation. */
+        private val byAuthor: Map<String, List<Ask>> by lazy {
+            val out = HashMap<String, MutableList<Ask>>()
+            for (ask in asks) {
+                ask.filter.authors
+                    ?.distinct()
+                    ?.forEach { out.getOrPut(it) { ArrayList(1) } += ask }
+            }
+            out
+        }
+
+        private val unbound: List<Ask> by lazy { asks.filter { it.filter.authors.isNullOrEmpty() } }
+
+        /**
+         * The asks an event by [pubKey] could match: those naming it, and those naming no author.
+         * Every other ask's `authors` excludes the event, so [Filter.match] need not be asked.
+         */
+        fun candidatesFor(pubKey: String): List<Ask> {
+            val bound = byAuthor[pubKey] ?: return unbound
+            return if (unbound.isEmpty()) bound else bound + unbound
+        }
+    }
 
     /** One rebuild's whole answer. */
     internal class Roster(
