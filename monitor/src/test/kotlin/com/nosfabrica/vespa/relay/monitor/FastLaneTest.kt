@@ -65,7 +65,7 @@ class FastLaneTest {
 
         override suspend fun candidatesSince(since: Long) = urls
 
-        override suspend fun canDial(url: NormalizedRelayUrl) = true
+        override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
 
         override suspend fun onEvent(event: Event) = Unit
 
@@ -119,17 +119,17 @@ class FastLaneTest {
                 inconsistent = { u -> stability.applyVerdicts(u).toSet() },
                 progress = processors.of("fitness"),
             )
-        val entry = { handle: Processors.Handle?, run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int ->
+        val entry = { handle: Processors.Handle?, run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int ->
             object : AliasMonitor.Pass {
                 override val progress = handle
 
                 override suspend fun measure(
                     label: String,
                     candidates: List<NormalizedRelayUrl>,
-                    canDial: suspend (NormalizedRelayUrl) -> Boolean,
+                    reach: suspend (NormalizedRelayUrl) -> Reach,
                     onEvent: suspend (Event) -> Unit,
                     sockets: Sockets,
-                ): Int = run(label, candidates, canDial, onEvent, sockets)
+                ): Int = run(label, candidates, reach, onEvent, sockets)
             }
         }
         return Lane(
@@ -142,7 +142,7 @@ class FastLaneTest {
                 fastLaneEveryMs = 1_000L,
                 fastLanePasses =
                     if (gateInLane) {
-                        listOf(entry(stability.progress, stability::measure), entry(fitness.progress, fitness::measure))
+                        listOf(entry(stability.progress) { l, c, r, e, s -> stability.measure(l, c, { r(it) == Reach.REACHABLE }, e, s) }, entry(fitness.progress, fitness::measure))
                     } else {
                         listOf(entry(fitness.progress, fitness::measure))
                     },

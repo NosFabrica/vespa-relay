@@ -56,7 +56,7 @@ class AliasMonitor(
         suspend fun measure(
             label: String,
             candidates: List<NormalizedRelayUrl>,
-            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            reach: suspend (NormalizedRelayUrl) -> Reach,
             onEvent: suspend (Event) -> Unit,
             sockets: Sockets,
         ): Int
@@ -82,8 +82,8 @@ class AliasMonitor(
          */
         suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
 
-        /** Whether this process can reach that url at all: transport, not policy. */
-        suspend fun canDial(url: NormalizedRelayUrl): Boolean
+        /** Whether this process can reach that url at all, and whose side a refusal is on: transport, not policy. */
+        suspend fun reach(url: NormalizedRelayUrl): Reach
 
         /** A probe's events are still events: offered to whichever streams want them. */
         suspend fun onEvent(event: Event)
@@ -95,7 +95,7 @@ class AliasMonitor(
     /** One label's work: what it sees, and how to reach it. */
     private class Work(
         val candidates: List<NormalizedRelayUrl>,
-        val canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        val reach: suspend (NormalizedRelayUrl) -> Reach,
         val onEvent: suspend (Event) -> Unit,
         val sockets: Sockets,
     )
@@ -169,7 +169,7 @@ class AliasMonitor(
             pass.progress?.begin()
             try {
                 // Guarded one at a time, so one pass failing does not cost the passes after it.
-                learned += pass.measure(FAST_LANE, fresh, src::canDial, src::onEvent, src.sockets)
+                learned += pass.measure(FAST_LANE, fresh, src::reach, src::onEvent, src.sockets)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -216,7 +216,7 @@ class AliasMonitor(
                     }
                 // Empty, not "fewer than two": the per-url passes grade a lone url, and the fold
                 // refuses a world of one itself.
-                if (urls.isEmpty()) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
+                if (urls.isEmpty()) emptyList() else listOf(ALL_STREAMS to Work(urls, src::reach, src::onEvent, src.sockets))
             } ?: emptyList()
         lastPassHadWork = work.isNotEmpty()
         // One pass at a time over every label, so the fold finishes everywhere before the next pass measures.
@@ -226,7 +226,7 @@ class AliasMonitor(
                 for ((label, w) in work) {
                     // Each label guarded on its own, so one failing does not cost the others.
                     try {
-                        val n = pass.measure(label, w.candidates, w.canDial, w.onEvent, w.sockets)
+                        val n = pass.measure(label, w.candidates, w.reach, w.onEvent, w.sockets)
                         learned += n
                         // Per label, not once at the end, so a fan-out starting mid-pass sees the
                         // verdicts already published.

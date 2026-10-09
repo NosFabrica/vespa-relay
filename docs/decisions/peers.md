@@ -66,6 +66,12 @@ the flag after another prober has finished and open a second connection for
 an answer already in hand. The timestamp is written after the verdict, or a
 reader could hold a stale answer for a whole TTL.
 
+**Before the first probe lands, a loser waits for it.** A loser taking the
+previous answer is right once there is one; before that, `probeSaid` is its
+`false` default, and every caller in the first fan-out that lost the flag was
+told the proxy was down while it was being found up. The wait is bounded past
+the probe's own connect timeout.
+
 **Relay-url normalisation is memoised per spelling, keyed without the onion
 gate.** A corpus with 19,844 known relay urls (issue 182) hands the parser
 the same few thousand spellings once per author. `allowOnion` is a property

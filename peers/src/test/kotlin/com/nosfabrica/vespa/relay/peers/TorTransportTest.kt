@@ -227,6 +227,30 @@ class TorTransportTest {
     }
 
     @Test
+    fun `callers that arrive while the first probe is in flight get its answer, not the default`() {
+        // Before the first probe lands there is no previous answer to take; `false` there reads as "Tor is down".
+        repeat(20) {
+            FakeSocks().use { socks ->
+                val transport = TorTransport(settings(port = socks.port), OkHttpClient())
+                val start = java.util.concurrent.CountDownLatch(1)
+                val said =
+                    java.util.concurrent.ConcurrentLinkedQueue<Boolean>()
+                val threads =
+                    List(16) {
+                        thread(isDaemon = true) {
+                            start.await()
+                            said += transport.socksAnswers()
+                        }
+                    }
+                start.countDown()
+                threads.forEach { it.join(20_000) }
+                assertEquals(16, said.size)
+                assertTrue(said.all { it }, "a listening proxy was reported down to ${said.count { !it }} of 16 first callers")
+            }
+        }
+    }
+
+    @Test
     fun `SYNC_TOR_SOCKS parses host and port, with or without a scheme`() {
         val plain = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor:9050")))
         assertEquals("tor", plain.socksHost)

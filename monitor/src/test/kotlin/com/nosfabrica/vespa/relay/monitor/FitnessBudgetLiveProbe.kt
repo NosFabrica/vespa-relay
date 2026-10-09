@@ -198,7 +198,7 @@ class FitnessBudgetLiveProbe {
             println("THE REAL PASS OVER THE SAME URLS")
             println("=".repeat(112))
             runBlocking {
-                pass.measure("live budget", urls, canDial = { reachability.canDial(it) }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("live budget", urls, reach = { reachability.reach(it) }, onEvent = {}, sockets = Sockets.NONE)
             }
         } finally {
             scope.cancel()

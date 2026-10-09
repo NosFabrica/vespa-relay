@@ -35,6 +35,17 @@ internal fun shouldPreProbe(
     tor: TorTransport?,
 ): Boolean = tor?.routes(url) != true
 
+/** What the guard in front of a dial learned. Only [PROVED_UNREACHABLE] is a fact about the relay. */
+enum class Reach {
+    REACHABLE,
+
+    /** The relay's host refused or does not exist, on a cause [Unreachability] accepts. */
+    PROVED_UNREACHABLE,
+
+    /** Our own transport cannot carry the dial; nothing was learned about the relay. */
+    TRANSPORT_DOWN,
+}
+
 /** Can we open a socket at all: the guard in front of every dial, shared so one url is judged one way. */
 internal class ReachabilityProbe(
     private val tor: TorTransport?,
@@ -50,8 +61,16 @@ internal class ReachabilityProbe(
         return cause(url)?.let { !Unreachability.proves(it) } ?: true
     }
 
+    /** Whether to dial, and when not, whose side the reason is on. */
+    suspend fun reach(url: NormalizedRelayUrl): Reach =
+        when {
+            tor?.routes(url) == true -> if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
+            reachable(url) -> Reach.REACHABLE
+            else -> Reach.PROVED_UNREACHABLE
+        }
+
     /** Our transport can carry it and something answers. */
-    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && reachable(url)
+    suspend fun canDial(url: NormalizedRelayUrl): Boolean = reach(url) == Reach.REACHABLE
 
     /** Null when the retry succeeds or the url has no host. */
     private suspend fun cause(url: NormalizedRelayUrl): Exception? =

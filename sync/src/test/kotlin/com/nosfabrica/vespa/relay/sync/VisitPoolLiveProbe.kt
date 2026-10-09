@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.AliasProbe
 import com.nosfabrica.vespa.relay.monitor.FitnessPass
+import com.nosfabrica.vespa.relay.monitor.Reach
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -116,7 +117,7 @@ class VisitPoolLiveProbe {
                         progress = processors.of("fitness"),
                     )
                 val started = System.currentTimeMillis()
-                fitness.measure("live probe", candidates, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                fitness.measure("live probe", candidates, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 println("=".repeat(78))
                 println("fitness pass over ${candidates.size} url(s) in ${System.currentTimeMillis() - started}ms — records now say:")
                 val roster = RelayDiscovery.discover(store, RelayDiscoveryConfig(listOf(probeSource(signer.pubKey)), 3600, RelayExcludes.NONE))

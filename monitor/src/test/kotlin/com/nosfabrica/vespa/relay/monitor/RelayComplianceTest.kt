@@ -232,7 +232,7 @@ class RelayComplianceTest {
             foldedAway = { emptyMap() },
             inconsistent = { emptySet() },
             progress = Processors().of("fitness"),
-        ).measure("compliance", listOf(url), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+        ).measure("compliance", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
         val published =
             store
@@ -302,7 +302,7 @@ class RelayComplianceTest {
                 foldedAway = { emptyMap() },
                 inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("cut page two", listOf(url), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure("cut page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
             val published =
                 store

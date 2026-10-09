@@ -106,7 +106,7 @@ internal class StreamWorld(
 
     /**
      * The sweep's candidate set. Urls a signed record calls dead are held out here rather than
-     * declined in [canDial], where the fold would report them as declined by our own transport.
+     * declined in [reach], where the fold would report them as declined by our own transport.
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = ownDead()
@@ -213,7 +213,7 @@ internal class StreamWorld(
         return fresh.filterNot { it in dead }
     }
 
-    override suspend fun canDial(url: NormalizedRelayUrl): Boolean = probe.canDial(url)
+    override suspend fun reach(url: NormalizedRelayUrl): Reach = probe.reach(url)
 
     /** Handed straight over; whether anything wants it, and on whose word, is the mirror's call. */
     override suspend fun onEvent(event: Event) = onProbeEvent(event)

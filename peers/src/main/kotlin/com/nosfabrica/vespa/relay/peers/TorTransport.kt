@@ -143,10 +143,13 @@ class TorTransport(
 
     @Volatile private var probeSaid = false
 
-    /** One prober at a time; a loser takes the previous answer rather than waiting. */
+    /** One prober at a time; a loser takes the previous answer, or waits for the first one. */
     private val probing =
         java.util.concurrent.atomic
             .AtomicBoolean(false)
+
+    /** Open until the first probe has an answer; before it, [probeSaid] is a default, not a reading. */
+    private val firstAnswer = java.util.concurrent.CountDownLatch(1)
 
     /**
      * Is our own proxy answering? When it is not, every onion dial fails indistinguishably from
@@ -154,7 +157,10 @@ class TorTransport(
      */
     fun socksAnswers(nowMs: Long = System.currentTimeMillis()): Boolean {
         if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
-        if (!probing.compareAndSet(false, true)) return probeSaid
+        if (!probing.compareAndSet(false, true)) {
+            firstAnswer.await(FIRST_ANSWER_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            return probeSaid
+        }
         try {
             // Re-checked under the flag: a caller can win the CAS after another prober has finished.
             if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
@@ -172,7 +178,13 @@ class TorTransport(
             probedAt = nowMs
         } finally {
             probing.set(false)
+            firstAnswer.countDown()
         }
         return probeSaid
+    }
+
+    private companion object {
+        /** Past the probe's own connect timeout, so a waiter only gives up on a prober that hung. */
+        const val FIRST_ANSWER_WAIT_MS = 2L * TorSettings.PROBE_TIMEOUT_MS
     }
 }

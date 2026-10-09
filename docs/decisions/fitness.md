@@ -264,3 +264,10 @@ is as likely our resolver or route as the relay, and read as `dead` it put
 "temporary failure in name resolution" on someone else's server.
 `FITNESS_EPOCH` went to 3 with it, so the verdicts signed under the old rule
 are taken back at boot.
+
+**The pre-probe says whose side a refusal is on.** It answered one Boolean,
+and with Tor's SOCKS port down that `false` covered every `.onion` (every url
+under `SYNC_TOR_ALL`), which the fitness pass signed as `dead`. `Reach`
+separates the relay's host proved unreachable from our transport not
+answering; the second is unmeasured and feeds the batch guard's blind share,
+as it always did in the stability gate.

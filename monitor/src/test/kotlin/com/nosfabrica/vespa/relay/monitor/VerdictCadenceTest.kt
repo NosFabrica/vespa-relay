@@ -111,7 +111,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(deadlineMs() * 40) {
-                    pass.measure("cut late", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure("cut late", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -153,7 +153,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("neg-open clock", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("neg-open clock", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
@@ -198,12 +198,12 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("wedged", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("wedged", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             store.wedged = false
             withTimeout(30_000) {
-                pass.measure("recovered", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("recovered", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             for (url in urls) {
@@ -245,10 +245,10 @@ class VerdictCadenceTest {
                 )
 
             // One label for both sweeps: the resume cursor is per label.
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val first = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val second = synchronized(attempted) { attempted.toList() }
 
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
@@ -303,7 +303,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             val sweptFirst = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
@@ -311,13 +311,13 @@ class VerdictCadenceTest {
             // A healthy lane tick writes its whole batch and so has no resume point of its own.
             wedged.set(false)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.FAST_LANE, laneUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.FAST_LANE, laneUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             synchronized(attempted) { attempted.clear() }
 
             wedged.set(true)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             val sweptAgain = synchronized(attempted) { attempted.toList() }
 
@@ -357,7 +357,7 @@ class VerdictCadenceTest {
                     reconcile = { _, _ -> },
                 )
             withTimeout(60_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             // Under the time budget, so only the consecutive limit could have ended this early.
@@ -397,7 +397,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled))
@@ -407,7 +407,7 @@ class VerdictCadenceTest {
 
             inserts.set(0)
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(1, inserts.get(), "a pass must re-sign what it dialled and only that")
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled), "the dialled url is still re-graded every pass")
@@ -427,7 +427,7 @@ class VerdictCadenceTest {
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
-                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.PRIME.value, gradeOf(store, alias), "a verdict that CHANGED must be written whatever the record said")
         }
@@ -453,12 +453,12 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertTrue(first.url in (evidenceOf(store, alias) ?: ""), "the first fold has to name the first canonical")
 
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertTrue(
@@ -468,7 +468,7 @@ class VerdictCadenceTest {
 
             val stamp = stampOf(store, alias)
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(stamp, stampOf(store, alias), "an unchanged inherited verdict must still be left standing")
         }
@@ -494,7 +494,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -554,7 +554,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(60_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)

@@ -103,7 +103,7 @@ class ProbeDeadlineTest {
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("blind batch", blind + fine, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure("blind batch", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
             for (url in blind + fine) {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
@@ -118,8 +118,27 @@ class ProbeDeadlineTest {
                 foldedAway = { emptyMap() },
                 inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("refused corpus", blind, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure("refused corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
+        }
+
+    @Test
+    fun `a proxy that does not answer grades nothing, however many urls sit behind it`() =
+        runBlocking {
+            // Under SYNC_TOR_ALL a dead SOCKS port declines every url; none of that is about the relays.
+            for (size in listOf(1, 60)) {
+                val store = newStore()
+                val urls = (0 until size).map { RelayUrlNormalizer.normalize("wss://behind$it.example") }
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                ).measure("proxy down", urls, reach = { Reach.TRANSPORT_DOWN }, onEvent = {}, sockets = Sockets.NONE)
+                for (url in urls) assertNull(gradeOf(store, url), "our proxy being down was signed onto ${url.url}")
+            }
         }
 
     @Test
@@ -139,7 +158,7 @@ class ProbeDeadlineTest {
                     foldedAway = { emptyMap() },
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
-                ).measure("one", listOf(url), canDial = { reachable }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure("one", listOf(url), reach = { if (reachable) Reach.REACHABLE else Reach.PROVED_UNREACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 return gradeOf(store, url)
             }
 
@@ -188,7 +207,7 @@ class ProbeDeadlineTest {
                 pass.measure(
                     "deadline",
                     listOf(wedged, answering),
-                    canDial = { true },
+                    reach = { Reach.REACHABLE },
                     onEvent = {},
                     sockets = Sockets.NONE,
                 )
@@ -302,7 +321,7 @@ class ProbeDeadlineTest {
                 }
             watcher.start()
             withTimeout(deadlineMs() * 20) {
-                pass.measure("deadline", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("deadline", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             watcher.interrupt()
             watcher.join()
@@ -327,7 +346,7 @@ class ProbeDeadlineTest {
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure("silence", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
             // A relay that closes every rung has spoken and is read as a drain; `restricted` is unreachable
@@ -340,7 +359,7 @@ class ProbeDeadlineTest {
                 foldedAway = { emptyMap() },
                 inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("refusal", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure("refusal", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.PRIME.value, gradeOf(refusing, wedged))
         }
 

@@ -169,22 +169,23 @@ class MonitorEngine(
     /** One pass as [AliasMonitor] sees it: the work, plus the row it reports on. */
     private fun entry(
         handle: Processors.Handle?,
-        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int,
+        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int,
     ) = object : AliasMonitor.Pass {
         override val progress = handle
 
         override suspend fun measure(
             label: String,
             candidates: List<NormalizedRelayUrl>,
-            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            reach: suspend (NormalizedRelayUrl) -> Reach,
             onEvent: suspend (Event) -> Unit,
             sockets: Sockets,
-        ): Int = run(label, candidates, canDial, onEvent, sockets)
+        ): Int = run(label, candidates, reach, onEvent, sockets)
     }
 
-    private val foldEntry = folding?.let { f -> entry(f.progress, f::measure) }
+    /** The fold and the stability gate learn nothing from why a url was declined, only that it was. */
+    private val foldEntry = folding?.let { f -> entry(f.progress) { l, c, reach, e, s -> f.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
 
-    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress, g::measure) }
+    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
 
     private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::measure) }
 

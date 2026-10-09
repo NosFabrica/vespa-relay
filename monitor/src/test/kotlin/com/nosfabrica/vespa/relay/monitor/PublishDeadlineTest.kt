@@ -105,7 +105,7 @@ class PublishDeadlineTest {
 
             // The assertion is the call completing at all.
             withTimeout(30_000) {
-                pass.measure("wedged store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             assertEquals(
@@ -170,7 +170,7 @@ class PublishDeadlineTest {
                     progress = handle,
                 )
 
-            val running = async { pass.measure("writing", dialled + folded, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            val running = async { pass.measure("writing", dialled + folded, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             withTimeout(30_000) { store.reached.await() }
 
             val mid = assertNotNull(processors.snapshot().single().measuring, "a pass mid-write holds a position")
@@ -229,7 +229,7 @@ class PublishDeadlineTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure("declining store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure("declining store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -281,7 +281,7 @@ class PublishDeadlineTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("one straggler", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("one straggler", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             assertEquals(8, store.insertsAttempted.get(), "a lone straggler must not abandon the batch")

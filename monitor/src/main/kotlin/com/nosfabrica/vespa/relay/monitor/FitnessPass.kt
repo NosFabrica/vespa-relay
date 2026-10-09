@@ -133,7 +133,7 @@ class FitnessPass(
     suspend fun measure(
         label: String,
         candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        reach: suspend (NormalizedRelayUrl) -> Reach,
         onEvent: suspend (Event) -> Unit,
         sockets: Sockets,
     ): Int {
@@ -190,7 +190,7 @@ class FitnessPass(
                     }
                 },
             ) { url ->
-                measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
+                measureOne(url, anchor, reach, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
             }
 
             // The batch guard: when our own dialling breaks it breaks for every url at once, so
@@ -359,7 +359,7 @@ class FitnessPass(
     private suspend fun measureOne(
         url: NormalizedRelayUrl,
         anchor: Long,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        reach: suspend (NormalizedRelayUrl) -> Reach,
         sockets: Sockets,
         outcomes: ConcurrentHashMap<NormalizedRelayUrl, Outcome>,
         unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
@@ -371,9 +371,9 @@ class FitnessPass(
         onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_REACHABILITY)
-        val reachable =
+        val reached =
             try {
-                canDial(url)
+                reach(url)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -381,9 +381,21 @@ class FitnessPass(
                 unmeasured[url] = "the reachability probe itself threw ${e.javaClass.simpleName}"
                 return
             }
-        if (!reachable) {
-            outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
-            return
+        when (reached) {
+            Reach.REACHABLE -> {
+                Unit
+            }
+
+            Reach.PROVED_UNREACHABLE -> {
+                outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
+                return
+            }
+
+            // Our proxy not answering says nothing about the relay behind it.
+            Reach.TRANSPORT_DOWN -> {
+                unmeasured[url] = "our own transport is not answering"
+                return
+            }
         }
         progress.holding(url.url, STAGE_DOCUMENT)
         document?.read(url)?.let { readings[url] = it }
