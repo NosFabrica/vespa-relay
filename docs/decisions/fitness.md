@@ -296,3 +296,13 @@ before compliance was decided, so a per-url deadline firing during page two
 published `prime` for a relay whose first page alone was `noncompliant`. Page
 one is now judged before the hand-over; the final grade on both pages still
 replaces it when the dial finishes.
+
+**A fitness batch reads its standing verdicts once.** The folds, the stability
+refusals and the grades it must not re-sign were three loads of the same
+records, each a chunked `#d` query over the batch. They are one
+`RelayVerdictRecord.load` now, taken after the earlier passes have written, so
+nothing they decided is missed. A load that fails measures nothing that batch
+rather than dialling aliases blind. The per-write `currentRecord` read stays:
+the edit is a read-modify-write and must see what the record holds at write
+time. The sweep's other reads (the dead set, our records, the fold's world, the
+stability gate's load) are per pass and were left alone.

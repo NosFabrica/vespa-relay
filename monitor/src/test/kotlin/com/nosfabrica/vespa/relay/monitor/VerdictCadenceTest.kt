@@ -98,8 +98,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     // Longer than the per-url deadline, so the outer clock fires first, as in production.
                     nip77DeadlineMs = deadlineMs() * 100,
@@ -145,8 +143,6 @@ class VerdictCadenceTest {
                     // A per-url deadline out of reach, so only the NEG-OPEN's own clock can end the job.
                     probe = answeringProbe(idleMs = 60_000L),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     nip77DeadlineMs = 100L,
                     reconcile = parkingNegOpen(),
@@ -190,8 +186,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
@@ -237,8 +231,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(recording, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
@@ -295,8 +287,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(recording, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
@@ -350,8 +340,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(alternating, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
@@ -366,6 +354,39 @@ class VerdictCadenceTest {
                 n.get(),
                 "a store answering every other write is not wedged; the batch must not end on the consecutive limit",
             )
+        }
+
+    @Test
+    fun `a batch reads what this monitor stands behind once, whatever it consults`() =
+        runBlocking {
+            // The folds, the stability refusals and the standing grades all come off one read.
+            val alias = RelayUrlNormalizer.normalize("wss://alias.example")
+            val canonical = RelayUrlNormalizer.normalize("wss://canonical.example")
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val queries = AtomicInteger()
+            val counting =
+                object : IEventStore by store {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        queries.incrementAndGet()
+                        return store.query(filter)
+                    }
+                }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(counting, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { _, urls -> urls.filter { it == alias }.associateWith { canonical } },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
+
+            // Nothing to dial and nothing to re-sign: the one read is the whole cost.
+            queries.set(0)
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(1, queries.get(), "the standing verdicts were read ${queries.get()} times for one batch")
         }
 
     @Test
@@ -390,8 +411,7 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(counting, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { mapOf(alias to canonical) },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, _ -> mapOf(alias to canonical) },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )
@@ -423,8 +443,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(counting, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
@@ -446,8 +464,7 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { mapOf(alias to onto) },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, _ -> mapOf(alias to onto) },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )
@@ -483,8 +500,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(idleMs = 60_000L),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     nip77DeadlineMs = 100L,
                     reconcile = parkingNegOpen(),
@@ -544,8 +559,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(alternating, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     publishWedgeBudgetMs = 500L,

@@ -57,10 +57,12 @@ class FitnessPass(
     /** The small-target ladder; [FITNESS_TARGET] events say "answers and pages" well enough. */
     private val probe: AliasProbe,
     private val client: INostrClient,
-    /** The fold's standing verdicts over these candidates; read, never earned here. */
-    private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+    /** The fold's standing verdicts over these candidates, off the batch's one read; never earned here. */
+    private val foldedAway: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl> =
+        { held, urls -> AliasFolding.foldsAmong(held, urls) },
     /** The consistency pass's standing refusals; same bargain. */
-    private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
+    private val inconsistent: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> =
+        { held, urls -> urls.filterTo(HashSet()) { it in held.inconsistent } },
     /** The bars a relay's answer is held to. */
     private val compliance: RelayCompliance = RelayCompliance(),
     val progress: Processors.Handle,
@@ -163,13 +165,27 @@ class FitnessPass(
         // Urls this pass asked and got no answer of any kind about. Never published.
         val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
         try {
+            // One read of what this monitor stands behind, after the passes before this one wrote.
+            val held =
+                try {
+                    record.load(candidates)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Without the standing folds an alias would be dialled and signed as its own relay.
+                    System.err.println(
+                        "router: fitness [$label] — could not read the standing verdicts (${e.javaClass.simpleName}); " +
+                            "nothing measured, every url is measured again next pass",
+                    )
+                    return 0
+                }
             // The free refusals first: standing verdicts other passes paid dials for.
-            val folded = foldedAway(candidates)
+            val folded = foldedAway(held, candidates)
             for ((alias, canonical) in folded) {
                 outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}", tested = false)
             }
             val remaining = candidates.filter { it !in folded }
-            val shaky = inconsistent(remaining)
+            val shaky = inconsistent(held, remaining)
             for (url in shaky) {
                 outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
             }
@@ -250,19 +266,7 @@ class FitnessPass(
             var stoppedBy: String? = null
             // An inherited verdict is written only when it would change something: re-stamping
             // `measured-at` on what this pass did not test would make it immortal.
-            val untested = outcomes.entries.filterNot { it.value.tested }.map { it.key }
-            val standing =
-                try {
-                    record.fitnessGrades(untested)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println(
-                        "router: fitness [$label] — could not read the standing grades (${e.javaClass.simpleName}); " +
-                            "re-signing every inherited verdict this pass rather than skipping one the record needs",
-                    )
-                    emptyMap()
-                }
+            val standing = held.fitness
             // Ordered by url and resumed where the last batch stopped, so the wedge limits below do
             // not drop the same tail every pass.
             val order = outcomes.keys.sortedBy { it.url }

@@ -326,15 +326,13 @@ class AliasFoldingTest {
             val up = upstreams()
             val fold = folding(store, up)
             assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
-            assertEquals(mapOf(alias to canonical), fold.foldsAmong(listOf(alias)))
+            assertEquals(mapOf(alias to canonical), AliasFolding.foldsAmong(RelayVerdictRecord(store, signer).load(listOf(alias)), listOf(alias)))
 
             val fitness =
                 FitnessPass(
                     record = RelayVerdictRecord(store, signer),
                     probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
                     client = EmptyNostrClient(),
-                    foldedAway = fold::foldsAmong,
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )

@@ -88,16 +88,6 @@ class AliasFolding(
     }
 
     /**
-     * Every candidate a stored fold names, onto the url it folds onto, whether or not that url is
-     * among them: a known alias is graded `alias` whatever else is in the batch.
-     */
-    suspend fun foldsAmong(candidates: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
-        if (candidates.isEmpty()) return emptyMap()
-        val known = view(candidates)
-        return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
-    }
-
-    /**
      * The stored verdicts over [candidates] in a map of their own: a narrower set replaced into
      * [aliases] would drop the canonicals of aliases outside it mid-fold. Only [measure] replaces.
      */
@@ -645,6 +635,18 @@ class AliasFolding(
 
     companion object {
         const val DEFAULT_DIAL_CONCURRENCY = MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+
+        /**
+         * Every candidate a fold in [held] names, onto the url it folds onto, whether or not that
+         * url is among them: a known alias is graded `alias` whatever else is in the batch.
+         */
+        fun foldsAmong(
+            held: RelayVerdictRecord.Verdicts,
+            candidates: List<NormalizedRelayUrl>,
+        ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+            val known = RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
+            return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
+        }
 
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"

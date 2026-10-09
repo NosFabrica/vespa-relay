@@ -183,8 +183,6 @@ class WriteOrderForensicProbe {
                         idleMs = { 20L },
                     ),
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
                 publishDeadlineMs = 50L,
                 reconcile = { _, _ -> },

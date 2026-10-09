@@ -238,9 +238,10 @@ untested verdict becomes immortal — the trap that header already describes for
 the event clock, one field over. So an inherited verdict is written only when it
 would CHANGE something: the record carries no such grade, carries a different
 one, or carries it under a superseded epoch or aged past the TTL.
-`RelayVerdictRecord.fitnessGrades` is the one chunked read that answers it, and
-a read that FAILS falls back to writing everything — skipping a write the record
-needs is the worse of the two mistakes. It is also most of a third of the loop:
+The batch's one `RelayVerdictRecord.load` answers it (`Verdicts.fitness`),
+beside the folds and the stability refusals; a load that FAILS measures nothing
+that batch, since without the standing folds an alias would be dialled and
+signed as its own relay. It is also most of a third of the loop:
 6,192 of the 20,075 graded records on staging are `alias` or `inconsistent`.
 
 **Two things about #172 that are NOT the fix, recorded so they are not tried

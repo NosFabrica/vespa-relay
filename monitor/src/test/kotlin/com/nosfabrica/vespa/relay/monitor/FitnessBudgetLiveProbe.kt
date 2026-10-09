@@ -188,8 +188,6 @@ class FitnessBudgetLiveProbe {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe,
                     client = client,
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = processors.of("fitness"),
                     document = document,
                 )

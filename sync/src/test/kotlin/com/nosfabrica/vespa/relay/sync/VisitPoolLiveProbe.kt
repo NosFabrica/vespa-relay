@@ -112,8 +112,6 @@ class VisitPoolLiveProbe {
                         record = record,
                         probe = AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { 15_000L },
                         client = client,
-                        foldedAway = { emptyMap() },
-                        inconsistent = { emptySet() },
                         progress = processors.of("fitness"),
                     )
                 val started = System.currentTimeMillis()

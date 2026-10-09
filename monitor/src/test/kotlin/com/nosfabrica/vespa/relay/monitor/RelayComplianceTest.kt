@@ -229,8 +229,6 @@ class RelayComplianceTest {
                     idleMs = { 200L },
                 ),
             client = EmptyNostrClient(),
-            foldedAway = { emptyMap() },
-            inconsistent = { emptySet() },
             progress = Processors().of("fitness"),
         ).measure("compliance", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
@@ -299,8 +297,6 @@ class RelayComplianceTest {
                         idleMs = { 60L },
                     ),
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
             ).measure("cut page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
@@ -347,8 +343,6 @@ class RelayComplianceTest {
                         idleMs = { idleMs },
                     ),
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
             ).measure("cut on page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 

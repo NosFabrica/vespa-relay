@@ -114,9 +114,6 @@ class FastLaneTest {
                 record = RelayVerdictRecord(store, signer),
                 probe = AliasProbe(fetch = fetch, target = 40, page = 40, fallbackPage = 40),
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                // The wire under test: fitness reads the gate's standing verdicts through this.
-                inconsistent = { u -> stability.applyVerdicts(u).toSet() },
                 progress = processors.of("fitness"),
             )
         val entry = { handle: Processors.Handle?, run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int ->

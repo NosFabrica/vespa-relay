@@ -97,8 +97,6 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = handle,
                     publishDeadlineMs = 100L,
                 )
@@ -165,8 +163,7 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { urls -> urls.filter { it in folded }.associateWith { canonical } },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, urls -> urls.filter { it in folded }.associateWith { canonical } },
                     progress = handle,
                 )
 
@@ -217,8 +214,6 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                 )
@@ -274,8 +269,6 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                 )

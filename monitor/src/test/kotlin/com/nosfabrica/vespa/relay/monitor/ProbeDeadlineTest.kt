@@ -99,8 +99,6 @@ class ProbeDeadlineTest {
                             if (url in fine) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = null)
                         },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
             pass.measure("blind batch", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
@@ -115,8 +113,6 @@ class ProbeDeadlineTest {
                 record = RelayVerdictRecord(refused, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
             ).measure("refused corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
@@ -133,8 +129,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 ).measure("proxy down", urls, reach = { Reach.TRANSPORT_DOWN }, onEvent = {}, sockets = Sockets.NONE)
                 for (url in urls) assertNull(gradeOf(store, url), "our proxy being down was signed onto ${url.url}")
@@ -156,8 +150,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 ).measure(
                     "dark",
@@ -198,8 +190,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 ).measure(
                     "one",
@@ -246,8 +236,6 @@ class ProbeDeadlineTest {
                     record = record,
                     probe = probe(stalling()),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = processors.of("fitness"),
                 )
 
@@ -349,8 +337,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(newStore(), signer),
                     probe = probe(stalling()),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = handle,
                 )
             // A suspended coroutine has no stack frame to dump, so the held set is how a stall is diagnosed.
@@ -391,8 +377,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = null) },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
             pass.measure("silence", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
@@ -405,8 +389,6 @@ class ProbeDeadlineTest {
                 record = RelayVerdictRecord(refusing, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = emptyList(), reason = "closed: blocked: can't handle empty filters") },
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
             ).measure("refusal", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.PRIME.value, gradeOf(refusing, wedged))

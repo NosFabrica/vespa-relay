@@ -155,9 +155,7 @@ class MonitorEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
-                // Every stored fold, canonical in the batch or not; a stand-in is routing, never a verdict.
-                foldedAway = { urls -> folding?.foldsAmong(urls) ?: emptyMap() },
-                inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
+                // The fold and the stability gate are read off the pass's one load of the record.
                 progress = processors.of(FITNESS_PROCESSOR),
                 // The per-url transport, so a `.onion` document is fetched inside the circuit.
                 document = RelayDocument(peers::httpFor),
