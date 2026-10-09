@@ -26,6 +26,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
+ * The sweep a `SWEEP_ORPHAN_SCORES_ON_START` value asks for: null when unset, otherwise a dry run
+ * unless it is exactly `true`. Deliberately not a switch: an unexpected value must read as the dry run.
+ */
+fun orphanSweepDryRun(setting: String?): Boolean? = setting?.trim()?.takeIf { it.isNotEmpty() }?.let { it != "true" }
+
+/**
  * Delete every kind 30382 signed by a service no stored 10040 names (`SWEEP_ORPHAN_SCORES_ON_START`).
  * A deletion is not a tombstone: the by-kind 30382 stream re-downloads what this frees unless its
  * filter is narrowed too. [dryRun] reports and writes nothing.

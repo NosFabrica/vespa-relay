@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
+import com.nosfabrica.vespa.relay.maintenance.orphanSweepDryRun
 import com.nosfabrica.vespa.relay.maintenance.parseReindexKinds
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
@@ -244,9 +245,8 @@ fun main() {
     } else if (reindexKinds != null) {
         System.err.println("relay: REINDEX_FTS_KINDS is set but REINDEX_FTS_ON_START is not true — no reindex runs")
     }
-    // Set at all runs the sweep; only true lets it delete.
-    env.strictFlag("SWEEP_ORPHAN_SCORES_ON_START")?.let { delete ->
-        launchOrphanScoreSweep(maintenanceScope, store, dryRun = !delete)
+    orphanSweepDryRun(env["SWEEP_ORPHAN_SCORES_ON_START"])?.let { dryRun ->
+        launchOrphanScoreSweep(maintenanceScope, store, dryRun)
     }
     // Seeded from the state file so a restart serves the last document until the first rollup.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
