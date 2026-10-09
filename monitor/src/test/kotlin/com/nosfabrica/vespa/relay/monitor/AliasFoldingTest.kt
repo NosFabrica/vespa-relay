@@ -321,6 +321,25 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a read over a narrower set leaves what the fold holds untouched`() =
+        runBlocking {
+            // The mirror's roster reads one stream's urls at a time, outside the monitor's pass gate.
+            val aliases = RelayAliases()
+            val fold = folding(newStore(), upstreams(), aliases = aliases)
+            val group = listOf(canonical, alias)
+            assertEquals(1, fold.measure("t", group, canDial = { true }))
+            val held = aliases.verdicts()
+            val measured = group.map { aliases.measured(it) }
+
+            assertEquals(mapOf(alias to canonical), fold.applyVerdicts(group).aliases)
+            fold.applyVerdicts(listOf(canonical))
+            fold.applyVerdicts(listOf(alias))
+
+            assertEquals(held, aliases.verdicts(), "a read changed the fold's verdicts")
+            assertEquals(measured, group.map { aliases.measured(it) }, "a read dropped a canonical the fold had measured")
+        }
+
+    @Test
     fun `apply never dials, however much there is to learn`() =
         runBlocking {
             val up = upstreams()
