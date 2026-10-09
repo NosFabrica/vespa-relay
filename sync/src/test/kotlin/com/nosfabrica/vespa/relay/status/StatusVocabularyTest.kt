@@ -157,6 +157,7 @@ class StatusVocabularyTest {
             RelayStatusReport.PrimeUnit(
                 relay = busy.url,
                 stream = "content",
+                coverageKeys = listOf("content"),
                 askKeys = setOf(ask.toJson(), secondAsk.toJson()),
                 visiting = true,
                 live = true,
@@ -167,7 +168,7 @@ class StatusVocabularyTest {
                 abortSaid = "error: too many kinds in filter",
                 abortAtSec = now - 900,
             ),
-            RelayStatusReport.PrimeUnit(quiet.url, "content", setOf(ask.toJson()), visiting = false, live = false),
+            RelayStatusReport.PrimeUnit(quiet.url, "content", listOf("content"), setOf(ask.toJson()), visiting = false, live = false),
         )
 
     /** One stream carrying every optional block: the caps, the clocks, and who is held right now. */

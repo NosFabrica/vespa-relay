@@ -680,6 +680,12 @@ class SyncBands(
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE
 
+        /** A stream's re-fetch bands as the pool walks them: its own, else one unbounded band that never re-fetches. */
+        internal fun catchUpBands(stream: SyncStream): List<SyncTier> = stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = NEVER)) }
+
+        /** Every key [stream]'s catch-up coverage is filed under, one per band; the report joins on these. */
+        internal fun coverageKeys(stream: SyncStream): List<String> = catchUpBands(stream).let { tiers -> tiers.map { SyncTier.keyFor(stream.name, tiers, it) } }
+
         /**
          * The band-clock section's key in the state file. `#` cannot start a HOCON key that
          * reaches us as a stream name, so it can never collide with one.

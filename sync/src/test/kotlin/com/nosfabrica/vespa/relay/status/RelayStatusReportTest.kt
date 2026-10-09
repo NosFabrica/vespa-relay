@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.config.SyncDirection
+import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
@@ -62,6 +65,7 @@ class RelayStatusReportTest {
     ) = RelayStatusReport.PrimeUnit(
         relay = relay,
         stream = stream,
+        coverageKeys = listOf(stream),
         askKeys = askKeys.toSet(),
         visiting = visiting,
         live = live,
@@ -478,13 +482,58 @@ class RelayStatusReportTest {
             rowsOf(
                 RelayStatusReport.build(
                     bands.snapshot(),
-                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", setOf(filter.toJson()), visiting = false, live = false)),
+                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", listOf("content"), setOf(filter.toJson()), visiting = false, live = false)),
                     1_700_000_000,
                 )!!,
             ).single()
         assertEquals("complete", row["syncStatus"]!!.jsonPrimitive.content, "a drained band the real SyncBands wrote must reach its own roster row")
         assertEquals(1, row["settled"]!!.jsonPrimitive.int)
         assertEquals(url.url, row["relay"]!!.jsonPrimitive.content, "and the row names the relay by the url both sides key on")
+    }
+
+    @Test
+    fun `a banded stream's coverage reaches its row, and an ask is settled only in every band`() {
+        // A stream with refetch tiers files each band under its own key; the row must find all of them.
+        val tiers = listOf(SyncTier(maxAgeSeconds = 30L * 86_400, everySeconds = 86_400), SyncTier(maxAgeSeconds = null, everySeconds = 7L * 86_400))
+        val stream = SyncStream("content", SyncDirection.DOWN, Filter(kinds = listOf(1)), emptyList(), trusted = false, refetchTiers = tiers)
+        val keys = SyncBands.coverageKeys(stream)
+        assertEquals(2, keys.size, "one coverage key per band")
+        val url = RelayUrlNormalizer.normalize("wss://banded.example")
+        val filter = Filter(kinds = listOf(1))
+        val bands = SyncBands(null)
+
+        fun walk(
+            key: String,
+            drained: Boolean,
+        ) = bands.record(
+            key,
+            url,
+            filter,
+            observedMin = 1_600_000_000,
+            observedMax = 1_700_000_000,
+            paged = true,
+            observedByKind = mapOf(1 to SyncCoverage.Span(1_600_000_000, 1_700_000_000, complete = drained)),
+            drained = drained,
+        )
+
+        fun row() =
+            rowsOf(
+                RelayStatusReport.build(
+                    bands.snapshot(),
+                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", keys, setOf(filter.toJson()), visiting = false, live = false)),
+                    1_700_000_000,
+                )!!,
+            ).single()
+
+        walk(keys[0], drained = true)
+        walk(keys[1], drained = false)
+        assertEquals("paging", row()["syncStatus"]!!.jsonPrimitive.content, "the older band is still open")
+        assertEquals(1, row()["bands"]!!.jsonPrimitive.int, "one ask with coverage, however many bands hold it")
+        assertNull(row()["settled"], "settled in one band is not settled")
+
+        walk(keys[1], drained = true)
+        assertEquals("complete", row()["syncStatus"]!!.jsonPrimitive.content)
+        assertEquals(1, row()["settled"]!!.jsonPrimitive.int)
     }
 
     @Test

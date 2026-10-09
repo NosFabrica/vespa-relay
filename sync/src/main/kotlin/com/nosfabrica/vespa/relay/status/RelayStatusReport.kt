@@ -40,6 +40,8 @@ object RelayStatusReport {
         /** The relay's normalized url, verbatim. */
         val relay: String,
         val stream: String,
+        /** The snapshot keys this stream's coverage is filed under: its name, or one `name#tier` per band. */
+        val coverageKeys: List<String>,
         /** Every ask this unit owes, as the filter JSON the band snapshot is keyed by. */
         val askKeys: Set<String>,
         /** A worker is inside this unit's visit right now. */
@@ -190,8 +192,7 @@ object RelayStatusReport {
                 // No coverage at all: only the abort tells refused from not yet reached.
                 band.bands == 0 -> if (unit.abortReason != null) REFUSED else NOT_STARTED
 
-                // Every owed ask settled, never merely every band. A unit
-                // owing nothing cannot be complete.
+                // Every owed ask settled in every band. A unit owing nothing cannot be complete.
                 unit.askKeys.isNotEmpty() && band.settled >= unit.askKeys.size -> COMPLETE
 
                 else -> PAGING
@@ -226,10 +227,13 @@ object RelayStatusReport {
 
     /** What one unit's owed asks have covered, gathered off the snapshot. */
     private class Folded {
-        /** Owed asks with any coverage. */
-        var bands = 0
+        /** Per owed ask with any coverage, how many of its bands are settled. */
+        val settledBands = HashMap<String, Int>()
 
-        /** Owed asks whose past is settled. */
+        /** Owed asks with any coverage. */
+        val bands get() = settledBands.size
+
+        /** Owed asks settled in every band; filled in once the walk is done. */
         var settled = 0
         var min: Long? = null
         var max: Long? = null
@@ -246,11 +250,11 @@ object RelayStatusReport {
     ): List<Folded> {
         val out = List(units.size) { Folded() }
         if (doc == null) return out
-        // Nested stream → relay → index, so streams the roster no longer names are skipped whole.
+        // Nested coverage key → relay → index, so streams the roster no longer names are skipped whole.
         val at = HashMap<String, HashMap<String, Int>>()
-        units.forEachIndexed { i, u -> at.getOrPut(u.stream) { HashMap() }[u.relay] = i }
-        for ((stream, byFilter) in doc) {
-            val inStream = at[stream] ?: continue
+        units.forEachIndexed { i, u -> u.coverageKeys.forEach { key -> at.getOrPut(key) { HashMap() }[u.relay] = i } }
+        for ((key, byFilter) in doc) {
+            val inStream = at[key] ?: continue
             val filters = byFilter as? JsonObject ?: continue
             for ((filter, byRelay) in filters) {
                 val relays = byRelay as? JsonObject ?: continue
@@ -260,9 +264,9 @@ object RelayStatusReport {
                     // A band for a filter this unit no longer asks is another unit's history.
                     if (filter !in units[i].askKeys) continue
                     val f = out[i]
-                    f.bands++
                     // An absent `complete` reads as not settled: the claim that costs a re-walk.
-                    if (band["complete"]?.jsonPrimitive?.booleanOrNull == true) f.settled++
+                    val settled = band["complete"]?.jsonPrimitive?.booleanOrNull == true
+                    f.settledBands.merge(filter, if (settled) 1 else 0, Int::plus)
                     band["min"]
                         ?.jsonPrimitive
                         ?.longOrNull
@@ -280,6 +284,7 @@ object RelayStatusReport {
                 }
             }
         }
+        out.forEachIndexed { i, f -> f.settled = f.settledBands.values.count { it >= units[i].coverageKeys.size } }
         return out
     }
 

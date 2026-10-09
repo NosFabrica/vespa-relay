@@ -242,6 +242,7 @@ internal class VisitPool(
         // One pass for the whole table; the same question asked per row would scan the map
         // thousands of times.
         val cannotReconcile = bands.cannotReconcileByUnit()
+        val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
         val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
@@ -252,6 +253,7 @@ internal class VisitPool(
                         relay = url.url,
                         stream = stream,
                         // The same strings the bands are keyed under, so the report joins on them.
+                        coverageKeys = coverageKeys[stream] ?: listOf(stream),
                         askKeys = unit.identity,
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
@@ -621,7 +623,7 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
-        val tiers = ask.stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = SyncBands.NEVER)) }
+        val tiers = SyncBands.catchUpBands(ask.stream)
         val now = nowSeconds()
         // Oldest-last, so the catch-up of recent history is never queued behind a re-page of
         // the tail. Each band keeps its own coverage: a band expires, and only its legs re-open.
