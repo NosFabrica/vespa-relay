@@ -1055,7 +1055,8 @@ internal class VisitPool(
 
     /**
      * Earns this unit a live permit by evicting the same stream's weakest tail, or returns
-     * null. The candidate must win on yield, not tie, so a pool of equals does not churn.
+     * null. The candidate must win on yield, not tie, so a pool of equals does not churn. The
+     * evicted tail's permit is handed over, never released, so no other worker can take it between.
      */
     private fun earnTail(candidate: VisitKey): PoolLimits.Hold? {
         val nowMs = System.currentTimeMillis()
@@ -1072,20 +1073,26 @@ internal class VisitPool(
             }
         }
         if (weakest == null || weakestScore >= mine) return null
+        // Another path dropped it first and released its permit; ask for one like anyone else.
+        val handedOver = detachTail(weakest) ?: return limits.tryHold(candidate.stream, POOL_LIVE)
         evictedTails.incrementAndGet()
-        dropTail(weakest)
         if (wantedBy(currentRoster, weakest)) queue.offer(weakest)
-        return limits.tryHold(candidate.stream, POOL_LIVE)
+        return handedOver
     }
 
     private fun dropTail(key: VisitKey) {
-        val tail = tails.remove(key) ?: return
+        detachTail(key)?.release()
+    }
+
+    /** Takes [key]'s tail down and returns its live permit unreleased, or null when none was up. */
+    private fun detachTail(key: VisitKey): PoolLimits.Hold? {
+        val tail = tails.remove(key) ?: return null
         reads.untail(tail.subId)
         sockets.release(key.url)
-        tail.hold.release()
         // The revisit timer was armed on the tailed cadence; let the next visit arm the untailed one.
         queue.disarm(key)
         phasesChanged()
+        return tail.hold
     }
 
     companion object {
