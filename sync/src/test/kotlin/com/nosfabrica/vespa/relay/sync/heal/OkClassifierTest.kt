@@ -41,12 +41,16 @@ class OkClassifierTest {
     }
 
     @Test
-    fun `auth-required, restricted and blocked each close the relay for writes`() {
+    fun `restricted and blocked each close the relay for writes`() {
         listOf(
-            "auth-required: we only accept events from authenticated users",
             "restricted: not on the allow list",
             "blocked: you are banned",
         ).forEach { assertEquals(PushVerdict.CLOSED, classify(false, it), "for '$it'") }
+    }
+
+    @Test
+    fun `auth-required asks for a login, which is not a refusal`() {
+        assertEquals(PushVerdict.AUTH, classify(false, "auth-required: we only accept events from authenticated users"))
     }
 
     @Test
@@ -81,7 +85,8 @@ class OkClassifierTest {
 
     @Test
     fun `the prefix is matched case-insensitively and past surrounding whitespace`() {
-        assertEquals(PushVerdict.CLOSED, classify(false, "  AUTH-REQUIRED: sign in  "))
+        assertEquals(PushVerdict.CLOSED, classify(false, "  RESTRICTED: members only  "))
+        assertEquals(PushVerdict.AUTH, classify(false, "  AUTH-REQUIRED: sign in  "))
     }
 }
 
