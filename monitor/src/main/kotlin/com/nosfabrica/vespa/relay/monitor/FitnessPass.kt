@@ -532,8 +532,15 @@ class FitnessPass(
         }
         val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
 
-        // Handed over before any further dial, so the per-url deadline cannot leave the url with no verdict.
-        settled(Outcome(Verdict.PRIME, evidence, rttReadMs = readMs))
+        // Handed over before any further dial, so the per-url deadline cannot leave the url with no
+        // verdict, and already graded on page one so a cut cannot publish a grade page one refutes.
+        settled(
+            if (compliance.decide(walked) == RelayCompliance.Verdict.NONCOMPLIANT) {
+                Outcome(Verdict.NONCOMPLIANT, NONCOMPLIANT_EVIDENCE, rttReadMs = readMs, compliant = factOf(walked))
+            } else {
+                Outcome(Verdict.PRIME, evidence, rttReadMs = readMs, compliant = factOf(walked))
+            },
+        )
 
         // The second page, through the rung that answered, under its own clock: a cut publishes
         // no `pageable` claim and no refusal.
@@ -588,7 +595,7 @@ class FitnessPass(
         if (compliance.decide(checked) == RelayCompliance.Verdict.NONCOMPLIANT) {
             return Outcome(
                 Verdict.NONCOMPLIANT,
-                "answered with events the filter did not ask for",
+                NONCOMPLIANT_EVIDENCE,
                 pageable = pageable,
                 rttReadMs = readMs,
                 compliant = factOf(checked),
@@ -866,6 +873,9 @@ class FitnessPass(
         const val NETWORK_CLEARNET = "clearnet"
 
         const val NETWORK_TOR = "tor"
+
+        /** The `noncompliant` grade's evidence, one sentence whichever page decided it. */
+        const val NONCOMPLIANT_EVIDENCE = "answered with events the filter did not ask for"
 
         /** Events per fitness ask; the pass dials the whole corpus, so the target is its cost. */
         const val FITNESS_TARGET = 20

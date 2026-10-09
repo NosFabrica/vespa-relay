@@ -321,6 +321,47 @@ class RelayComplianceTest {
         }
 
     @Test
+    fun `a url the deadline cuts during page two keeps the grade page one earned`(): Unit =
+        runBlocking {
+            // Page one alone is off-window past both bars; the per-url clock fires while page two is out.
+            val store = newStore()
+            val mixed = signed(kind = 1, at = settled, n = 15) + signed(kind = 1, at = nowSeconds(), n = 5)
+            val idleMs = 100L
+            val fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page = { _, want, until, _ ->
+                if (until != null && until < settled - 10) {
+                    kotlinx.coroutines.CompletableDeferred<AliasProbe.Page>().await()
+                } else {
+                    // Late enough that the per-url deadline lands inside page two's own budget.
+                    kotlinx.coroutines.delay(AliasProbe.WINDOWS_PER_URL * idleMs - 2 * idleMs)
+                    AliasProbe.Page(mixed.take(want))
+                }
+            }
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(
+                        fetch = fetch,
+                        target = FitnessPass.FITNESS_TARGET,
+                        page = FitnessPass.FITNESS_TARGET,
+                        fallbackPage = FitnessPass.FITNESS_TARGET,
+                        idleMs = { idleMs },
+                    ),
+                client = EmptyNostrClient(),
+                foldedAway = { emptyMap() },
+                inconsistent = { emptySet() },
+                progress = Processors().of("fitness"),
+            ).measure("cut on page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+
+            val published =
+                store
+                    .query<Event>(
+                        Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
+                    ).maxByOrNull { it.createdAt }
+            assertEquals("noncompliant", published?.tags?.firstOrNull { it[0] == RelayVerdictRecord.LABEL_TAG }?.getOrNull(1))
+            assertEquals("false", published?.tags?.firstOrNull { it[0] == RelayVerdictRecord.COMPLIANT_TAG }?.getOrNull(1))
+        }
+
+    @Test
     fun `a relay ignoring the cursor entirely is still unpageable, and now says the other half too`(): Unit =
         runBlocking {
             val (label, facts) = grade(newStore(), signed(kind = 1, at = nowSeconds(), n = 20))

@@ -290,3 +290,9 @@ the same set. The fast lane passes only the urls named since its last look, so
 a known alias arriving without its canonical became a stand-in, was dialled
 and signed `prime`, and the next sweep re-signed it `alias`. `foldsAmong`
 answers from the stored verdicts alone.
+
+**The first hand-over is graded on page one.** `settled` handed over `prime`
+before compliance was decided, so a per-url deadline firing during page two
+published `prime` for a relay whose first page alone was `noncompliant`. Page
+one is now judged before the hand-over; the final grade on both pages still
+replaces it when the dial finishes.
