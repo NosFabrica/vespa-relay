@@ -31,6 +31,7 @@ import java.io.EOFException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -46,7 +47,7 @@ class RelayFrameLimitTest {
 
     private fun <T> serving(
         limits: RelayLimits,
-        block: (Socket) -> T,
+        block: (Socket, Int) -> T,
     ): T {
         val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl)
         val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), limits = limits, wait = false)
@@ -62,7 +63,7 @@ class RelayFrameLimitTest {
                 socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
                 socket.soTimeout = 5_000
                 upgrade(socket, port)
-                block(socket)
+                block(socket, port)
             }
         } finally {
             server.stop(0, 0)
@@ -140,22 +141,31 @@ class RelayFrameLimitTest {
 
     @Test
     fun `a frame declaring more than the cap is refused from its header`() {
-        serving(relayLimitsFromEnv(emptyMap())) { socket ->
-            // A gigabyte declared, a handful of bytes sent: the server must not wait for the rest.
-            socket.getOutputStream().textFrame("[\"REQ\"".toByteArray(), declared = 1L shl 30)
+        val limits = relayLimitsFromEnv(emptyMap())
+        serving(limits) { socket, port ->
+            // One byte over the cap, a handful sent: a server without the cap would sit waiting for the
+            // rest, so a timeout is the failure. A 1009 close or a dropped connection is the refusal.
+            socket.getOutputStream().textFrame("[\"REQ\"".toByteArray(), declared = maxFrameBytes(limits) + 1)
             val input = DataInputStream(socket.getInputStream())
             while (true) {
-                // A dropped connection is not a refusal: it is also what a server that tried to buffer the gigabyte does.
                 val frame =
                     try {
                         input.nextFrame()
                     } catch (_: SocketTimeoutException) {
                         fail("the server is still reading a frame it should have refused from its header")
-                    } ?: fail("the connection dropped without a close frame")
+                    } catch (_: SocketException) {
+                        null
+                    } ?: break
                 if (frame.opcode != 0x8) continue
                 val code = ((frame.payload[0].toInt() and 0xFF) shl 8) or (frame.payload[1].toInt() and 0xFF)
                 assertEquals(1009, code, "closed as too big")
                 break
+            }
+            // Refused, not fallen over: the next client is served.
+            Socket().use { next ->
+                next.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+                next.soTimeout = 5_000
+                upgrade(next, port)
             }
         }
     }
@@ -165,7 +175,7 @@ class RelayFrameLimitTest {
     fun `a message at the engine's length in three-byte characters is still read`() {
         val subId = "€".repeat(200)
         val req = """["REQ","$subId",{"ids":["${"0".repeat(64)}"],"search":"include:spam"}]"""
-        serving(relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to req.length.toString()))) { socket ->
+        serving(relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to req.length.toString()))) { socket, _ ->
             socket.getOutputStream().textFrame(req.toByteArray(Charsets.UTF_8))
             val input = DataInputStream(socket.getInputStream())
             while (true) {
