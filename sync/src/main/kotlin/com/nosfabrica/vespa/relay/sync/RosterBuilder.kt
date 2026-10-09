@@ -78,7 +78,7 @@ internal class RosterBuilder(
         val identity: Set<String>,
     ) {
         /** The asks binding each author; built on the first tail event, once per roster generation. */
-        private val byAuthor: Map<String, List<Ask>> by lazy {
+        @PublishedApi internal val byAuthor: Map<String, List<Ask>> by lazy {
             val out = HashMap<String, MutableList<Ask>>()
             for (ask in asks) {
                 ask.filter.authors
@@ -88,15 +88,20 @@ internal class RosterBuilder(
             out
         }
 
-        private val unbound: List<Ask> by lazy { asks.filter { it.filter.authors.isNullOrEmpty() } }
+        @PublishedApi internal val unbound: List<Ask> by lazy { asks.filter { it.filter.authors.isNullOrEmpty() } }
 
         /**
-         * The asks an event by [pubKey] could match: those naming it, and those naming no author.
-         * Every other ask's `authors` excludes the event, so [Filter.match] need not be asked.
+         * Visits the asks an event by [pubKey] could match: those naming it, then those naming no
+         * author. Every other ask's `authors` excludes the event. Allocates nothing per call.
          */
-        fun candidatesFor(pubKey: String): List<Ask> {
-            val bound = byAuthor[pubKey] ?: return unbound
-            return if (unbound.isEmpty()) bound else bound + unbound
+        inline fun forEachCandidate(
+            pubKey: String,
+            action: (Ask) -> Unit,
+        ) {
+            val bound = byAuthor[pubKey]
+            if (bound != null) for (i in bound.indices) action(bound[i])
+            val free = unbound
+            for (i in free.indices) action(free[i])
         }
     }
 

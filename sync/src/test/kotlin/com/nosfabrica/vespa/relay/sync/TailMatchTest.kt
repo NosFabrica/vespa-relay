@@ -53,7 +53,7 @@ class TailMatchTest {
         repeat(500) { n ->
             val event = PoolFixture.event(n, 1_700_000_000L + n, kinds.random(random), (authors + stranger).random(random))
             val scanned = asks.filter { it.filter.match(event) }
-            val indexed = unit.candidatesFor(event.pubKey).filter { it.filter.match(event) }
+            val indexed = unit.candidates(event.pubKey).filter { it.filter.match(event) }
             assertEquals(scanned.toSet(), indexed.toSet(), "event by ${event.pubKey.take(8)} kind ${event.kind}")
         }
     }
@@ -62,7 +62,9 @@ class TailMatchTest {
     fun `a unit of bound asks alone offers nothing to a stranger`() {
         val asks = List(3) { RosterBuilder.Ask(stream, Filter(kinds = listOf(1), authors = listOf("%064x".format(it)))) }
         val unit = RosterBuilder.UnitAsks(asks, asks.map { it.filter.toJson() }.toSet())
-        assertEquals(emptyList(), unit.candidatesFor("f".repeat(64)))
-        assertEquals(listOf(asks[1]), unit.candidatesFor("%064x".format(1)))
+        assertEquals(emptyList(), unit.candidates("f".repeat(64)))
+        assertEquals(listOf(asks[1]), unit.candidates("%064x".format(1)))
     }
+
+    private fun RosterBuilder.UnitAsks.candidates(pubKey: String): List<RosterBuilder.Ask> = ArrayList<RosterBuilder.Ask>().also { out -> forEachCandidate(pubKey) { out += it } }
 }

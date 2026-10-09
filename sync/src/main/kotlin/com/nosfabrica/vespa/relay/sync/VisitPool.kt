@@ -1028,11 +1028,8 @@ internal class VisitPool(
                 var allTrusted = true
                 var healContent = false
                 var healRetractions = false
-                for (ask in currentRoster.asks[url]
-                    ?.get(key.stream)
-                    ?.candidatesFor(event.pubKey)
-                    .orEmpty()) {
-                    if (!ask.filter.match(event)) continue
+                currentRoster.asks[url]?.get(key.stream)?.forEachCandidate(event.pubKey) { ask ->
+                    if (!ask.filter.match(event)) return@forEachCandidate
                     any = true
                     allTrusted = allTrusted && ask.stream.trusted
                     healContent = healContent || ask.stream.healContent
