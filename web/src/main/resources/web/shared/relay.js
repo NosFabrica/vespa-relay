@@ -70,6 +70,9 @@ export class Relay {
   connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.opening) return this.opening;
+    // A socket still closing is replaced before its close event lands, and that event no longer
+    // speaks for this relay: what was outstanding on it fails now, not at its own timeout.
+    if (this.ws) this.failPending();
     this.opening = new Promise((resolve, reject) => {
       let settled = false;
       const ws = new WebSocket(this.url);
@@ -89,10 +92,7 @@ export class Relay {
         this.ws = null;
         this.challenge = null;
         this.authed = false;
-        for (const s of this.subs.values()) s.finish(new Error("connection closed"));
-        this.subs.clear();
-        // A count outstanding on a socket that is gone is refused, not timed out.
-        this.failCounts(REFUSED);
+        this.failPending();
         this.wakeChallengeWaiters();
         this.onclose && this.onclose();
       };
@@ -141,6 +141,20 @@ export class Relay {
   failCounts(reason) {
     if (!this.counts.size) return;
     for (const finish of [...this.counts.values()]) finish(reason);
+  }
+
+  /**
+   * Fail every ask outstanding on a socket that is gone. A challenge waiter is left alone: the
+   * replacement socket's challenge is the one it wants.
+   */
+  failPending() {
+    for (const s of [...this.subs.values()]) s.finish(new Error("connection closed"));
+    this.subs.clear();
+    // A count outstanding on a socket that is gone is refused, not timed out.
+    this.failCounts(REFUSED);
+    const oks = [...this.okWaiters.values()];
+    this.okWaiters.clear();
+    for (const w of oks) w(["OK", null, false, "connection closed"]);
   }
 
   /** Hand the current challenge (or its absence) to everyone waiting on one. */
