@@ -11,7 +11,7 @@ import { postedTo } from "./shared/groups.js";
 import { enrichGroupNames } from "./shared/groupnames.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
-import { nip19Parse, shortNpub } from "./shared/nip19.js";
+import { answers, idHolds, nip19Parse, shortNpub } from "./shared/nip19.js";
 import { njumpFor, tagsWhere, badgeLabel } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
 import { forgetProvenance } from "./provenance.js";
@@ -35,13 +35,15 @@ function headHtml(raw) {
 const emptyState = (title, body) => `<div class="empty"><b>${esc(title)}</b>${esc(body)}</div>`;
 
 async function fetchEntity(conn, p, timeoutMs) {
-  // Replaceable kinds can still hand back more than one event; newest wins.
-  const newest = (evs) => evs.reduce((a, b) => (!a || b.created_at > a.created_at ? b : a), null);
+  // Replaceable kinds can still hand back more than one event; newest wins. A relay may answer
+  // with something it was not asked for, which is dropped.
+  const newest = (evs) => evs.filter((e) => answers(e, p))
+    .reduce((a, b) => (!a || b.created_at > a.created_at ? b : a), null);
   if (p.type === "npub" || p.type === "nprofile") {
     return newest(await conn.req({ kinds: [0], authors: [p.pubkey], limit: 1 }, timeoutMs));
   }
   if (p.type === "note" || p.type === "nevent") {
-    return (await conn.req({ ids: [p.id], limit: 1 }, timeoutMs))[0] || null;
+    return newest(await conn.req({ ids: [p.id], limit: 1 }, timeoutMs));
   }
   return newest(await conn.req({ kinds: [p.kind], authors: [p.author], "#d": [p.d], limit: 1 }, timeoutMs));
 }
@@ -77,7 +79,8 @@ async function fetchFromHints(parsed, stage = () => {}) {
     const r = new Relay(url);
     try {
       const ev = await fetchEntity(r, parsed, HINT_TIMEOUT_MS);
-      if (ev) return { ev, from: url };
+      // A third party's payload: its id must be its own hash. The signature is this relay's to judge.
+      if (ev && (await idHolds(ev)) !== false) return { ev, from: url };
     } catch (e) { /* an unreachable hint is normal; try the next */ }
     finally { try { r.ws && r.ws.close(); } catch (e) {} }
   }

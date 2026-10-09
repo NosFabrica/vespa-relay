@@ -84,6 +84,27 @@ export function addrOf(ev) {
   return `${ev.kind}:${ev.pubkey}:${d}`;
 }
 
+/** Whether [ev] is what the parsed identifier [p] names: its id, or its kind, author and `d`. */
+export function answers(ev, p) {
+  if (!ev || !p) return false;
+  if (p.type === "npub" || p.type === "nprofile") return ev.kind === 0 && ev.pubkey === p.pubkey;
+  if (p.type === "note" || p.type === "nevent") return ev.id === p.id;
+  const d = ((ev.tags || []).find((t) => Array.isArray(t) && t[0] === "d") || [])[1];
+  return ev.kind === p.kind && ev.pubkey === p.author && (typeof d === "string" ? d : "") === p.d;
+}
+
+/**
+ * Whether [ev]'s id is the NIP-01 hash of its own content, so nothing was altered under it.
+ * Null where WebCrypto is missing, as on a plain-http page.
+ */
+export async function idHolds(ev) {
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (!subtle || !ev) return null;
+  const ser = JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+  const h = await subtle.digest("SHA-256", new TextEncoder().encode(ser));
+  return bytesToHex([...new Uint8Array(h)]) === ev.id;
+}
+
 /**
  * An `a` tag's `kind:pubkey:d` as an naddr, or null when the tag is malformed. The TLV length
  * is one byte, so a `d` over 255 UTF-8 bytes has no encoding.
