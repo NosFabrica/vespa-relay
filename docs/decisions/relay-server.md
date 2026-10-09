@@ -188,6 +188,17 @@ quartz's character limit ever saw a message. The cap is three bytes per
 character, the same bound the HTTP body cap uses, and a refused frame closes
 with 1009.
 
+**A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
+Every AUTH by a fresh key started a store walk on the maintenance scope; a
+burst of keys was a burst of walks. The notice is a courtesy, so a saturated
+relay sends none rather than holding a queue that grows with the burst.
+
+**The ban list is synced before it is renamed into place, and a failed write is
+said rather than thrown.** Without the sync a power loss could leave the rename
+pointing at an empty file, which loads as no bans at all. A disk that refuses
+the write keeps the previous file and logs; the ban already applies in memory,
+and throwing turned an enforced ban into an RPC 500.
+
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went
 away: the Kinds table on `/stats.html` covers every kind where the old page

@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 
 /**
  * Fires on each successful NIP-42 AUTH with the pubkey and the connection's channel. Non-suspend:
@@ -50,15 +51,22 @@ class TrustNotice(
     private val store: IEventStore,
     /** Owned by the composition root and cancelled at shutdown, so a check cannot outlive the process. */
     private val scope: CoroutineScope,
+    maxInFlight: Int = MAX_IN_FLIGHT,
 ) {
+    /** A burst of fresh keys signing in costs at most this many store walks; the rest get no notice. */
+    private val inFlight = Semaphore(maxInFlight)
+
     /** The [AuthNotifier] shape: start the walk and return. [send] stays valid after the connection closes. */
     fun check(
         pubkey: HexKey,
         send: (Message) -> Unit,
     ) {
-        scope.launch {
-            notices(pubkey).forEach { send(NoticeMessage(it)) }
-        }
+        // Skipped rather than queued: the notice is a courtesy, and a queue would grow with the burst.
+        if (!inFlight.tryAcquire()) return
+        // On completion, not in the body: a launch into a cancelled scope never runs its body.
+        scope
+            .launch { notices(pubkey).forEach { send(NoticeMessage(it)) } }
+            .invokeOnCompletion { inFlight.release() }
     }
 
     /** At most one notice, the first unmet link. */
@@ -93,6 +101,9 @@ class TrustNotice(
         }
 
     companion object {
+        /** Sign-in checks one relay runs at once. */
+        const val MAX_IN_FLIGHT = 16
+
         /** The whole list, because its `30382:rank` tag is what the next ask is addressed to. */
         internal fun providerListFilter(pubkey: HexKey) =
             Filter(

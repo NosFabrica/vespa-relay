@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicLong
 
@@ -37,7 +38,14 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     val reportFailure = reconcileFailures()
     while (true) {
         attempt++
-        val result = runCatching { store.reconcileTrust(onProgress = progress) }
+        val result =
+            try {
+                Result.success(store.reconcileTrust(onProgress = progress))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         result.onSuccess { r ->
             when {
                 r.services == 0 -> {
