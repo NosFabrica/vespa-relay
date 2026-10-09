@@ -152,7 +152,11 @@ internal class ObserverBackend(
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { gate.through(ctx, filters, timedEose(onEose)) { eose -> gatedLive(filters) { admit -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } } }
+    ) = ranked(ctx) {
+        timedEose(onEose) { onReplayed ->
+            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } }
+        }
+    }
 
     override suspend fun queryRaw(
         ctx: RequestContext,
@@ -161,8 +165,10 @@ internal class ObserverBackend(
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
     ) = ranked(ctx) {
-        gate.through(ctx, filters, timedEose(onEose)) { eose ->
-            gatedLive(filters) { admit -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) }
+        timedEose(onEose) { onReplayed ->
+            gate.through(ctx, filters, onReplayed) { eose ->
+                gatedLive(filters) { admit -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) }
+            }
         }
     }
 
@@ -227,23 +233,29 @@ internal class ObserverBackend(
         }
     }
 
-    /** Starts the clock now; the returned EOSE records the replay span once. */
-    private fun timedEose(onEose: () -> Unit): () -> Unit {
-        if (pressure == null) return onEose
-        val startedNs = System.nanoTime()
-        return {
-            pressure.record((System.nanoTime() - startedNs) / 1_000_000)
-            onEose()
+    /** Runs [block] with an EOSE that records the replay span; a read that ends before its EOSE records nothing. */
+    private suspend fun <T> timedEose(
+        onEose: () -> Unit,
+        block: suspend (eose: () -> Unit) -> T,
+    ): T {
+        val read = pressure?.begin() ?: return block(onEose)
+        try {
+            return block {
+                read.finish()
+                onEose()
+            }
+        } finally {
+            // A no-op after the EOSE; otherwise the read leaves the in-flight count unsampled.
+            read.abandon()
         }
     }
 
     private suspend fun <T> timed(block: suspend () -> T): T {
-        if (pressure == null) return block()
-        val startedNs = System.nanoTime()
+        val read = pressure?.begin() ?: return block()
         try {
             return block()
         } finally {
-            pressure.record((System.nanoTime() - startedNs) / 1_000_000)
+            read.finish()
         }
     }
 }

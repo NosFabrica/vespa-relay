@@ -159,6 +159,56 @@ class ServingPressureTest {
     }
 
     @Test
+    fun `a read still hanging keeps the mean from fading`() {
+        // A stalled store finishes no reads; that silence is the stall, not a quiet relay.
+        var now = 1_000_000L
+        val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })
+        feed(p, 30_000, 60)
+        val hung = p.begin()
+
+        now += 10 * 60_000
+        assertTrue(p.backoffMs() > 0, "ingest must keep yielding while a read hangs: ${p.meanMs()}ms")
+
+        hung.abandon()
+        now += 10 * 60_000
+        assertEquals(0, p.backoffMs(), "once nothing is in flight, the quiet fades as before")
+    }
+
+    @Test
+    fun `a read in flight past the threshold is pressure before it finishes`() {
+        var now = 0L
+        val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })
+        feed(p, 200, 60)
+        p.begin()
+        assertEquals(0, p.backoffMs())
+
+        now += 10_000
+        assertTrue(p.backoffMs() > 0, "a healthy mean must not hide a store that stopped answering")
+        assertTrue(p.meanMs() >= 10_000, "and /pressure reports the stall: ${p.meanMs()}ms")
+    }
+
+    @Test
+    fun `a read ended twice is one sample and leaves nothing in flight`() {
+        // The EOSE and the call's exit both end a REQ's read.
+        var now = 0L
+        val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })
+        val read = p.begin()
+        now += 50
+        read.finish()
+        read.abandon()
+        read.finish()
+        assertEquals(1, p.sampleCount())
+
+        val dropped = p.begin()
+        dropped.abandon()
+        dropped.finish()
+        assertEquals(1, p.sampleCount(), "a read abandoned before its EOSE is no sample")
+
+        now += 10 * 60_000
+        assertEquals(0, p.meanMs(), "and nothing it began still holds the mean up")
+    }
+
+    @Test
     fun `an adopted mean ages like a recorded one`() {
         var now = 0L
         val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })

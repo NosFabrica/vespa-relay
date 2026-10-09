@@ -245,6 +245,16 @@ the mean, and the first-sample check then adopted one straggler wholesale.
 The threshold (2s) sits above a healthy read (~400ms against 52M documents)
 and below the point a client gives up.
 
+**The pressure mean holds while a read is in flight, and a stalled read counts
+at its age.** The decay read a minute with no finished read as quiet, but a
+read that hangs never finishes, so a store stall faded the mean to zero and
+ingest wrote at full rate into the stalled engine. The relay brackets each
+timed read with `begin` and one end (the EOSE, or the call's exit for a read
+that never reached one; a `Read` ends once however many paths reach it).
+Holding the mean alone would leave a stall that starts from healthy reads
+invisible until one returns, so a read in flight past the threshold reports
+its age.
+
 **`STORE_WRITERS` is `SHARED_STRICT`.** The relay and the sync process write
 the same authors, so a cached guard-owner view admits an event the other's
 tombstone covers, and nothing repairs it afterwards. The cost was measured:

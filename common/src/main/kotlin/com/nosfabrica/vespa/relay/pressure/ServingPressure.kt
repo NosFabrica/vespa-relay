@@ -20,13 +20,16 @@
  */
 package com.nosfabrica.vespa.relay.pressure
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.pow
 
 /**
  * How slow the relay's own reads have become, so the mirror can stop filling the engine's queue.
  * The mean is exponentially weighted (alpha = 1/8): one slow query is absorbed, a sustained rise
- * moves it within a handful of reads. It also decays once no read has finished for [QUIET_GRACE_MS].
+ * moves it within a handful of reads. It decays only once no read is in flight and none has
+ * ended for [QUIET_GRACE_MS], and a read in flight past the threshold counts at its age.
  */
 class ServingPressure(
     /** Above this mean read latency (ms), ingest starts yielding. */
@@ -39,7 +42,35 @@ class ServingPressure(
 
     private val samples = AtomicLong(0)
 
-    @Volatile private var lastSampleMs = clockMs()
+    /** When a read last ended, answered or not. */
+    @Volatile private var lastReadMs = clockMs()
+
+    private val inFlight = ConcurrentHashMap.newKeySet<Read>()
+
+    /** One read from [begin] to its first end; a second end is a no-op, so two paths may both end it. */
+    inner class Read internal constructor(
+        internal val startedMs: Long,
+    ) {
+        private val ended = AtomicBoolean(false)
+
+        /** The read answered: its latency becomes a sample. */
+        fun finish() {
+            if (!ended.compareAndSet(false, true)) return
+            // Recorded while still in flight, so the quiet it spent hanging does not age the mean.
+            record(clockMs() - startedMs)
+            inFlight.remove(this)
+        }
+
+        /** The read ended unanswered (cancelled, failed, closed before its EOSE): no sample. */
+        fun abandon() {
+            if (!ended.compareAndSet(false, true)) return
+            lastReadMs = clockMs()
+            inFlight.remove(this)
+        }
+    }
+
+    /** Starts timing one read; every [Read] must be ended, or it holds the mean up for good. */
+    fun begin(): Read = Read(clockMs()).also { inFlight.add(it) }
 
     /** Records a completed read; on the serving path, so it must stay cheap. */
     fun record(durationMs: Long) {
@@ -51,18 +82,25 @@ class ServingPressure(
         meanMicros.updateAndGet { prev ->
             if (first) micros else aged(prev, now).let { it + (micros - it) / 8 }
         }
-        lastSampleMs = now
+        lastReadMs = now
     }
 
-    /** The current mean read latency in milliseconds, decayed for any quiet since; 0 before any read. */
-    fun meanMs(): Long = aged(meanMicros.get(), clockMs()) / 1_000
+    /** The current mean read latency in milliseconds, decayed for any quiet since, or a stalled read's age; 0 before any read. */
+    fun meanMs(): Long {
+        val now = clockMs()
+        val mean = aged(meanMicros.get(), now) / 1_000
+        val stalledMs = inFlight.minOfOrNull { it.startedMs }?.let { now - it } ?: 0
+        return if (stalledMs > thresholdMs) maxOf(mean, stalledMs) else mean
+    }
 
     /** [micros] halved every [DECAY_HALF_LIFE_MS] of quiet past the grace: a relay nobody reads has no readers to protect. */
     private fun aged(
         micros: Long,
         now: Long,
     ): Long {
-        val quietMs = now - lastSampleMs - QUIET_GRACE_MS
+        // A read that hangs has not finished to say so.
+        if (inFlight.isNotEmpty()) return micros
+        val quietMs = now - lastReadMs - QUIET_GRACE_MS
         if (quietMs <= 0) return micros
         return (micros * 0.5.pow(quietMs.toDouble() / DECAY_HALF_LIFE_MS)).toLong()
     }
@@ -80,7 +118,7 @@ class ServingPressure(
     ) {
         meanMicros.set(meanMs.coerceAtLeast(0) * 1_000)
         samples.set(sampleCount.coerceAtLeast(0))
-        lastSampleMs = clockMs()
+        lastReadMs = clockMs()
     }
 
     /**
@@ -106,7 +144,7 @@ class ServingPressure(
         /** Below this, the mean is one client's cold first query rather than a trend. */
         const val MIN_SAMPLES = 20
 
-        /** Quiet that still reads as load: a slow read in progress has not finished to say so. */
+        /** How long the mean holds after the last read ends, before it starts to fade. */
         const val QUIET_GRACE_MS = 60_000L
 
         /** How fast the mean fades once the grace is spent. */
