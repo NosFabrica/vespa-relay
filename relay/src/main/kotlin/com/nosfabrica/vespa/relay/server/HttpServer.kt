@@ -135,6 +135,7 @@ fun serveRelay(
             // The ping makes a peer that walked off NAT detectable; the timeout reaps its session.
             pingPeriodMillis = 30_000
             timeoutMillis = 60_000
+            maxFrameSize = maxFrameBytes(limits)
         }
         routing {
             nostrRelay(relay)
@@ -180,6 +181,12 @@ fun serveRelay(
         }
     }.start(wait = wait)
 }
+
+/**
+ * The largest websocket message read, judged from the frame header before the payload is buffered:
+ * the engine's character cap at three UTF-8 bytes per character, as the HTTP body cap counts it.
+ */
+internal fun maxFrameBytes(limits: RelayLimits): Long = (limits.maxMessageLength ?: defaultRelayLimits().maxMessageLength ?: 262_144) * 3L
 
 /** Spelled as the Tor Project spells it; readers compare case-insensitively. */
 private const val ONION_LOCATION = "Onion-Location"

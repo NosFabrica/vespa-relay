@@ -177,7 +177,16 @@ behind the very congestion that tripped it, so the session is cancelled after
 a short grace, which closes the socket and stops its REQs querying for replies
 nobody reads. The 30s ping and 60s timeout exist because a phone that walked
 off NAT leaves a half-open session whose subscriptions and buffers survive
-until the OS gives up, which can be never.
+until the OS gives up, which can be never. The queue is bounded in characters
+as well as frames: 8192 frames of large events let one non-reading client pin
+hundreds of megabytes.
+
+**The websocket's frame cap is the engine's message length, in bytes.** Ktor's
+default is unbounded, and it judges a frame from its header, so an anonymous
+client could declare a gigabyte and have the server try to hold it before
+quartz's character limit ever saw a message. The cap is three bytes per
+character, the same bound the HTTP body cap uses, and a refused frame closes
+with 1009.
 
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went

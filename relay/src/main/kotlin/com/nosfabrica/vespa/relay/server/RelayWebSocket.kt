@@ -30,9 +30,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicLong
 
 /** Outbound frames queued for one connection before it is treated as a slow consumer. */
 private const val MAX_OUTGOING_BUFFER = 8192
+
+/** Outbound characters queued for one connection, at most two heap bytes each, before the same. */
+private const val MAX_OUTGOING_CHARS = 16L * 1024 * 1024
 
 /** How long a slow consumer's close frame gets before the session is torn down anyway. */
 private const val CLOSE_GRACE_MS = 5_000L
@@ -42,20 +46,19 @@ fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
         // One writer drains a bounded queue; a full queue disconnects the client rather than dropping
         // frames, which would break NIP-01.
-        val outCh = Channel<String>(MAX_OUTGOING_BUFFER)
-        val writer = launch { for (text in outCh) outgoing.send(Frame.Text(text)) }
+        val outQueue = OutboundQueue()
+        val writer = launch { outQueue.drain { text -> outgoing.send(Frame.Text(text)) } }
         try {
             server.serve(
                 send = { text ->
-                    val result = outCh.trySend(text)
-                    if (result.isFailure && !result.isClosed) {
-                        outCh.close()
+                    if (!outQueue.offer(text)) {
+                        outQueue.close()
                         launch {
                             // The close frame queues behind the congestion that tripped this; cancelling the
                             // session closes the socket regardless.
                             runCatching {
                                 withTimeoutOrNull(CLOSE_GRACE_MS) {
-                                    close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: over $MAX_OUTGOING_BUFFER buffered frames"))
+                                    close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: outbound buffer full"))
                                 }
                             }
                             this@webSocket.cancel()
@@ -69,8 +72,44 @@ fun Route.nostrRelay(server: NostrRelayServer) {
                 },
             )
         } finally {
-            outCh.close()
+            outQueue.close()
             writer.cancel()
         }
+    }
+}
+
+/** One connection's outbound frames, bounded by count and by characters; the writer frees both as it sends. */
+internal class OutboundQueue(
+    maxFrames: Int = MAX_OUTGOING_BUFFER,
+    private val maxChars: Long = MAX_OUTGOING_CHARS,
+) {
+    private val frames = Channel<String>(maxFrames)
+    private val queuedChars = AtomicLong()
+
+    @Volatile
+    private var closed = false
+
+    /** False only when a bound is reached on an open queue; a closed queue drops [text], its connection is ending. */
+    fun offer(text: String): Boolean {
+        if (closed) return true
+        val chars = text.length.toLong()
+        if (queuedChars.addAndGet(chars) > maxChars || !frames.trySend(text).isSuccess) {
+            queuedChars.addAndGet(-chars)
+            return closed
+        }
+        return true
+    }
+
+    /** Hands each frame to [write] in order until the queue is closed. */
+    suspend fun drain(write: suspend (String) -> Unit) {
+        for (text in frames) {
+            write(text)
+            queuedChars.addAndGet(-text.length.toLong())
+        }
+    }
+
+    fun close() {
+        closed = true
+        frames.close()
     }
 }
