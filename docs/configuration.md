@@ -20,7 +20,10 @@ codebase forbids.
 Unset or blank is the default. A number that does not parse, or falls outside
 its range, stops the boot and names the variable, as does a switch that is not
 `true`/`false` (`1`/`0`, `yes`/`no` and `on`/`off` also work, in any case). A
-typo read as the default would be a setting nobody can see is not applied.
+typo read as the default would be a setting nobody can see is not applied. The
+ranges are listed under [Ranges the boot enforces](#ranges-the-boot-enforces).
+`SWEEP_ORPHAN_SCORES_ON_START` is the one exception: it deletes data, so only
+the exact word `true` deletes and every other value is a dry run.
 
 ## Core
 
@@ -183,7 +186,7 @@ reason.
 
 | var | meaning | default |
 |---|---|---|
-| `REQUIRE_READ_LENS` | refuse a REQ or COUNT from a connection that has not authenticated unless every filter declares its web-of-trust lens. `false`/`0`/`no`/`off` turns it off; anything else — including a typo — leaves it ON | on |
+| `REQUIRE_READ_LENS` | refuse a REQ or COUNT from a connection that has not authenticated unless every filter declares its web-of-trust lens. `false`/`0`/`no`/`off` turns it off; any other value that is not a switch — a typo included — stops the boot | on |
 
 With it on, an undeclared read is answered with
 
@@ -686,3 +689,39 @@ what it accepts.
 The audit runs each parse itself, on the ingest worker, because a `LogSink` receives
 only `(level, tag, message, throwable)` — no event. That is also why it is opt-in: it
 costs one extra parse per mirrored event. See `ParseAudit`.
+
+## Ranges the boot enforces
+
+Each of these stops its process at boot, naming the variable, when set to
+anything outside the range. "Any" is a whole number of any size; a switch is
+`true`/`false`, `1`/`0`, `yes`/`no` or `on`/`off`.
+
+| var | process | accepted |
+|---|---|---|
+| `RELAY_PORT` | relay | `1`–`65535` |
+| `PULSE_PORT` / `SYNC_PULSE_PORT` / `SYNC_STATUS_PORT` / `MONITOR_STATUS_PORT` | relay / sync | `0`–`65535` |
+| `SEARCH_CONCURRENCY_PER_CONNECTION` / `SEARCH_EXPAND_MAX_PER_EVENT` / `SEARCH_EXPAND_MAX_TOTAL` | relay | `0` or more |
+| `HTTP_RELAY_PER_CLIENT` / `HTTP_RELAY_TOTAL` | relay | `0` or more |
+| `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
+| `REJECT_FUTURE_SECONDS` | relay | `0` or more |
+| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | any |
+| `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` / `NEG_FRAME_SIZE_LIMIT` / `EXPIRATION_SWEEP_SECONDS` / `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | any |
+| `STORE_METRICS_LOG_SECONDS` | both | any |
+| `SYNC_UP_INTERVAL_SECONDS` | sync | `10` or more |
+| `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |
+| `SYNC_INGEST_CONCURRENCY` | sync | `1`–`64` |
+| `SYNC_INGEST_BATCH` | sync | `1`–`20000` |
+| `SYNC_NEG_PAGE_TARGET` / `SYNC_NEG_PAGE_SLACK_SECONDS` | sync | `0` or more |
+| `SYNC_NEG_PAGE_MIN` | sync | `1` or more |
+| `SYNC_NEG_PAGE_MAX` | sync | `SYNC_NEG_PAGE_MIN` or more |
+| `SYNC_TOR_CONNECT_TIMEOUT_SECONDS` | sync | `5` or more |
+| `SYNC_TOR_MAX_SOCKETS` | sync | `1`–`512` |
+| `SYNC_REFUSED_EPOCH_SECONDS` / `SYNC_REFUSED_EPOCH_CAPACITY` / `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS` / `SYNC_STATUS_INTERVAL_SECONDS` | sync | `1` or more |
+| `SERVING_PRESSURE_THRESHOLD_MS` | sync | `100` or more |
+| `VESPA_DEDUP_CHUNK` | sync | `1` or more |
+| `PARSE_AUDIT_SAMPLES` | sync | `1`–`100` |
+| `PARSE_AUDIT_INTERVAL_SECONDS` | sync | `5` or more |
+| `SYNC_WIRE_LOG` | sync | `sent` or `full`, in any case |
+| `AUTO_DEPLOY` | both | a switch |
+| `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
+| `SYNC_PULSE_PUBLIC` / `SYNC_PULSE_CLIENT_DETAIL` / `SYNC_TOR_ALL` | sync | a switch |

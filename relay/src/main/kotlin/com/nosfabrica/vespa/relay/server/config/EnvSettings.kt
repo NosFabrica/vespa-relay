@@ -53,7 +53,7 @@ fun defaultRelayLimits(): RelayLimits =
         createdAtUpperLimit = null,
     )
 
-/** [defaultRelayLimits] with any field the environment sets. Unparseable values keep the default. */
+/** [defaultRelayLimits] with any field the environment sets. A value that is not a whole number stops the boot. */
 fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     val d = defaultRelayLimits()
     return RelayLimits(

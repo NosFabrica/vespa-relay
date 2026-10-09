@@ -154,12 +154,15 @@ the TTL was simply lost until store `226db24694` bounded the pass's age
 confidence its pointer expressed needs the pointer's relevance, which
 `IEventStore` does not expose. What this relay owns is the budget. A cap
 `coerceAtLeast(0)` once turned `-1` into a cap of zero, the feature on and
-adding nothing; a negative now keeps the default and zero is honoured as zero.
+adding nothing; a negative now stops the boot and zero is honoured as zero.
 
-**Unparseable booleans fail closed.** `REQUIRE_READ_LENS=treu` looks exactly
-like a relay working, and the failure modes are not symmetric: a typo that
-silently opened the corpus cannot be noticed from outside. The same rule makes
-an unparseable `SEARCH_CONCURRENCY_PER_CONNECTION` the default rather than off.
+**An unparseable setting stops the boot.** `REQUIRE_READ_LENS=treu` once
+failed closed, and before that a typo silently opened the corpus, which cannot
+be noticed from outside. Every number and switch now goes through
+`StrictEnv`, so a value outside its range or not a switch names itself at boot
+instead of running as a default nobody chose. `SWEEP_ORPHAN_SCORES_ON_START`
+is the exception: it deletes data, so anything but exactly `true` is the dry
+run rather than a refused boot or, worse, a `1` read as delete.
 
 **Pubkey settings take npubs only.** Bare hex has no checksum, so one mistyped
 character is a valid-looking key that is nobody. A bad value throws rather
