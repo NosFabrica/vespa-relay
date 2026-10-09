@@ -34,8 +34,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -147,31 +145,14 @@ class ConsistencyPass(
         // One anchor for the whole pass.
         val anchor = RelayConsistency.settledAnchor(nowSeconds())
 
-        coroutineScope {
-            for (url in wanted) {
-                launch {
-                    gate.withPermit(url) {
-                        // The deadline sits inside the permit; around the launch it would time the
-                        // wait for a permit.
-                        val ran =
-                            withTimeoutOrNull(probe.deadlineMs(url)) {
-                                try {
-                                    measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced)
-                                } finally {
-                                    progress?.released(url.url)
-                                }
-                            }
-                        // Nothing is published about a url the deadline cut: the clock is ours.
-                        if (ran == null) silent[url] = Finding(Unmeasured.ABANDONED)
-                    }
-                    // Counted on completion, since the body has four early returns.
-                }.invokeOnCompletion { progress?.attempted() }
-            }
+        // Nothing is published about a url the deadline cut: the clock is ours.
+        dialEach(wanted, gate, probe::deadlineMs, progress, cut = { silent[it] = Finding(Unmeasured.ABANDONED) }) { url ->
+            measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced)
         }
 
         if (decided.get() > 0 || silent.isNotEmpty()) {
             System.err.println(
-                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) ? ${decided.get()} decided " +
+                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) — ${decided.get()} decided " +
                     "(${refused.get()} refused as inconsistent), ${silent.size} proved nothing" +
                     breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
                     ", ${consistency.refusedCount()} url(s) now refused in total " +

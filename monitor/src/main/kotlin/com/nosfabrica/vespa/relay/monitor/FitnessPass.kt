@@ -174,55 +174,23 @@ class FitnessPass(
             progress.measuring(toDial.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
-            coroutineScope {
-                for (url in toDial) {
-                    launch {
-                        // Counted here rather than from `invokeOnCompletion`: that handler can run
-                        // after the enclosing `coroutineScope` has resumed, and the write phase
-                        // installs a new position — a late tick would land on that one's count.
-                        try {
-                            gate.withPermit(url) {
-                                // The deadline sits inside the permit; around the launch it would time
-                                // the wait for a permit.
-                                val ran =
-                                    withTimeoutOrNull(probe.deadlineMs(url)) {
-                                        try {
-                                            measureOne(
-                                                url,
-                                                anchor,
-                                                canDial,
-                                                sockets,
-                                                outcomes,
-                                                unmeasured,
-                                                readings,
-                                                downloaded,
-                                                negOpenCut,
-                                                secondPageCut,
-                                                pageUnproven,
-                                                onEvent,
-                                            )
-                                        } finally {
-                                            progress.released(url.url)
-                                        }
-                                    }
-                                if (ran == null) {
-                                    if (outcomes.containsKey(url)) {
-                                        // Cut late, and the verdict stands: our clock firing one step
-                                        // later does not un-tell it.
-                                        cutLate.incrementAndGet()
-                                    } else {
-                                        // No verdict is written: our timeout is not a fact about the relay.
-                                        if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
-                                        abandonedCount.incrementAndGet()
-                                    }
-                                }
-                            }
-                        } finally {
-                            // The url is behind the pass however it ended, cancellation included.
-                            progress.attempted()
-                        }
+            dialEach(
+                toDial,
+                gate,
+                probe::deadlineMs,
+                progress,
+                cut = { url ->
+                    if (outcomes.containsKey(url)) {
+                        // Cut late, and the verdict stands: our clock firing one step later does not un-tell it.
+                        cutLate.incrementAndGet()
+                    } else {
+                        // No verdict is written: our timeout is not a fact about the relay.
+                        if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
+                        abandonedCount.incrementAndGet()
                     }
-                }
+                },
+            ) { url ->
+                measureOne(url, anchor, canDial, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
             }
 
             // The batch guard: when our own dialling breaks it breaks for every url at once, so
