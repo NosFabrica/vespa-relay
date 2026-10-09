@@ -1142,8 +1142,9 @@ object StatusVocabulary {
                     "a queue that cannot take it parks its first event, stalls the whole socket for every " +
                     "subscription on it, and comes back `abortedBackpressured` an idle window later, having cost " +
                     "the relay a handshake and a REQ for nothing; declining is the cheaper of the two. Nothing is " +
-                    "recorded and the revisit timer brings the unit back, as after a refused dial permit. This " +
-                    "climbing is the pool standing still on purpose, and the number to fix is the store's.",
+                    "recorded and the unit is tried again within seconds, as after a refused dial permit, so this " +
+                    "counts tries, not units: every waiting unit adds one every few seconds while the queue stays " +
+                    "full. This climbing is the pool standing still on purpose, and the number to fix is the store's.",
             )
             term(
                 "negentropyRunning",

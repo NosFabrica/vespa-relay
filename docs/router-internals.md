@@ -409,8 +409,8 @@ capacity and never started, including a producer outside the pool.
 
 **And a visit is not dialled into a queue that cannot take it.** `visit` reads
 `IngestPipeline.isFull` before the dial permit and returns if so — skipped, not
-queued, exactly as a refused permit is, counted as `visitsHeldByIngest` on the
-visits row. A download into a full queue does one thing: parks its first event,
+queued, exactly as a refused permit is, and tried again within seconds;
+counted, per try, as `visitsHeldByIngest` on the visits row. A download into a full queue does one thing: parks its first event,
 stalls the socket for everyone on it, and comes back `abortedBackpressured`
 thirty seconds later, having cost the relay a handshake and a REQ for nothing —
 per unit, per revisit, 96 at a time, for as long as the store is behind. The

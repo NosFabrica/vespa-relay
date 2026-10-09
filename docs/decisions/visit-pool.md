@@ -127,7 +127,10 @@ relay that had just been visited: five minutes at no yield. Live, a roster
 admitting 76 units at once was refused 103 visits in its first ten minutes, and
 49 of the 76 ended the run with no band. Nothing was dialled, so nothing is owed
 a wait: the unit retries after `TURNED_AWAY_RETRY_MS`, and a timer standing from
-an earlier visit is disarmed so it cannot hold the unit to the longer one.
+an earlier visit is disarmed so it cannot hold the unit to the longer one. Each
+try counts in `deferred` or `visitsHeldByIngest`, so both now count tries rather
+than units. The next live run with both fixes ended with 13 of 65 units
+unbanded.
 
 **An evicted unit's prompt visit does not evict in turn.** Eviction requeues the
 loser at once so it catches up on what its tail would have carried, and that
@@ -137,4 +140,4 @@ low-yield relays the one just visited always won: live, the pool counted 279
 evictions in ten minutes, nearly all of them three quiet relays trading one
 tail. The prompt visit now takes only a spare permit; its next ordinary visit
 may evict again, so a pair can still trade a tail, at the revisit cadence rather
-than back to back.
+than back to back. The next live run counted 25 evictions.
