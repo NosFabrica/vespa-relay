@@ -69,6 +69,7 @@ import com.nosfabrica.vespa.relay.store.deployBundledSchema
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
@@ -90,6 +91,7 @@ import java.io.File
  * is required. Mirroring into the same store is the sync process's job.
  */
 fun main() {
+    exitOnBootFailure()
     val env = System.getenv()
 
     // A sync or monitor config aimed at this process is a configured component that would run

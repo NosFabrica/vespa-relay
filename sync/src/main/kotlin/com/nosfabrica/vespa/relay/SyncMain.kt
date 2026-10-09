@@ -51,6 +51,7 @@ import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
+import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
@@ -92,6 +93,7 @@ private fun statusPage(resource: String = "/stats.html"): String =
  * entirely from the environment; `docs/configuration.md` documents every variable.
  */
 fun main() {
+    exitOnBootFailure()
     val env = System.getenv()
 
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
