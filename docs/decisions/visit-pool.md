@@ -118,3 +118,13 @@ held every banded pair at `paging`. The walk now passes the ask bounded by the
 band's older edge. Nothing below that edge is ever the band's to owe, because
 the edge only rises with `now`; the oldest band's edge is the filter's own, so
 an unbanded stream is unchanged.
+
+**A visit turned away before it dialled retries within seconds.** The workers
+are the streams' visit shares summed and draw from one queue, so a worker that
+draws a unit whose stream's share is full is routine, and so is a full ingest
+queue. Both returned, and the unit then waited out a revisit timer sized for a
+relay that had just been visited: five minutes at no yield. Live, a roster
+admitting 76 units at once was refused 103 visits in its first ten minutes, and
+49 of the 76 ended the run with no band. Nothing was dialled, so nothing is owed
+a wait: the unit retries after `TURNED_AWAY_RETRY_MS`, and a timer standing from
+an earlier visit is disarmed so it cannot hold the unit to the longer one.

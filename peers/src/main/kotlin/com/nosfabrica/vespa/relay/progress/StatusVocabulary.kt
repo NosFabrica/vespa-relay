@@ -324,7 +324,8 @@ object StatusVocabulary {
                     "drops work is indistinguishable from work that was never due — a stream whose history has not " +
                     "been re-checked in a week reads identically whether its audits are capped to nothing or its " +
                     "bands simply have not aged. Nothing is lost when this climbs: the job stays due and the next " +
-                    "visit takes it, so the cost of a full cap is one revisit delay. It is a rate, not a backlog — " +
+                    "visit takes it, so the cost of a full cap is one revisit delay — except on `visiting`, where " +
+                    "nothing was dialled and the unit is retried within seconds. It is a rate, not a backlog — " +
                     "a relay refused twice counts twice.",
             )
             term(

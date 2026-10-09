@@ -193,6 +193,9 @@ internal class VisitPool(
     /** Where a unit's next visit starts, after one cut short; absent starts at the first ask. */
     private val resumeAt = ConcurrentHashMap<VisitKey, Int>()
 
+    /** Units turned away before dialling: they retry after [TURNED_AWAY_RETRY_MS], not a revisit's wait. */
+    private val turnedAway = ConcurrentHashMap.newKeySet<VisitKey>()
+
     /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
     private fun arrived(
         url: NormalizedRelayUrl,
@@ -442,7 +445,11 @@ internal class VisitPool(
                     stillWanted = { key -> wantedBy(currentRoster, key) },
                     // Read, never getOrPut: a finishing visit must not resurrect a pruned yield.
                     revisitDelayMs = { key ->
-                        revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
+                        if (turnedAway.remove(key)) {
+                            TURNED_AWAY_RETRY_MS
+                        } else {
+                            revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
+                        }
                     },
                     visit = ::guardedVisit,
                 )
@@ -484,6 +491,7 @@ internal class VisitPool(
             yields.remove(url)
         }
         resumeAt.keys.removeIf { !wantedBy(built, it) }
+        turnedAway.removeIf { !wantedBy(built, it) }
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -566,14 +574,22 @@ internal class VisitPool(
         val snapshot = currentRoster
         val wanted = asksFor(snapshot, key)
         // A download into a full queue parks its first event and silences the
-        // socket; skipped like a refused permit, and the revisit brings it back.
+        // socket; skipped like a refused permit, and retried shortly.
         if (ingest.isFull()) {
             visitsHeldByIngest.incrementAndGet()
+            turnAway(key)
             return
         }
         // Taken before the socket claim, so `visitConcurrency` bounds simultaneous dials.
-        val permit = limits.tryHold(key.stream, JOB_VISITING) ?: return
+        // Workers are shared across streams, so a full share is routine and retried shortly.
+        val permit =
+            limits.tryHold(key.stream, JOB_VISITING) ?: run {
+                turnAway(key)
+                return
+            }
         visitsRun.incrementAndGet()
+        // A prompt requeue can reach here past an earlier turn-away; this visit's own wait applies.
+        turnedAway.remove(key)
         val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         ongoingVisit.stream = key.stream
         ongoing[key] = ongoingVisit
@@ -635,6 +651,12 @@ internal class VisitPool(
             // The heal drain and the tail open still count as visiting.
             permit.release()
         }
+    }
+
+    /** Nothing was dialled, so the next try needs no revisit's wait; a standing timer would hold it to one. */
+    private fun turnAway(key: VisitKey) {
+        turnedAway += key
+        queue.disarm(key)
     }
 
     /** One refused walk: the ending, the chunk the relay actually saw, and when it was asked. */
@@ -1269,6 +1291,9 @@ internal class VisitPool(
         const val REVISIT_TAILED_MS = 30L * 60 * 1000
         const val REVISIT_UNTAILED_MS = 5L * 60 * 1000
         const val REVISIT_FLOOR_MS = 60_000L
+
+        /** A visit turned away before dialling retries this soon; it cost nothing, so it earns no wait. */
+        const val TURNED_AWAY_RETRY_MS = 5_000L
 
         const val YIELD_HALVES_THE_WAIT = 50.0
 

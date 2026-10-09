@@ -54,6 +54,8 @@ internal class PoolFixture(
     /** Answers each walk; the default is an honest empty relay. */
     val answer: suspend (Filter, suspend (Event) -> Unit) -> PagedFetchResult = { _, _ -> PagedFetchResult(0, PagedFetchResult.End.DRAINED) },
     val bands: SyncBands = SyncBands(null),
+    /** Answers each walk knowing the relay; when set, it replaces [answer]. */
+    val answerAt: (suspend (NormalizedRelayUrl, Filter, suspend (Event) -> Unit) -> PagedFetchResult)? = null,
 ) : RelayReads {
     val store = NostrSemanticsStore(InMemoryEventIndex())
     val processors = Processors()
@@ -67,7 +69,7 @@ internal class PoolFixture(
         onEvent: suspend (Event) -> Unit,
     ): PagedFetchResult {
         asked += filter
-        return answer(filter, onEvent)
+        return answerAt?.invoke(url, filter, onEvent) ?: answer(filter, onEvent)
     }
 
     override suspend fun tail(
@@ -102,6 +104,7 @@ internal class PoolFixture(
         limits: PoolLimits = PoolLimits(emptyMap()),
         quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
         roster: RosterSource = RosterBuilder(store = store, streams = streams, bands = bands),
+        workers: Int = 1,
     ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
@@ -124,7 +127,7 @@ internal class PoolFixture(
             rosterBuilder = roster,
             streams = streams,
             progress = processors.of("visits"),
-            workers = 1,
+            workers = workers,
             limits = limits,
             quietGiveUpMs = quietGiveUpMs,
         )
