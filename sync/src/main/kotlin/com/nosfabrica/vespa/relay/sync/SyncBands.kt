@@ -306,6 +306,47 @@ class SyncBands(
         }
     }
 
+    /**
+     * Records a paged walk the relay cut short. Newest-first, it read from [walkedTop] down to
+     * its oldest event, so a kind whose span would bridge unwalked ground to the band records nothing.
+     */
+    fun recordCut(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        observedByKind: Map<Int, SyncCoverage.Span>,
+        walkedTop: Long,
+        now: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) }
+        // Keyed as quartz files them: a filter naming no kinds holds one span for all of them.
+        val spans =
+            if (filter.kinds.isNullOrEmpty() && observedByKind.isNotEmpty()) {
+                mapOf(SyncCoverage.ALL_KINDS to observedByKind.values.reduce { a, b -> a.widen(b) })
+            } else {
+                observedByKind
+            }
+        val kept = spans.filter { (kind, span) -> touches(held?.spans?.get(kind), span.min, walkedTop) }
+        if (kept.isEmpty()) return
+        coverage(stream).record(
+            url,
+            filter,
+            kept.values.minOf { it.min },
+            kept.values.maxOf { it.max },
+            paged = true,
+            reconciledThrough = null,
+            observedByKind = kept,
+            drained = false,
+        )
+    }
+
+    /** quartz's own staleness rule: past its period a band is replaced by the next record, not widened. */
+    private fun isStale(
+        stream: String,
+        band: SyncCoverage.Band,
+        now: Long,
+    ): Boolean = now - band.fullAt >= refetchThePastSecondsFor(stream)
+
     fun coveringWindow(
         stream: String,
         urls: List<NormalizedRelayUrl>,
@@ -661,6 +702,16 @@ class SyncBands(
     companion object {
         // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
+
+        /**
+         * Whether ground walked from [walkedTop] down to [walkedMin] meets [held] with no gap,
+         * so widening one by the other claims only walked time. Nothing held always meets.
+         */
+        internal fun touches(
+            held: SyncCoverage.Span?,
+            walkedMin: Long,
+            walkedTop: Long,
+        ): Boolean = held == null || (walkedMin <= held.max && held.min <= walkedTop)
 
         /** The dueness rule as a predicate, for tests. A clock of zero is always due. */
         internal fun auditDue(

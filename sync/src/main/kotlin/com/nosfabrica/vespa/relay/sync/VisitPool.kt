@@ -752,16 +752,20 @@ internal class VisitPool(
                     ours = stalledByUs(walked.end) && heldByUs(url),
                 )
             }
-            bands.record(
-                key,
-                url,
-                ask.filter,
-                seenMin,
-                seenMax,
-                paged = true,
-                observedByKind = seenByKind,
-                drained = drainSettlesThePast(walked, chunk, ask.filter),
-            )
+            if (readToTheEnd(walked)) {
+                bands.record(
+                    key,
+                    url,
+                    ask.filter,
+                    seenMin,
+                    seenMax,
+                    paged = true,
+                    observedByKind = seenByKind,
+                    drained = drainSettlesThePast(walked, chunk, ask.filter),
+                )
+            } else {
+                bands.recordCut(key, url, ask.filter, seenByKind, walkedTop = chunk.until ?: (askedAtMs / 1000))
+            }
         }
         return null
     }
@@ -1062,16 +1066,21 @@ internal class VisitPool(
          * Whether a walk ended in a way that makes the next leg futile: nothing delivered, and
          * an ending that is the relay declining rather than an empty page or our own limit.
          */
-        internal fun refusedOutright(walked: PagedFetchResult): Boolean =
-            walked.downloaded == 0 &&
-                when (walked.end) {
-                    PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> false
+        internal fun refusedOutright(walked: PagedFetchResult): Boolean = walked.downloaded == 0 && !readToTheEnd(walked)
 
-                    PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
-                    PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
-                    PagedFetchResult.End.UNPAGEABLE,
-                    -> true
-                }
+        /**
+         * Whether a walk read its filter to the end: the relay drained it, or the filter's own
+         * limit stopped it. Any other ending leaves ground below the oldest event unread.
+         */
+        internal fun readToTheEnd(walked: PagedFetchResult): Boolean =
+            when (walked.end) {
+                PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> true
+
+                PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
+                PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
+                PagedFetchResult.End.UNPAGEABLE,
+                -> false
+            }
 
         /**
          * The endings a socket parked in one of our hooks can manufacture: silence, and a first
