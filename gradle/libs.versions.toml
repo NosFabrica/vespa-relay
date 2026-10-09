@@ -1005,8 +1005,34 @@ quartz = "68268da413"
 #
 # LEXICOGRAPHIC: '14d8…' < '5379…': the losing direction, moot — nothing else names the store.
 #
-# Prev 5379e572dc, and ff54c9beb1 before it (both above).
-vespaEventStore = "14d8c7eeed"
+# a995519bef = vespa-eventstore main @ 2026-10-08, the merge of #162 — SAME TREE as its head
+# 8762d85ce6 (`git diff 8762d85ce6 a995519bef` is empty), one commit over 14d8c7eeed. NIP-50 ON
+# BODY-LESS KINDS STOPS PAYING FOR THE BODY PHRASE (vespa-eventstore #161, fix 1): a kind 0
+# document never carries search_text, so `search_text_gram` is empty on all of them, yet a
+# `kinds:[0]` search ran the trigram phrase anyway and paid 1.4-1.9 s on production (445M docs)
+# for it — `kind = 0 and <phrase>` took 1.77 s to match 0 documents, because Vespa drives the AND
+# from the phrase's smaller estimate. The compiler now leaves the phrase out when every kind a
+# compiled query names is in EventYql.BODYLESS_KINDS (kind 0 alone), judged per compiled query so
+# a reference-expansion companion keeps its body reach; the exact search_text clause still runs.
+# Engine query code only: no schema, no services.xml, no quartz move (the store still names
+# 68268da413), nothing re-derived; nothing to deploy beyond the relay's own restart.
+#   git merge-base --is-ancestor 14d8c7eeed a995519bef   # verified
+#
+# SPELLED `com.github.nosfabrica` (below): JitPack's `NosFabrica` entry for this commit holds a
+# failed infra build (JAVA_HOME pointing at a missing JDK, exit 1) and 404s the jar, while the
+# lowercase entry serves it — docs/traps.md, "JitPack caches builds per group-spelling".
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,257 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line a995519bef in all
+# six modules, zero arrows; and RelayContractIT over the wire against a relay built from both pins
+# on Vespa 8.763.13: 8,191 checks, 0 failing. And the store at a995519bef itself: its integration
+# suite against a real Vespa 8.763.13 in Docker (23 tests, 22 passed, StagingCorpusIT skipped by
+# design, 0 failures; SearchBodyGramIT among them), read off the result XML.
+#
+# LEXICOGRAPHIC: 'a995…' > '14d8…': the safe direction, moot — nothing else names the store.
+#
+# Prev 14d8c7eeed, 5379e572dc and ff54c9beb1 before it (all above).
+vespaEventStore = "a995519bef"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -1028,9 +1054,11 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # entry can permanently hold a failed infra build while the other serves fine.
 # Lowercase served the pins through 5379e572dc (the capitalized entry had failed);
 # for 14d8c7eeed it is the reverse — `nosfabrica` failed opening gradle-wrapper.jar,
-# `NosFabrica` built (its pom also names engine under `NosFabrica`). Same repo,
-# same artifacts — different cache key. On the next bump, check both spellings.
-vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+# `NosFabrica` built (its pom also names engine under `NosFabrica`). For a995519bef
+# it flips back: `NosFabrica` failed (JAVA_HOME at a missing JDK), `nosfabrica` built
+# (its pom names engine under `nosfabrica`). Same repo, same artifacts — different
+# cache key. On the next bump, check both spellings.
+vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
