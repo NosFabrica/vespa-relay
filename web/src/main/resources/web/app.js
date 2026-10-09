@@ -837,11 +837,12 @@ document.addEventListener("keydown", (e) => {
  * Who the picker offers for a half-typed `from:`/`to:`: a NIP-50 profile search on the
  * authenticated socket, ranked by the reader. A pasted hex key resolves to itself.
  */
-async function lookupAuthors(partial) {
+async function lookupAuthors(partial, signal) {
   const direct = pubkeyParam(partial);
   if (direct) { await enrichProfiles([direct]).catch(() => {}); return [direct]; }
   await ensureLogin();
-  const events = await relay.req({ kinds: [0], search: askString(partial), limit: 12 });
+  // [signal] is the picker retiring this lookup; an aborted REQ is never sent, or is CLOSEd.
+  const events = await relay.req({ kinds: [0], search: askString(partial), limit: 12 }, undefined, { signal });
   seedProfiles(events);
   return [...new Set(events.map((e) => e.pubkey))];
 }
@@ -946,7 +947,7 @@ function groupLockState() {
  * NIP-50 search over kind 39000, never folded into one row (shared/groups.js). The decrypt
  * prompt is raised here, on first use of `group:`, not on page load.
  */
-async function lookupGroups(partial) {
+async function lookupGroups(partial, signal) {
   await ensureLogin().catch(() => {});
   const own = await ownGroupCandidates().catch(() => []);
   // Started, not awaited: the public rows return now, and the picker re-asks when the dialog is answered.
@@ -955,7 +956,7 @@ async function lookupGroups(partial) {
   let found = [];
   try {
     // `group:` alone is "show me my groups", not a match-all over every 39000.
-    if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 });
+    if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 }, undefined, { signal });
   } catch (e) { found = []; }
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];

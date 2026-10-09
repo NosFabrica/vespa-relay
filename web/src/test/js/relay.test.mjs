@@ -225,6 +225,28 @@ assert.strictEqual(t.calls, 1);
   }
 }
 
+// A picker lookup retired before its REQ went out is never sent; the pickers hand their signal
+// all the way down, or a superseded search still runs at the relay ahead of the real one.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(m) };
+  const ctl = new AbortController();
+  ctl.abort();
+  const got = await r.req({ kinds: [0], search: "ali" }, 5000, { signal: ctl.signal });
+  assert.strictEqual(sent.length, 0, "nothing is sent for an ask already retired");
+  assert.strictEqual(got.complete, false);
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
+  for (const fn of ["lookupAuthors", "lookupGroups"]) {
+    const start = app.indexOf(`async function ${fn}(partial, signal)`);
+    assert.ok(start >= 0, `${fn}() must take the picker's signal`);
+    const body = app.slice(start, app.indexOf("\n}", start));
+    assert.ok(/search: askString\(partial\)[^\n]*\{ signal \}/.test(body), `${fn}() must hand the picker's signal to its search`);
+  }
+}
+
 // Sign-out closes the socket and connects again before the old close event lands; what was
 // outstanding on the old socket fails then, not at its own timeout.
 {
