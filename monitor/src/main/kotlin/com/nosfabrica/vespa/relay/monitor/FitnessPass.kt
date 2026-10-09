@@ -44,6 +44,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -108,7 +109,7 @@ class FitnessPass(
             RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
         }
 
-    /** Why a url was set aside with no verdict, without counting as our dialling gone blind. */
+    /** Why a url was set aside with no verdict. Only [LOOKUP_UNEXPLAINED] counts as blind, once per host. */
     private enum class Deferral(
         val why: String,
         /** A server answered, which is evidence our own network works. */
@@ -237,11 +238,19 @@ class FitnessPass(
 
             // The batch guard: when our own dialling breaks it breaks for every url at once, so
             // nothing is published, the clean-looking verdicts included. The share is over the dials
-            // that went out; a url set aside before any server could answer is outside it.
+            // that went out; a url set aside before any server could answer is outside it. A lookup
+            // with no reason in it is our resolver as often as the name, and counts once per host,
+            // since one host's cached failure repeats across all of its paths.
             val dialled = toDial.size
-            val wentOut = dialled - deferred.values.count { !it.serverAnswered }
-            val blind = unmeasured.size + abandonedCount.get()
-            val deferredCounts = deferred.values.groupingBy { it.why }.eachCount()
+            val lookups = deferred.filterValues { it == Deferral.LOOKUP_UNEXPLAINED }.keys
+            val lookupHosts = lookups.mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+            val wentOut = dialled - deferred.values.count { !it.serverAnswered } + lookupHosts
+            val blind = unmeasured.size + abandonedCount.get() + lookupHosts
+            val deferredCounts =
+                deferred.values
+                    .filter { it != Deferral.LOOKUP_UNEXPLAINED }
+                    .groupingBy { it.why }
+                    .eachCount()
             if (wentOut >= GUARD_FLOOR && blind > wentOut * GUARD_SHARE) {
                 System.err.println(
                     "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
@@ -259,6 +268,8 @@ class FitnessPass(
                     unmeasured.size,
                     downloaded.get(),
                     deferredCounts = deferredCounts,
+                    lookups = lookups.size,
+                    lookupHosts = lookupHosts,
                     cutLate = cutLate.get(),
                     negOpenCut = negOpenCut.get(),
                     secondPageCut = secondPageCut.get(),
@@ -354,6 +365,8 @@ class FitnessPass(
                 unmeasured.size,
                 downloaded.get(),
                 deferredCounts = deferredCounts,
+                lookups = lookups.size,
+                lookupHosts = lookupHosts,
                 unwrittenCount = outcomes.size - tally.published - skipped,
                 wedgedWrites = tally.wedged,
                 declinedWrites = tally.declined,
@@ -761,6 +774,9 @@ class FitnessPass(
         downloadedCount: Int,
         /** Urls set aside, by why; outside the counts and outside the blind share. */
         deferredCounts: Map<String, Int> = emptyMap(),
+        /** Urls whose lookup failed with no reason in it, and their hosts: blind, once per host. */
+        lookups: Int = 0,
+        lookupHosts: Int = 0,
         /** Earned verdicts that never reached the store. Zero on the guard's refuse-to-publish path. */
         unwrittenCount: Int = 0,
         /** Of which this many hit the per-write deadline. */
@@ -792,6 +808,13 @@ class FitnessPass(
             System.err.println(
                 "router: fitness [$label] — $unmeasuredCount url(s) answered nothing at all, no verdict written: " +
                     "no EOSE, no CLOSED and no transport reason on any rung, or our own resolver, route or socket layer failing",
+            )
+        }
+        if (lookups > 0) {
+            System.err.println(
+                "router: fitness [$label] — $lookups url(s) on $lookupHosts host(s) failed the lookup with no reason left " +
+                    "to read, no verdict written; counted once per host as this router failing to dial, since our resolver " +
+                    "fails that way as readily as the name",
             )
         }
         if (deferredCounts.isNotEmpty()) {

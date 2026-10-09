@@ -151,13 +151,21 @@ class FitnessGuardTest {
     }
 
     @Test
-    fun `a lookup the probe could not read is set aside, not counted as blind`() {
-        // Many urls on one host share the JVM's cached failure; they must not trip the guard on the rest.
-        val cached = urls("cached", 40)
+    fun `one host's unexplained lookup counts once, however many paths it serves`() {
+        // Every path on the host meets the JVM's cached failure; together they are one blind dial, not forty.
+        val cached = (0 until 40).map { RelayUrlNormalizer.normalize("wss://cached.example/p$it") }
         val fine = urls("fine", 20)
         val graded = grades(cached + fine, reach = { if (it in cached) Reach.UNEXPLAINED else Reach.REACHABLE }) { null }
         assertTrue(cached.all { graded[it] == null })
         assertTrue(fine.all { graded[it] == Verdict.PRIME.value })
+    }
+
+    @Test
+    fun `a resolver failing lookups across many hosts refuses the batch`() {
+        val unresolved = urls("unresolved", 40)
+        val fine = urls("fine", 20)
+        val graded = grades(unresolved + fine, reach = { if (it in unresolved) Reach.UNEXPLAINED else Reach.REACHABLE }) { null }
+        assertTrue(graded.values.all { it == null }, "a dark resolver published verdicts beside it")
     }
 
     private val pkix = "cannot:WebSocket Failure: PKIX path building failed (SSLHandshakeException)"

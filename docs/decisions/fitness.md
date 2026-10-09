@@ -380,6 +380,15 @@ out (a 5xx went out and was answered, so it stays in the denominator). A 5xx
 also counts as a server reached for the dark-network guard. `unmeasured` keeps
 the dials that got no answer at all, our clearnet transport failing included.
 
+**An unexplained lookup counts as blind once per host.** Setting it aside
+outside the blind share took the batch guard's alarm away exactly where it is
+needed: live, in a network namespace with no route out, 484 of 498 urls failed
+their lookup with no reason in them, the guard saw 4 dials go out, and the pass
+logged them as set aside and "NOT counted as this router failing to dial". On
+healthy live passes no url failed that way. One host's cached failure still
+repeats across every path it serves, so the share counts distinct hosts, and the
+pass names the lookups on their own line.
+
 **A dial's TLS failure is believed only when our own handshake fails too.**
 Through an intercepting TLS proxy on our egress, fourteen relays were signed
 `dead` "the TLS handshake failed" while a direct handshake to each succeeded,
