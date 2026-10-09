@@ -129,6 +129,50 @@ class SyncBands(
     /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
 
+    /** One piece of held state's owner: a coverage or stream key, the filter's JSON, the relay. */
+    data class Held(
+        val key: String,
+        val filter: String,
+        val relay: String,
+    )
+
+    private val unowned = UnownedClock<Held>()
+
+    /**
+     * Forgets the bands, clocks and verdicts no roster unit has owned for
+     * [UnownedClock.UNOWNED_TTL_SECONDS]. [owned] is everything the current roster files under.
+     */
+    fun retain(
+        owned: Set<Held>,
+        now: Long = System.currentTimeMillis() / 1000,
+    ): Int {
+        val held = HashSet<Held>()
+        coverageByStream.forEach { (key, coverage) -> coverage.export().keys.forEach { held += Held(key, it.filter, it.relay) } }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
+        val clocksBefore = unowned.stamps()
+        val doomed = unowned.expired(held, owned, now)
+        if (doomed.isEmpty()) {
+            if (unowned.stamps() != clocksBefore) changed()
+            return 0
+        }
+        val gone = doomed.groupBy { it.key }
+        for ((key, ofKey) in gone) {
+            val old = coverageByStream[key] ?: continue
+            val drop = ofKey.mapTo(HashSet()) { SyncCoverage.BandKey(it.relay, it.filter) }
+            val kept = old.export().filterKeys { it !in drop }
+            // quartz has no removal, so the coverage is rebuilt; a record racing the swap costs a re-walk, never a claim.
+            if (kept.isEmpty()) {
+                coverageByStream.remove(key, old)
+            } else {
+                coverageByStream.replace(key, old, SyncCoverage(refetchThePastSecondsFor(key), onChange = { changed() }).also { it.restore(kept) })
+            }
+        }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
+        changed()
+        System.err.println("router: forgot ${doomed.size} band(s) no roster unit has owned for ${UnownedClock.UNOWNED_TTL_SECONDS / 86_400}d")
+        return doomed.size
+    }
+
     /**
      * The audit gate: due by [auditDueAt] and outside the attempt spacing. True claims the
      * attempt, so an audit that cannot complete is not retried on every visit.
@@ -511,6 +555,16 @@ class SyncBands(
                     }
                     return@forEach
                 }
+                if (streamOrFlatKey == UNOWNED_SINCE) {
+                    o.forEach { (key, byFilter) ->
+                        byFilter.jsonObject.forEach { (filter, byRelay) ->
+                            byRelay.jsonObject.forEach { (relay, ts) ->
+                                ts.jsonPrimitive.longOrNull?.let { unowned.restore(Held(key, filter, relay), it) }
+                            }
+                        }
+                    }
+                    return@forEach
+                }
                 if (streamOrFlatKey == CANNOT_RECONCILE) {
                     o.forEach { (stream, byBand) ->
                         byBand.jsonObject.forEach { (band, byFilter) ->
@@ -657,6 +711,7 @@ class SyncBands(
             }
             putBandClocks()
             putCannotReconcile()
+            putUnownedSince()
         }
 
     /**
@@ -739,6 +794,27 @@ class SyncBands(
         )
     }
 
+    /** The unowned clocks, so a restart does not hand every orphan a fresh grace period. */
+    private fun JsonObjectBuilder.putUnownedSince() {
+        val stamps = unowned.stamps()
+        if (stamps.isEmpty()) return
+        put(
+            UNOWNED_SINCE,
+            buildJsonObject {
+                stamps.entries.groupBy { it.key.key }.forEach { (key, ofKey) ->
+                    put(
+                        key,
+                        buildJsonObject {
+                            ofKey.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
+                                put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, it.value) } })
+                            }
+                        },
+                    )
+                }
+            },
+        )
+    }
+
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     private fun save(): Boolean {
         val f = file ?: return true
@@ -804,6 +880,9 @@ class SyncBands(
 
         /** Where the impossible bands are written, beside [BAND_CLOCKS] and out of the url namespace. */
         private const val CANNOT_RECONCILE = "#cannotReconcile"
+
+        /** Where the unowned clocks are written, out of the stream namespace like the others. */
+        private const val UNOWNED_SINCE = "#unownedSince"
 
         /**
          * First windows a band must lose in a row before it reads as impossible. More than one

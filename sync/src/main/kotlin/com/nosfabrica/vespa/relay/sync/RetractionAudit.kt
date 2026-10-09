@@ -59,7 +59,7 @@ internal class RetractionAudit(
      * The ask's owned-kind projection, the one filter the audit clock, the reconcile and the
      * deletes all run on. Null when the ask carries no owned kind.
      */
-    private fun ownedAskOf(
+    internal fun ownedAskOf(
         stream: SyncStream,
         ask: Filter,
     ): Filter? {

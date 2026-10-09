@@ -481,6 +481,8 @@ internal class VisitPool(
             yields.remove(url)
         }
         resumeAt.keys.removeIf { !wantedBy(built, it) }
+        bands.retain(ownedState(built))
+        pager.retain(next.keys.mapTo(HashSet()) { it.url })
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -496,6 +498,20 @@ internal class VisitPool(
             )
         }
         phasesChanged()
+    }
+
+    /** Everything a unit of [roster] files state under: its catch-up bands, its audit clocks, its retraction's ask. */
+    private fun ownedState(roster: RosterBuilder.Roster): Set<SyncBands.Held> {
+        val keysOf = streams.associate { it.name to (SyncBands.coverageKeys(it) + it.name).distinct() }
+        val out = HashSet<SyncBands.Held>()
+        for ((url, byStream) in roster.asks) {
+            for ((name, unit) in byStream) {
+                val keys = keysOf[name] ?: listOf(name)
+                val filters = unit.identity + unit.asks.mapNotNull { retraction?.ownedAskOf(it.stream, it.filter)?.toJson() }
+                for (key in keys) for (filter in filters) out += SyncBands.Held(key, filter, url.url)
+            }
+        }
+        return out
     }
 
     /** One visit with its failure recorded as an abort. */

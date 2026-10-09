@@ -76,6 +76,9 @@ class SweepState(
     private val peers = ConcurrentHashMap<String, Peer>()
     private val sweeps = ConcurrentHashMap<Cursor, Reconciled>()
 
+    /** Per peer url, when it last left the roster. */
+    private val unowned = UnownedClock<String>()
+
     /**
      * Migration shim: cursors from a file written before the format nested, claimed by the
      * first stream to ask. Delete with [claim] and the flat branches in [load] and [snapshot].
@@ -187,6 +190,22 @@ class SweepState(
 
     fun size(): Int = sweeps.size + preStream.size
 
+    /**
+     * Drops cursors too old to resume from and the learned sizes of peers [relays] has not held
+     * for [UnownedClock.UNOWNED_TTL_SECONDS]. [relays] is every url on the current roster.
+     */
+    fun retain(
+        relays: Set<String>,
+        now: Long = nowSeconds(),
+    ) {
+        val stale = sweeps.keys.removeIf { key -> sweeps[key]?.let { now - it.at > staleAfterSeconds } == true }
+        val staleOld = preStream.keys.removeIf { key -> preStream[key]?.let { now - it.at > staleAfterSeconds } == true }
+        val clocksBefore = unowned.stamps()
+        val gone = unowned.expired(peers.keys.toSet(), relays, now)
+        peers.keys.removeAll(gone)
+        if (stale || staleOld || gone.isNotEmpty() || unowned.stamps() != clocksBefore) changed()
+    }
+
     /** Migration shim: adopt a pre-stream cursor for this pair, once, into the stream that asked. */
     private fun claim(key: Cursor): Reconciled? {
         if (preStream.isEmpty()) return null
@@ -249,6 +268,7 @@ class SweepState(
                 val o = v.jsonObject
                 peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
             }
+            root[UNOWNED_SINCE]?.jsonObject?.forEach { (url, ts) -> ts.jsonPrimitive.longOrNull?.let { unowned.restore(url, it) } }
             root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
                 // Migration shim, told apart by shape: a filter is serialised JSON and can never be named `downTo`.
@@ -342,6 +362,8 @@ class SweepState(
                     preStream.forEach { (pair, r) -> put("${pair.second}|${pair.first}", mark(r)) }
                 },
             )
+            val stamps = unowned.stamps()
+            if (stamps.isNotEmpty()) put(UNOWNED_SINCE, buildJsonObject { stamps.forEach { (url, at) -> put(url, at) } })
         }
 
     private fun save(): Boolean {
@@ -376,6 +398,9 @@ class SweepState(
         private val json = Json { prettyPrint = true }
 
         private const val DEFAULT_FLUSH_SECONDS = 30L
+
+        /** Beside `peers` and `sweeps`, which are all the status page reads. */
+        private const val UNOWNED_SINCE = "unownedSince"
 
         /**
          * `SYNC_SWEEP_STATE_FILE`, unset for in-memory; `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS`

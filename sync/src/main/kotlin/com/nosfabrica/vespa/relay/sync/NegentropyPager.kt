@@ -219,6 +219,9 @@ internal class NegentropyPager(
     /** How far below `now` a sweep stops. */
     internal val slackSeconds: Long get() = tuning.slackSeconds
 
+    /** Lets the sweep state forget what no relay on [relays] can use; see [SweepState.retain]. */
+    fun retain(relays: Set<String>) = state.retain(relays)
+
     /**
      * Reconcile [leg] against [url], one right-sized window at a time. [stream] and [shape]
      * are the cursor's identity. Only `since`/`until` vary across windows: strfry matches a
