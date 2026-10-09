@@ -155,8 +155,8 @@ class MonitorEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
-                // `aliases` only: this pass signs `l=alias` for every entry, and a stand-in was never measured.
-                foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
+                // Every stored fold, canonical in the batch or not; a stand-in is routing, never a verdict.
+                foldedAway = { urls -> folding?.foldsAmong(urls) ?: emptyMap() },
                 inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
                 // The per-url transport, so a `.onion` document is fetched inside the circuit.

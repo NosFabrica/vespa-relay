@@ -24,9 +24,11 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.client.EmptyNostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -319,6 +321,43 @@ class AliasFoldingTest {
             assertEquals(0, fold.measure("t", group, canDial = { true }))
             assertEquals(group, fold.applyVerdicts(group).dial)
         }
+
+    @Test
+    fun `a known alias is graded alias whatever else is in the batch`() =
+        runBlocking {
+            // The fast lane hands fitness only the urls named since its last look, often without the canonical.
+            val store = newStore()
+            val up = upstreams()
+            val fold = folding(store, up)
+            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
+            assertEquals(mapOf(alias to canonical), fold.foldsAmong(listOf(alias)))
+
+            val fitness =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
+                    client = EmptyNostrClient(),
+                    foldedAway = fold::foldsAmong,
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+            for (batch in listOf(listOf(alias), listOf(canonical, alias), listOf(alias))) {
+                fitness.measure("t", batch, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                assertEquals(Verdict.ALIAS.value, gradeOf(store, alias), "graded on batch ${batch.map { it.url }}")
+            }
+        }
+
+    /** The fitness grade on [url]'s record, or null. */
+    private suspend fun gradeOf(
+        store: NostrSemanticsStore,
+        url: NormalizedRelayUrl,
+    ): String? =
+        store
+            .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))))
+            .flatMap { it.tags.toList() }
+            .firstOrNull { it.size >= 3 && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE }
+            ?.get(1)
 
     @Test
     fun `a read over a narrower set leaves what the fold holds untouched`() =

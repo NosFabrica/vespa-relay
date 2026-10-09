@@ -283,3 +283,10 @@ any size, so the fast lane too) or when the pre-probe failed more than
 above the near-half share of name and refusal failures a real sweep has shown
 (the funnel in router-internals.md). Only the `dead` verdicts are withheld: a
 false trip costs those urls a cheap re-probe, not every grade in the batch.
+
+**Fitness grades `alias` off every stored fold, not off the batch's collapse.**
+It read `Collapsed.aliases`, which holds a fold only when its canonical is in
+the same set. The fast lane passes only the urls named since its last look, so
+a known alias arriving without its canonical became a stand-in, was dialled
+and signed `prime`, and the next sweep re-signed it `alias`. `foldsAmong`
+answers from the stored verdicts alone.
