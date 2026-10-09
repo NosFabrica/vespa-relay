@@ -28,6 +28,13 @@ streams {
 }
 ```
 
+A key the loader does not read, at any level (the top, a stream, a filter, a
+`relaySource` entry, a select, a tier, the monitor), stops the boot and names
+the key: misspelt, it would otherwise leave its setting at the default while
+the file reads as if it were set. The same goes for a `relaySource`-only key
+(`refreshSeconds`, `exclude`, `gatedBy`, `maxRelaysPerList`) on a stream of
+static `urls`.
+
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
 - **`dir`** — `down` mirrors upstream events into our store; `up` publishes our

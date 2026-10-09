@@ -308,6 +308,14 @@ object RouterConfigLoader {
                     }
                 val negentropyTiers = parseTiers(name, s, "negentropy", "negentropySyncThePastSeconds", negentropySyncThePastSeconds)
                 val refetchTiers = parseTiers(name, s, "refetch", "refetchThePastSeconds", refetchThePastSeconds)
+                if (discovery == null) {
+                    val discoveryOnly = DISCOVERY_KEYS.filter { s.hasPath(it) }
+                    require(discoveryOnly.isEmpty()) {
+                        "router: stream '$name' sets ${discoveryOnly.joinToString { "`$it`" }}, which only a `relaySource` " +
+                            "stream reads — on a stream of static `urls` it would do nothing"
+                    }
+                }
+                refuseUnknownKeys(s, "stream '$name'", STREAM_KEYS + DISCOVERY_KEYS)
                 if (deleteMissing != DeleteMissing.OFF) {
                     // The comparison runs as the pool's audit, so it needs a relay list and the audit clock.
                     require(discovery != null) {
@@ -367,6 +375,7 @@ object RouterConfigLoader {
             }
         }
         refuseRouterWidePoolWidths(cfg)
+        refuseUnknownKeys(cfg, "the sync config", ROOT_KEYS)
         val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
         return RouterConfig(
             connTimeout,
@@ -441,6 +450,7 @@ object RouterConfigLoader {
             "router: monitor sets concurrency — renamed to dialConcurrency (it bounds the probe passes' dials). " +
                 "Rename the key"
         }
+        refuseUnknownKeys(m, "the monitor config", MONITOR_KEYS)
         return MonitorConfig(
             sources = sources,
             exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
@@ -538,6 +548,7 @@ object RouterConfigLoader {
         val tiers =
             s.getConfigList(key).mapIndexed { i, t ->
                 require(t.hasPath("every")) { "router: stream '$stream' `$key`[$i] has no `every` — a band with no cadence is never due" }
+                refuseUnknownKeys(t, "stream '$stream' `$key`[$i]", setOf("every", "maxAge"))
                 val every = t.getLong("every")
                 require(every >= 0L) { "router: stream '$stream' `$key`[$i] has a negative `every`" }
                 SyncTier(
@@ -760,6 +771,7 @@ object RouterConfigLoader {
                 "moved beside `exclude` on the stream, because which urls may be dialled is not a property of " +
                 "how one was discovered"
         }
+        refuseUnknownKeys(s, "stream '$stream' $what entry", setOf("filter", "select", "maxAgeSeconds", "refreshSeconds"))
         return RelaySource(
             selects = selects,
             filter = filter,
@@ -795,6 +807,7 @@ object RouterConfigLoader {
                 s.hasPath("marker") -> markerSugar(stream, index, s.getString("marker"))
                 else -> emptyList()
             }
+        refuseUnknownKeys(s, "stream '$stream' select", SELECT_KEYS, ::isBindable)
         return RelaySelect(
             kind = if (s.hasPath("kind")) s.getInt("kind") else null,
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
@@ -804,10 +817,10 @@ object RouterConfigLoader {
         )
     }
 
-    /** The fields a select may bind. A closed list, so a typo cannot bind nothing quietly. */
+    /** The fields a select may bind; with [SELECT_KEYS], every key a select may hold. */
     private val BINDABLE = setOf("authors", "ids", "kinds")
 
-    private fun isBindable(key: String) = key in BINDABLE || (key.length == 2 && key[0] == '#' && key[1].isLetter())
+    private fun isBindable(key: String) = key in BINDABLE || isTagFilter(key)
 
     /**
      * Which tag slot feeds which filter field. A value is an Int (that element of the tag) or
@@ -884,6 +897,7 @@ object RouterConfigLoader {
         urlIndex: Int,
         c: Config,
     ): TagCondition {
+        refuseUnknownKeys(c, "stream '$stream' where entry", setOf("index", "equals", "minSize", "maxSize"))
         val index = if (c.hasPath("index")) c.getInt("index") else null
         val equals = if (c.hasPath("equals")) c.getString("equals") else null
         val minSize = if (c.hasPath("minSize")) c.getInt("minSize") else null
@@ -920,6 +934,8 @@ object RouterConfigLoader {
 
     /** Turn a HOCON filter object into a quartz [Filter]: standard NIP-01 fields plus `#x` tag filters. */
     fun parseFilter(f: Config): Filter {
+        refuseUnknownKeys(f, "filter at ${f.origin().description()}", FILTER_KEYS, ::isTagFilter)
+
         fun strs(k: String) = if (f.hasPath(quote(k))) f.getStringList(quote(k)) else null
 
         fun ints(k: String) = if (f.hasPath(quote(k))) f.getIntList(quote(k)).map { it.toInt() } else null
@@ -944,7 +960,7 @@ object RouterConfigLoader {
             f
                 .root()
                 .keys
-                .filter { it.startsWith("#") && it.length == 2 }
+                .filter(::isTagFilter)
                 .associate { it.substring(1) to f.getStringList(quote(it)) }
                 .ifEmpty { null }
 
@@ -997,6 +1013,62 @@ object RouterConfigLoader {
             }
             key
         }
+
+    private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor")
+
+    private val STREAM_KEYS =
+        setOf(
+            "urls",
+            "dir",
+            "filter",
+            "trusted",
+            "deleteMissing",
+            "ownedKinds",
+            "healContent",
+            "healRetractions",
+            "negentropySyncThePastSeconds",
+            "refetchThePastSeconds",
+            "negentropy",
+            "refetch",
+            "refetchConcurrency",
+            "negentropyConcurrency",
+            "maxLiveConcurrency",
+            "visitConcurrency",
+        )
+
+    /** The stream keys [parseDiscovery] reads, and so only on a stream with a `relaySource`. */
+    private val DISCOVERY_KEYS = setOf("relaySource", "gatedBy", "refreshSeconds", "exclude", "maxRelaysPerList")
+
+    private val MONITOR_KEYS = setOf("sources", "exclude", "sweepSeconds", "fastLaneSeconds", "dialConcurrency")
+
+    private val SELECT_KEYS = setOf("kind", "tag", "relay", "index", "marker", "where")
+
+    private val FILTER_KEYS = setOf("ids", "authors", "kinds", "since", "until", "limit", "search")
+
+    /** A NIP-01 tag filter: `#` and one letter. */
+    private fun isTagFilter(key: String) = key.length == 2 && key[0] == '#' && key[1].isLetter()
+
+    /**
+     * Refuses a key nothing at this level reads: misspelt, it leaves its setting at the default
+     * while the config reads as if it were set. Runs after the retired-name refusals, which say more.
+     */
+    private fun refuseUnknownKeys(
+        cfg: Config,
+        where: String,
+        known: Set<String>,
+        alsoKnown: (String) -> Boolean = { false },
+    ) {
+        val unknown =
+            cfg
+                .root()
+                .keys
+                .filterNot { it in known || alsoKnown(it) }
+                .sorted()
+        require(unknown.isEmpty()) {
+            "router: $where sets ${unknown.joinToString { "`$it`" }}, which nothing reads — check the spelling. " +
+                "Known here: ${known.sorted().joinToString { "`$it`" }}"
+        }
+    }
 
     /** HOCON path segments with dots or hashes must be quoted for get*(). */
     private fun quote(key: String): String = "\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
