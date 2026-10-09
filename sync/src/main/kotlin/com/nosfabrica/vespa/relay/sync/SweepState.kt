@@ -85,10 +85,11 @@ class SweepState(
      */
     private val preStream = ConcurrentHashMap<Pair<String, String>, Reconciled>()
 
-    @Volatile private var dirty = false
-
-    /** Bumped on every change, so a snapshot built since then can be served again. */
+    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
     private val generation = AtomicLong()
+
+    /** The generation the file holds; behind [generation], the next flush writes. */
+    @Volatile private var savedAt = NEVER_SAVED
 
     /** The last snapshot and the generation it was built at. */
     private class Built(
@@ -103,9 +104,8 @@ class SweepState(
     /** Held for the disk write alone, so a status read never waits on the file. */
     private val writeLock = Any()
 
-    /** Every mutation of persisted state ends here. */
+    /** Every mutation of persisted state ends here, after the mutation itself. */
     private fun changed() {
-        dirty = true
         generation.incrementAndGet()
     }
 
@@ -113,7 +113,7 @@ class SweepState(
 
     init {
         load()
-        dirty = false
+        savedAt = generation.get()
     }
 
     // ---- what a peer will reconcile -----------------------------------------
@@ -252,10 +252,10 @@ class SweepState(
 
     fun flush() {
         synchronized(writeLock) {
-            if (!dirty) return
-            dirty = false
-            // A failed write re-arms the flag, so the next tick retries it.
-            if (!save()) dirty = true
+            if (file == null || generation.get() == savedAt) return
+            val current = current()
+            // A failed write leaves [savedAt] behind, so the next tick retries it.
+            if (save(current.doc)) savedAt = current.generation
         }
     }
 
@@ -308,13 +308,15 @@ class SweepState(
     }
 
     /** Every cursor and peer cap, in the one shape [save] writes and the status page reads. */
-    internal fun snapshot(): JsonObject {
-        built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+    internal fun snapshot(): JsonObject = current().doc
+
+    private fun current(): Built {
+        built?.takeIf { it.generation == generation.get() }?.let { return it }
         synchronized(buildLock) {
-            built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+            built?.takeIf { it.generation == generation.get() }?.let { return it }
             // Read before the build: a change landing during it leaves the result marked stale.
             val at = generation.get()
-            return build().also { built = Built(at, it) }
+            return Built(at, build()).also { built = it }
         }
     }
 
@@ -366,10 +368,10 @@ class SweepState(
             if (stamps.isNotEmpty()) put(UNOWNED_SINCE, buildJsonObject { stamps.forEach { (url, at) -> put(url, at) } })
         }
 
-    private fun save(): Boolean {
+    private fun save(doc: JsonObject): Boolean {
         val f = file ?: return true
         return runCatching {
-            val text = json.encodeToString(JsonObject.serializer(), snapshot())
+            val text = json.encodeToString(JsonObject.serializer(), doc)
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(text)
@@ -384,6 +386,9 @@ class SweepState(
     }
 
     companion object {
+        /** Below every generation, so a store that has never written always has something to write. */
+        private const val NEVER_SAVED = -1L
+
         /**
          * The cursor's identity: the stream, the filter with its time bounds removed, and the
          * peer. Taken once per sweep because it serialises the filter.

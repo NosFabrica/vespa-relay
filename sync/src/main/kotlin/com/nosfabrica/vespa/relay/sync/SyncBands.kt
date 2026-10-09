@@ -57,10 +57,11 @@ class SyncBands(
     /** Per-stream re-fetch periods. Fixed at construction: a coverage carries its period for the process's life. */
     private val perStream: Map<String, Long> = emptyMap(),
 ) : AutoCloseable {
-    @Volatile private var dirty = false
-
-    /** Bumped on every change, so a snapshot built since then can be served again. */
+    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
     private val generation = AtomicLong()
+
+    /** The generation the file holds; behind [generation], the next flush writes. */
+    @Volatile private var savedAt = NEVER_SAVED
 
     /** The last snapshot and the generation it was built at. */
     private class Built(
@@ -75,9 +76,8 @@ class SyncBands(
     /** Held for the disk write alone, so a status read never waits on the file. */
     private val writeLock = Any()
 
-    /** Every mutation of persisted state ends here. */
+    /** Every mutation of persisted state ends here, after the mutation itself. */
     private fun changed() {
-        dirty = true
         generation.incrementAndGet()
     }
 
@@ -307,7 +307,7 @@ class SyncBands(
     init {
         val pruned = load()
         // Reopening a file is not a change; a prune is, and only a write takes the keys off disk.
-        dirty = pruned > 0
+        savedAt = if (pruned > 0) NEVER_SAVED else generation.get()
     }
 
     /** The bands of one stream, created on first use. */
@@ -545,10 +545,10 @@ class SyncBands(
     /** Write the map if anything changed since the last write. */
     fun flush() {
         synchronized(writeLock) {
-            if (!dirty) return
-            dirty = false
-            // A failed write re-arms the flag, so the next tick retries it.
-            if (!save()) dirty = true
+            if (file == null || generation.get() == savedAt) return
+            val current = current()
+            // A failed write leaves [savedAt] behind, so the next tick retries it.
+            if (save(current.doc)) savedAt = current.generation
         }
     }
 
@@ -693,13 +693,15 @@ class SyncBands(
     }
 
     /** Every band this router holds, in the one shape [save] writes and the status page reads. */
-    internal fun snapshot(): JsonObject {
-        built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+    internal fun snapshot(): JsonObject = current().doc
+
+    private fun current(): Built {
+        built?.takeIf { it.generation == generation.get() }?.let { return it }
         synchronized(buildLock) {
-            built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+            built?.takeIf { it.generation == generation.get() }?.let { return it }
             // Read before the build: a change landing during it leaves the result marked stale.
             val at = generation.get()
-            return build().also { built = Built(at, it) }
+            return Built(at, build()).also { built = it }
         }
     }
 
@@ -838,10 +840,10 @@ class SyncBands(
     }
 
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
-    private fun save(): Boolean {
+    private fun save(doc: JsonObject): Boolean {
         val f = file ?: return true
         return runCatching {
-            val text = json.encodeToString(JsonObject.serializer(), snapshot())
+            val text = json.encodeToString(JsonObject.serializer(), doc)
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(text)
@@ -857,6 +859,9 @@ class SyncBands(
     }
 
     companion object {
+        /** Below every generation, so a store that has never written always has something to write. */
+        private const val NEVER_SAVED = -1L
+
         // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
 

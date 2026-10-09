@@ -340,3 +340,11 @@ The status tick built the band document under the same monitor the flusher
 held through the pretty-printed write, so a tick that met a flush waited out
 the disk. A change counter lets both reuse one built document, and the write
 takes a lock of its own.
+
+**The file is behind when the counter is ahead of the last write.** A dirty
+flag set before the counter moved let a flush in between clear the flag and
+write the cached document of the old count, so the change stayed off disk
+until another came, and was lost if it was the last before `close`. The
+counter now moves after the mutation, and a flush writes whenever it is ahead
+of the generation the last successful write held; a failed write simply
+leaves it behind.

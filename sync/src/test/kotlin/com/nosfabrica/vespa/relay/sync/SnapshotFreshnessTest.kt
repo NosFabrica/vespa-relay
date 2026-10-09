@@ -28,6 +28,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -128,5 +130,82 @@ class SnapshotFreshnessTest {
                 .jsonObject["filter"]!!
                 .jsonObject
         assertEquals("[20]", filter["kinds"].toString(), "the second document's filter, not a remembered one")
+    }
+
+    /** Runs [mutate] while another thread flushes [flush] in a tight loop, then closes. */
+    private fun racingFlusher(
+        flush: () -> Unit,
+        mutate: () -> Unit,
+    ) {
+        val done = AtomicBoolean()
+        val flusher = Thread { while (!done.get()) flush() }.apply { start() }
+        try {
+            mutate()
+        } finally {
+            done.set(true)
+            flusher.join()
+        }
+    }
+
+    @Test
+    fun `close persists every band change a racing flush did not`() {
+        val f = File.createTempFile("bands", ".json").also { it.delete() }
+        try {
+            repeat(ROUNDS) { round ->
+                f.delete()
+                val bands = SyncBands(f)
+                racingFlusher(bands::flush) {
+                    repeat(CHANGES) {
+                        val relay = RelayUrlNormalizer.normalize("wss://r$it.example")
+                        bands.record("s", relay, notes, now() - 600, now() - 60, paged = true)
+                    }
+                }
+                bands.close()
+                assertEquals(bands.snapshot(), SyncBands(f).snapshot(), "round $round: the file holds the last change")
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `close persists every sweep change a racing flush did not`() {
+        val f = File.createTempFile("sweeps", ".json").also { it.delete() }
+        try {
+            repeat(ROUNDS) { round ->
+                f.delete()
+                val sweeps = SweepState(f)
+                racingFlusher(sweeps::flush) {
+                    repeat(CHANGES) { sweeps.advance(SweepState.keyFor("s", RelayUrlNormalizer.normalize("wss://r$it.example"), notes), 100L + it, 200L + it) }
+                }
+                sweeps.close()
+                assertEquals(sweeps.snapshot(), SweepState(f).snapshot(), "round $round: the file holds the last change")
+            }
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `a write that failed is retried by the next flush`() {
+        val dir = Files.createTempDirectory("bands").toFile()
+        val f = File(dir, "bands.json")
+        try {
+            val bands = SyncBands(f)
+            bands.record("s", a, notes, now() - 600, now() - 60, paged = true)
+            // A non-empty directory where the file goes makes the move fail.
+            File(f, "blocker").apply { parentFile.mkdirs() }.writeText("")
+            bands.flush()
+            f.deleteRecursively()
+            bands.close()
+            assertEquals(setOf(a.url), SyncBands(f).snapshot().relays("s", notes))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    private companion object {
+        const val ROUNDS = 100
+        const val CHANGES = 20
     }
 }
