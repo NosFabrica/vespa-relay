@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
+import com.vitorpamplona.quartz.nip01Core.crypto.verifySignature
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
@@ -285,11 +286,17 @@ class IngestPipeline(
 
     /**
      * The batch's events worth writing, in batch order: duplicates, superseded replaceables and
-     * bad signatures dropped and tallied. Only a verified copy may shadow another, so a forged
-     * copy or a forged newer version never costs the batch a genuine event.
+     * bad signatures dropped and tallied. Only a verified copy may shadow another, and only a copy
+     * whose id matches its content may place its group, so no forgery costs the batch a genuine event.
      */
     private suspend fun admit(batch: List<Inbound>): List<Inbound> {
-        val contests = dropSuperseded(batch, dropDuplicates(batch))
+        val fresh = dropDuplicates(batch)
+        val hashStartedNs = System.nanoTime()
+        val (placed, forged) = ledByContent(batch, fresh)
+        // Booked to `verify` without a call of its own, since it is the id half of the check below.
+        IngestStats.add("verify", System.nanoTime() - hashStartedNs)
+        tallyBadSignatures(forged)
+        val contests = dropSuperseded(batch, placed)
         if (contests.isEmpty()) return emptyList()
         val winners = ArrayList<Int>(contests.size)
         val superseded = ArrayList<List<Int>>()
@@ -303,14 +310,16 @@ class IngestPipeline(
                         superseded.add(copies)
                         continue
                     }
-                    for (i in copies) {
+                    for ((n, i) in copies.withIndex()) {
                         val msg = batch[i]
                         when {
                             won -> {
                                 duplicates++
                             }
 
-                            msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false) -> {
+                            // The leader's id is already checked against its content; the rest are not.
+                            msg.skipVerify ||
+                                runCatching { if (n == 0) msg.event.verifySignature() else msg.event.verify() }.getOrDefault(false) -> {
                                 winners.add(i)
                                 won = true
                             }
@@ -323,10 +332,7 @@ class IngestPipeline(
                 }
             }
         }
-        if (badSigs > 0) {
-            rejected.addAndGet(badSigs.toLong())
-            badSignatures.addAndGet(badSigs.toLong())
-        }
+        tallyBadSignatures(badSigs)
         if (duplicates > 0) {
             rejected.addAndGet(duplicates.toLong())
             noteRejection(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
@@ -334,6 +340,12 @@ class IngestPipeline(
         if (superseded.isNotEmpty()) reportSuperseded(batch, superseded)
         winners.sort()
         return winners.map { batch[it] }
+    }
+
+    private fun tallyBadSignatures(count: Int) {
+        if (count == 0) return
+        rejected.addAndGet(count.toLong())
+        badSignatures.addAndGet(count.toLong())
     }
 
     /**
@@ -390,6 +402,29 @@ class IngestPipeline(
             noteRejection(RejectionReason.DUPLICATE.take(48), dropped.toLong())
         }
         return fresh
+    }
+
+    /**
+     * Each group of [copies] led by its first trusted copy or copy whose id hashes to its content,
+     * the only copy whose kind, author and stamp may place the group. Copies ahead of it, and
+     * groups with none, are forged; their count is returned beside the groups.
+     */
+    private fun ledByContent(
+        batch: List<Inbound>,
+        copies: List<List<Int>>,
+    ): Pair<List<List<Int>>, Int> {
+        var forged = 0
+        val led = ArrayList<List<Int>>(copies.size)
+        for (c in copies) {
+            val lead = c.indexOfFirst { batch[it].skipVerify || runCatching { batch[it].event.verifyId() }.getOrDefault(false) }
+            if (lead < 0) {
+                forged += c.size
+                continue
+            }
+            forged += lead
+            led.add(if (lead == 0) c else c.subList(lead, c.size))
+        }
+        return led to forged
     }
 
     /** Write a batch through the store's bulk path; if it throws, bisect so one bad event does not cost the batch. */
@@ -538,8 +573,8 @@ class IngestPipeline(
 
     /**
      * Tally versions a verified one beats as `replaced:` and report each to the sink, since the
-     * store never sees them. `verifyId` binds the id to the content that earned it; an unchecked
-     * id would be attacker-chosen.
+     * store never sees them. Each is reported by its leader, and only once its id is bound to its
+     * content: an unchecked id would be attacker-chosen.
      */
     private fun reportSuperseded(
         batch: List<Inbound>,
@@ -549,7 +584,9 @@ class IngestPipeline(
         noteRejection(RejectionReason.REPLACED.take(48), dropped)
         rejected.addAndGet(dropped)
         for (copies in versions) {
-            val msg = copies.firstNotNullOfOrNull { i -> batch[i].takeIf { it.event.verifyId() } } ?: continue
+            val msg = batch[copies[0]]
+            // A trusted leader skipped the id check every other leader passed.
+            if (msg.skipVerify && !runCatching { msg.event.verifyId() }.getOrDefault(false)) continue
             reportRefusal(msg.event, msg.origin, RejectionReason.REPLACED)
         }
     }

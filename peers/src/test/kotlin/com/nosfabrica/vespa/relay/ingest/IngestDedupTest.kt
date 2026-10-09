@@ -304,6 +304,56 @@ class IngestDedupTest {
         assertTrue(pipeline.rejectionBreakdown().contains("bad signature"), pipeline.rejectionBreakdown())
     }
 
+    /** [event]'s id over content it does not hash: a kind 0 by [author] stamped [at]. */
+    private fun idClone(
+        event: Event,
+        author: NostrSignerSync,
+        at: Long,
+    ) = Event(
+        id = event.id,
+        pubKey = author.pubKey,
+        createdAt = at,
+        kind = 0,
+        tags = emptyArray(),
+        content = "",
+        sig = "f".repeat(128),
+    )
+
+    @Test
+    fun `a forged copy claiming a beaten address does not take the genuine event with it`() {
+        // Wide enough for both probes, so the stored profiles are read and compared.
+        val people = (0 until 130).map { NostrSignerSync() }
+        val notes = (0 until 130).map { note(it) }
+        val clones = notes.zip(people).map { (n, p) -> idClone(n, p, at = 1) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) =
+            ingest(preload = people.map { profile(it, 1_700_000_000L) }, offer = clones + notes, refusals = sink)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(1))) }
+        assertEquals(notes.map { it.id }.toSet(), kept.map { it.id }.toSet(), pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in notes.map { it.id } }, "a genuine note was reported refused: $blamed")
+    }
+
+    @Test
+    fun `a forged copy claiming a newer version cannot supersede the genuine one`() {
+        val people = (0 until 130).map { NostrSignerSync() }
+        val profiles = people.map { profile(it, 1_700_000_000L) }
+        val notes = (0 until 130).map { note(it) }
+        // Each note's id over a kind 0 newer than its author's real profile, arriving ahead of the note.
+        val clones = notes.zip(people).map { (n, p) -> idClone(n, p, at = 1_800_000_000L) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) = ingest(preload = emptyList(), offer = profiles + clones + notes, refusals = sink)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0, 1))) }.map { it.id }.toSet()
+        val genuine = (profiles + notes).map { it.id }.toSet()
+        assertEquals(genuine, kept, pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in genuine }, "a genuine event was reported refused: $blamed")
+    }
+
     private companion object {
         const val SETTLE_TIMEOUT_MS = 30_000
     }

@@ -95,6 +95,18 @@ passes; the rest drop unverified. The common case still costs one
 verification per contest, and the store-version probe still runs first, since
 the version it compares against is already verified.
 
+**A group of copies is placed by a copy whose id hashes its content.** Copies
+were grouped by their claimed id and the group placed by its first copy's
+kind, author and stamp, none of them checked. A forged copy carrying a genuine
+note's id while claiming an old kind 0 by an author with a stored profile took
+the note down with it: 130 such copies ahead of 130 genuine notes stored none
+and reported all 130 `replaced`, on the way to suppressing them. The leader is
+now the first copy passing `verifyId`, and the copies ahead of it count as bad
+signatures. Copies that share a checked id share their content, so the leader
+speaks for the group, and its signature check skips the hash it already paid:
+the common case costs what it did. A trusted stream's copy leads unhashed and
+is hashed only before it is reported.
+
 **A batch pass that throws loses its batch, not its worker.** The worker loop
 was guarded only by its caller, so a `StackOverflowError` from the parse audit
 on deeply nested content ended a worker for the life of the process, and every
