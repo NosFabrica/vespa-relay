@@ -20,13 +20,15 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import kotlinx.coroutines.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** The reconcile's progress line: its arithmetic, and its refusal to quote a percentage that cannot move. */
+/** The reconcile's progress line, what it retries, and its refusal to quote a percentage that cannot move. */
 class TrustReconcileProgressTest {
     @Test
     fun `screening reports a fraction and an eta`() {
@@ -93,5 +95,17 @@ class TrustReconcileProgressTest {
         report(47, IllegalStateException("cold engine"))
         assertEquals(2, out.size, "a loop still retrying says so")
         assertContains(out[1], "attempt 47")
+    }
+
+    /** A JVM error that leaves the process sound must not end the retry loop silently. */
+    @Test
+    fun `every failure but cancellation and a failing JVM is retried`() {
+        for (thrown in listOf(IllegalStateException("cold"), NoClassDefFoundError("x"), StackOverflowError(), AssertionError("x"))) {
+            assertTrue(retryable<Unit> { throw thrown }.isFailure, "$thrown ended the retry loop")
+        }
+        assertFailsWith<CancellationException> { retryable<Unit> { throw CancellationException("stop") } }
+        assertFailsWith<OutOfMemoryError> { retryable<Unit> { throw OutOfMemoryError() } }
+        assertFailsWith<InternalError> { retryable<Unit> { throw InternalError() } }
+        assertEquals(3, retryable { 3 }.getOrNull())
     }
 }

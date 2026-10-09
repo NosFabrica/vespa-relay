@@ -36,16 +36,10 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     // One reporter for the whole retry sequence, or every attempt restarts the throttle window.
     val progress = reconcileProgress()
     val reportFailure = reconcileFailures()
+    var errorShown = false
     while (true) {
         attempt++
-        val result =
-            try {
-                Result.success(store.reconcileTrust(onProgress = progress))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
+        val result = retryable { store.reconcileTrust(onProgress = progress) }
         result.onSuccess { r ->
             when {
                 r.services == 0 -> {
@@ -85,12 +79,35 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
             cause?.printStackTrace()
             return
         }
-        // The first failure gets its stack; every retry after it is still said aloud.
-        if (reportFailure(attempt, cause)) cause?.printStackTrace()
+        // The first failure gets its stack; every retry after it is still said aloud. A JVM error is
+        // not a cold engine, so it is said on every attempt.
+        if (cause is Error) {
+            System.err.println("trust: reconcile attempt $attempt threw $cause, a JVM error rather than a cold engine; retrying")
+            if (!errorShown) cause.printStackTrace()
+            errorShown = true
+        } else if (reportFailure(attempt, cause)) {
+            cause?.printStackTrace()
+        }
         delay(TRUST_RECONCILE_RETRY_MS)
         waited += TRUST_RECONCILE_RETRY_MS
     }
 }
+
+/**
+ * [block]'s outcome as a retryable result. Cancellation and a failing JVM propagate; a stack overflow
+ * is the one VM error that leaves the JVM sound, so it is retried with every other throwable.
+ */
+internal inline fun <T> retryable(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: VirtualMachineError) {
+        if (e !is StackOverflowError) throw e
+        Result.failure(e)
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
 
 private const val TRUST_RECONCILE_RETRY_MS = 5_000L
 private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
