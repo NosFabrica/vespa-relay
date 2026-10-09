@@ -395,3 +395,12 @@ batch's direct wss dials they are withheld as our truststore or clock, which
 fail every handshake at once where real certificate faults are a small
 minority. At any batch size, so a fast-lane batch rarely signs a TLS `dead`
 and leaves it to the sweep.
+
+**Below the guard floor, proof needs more servers reached than urls proved
+gone.** A batch under `GUARD_FLOOR` was held to `reached == 0` alone, so one
+success (an onion, an IP literal, a name still in our cache) vouched for every
+other url the pre-probe failed, which is exactly what our resolver answering
+NXDOMAIN for everything looks like. A small batch now withholds its pre-probe
+`dead` (and its `silent`) when more urls were proved gone than reached a
+server. The fast lane pays for it with a delay: those urls are graded by the
+sweep, whose batch is past the floor.

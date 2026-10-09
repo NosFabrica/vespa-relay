@@ -135,6 +135,22 @@ class FitnessGuardTest {
     }
 
     @Test
+    fun `one server reached does not vouch for a small batch the pre-probe mostly failed`() {
+        // Our resolver answering NXDOMAIN for everything still lets an IP literal or an onion through.
+        val gone = urls("gone", 5)
+        val lucky = urls("lucky", 1)
+        val withheld = grades(gone + lucky, reach = { if (it in gone) Reach.PROVED_UNREACHABLE else Reach.REACHABLE }) { null }
+        assertTrue(gone.all { withheld[it] == null }, "five urls signed dead beside one that answered")
+        assertEquals(Verdict.PRIME.value, withheld[lucky.single()])
+
+        // More servers reached than proved gone is a working network, and the proof stands.
+        val few = urls("few", 2)
+        val live = urls("live", 3)
+        val published = grades(few + live, reach = { if (it in few) Reach.PROVED_UNREACHABLE else Reach.REACHABLE }) { null }
+        assertTrue(few.all { published[it] == Verdict.DEAD.value })
+    }
+
+    @Test
     fun `a lookup the probe could not read is set aside, not counted as blind`() {
         // Many urls on one host share the JVM's cached failure; they must not trip the guard on the rest.
         val cached = urls("cached", 40)

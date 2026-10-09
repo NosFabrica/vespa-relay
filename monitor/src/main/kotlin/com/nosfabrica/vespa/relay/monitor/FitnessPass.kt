@@ -1038,13 +1038,15 @@ class FitnessPass(
         const val DEAD_GUARD_SHARE = 0.75
 
         /**
-         * Does a batch look like our own network went dark: no dial reached a server at all, or,
-         * where a share means anything, the pre-probe failed more than [DEAD_GUARD_SHARE] of it.
+         * Does a batch look like our own network went dark: no dial reached a server, or the pre-probe
+         * failed more than [DEAD_GUARD_SHARE] of it, or, below [GUARD_FLOOR], more urls than reached one.
          */
         internal fun looksDark(
             dialled: Int,
             provedGone: Int,
             reached: Int,
-        ): Boolean = reached == 0 || (dialled >= GUARD_FLOOR && provedGone > dialled * DEAD_GUARD_SHARE)
+        ): Boolean =
+            reached == 0 ||
+                if (dialled >= GUARD_FLOOR) provedGone > dialled * DEAD_GUARD_SHARE else provedGone > reached
     }
 }
