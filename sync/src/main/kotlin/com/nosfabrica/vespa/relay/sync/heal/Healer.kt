@@ -122,7 +122,8 @@ class Healer(
                 cut = "its ${settings.passBudgetMs / 1000}s budget ran out"
                 break
             }
-            val (key, stale) = entries[next++]
+            val at = next++
+            val (key, stale) = entries[at]
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
 
             try {
@@ -165,12 +166,15 @@ class Healer(
                         caps.strike(url, pass)
                         if (silentInARow >= settings.maxSilentInARow) {
                             cut = "$silentInARow push(es) in a row went unanswered"
+                            // The entry that drew the cut goes back with the rest.
+                            next = at
                             break
                         }
                     }
 
                     PushVerdict.AUTH -> {
                         cut = "the relay asked us to authenticate first"
+                        next = at
                         break
                     }
 

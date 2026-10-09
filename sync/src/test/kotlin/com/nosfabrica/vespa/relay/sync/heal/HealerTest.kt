@@ -95,7 +95,11 @@ class HealerTest {
                 s.healer.drain(url)
                 assertEquals(quick.maxSilentInARow, s.pushes.get(), "silence in a row ends the pass")
                 assertEquals(quick.maxSilentInARow, s.caps.state(url).strikes, "and every timeout is a strike")
-                assertEquals(20 - quick.maxSilentInARow, s.queue.sizeFor(url), "the repairs never tried wait for the next pass")
+                assertEquals(
+                    20 - quick.maxSilentInARow + 1,
+                    s.queue.sizeFor(url),
+                    "the repairs never tried, and the one the pass stopped on, wait for the next pass",
+                )
             } finally {
                 scope.cancel()
             }
@@ -145,11 +149,29 @@ class HealerTest {
                 s.healer.drain(url)
                 assertFalse(s.caps.isClosed(url), "a login prompt is not a policy")
                 assertTrue(s.stale.none { s.refused.suppressed(it.id, it.createdAt) }, "and the served copies stay repairable")
-                assertEquals(4, s.queue.sizeFor(url), "the pass ends at the prompt and keeps what it did not try")
+                assertEquals(5, s.queue.sizeFor(url), "the pass ends at the prompt and keeps every repair it did not deliver")
 
                 authed = true
                 s.healer.drain(url)
-                assertEquals(4L, s.healer.accepted.get(), "once authenticated, the next pass delivers")
+                assertEquals(5L, s.healer.accepted.get(), "once authenticated, the next pass delivers")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a relay that stays auth-gated loses no repair however many visits ask`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                var authed = false
+                val s = setup(scope, 3, quick) { if (authed) PublishResult(true, "") else PublishResult(false, "auth-required: sign in") }
+                repeat(5) { s.healer.drain(url) }
+                assertEquals(3, s.queue.sizeFor(url), "every prompted visit hands its whole queue back")
+
+                authed = true
+                s.healer.drain(url)
+                assertEquals(3L, s.healer.accepted.get(), "and the first authenticated visit delivers all of it")
             } finally {
                 scope.cancel()
             }
