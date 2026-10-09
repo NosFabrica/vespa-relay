@@ -254,3 +254,13 @@ mints one url per user on a filtering relay, so a per-url counter never reaches
 a threshold. The authority is `host[:port]`: a subdomain is not folded into its
 parent, and two ports are two relays. A host that delivered anything this cycle
 is never treated as dead, whatever its siblings did.
+
+**A dial's connect word earns `silent`, not `dead`.** `Silence` reads text,
+and `dead` is a signed public claim that hides the url from discovery, so it
+rests on what proves it: the typed pre-probe (`Unreachability.proves`), or
+the server taking the connect and refusing TLS or the websocket upgrade. A
+name, refusal or route word from a dial the pre-probe had just let through
+is as likely our resolver or route as the relay, and read as `dead` it put
+"temporary failure in name resolution" on someone else's server.
+`FITNESS_EPOCH` went to 3 with it, so the verdicts signed under the old rule
+are taken back at boot.

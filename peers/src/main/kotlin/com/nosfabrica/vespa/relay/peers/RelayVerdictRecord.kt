@@ -539,7 +539,7 @@ class RelayVerdictRecord(
         const val NIP77_TAG = "nip77"
 
         /** The fitness verdict's rules version; `FitnessPass.retireStaleEpochs` takes back older ones at boot. */
-        const val FITNESS_EPOCH = "2"
+        const val FITNESS_EPOCH = "3"
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 
