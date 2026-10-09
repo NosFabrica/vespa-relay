@@ -1259,9 +1259,9 @@ object StatusVocabulary {
             )
             term(
                 "syncStatus",
-                "Where this router's sync of one (relay, stream) pair stands. `complete` — every band the pair " +
-                    "holds is settled, which is a paged leg the relay EOSEd empty or a finished negentropy " +
-                    "reconcile; `paging` — bands exist and at least one is still walking backwards, so read " +
+                "Where this router's sync of one (relay, stream) pair stands. `complete` — every ask's past is " +
+                    "settled down to the floor, by a paged walk the relay EOSEd empty in every band it holds or by " +
+                    "a finished negentropy reconcile reaching the floor; `paging` — bands exist and at least one is still walking backwards, so read " +
                     "`coveredFrom`; `refused` — the pool visited it and could write no band, with the reason and " +
                     "the relay's own sentence beside it; `notStarted` — on the roster, no band, and no refusal " +
                     "recorded, so the queue has not reached it yet. The last two are the same absence in the band " +
