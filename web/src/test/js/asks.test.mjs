@@ -50,6 +50,19 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
   assert.strictEqual(n, 2, "a rejected ask is retried, not replayed");
 }
 
+// A signed-in search names no lens in its filters: the socket's AUTH is the lens. Sign-out and
+// sign-in as somebody else inside the freshness window asks the same filters for another reader.
+{
+  const cache = new AskCache();
+  let n = 0;
+  const ask = () => { n++; const a = [n]; a.complete = true; return Promise.resolve(a); };
+  const alice = "a".repeat(64), bob = "b".repeat(64);
+  assert.deepStrictEqual([...await cache.take(f(160), ask, alice)], [1]);
+  assert.deepStrictEqual([...await cache.take(f(160), ask, alice)], [1], "the same reader reuses the answer");
+  assert.deepStrictEqual([...await cache.take(f(160), ask, bob)], [2], "another reader is asked again, never handed the first one's ranking");
+  assert.deepStrictEqual([...await cache.take(f(160), ask, null)], [3], "…and so is an anonymous socket");
+}
+
 // `complete = false` is what a timed-out or aborted read comes back as.
 {
   const cache = new AskCache();
@@ -65,7 +78,8 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
 }
 
 assert.ok(/const asks = new AskCache\(\)/.test(app), "app.js keeps one ask cache");
-assert.ok(/asks\.take\(filters, \(\) => relay\.req\(filters, undefined, \{ signal \}\)\)/.test(app), "…and every ranked search goes through it");
+assert.ok(/asks\.take\(filters, \(\) => relay\.req\(filters, undefined, \{ signal \}\), relay\.authed \? me : null\)/.test(app),
+  "…and every ranked search goes through it, under the reader the socket authenticated as");
 assert.ok(/if \(pop\.loading\) \{ popupQueued = text; return; \}/.test(app), "a type-ahead while one is in flight only replaces the waiting text");
 assert.ok(/if \(live && next != null && next !== text && \$q\.value\.trim\(\) === next\) armPopup\(next\)/.test(app), "the waiting text runs when the ask lands, if the box still says it — through the debounce again");
 assert.ok(/if \(pop\.abort && pop\.inFlightFor !== text\) pop\.abort\.abort\(\)/.test(app), "Enter closes a type-ahead for any other text, so the submit is not queued behind it");

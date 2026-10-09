@@ -300,7 +300,7 @@ async function search(text, limit, deep, signal) {
   const filters = buildFilters(text, limit);
   // Through the cache, so Enter reuses the popup's answer. [signal] is the popup's, so an
   // overtaken type-ahead is closed at the relay.
-  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }));
+  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }), relay.authed ? me : null);
   // `complete` is EOSE, not the timeout. shared/relay.js marks the array and uniqueById
   // returns a new one, so read it first.
   return {
