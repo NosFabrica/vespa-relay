@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** When the real [VisitPool] gets back to a unit it could not serve. */
+/** When the real [VisitPool] gets back to a unit it could not serve: a refused permit, an evicted tail. */
 class VisitPoolSchedulingTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
     private val b = RelayUrlNormalizer.normalize("wss://b.example")
@@ -82,6 +82,37 @@ class VisitPoolSchedulingTest {
                     while (paged.size < 2) delay(20)
                 }
                 assertEquals(setOf(a, b), paged.toSet())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `an evicted unit's prompt visit catches up without evicting back`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val streams = listOf(stream(maxLiveConcurrency = 1))
+            val walks = AtomicInteger()
+            val visits = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            val fixture =
+                PoolFixture(scope, streams, answerAt = { url, _, onEvent ->
+                    // Every walk delivers more than the last, so whoever was visited last outscores the sitting tail.
+                    val n = walks.incrementAndGet()
+                    visits.computeIfAbsent(url) { AtomicInteger() }.incrementAndGet()
+                    val now = System.currentTimeMillis() / 1000
+                    repeat(n) { onEvent(PoolFixture.event(n * 1000 + it, now)) }
+                    PagedFetchResult(n, PagedFetchResult.End.DRAINED)
+                })
+            try {
+                fixture.pool(limits = PoolLimits.of(streams)).start()
+                withTimeout(10_000) {
+                    while ((fixture.counts()["liveEvicted"] ?: 0L) == 0L) delay(10)
+                }
+                // Long enough for a ping-pong to run up dozens of evictions at fixture speed.
+                delay(2_000)
+                assertEquals(1L, fixture.counts()["liveEvicted"], "one eviction, not a ping-pong")
+                assertEquals(1, fixture.tails.size, "the evictor holds the one live permit")
+                assertEquals(3, walks.get(), "each unit's first visit, then the evicted one's prompt catch-up")
             } finally {
                 scope.cancel()
             }

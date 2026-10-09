@@ -196,6 +196,9 @@ internal class VisitPool(
     /** Units turned away before dialling: they retry after [TURNED_AWAY_RETRY_MS], not a revisit's wait. */
     private val turnedAway = ConcurrentHashMap.newKeySet<VisitKey>()
 
+    /** Units whose tail was just evicted: the prompt visit catches up and does not evict in turn. */
+    private val evicted = ConcurrentHashMap.newKeySet<VisitKey>()
+
     /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
     private fun arrived(
         url: NormalizedRelayUrl,
@@ -492,6 +495,7 @@ internal class VisitPool(
         }
         resumeAt.keys.removeIf { !wantedBy(built, it) }
         turnedAway.removeIf { !wantedBy(built, it) }
+        evicted.removeIf { !wantedBy(built, it) }
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -590,6 +594,7 @@ internal class VisitPool(
         visitsRun.incrementAndGet()
         // A prompt requeue can reach here past an earlier turn-away; this visit's own wait applies.
         turnedAway.remove(key)
+        val mayEvict = !evicted.remove(key)
         val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         ongoingVisit.stream = key.stream
         ongoing[key] = ongoingVisit
@@ -644,7 +649,7 @@ internal class VisitPool(
             aborts.cleared(key.stream, url)
             ongoingVisit.stage = FINISHING
             healer.drain(url)
-            openTail(key)
+            openTail(key, mayEvict)
         } finally {
             ongoing.remove(key)
             sockets.release(url)
@@ -1022,9 +1027,13 @@ internal class VisitPool(
     /**
      * Opens this unit's live tail, `since` [TAIL_OVERLAP_SECONDS] behind now so the seam with
      * the catch-up cannot drop an event. A sitting tail whose asks or kind cap changed is
-     * re-opened. The socket claim lives until the roster drops the unit.
+     * re-opened. The socket claim lives until the roster drops the unit. Without [mayEvict] it
+     * takes only a spare permit: a unit just evicted would otherwise evict back.
      */
-    private suspend fun openTail(key: VisitKey) {
+    private suspend fun openTail(
+        key: VisitKey,
+        mayEvict: Boolean,
+    ) {
         val url = key.url
         val snapshot = currentRoster
         val urlAsks = asksFor(snapshot, key)
@@ -1038,7 +1047,7 @@ internal class VisitPool(
         }
         // A spare permit within the stream's budget, or one earned by evicting its weakest tail.
         // `trySpare` does not count a deferral: a full live budget is normal, not refused work.
-        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: earnTail(key) ?: return
+        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: (if (mayEvict) earnTail(key) else null) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // Built before the listener closes over it, so the first burst lands on the counters.
         val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
@@ -1111,7 +1120,10 @@ internal class VisitPool(
         // Another path dropped it first and released its permit; ask for one like anyone else.
         val handedOver = detachTail(weakest) ?: return limits.tryHold(candidate.stream, POOL_LIVE)
         evictedTails.incrementAndGet()
-        if (wantedBy(currentRoster, weakest)) queue.offer(weakest)
+        if (wantedBy(currentRoster, weakest)) {
+            evicted += weakest
+            queue.offer(weakest)
+        }
         return handedOver
     }
 
