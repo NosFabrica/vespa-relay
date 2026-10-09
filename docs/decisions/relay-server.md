@@ -187,9 +187,17 @@ behind the very congestion that tripped it, so the session is cancelled after
 a short grace, which closes the socket and stops its REQs querying for replies
 nobody reads. The 30s ping and 60s timeout exist because a phone that walked
 off NAT leaves a half-open session whose subscriptions and buffers survive
-until the OS gives up, which can be never. The queue is bounded in characters
-as well as frames: 8192 frames of large events let one non-reading client pin
-hundreds of megabytes.
+until the OS gives up, which can be never.
+
+**Over its character budget, only a client that stopped reading is cut off.**
+8192 frames of large events let one non-reading client pin hundreds of
+megabytes, so the queue has a 16M-character budget. A hard cap on it closed
+healthy clients: quartz pushes a whole REQ answer at store speed, and one page
+of 5000 large follow or relay lists passes the budget while the client drains
+it normally, then retries forever. Past the budget, a connection is closed only
+when the writer has waited 30s on one frame, checked on every offer and once a
+second; a non-reader holds at most what arrives in that window, still under the
+8192-frame bound, and the frame bound is unchanged.
 
 **The websocket's frame cap is the engine's message length, in bytes.** Ktor's
 default is unbounded, and it judges a frame from its header, so an anonymous
