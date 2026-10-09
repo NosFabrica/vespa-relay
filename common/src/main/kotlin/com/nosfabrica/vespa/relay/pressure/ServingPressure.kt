@@ -21,34 +21,51 @@
 package com.nosfabrica.vespa.relay.pressure
 
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.pow
 
 /**
  * How slow the relay's own reads have become, so the mirror can stop filling the engine's queue.
  * The mean is exponentially weighted (alpha = 1/8): one slow query is absorbed, a sustained rise
- * moves it within a handful of reads.
+ * moves it within a handful of reads. It also decays once no read has finished for [QUIET_GRACE_MS].
  */
 class ServingPressure(
     /** Above this mean read latency (ms), ingest starts yielding. */
     private val thresholdMs: Long = DEFAULT_THRESHOLD_MS,
     private val maxBackoffMs: Long = 2_000,
+    /** Monotonic milliseconds. */
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val meanMicros = AtomicLong(0)
 
     private val samples = AtomicLong(0)
+
+    @Volatile private var lastSampleMs = clockMs()
 
     /** Records a completed read; on the serving path, so it must stay cheap. */
     fun record(durationMs: Long) {
         // Floored at 1 so a mean of zero stays unreachable; the counter, not the mean, says which
         // sample is first.
         val micros = durationMs.coerceAtLeast(1) * 1_000
+        val now = clockMs()
         val first = samples.getAndIncrement() == 0L
         meanMicros.updateAndGet { prev ->
-            if (first) micros else prev + (micros - prev) / 8
+            if (first) micros else aged(prev, now).let { it + (micros - it) / 8 }
         }
+        lastSampleMs = now
     }
 
-    /** The current mean read latency in milliseconds, or 0 before any read. */
-    fun meanMs(): Long = meanMicros.get() / 1_000
+    /** The current mean read latency in milliseconds, decayed for any quiet since; 0 before any read. */
+    fun meanMs(): Long = aged(meanMicros.get(), clockMs()) / 1_000
+
+    /** [micros] halved every [DECAY_HALF_LIFE_MS] of quiet past the grace: a relay nobody reads has no readers to protect. */
+    private fun aged(
+        micros: Long,
+        now: Long,
+    ): Long {
+        val quietMs = now - lastSampleMs - QUIET_GRACE_MS
+        if (quietMs <= 0) return micros
+        return (micros * 0.5.pow(quietMs.toDouble() / DECAY_HALF_LIFE_MS)).toLong()
+    }
 
     fun sampleCount(): Long = samples.get()
 
@@ -63,6 +80,7 @@ class ServingPressure(
     ) {
         meanMicros.set(meanMs.coerceAtLeast(0) * 1_000)
         samples.set(sampleCount.coerceAtLeast(0))
+        lastSampleMs = clockMs()
     }
 
     /**
@@ -87,5 +105,11 @@ class ServingPressure(
 
         /** Below this, the mean is one client's cold first query rather than a trend. */
         const val MIN_SAMPLES = 20
+
+        /** Quiet that still reads as load: a slow read in progress has not finished to say so. */
+        const val QUIET_GRACE_MS = 60_000L
+
+        /** How fast the mean fades once the grace is spent. */
+        const val DECAY_HALF_LIFE_MS = 30_000L
     }
 }

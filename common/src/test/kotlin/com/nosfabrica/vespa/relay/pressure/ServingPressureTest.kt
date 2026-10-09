@@ -140,6 +140,36 @@ class ServingPressureTest {
     }
 
     @Test
+    fun `a slow burst followed by silence stops costing ingest`() {
+        // With no reads finishing, nothing would ever pull the mean back down.
+        var now = 1_000_000L
+        val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })
+        feed(p, 30_000, 60)
+        assertTrue(p.backoffMs() > 0)
+
+        now += 20_000
+        assertTrue(p.backoffMs() > 0, "a short quiet may be a slow read still running")
+
+        now += 10 * 60_000
+        assertEquals(0, p.backoffMs(), "ten quiet minutes: there is nobody left to protect")
+        assertTrue(p.meanMs() < 2_000, "and /pressure says so too: ${p.meanMs()}ms")
+
+        feed(p, 5_000, 1)
+        assertEquals(0, p.backoffMs(), "one slow read after the quiet is an outlier, not the old burst back")
+    }
+
+    @Test
+    fun `an adopted mean ages like a recorded one`() {
+        var now = 0L
+        val p = ServingPressure(thresholdMs = 2_000, clockMs = { now })
+        p.adopt(10_000, 100)
+        assertTrue(p.backoffMs() > 0)
+
+        now += 10 * 60_000
+        assertEquals(0, p.backoffMs(), "a feed that stopped updating is not a load")
+    }
+
+    @Test
     fun `the backoff is bounded however bad it gets`() {
         // Ingest yields; it does not stop.
         val p = ServingPressure(thresholdMs = 1_000, maxBackoffMs = 2_000)
