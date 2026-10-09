@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.web
 
+import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
 import com.vitorpamplona.quartz.nip98HttpAuth.Nip98AuthVerifier
 import java.security.SecureRandom
 import java.util.Base64
@@ -67,7 +68,10 @@ class Nip98AdminGate(
     private val admins: Set<String>,
     /** Origin the tokens are signed against, no trailing slash (e.g. `http://localhost:7780`). */
     val publicUrl: String,
-    private val verifier: Nip98AuthVerifier = Nip98AuthVerifier(),
+    /** Remembers only tokens that claim an administrator, so nobody else's can evict one from it. */
+    private val adminVerifier: Nip98AuthVerifier = Nip98AuthVerifier(),
+    /** Every other token: quartz's replay set is a bounded FIFO that a flood of these would roll over. */
+    private val otherVerifier: Nip98AuthVerifier = Nip98AuthVerifier(),
 ) : AdminGate {
     /** The `u` a token for [path] must carry. Published in the 401 so a signer never has to guess. */
     fun urlFor(path: String): String = publicUrl.trimEnd('/') + path
@@ -84,11 +88,21 @@ class Nip98AdminGate(
         url: String,
     ): Admitted {
         if (authorization.isNullOrBlank()) return Admitted.NoCredentials
+        // Routed on the claimed author before any verifier remembers the token.
+        val claimsAdmin = claimedAuthor(authorization) in admins
+        val verifier = if (claimsAdmin) adminVerifier else otherVerifier
         // No body to bind: this gate protects GETs and a bodyless POST. A token carrying a payload
         // hash still verifies, since quartz compares it only against a body it was given.
         return when (val r = verifier.verify(authorization, method, url, null)) {
             is Nip98AuthVerifier.Result.Verified -> {
-                if (r.pubkey in admins) Admitted.Admin(r.pubkey) else Admitted.NotAdmin(r.pubkey)
+                when {
+                    r.pubkey !in admins -> Admitted.NotAdmin(r.pubkey)
+
+                    // Never admitted off the floodable set, whatever made the two parses disagree.
+                    !claimsAdmin -> Admitted.BadCredentials("token author could not be read")
+
+                    else -> Admitted.Admin(r.pubkey)
+                }
             }
 
             is Nip98AuthVerifier.Result.Malformed -> {
@@ -104,6 +118,18 @@ class Nip98AdminGate(
             }
         }
     }
+
+    /** The pubkey a token claims, unverified and decoded as quartz decodes it; null when it does not decode. */
+    private fun claimedAuthor(authorization: String): String? =
+        runCatching {
+            val encoded = authorization.trim().removePrefix(Nip98AuthVerifier.SCHEME).trim()
+            OptimizedJsonMapper
+                .fromJson(
+                    kotlin.io.encoding.Base64
+                        .decode(encoded)
+                        .decodeToString(),
+                ).pubKey
+        }.getOrNull()
 }
 
 /**
